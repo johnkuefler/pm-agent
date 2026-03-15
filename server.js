@@ -136,14 +136,22 @@ app.post('/webhook/transcript', async (req, res) => {
 
   const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
 
-  // Stop phrase — cut Nora off mid-speech
-  if (lower.includes('stop nora') || lower.includes('nora stop')) {
+  // Stop/interrupt phrases — cut Nora off mid-speech
+  if (lower.includes('stop nora') || lower.includes('nora stop') || lower.includes('hold on') || lower.includes('never mind') || lower.includes('nevermind')) {
     console.log('🛑 Stop phrase detected');
+    if (session.abortController) session.abortController.abort();
     await silenceBot(bot_id);
     return;
   }
 
   if (!lower.includes('hey nora') && !lower.includes('nora ')) return;
+
+  // Abort any in-progress response before starting a new one
+  if (session.abortController) {
+    console.log('⏭️ Aborting previous response');
+    session.abortController.abort();
+    await silenceBot(bot_id);
+  }
 
   console.log('🎙️ Nora triggered');
   await handleNora(bot_id, text, session);
@@ -201,20 +209,21 @@ app.delete('/memory/:index', (req, res) => {
 });
 
 async function handleNora(botId, triggerText, session) {
+  const abortController = new AbortController();
+  session.abortController = abortController;
+
   try {
     const meetingContext = session.buffer.slice(-10).join('\n');
     const userMessage = `[Recent meeting conversation]\n${meetingContext}\n\n[What triggered you]\n${triggerText}`;
 
     session.history.push({ role: 'user', content: userMessage });
 
-    // Stream Claude response — speak the first sentence while the rest generates
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 300,
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
         temperature: 0.9,
-        stream: true,
         system: buildSystemPrompt(),
         messages: session.history
       },
@@ -224,46 +233,35 @@ async function handleNora(botId, triggerText, session) {
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01'
         },
-        responseType: 'stream'
+        signal: abortController.signal
       }
     );
 
-    let fullReply = '';
+    if (abortController.signal.aborted) return;
 
-    await new Promise((resolve, reject) => {
-      let sseBuffer = '';
-      response.data.on('data', (chunk) => {
-        sseBuffer += chunk.toString();
-        const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop();
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue;
-          const data = line.slice(6).trim();
-          if (data === '[DONE]') continue;
-
-          try {
-            const event = JSON.parse(data);
-            if (event.type === 'content_block_delta' && event.delta?.text) {
-              fullReply += event.delta.text;
-            }
-          } catch {}
-        }
-      });
-      response.data.on('end', resolve);
-      response.data.on('error', reject);
-    });
+    const fullReply = response.data.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text).join(' ');
 
     console.log('🤖 Nora:', fullReply);
     session.history.push({ role: 'assistant', content: fullReply });
     if (session.history.length > 20) session.history.splice(0, 2);
 
+    if (abortController.signal.aborted) return;
     await speakInMeeting(botId, fullReply);
 
     // Check for memories in background
     extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
   } catch (err) {
+    if (err.name === 'CanceledError' || abortController.signal.aborted) {
+      console.log('🚫 Response aborted');
+      return;
+    }
     console.error('Claude error:', err.response?.data || err.message);
+  } finally {
+    if (session.abortController === abortController) {
+      session.abortController = null;
+    }
   }
 }
 
