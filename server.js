@@ -26,6 +26,14 @@ app.get('/', (req, res) => res.json({ status: 'ok', agent: 'Norah' }));
 
 // One session per bot
 const sessions = {};
+let activeBotId = null;
+
+// Register bot ID when Norah joins a meeting
+app.post('/register-bot', (req, res) => {
+  activeBotId = req.body.bot_id;
+  console.log('🤖 Registered bot:', activeBotId);
+  res.json({ ok: true });
+});
 
 // Recall.ai sends transcript chunks here
 app.post('/webhook/transcript', async (req, res) => {
@@ -36,12 +44,13 @@ app.post('/webhook/transcript', async (req, res) => {
   const event = req.body;
   if (event.event !== 'transcript.data') return;
 
-  const bot_id = event.data?.bot_id;
+  const bot_id = event.data?.bot_id || event.bot_id || activeBotId;
   const words = event.data?.data?.words;
   const text = words?.map(w => w.text).join(' ') || event.data?.data?.text;
   const speaker = event.data?.data?.participant?.name || 'Participant';
 
-  if (!bot_id || !text) return;
+  if (!text) return;
+  console.log(`[bot_id: ${bot_id}] [${speaker}]: ${text}`);
 
   console.log(`[${speaker}]: ${text}`);
 
@@ -51,8 +60,8 @@ app.post('/webhook/transcript', async (req, res) => {
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
-  const lower = text.toLowerCase();
-  if (!lower.includes('hey norah') && !lower.includes('norah,') && !lower.includes('hey nora') && !lower.includes('nora,')) return;
+  const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
+  if (!lower.includes('hey norah') && !lower.includes('hey nora') && !lower.includes('norah ') && !lower.includes('nora ')) return;
 
   console.log('🎙️ Norah triggered');
   await handleNorah(bot_id, text, session);

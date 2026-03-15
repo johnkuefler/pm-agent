@@ -36,6 +36,10 @@ async function sendNorahToMeeting(zoomUrl) {
   });
 
   console.log('✅ Norah joined. Bot ID:', res.data.id);
+
+  // Register bot ID with the server
+  await axios.post(`${SERVER_URL}/register-bot`, { bot_id: res.data.id }).catch(() => {});
+
   return res.data.id;
 }
 
