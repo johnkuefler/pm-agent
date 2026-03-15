@@ -84,6 +84,14 @@
           <span id="proactive-status" style="color: #666; font-size: 12px; margin-left: 8px;"></span>
         </div>
       </div>
+      <div class="section">
+        <h2>One-on-One Mode</h2>
+        <p style="color: #888; font-size: 13px; margin-bottom: 12px;">When enabled, Nora responds to every utterance without needing her name. Great for 1:1 calls where you don't want to keep saying "Hey Nora" every time.</p>
+        <div class="row" style="align-items: center;">
+          <button id="one-on-one-btn" class="btn btn-sm" onclick="toggleOneOnOne()" style="min-width: 100px;">Loading...</button>
+          <span id="one-on-one-status" style="color: #666; font-size: 12px; margin-left: 8px;"></span>
+        </div>
+      </div>
     </div>
 
     <!-- Tasks Tab -->
@@ -181,8 +189,9 @@
   <script>
     let currentFilter = 'all';
 
-    // Load proactive status on page load
+    // Load meeting mode statuses on page load
     loadProactiveStatus();
+    loadOneOnOneStatus();
 
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -204,7 +213,7 @@
       try {
         const r = await fetch('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_url: u }) });
         const d = await r.json();
-        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; loadProactiveStatus(); }
+        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; loadProactiveStatus(); loadOneOnOneStatus(); }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
@@ -585,6 +594,57 @@
         updateProactiveBtn(data.proactive);
       } catch (e) {
         document.getElementById('proactive-status').textContent = 'Failed: ' + e.message;
+      }
+    }
+
+    // One-on-one mode
+    async function loadOneOnOneStatus() {
+      const btn = document.getElementById('one-on-one-btn');
+      const status = document.getElementById('one-on-one-status');
+      try {
+        const r = await fetch('/one-on-one');
+        const data = await r.json();
+        if (!data.active_session && data.active_session !== undefined) {
+          btn.textContent = 'No Meeting';
+          btn.className = 'btn btn-sm';
+          btn.style.background = '#333'; btn.style.color = '#666';
+          btn.disabled = true;
+          status.textContent = 'Join a meeting first';
+        } else {
+          updateOneOnOneBtn(data.oneOnOne);
+          btn.disabled = false;
+        }
+      } catch (e) {
+        btn.textContent = 'Error';
+        btn.className = 'btn btn-sm';
+      }
+    }
+
+    function updateOneOnOneBtn(enabled) {
+      const btn = document.getElementById('one-on-one-btn');
+      const status = document.getElementById('one-on-one-status');
+      if (enabled) {
+        btn.textContent = 'Enabled';
+        btn.style.background = '#1e3a5f'; btn.style.color = '#7dd3fc'; btn.style.border = '1px solid #1e3a5f';
+        status.textContent = 'Nora responds to everything — no wake word needed';
+      } else {
+        btn.textContent = 'Disabled';
+        btn.style.background = '#1a1a1a'; btn.style.color = '#888'; btn.style.border = '1px solid #333';
+        status.textContent = 'Nora only responds when called by name';
+      }
+    }
+
+    async function toggleOneOnOne() {
+      try {
+        const r = await fetch('/one-on-one', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await r.json();
+        if (data.error) {
+          document.getElementById('one-on-one-status').textContent = data.error;
+          return;
+        }
+        updateOneOnOneBtn(data.oneOnOne);
+      } catch (e) {
+        document.getElementById('one-on-one-status').textContent = 'Failed: ' + e.message;
       }
     }
 

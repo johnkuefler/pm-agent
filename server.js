@@ -447,7 +447,7 @@ app.post('/join', async (req, res) => {
     });
 
     activeBotId = botRes.data.id;
-    if (!sessions[activeBotId]) sessions[activeBotId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, utterancesSinceEval: 0 };
+    if (!sessions[activeBotId]) sessions[activeBotId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
     console.log('✅ Nora joined via web. Bot ID:', activeBotId);
     res.json({ bot_id: botRes.data.id });
   } catch (err) {
@@ -486,7 +486,7 @@ app.post('/webhook/transcript', async (req, res) => {
 
   console.log(`[${speaker}]: ${text}`);
 
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, utterancesSinceEval: 0 };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
   const session = sessions[bot_id];
 
   session.buffer.push(`${speaker}: ${text}`);
@@ -525,6 +525,17 @@ app.post('/webhook/transcript', async (req, res) => {
     return;
   }
 
+  // One-on-one mode — respond to everything without wake word
+  if (session.oneOnOne) {
+    if (session.abortController) {
+      session.abortController.abort();
+      await silenceBot(bot_id);
+    }
+    console.log('🎙️ Nora triggered (one-on-one mode)');
+    await handleNora(bot_id, text, session);
+    return;
+  }
+
   // Proactive interjection — evaluate every 10 utterances if enabled
   if (session.proactive) {
     session.utterancesSinceEval++;
@@ -545,7 +556,7 @@ app.post('/webhook/chat', async (req, res) => {
   if (!text.toLowerCase().startsWith('@nora')) return;
 
   const query = text.replace(/@nora/i, '').trim();
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, utterancesSinceEval: 0 };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
   await handleNora(bot_id, query, sessions[bot_id]);
 });
 
@@ -564,6 +575,22 @@ app.post('/proactive', (req, res) => {
   sessions[bot_id].utterancesSinceEval = 0;
   console.log(`🧠 Proactive mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
   res.json({ ok: true, proactive: enabled, bot_id });
+});
+
+// One-on-one mode toggle — Nora responds to every utterance without wake word
+app.get('/one-on-one', (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.json({ oneOnOne: false, active_session: false });
+  res.json({ oneOnOne: sessions[bot_id].oneOnOne, bot_id });
+});
+
+app.post('/one-on-one', (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
+  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].oneOnOne;
+  sessions[bot_id].oneOnOne = enabled;
+  console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
+  res.json({ ok: true, oneOnOne: enabled, bot_id });
 });
 
 // Meeting status updates — track bot_id and clean up
