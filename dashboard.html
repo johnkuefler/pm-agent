@@ -220,7 +220,11 @@
           list.innerHTML = '<p class="empty">No tasks yet.</p>';
           return;
         }
-        list.innerHTML = tasks.map(t => `
+        list.innerHTML = tasks.map(t => {
+          const transcriptLink = t.source_bot_id
+            ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(t.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
+            : '';
+          return `
           <div class="task-item ${t.status === 'done' ? 'done' : ''}">
             <div class="task-action">${escHtml(t.action)}</div>
             ${t.detail ? `<div class="task-detail">${escHtml(t.detail)}</div>` : ''}
@@ -228,14 +232,14 @@
               <span class="task-badge ${t.status === 'done' ? 'badge-done' : 'badge-pending'}">${t.status}</span>
               ${t.assignee ? ' · ' + escHtml(t.assignee) : ''}
               ${t.due ? ' · due ' + escHtml(t.due) : ''}
-              · ${new Date(t.created).toLocaleDateString()}
+              · ${new Date(t.created).toLocaleDateString()}${transcriptLink}
             </div>
             <div class="task-buttons">
               ${t.status === 'pending' ? `<button class="btn btn-success" onclick="completeTask('${t.id}')">Mark Done</button>` : ''}
               <button class="btn btn-danger" onclick="deleteTask('${t.id}')">Delete</button>
             </div>
-          </div>
-        `).join('');
+          </div>`;
+        }).join('');
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load tasks.</p>'; }
     }
 
