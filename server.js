@@ -1195,22 +1195,61 @@ async function extractTasks(context, trigger, reply, source = {}) {
     const items = JSON.parse(match[0]);
     if (!Array.isArray(items) || items.length === 0) return;
 
+    // Deduplicate: ask Claude to check new tasks against existing pending tasks
+    const existingTasks = loadTasks().filter(t => t.status === 'pending');
+    let filteredItems = items.filter(i => i.action && typeof i.action === 'string');
+    if (filteredItems.length > 0 && existingTasks.length > 0) {
+      try {
+        const existingList = existingTasks.map(t => `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}`).join('\n');
+        const newList = filteredItems.map((t, i) => `${i}: ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}`).join('\n');
+        const dedupRes = await axios.post(
+          'https://api.anthropic.com/v1/messages',
+          {
+            model: 'claude-haiku-4-5-20251001',
+            max_tokens: 200,
+            temperature: 0,
+            system: `You check for duplicate tasks. Given a list of existing tasks and a list of new candidate tasks, return a JSON array of the indices (numbers) of new tasks that are NOT duplicates. A task is a duplicate if an existing task already covers the same action for the same person/purpose, even if worded differently. Be strict — if it's essentially the same request, it's a duplicate. Return only the indices of truly new tasks as a JSON array of numbers, e.g. [0, 2]. If all are duplicates, return [].`,
+            messages: [{ role: 'user', content: `Existing pending tasks:\n${existingList}\n\nNew candidate tasks:\n${newList}\n\nIndices of non-duplicate new tasks (JSON array):` }]
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01'
+            }
+          }
+        );
+        const dedupText = dedupRes.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+        const dedupMatch = dedupText.match(/\[[\s\S]*?\]/);
+        if (dedupMatch) {
+          const keepIndices = JSON.parse(dedupMatch[0]);
+          if (Array.isArray(keepIndices)) {
+            const before = filteredItems.length;
+            filteredItems = filteredItems.filter((_, i) => keepIndices.includes(i));
+            if (filteredItems.length < before) {
+              console.log(`🔍 Dedup: ${before - filteredItems.length} duplicate task(s) filtered out`);
+            }
+          }
+        }
+      } catch (dedupErr) {
+        console.error('Task dedup check error (proceeding anyway):', dedupErr.message);
+      }
+    }
+
     // Build context snippet: the conversation around when the task was requested
     const contextSnippet = `${context}\n\n[Trigger]: ${trigger}\n[Nora replied]: ${reply}`;
 
-    for (const item of items) {
-      if (item.action && typeof item.action === 'string') {
-        addTask({
-          action: item.action,
-          detail: item.detail || '',
-          assignee: item.assignee || '',
-          due: item.due || '',
-          source_channel: source.channel || '',
-          source_user: source.user || '',
-          source_bot_id: source.bot_id || '',
-          context: contextSnippet
-        });
-      }
+    for (const item of filteredItems) {
+      addTask({
+        action: item.action,
+        detail: item.detail || '',
+        assignee: item.assignee || '',
+        due: item.due || '',
+        source_channel: source.channel || '',
+        source_user: source.user || '',
+        source_bot_id: source.bot_id || '',
+        context: contextSnippet
+      });
     }
   } catch (err) {
     console.error('Task extraction error:', err.message);
