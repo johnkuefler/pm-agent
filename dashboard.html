@@ -75,6 +75,14 @@
         </div>
         <div id="join-status" class="toast"></div>
       </div>
+      <div class="section">
+        <h2>Proactive Mode</h2>
+        <p style="color: #888; font-size: 13px; margin-bottom: 12px;">When enabled, Nora will evaluate the conversation every ~10 utterances and interject if she has relevant information — even without being called by name.</p>
+        <div class="row" style="align-items: center;">
+          <button id="proactive-btn" class="btn btn-sm" onclick="toggleProactive()" style="min-width: 100px;">Loading...</button>
+          <span id="proactive-status" style="color: #666; font-size: 12px; margin-left: 8px;"></span>
+        </div>
+      </div>
     </div>
 
     <!-- Tasks Tab -->
@@ -132,6 +140,9 @@
 
   <script>
     let currentFilter = 'all';
+
+    // Load proactive status on page load
+    loadProactiveStatus();
 
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -315,6 +326,57 @@
     function closeTranscript() {
       document.getElementById('transcript-detail').style.display = 'none';
       document.getElementById('transcript-list').style.display = 'block';
+    }
+
+    // Proactive mode
+    async function loadProactiveStatus() {
+      const btn = document.getElementById('proactive-btn');
+      const status = document.getElementById('proactive-status');
+      try {
+        const r = await fetch('/proactive');
+        const data = await r.json();
+        if (!data.active_session && data.active_session !== undefined) {
+          btn.textContent = 'No Meeting';
+          btn.className = 'btn btn-sm';
+          btn.style.background = '#333'; btn.style.color = '#666';
+          btn.disabled = true;
+          status.textContent = 'Join a meeting first';
+        } else {
+          updateProactiveBtn(data.proactive);
+          btn.disabled = false;
+        }
+      } catch (e) {
+        btn.textContent = 'Error';
+        btn.className = 'btn btn-sm';
+      }
+    }
+
+    function updateProactiveBtn(enabled) {
+      const btn = document.getElementById('proactive-btn');
+      const status = document.getElementById('proactive-status');
+      if (enabled) {
+        btn.textContent = 'Enabled';
+        btn.style.background = '#064e3b'; btn.style.color = '#6ee7b7'; btn.style.border = '1px solid #064e3b';
+        status.textContent = 'Nora will interject when she has relevant info';
+      } else {
+        btn.textContent = 'Disabled';
+        btn.style.background = '#1a1a1a'; btn.style.color = '#888'; btn.style.border = '1px solid #333';
+        status.textContent = 'Nora will only respond when called by name';
+      }
+    }
+
+    async function toggleProactive() {
+      try {
+        const r = await fetch('/proactive', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const data = await r.json();
+        if (data.error) {
+          document.getElementById('proactive-status').textContent = data.error;
+          return;
+        }
+        updateProactiveBtn(data.proactive);
+      } catch (e) {
+        document.getElementById('proactive-status').textContent = 'Failed: ' + e.message;
+      }
     }
 
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }

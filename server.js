@@ -77,6 +77,8 @@ function addTask(task) {
     ...task,
     source_channel: task.source_channel || '',
     source_user: task.source_user || '',
+    source_bot_id: task.source_bot_id || '',
+    context: task.context || '',
     status: 'pending',
     created: new Date().toISOString(),
     completed: null
@@ -200,6 +202,8 @@ ${baseUrl}
   "due": "Deadline if mentioned, otherwise empty",
   "source_channel": "slack:C0123... or zoom",
   "source_user": "U0123... (Slack user ID)",
+  "source_bot_id": "Recall.ai bot ID if task came from a meeting (use to fetch full transcript via GET /transcripts/{bot_id})",
+  "context": "Conversation snippet surrounding the task request — includes the trigger, Nora's reply, and recent utterances",
   "status": "pending | done",
   "created": "ISO 8601 timestamp",
   "completed": "ISO 8601 timestamp or null"
@@ -226,7 +230,11 @@ ${baseUrl}
 1. Fetch pending tasks:
    GET ${baseUrl}/tasks?status=pending
 
-2. For each pending task, determine the right action:
+2. For each pending task, read the task's "context" field first — it contains the conversation snippet around when the task was requested. If the task has a "source_bot_id", you can fetch the full meeting transcript for deeper context:
+   GET ${baseUrl}/transcripts/{source_bot_id}
+   Use this to understand nuances like who should be invited, what tone to use, specific details mentioned in conversation, etc.
+
+3. Determine the right action:
    - "Schedule a meeting..." → use Google Calendar MCP (gcal) to create event
    - "Send an email to..." → use Gmail MCP to draft/send
    - "Create a task in Teamwork..." → use Teamwork MCP (twprojects) to create task
@@ -356,7 +364,7 @@ app.post('/webhook/transcript', async (req, res) => {
 
   console.log(`[${speaker}]: ${text}`);
 
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, utterancesSinceEval: 0 };
   const session = sessions[bot_id];
 
   session.buffer.push(`${speaker}: ${text}`);
@@ -383,17 +391,28 @@ app.post('/webhook/transcript', async (req, res) => {
     return;
   }
 
-  if (!lower.includes('hey nora') && !lower.includes('nora ')) return;
-
-  // Abort any in-progress response before starting a new one
-  if (session.abortController) {
-    console.log('⏭️ Aborting previous response');
-    session.abortController.abort();
-    await silenceBot(bot_id);
+  // Wake word trigger — always respond
+  if (lower.includes('hey nora') || lower.includes('nora ')) {
+    if (session.abortController) {
+      console.log('⏭️ Aborting previous response');
+      session.abortController.abort();
+      await silenceBot(bot_id);
+    }
+    console.log('🎙️ Nora triggered');
+    await handleNora(bot_id, text, session);
+    return;
   }
 
-  console.log('🎙️ Nora triggered');
-  await handleNora(bot_id, text, session);
+  // Proactive interjection — evaluate every 10 utterances if enabled
+  if (session.proactive) {
+    session.utterancesSinceEval++;
+    if (session.utterancesSinceEval >= 10) {
+      session.utterancesSinceEval = 0;
+      evaluateInterjection(bot_id, session).catch(err => {
+        console.error('Proactive eval error:', err.message);
+      });
+    }
+  }
 });
 
 // Zoom chat trigger — type "@nora your question" in chat
@@ -404,8 +423,25 @@ app.post('/webhook/chat', async (req, res) => {
   if (!text.toLowerCase().startsWith('@nora')) return;
 
   const query = text.replace(/@nora/i, '').trim();
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, utterancesSinceEval: 0 };
   await handleNora(bot_id, query, sessions[bot_id]);
+});
+
+// Proactive mode toggle — enable/disable Nora interjecting without wake word
+app.get('/proactive', (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.json({ proactive: false, active_session: false });
+  res.json({ proactive: sessions[bot_id].proactive, bot_id });
+});
+
+app.post('/proactive', (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
+  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].proactive;
+  sessions[bot_id].proactive = enabled;
+  sessions[bot_id].utterancesSinceEval = 0;
+  console.log(`🧠 Proactive mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
+  res.json({ ok: true, proactive: enabled, bot_id });
 });
 
 // Meeting status updates — track bot_id and clean up
@@ -739,6 +775,64 @@ function isAskingClarification(reply) {
   return hasQuestion && matchesPattern;
 }
 
+// Proactive interjection — evaluate whether Nora should speak up without being called
+async function evaluateInterjection(botId, session) {
+  // Don't evaluate if Nora is already speaking
+  if (session.abortController) return;
+
+  const recentBuffer = session.buffer.slice(-15).join('\n');
+  const memory = loadMemory();
+  const memoryBlock = memory.length > 0 ? memory.map(m => `- ${m.fact}`).join('\n') : 'No memories stored.';
+
+  try {
+    const response = await axios.post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-haiku-4-5-20241022',
+      max_tokens: 200,
+      system: `You are an evaluation function — not a conversational assistant. Your job is to decide if Nora, an AI PM assistant in a live meeting, should interject RIGHT NOW without being called upon.
+
+You must respond with EXACTLY one of:
+INTERJECT: <a short natural sentence Nora should say>
+NO
+
+Rules — you must say NO unless ALL of these are true:
+1. Someone stated something factually wrong that Nora can correct using her memory below
+2. OR a direct question was asked and went unanswered for multiple exchanges and Nora has the specific answer in her memory
+3. OR a deadline, commitment, or conflict was mentioned that contradicts something in Nora's memory
+4. There is a clear pause or opening in conversation (not mid-discussion)
+5. Nora's interjection would be genuinely valuable — not just "helpful"
+
+Say NO if:
+- The conversation is flowing normally and people are handling things fine
+- Someone might answer the question themselves in the next few exchanges
+- Nora would just be agreeing, summarizing, or adding minor context
+- The topic is social, off-topic, or not related to work Nora tracks
+- You're even slightly unsure whether Nora should speak
+
+Nora's memory:
+${memoryBlock}`,
+      messages: [{ role: 'user', content: `Here are the last 15 utterances from the meeting:\n\n${recentBuffer}\n\nShould Nora interject?` }]
+    }, {
+      headers: {
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json'
+      }
+    });
+
+    const result = response.data.content[0]?.text?.trim() || 'NO';
+    console.log(`🧠 Proactive eval: ${result}`);
+
+    if (result.startsWith('INTERJECT:')) {
+      const interjection = result.replace('INTERJECT:', '').trim();
+      console.log(`💡 Nora interjecting: ${interjection}`);
+      // Use handleNora so it goes through the full pipeline (history, transcript, TTS)
+      await handleNora(botId, `[Nora is proactively interjecting because she has relevant information] ${interjection}`, session);
+    }
+  } catch (err) {
+    console.error('Proactive eval error:', err.message);
+  }
+}
+
 async function handleNora(botId, triggerText, session) {
   const abortController = new AbortController();
   session.abortController = abortController;
@@ -793,7 +887,7 @@ async function handleNora(botId, triggerText, session) {
     // Only extract if Nora gave a definitive response, not clarifying questions
     if (!isAskingClarification(fullReply)) {
       extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
-      extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom' }).catch(() => {});
+      extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -883,9 +977,21 @@ async function extractTasks(context, trigger, reply, source = {}) {
     const items = JSON.parse(match[0]);
     if (!Array.isArray(items) || items.length === 0) return;
 
+    // Build context snippet: the conversation around when the task was requested
+    const contextSnippet = `${context}\n\n[Trigger]: ${trigger}\n[Nora replied]: ${reply}`;
+
     for (const item of items) {
       if (item.action && typeof item.action === 'string') {
-        addTask({ action: item.action, detail: item.detail || '', assignee: item.assignee || '', due: item.due || '', source_channel: source.channel || '', source_user: source.user || '' });
+        addTask({
+          action: item.action,
+          detail: item.detail || '',
+          assignee: item.assignee || '',
+          due: item.due || '',
+          source_channel: source.channel || '',
+          source_user: source.user || '',
+          source_bot_id: source.bot_id || '',
+          context: contextSnippet
+        });
       }
     }
   } catch (err) {
