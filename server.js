@@ -21,12 +21,17 @@ LimeLight context:
 - Active clients: Pitsco Education, Lincoln Center Theater (May 2026), Lettermen's Energy, US Alliance Life (April 2026 fixed fee), MSG, Russell Cellular, VFW Foundation, Morton Salt, NDS, Catholic Charities, KCCTE, Green Gorilla Cleaning.
 - Teamwork is the system of record. Fixed fee work means tight scope — flag creep immediately.`;
 
+// Health check
+app.get('/', (req, res) => res.json({ status: 'ok', agent: 'Norah' }));
+
 // One session per bot
 const sessions = {};
 
 // Recall.ai sends transcript chunks here
 app.post('/webhook/transcript', async (req, res) => {
   res.sendStatus(200);
+
+  console.log('📨 Webhook received:', JSON.stringify(req.body).slice(0, 500));
 
   const event = req.body;
   if (event.event !== 'transcript.data') return;
@@ -46,7 +51,7 @@ app.post('/webhook/transcript', async (req, res) => {
   if (session.buffer.length > 20) session.buffer.shift();
 
   const lower = text.toLowerCase();
-  if (!lower.includes('hey norah') && !lower.includes('norah,')) return;
+  if (!lower.includes('hey norah') && !lower.includes('norah,') && !lower.includes('hey nora') && !lower.includes('nora,')) return;
 
   console.log('🎙️ Norah triggered');
   await handleNorah(bot_id, text, session);
