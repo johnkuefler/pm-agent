@@ -9,10 +9,10 @@ app.use(express.json());
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 
 // Load prompt from file
-const PROMPT_PATH = path.join(__dirname, 'norah-prompt.md');
+const PROMPT_PATH = path.join(__dirname, 'nora-prompt.md');
 const VOLUME_DIR = '/data';
-const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'norah-memory.json');
-const MEMORY_PATH_LOCAL = path.join(__dirname, 'norah-memory.json');
+const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-memory.json');
+const MEMORY_PATH_LOCAL = path.join(__dirname, 'nora-memory.json');
 
 // Use Railway volume if available, fall back to local file for dev
 function getMemoryPath() {
@@ -70,7 +70,7 @@ app.post('/join', async (req, res) => {
     const SERVER_URL = `https://${req.get('host')}`;
     const botRes = await axios.post(`${RECALL_BASE}/bot/`, {
       meeting_url,
-      bot_name: 'Norah',
+      bot_name: 'Nora',
       recording_config: {
         transcript: { provider: { meeting_captions: {} } },
         realtime_endpoints: [{
@@ -90,7 +90,7 @@ app.post('/join', async (req, res) => {
     });
 
     activeBotId = botRes.data.id;
-    console.log('✅ Norah joined via web. Bot ID:', activeBotId);
+    console.log('✅ Nora joined via web. Bot ID:', activeBotId);
     res.json({ bot_id: botRes.data.id });
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
@@ -102,7 +102,7 @@ app.post('/join', async (req, res) => {
 const sessions = {};
 let activeBotId = null;
 
-// Register bot ID when Norah joins a meeting
+// Register bot ID when Nora joins a meeting
 app.post('/register-bot', (req, res) => {
   activeBotId = req.body.bot_id;
   console.log('🤖 Registered bot:', activeBotId);
@@ -136,29 +136,29 @@ app.post('/webhook/transcript', async (req, res) => {
 
   const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
 
-  // Stop phrase — cut Norah off mid-speech
-  if (lower.includes('stop norah') || lower.includes('stop nora') || lower.includes('norah stop') || lower.includes('nora stop')) {
+  // Stop phrase — cut Nora off mid-speech
+  if (lower.includes('stop nora') || lower.includes('nora stop')) {
     console.log('🛑 Stop phrase detected');
     await silenceBot(bot_id);
     return;
   }
 
-  if (!lower.includes('hey norah') && !lower.includes('hey nora') && !lower.includes('norah ') && !lower.includes('nora ')) return;
+  if (!lower.includes('hey nora') && !lower.includes('nora ')) return;
 
-  console.log('🎙️ Norah triggered');
-  await handleNorah(bot_id, text, session);
+  console.log('🎙️ Nora triggered');
+  await handleNora(bot_id, text, session);
 });
 
-// Zoom chat trigger — type "@norah your question" in chat
+// Zoom chat trigger — type "@nora your question" in chat
 app.post('/webhook/chat', async (req, res) => {
   res.sendStatus(200);
   const { bot_id, data } = req.body;
   const text = data?.chat_message?.text || '';
-  if (!text.toLowerCase().startsWith('@norah')) return;
+  if (!text.toLowerCase().startsWith('@nora')) return;
 
-  const query = text.replace(/@norah/i, '').trim();
+  const query = text.replace(/@nora/i, '').trim();
   if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [] };
-  await handleNorah(bot_id, query, sessions[bot_id]);
+  await handleNora(bot_id, query, sessions[bot_id]);
 });
 
 // Meeting status updates — track bot_id and clean up
@@ -177,7 +177,7 @@ app.post('/webhook/status', async (req, res) => {
   }
 });
 
-// Memory API — view and edit Norah's memory
+// Memory API — view and edit Nora's memory
 app.get('/memory', (req, res) => res.json(loadMemory()));
 
 app.post('/memory', (req, res) => {
@@ -200,7 +200,7 @@ app.delete('/memory/:index', (req, res) => {
   res.json({ ok: true, memory });
 });
 
-async function handleNorah(botId, triggerText, session) {
+async function handleNora(botId, triggerText, session) {
   try {
     const meetingContext = session.buffer.slice(-10).join('\n');
     const userMessage = `[Recent meeting conversation]\n${meetingContext}\n\n[What triggered you]\n${triggerText}`;
@@ -229,15 +229,13 @@ async function handleNorah(botId, triggerText, session) {
     );
 
     let fullReply = '';
-    let sentenceBuffer = '';
-    let firstSentenceSpoken = false;
 
     await new Promise((resolve, reject) => {
       let sseBuffer = '';
-      response.data.on('data', async (chunk) => {
+      response.data.on('data', (chunk) => {
         sseBuffer += chunk.toString();
         const lines = sseBuffer.split('\n');
-        sseBuffer = lines.pop(); // keep incomplete line
+        sseBuffer = lines.pop();
 
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
@@ -247,18 +245,7 @@ async function handleNorah(botId, triggerText, session) {
           try {
             const event = JSON.parse(data);
             if (event.type === 'content_block_delta' && event.delta?.text) {
-              const text = event.delta.text;
-              fullReply += text;
-              sentenceBuffer += text;
-
-              // Speak first sentence as soon as it ends
-              if (!firstSentenceSpoken && /[.!?]/.test(sentenceBuffer)) {
-                firstSentenceSpoken = true;
-                const firstSentence = sentenceBuffer.trim();
-                sentenceBuffer = '';
-                // Fire and forget — don't await, let Claude keep streaming
-                speakInMeeting(botId, firstSentence).catch(e => console.error('First sentence speak error:', e.message));
-              }
+              fullReply += event.delta.text;
             }
           } catch {}
         }
@@ -267,18 +254,11 @@ async function handleNorah(botId, triggerText, session) {
       response.data.on('error', reject);
     });
 
-    console.log('🤖 Norah:', fullReply);
+    console.log('🤖 Nora:', fullReply);
     session.history.push({ role: 'assistant', content: fullReply });
     if (session.history.length > 20) session.history.splice(0, 2);
 
-    // Speak the remainder after the first sentence
-    const remainder = sentenceBuffer.trim();
-    if (remainder) {
-      await speakInMeeting(botId, remainder);
-    } else if (!firstSentenceSpoken) {
-      // No sentence break found — speak the whole thing
-      await speakInMeeting(botId, fullReply);
-    }
+    await speakInMeeting(botId, fullReply);
 
     // Check for memories in background
     extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
@@ -295,8 +275,8 @@ async function extractMemory(context, trigger, reply) {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
         temperature: 0,
-        system: `You extract facts worth remembering from meeting conversations. Only return facts that are actionable, specific, and would be useful in future meetings — things like decisions made, deadlines set, status changes, assignments, or explicit "remember this" requests. Do NOT save opinions, greetings, or vague statements. Respond with a JSON array of short fact strings, or an empty array [] if nothing is worth remembering.`,
-        messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNorah's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
+        system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return []. Respond with a JSON array of short fact strings, or an empty array [].`,
+        messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
       },
       {
         headers: {
@@ -341,7 +321,7 @@ async function silenceBot(botId) {
       { kind: 'mp3', b64_data: 'SUQzAwAAAAAAJlRQRTEAAAAcAAAAU291bmRKYXkuY29tIFNvdW5kIEVmZmVjdHMA' },
       { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
     );
-    console.log('🔇 Norah silenced');
+    console.log('🔇 Nora silenced');
   } catch (err) {
     console.error('Silence error:', err.message);
   }
@@ -376,7 +356,7 @@ async function speakInMeeting(botId, text) {
       { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
     );
 
-    console.log('🔊 Norah spoke');
+    console.log('🔊 Nora spoke');
   } catch (err) {
     const errData = err.response?.data;
     const errMsg = Buffer.isBuffer(errData) ? errData.toString('utf8') : errData;
@@ -385,5 +365,5 @@ async function speakInMeeting(botId, text) {
 }
 
 app.listen(process.env.PORT, () => {
-  console.log(`Norah server running on port ${process.env.PORT}`);
+  console.log(`Nora server running on port ${process.env.PORT}`);
 });

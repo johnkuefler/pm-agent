@@ -4,10 +4,10 @@ const axios = require('axios');
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 const SERVER_URL = 'https://pm-agent-production-c49e.up.railway.app';
 
-async function sendNorahToMeeting(zoomUrl) {
+async function sendNoraToMeeting(zoomUrl) {
   const res = await axios.post(`${RECALL_BASE}/bot/`, {
     meeting_url: zoomUrl,
-    bot_name: "Norah",
+    bot_name: "Nora",
     recording_config: {
       transcript: {
         provider: {
@@ -35,7 +35,7 @@ async function sendNorahToMeeting(zoomUrl) {
     headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
   });
 
-  console.log('✅ Norah joined. Bot ID:', res.data.id);
+  console.log('✅ Nora joined. Bot ID:', res.data.id);
 
   // Register bot ID with the server
   await axios.post(`${SERVER_URL}/register-bot`, { bot_id: res.data.id }).catch(() => {});
@@ -49,6 +49,6 @@ if (!zoomUrl) {
   process.exit(1);
 }
 
-sendNorahToMeeting(zoomUrl).catch(err => {
+sendNoraToMeeting(zoomUrl).catch(err => {
   console.error('Error:', err.response?.data || err.message);
 });
