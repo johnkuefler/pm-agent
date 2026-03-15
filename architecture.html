@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nora – System Architecture</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+        h1 {
+            text-align: center;
+            font-size: 2rem;
+            margin-bottom: 0.25rem;
+            color: #f8fafc;
+        }
+        .subtitle {
+            text-align: center;
+            color: #94a3b8;
+            margin-bottom: 2rem;
+            font-size: 1rem;
+        }
+        .section {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border: 1px solid #334155;
+        }
+        .section h2 {
+            color: #38bdf8;
+            margin-bottom: 1rem;
+            font-size: 1.25rem;
+        }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+        }
+        .mermaid svg {
+            max-width: 100%;
+        }
+        .legend {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 0.9rem;
+        }
+        .legend-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+        .dot-blue { background: #38bdf8; }
+        .dot-green { background: #4ade80; }
+        .dot-purple { background: #a78bfa; }
+        .dot-orange { background: #fb923c; }
+        .dot-pink { background: #f472b6; }
+        .dot-yellow { background: #facc15; }
+        .note {
+            color: #94a3b8;
+            font-size: 0.85rem;
+            margin-top: 1.5rem;
+            text-align: center;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+
+<h1>Nora – AI Project Manager</h1>
+<p class="subtitle">System Architecture &middot; LimeLight Marketing</p>
+
+<!-- ============================================ -->
+<!-- HIGH-LEVEL OVERVIEW -->
+<!-- ============================================ -->
+<div class="section">
+    <h2>High-Level Overview</h2>
+    <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px' }}}%%
+graph TB
+    subgraph Users["👥 Users"]
+        ZM["Zoom Meeting<br/>(voice)"]
+        SL["Slack<br/>(text)"]
+        WEB["Dashboard<br/>(browser)"]
+    end
+
+    subgraph Core["🧠 Nora Server (Node.js / Express)"]
+        SRV["server.js<br/>──────────<br/>Webhook handlers<br/>Session management<br/>AI pipeline<br/>REST API"]
+    end
+
+    subgraph AI["🤖 AI Services"]
+        CL["Anthropic Claude<br/>(Haiku 4.5)"]
+        EL["ElevenLabs<br/>(TTS)"]
+    end
+
+    subgraph Integration["🔌 Integrations"]
+        RC["Recall.ai<br/>(Zoom bot)"]
+        SLAPI["Slack API"]
+    end
+
+    subgraph Storage["💾 Persistent Storage"]
+        MEM["nora-memory.json"]
+        TSK["nora-tasks.json"]
+        PRJ["nora-projects.json"]
+        TRN["transcript-*.json"]
+    end
+
+    subgraph TaskRunner["⚙️ Task Processing"]
+        CC["Scheduled<br/>Claude Code<br/>Sessions"]
+        TW["Teamwork"]
+        GM["Gmail"]
+        GC["Google Calendar"]
+    end
+
+    ZM <-->|audio stream| RC
+    RC <-->|webhooks + API| SRV
+    SL <-->|events + messages| SLAPI
+    SLAPI <-->|webhooks + API| SRV
+    WEB <-->|REST API| SRV
+
+    SRV <-->|generate responses<br/>extract memory/tasks| CL
+    SRV -->|text → speech| EL
+    EL -->|audio (base64)| SRV
+
+    SRV <-->|read / write| MEM
+    SRV <-->|read / write| TSK
+    SRV <-->|read / write| PRJ
+    SRV <-->|read / write| TRN
+
+    CC -->|GET /tasks<br/>PATCH /tasks/:id/complete<br/>POST /notify| SRV
+    CC -->|MCP tools| TW
+    CC -->|MCP tools| GM
+    CC -->|MCP tools| GC
+
+    classDef users fill:#1e3a5f,stroke:#38bdf8,color:#e2e8f0
+    classDef core fill:#1e293b,stroke:#4ade80,color:#e2e8f0
+    classDef ai fill:#2d1b4e,stroke:#a78bfa,color:#e2e8f0
+    classDef integration fill:#3b2510,stroke:#fb923c,color:#e2e8f0
+    classDef storage fill:#1a2e1a,stroke:#4ade80,color:#e2e8f0
+    classDef runner fill:#3b1028,stroke:#f472b6,color:#e2e8f0
+
+    class ZM,SL,WEB users
+    class SRV core
+    class CL,EL ai
+    class RC,SLAPI integration
+    class MEM,TSK,PRJ,TRN storage
+    class CC,TW,GM,GC runner
+    </div>
+    <div class="legend">
+        <div class="legend-item"><div class="legend-dot dot-blue"></div> User-facing channels</div>
+        <div class="legend-item"><div class="legend-dot dot-green"></div> Core server + data</div>
+        <div class="legend-item"><div class="legend-dot dot-purple"></div> AI services</div>
+        <div class="legend-item"><div class="legend-dot dot-orange"></div> External integrations</div>
+        <div class="legend-item"><div class="legend-dot dot-pink"></div> Async task execution</div>
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- VOICE PIPELINE -->
+<!-- ============================================ -->
+<div class="section">
+    <h2>Voice Pipeline (Zoom Meetings)</h2>
+    <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px' }}}%%
+sequenceDiagram
+    participant Z as Zoom Meeting
+    participant R as Recall.ai Bot
+    participant S as server.js
+    participant C as Claude (Haiku 4.5)
+    participant E as ElevenLabs TTS
+    participant D as Data Files
+
+    Note over Z,R: Nora joins via POST /join → Recall.ai
+    Z->>R: Real-time audio stream
+    R->>S: POST /webhook/transcript<br/>(speaker + text)
+    S->>S: Buffer utterances (last 20)<br/>Detect wake word ("Nora")
+
+    alt Wake word detected
+        S->>S: buildSystemPrompt()<br/>(base prompt + memory + projects + transcript)
+        S->>C: Generate response<br/>(system prompt + conversation history)
+        C-->>S: Response text
+        S->>E: Text-to-speech request
+        E-->>S: Base64 MP3 audio
+        S->>R: POST /bot/{id}/output_audio
+        R->>Z: Play audio in meeting
+
+        par Background extraction
+            S->>C: Extract new memories
+            C-->>S: Memory facts
+            S->>D: Append to nora-memory.json
+        and
+            S->>C: Extract new tasks
+            C-->>S: Task items
+            S->>D: Append to nora-tasks.json
+        end
+    end
+
+    alt Proactive mode ON (every 10 utterances)
+        S->>C: Evaluate: should Nora interject?
+        C-->>S: yes/no + response
+        opt If yes
+            S->>E: TTS
+            E-->>S: Audio
+            S->>R: Play audio
+        end
+    end
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- SLACK PIPELINE -->
+<!-- ============================================ -->
+<div class="section">
+    <h2>Slack Pipeline</h2>
+    <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px' }}}%%
+sequenceDiagram
+    participant U as Slack User
+    participant SA as Slack API
+    participant S as server.js
+    participant C as Claude (Haiku 4.5)
+    participant D as Data Files
+
+    U->>SA: @Nora or DM
+    SA->>S: POST /webhook/slack<br/>(event payload)
+    S->>S: Verify Slack signature (HMAC-SHA256)
+    S->>S: buildSystemPrompt(channel: "slack")
+
+    S->>C: Generate response<br/>(system prompt + message)
+    C-->>S: Response text (markdown OK)
+
+    S->>SA: chat.postMessage<br/>(reply in thread)
+    SA->>U: Nora's reply
+
+    par Background extraction
+        S->>C: Extract memories
+        C-->>S: Facts
+        S->>D: Save to nora-memory.json
+    and
+        S->>C: Extract tasks
+        C-->>S: Tasks
+        S->>D: Save to nora-tasks.json
+    end
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- TASK PROCESSING -->
+<!-- ============================================ -->
+<div class="section">
+    <h2>Task Processing Pipeline</h2>
+    <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px' }}}%%
+graph LR
+    subgraph Conversations
+        ZC["Zoom meetings"]
+        SC["Slack messages"]
+    end
+
+    subgraph Extraction
+        EX["Claude extracts<br/>action items"]
+    end
+
+    subgraph Queue["Task Queue (nora-tasks.json)"]
+        T1["📋 pending"]
+        T2["📋 pending"]
+        T3["✅ completed"]
+    end
+
+    subgraph Scheduled["Scheduled Claude Code Session"]
+        CC["Claude Code<br/>reads GET /tasks"]
+        CC -->|MCP| TW["Teamwork<br/>create tasks"]
+        CC -->|MCP| GM["Gmail<br/>send emails"]
+        CC -->|MCP| GC["Google Calendar<br/>schedule meetings"]
+        CC -->|MCP| SL["Slack<br/>send messages"]
+    end
+
+    subgraph Notify
+        N["POST /notify<br/>→ Slack DM to requester"]
+        DONE["PATCH /tasks/:id/complete"]
+    end
+
+    ZC --> EX
+    SC --> EX
+    EX --> T1
+    EX --> T2
+    T1 --> CC
+    T2 --> CC
+    CC --> N
+    CC --> DONE
+
+    classDef pending fill:#3b2510,stroke:#fb923c,color:#e2e8f0
+    classDef done fill:#1a2e1a,stroke:#4ade80,color:#e2e8f0
+    classDef process fill:#2d1b4e,stroke:#a78bfa,color:#e2e8f0
+
+    class T1,T2 pending
+    class T3 done
+    class CC,TW,GM,GC,SL process
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- DATA MODEL -->
+<!-- ============================================ -->
+<div class="section">
+    <h2>Data Model</h2>
+    <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px' }}}%%
+erDiagram
+    MEMORY {
+        string fact "What Nora remembers"
+        string project "Associated project"
+        string added "Timestamp"
+        string source "zoom | slack | manual"
+    }
+
+    TASK {
+        string id "Unique ID"
+        string action "send-email | create-task | schedule-meeting | etc"
+        string detail "Description"
+        string assignee "Who requested it"
+        string due "Due date"
+        string source_channel "Origin channel"
+        string source_user "Slack user ID"
+        string source_bot_id "Recall bot ID"
+        string context "Conversation context"
+        string status "pending | completed"
+        string created "Timestamp"
+        string completed "Timestamp"
+    }
+
+    PROJECT {
+        string name "Project name"
+        string details "Project summary and notes"
+        string created "Timestamp"
+    }
+
+    TRANSCRIPT {
+        string bot_id "Recall bot ID"
+        string ended "End timestamp"
+        array transcript "Array of utterances"
+    }
+
+    SESSION {
+        array history "Claude message history (max 20)"
+        array buffer "Rolling utterance buffer (max 20)"
+        array transcript "Full transcript"
+        object abortController "Cancel in-progress AI calls"
+        boolean proactive "Proactive interjection toggle"
+        int utterancesSinceEval "Counter for proactive eval"
+    }
+
+    PROJECT ||--o{ MEMORY : "groups"
+    TASK }o--|| SESSION : "extracted from"
+    MEMORY }o--|| SESSION : "extracted from"
+    TRANSCRIPT ||--|| SESSION : "persists"
+    </div>
+</div>
+
+<!-- ============================================ -->
+<!-- DEPLOYMENT -->
+<!-- ============================================ -->
+<div class="section">
+    <h2>Deployment</h2>
+    <div class="mermaid">
+%%{init: {'theme': 'dark', 'themeVariables': { 'fontSize': '14px' }}}%%
+graph TB
+    subgraph Railway["☁️ Railway (Production)"]
+        APP["Node.js server<br/>(server.js)"]
+        VOL["/data/ volume<br/>──────────<br/>nora-memory.json<br/>nora-tasks.json<br/>nora-projects.json<br/>transcript-*.json"]
+        APP <--> VOL
+    end
+
+    subgraph External["🌐 External Services"]
+        RE["Recall.ai"]
+        AN["Anthropic API"]
+        EL["ElevenLabs API"]
+        SK["Slack API"]
+    end
+
+    subgraph Local["💻 Local Development"]
+        DEV["server.js<br/>(local JSON files)"]
+        CLI["join-meeting.js"]
+    end
+
+    APP <--> RE
+    APP <--> AN
+    APP <--> EL
+    APP <--> SK
+
+    DEV <--> RE
+    DEV <--> AN
+    DEV <--> EL
+    DEV <--> SK
+
+    classDef cloud fill:#1e3a5f,stroke:#38bdf8,color:#e2e8f0
+    classDef ext fill:#3b2510,stroke:#fb923c,color:#e2e8f0
+    classDef local fill:#1a2e1a,stroke:#4ade80,color:#e2e8f0
+
+    class APP,VOL cloud
+    class RE,AN,EL,SK ext
+    class DEV,CLI local
+    </div>
+    <p class="note">Storage path auto-switches between /data/ (Railway volume) and local project root based on environment.</p>
+</div>
+
+</body>
+</html>

@@ -169,7 +169,10 @@
       </div>
       <div id="transcript-detail" class="section" style="display: none;">
         <h2 id="transcript-detail-title">Transcript</h2>
-        <button class="btn btn-danger btn-sm" onclick="closeTranscript()" style="margin-bottom: 12px;">Back to list</button>
+        <div style="margin-bottom: 12px;">
+          <button class="btn btn-danger btn-sm" onclick="closeTranscript()">Back to list</button>
+          <button id="transcript-delete-btn" class="btn btn-danger btn-sm" style="margin-left: 8px; background: #7f1d1d; border-color: #991b1b;">Delete transcript</button>
+        </div>
         <div id="transcript-content" style="font-size: 13px; line-height: 1.6;"></div>
       </div>
     </div>
@@ -184,7 +187,8 @@
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-      event.target.classList.add('active');
+      const tabs = document.querySelectorAll('.tab');
+      tabs.forEach(t => { if (t.textContent.trim().toLowerCase() === name) t.classList.add('active'); });
       document.getElementById('page-' + name).classList.add('active');
       if (name === 'memory') loadMemory();
       if (name === 'tasks') loadTasks();
@@ -200,7 +204,7 @@
       try {
         const r = await fetch('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_url: u }) });
         const d = await r.json();
-        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; }
+        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; loadProactiveStatus(); }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
@@ -315,10 +319,13 @@
     }
 
     function memoryItemHtml(m) {
+      const transcriptLink = m.source_bot_id
+        ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
+        : '';
       return `<div class="memory-item">
         <div>
           <div class="memory-fact">${escHtml(m.fact)}</div>
-          <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}</div>
+          <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${transcriptLink}</div>
         </div>
         <button class="btn btn-danger" onclick="deleteMemory(${m._idx})">Remove</button>
       </div>`;
@@ -363,11 +370,14 @@
           return;
         }
         list.innerHTML = transcripts.map(t => `
-          <div class="task-item" style="cursor: pointer;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
-            <div class="task-action">${escHtml(t.bot_id)}</div>
-            <div class="task-meta">
-              ${t.utterance_count} utterances · ended ${new Date(t.ended).toLocaleString()}
+          <div class="task-item" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+            <div style="flex: 1;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
+              <div class="task-action">${escHtml(t.bot_id)}</div>
+              <div class="task-meta">
+                ${t.utterance_count} utterances · ended ${new Date(t.ended).toLocaleString()}
+              </div>
             </div>
+            <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteTranscript('${escHtml(t.bot_id)}')" style="margin-left: 12px; flex-shrink: 0;">Delete</button>
           </div>
         `).join('');
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load transcripts.</p>'; }
@@ -379,6 +389,7 @@
       const content = document.getElementById('transcript-content');
       detail.style.display = 'block';
       document.getElementById('transcript-detail-title').textContent = 'Transcript: ' + botId;
+      document.getElementById('transcript-delete-btn').onclick = () => deleteTranscript(botId);
       content.innerHTML = 'Loading...';
       try {
         const r = await fetch('/transcripts/' + botId);
@@ -397,6 +408,19 @@
     function closeTranscript() {
       document.getElementById('transcript-detail').style.display = 'none';
       document.getElementById('transcript-list').style.display = 'block';
+    }
+
+    async function deleteTranscript(botId) {
+      if (!confirm('Delete this transcript? This cannot be undone.')) return;
+      try {
+        const r = await fetch('/transcripts/' + botId, { method: 'DELETE' });
+        if (r.ok) {
+          loadTranscripts();
+        } else {
+          const data = await r.json();
+          alert('Failed to delete: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) { alert('Failed: ' + e.message); }
     }
 
     // Proactive mode

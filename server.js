@@ -192,7 +192,7 @@ ${baseUrl}
 
 ### Memory
 - GET  /memory                  — Returns full memory array
-  Response: [{ "fact": "string", "project": "string (empty if general)", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system" }]
+  Response: [{ "fact": "string", "project": "string (empty if general)", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system", "source_bot_id": "Recall.ai bot ID if from a meeting (empty otherwise)" }]
 
 - POST /memory                  — Add a new memory
   Body: { "fact": "string", "source": "string", "project": "string (optional)" }
@@ -245,6 +245,10 @@ ${baseUrl}
   Response: { "bot_id", "ended", "transcript": [{ "speaker", "text", "timestamp" }] }
   404 if not found.
 
+- DELETE /transcripts/:botId    — Delete a transcript
+  Response: { "ok": true }
+  404 if not found.
+
 ### Notifications
 - POST /notify                  — Post a message to Slack as Nora
   Body: { "channel": "C...", "text": "string" }  (or "user": "U..." for DMs)
@@ -289,7 +293,8 @@ ${baseUrl}
   "fact": "Short fact string",
   "project": "Project name (empty string if general)",
   "added": "YYYY-MM-DD",
-  "source": "meeting | slack | manual | system | auto"
+  "source": "meeting | slack | manual | system | auto",
+  "source_bot_id": "Recall.ai bot ID linking to the meeting transcript this memory was extracted from (empty string if not from a meeting). Use GET /transcripts/{source_bot_id} to fetch the full transcript."
 }
 
 ### Project Schema
@@ -400,6 +405,7 @@ app.post('/join', async (req, res) => {
     });
 
     activeBotId = botRes.data.id;
+    if (!sessions[activeBotId]) sessions[activeBotId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, utterancesSinceEval: 0 };
     console.log('✅ Nora joined via web. Bot ID:', activeBotId);
     res.json({ bot_id: botRes.data.id });
   } catch (err) {
@@ -873,6 +879,19 @@ app.get('/transcripts/:botId', (req, res) => {
   }
 });
 
+app.delete('/transcripts/:botId', (req, res) => {
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+  try {
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
+    fs.unlinkSync(filePath);
+    console.log('🗑️ Transcript deleted:', req.params.botId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Detect if Nora's reply is asking clarifying questions rather than confirming an action
 function isAskingClarification(reply) {
   const lower = reply.toLowerCase();
@@ -1009,7 +1028,7 @@ async function handleNora(botId, triggerText, session) {
 
     // Only extract if Nora gave a definitive response, not clarifying questions
     if (!isAskingClarification(fullReply)) {
-      extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
+      extractMemory(meetingContext, triggerText, fullReply, botId).catch(() => {});
       extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
@@ -1027,7 +1046,7 @@ async function handleNora(botId, triggerText, session) {
   }
 }
 
-async function extractMemory(context, trigger, reply) {
+async function extractMemory(context, trigger, reply, sourceBotId) {
   try {
     const projects = loadProjects();
     const projectNames = projects.map(p => p.name);
@@ -1068,7 +1087,7 @@ async function extractMemory(context, trigger, reply) {
       const fact = typeof item === 'string' ? item : item.fact;
       const project = typeof item === 'string' ? '' : (item.project || '');
       if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
-        memory.push({ fact, project, added: new Date().toISOString().split('T')[0], source: 'meeting' });
+        memory.push({ fact, project, added: new Date().toISOString().split('T')[0], source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '' });
         existingFacts.add(fact.toLowerCase());
         added++;
       }
