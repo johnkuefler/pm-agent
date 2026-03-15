@@ -297,7 +297,7 @@ app.post('/join', async (req, res) => {
       meeting_url,
       bot_name: 'Nora',
       recording_config: {
-        transcript: { provider: { meeting_captions: {} } },
+        transcript: { provider: { assembly_ai: {} } },
         realtime_endpoints: [{
           type: 'webhook',
           url: `${SERVER_URL}/webhook/transcript`,
