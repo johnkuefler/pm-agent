@@ -1,10 +1,15 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const app = express();
-app.use(express.json());
+
+// Capture raw body for Slack signature verification
+app.use(express.json({
+  verify: (req, res, buf) => { req.rawBody = buf; }
+}));
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 
@@ -81,8 +86,17 @@ function addTask(task) {
 
 initMemory();
 
-function buildSystemPrompt() {
-  const base = loadPrompt();
+function buildSystemPrompt(channel = 'zoom') {
+  let base = loadPrompt();
+
+  // Swap channel-specific framing
+  if (channel === 'slack') {
+    base = base.replace(
+      'You are in a live Zoom meeting. Keep responses short — 2-3 sentences max. You are speaking out loud so no markdown, no bullet points, no lists. Natural spoken language only.',
+      'You are responding in Slack. Keep responses concise but you can use markdown formatting, bullet points, and code blocks when helpful. A few sentences is ideal — don\'t write essays.'
+    );
+  }
+
   const memory = loadMemory();
   if (memory.length === 0) return base;
   const memoryBlock = memory.map(m => `- ${m.fact}`).join('\n');
@@ -227,6 +241,120 @@ app.post('/webhook/status', async (req, res) => {
     if (activeBotId === bot_id) activeBotId = null;
   }
 });
+
+// Slack webhook — @mentions and DMs
+const slackSessions = {}; // channel/DM conversation history
+
+function verifySlackSignature(req) {
+  const sigSecret = process.env.SLACK_SIGNING_SECRET;
+  if (!sigSecret) return true; // skip in dev if not set
+  const timestamp = req.headers['x-slack-request-timestamp'];
+  const sig = req.headers['x-slack-signature'];
+  if (!timestamp || !sig) return false;
+  // Reject requests older than 5 minutes
+  if (Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
+  const basestring = `v0:${timestamp}:${req.rawBody}`;
+  const hash = 'v0=' + crypto.createHmac('sha256', sigSecret).update(basestring).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(sig));
+}
+
+app.post('/webhook/slack', async (req, res) => {
+  // URL verification challenge
+  if (req.body.type === 'url_verification') {
+    return res.json({ challenge: req.body.challenge });
+  }
+
+  // Verify signature
+  if (!verifySlackSignature(req)) {
+    console.error('❌ Slack signature verification failed');
+    return res.sendStatus(401);
+  }
+
+  res.sendStatus(200);
+
+  const event = req.body.event;
+  if (!event) return;
+
+  // Ignore bot messages (prevent loops)
+  if (event.bot_id || event.subtype === 'bot_message') return;
+
+  // Handle app_mention and direct messages
+  if (event.type !== 'app_mention' && event.type !== 'message') return;
+
+  const text = event.text || '';
+  const channel = event.channel;
+  const user = event.user;
+  const threadTs = event.thread_ts || event.ts; // reply in thread
+
+  // Strip the @mention tag from the text
+  const query = text.replace(/<@[A-Z0-9]+>/g, '').trim();
+  if (!query) return;
+
+  console.log(`💬 Slack [${event.type}] from ${user}: ${query}`);
+
+  await handleSlack(channel, user, query, threadTs);
+});
+
+async function handleSlack(channel, user, text, threadTs) {
+  try {
+    // Per-channel conversation history
+    if (!slackSessions[channel]) slackSessions[channel] = [];
+    const history = slackSessions[channel];
+
+    history.push({ role: 'user', content: `[Slack user <@${user}>]: ${text}` });
+
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 400,
+        temperature: 0.9,
+        system: buildSystemPrompt('slack'),
+        messages: history
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        }
+      }
+    );
+
+    const reply = response.data.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text).join(' ');
+
+    console.log('🤖 Nora (Slack):', reply);
+    history.push({ role: 'assistant', content: reply });
+    if (history.length > 20) history.splice(0, 2);
+
+    // Post reply to Slack
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      text: reply,
+      thread_ts: threadTs
+    }, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+
+    // Extract tasks/memory in background
+    extractTasks(text, text, reply).catch(() => {});
+    extractMemory(text, text, reply).catch(() => {});
+  } catch (err) {
+    console.error('Slack handler error:', err.response?.data || err.message);
+    // Try to post error message back
+    try {
+      await axios.post('https://slack.com/api/chat.postMessage', {
+        channel,
+        text: "Sorry, hit an error processing that. Check the logs.",
+        thread_ts: threadTs
+      }, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+      });
+    } catch {}
+  }
+}
 
 // Memory API — view and edit Nora's memory
 app.get('/memory', (req, res) => res.json(loadMemory()));
