@@ -151,6 +151,9 @@ ${baseUrl}
 - DELETE /memory/:index         — Remove memory by array index
   Response: { "ok": true, "memory": [...] }
 
+- DELETE /memory                — Clear all memory
+  Response: { "ok": true, "memory": [] }
+
 ### Tasks
 - GET  /tasks                   — List all tasks. Filter: ?status=pending or ?status=done
   Response: [{ "id", "action", "detail", "assignee", "due", "source_channel", "source_user", "status", "created", "completed" }]
@@ -620,6 +623,12 @@ app.delete('/memory/:index', (req, res) => {
   saveMemory(memory);
   console.log('🧠 Memory removed:', removed[0].fact);
   res.json({ ok: true, memory });
+});
+
+app.delete('/memory', (req, res) => {
+  saveMemory([]);
+  console.log('🧠 Memory cleared');
+  res.json({ ok: true, memory: [] });
 });
 
 // Task queue API
