@@ -37,7 +37,8 @@ app.post('/webhook/transcript', async (req, res) => {
   if (event.event !== 'transcript.data') return;
 
   const bot_id = event.data?.bot_id;
-  const text = event.data?.data?.text;
+  const words = event.data?.data?.words;
+  const text = words?.map(w => w.text).join(' ') || event.data?.data?.text;
   const speaker = event.data?.data?.participant?.name || 'Participant';
 
   if (!bot_id || !text) return;
