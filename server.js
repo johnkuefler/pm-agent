@@ -372,6 +372,44 @@ ${baseUrl}
 - Google Calendar (gcal): Create/update events, find free time, check availability
 - Gmail: Search messages, read threads, create drafts
 - Slack: Send messages, search channels, read threads
+- Confluence: Search pages, read content, find project documentation
+- Google Drive: Search files, read documents/sheets, find shared resources
+
+## Processing Research Tasks
+
+Some tasks will have action: "research". These are auto-created when Nora detected a knowledge gap in her response — she didn't have enough context to answer well. The goal is to fill that gap so she's prepared next time.
+
+1. Identify research tasks:
+   GET ${baseUrl}/tasks?status=pending
+   Filter for tasks where action === "research"
+
+2. Read the task's "detail" field — it describes what to research and may include search terms.
+   Read the task's "context" field — it shows the conversation where the gap was detected.
+
+3. Search for information using available MCP tools:
+   - Confluence: Search for internal docs, project pages, process documentation, meeting notes
+   - Google Drive: Search for shared docs, spreadsheets, presentations, project files
+   - Gmail: Search for relevant email threads that might contain context
+   - Slack: Search channel history for discussions about the topic
+
+4. Synthesize findings into concise memory facts and save them:
+   POST ${baseUrl}/memory
+   { "fact": "Concise fact learned from research", "source": "auto", "project": "ProjectName" }
+
+   Guidelines for research memories:
+   - Keep each fact concise and specific (1-2 sentences)
+   - Include concrete details: dates, names, numbers, decisions
+   - Tag with the correct project name
+   - Create multiple focused memories rather than one long one
+   - Only save facts that are accurate and clearly stated in the source docs
+
+5. Notify the original requester (if applicable):
+   POST ${baseUrl}/notify
+   Use the task's source_channel/source_user to let them know Nora has updated her knowledge.
+   Example: "I've done some research on [topic] and updated my notes. Ask me again anytime!"
+
+6. Mark the research task as done:
+   PATCH ${baseUrl}/tasks/{task_id}/complete
 `);
 });
 
@@ -660,6 +698,7 @@ async function handleSlack(channel, user, text, threadTs) {
     if (!isAskingClarification(reply)) {
       extractTasks(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
       extractMemory(text, text, reply).catch(() => {});
+      extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -1097,6 +1136,7 @@ async function handleNora(botId, triggerText, session) {
     if (!isAskingClarification(fullReply)) {
       extractMemory(meetingContext, triggerText, fullReply, botId).catch(() => {});
       extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
+      extractResearchNeeds(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -1253,6 +1293,71 @@ async function extractTasks(context, trigger, reply, source = {}) {
     }
   } catch (err) {
     console.error('Task extraction error:', err.message);
+  }
+}
+
+async function extractResearchNeeds(context, trigger, reply, source = {}) {
+  try {
+    const memory = loadMemory();
+    const projects = loadProjects();
+    const memorySnapshot = memory.slice(-30).map(m => `- ${m.fact}${m.project ? ' [' + m.project + ']' : ''}`).join('\n');
+    const projectList = projects.map(p => p.name).join(', ');
+
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        temperature: 0,
+        system: `You evaluate whether an AI assistant named Nora showed a knowledge gap in her response. Nora is a PM agent for a marketing agency. She has memory and project notes, but sometimes gets asked about things she doesn't have enough context on.
+
+A knowledge gap means Nora's reply:
+- Was vague, hedging, or clearly lacked specifics ("I'm not sure about...", "I don't have details on...", "you'd need to check...")
+- Gave a generic answer when the question was about a specific project, client, or internal process
+- Acknowledged she didn't have information
+- Answered but was clearly missing key context that would exist in internal docs
+
+Do NOT flag a gap if:
+- Nora answered confidently with specific information
+- The question was about scheduling, task creation, or reminders (those are actions, not knowledge)
+- Nora was asked to do something, not asked about something
+- The question was clearly hypothetical or opinion-based
+
+If there IS a knowledge gap, return a JSON object: { "needed": true, "topic": "short description of what to research", "project": "project name if relevant, empty string otherwise", "search_terms": ["keyword1", "keyword2"] }
+
+If there is NO gap, return: { "needed": false }`,
+        messages: [{ role: 'user', content: `Nora's current memory (recent):\n${memorySnapshot || '(empty)'}\n\nKnown projects: ${projectList || '(none)'}\n\nConversation:\n${context}\n\nTrigger: ${trigger}\n\nNora's response: ${reply}\n\nDoes Nora's response show a knowledge gap?` }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        }
+      }
+    );
+
+    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return;
+
+    const result = JSON.parse(match[0]);
+    if (!result.needed) return;
+
+    const searchTerms = Array.isArray(result.search_terms) ? result.search_terms.join(', ') : '';
+    addTask({
+      action: 'research',
+      detail: `Research: ${result.topic}. Search Confluence and Google Drive for relevant docs.${searchTerms ? ' Search terms: ' + searchTerms : ''}`,
+      assignee: 'Nora',
+      due: '',
+      source_channel: source.channel || '',
+      source_user: source.user || '',
+      source_bot_id: source.bot_id || '',
+      context: `${context}\n\n[Trigger]: ${trigger}\n[Nora replied]: ${reply}\n[Knowledge gap detected]: ${result.topic}`
+    });
+    console.log(`🔬 Research task created: ${result.topic}${result.project ? ' [' + result.project + ']' : ''}`);
+  } catch (err) {
+    console.error('Research extraction error:', err.message);
   }
 }
 
