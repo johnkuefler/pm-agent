@@ -175,6 +175,10 @@ app.get('/instructions', (req, res) => {
   res.sendFile(path.join(__dirname, 'instructions.html'));
 });
 
+app.get('/architecture', (req, res) => {
+  res.sendFile(path.join(__dirname, 'architecture.html'));
+});
+
 // Cowork instructions — plain text reference for scheduled Cowork tasks
 app.get('/cowork-instructions', (req, res) => {
   const baseUrl = `https://${req.get('host')}`;
