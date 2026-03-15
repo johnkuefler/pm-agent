@@ -39,7 +39,7 @@ app.post('/register-bot', (req, res) => {
 app.post('/webhook/transcript', async (req, res) => {
   res.sendStatus(200);
 
-  console.log('📨 Webhook received:', JSON.stringify(req.body).slice(0, 500));
+  console.log('📨 Webhook received:', JSON.stringify(req.body).slice(0, 800));
 
   const event = req.body;
   if (event.event !== 'transcript.data') return;
@@ -79,13 +79,19 @@ app.post('/webhook/chat', async (req, res) => {
   await handleNorah(bot_id, query, sessions[bot_id]);
 });
 
-// Meeting ended — clean up
+// Meeting status updates — track bot_id and clean up
 app.post('/webhook/status', async (req, res) => {
   res.sendStatus(200);
+  console.log('📡 Status webhook:', JSON.stringify(req.body).slice(0, 300));
   const { bot_id, data } = req.body;
+  if (bot_id) {
+    activeBotId = bot_id;
+    console.log('📡 Tracked bot_id from status:', bot_id);
+  }
   if (data?.status?.code === 'done') {
     console.log(`Meeting ended. Cleaning up session ${bot_id}`);
     delete sessions[bot_id];
+    if (activeBotId === bot_id) activeBotId = null;
   }
 });
 
@@ -159,7 +165,9 @@ async function speakInMeeting(botId, text) {
 
     console.log('🔊 Norah spoke');
   } catch (err) {
-    console.error('Voice error:', err.response?.data || err.message);
+    const errData = err.response?.data;
+    const errMsg = Buffer.isBuffer(errData) ? errData.toString('utf8') : errData;
+    console.error('Voice error:', errMsg || err.message);
   }
 }
 
