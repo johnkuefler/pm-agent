@@ -28,13 +28,15 @@ const sessions = {};
 app.post('/webhook/transcript', async (req, res) => {
   res.sendStatus(200);
 
-  const { bot_id, data } = req.body;
-  if (!data?.transcript) return;
+  const event = req.body;
+  if (event.event !== 'transcript.data') return;
 
-  const { speaker, words, is_final } = data.transcript;
-  if (!is_final || !words?.length) return;
+  const bot_id = event.data?.bot_id;
+  const text = event.data?.data?.text;
+  const speaker = event.data?.data?.participant?.name || 'Participant';
 
-  const text = words.map(w => w.text).join(' ');
+  if (!bot_id || !text) return;
+
   console.log(`[${speaker}]: ${text}`);
 
   if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [] };
@@ -43,7 +45,6 @@ app.post('/webhook/transcript', async (req, res) => {
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
-  // Wake word check
   const lower = text.toLowerCase();
   if (!lower.includes('hey norah') && !lower.includes('norah,')) return;
 
