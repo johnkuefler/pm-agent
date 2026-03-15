@@ -210,6 +210,8 @@
     }
 
     // Tasks
+    let taskDataCache = {};
+
     async function loadTasks() {
       const list = document.getElementById('task-list');
       const url = currentFilter === 'all' ? '/tasks' : `/tasks?status=${currentFilter}`;
@@ -220,6 +222,8 @@
           list.innerHTML = '<p class="empty">No tasks yet.</p>';
           return;
         }
+        taskDataCache = {};
+        tasks.forEach(t => { taskDataCache[t.id] = { action: t.action, detail: t.detail || '', assignee: t.assignee || '', due: t.due || '' }; });
         list.innerHTML = tasks.map(t => {
           const transcriptLink = t.source_bot_id
             ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(t.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
@@ -235,7 +239,7 @@
               · ${new Date(t.created).toLocaleDateString()}${transcriptLink}
             </div>
             <div class="task-buttons">
-              <button class="btn btn-success" onclick="editTask('${escHtml(t.id)}', ${escHtml(JSON.stringify({ action: t.action, detail: t.detail || '', assignee: t.assignee || '', due: t.due || '' }))})">Edit</button>
+              <button class="btn btn-success" onclick="editTask('${escHtml(t.id)}')">Edit</button>
               ${t.status === 'pending' ? `<button class="btn btn-success" onclick="completeTask('${t.id}')">Mark Done</button>` : ''}
               <button class="btn btn-danger" onclick="deleteTask('${t.id}')">Delete</button>
             </div>
@@ -279,7 +283,9 @@
       loadTasks();
     }
 
-    function editTask(id, data) {
+    function editTask(id) {
+      const data = taskDataCache[id];
+      if (!data) return;
       const el = document.getElementById('task-' + id);
       if (!el) return;
       el.innerHTML = `
