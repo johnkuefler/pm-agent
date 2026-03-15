@@ -1,28 +1,123 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const app = express();
 app.use(express.json());
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 
-const SYSTEM_PROMPT = `You are Norah. PM agent for LimeLight Marketing, a digital agency in Pittsburg KS.
+// Load prompt from file
+const PROMPT_PATH = path.join(__dirname, 'norah-prompt.md');
+const VOLUME_DIR = '/data';
+const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'norah-memory.json');
+const MEMORY_PATH_LOCAL = path.join(__dirname, 'norah-memory.json');
 
-You are in a live Zoom meeting. Keep responses short — 2-3 sentences max. You are speaking out loud so no markdown, no bullet points, no lists. Natural spoken language only.
+// Use Railway volume if available, fall back to local file for dev
+function getMemoryPath() {
+  if (fs.existsSync(VOLUME_DIR)) return MEMORY_PATH_VOLUME;
+  return MEMORY_PATH_LOCAL;
+}
 
-You talk like a real person. Fragments are fine. Don't always wrap things up cleanly. Push back when something's off. When something is genuinely good, say so once and move on. No filler words, no sycophantic openers.
+// Seed volume with local memory file on first run
+function initMemory() {
+  const memPath = getMemoryPath();
+  if (memPath === MEMORY_PATH_VOLUME && !fs.existsSync(MEMORY_PATH_VOLUME)) {
+    try {
+      const seed = fs.readFileSync(MEMORY_PATH_LOCAL, 'utf8');
+      fs.writeFileSync(MEMORY_PATH_VOLUME, seed);
+      console.log('🧠 Seeded memory to volume');
+    } catch { /* no seed file, start fresh */ }
+  }
+}
 
-Battle-tested. You've run projects, managed creatives, argued about scope at 4pm on a Friday. You care whether LimeLight wins.
+function loadPrompt() {
+  return fs.readFileSync(PROMPT_PATH, 'utf8');
+}
 
-LimeLight context:
-- John Kuefler — Sr. Director, Partner. Runs strategy, estimation, delivery.
-- Kinsey Landry — PM, 1 month in, new to the role.
-- Dianne — AM, B2B pod, HubSpot. Elle — AM, D2C pod, Klaviyo.
-- Active clients: Pitsco Education, Lincoln Center Theater (May 2026), Lettermen's Energy, US Alliance Life (April 2026 fixed fee), MSG, Russell Cellular, VFW Foundation, Morton Salt, NDS, Catholic Charities, KCCTE, Green Gorilla Cleaning.
-- Teamwork is the system of record. Fixed fee work means tight scope — flag creep immediately.`;
+function loadMemory() {
+  try {
+    return JSON.parse(fs.readFileSync(getMemoryPath(), 'utf8'));
+  } catch { return []; }
+}
 
-// Health check
-app.get('/', (req, res) => res.json({ status: 'ok', agent: 'Norah' }));
+function saveMemory(memory) {
+  fs.writeFileSync(getMemoryPath(), JSON.stringify(memory, null, 2));
+}
+
+initMemory();
+
+function buildSystemPrompt() {
+  const base = loadPrompt();
+  const memory = loadMemory();
+  if (memory.length === 0) return base;
+  const memoryBlock = memory.map(m => `- ${m.fact}`).join('\n');
+  return `${base}\n\n[Your memory]\n${memoryBlock}`;
+}
+
+// Dashboard
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html><html><head><title>Norah</title>
+<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#111;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
+.card{background:#1a1a1a;border-radius:12px;padding:40px;max-width:480px;width:100%}h1{font-size:28px;margin-bottom:8px}p{color:#888;margin-bottom:24px}
+input{width:100%;padding:12px;border-radius:8px;border:1px solid #333;background:#222;color:#eee;font-size:14px;margin-bottom:12px}
+button{width:100%;padding:12px;border-radius:8px;border:none;background:#7c3aed;color:#fff;font-size:14px;cursor:pointer;font-weight:600}button:hover{background:#6d28d9}
+#status{margin-top:16px;padding:12px;border-radius:8px;display:none;font-size:13px}
+.ok{background:#064e3b;color:#6ee7b7;display:block}.err{background:#450a0a;color:#fca5a5;display:block}
+a{color:#7c3aed;text-decoration:none;font-size:13px}</style></head>
+<body><div class="card"><h1>Norah</h1><p>PM Agent for LimeLight Marketing</p>
+<input id="url" placeholder="Paste Zoom meeting link..." />
+<button onclick="go()">Send Norah to Meeting</button>
+<div id="status"></div>
+<br><a href="/memory" target="_blank">View Memory</a>
+<script>
+async function go(){const s=document.getElementById('status'),u=document.getElementById('url').value;
+if(!u){s.className='err';s.textContent='Paste a Zoom link first';return}
+s.className='ok';s.textContent='Sending Norah...';
+try{const r=await fetch('/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({meeting_url:u})});
+const d=await r.json();if(d.bot_id){s.className='ok';s.textContent='Norah joined! Bot ID: '+d.bot_id}
+else{s.className='err';s.textContent='Error: '+(d.error||JSON.stringify(d))}}
+catch(e){s.className='err';s.textContent='Failed: '+e.message}}
+</script></div></body></html>`);
+});
+
+// Join meeting via API
+app.post('/join', async (req, res) => {
+  try {
+    const { meeting_url } = req.body;
+    if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
+
+    const SERVER_URL = `https://${req.get('host')}`;
+    const botRes = await axios.post(`${RECALL_BASE}/bot/`, {
+      meeting_url,
+      bot_name: 'Norah',
+      recording_config: {
+        transcript: { provider: { meeting_captions: {} } },
+        realtime_endpoints: [{
+          type: 'webhook',
+          url: `${SERVER_URL}/webhook/transcript`,
+          events: ['transcript.data']
+        }]
+      },
+      automatic_audio_output: {
+        in_call_recording: {
+          data: { kind: 'mp3', b64_data: 'SUQzAwAAAAAAJlRQRTEAAAAcAAAAU291bmRKYXkuY29tIFNvdW5kIEVmZmVjdHMA' }
+        }
+      },
+      webhook_url: `${SERVER_URL}/webhook/status`
+    }, {
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+    });
+
+    activeBotId = botRes.data.id;
+    console.log('✅ Norah joined via web. Bot ID:', activeBotId);
+    res.json({ bot_id: botRes.data.id });
+  } catch (err) {
+    console.error('Join error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
 
 // One session per bot
 const sessions = {};
@@ -95,6 +190,29 @@ app.post('/webhook/status', async (req, res) => {
   }
 });
 
+// Memory API — view and edit Norah's memory
+app.get('/memory', (req, res) => res.json(loadMemory()));
+
+app.post('/memory', (req, res) => {
+  const { fact, source } = req.body;
+  if (!fact) return res.status(400).json({ error: 'fact is required' });
+  const memory = loadMemory();
+  memory.push({ fact, added: new Date().toISOString().split('T')[0], source: source || 'manual' });
+  saveMemory(memory);
+  console.log('🧠 Memory added:', fact);
+  res.json({ ok: true, memory });
+});
+
+app.delete('/memory/:index', (req, res) => {
+  const memory = loadMemory();
+  const idx = parseInt(req.params.index);
+  if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
+  const removed = memory.splice(idx, 1);
+  saveMemory(memory);
+  console.log('🧠 Memory removed:', removed[0].fact);
+  res.json({ ok: true, memory });
+});
+
 async function handleNorah(botId, triggerText, session) {
   try {
     const meetingContext = session.buffer.slice(-10).join('\n');
@@ -108,7 +226,7 @@ async function handleNorah(botId, triggerText, session) {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 300,
         temperature: 0.9,
-        system: SYSTEM_PROMPT,
+        system: buildSystemPrompt(),
         messages: session.history
       },
       {
@@ -129,8 +247,57 @@ async function handleNorah(botId, triggerText, session) {
     if (session.history.length > 20) session.history.splice(0, 2);
 
     await speakInMeeting(botId, reply);
+
+    // Check for memories in background — don't slow down the conversation
+    extractMemory(meetingContext, triggerText, reply).catch(() => {});
   } catch (err) {
     console.error('Claude error:', err.response?.data || err.message);
+  }
+}
+
+async function extractMemory(context, trigger, reply) {
+  try {
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 200,
+        temperature: 0,
+        system: `You extract facts worth remembering from meeting conversations. Only return facts that are actionable, specific, and would be useful in future meetings — things like decisions made, deadlines set, status changes, assignments, or explicit "remember this" requests. Do NOT save opinions, greetings, or vague statements. Respond with a JSON array of short fact strings, or an empty array [] if nothing is worth remembering.`,
+        messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNorah's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        }
+      }
+    );
+
+    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return;
+
+    const facts = JSON.parse(match[0]);
+    if (!Array.isArray(facts) || facts.length === 0) return;
+
+    const memory = loadMemory();
+    const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
+    let added = 0;
+    for (const fact of facts) {
+      if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
+        memory.push({ fact, added: new Date().toISOString().split('T')[0], source: 'meeting' });
+        existingFacts.add(fact.toLowerCase());
+        added++;
+      }
+    }
+    if (added > 0) {
+      saveMemory(memory);
+      console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, facts);
+    }
+  } catch (err) {
+    console.error('Memory extraction error:', err.message);
   }
 }
 
