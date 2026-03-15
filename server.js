@@ -947,17 +947,22 @@ app.get('/transcripts', (req, res) => {
     const list = files.map(f => {
       try {
         const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        // Derive ended from last utterance if null (orphaned sessions)
+        let ended = data.ended;
+        if (!ended && data.transcript && data.transcript.length > 0) {
+          ended = data.transcript[data.transcript.length - 1].timestamp || null;
+        }
         return {
           bot_id: data.bot_id,
-          ended: data.ended,
+          ended,
           file: f,
           url: `/transcripts/${data.bot_id}`,
           utterance_count: data.transcript ? data.transcript.length : 0
         };
       } catch { return null; }
     }).filter(Boolean);
-    // Sort newest first
-    list.sort((a, b) => new Date(b.ended) - new Date(a.ended));
+    // Sort newest first — null (in-progress) sorts to top
+    list.sort((a, b) => (b.ended ? new Date(b.ended).getTime() : Infinity) - (a.ended ? new Date(a.ended).getTime() : Infinity));
     res.json(list);
   } catch {
     res.json([]);
@@ -1439,6 +1444,35 @@ async function speakInMeeting(botId, text) {
   }
 }
 
+// Backfill transcript files that have ended: null using last utterance timestamp
+function backfillTranscriptDates() {
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  try {
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json'));
+    let fixed = 0;
+    for (const f of files) {
+      try {
+        const filePath = path.join(dir, f);
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        if (!data.ended && data.transcript && data.transcript.length > 0) {
+          const lastUtterance = data.transcript[data.transcript.length - 1];
+          const ts = lastUtterance.timestamp || lastUtterance.time;
+          if (ts) {
+            data.ended = ts;
+            fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+            fixed++;
+            console.log(`Backfilled ended timestamp for ${data.bot_id}: ${ts}`);
+          }
+        }
+      } catch (err) {
+        console.error(`Error backfilling ${f}:`, err.message);
+      }
+    }
+    if (fixed > 0) console.log(`Backfilled ${fixed} transcript(s)`);
+  } catch {}
+}
+
 app.listen(process.env.PORT, () => {
   console.log(`Nora server running on port ${process.env.PORT}`);
+  backfillTranscriptDates();
 });

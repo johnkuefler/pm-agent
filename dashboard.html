@@ -452,7 +452,7 @@
             <div style="flex: 1;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
               <div class="task-action">${escHtml(t.bot_id)}</div>
               <div class="task-meta">
-                ${t.utterance_count} utterances · ended ${new Date(t.ended).toLocaleString()}
+                ${t.utterance_count} utterances · ${t.ended ? 'ended ' + new Date(t.ended).toLocaleString() : '<span style="color: #fbbf24;">In progress</span>'}
               </div>
             </div>
             <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteTranscript('${escHtml(t.bot_id)}')" style="margin-left: 12px; flex-shrink: 0;">Delete</button>
