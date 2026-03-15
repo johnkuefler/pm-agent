@@ -300,7 +300,7 @@ app.post('/join', async (req, res) => {
       meeting_url,
       bot_name: 'Nora',
       recording_config: {
-        transcript: { provider: { assembly_ai_streaming: { speech_model: 'nano' } } },
+        transcript: { provider: { assembly_ai_v3_streaming: { speech_model: 'nano' } } },
         realtime_endpoints: [{
           type: 'webhook',
           url: `${SERVER_URL}/webhook/transcript`,
