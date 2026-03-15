@@ -104,6 +104,66 @@
       </div>
     </div>
 
+    <!-- Projects -->
+    <div class="section">
+      <h2>Projects</h2>
+      <p>Projects give Nora deeper context on specific initiatives. Each project has a name and free-text details (stakeholders, timelines, goals, etc.). Memories can be tagged with a project name to organize knowledge. Project details and project-specific memories are grouped together in Nora's system prompt.</p>
+      <p><strong>Storage:</strong> <code>/data/nora-projects.json</code> on Railway Volume</p>
+
+      <h3>Projects API</h3>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/projects</span></div>
+        <div class="endpoint-desc">List all projects</div>
+        <pre>[
+  {
+    "name": "Pitsco",
+    "details": "Client rebrand project. Stakeholders: Kyle, Brandee. Deadline: April 15.",
+    "created": "2026-03-15T18:00:00.000Z"
+  }
+]</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/projects/:name</span></div>
+        <div class="endpoint-desc">Get a project with its associated memories</div>
+        <pre>// Response includes project details + all memories tagged with this project
+{
+  "name": "Pitsco",
+  "details": "Client rebrand project...",
+  "created": "2026-03-15T18:00:00.000Z",
+  "memories": [{ "fact": "...", "project": "Pitsco", "added": "2026-03-15", "source": "meeting" }]
+}</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/projects</span></div>
+        <div class="endpoint-desc">Create a new project</div>
+        <pre>// Request body:
+{ "name": "Pitsco", "details": "Client rebrand project. Stakeholders: Kyle, Brandee." }
+
+// Response:
+{ "ok": true, "project": {...} }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge patch">PUT</span> <span class="endpoint-path">/projects/:name</span></div>
+        <div class="endpoint-desc">Update a project's name or details</div>
+        <pre>// Request body (all fields optional):
+{ "name": "New Name", "details": "Updated details..." }
+
+// Response:
+{ "ok": true, "project": {...} }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge delete">DELETE</span> <span class="endpoint-path">/projects/:name</span></div>
+        <div class="endpoint-desc">Delete a project (does not delete associated memories)</div>
+        <pre>DELETE /projects/Pitsco
+// Response: { "ok": true }</pre>
+      </div>
+    </div>
+
     <!-- Tasks -->
     <div class="section">
       <h2>Task Queue</h2>

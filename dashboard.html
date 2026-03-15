@@ -117,6 +117,9 @@
       <div class="section">
         <h2>Add Memory</h2>
         <textarea id="new-fact" placeholder="Type a fact for Nora to remember..."></textarea>
+        <select id="new-fact-project" style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 14px; margin-top: 8px;">
+          <option value="">General (no project)</option>
+        </select>
         <div class="row">
           <button class="btn btn-primary btn-sm" onclick="addMemory()">Add to Memory</button>
         </div>
@@ -236,30 +239,63 @@
     async function loadMemory() {
       const list = document.getElementById('memory-list');
       try {
-        const r = await fetch('/memory');
-        const memories = await r.json();
+        const [memRes, projRes] = await Promise.all([fetch('/memory'), fetch('/projects')]);
+        const memories = await memRes.json();
+        const projects = await projRes.json();
+
+        // Populate project dropdown
+        const select = document.getElementById('new-fact-project');
+        select.innerHTML = '<option value="">General (no project)</option>' +
+          projects.map(p => `<option value="${escHtml(p.name)}">${escHtml(p.name)}</option>`).join('');
+
         if (memories.length === 0) {
           list.innerHTML = '<p class="empty">No memories yet.</p>';
           return;
         }
-        list.innerHTML = memories.map((m, i) => `
-          <div class="memory-item">
-            <div>
-              <div class="memory-fact">${escHtml(m.fact)}</div>
-              <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}</div>
-            </div>
-            <button class="btn btn-danger" onclick="deleteMemory(${i})">Remove</button>
-          </div>
-        `).join('');
+
+        // Group by project
+        const general = [];
+        const byProject = {};
+        memories.forEach((m, i) => {
+          const entry = { ...m, _idx: i };
+          if (m.project) {
+            if (!byProject[m.project]) byProject[m.project] = [];
+            byProject[m.project].push(entry);
+          } else {
+            general.push(entry);
+          }
+        });
+
+        let html = '';
+        if (general.length > 0) {
+          html += '<div style="color: #888; font-size: 12px; font-weight: 600; margin: 12px 0 4px; text-transform: uppercase;">General</div>';
+          html += general.map(m => memoryItemHtml(m)).join('');
+        }
+        for (const [proj, items] of Object.entries(byProject)) {
+          html += `<div style="color: #a78bfa; font-size: 12px; font-weight: 600; margin: 16px 0 4px; text-transform: uppercase;">${escHtml(proj)}</div>`;
+          html += items.map(m => memoryItemHtml(m)).join('');
+        }
+        list.innerHTML = html;
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load memory.</p>'; }
+    }
+
+    function memoryItemHtml(m) {
+      return `<div class="memory-item">
+        <div>
+          <div class="memory-fact">${escHtml(m.fact)}</div>
+          <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}</div>
+        </div>
+        <button class="btn btn-danger" onclick="deleteMemory(${m._idx})">Remove</button>
+      </div>`;
     }
 
     async function addMemory() {
       const s = document.getElementById('memory-status');
       const fact = document.getElementById('new-fact').value.trim();
+      const project = document.getElementById('new-fact-project').value;
       if (!fact) { s.className = 'toast err'; s.textContent = 'Type something first'; return; }
       try {
-        await fetch('/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact }) });
+        await fetch('/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact, project }) });
         document.getElementById('new-fact').value = '';
         s.className = 'toast ok'; s.textContent = 'Memory added';
         loadMemory();

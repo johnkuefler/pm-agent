@@ -20,6 +20,8 @@ const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-memory.json');
 const MEMORY_PATH_LOCAL = path.join(__dirname, 'nora-memory.json');
 const TASKS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-tasks.json');
 const TASKS_PATH_LOCAL = path.join(__dirname, 'nora-tasks.json');
+const PROJECTS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-projects.json');
+const PROJECTS_PATH_LOCAL = path.join(__dirname, 'nora-projects.json');
 
 // Use Railway volume if available, fall back to local file for dev
 function getMemoryPath() {
@@ -69,6 +71,22 @@ function saveTasks(tasks) {
   fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
 }
 
+// Projects — same pattern as memory/tasks
+function getProjectsPath() {
+  if (fs.existsSync(VOLUME_DIR)) return PROJECTS_PATH_VOLUME;
+  return PROJECTS_PATH_LOCAL;
+}
+
+function loadProjects() {
+  try {
+    return JSON.parse(fs.readFileSync(getProjectsPath(), 'utf8'));
+  } catch { return []; }
+}
+
+function saveProjects(projects) {
+  fs.writeFileSync(getProjectsPath(), JSON.stringify(projects, null, 2));
+}
+
 function addTask(task) {
   const tasks = loadTasks();
   const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -102,9 +120,39 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   }
 
   const memory = loadMemory();
-  if (memory.length > 0) {
-    const memoryBlock = memory.map(m => `- ${m.fact}`).join('\n');
-    base = `${base}\n\n[Your memory]\n${memoryBlock}`;
+  const projects = loadProjects();
+
+  if (memory.length > 0 || projects.length > 0) {
+    // Group memories by project
+    const general = memory.filter(m => !m.project);
+    const byProject = {};
+    for (const m of memory) {
+      if (m.project) {
+        if (!byProject[m.project]) byProject[m.project] = [];
+        byProject[m.project].push(m);
+      }
+    }
+
+    let memoryBlock = '[Your memory]\n';
+
+    if (general.length > 0) {
+      memoryBlock += '\n## General\n' + general.map(m => `- ${m.fact}`).join('\n');
+    }
+
+    // Include project details + project-specific memories together
+    const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
+    for (const name of allProjectNames) {
+      memoryBlock += `\n\n## ${name}`;
+      const proj = projects.find(p => p.name === name);
+      if (proj && proj.details) {
+        memoryBlock += `\n${proj.details}`;
+      }
+      if (byProject[name]) {
+        memoryBlock += '\n' + byProject[name].map(m => `- ${m.fact}`).join('\n');
+      }
+    }
+
+    base = `${base}\n\n${memoryBlock}`;
   }
 
   // Inject live transcript context if available
@@ -144,10 +192,10 @@ ${baseUrl}
 
 ### Memory
 - GET  /memory                  — Returns full memory array
-  Response: [{ "fact": "string", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system" }]
+  Response: [{ "fact": "string", "project": "string (empty if general)", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system" }]
 
 - POST /memory                  — Add a new memory
-  Body: { "fact": "string", "source": "string" }
+  Body: { "fact": "string", "source": "string", "project": "string (optional)" }
   Response: { "ok": true, "memory": [...] }
 
 - DELETE /memory/:index         — Remove memory by array index
@@ -155,6 +203,24 @@ ${baseUrl}
 
 - DELETE /memory                — Clear all memory
   Response: { "ok": true, "memory": [] }
+
+### Projects
+- GET  /projects                — Returns all projects
+  Response: [{ "name": "string", "details": "string", "created": "ISO 8601" }]
+
+- GET  /projects/:name          — Returns a project with its associated memories
+  Response: { "name": "string", "details": "string", "created": "ISO 8601", "memories": [...] }
+
+- POST /projects                — Create a new project
+  Body: { "name": "string", "details": "string" }
+  Response: { "ok": true, "project": {...} }
+
+- PUT  /projects/:name          — Update a project's name or details
+  Body: { "name": "string (optional)", "details": "string (optional)" }
+  Response: { "ok": true, "project": {...} }
+
+- DELETE /projects/:name        — Delete a project
+  Response: { "ok": true }
 
 ### Tasks
 - GET  /tasks                   — List all tasks. Filter: ?status=pending or ?status=done
@@ -221,8 +287,16 @@ ${baseUrl}
 ### Memory Schema
 {
   "fact": "Short fact string",
+  "project": "Project name (empty string if general)",
   "added": "YYYY-MM-DD",
   "source": "meeting | slack | manual | system | auto"
+}
+
+### Project Schema
+{
+  "name": "Project name",
+  "details": "Free-text project details — stakeholders, timelines, context, etc.",
+  "created": "ISO 8601 timestamp"
 }
 
 ## Processing Pending Tasks
@@ -651,10 +725,10 @@ app.post('/notify', async (req, res) => {
 app.get('/memory', (req, res) => res.json(loadMemory()));
 
 app.post('/memory', (req, res) => {
-  const { fact, source } = req.body;
+  const { fact, source, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
   const memory = loadMemory();
-  memory.push({ fact, added: new Date().toISOString().split('T')[0], source: source || 'manual' });
+  memory.push({ fact, project: project || '', added: new Date().toISOString().split('T')[0], source: source || 'manual' });
   saveMemory(memory);
   console.log('🧠 Memory added:', fact);
   res.json({ ok: true, memory });
@@ -674,6 +748,55 @@ app.delete('/memory', (req, res) => {
   saveMemory([]);
   console.log('🧠 Memory cleared');
   res.json({ ok: true, memory: [] });
+});
+
+// Projects API — manage project knowledge bases
+app.get('/projects', (req, res) => res.json(loadProjects()));
+
+app.get('/projects/:name', (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  // Include project-specific memories
+  const memory = loadMemory();
+  const projectMemories = memory.filter(m => m.project && m.project.toLowerCase() === req.params.name.toLowerCase());
+  res.json({ ...project, memories: projectMemories });
+});
+
+app.post('/projects', (req, res) => {
+  const { name, details } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
+  const projects = loadProjects();
+  const existing = projects.find(p => p.name.toLowerCase() === name.toLowerCase());
+  if (existing) return res.status(409).json({ error: 'Project already exists', project: existing });
+  const project = { name, details: details || '', created: new Date().toISOString() };
+  projects.push(project);
+  saveProjects(projects);
+  console.log('📁 Project added:', name);
+  res.json({ ok: true, project });
+});
+
+app.put('/projects/:name', (req, res) => {
+  const projects = loadProjects();
+  const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
+  if (idx === -1) return res.status(404).json({ error: 'Project not found' });
+  const { name, details } = req.body;
+  if (name) projects[idx].name = name;
+  if (details !== undefined) projects[idx].details = details;
+  projects[idx].updated = new Date().toISOString();
+  saveProjects(projects);
+  console.log('📁 Project updated:', projects[idx].name);
+  res.json({ ok: true, project: projects[idx] });
+});
+
+app.delete('/projects/:name', (req, res) => {
+  const projects = loadProjects();
+  const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
+  if (idx === -1) return res.status(404).json({ error: 'Project not found' });
+  const removed = projects.splice(idx, 1);
+  saveProjects(projects);
+  console.log('📁 Project deleted:', removed[0].name);
+  res.json({ ok: true });
 });
 
 // Task queue API
@@ -906,13 +1029,19 @@ async function handleNora(botId, triggerText, session) {
 
 async function extractMemory(context, trigger, reply) {
   try {
+    const projects = loadProjects();
+    const projectNames = projects.map(p => p.name);
+    const projectHint = projectNames.length > 0
+      ? `\n\nKnown projects: ${projectNames.join(', ')}. If the fact relates to one of these projects, use that exact name. If it relates to a different project, use whatever name was mentioned. If it's general (not project-specific), use "".`
+      : '\n\nIf the fact relates to a specific project, include the project name as mentioned in conversation. If it\'s general, use "".';
+
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
+        max_tokens: 300,
         temperature: 0,
-        system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return []. Respond with a JSON array of short fact strings, or an empty array [].`,
+        system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return []. Respond with a JSON array of objects with "fact" (string) and "project" (string — project name if relevant, empty string if general).${projectHint}`,
         messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
       },
       {
@@ -928,22 +1057,25 @@ async function extractMemory(context, trigger, reply) {
     const match = text.match(/\[[\s\S]*\]/);
     if (!match) return;
 
-    const facts = JSON.parse(match[0]);
-    if (!Array.isArray(facts) || facts.length === 0) return;
+    const items = JSON.parse(match[0]);
+    if (!Array.isArray(items) || items.length === 0) return;
 
     const memory = loadMemory();
     const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
     let added = 0;
-    for (const fact of facts) {
+    for (const item of items) {
+      // Support both old format (plain strings) and new format (objects with fact + project)
+      const fact = typeof item === 'string' ? item : item.fact;
+      const project = typeof item === 'string' ? '' : (item.project || '');
       if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
-        memory.push({ fact, added: new Date().toISOString().split('T')[0], source: 'meeting' });
+        memory.push({ fact, project, added: new Date().toISOString().split('T')[0], source: 'meeting' });
         existingFacts.add(fact.toLowerCase());
         added++;
       }
     }
     if (added > 0) {
       saveMemory(memory);
-      console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, facts);
+      console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, items);
     }
   } catch (err) {
     console.error('Memory extraction error:', err.message);
