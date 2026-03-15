@@ -88,7 +88,7 @@ function addTask(task) {
 
 initMemory();
 
-function buildSystemPrompt(channel = 'zoom') {
+function buildSystemPrompt(channel = 'zoom', transcript = null) {
   let base = loadPrompt();
 
   // Swap channel-specific framing
@@ -100,9 +100,19 @@ function buildSystemPrompt(channel = 'zoom') {
   }
 
   const memory = loadMemory();
-  if (memory.length === 0) return base;
-  const memoryBlock = memory.map(m => `- ${m.fact}`).join('\n');
-  return `${base}\n\n[Your memory]\n${memoryBlock}`;
+  if (memory.length > 0) {
+    const memoryBlock = memory.map(m => `- ${m.fact}`).join('\n');
+    base = `${base}\n\n[Your memory]\n${memoryBlock}`;
+  }
+
+  // Inject live transcript context if available
+  if (transcript && transcript.length > 0) {
+    const recent = transcript.slice(-30);
+    const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
+    base = `${base}\n\n[What's been discussed in this meeting so far]\n${transcriptBlock}`;
+  }
+
+  return base;
 }
 
 // Dashboard
@@ -113,6 +123,162 @@ app.get('/', (req, res) => {
 // Claude instructions page — serves prompt + API docs for scheduled Claude Code sessions
 app.get('/instructions', (req, res) => {
   res.sendFile(path.join(__dirname, 'instructions.html'));
+});
+
+// Cowork instructions — plain text reference for scheduled Cowork tasks
+app.get('/cowork-instructions', (req, res) => {
+  const baseUrl = `https://${req.get('host')}`;
+  res.type('text/plain').send(`# Nora — Cowork Instructions
+# Generated: ${new Date().toISOString()}
+# Base URL: ${baseUrl}
+
+## What is Nora?
+Nora is a voice-enabled AI project management assistant for LimeLight Marketing. She joins Zoom meetings via Recall.ai, listens to conversations, responds when triggered, and speaks back using ElevenLabs TTS. She also responds to Slack messages. She has persistent memory, a task queue, and saves full meeting transcripts. External agents (like Cowork scheduled tasks) process her task queue and analyze transcripts.
+
+## Base URL
+${baseUrl}
+
+## API Endpoints
+
+### Memory
+- GET  /memory                  — Returns full memory array
+  Response: [{ "fact": "string", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system" }]
+
+- POST /memory                  — Add a new memory
+  Body: { "fact": "string", "source": "string" }
+  Response: { "ok": true, "memory": [...] }
+
+- DELETE /memory/:index         — Remove memory by array index
+  Response: { "ok": true, "memory": [...] }
+
+### Tasks
+- GET  /tasks                   — List all tasks. Filter: ?status=pending or ?status=done
+  Response: [{ "id", "action", "detail", "assignee", "due", "source_channel", "source_user", "status", "created", "completed" }]
+
+- POST /tasks                   — Add a task
+  Body: { "action": "string", "detail": "string", "assignee": "string", "due": "string" }
+  Response: { "ok": true, "id": "nora-..." }
+
+- PATCH /tasks/:id/complete     — Mark task done (idempotent)
+  Response: { "ok": true, "task": {...} }
+  If already done: { "ok": true, "already": true, "task": {...} }
+
+- DELETE /tasks/:id             — Delete a task
+  Response: { "ok": true }
+
+### Transcripts
+- GET  /transcripts             — List all saved transcripts, newest first
+  Response: [{ "bot_id", "ended", "file", "url", "utterance_count" }]
+
+- GET  /transcripts/:botId      — Full transcript for a meeting
+  Response: { "bot_id", "ended", "transcript": [{ "speaker", "text", "timestamp" }] }
+  404 if not found.
+
+### Notifications
+- POST /notify                  — Post a message to Slack as Nora
+  Body: { "channel": "C...", "text": "string" }  (or "user": "U..." for DMs)
+  Optional: "blocks" (Block Kit), "file_url" + "file_name", "thread_ts"
+  Response: { "ok": true, "channel": "...", "ts": "..." }
+
+### Other
+- GET  /                        — Dashboard web UI
+- GET  /prompt                  — Nora's raw system prompt (text/plain)
+- GET  /instructions            — Full HTML reference page
+- POST /join                    — Send Nora to a Zoom meeting. Body: { "meeting_url": "..." }
+
+## Schemas
+
+### Task Schema
+{
+  "id": "nora-{timestamp}-{random}",
+  "action": "What Nora was asked to do",
+  "detail": "Specifics or context",
+  "assignee": "Person it's for",
+  "due": "Deadline if mentioned, otherwise empty",
+  "source_channel": "slack:C0123... or zoom",
+  "source_user": "U0123... (Slack user ID)",
+  "status": "pending | done",
+  "created": "ISO 8601 timestamp",
+  "completed": "ISO 8601 timestamp or null"
+}
+
+### Transcript Schema
+{
+  "bot_id": "Recall.ai bot ID",
+  "ended": "ISO 8601 timestamp",
+  "transcript": [
+    { "speaker": "Person Name", "text": "What they said", "timestamp": "ISO 8601" }
+  ]
+}
+
+### Memory Schema
+{
+  "fact": "Short fact string",
+  "added": "YYYY-MM-DD",
+  "source": "meeting | slack | manual | system | auto"
+}
+
+## Processing Pending Tasks
+
+1. Fetch pending tasks:
+   GET ${baseUrl}/tasks?status=pending
+
+2. For each pending task, determine the right action:
+   - "Schedule a meeting..." → use Google Calendar MCP (gcal) to create event
+   - "Send an email to..." → use Gmail MCP to draft/send
+   - "Create a task in Teamwork..." → use Teamwork MCP (twprojects) to create task
+   - "Send a Slack message..." → use Slack MCP to post message
+   - "Remind [person] about..." → determine best channel and notify
+
+3. Execute the action using the appropriate MCP tool.
+
+4. Notify the requester that it's done:
+   POST ${baseUrl}/notify
+   {
+     "channel": "C0123ABCDEF",  // from task.source_channel (strip "slack:" prefix)
+     "text": "Done — scheduled the follow-up with Kyle for Tuesday at 2pm."
+   }
+   - If source_channel starts with "slack:", strip the prefix to get the channel ID.
+   - If source_channel is "zoom", use task.source_user to DM them instead.
+
+5. Mark the task as done:
+   PATCH ${baseUrl}/tasks/{task_id}/complete
+
+6. Optionally, add a memory about what was done:
+   POST ${baseUrl}/memory
+   { "fact": "Sent Q2 report to Brandee on 2026-03-14", "source": "auto" }
+
+## Processing Transcripts
+
+1. Check for new transcripts:
+   GET ${baseUrl}/transcripts
+
+2. For each transcript you haven't processed yet, fetch the full content:
+   GET ${baseUrl}/transcripts/{bot_id}
+
+3. Analyze the transcript for:
+   - Action items and decisions not already captured as tasks
+   - Key decisions that should be recorded as memories
+   - Follow-ups that need scheduling
+
+4. Create new tasks for any action items found:
+   POST ${baseUrl}/tasks
+   { "action": "...", "detail": "From meeting transcript", "assignee": "...", "due": "..." }
+
+5. Post a meeting summary to Slack:
+   POST ${baseUrl}/notify
+   {
+     "channel": "C0123ABCDEF",
+     "text": "Meeting summary from [date]:\\n- Key decisions...\\n- Action items..."
+   }
+
+## Available MCP Integrations
+- Teamwork (twprojects): Create/update tasks, milestones, projects, time logs
+- Teamwork Desk (twdesk): Manage support tickets, customers, messages
+- Google Calendar (gcal): Create/update events, find free time, check availability
+- Gmail: Search messages, read threads, create drafts
+- Slack: Send messages, search channels, read threads
+`);
 });
 
 // Nora's system prompt as raw text (for Claude Code to fetch)
@@ -187,11 +353,13 @@ app.post('/webhook/transcript', async (req, res) => {
 
   console.log(`[${speaker}]: ${text}`);
 
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [] };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null };
   const session = sessions[bot_id];
 
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
+
+  session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
 
   const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
 
@@ -224,7 +392,7 @@ app.post('/webhook/chat', async (req, res) => {
   if (!text.toLowerCase().startsWith('@nora')) return;
 
   const query = text.replace(/@nora/i, '').trim();
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [] };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null };
   await handleNora(bot_id, query, sessions[bot_id]);
 });
 
@@ -239,6 +407,22 @@ app.post('/webhook/status', async (req, res) => {
   }
   if (data?.status?.code === 'done') {
     console.log(`Meeting ended. Cleaning up session ${bot_id}`);
+    // Persist transcript before cleaning up
+    const session = sessions[bot_id];
+    if (session && session.transcript && session.transcript.length > 0) {
+      try {
+        const transcriptData = {
+          bot_id,
+          ended: new Date().toISOString(),
+          transcript: session.transcript
+        };
+        const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+        fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify(transcriptData, null, 2));
+        console.log(`📝 Transcript saved: transcript-${bot_id}.json (${session.transcript.length} utterances)`);
+      } catch (err) {
+        console.error('Transcript save error:', err.message);
+      }
+    }
     delete sessions[bot_id];
     if (activeBotId === bot_id) activeBotId = null;
   }
@@ -475,6 +659,43 @@ app.delete('/tasks/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// Transcript API — list and retrieve saved meeting transcripts
+app.get('/transcripts', (req, res) => {
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  try {
+    const files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json'));
+    const list = files.map(f => {
+      try {
+        const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+        return {
+          bot_id: data.bot_id,
+          ended: data.ended,
+          file: f,
+          url: `/transcripts/${data.bot_id}`,
+          utterance_count: data.transcript ? data.transcript.length : 0
+        };
+      } catch { return null; }
+    }).filter(Boolean);
+    // Sort newest first
+    list.sort((a, b) => new Date(b.ended) - new Date(a.ended));
+    res.json(list);
+  } catch {
+    res.json([]);
+  }
+});
+
+app.get('/transcripts/:botId', (req, res) => {
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+  try {
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Detect if Nora's reply is asking clarifying questions rather than confirming an action
 function isAskingClarification(reply) {
   const lower = reply.toLowerCase();
@@ -516,7 +737,7 @@ async function handleNora(botId, triggerText, session) {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
         temperature: 0.9,
-        system: buildSystemPrompt(),
+        system: buildSystemPrompt('zoom', session.transcript),
         messages: session.history
       },
       {
