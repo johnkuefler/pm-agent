@@ -364,6 +364,15 @@ app.post('/webhook/transcript', async (req, res) => {
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
 
+  // Persist transcript incrementally so nothing is lost if the meeting ends abruptly
+  try {
+    const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+    const transcriptData = { bot_id, ended: null, transcript: session.transcript };
+    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify(transcriptData, null, 2));
+  } catch (err) {
+    console.error('Transcript incremental save error:', err.message);
+  }
+
   const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
 
   // Stop/interrupt phrases — cut Nora off mid-speech
@@ -768,6 +777,15 @@ async function handleNora(botId, triggerText, session) {
     console.log('🤖 Nora:', fullReply);
     session.history.push({ role: 'assistant', content: fullReply });
     if (session.history.length > 20) session.history.splice(0, 2);
+
+    // Add Nora's reply to the transcript
+    session.transcript.push({ speaker: 'Nora', text: fullReply, timestamp: new Date().toISOString() });
+    try {
+      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+      fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
+    } catch (err) {
+      console.error('Transcript incremental save error:', err.message);
+    }
 
     if (abortController.signal.aborted) return;
     await speakInMeeting(botId, fullReply);

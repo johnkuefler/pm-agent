@@ -50,6 +50,7 @@
     .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; }
     .filter-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #333; background: transparent; color: #888; cursor: pointer; font-size: 12px; }
     .filter-btn.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+    .task-item[style*="cursor"]:hover { background: #222; border-radius: 8px; }
   </style>
 </head>
 <body>
@@ -61,6 +62,7 @@
       <div class="tab active" onclick="showTab('meeting')">Meeting</div>
       <div class="tab" onclick="showTab('tasks')">Tasks</div>
       <div class="tab" onclick="showTab('memory')">Memory</div>
+      <div class="tab" onclick="showTab('transcripts')">Transcripts</div>
     </div>
 
     <!-- Meeting Tab -->
@@ -113,6 +115,19 @@
         <div id="memory-status" class="toast"></div>
       </div>
     </div>
+
+    <!-- Transcripts Tab -->
+    <div id="page-transcripts" class="page">
+      <div class="section">
+        <h2>Meeting Transcripts</h2>
+        <div id="transcript-list"></div>
+      </div>
+      <div id="transcript-detail" class="section" style="display: none;">
+        <h2 id="transcript-detail-title">Transcript</h2>
+        <button class="btn btn-danger btn-sm" onclick="closeTranscript()" style="margin-bottom: 12px;">Back to list</button>
+        <div id="transcript-content" style="font-size: 13px; line-height: 1.6;"></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -125,6 +140,7 @@
       document.getElementById('page-' + name).classList.add('active');
       if (name === 'memory') loadMemory();
       if (name === 'tasks') loadTasks();
+      if (name === 'transcripts') loadTranscripts();
     }
 
     async function joinMeeting() {
@@ -250,6 +266,55 @@
       if (!confirm('Clear ALL of Nora\'s memory? This cannot be undone.')) return;
       await fetch('/memory', { method: 'DELETE' });
       loadMemory();
+    }
+
+    // Transcripts
+    async function loadTranscripts() {
+      const list = document.getElementById('transcript-list');
+      document.getElementById('transcript-detail').style.display = 'none';
+      list.style.display = 'block';
+      try {
+        const r = await fetch('/transcripts');
+        const transcripts = await r.json();
+        if (transcripts.length === 0) {
+          list.innerHTML = '<p class="empty">No transcripts yet. Transcripts are saved when meetings end.</p>';
+          return;
+        }
+        list.innerHTML = transcripts.map(t => `
+          <div class="task-item" style="cursor: pointer;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
+            <div class="task-action">${escHtml(t.bot_id)}</div>
+            <div class="task-meta">
+              ${t.utterance_count} utterances · ended ${new Date(t.ended).toLocaleString()}
+            </div>
+          </div>
+        `).join('');
+      } catch (e) { list.innerHTML = '<p class="empty">Failed to load transcripts.</p>'; }
+    }
+
+    async function viewTranscript(botId) {
+      document.getElementById('transcript-list').style.display = 'none';
+      const detail = document.getElementById('transcript-detail');
+      const content = document.getElementById('transcript-content');
+      detail.style.display = 'block';
+      document.getElementById('transcript-detail-title').textContent = 'Transcript: ' + botId;
+      content.innerHTML = 'Loading...';
+      try {
+        const r = await fetch('/transcripts/' + botId);
+        if (!r.ok) { content.innerHTML = '<p class="empty">Transcript not found.</p>'; return; }
+        const data = await r.json();
+        content.innerHTML = data.transcript.map(u => `
+          <div style="padding: 4px 0; border-bottom: 1px solid #1a1a1a;">
+            <strong style="color: #a78bfa;">${escHtml(u.speaker)}</strong>
+            <span style="color: #555; font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
+            <div style="color: #ccc;">${escHtml(u.text)}</div>
+          </div>
+        `).join('');
+      } catch (e) { content.innerHTML = '<p class="empty">Failed to load transcript.</p>'; }
+    }
+
+    function closeTranscript() {
+      document.getElementById('transcript-detail').style.display = 'none';
+      document.getElementById('transcript-list').style.display = 'block';
     }
 
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
