@@ -88,8 +88,7 @@ async function handleNorah(botId, triggerText, session) {
         max_tokens: 300,
         temperature: 0.9,
         system: SYSTEM_PROMPT,
-        messages: session.history,
-        mcp_servers: [{ type: 'url', url: 'https://mcp.ai.teamwork.com', name: 'teamwork' }]
+        messages: session.history
       },
       {
         headers: {
@@ -140,7 +139,7 @@ async function speakInMeeting(botId, text) {
     await axios.post(
       `${RECALL_BASE}/bot/${botId}/output_audio/`,
       { kind: 'mp3', b64_data: b64Audio },
-      { headers: { Authorization: process.env.RECALL_API_KEY } }
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
     );
 
     console.log('🔊 Norah spoke');

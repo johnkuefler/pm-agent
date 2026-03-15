@@ -11,9 +11,7 @@ async function sendNorahToMeeting(zoomUrl) {
     recording_config: {
       transcript: {
         provider: {
-          recallai_streaming: {
-            mode: "prioritize_low_latency"
-          }
+          meeting_captions: {}
         }
       },
       realtime_endpoints: [
