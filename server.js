@@ -135,6 +135,14 @@ app.post('/webhook/transcript', async (req, res) => {
   if (session.buffer.length > 20) session.buffer.shift();
 
   const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
+
+  // Stop phrase — cut Norah off mid-speech
+  if (lower.includes('stop norah') || lower.includes('stop nora') || lower.includes('norah stop') || lower.includes('nora stop')) {
+    console.log('🛑 Stop phrase detected');
+    await silenceBot(bot_id);
+    return;
+  }
+
   if (!lower.includes('hey norah') && !lower.includes('hey nora') && !lower.includes('norah ') && !lower.includes('nora ')) return;
 
   console.log('🎙️ Norah triggered');
@@ -199,12 +207,14 @@ async function handleNorah(botId, triggerText, session) {
 
     session.history.push({ role: 'user', content: userMessage });
 
+    // Stream Claude response — speak the first sentence while the rest generates
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-sonnet-4-20250514',
         max_tokens: 300,
         temperature: 0.9,
+        stream: true,
         system: buildSystemPrompt(),
         messages: session.history
       },
@@ -213,22 +223,65 @@ async function handleNorah(botId, triggerText, session) {
           'Content-Type': 'application/json',
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01'
-        }
+        },
+        responseType: 'stream'
       }
     );
 
-    const reply = response.data.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text).join(' ');
+    let fullReply = '';
+    let sentenceBuffer = '';
+    let firstSentenceSpoken = false;
 
-    console.log('🤖 Norah:', reply);
-    session.history.push({ role: 'assistant', content: reply });
+    await new Promise((resolve, reject) => {
+      let sseBuffer = '';
+      response.data.on('data', async (chunk) => {
+        sseBuffer += chunk.toString();
+        const lines = sseBuffer.split('\n');
+        sseBuffer = lines.pop(); // keep incomplete line
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') continue;
+
+          try {
+            const event = JSON.parse(data);
+            if (event.type === 'content_block_delta' && event.delta?.text) {
+              const text = event.delta.text;
+              fullReply += text;
+              sentenceBuffer += text;
+
+              // Speak first sentence as soon as it ends
+              if (!firstSentenceSpoken && /[.!?]/.test(sentenceBuffer)) {
+                firstSentenceSpoken = true;
+                const firstSentence = sentenceBuffer.trim();
+                sentenceBuffer = '';
+                // Fire and forget — don't await, let Claude keep streaming
+                speakInMeeting(botId, firstSentence).catch(e => console.error('First sentence speak error:', e.message));
+              }
+            }
+          } catch {}
+        }
+      });
+      response.data.on('end', resolve);
+      response.data.on('error', reject);
+    });
+
+    console.log('🤖 Norah:', fullReply);
+    session.history.push({ role: 'assistant', content: fullReply });
     if (session.history.length > 20) session.history.splice(0, 2);
 
-    await speakInMeeting(botId, reply);
+    // Speak the remainder after the first sentence
+    const remainder = sentenceBuffer.trim();
+    if (remainder) {
+      await speakInMeeting(botId, remainder);
+    } else if (!firstSentenceSpoken) {
+      // No sentence break found — speak the whole thing
+      await speakInMeeting(botId, fullReply);
+    }
 
-    // Check for memories in background — don't slow down the conversation
-    extractMemory(meetingContext, triggerText, reply).catch(() => {});
+    // Check for memories in background
+    extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
   } catch (err) {
     console.error('Claude error:', err.response?.data || err.message);
   }
@@ -239,7 +292,7 @@ async function extractMemory(context, trigger, reply) {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-sonnet-4-20250514',
+        model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
         temperature: 0,
         system: `You extract facts worth remembering from meeting conversations. Only return facts that are actionable, specific, and would be useful in future meetings — things like decisions made, deadlines set, status changes, assignments, or explicit "remember this" requests. Do NOT save opinions, greetings, or vague statements. Respond with a JSON array of short fact strings, or an empty array [] if nothing is worth remembering.`,
@@ -277,6 +330,20 @@ async function extractMemory(context, trigger, reply) {
     }
   } catch (err) {
     console.error('Memory extraction error:', err.message);
+  }
+}
+
+// Tiny silent MP3 — cuts off any playing audio
+async function silenceBot(botId) {
+  try {
+    await axios.post(
+      `${RECALL_BASE}/bot/${botId}/output_audio/`,
+      { kind: 'mp3', b64_data: 'SUQzAwAAAAAAJlRQRTEAAAAcAAAAU291bmRKYXkuY29tIFNvdW5kIEVmZmVjdHMA' },
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+    );
+    console.log('🔇 Norah silenced');
+  } catch (err) {
+    console.error('Silence error:', err.message);
   }
 }
 
