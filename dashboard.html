@@ -17,6 +17,8 @@
     .btn-primary:hover { background: #6d28d9; }
     .btn-danger { background: transparent; color: #f87171; border: 1px solid #333; padding: 6px 10px; font-size: 12px; }
     .btn-danger:hover { background: #450a0a; }
+    .btn-success { background: transparent; color: #6ee7b7; border: 1px solid #333; padding: 6px 10px; font-size: 12px; }
+    .btn-success:hover { background: #064e3b; }
     .btn-sm { padding: 6px 12px; font-size: 12px; }
     .row { display: flex; gap: 8px; margin-top: 12px; }
     .toast { margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none; font-size: 13px; }
@@ -35,6 +37,19 @@
     .tab.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
     .page { display: none; }
     .page.active { display: block; }
+    .task-item { padding: 12px 0; border-bottom: 1px solid #222; }
+    .task-item:last-child { border-bottom: none; }
+    .task-item.done { opacity: 0.5; }
+    .task-action { font-size: 14px; line-height: 1.4; font-weight: 500; }
+    .task-detail { font-size: 13px; color: #aaa; margin-top: 2px; }
+    .task-meta { color: #666; font-size: 11px; margin-top: 4px; }
+    .task-buttons { display: flex; gap: 6px; margin-top: 8px; }
+    .task-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+    .badge-pending { background: #422006; color: #fbbf24; }
+    .badge-done { background: #064e3b; color: #6ee7b7; }
+    .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .filter-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #333; background: transparent; color: #888; cursor: pointer; font-size: 12px; }
+    .filter-btn.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
   </style>
 </head>
 <body>
@@ -44,6 +59,7 @@
 
     <div class="tab-bar">
       <div class="tab active" onclick="showTab('meeting')">Meeting</div>
+      <div class="tab" onclick="showTab('tasks')">Tasks</div>
       <div class="tab" onclick="showTab('memory')">Memory</div>
     </div>
 
@@ -56,6 +72,29 @@
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
         <div id="join-status" class="toast"></div>
+      </div>
+    </div>
+
+    <!-- Tasks Tab -->
+    <div id="page-tasks" class="page">
+      <div class="section">
+        <h2>Nora's Action Items</h2>
+        <div class="filter-bar">
+          <button class="filter-btn active" onclick="filterTasks('all', this)">All</button>
+          <button class="filter-btn" onclick="filterTasks('pending', this)">Pending</button>
+          <button class="filter-btn" onclick="filterTasks('done', this)">Done</button>
+        </div>
+        <div id="task-list"></div>
+      </div>
+      <div class="section">
+        <h2>Add Task Manually</h2>
+        <input id="new-task-action" placeholder="What needs to be done..." />
+        <input id="new-task-assignee" placeholder="Assignee (optional)" style="margin-top: 8px;" />
+        <input id="new-task-due" placeholder="Due date (optional)" style="margin-top: 8px;" />
+        <div class="row">
+          <button class="btn btn-primary btn-sm" onclick="addTask()">Add Task</button>
+        </div>
+        <div id="task-status" class="toast"></div>
       </div>
     </div>
 
@@ -77,12 +116,15 @@
   </div>
 
   <script>
+    let currentFilter = 'all';
+
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       event.target.classList.add('active');
       document.getElementById('page-' + name).classList.add('active');
       if (name === 'memory') loadMemory();
+      if (name === 'tasks') loadTasks();
     }
 
     async function joinMeeting() {
@@ -98,6 +140,72 @@
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
 
+    // Tasks
+    async function loadTasks() {
+      const list = document.getElementById('task-list');
+      const url = currentFilter === 'all' ? '/tasks' : `/tasks?status=${currentFilter}`;
+      try {
+        const r = await fetch(url);
+        const tasks = await r.json();
+        if (tasks.length === 0) {
+          list.innerHTML = '<p class="empty">No tasks yet.</p>';
+          return;
+        }
+        list.innerHTML = tasks.map(t => `
+          <div class="task-item ${t.status === 'done' ? 'done' : ''}">
+            <div class="task-action">${escHtml(t.action)}</div>
+            ${t.detail ? `<div class="task-detail">${escHtml(t.detail)}</div>` : ''}
+            <div class="task-meta">
+              <span class="task-badge ${t.status === 'done' ? 'badge-done' : 'badge-pending'}">${t.status}</span>
+              ${t.assignee ? ' · ' + escHtml(t.assignee) : ''}
+              ${t.due ? ' · due ' + escHtml(t.due) : ''}
+              · ${new Date(t.created).toLocaleDateString()}
+            </div>
+            <div class="task-buttons">
+              ${t.status === 'pending' ? `<button class="btn btn-success" onclick="completeTask('${t.id}')">Mark Done</button>` : ''}
+              <button class="btn btn-danger" onclick="deleteTask('${t.id}')">Delete</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) { list.innerHTML = '<p class="empty">Failed to load tasks.</p>'; }
+    }
+
+    function filterTasks(status, btn) {
+      currentFilter = status;
+      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      loadTasks();
+    }
+
+    async function addTask() {
+      const s = document.getElementById('task-status');
+      const action = document.getElementById('new-task-action').value.trim();
+      if (!action) { s.className = 'toast err'; s.textContent = 'Describe the task first'; return; }
+      const assignee = document.getElementById('new-task-assignee').value.trim();
+      const due = document.getElementById('new-task-due').value.trim();
+      try {
+        await fetch('/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, assignee, due }) });
+        document.getElementById('new-task-action').value = '';
+        document.getElementById('new-task-assignee').value = '';
+        document.getElementById('new-task-due').value = '';
+        s.className = 'toast ok'; s.textContent = 'Task added';
+        loadTasks();
+        setTimeout(() => s.style.display = 'none', 2000);
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function completeTask(id) {
+      await fetch('/tasks/' + id + '/complete', { method: 'PATCH' });
+      loadTasks();
+    }
+
+    async function deleteTask(id) {
+      if (!confirm('Delete this task?')) return;
+      await fetch('/tasks/' + id, { method: 'DELETE' });
+      loadTasks();
+    }
+
+    // Memory
     async function loadMemory() {
       const list = document.getElementById('memory-list');
       try {

@@ -13,6 +13,8 @@ const PROMPT_PATH = path.join(__dirname, 'nora-prompt.md');
 const VOLUME_DIR = '/data';
 const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-memory.json');
 const MEMORY_PATH_LOCAL = path.join(__dirname, 'nora-memory.json');
+const TASKS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-tasks.json');
+const TASKS_PATH_LOCAL = path.join(__dirname, 'nora-tasks.json');
 
 // Use Railway volume if available, fall back to local file for dev
 function getMemoryPath() {
@@ -46,6 +48,37 @@ function saveMemory(memory) {
   fs.writeFileSync(getMemoryPath(), JSON.stringify(memory, null, 2));
 }
 
+// Task queue — same pattern as memory
+function getTasksPath() {
+  if (fs.existsSync(VOLUME_DIR)) return TASKS_PATH_VOLUME;
+  return TASKS_PATH_LOCAL;
+}
+
+function loadTasks() {
+  try {
+    return JSON.parse(fs.readFileSync(getTasksPath(), 'utf8'));
+  } catch { return []; }
+}
+
+function saveTasks(tasks) {
+  fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
+}
+
+function addTask(task) {
+  const tasks = loadTasks();
+  const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  tasks.push({
+    id,
+    ...task,
+    status: 'pending',
+    created: new Date().toISOString(),
+    completed: null
+  });
+  saveTasks(tasks);
+  console.log('📋 Task added:', id, task.action);
+  return id;
+}
+
 initMemory();
 
 function buildSystemPrompt() {
@@ -59,6 +92,16 @@ function buildSystemPrompt() {
 // Dashboard
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
+});
+
+// Claude instructions page — serves prompt + API docs for scheduled Claude Code sessions
+app.get('/instructions', (req, res) => {
+  res.sendFile(path.join(__dirname, 'instructions.html'));
+});
+
+// Nora's system prompt as raw text (for Claude Code to fetch)
+app.get('/prompt', (req, res) => {
+  res.type('text/plain').send(loadPrompt());
 });
 
 // Join meeting via API
@@ -208,6 +251,43 @@ app.delete('/memory/:index', (req, res) => {
   res.json({ ok: true, memory });
 });
 
+// Task queue API
+app.get('/tasks', (req, res) => {
+  const tasks = loadTasks();
+  const status = req.query.status; // ?status=pending or ?status=done
+  if (status) return res.json(tasks.filter(t => t.status === status));
+  res.json(tasks);
+});
+
+app.post('/tasks', (req, res) => {
+  const { action, detail, assignee, due } = req.body;
+  if (!action) return res.status(400).json({ error: 'action is required' });
+  const id = addTask({ action, detail: detail || '', assignee: assignee || '', due: due || '' });
+  res.json({ ok: true, id });
+});
+
+app.patch('/tasks/:id/complete', (req, res) => {
+  const tasks = loadTasks();
+  const task = tasks.find(t => t.id === req.params.id);
+  if (!task) return res.status(404).json({ error: 'task not found' });
+  if (task.status === 'done') return res.json({ ok: true, already: true, task });
+  task.status = 'done';
+  task.completed = new Date().toISOString();
+  saveTasks(tasks);
+  console.log('✅ Task completed:', task.id, task.action);
+  res.json({ ok: true, task });
+});
+
+app.delete('/tasks/:id', (req, res) => {
+  const tasks = loadTasks();
+  const idx = tasks.findIndex(t => t.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'task not found' });
+  const removed = tasks.splice(idx, 1);
+  saveTasks(tasks);
+  console.log('🗑️ Task deleted:', removed[0].id);
+  res.json({ ok: true });
+});
+
 async function handleNora(botId, triggerText, session) {
   const abortController = new AbortController();
   session.abortController = abortController;
@@ -250,8 +330,9 @@ async function handleNora(botId, triggerText, session) {
     if (abortController.signal.aborted) return;
     await speakInMeeting(botId, fullReply);
 
-    // Check for memories in background
+    // Check for memories and action items in background
     extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
+    extractTasks(meetingContext, triggerText, fullReply).catch(() => {});
   } catch (err) {
     if (err.name === 'CanceledError' || abortController.signal.aborted) {
       console.log('🚫 Response aborted');
@@ -308,6 +389,43 @@ async function extractMemory(context, trigger, reply) {
     }
   } catch (err) {
     console.error('Memory extraction error:', err.message);
+  }
+}
+
+async function extractTasks(context, trigger, reply) {
+  try {
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        temperature: 0,
+        system: `You extract action items that Nora was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, create a task for...", "Nora, remind me to...". Do NOT extract general discussion, suggestions Nora made, or things other people said they would do. Return a JSON array of objects with: action (what to do), detail (specifics), assignee (who it's for), due (deadline if mentioned, otherwise ""). Return [] if no action items.`,
+        messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nAction items for Nora (JSON array or []):` }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        }
+      }
+    );
+
+    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return;
+
+    const items = JSON.parse(match[0]);
+    if (!Array.isArray(items) || items.length === 0) return;
+
+    for (const item of items) {
+      if (item.action && typeof item.action === 'string') {
+        addTask({ action: item.action, detail: item.detail || '', assignee: item.assignee || '', due: item.due || '' });
+      }
+    }
+  } catch (err) {
+    console.error('Task extraction error:', err.message);
   }
 }
 

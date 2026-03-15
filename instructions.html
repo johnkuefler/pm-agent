@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Nora — Claude Instructions</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: #111; color: #eee; padding: 40px 20px; line-height: 1.6; }
+    .container { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 28px; margin-bottom: 4px; }
+    .subtitle { color: #888; margin-bottom: 32px; font-size: 14px; }
+    h2 { font-size: 20px; margin: 32px 0 12px; color: #c4b5fd; }
+    h3 { font-size: 16px; margin: 20px 0 8px; color: #a78bfa; }
+    p { margin-bottom: 12px; color: #ccc; font-size: 14px; }
+    code { background: #1e1e2e; padding: 2px 6px; border-radius: 4px; font-size: 13px; color: #a78bfa; }
+    pre { background: #1e1e2e; border-radius: 8px; padding: 16px; margin: 12px 0; overflow-x: auto; font-size: 13px; line-height: 1.5; color: #cdd6f4; }
+    .section { background: #1a1a1a; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+    .prompt-box { background: #1e1e2e; border: 1px solid #333; border-radius: 8px; padding: 16px; margin: 12px 0; white-space: pre-wrap; font-size: 13px; line-height: 1.5; color: #cdd6f4; max-height: 400px; overflow-y: auto; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin-right: 4px; }
+    .get { background: #064e3b; color: #6ee7b7; }
+    .post { background: #422006; color: #fbbf24; }
+    .patch { background: #1e1b4b; color: #a78bfa; }
+    .delete { background: #450a0a; color: #fca5a5; }
+    .endpoint { margin: 12px 0; padding: 12px; background: #1e1e2e; border-radius: 8px; }
+    .endpoint-path { font-family: monospace; font-size: 14px; font-weight: 600; }
+    .endpoint-desc { color: #888; font-size: 13px; margin-top: 4px; }
+    a { color: #a78bfa; }
+    ul { margin: 8px 0 12px 20px; color: #ccc; font-size: 14px; }
+    li { margin-bottom: 4px; }
+    .back { display: inline-block; margin-bottom: 24px; color: #888; text-decoration: none; font-size: 13px; }
+    .back:hover { color: #ccc; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <a href="/" class="back">&larr; Back to Dashboard</a>
+    <h1>Nora — Claude Instructions</h1>
+    <p class="subtitle">System reference for Claude Code scheduled sessions and integrations</p>
+
+    <!-- Overview -->
+    <div class="section">
+      <h2>System Overview</h2>
+      <p>Nora is a voice AI PM agent for LimeLight Marketing. She joins Zoom meetings via Recall.ai, listens to conversation through real-time transcription, responds when triggered by wake word ("Nora"), and speaks back using ElevenLabs TTS. She has persistent memory and a task queue that external agents (like Claude Code) can process.</p>
+
+      <h3>Architecture</h3>
+      <ul>
+        <li><strong>Server:</strong> Node.js/Express on Railway</li>
+        <li><strong>Voice pipeline:</strong> Zoom &rarr; Recall.ai transcription webhook &rarr; Wake word detection &rarr; Claude Haiku &rarr; ElevenLabs TTS &rarr; Recall.ai output audio &rarr; Zoom</li>
+        <li><strong>AI:</strong> Claude Haiku 4.5 for voice responses, Claude Haiku 4.5 for memory/task extraction</li>
+        <li><strong>Storage:</strong> JSON files on Railway Volume (<code>/data/</code>) — memory and tasks persist across deploys</li>
+        <li><strong>Dashboard:</strong> Web UI at root URL for meeting joins, task management, memory management</li>
+      </ul>
+
+      <h3>Wake Word &amp; Triggers</h3>
+      <ul>
+        <li><strong>Voice:</strong> Say "Hey Nora" or "Nora" followed by a question in a Zoom meeting</li>
+        <li><strong>Chat:</strong> Type <code>@nora your question</code> in Zoom chat</li>
+        <li><strong>Stop phrases:</strong> "Stop Nora", "Nora stop", "hold on", "never mind" — cuts off mid-speech</li>
+      </ul>
+    </div>
+
+    <!-- Nora's Brain -->
+    <div class="section">
+      <h2>Nora's System Prompt</h2>
+      <p>This is loaded from <code>nora-prompt.md</code> and injected as the system prompt on every Claude call. Memory facts are appended at the end. Also available as raw text at <code>/prompt</code>.</p>
+      <div id="prompt-content" class="prompt-box">Loading...</div>
+    </div>
+
+    <!-- Memory -->
+    <div class="section">
+      <h2>Memory System</h2>
+      <p>Nora has persistent long-term memory stored as a JSON array. Each memory is a fact string with metadata. Memory is appended to the system prompt on every Claude call so Nora always has access to everything she's been told.</p>
+      <p><strong>Auto-extraction:</strong> After each voice response, a background Haiku call checks if someone explicitly asked Nora to remember something. Only explicit "remember this" requests and action items with clear owners/deadlines are saved.</p>
+      <p><strong>Storage:</strong> <code>/data/nora-memory.json</code> on Railway Volume (falls back to <code>nora-memory.json</code> locally)</p>
+
+      <h3>Memory API</h3>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/memory</span></div>
+        <div class="endpoint-desc">Returns the full memory array</div>
+        <pre>[
+  {
+    "fact": "Nora went live on March 14, 2026",
+    "added": "2026-03-14",
+    "source": "system"
+  }
+]</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/memory</span></div>
+        <div class="endpoint-desc">Add a new memory</div>
+        <pre>// Request body:
+{ "fact": "Pitsco project deadline is April 15", "source": "manual" }
+
+// Response:
+{ "ok": true, "memory": [...] }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge delete">DELETE</span> <span class="endpoint-path">/memory/:index</span></div>
+        <div class="endpoint-desc">Remove a memory by array index</div>
+        <pre>DELETE /memory/0
+// Response: { "ok": true, "memory": [...] }</pre>
+      </div>
+    </div>
+
+    <!-- Tasks -->
+    <div class="section">
+      <h2>Task Queue</h2>
+      <p>Nora's task queue is the bridge between meetings and action. When someone asks Nora to do something specific in a meeting (schedule a meeting, send an email, create a Teamwork task), it gets extracted and added to the queue as a pending task.</p>
+      <p><strong>For Claude Code scheduled sessions:</strong> Fetch pending tasks, execute them using MCP tools (Teamwork, Slack, Gmail, Google Calendar), then mark each one complete by ID. The complete endpoint is idempotent — calling it twice won't double-do anything.</p>
+      <p><strong>Storage:</strong> <code>/data/nora-tasks.json</code> on Railway Volume</p>
+
+      <h3>Task API</h3>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/tasks</span></div>
+        <div class="endpoint-desc">List all tasks. Filter with <code>?status=pending</code> or <code>?status=done</code></div>
+        <pre>[
+  {
+    "id": "nora-1710432000000-a3f2",
+    "action": "Schedule follow-up meeting with Kyle",
+    "detail": "Discuss Q2 campaign results",
+    "assignee": "Kyle Tapper",
+    "due": "next Tuesday",
+    "status": "pending",
+    "created": "2026-03-14T18:00:00.000Z",
+    "completed": null
+  }
+]</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/tasks</span></div>
+        <div class="endpoint-desc">Add a task manually</div>
+        <pre>// Request body:
+{
+  "action": "Send weekly report to Brandee",
+  "detail": "Include Teamwork metrics",
+  "assignee": "Brandee Johnson",
+  "due": "Monday 8am"
+}
+
+// Response: { "ok": true, "id": "nora-1710432000000-a3f2" }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge patch">PATCH</span> <span class="endpoint-path">/tasks/:id/complete</span></div>
+        <div class="endpoint-desc">Mark a task as done (idempotent — safe to call multiple times)</div>
+        <pre>PATCH /tasks/nora-1710432000000-a3f2/complete
+
+// Response: { "ok": true, "task": { ... } }
+// If already done: { "ok": true, "already": true, "task": { ... } }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge delete">DELETE</span> <span class="endpoint-path">/tasks/:id</span></div>
+        <div class="endpoint-desc">Delete a task permanently</div>
+        <pre>DELETE /tasks/nora-1710432000000-a3f2
+// Response: { "ok": true }</pre>
+      </div>
+    </div>
+
+    <!-- Scheduled Session Workflow -->
+    <div class="section">
+      <h2>Claude Code Scheduled Session Workflow</h2>
+      <p>This is the recommended workflow for a scheduled Claude Code session that processes Nora's task queue:</p>
+      <pre>1. Fetch pending tasks:
+   GET {BASE_URL}/tasks?status=pending
+
+2. For each pending task, determine the right action:
+   - "Schedule a meeting..." → use Google Calendar MCP to create event
+   - "Send an email to..." → use Gmail MCP to draft/send
+   - "Create a task in Teamwork..." → use Teamwork MCP to create task
+   - "Send a Slack message..." → use Slack MCP to post message
+   - "Remind [person] about..." → determine best channel and notify
+
+3. Execute the action using the appropriate MCP tool
+
+4. Mark the task as done:
+   PATCH {BASE_URL}/tasks/{task_id}/complete
+
+5. Optionally, add a memory about what was done:
+   POST {BASE_URL}/memory
+   { "fact": "Sent Q2 report to Brandee on 2026-03-14", "source": "auto" }</pre>
+
+      <h3>Available MCP Integrations</h3>
+      <ul>
+        <li><strong>Teamwork (twprojects):</strong> Create/update tasks, milestones, projects, time logs</li>
+        <li><strong>Teamwork Desk (twdesk):</strong> Manage support tickets, customers, messages</li>
+        <li><strong>Google Calendar (gcal):</strong> Create/update events, find free time, check availability</li>
+        <li><strong>Gmail:</strong> Search messages, read threads, create drafts</li>
+        <li><strong>Slack:</strong> Send messages, search channels, read threads</li>
+      </ul>
+    </div>
+
+    <!-- Other Endpoints -->
+    <div class="section">
+      <h2>Other Endpoints</h2>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/</span></div>
+        <div class="endpoint-desc">Dashboard web UI (meeting joins, tasks, memory management)</div>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/prompt</span></div>
+        <div class="endpoint-desc">Nora's raw system prompt as plain text</div>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/join</span></div>
+        <div class="endpoint-desc">Send Nora to a Zoom meeting</div>
+        <pre>{ "meeting_url": "https://us02web.zoom.us/j/123456?pwd=abc" }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/webhook/transcript</span></div>
+        <div class="endpoint-desc">Recall.ai transcript webhook (internal — do not call directly)</div>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/webhook/status</span></div>
+        <div class="endpoint-desc">Recall.ai meeting status webhook (internal)</div>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/webhook/chat</span></div>
+        <div class="endpoint-desc">Zoom chat message webhook (internal)</div>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/register-bot</span></div>
+        <div class="endpoint-desc">Register a bot ID manually (legacy)</div>
+      </div>
+    </div>
+
+    <!-- Environment -->
+    <div class="section">
+      <h2>Environment Variables</h2>
+      <pre>RECALL_API_KEY      — Recall.ai API token
+RECALL_REGION       — Recall.ai region (us-west-2)
+ANTHROPIC_API_KEY   — Anthropic API key for Claude
+ELEVENLABS_API_KEY  — ElevenLabs API key for TTS
+ELEVENLABS_VOICE_ID — ElevenLabs voice ID (vVbAf9jRhIe9lro41Tgc)
+PORT                — Server port (Railway sets automatically)</pre>
+    </div>
+
+    <!-- Team Reference -->
+    <div class="section">
+      <h2>LimeLight Marketing Team</h2>
+      <div id="team-list" style="font-size: 13px; color: #ccc;"></div>
+    </div>
+
+    <!-- Current Memory -->
+    <div class="section">
+      <h2>Current Memory Contents</h2>
+      <div id="memory-contents" class="prompt-box">Loading...</div>
+    </div>
+
+    <!-- Current Tasks -->
+    <div class="section">
+      <h2>Current Pending Tasks</h2>
+      <div id="tasks-contents" class="prompt-box">Loading...</div>
+    </div>
+  </div>
+
+  <script>
+    // Load prompt
+    fetch('/prompt')
+      .then(r => r.text())
+      .then(text => {
+        document.getElementById('prompt-content').textContent = text;
+
+        // Extract team from prompt
+        const teamMatch = text.match(/The team:\n([\s\S]*?)(?:\n\n|$)/);
+        if (teamMatch) {
+          const lines = teamMatch[1].trim().split('\n').map(l => l.replace(/^- /, ''));
+          document.getElementById('team-list').innerHTML = lines.map(l => {
+            const [name, ...rest] = l.split(' — ');
+            return `<div style="padding: 4px 0; border-bottom: 1px solid #222;"><strong>${name}</strong> — ${rest.join(' — ')}</div>`;
+          }).join('');
+        }
+      })
+      .catch(() => { document.getElementById('prompt-content').textContent = 'Failed to load prompt.'; });
+
+    // Load memory
+    fetch('/memory')
+      .then(r => r.json())
+      .then(mem => {
+        document.getElementById('memory-contents').textContent = JSON.stringify(mem, null, 2);
+      })
+      .catch(() => { document.getElementById('memory-contents').textContent = 'Failed to load.'; });
+
+    // Load pending tasks
+    fetch('/tasks?status=pending')
+      .then(r => r.json())
+      .then(tasks => {
+        document.getElementById('tasks-contents').textContent = tasks.length === 0
+          ? 'No pending tasks.'
+          : JSON.stringify(tasks, null, 2);
+      })
+      .catch(() => { document.getElementById('tasks-contents').textContent = 'Failed to load.'; });
+  </script>
+</body>
+</html>
