@@ -754,6 +754,19 @@ app.delete('/memory/:index', (req, res) => {
   res.json({ ok: true, memory });
 });
 
+app.put('/memory/:index', (req, res) => {
+  const memory = loadMemory();
+  const idx = parseInt(req.params.index);
+  if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
+  const { fact, project } = req.body;
+  if (!fact) return res.status(400).json({ error: 'fact is required' });
+  memory[idx].fact = fact;
+  if (project !== undefined) memory[idx].project = project;
+  saveMemory(memory);
+  console.log('🧠 Memory updated:', fact);
+  res.json({ ok: true, memory });
+});
+
 app.delete('/memory', (req, res) => {
   saveMemory([]);
   console.log('🧠 Memory cleared');
@@ -846,6 +859,20 @@ app.delete('/tasks/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+app.put('/tasks/:id', (req, res) => {
+  const tasks = loadTasks();
+  const task = tasks.find(t => t.id === req.params.id);
+  if (!task) return res.status(404).json({ error: 'task not found' });
+  const { action, detail, assignee, due } = req.body;
+  if (action !== undefined) task.action = action;
+  if (detail !== undefined) task.detail = detail;
+  if (assignee !== undefined) task.assignee = assignee;
+  if (due !== undefined) task.due = due;
+  saveTasks(tasks);
+  console.log('✏️ Task updated:', task.id, task.action);
+  res.json({ ok: true, task });
+});
+
 // Transcript API — list and retrieve saved meeting transcripts
 app.get('/transcripts', (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
@@ -890,6 +917,42 @@ app.delete('/transcripts/:botId', (req, res) => {
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
     fs.unlinkSync(filePath);
     console.log('🗑️ Transcript deleted:', req.params.botId);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/transcripts/:botId/utterances/:index', (req, res) => {
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+  try {
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const idx = parseInt(req.params.index);
+    if (idx < 0 || idx >= data.transcript.length) return res.status(404).json({ error: 'utterance index out of range' });
+    const { speaker, text } = req.body;
+    if (speaker !== undefined) data.transcript[idx].speaker = speaker;
+    if (text !== undefined) data.transcript[idx].text = text;
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    console.log('✏️ Transcript utterance updated:', req.params.botId, 'index', idx);
+    res.json({ ok: true, utterance: data.transcript[idx] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/transcripts/:botId/utterances/:index', (req, res) => {
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+  try {
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const idx = parseInt(req.params.index);
+    if (idx < 0 || idx >= data.transcript.length) return res.status(404).json({ error: 'utterance index out of range' });
+    const removed = data.transcript.splice(idx, 1);
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    console.log('🗑️ Transcript utterance deleted:', req.params.botId, 'index', idx, removed[0].text.slice(0, 50));
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

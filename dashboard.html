@@ -225,7 +225,7 @@
             ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(t.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
             : '';
           return `
-          <div class="task-item ${t.status === 'done' ? 'done' : ''}">
+          <div class="task-item ${t.status === 'done' ? 'done' : ''}" id="task-${escHtml(t.id)}">
             <div class="task-action">${escHtml(t.action)}</div>
             ${t.detail ? `<div class="task-detail">${escHtml(t.detail)}</div>` : ''}
             <div class="task-meta">
@@ -235,6 +235,7 @@
               · ${new Date(t.created).toLocaleDateString()}${transcriptLink}
             </div>
             <div class="task-buttons">
+              <button class="btn btn-success" onclick="editTask('${escHtml(t.id)}', ${escHtml(JSON.stringify({ action: t.action, detail: t.detail || '', assignee: t.assignee || '', due: t.due || '' }))})">Edit</button>
               ${t.status === 'pending' ? `<button class="btn btn-success" onclick="completeTask('${t.id}')">Mark Done</button>` : ''}
               <button class="btn btn-danger" onclick="deleteTask('${t.id}')">Delete</button>
             </div>
@@ -275,6 +276,33 @@
     async function deleteTask(id) {
       if (!confirm('Delete this task?')) return;
       await fetch('/tasks/' + id, { method: 'DELETE' });
+      loadTasks();
+    }
+
+    function editTask(id, data) {
+      const el = document.getElementById('task-' + id);
+      if (!el) return;
+      el.innerHTML = `
+        <input id="edit-task-action-${id}" value="${escHtml(data.action)}" placeholder="Action..." style="margin-bottom: 6px;" />
+        <input id="edit-task-detail-${id}" value="${escHtml(data.detail)}" placeholder="Detail (optional)" style="margin-bottom: 6px;" />
+        <div style="display: flex; gap: 8px; margin-bottom: 6px;">
+          <input id="edit-task-assignee-${id}" value="${escHtml(data.assignee)}" placeholder="Assignee" style="flex: 1;" />
+          <input id="edit-task-due-${id}" value="${escHtml(data.due)}" placeholder="Due date" style="flex: 1;" />
+        </div>
+        <div class="task-buttons">
+          <button class="btn btn-primary btn-sm" onclick="saveTaskEdit('${escHtml(id)}')">Save</button>
+          <button class="btn btn-danger btn-sm" onclick="loadTasks()">Cancel</button>
+        </div>`;
+      document.getElementById('edit-task-action-' + id).focus();
+    }
+
+    async function saveTaskEdit(id) {
+      const action = document.getElementById('edit-task-action-' + id).value.trim();
+      if (!action) return;
+      const detail = document.getElementById('edit-task-detail-' + id).value.trim();
+      const assignee = document.getElementById('edit-task-assignee-' + id).value.trim();
+      const due = document.getElementById('edit-task-due-' + id).value.trim();
+      await fetch('/tasks/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, detail, assignee, due }) });
       loadTasks();
     }
 
@@ -326,13 +354,44 @@
       const transcriptLink = m.source_bot_id
         ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
         : '';
-      return `<div class="memory-item">
-        <div>
+      return `<div class="memory-item" id="memory-${m._idx}">
+        <div style="flex: 1;">
           <div class="memory-fact">${escHtml(m.fact)}</div>
           <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${transcriptLink}</div>
         </div>
-        <button class="btn btn-danger" onclick="deleteMemory(${m._idx})">Remove</button>
+        <div style="display: flex; gap: 6px; flex-shrink: 0;">
+          <button class="btn btn-success" onclick="editMemory(${m._idx}, '${escHtml(m.fact).replace(/'/g, "\\'")}', '${escHtml(m.project || '').replace(/'/g, "\\'")}')">Edit</button>
+          <button class="btn btn-danger" onclick="deleteMemory(${m._idx})">Remove</button>
+        </div>
       </div>`;
+    }
+
+    function editMemory(idx, currentFact, currentProject) {
+      const el = document.getElementById('memory-' + idx);
+      if (!el) return;
+      const projects = document.getElementById('new-fact-project').innerHTML;
+      el.innerHTML = `
+        <div style="flex: 1;">
+          <input id="edit-memory-fact-${idx}" value="${escHtml(currentFact)}" style="margin-bottom: 6px;" />
+          <select id="edit-memory-project-${idx}" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 13px;">
+            ${projects}
+          </select>
+        </div>
+        <div style="display: flex; gap: 6px; flex-shrink: 0; align-self: center;">
+          <button class="btn btn-primary btn-sm" onclick="saveMemoryEdit(${idx})">Save</button>
+          <button class="btn btn-danger btn-sm" onclick="loadMemory()">Cancel</button>
+        </div>`;
+      const sel = document.getElementById('edit-memory-project-' + idx);
+      if (sel) sel.value = currentProject;
+      document.getElementById('edit-memory-fact-' + idx).focus();
+    }
+
+    async function saveMemoryEdit(idx) {
+      const fact = document.getElementById('edit-memory-fact-' + idx).value.trim();
+      const project = document.getElementById('edit-memory-project-' + idx).value;
+      if (!fact) return;
+      await fetch('/memory/' + idx, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact, project }) });
+      loadMemory();
     }
 
     async function addMemory() {
@@ -387,7 +446,10 @@
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load transcripts.</p>'; }
     }
 
+    let currentTranscriptBotId = null;
+
     async function viewTranscript(botId) {
+      currentTranscriptBotId = botId;
       document.getElementById('transcript-list').style.display = 'none';
       const detail = document.getElementById('transcript-detail');
       const content = document.getElementById('transcript-content');
@@ -399,14 +461,56 @@
         const r = await fetch('/transcripts/' + botId);
         if (!r.ok) { content.innerHTML = '<p class="empty">Transcript not found.</p>'; return; }
         const data = await r.json();
-        content.innerHTML = data.transcript.map(u => `
-          <div style="padding: 4px 0; border-bottom: 1px solid #1a1a1a;">
+        renderUtterances(data.transcript);
+      } catch (e) { content.innerHTML = '<p class="empty">Failed to load transcript.</p>'; }
+    }
+
+    function renderUtterances(transcript) {
+      const content = document.getElementById('transcript-content');
+      content.innerHTML = transcript.map((u, i) => `
+        <div id="utt-${i}" style="padding: 4px 0; border-bottom: 1px solid #1a1a1a; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+          <div style="flex: 1;">
             <strong style="color: #a78bfa;">${escHtml(u.speaker)}</strong>
             <span style="color: #555; font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
             <div style="color: #ccc;">${escHtml(u.text)}</div>
           </div>
-        `).join('');
-      } catch (e) { content.innerHTML = '<p class="empty">Failed to load transcript.</p>'; }
+          <div style="display: flex; gap: 4px; flex-shrink: 0; padding-top: 2px;">
+            <button class="btn btn-success btn-sm" onclick="editUtterance(${i}, '${escHtml(u.speaker).replace(/'/g, "\\'")}', '${escHtml(u.text).replace(/'/g, "\\'")}')">Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="deleteUtterance(${i})">Del</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function editUtterance(idx, speaker, text) {
+      const el = document.getElementById('utt-' + idx);
+      if (!el) return;
+      el.innerHTML = `
+        <div style="flex: 1;">
+          <input id="edit-utt-speaker-${idx}" value="${escHtml(speaker)}" placeholder="Speaker" style="margin-bottom: 4px; font-size: 13px;" />
+          <textarea id="edit-utt-text-${idx}" placeholder="Text" style="font-size: 13px; min-height: 40px;">${escHtml(text)}</textarea>
+        </div>
+        <div style="display: flex; gap: 4px; flex-shrink: 0; align-self: center;">
+          <button class="btn btn-primary btn-sm" onclick="saveUtterance(${idx})">Save</button>
+          <button class="btn btn-danger btn-sm" onclick="viewTranscript(currentTranscriptBotId)">Cancel</button>
+        </div>`;
+      document.getElementById('edit-utt-speaker-' + idx).focus();
+    }
+
+    async function saveUtterance(idx) {
+      const speaker = document.getElementById('edit-utt-speaker-' + idx).value.trim();
+      const text = document.getElementById('edit-utt-text-' + idx).value.trim();
+      if (!speaker || !text) return;
+      await fetch('/transcripts/' + currentTranscriptBotId + '/utterances/' + idx, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ speaker, text })
+      });
+      viewTranscript(currentTranscriptBotId);
+    }
+
+    async function deleteUtterance(idx) {
+      if (!confirm('Delete this utterance?')) return;
+      await fetch('/transcripts/' + currentTranscriptBotId + '/utterances/' + idx, { method: 'DELETE' });
+      viewTranscript(currentTranscriptBotId);
     }
 
     function closeTranscript() {
