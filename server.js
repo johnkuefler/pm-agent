@@ -75,6 +75,8 @@ function addTask(task) {
   tasks.push({
     id,
     ...task,
+    source_channel: task.source_channel || '',
+    source_user: task.source_user || '',
     status: 'pending',
     created: new Date().toISOString(),
     completed: null
@@ -339,7 +341,7 @@ async function handleSlack(channel, user, text, threadTs) {
     });
 
     // Extract tasks/memory in background
-    extractTasks(text, text, reply).catch(() => {});
+    extractTasks(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
     extractMemory(text, text, reply).catch(() => {});
   } catch (err) {
     console.error('Slack handler error:', err.response?.data || err.message);
@@ -355,6 +357,59 @@ async function handleSlack(channel, user, text, threadTs) {
     } catch {}
   }
 }
+
+// Notify endpoint — Claude Code calls this to have Nora post follow-ups
+app.post('/notify', async (req, res) => {
+  const { channel, user, text, blocks, file_url, file_name, thread_ts } = req.body;
+
+  // Determine where to send — channel ID, or DM a user
+  const target = channel || user;
+  if (!target || !text) return res.status(400).json({ error: 'channel or user, and text are required' });
+
+  try {
+    // If DMing a user by Slack user ID, open a DM channel first
+    let channelId = target;
+    if (target.startsWith('U')) {
+      const dmRes = await axios.post('https://slack.com/api/conversations.open', {
+        users: target
+      }, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+      });
+      channelId = dmRes.data.channel?.id || target;
+    }
+
+    // Post the message
+    const msgPayload = { channel: channelId, text };
+    if (blocks) msgPayload.blocks = blocks;
+    if (thread_ts) msgPayload.thread_ts = thread_ts;
+
+    const msgRes = await axios.post('https://slack.com/api/chat.postMessage', msgPayload, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+
+    // Upload a file if provided
+    if (file_url && file_name) {
+      // Download the file first
+      const fileData = await axios.get(file_url, { responseType: 'arraybuffer' });
+      const formData = new FormData();
+      formData.append('channels', channelId);
+      formData.append('filename', file_name);
+      formData.append('title', file_name);
+      formData.append('file', new Blob([fileData.data]), file_name);
+      if (thread_ts) formData.append('thread_ts', thread_ts);
+
+      await axios.post('https://slack.com/api/files.upload', formData, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+      });
+    }
+
+    console.log('📤 Nora notified:', channelId, text.slice(0, 100));
+    res.json({ ok: true, channel: channelId, ts: msgRes.data.ts });
+  } catch (err) {
+    console.error('Notify error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
 
 // Memory API — view and edit Nora's memory
 app.get('/memory', (req, res) => res.json(loadMemory()));
@@ -460,7 +515,7 @@ async function handleNora(botId, triggerText, session) {
 
     // Check for memories and action items in background
     extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
-    extractTasks(meetingContext, triggerText, fullReply).catch(() => {});
+    extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom' }).catch(() => {});
   } catch (err) {
     if (err.name === 'CanceledError' || abortController.signal.aborted) {
       console.log('🚫 Response aborted');
@@ -520,7 +575,7 @@ async function extractMemory(context, trigger, reply) {
   }
 }
 
-async function extractTasks(context, trigger, reply) {
+async function extractTasks(context, trigger, reply, source = {}) {
   try {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
@@ -549,7 +604,7 @@ async function extractTasks(context, trigger, reply) {
 
     for (const item of items) {
       if (item.action && typeof item.action === 'string') {
-        addTask({ action: item.action, detail: item.detail || '', assignee: item.assignee || '', due: item.due || '' });
+        addTask({ action: item.action, detail: item.detail || '', assignee: item.assignee || '', due: item.due || '', source_channel: source.channel || '', source_user: source.user || '' });
       }
     }
   } catch (err) {

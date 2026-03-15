@@ -123,6 +123,8 @@
     "detail": "Discuss Q2 campaign results",
     "assignee": "Kyle Tapper",
     "due": "next Tuesday",
+    "source_channel": "slack:C0123ABCDEF",
+    "source_user": "U0123ABCDEF",
     "status": "pending",
     "created": "2026-03-14T18:00:00.000Z",
     "completed": null
@@ -177,10 +179,21 @@
 
 3. Execute the action using the appropriate MCP tool
 
-4. Mark the task as done:
+4. Notify the requester that it's done (posts as Nora):
+   POST {BASE_URL}/notify
+   {
+     "channel": "C0123ABCDEF",   // from task.source_channel (strip "slack:" prefix)
+     "user": "U0123ABCDEF",      // from task.source_user (used for DMs)
+     "text": "Done — scheduled the follow-up with Kyle for Tuesday at 2pm."
+   }
+   Use "channel" for channel replies, "user" for DMs.
+   If source_channel starts with "slack:", strip the prefix to get the channel ID.
+   If source_channel is "zoom", skip Slack notify or DM the source_user instead.
+
+5. Mark the task as done:
    PATCH {BASE_URL}/tasks/{task_id}/complete
 
-5. Optionally, add a memory about what was done:
+6. Optionally, add a memory about what was done:
    POST {BASE_URL}/memory
    { "fact": "Sent Q2 report to Brandee on 2026-03-14", "source": "auto" }</pre>
 
@@ -206,6 +219,36 @@
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/prompt</span></div>
         <div class="endpoint-desc">Nora's raw system prompt as plain text</div>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/notify</span></div>
+        <div class="endpoint-desc">Have Nora post a message to Slack (used by Claude Code after completing tasks)</div>
+        <pre>// Post to a channel:
+{ "channel": "C0123ABCDEF", "text": "Done — weekly report sent to Brandee." }
+
+// DM a user:
+{ "user": "U0123ABCDEF", "text": "Hey, that follow-up with Kyle is scheduled for Tuesday 2pm." }
+
+// Reply in a specific thread:
+{ "channel": "C0123ABC", "text": "All set.", "thread_ts": "1710432000.000100" }
+
+// Attach a file (downloads from URL and uploads to Slack):
+{
+  "channel": "C0123ABCDEF",
+  "text": "Here's the weekly report.",
+  "file_url": "https://example.com/report.pdf",
+  "file_name": "weekly-report.pdf"
+}
+
+// Use Slack Block Kit for rich formatting:
+{
+  "channel": "C0123ABCDEF",
+  "text": "Task update",
+  "blocks": [{ "type": "section", "text": { "type": "mrkdwn", "text": "*Task completed*\n..." }}]
+}
+
+// Response: { "ok": true, "channel": "C0123ABCDEF", "ts": "1710432000.000200" }</pre>
       </div>
 
       <div class="endpoint">
