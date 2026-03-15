@@ -340,9 +340,13 @@ async function handleSlack(channel, user, text, threadTs) {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
     });
 
-    // Extract tasks/memory in background
-    extractTasks(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
-    extractMemory(text, text, reply).catch(() => {});
+    // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
+    if (!isAskingClarification(reply)) {
+      extractTasks(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
+      extractMemory(text, text, reply).catch(() => {});
+    } else {
+      console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
+    }
   } catch (err) {
     console.error('Slack handler error:', err.response?.data || err.message);
     // Try to post error message back
@@ -471,6 +475,31 @@ app.delete('/tasks/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// Detect if Nora's reply is asking clarifying questions rather than confirming an action
+function isAskingClarification(reply) {
+  const lower = reply.toLowerCase();
+  const clarifyPatterns = [
+    /do you mean/,
+    /which (one|project|client|competitor|team|person)/,
+    /can you clarify/,
+    /what (specifically|exactly|do you mean)/,
+    /could you (be more specific|clarify|elaborate)/,
+    /are you (referring to|talking about|looking for)/,
+    /did you mean/,
+    /just to clarify/,
+    /before i (do that|get started|jump in|dig in|start)/,
+    /a few questions/,
+    /couple (of )?questions/,
+    /first.{0,20}(need to know|need some clarity|want to understand)/,
+    /what('s| is) the (scope|timeline|deadline|priority)/,
+    /who('s| is| should) (the|be)/
+  ];
+  // Must end with a question mark or match clarification patterns
+  const hasQuestion = reply.trim().endsWith('?');
+  const matchesPattern = clarifyPatterns.some(p => p.test(lower));
+  return hasQuestion && matchesPattern;
+}
+
 async function handleNora(botId, triggerText, session) {
   const abortController = new AbortController();
   session.abortController = abortController;
@@ -513,9 +542,13 @@ async function handleNora(botId, triggerText, session) {
     if (abortController.signal.aborted) return;
     await speakInMeeting(botId, fullReply);
 
-    // Check for memories and action items in background
-    extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
-    extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom' }).catch(() => {});
+    // Only extract if Nora gave a definitive response, not clarifying questions
+    if (!isAskingClarification(fullReply)) {
+      extractMemory(meetingContext, triggerText, fullReply).catch(() => {});
+      extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom' }).catch(() => {});
+    } else {
+      console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
+    }
   } catch (err) {
     if (err.name === 'CanceledError' || abortController.signal.aborted) {
       console.log('🚫 Response aborted');
