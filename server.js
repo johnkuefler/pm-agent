@@ -58,28 +58,7 @@ function buildSystemPrompt() {
 
 // Dashboard
 app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><title>Norah</title>
-<style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:-apple-system,sans-serif;background:#111;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
-.card{background:#1a1a1a;border-radius:12px;padding:40px;max-width:480px;width:100%}h1{font-size:28px;margin-bottom:8px}p{color:#888;margin-bottom:24px}
-input{width:100%;padding:12px;border-radius:8px;border:1px solid #333;background:#222;color:#eee;font-size:14px;margin-bottom:12px}
-button{width:100%;padding:12px;border-radius:8px;border:none;background:#7c3aed;color:#fff;font-size:14px;cursor:pointer;font-weight:600}button:hover{background:#6d28d9}
-#status{margin-top:16px;padding:12px;border-radius:8px;display:none;font-size:13px}
-.ok{background:#064e3b;color:#6ee7b7;display:block}.err{background:#450a0a;color:#fca5a5;display:block}
-a{color:#7c3aed;text-decoration:none;font-size:13px}</style></head>
-<body><div class="card"><h1>Norah</h1><p>PM Agent for LimeLight Marketing</p>
-<input id="url" placeholder="Paste Zoom meeting link..." />
-<button onclick="go()">Send Norah to Meeting</button>
-<div id="status"></div>
-<br><a href="/memory" target="_blank">View Memory</a>
-<script>
-async function go(){const s=document.getElementById('status'),u=document.getElementById('url').value;
-if(!u){s.className='err';s.textContent='Paste a Zoom link first';return}
-s.className='ok';s.textContent='Sending Norah...';
-try{const r=await fetch('/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({meeting_url:u})});
-const d=await r.json();if(d.bot_id){s.className='ok';s.textContent='Norah joined! Bot ID: '+d.bot_id}
-else{s.className='err';s.textContent='Error: '+(d.error||JSON.stringify(d))}}
-catch(e){s.className='err';s.textContent='Failed: '+e.message}}
-</script></div></body></html>`);
+  res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
 
 // Join meeting via API

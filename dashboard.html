@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Norah — PM Agent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, sans-serif; background: #111; color: #eee; padding: 40px 20px; }
+    .container { max-width: 600px; margin: 0 auto; }
+    h1 { font-size: 28px; margin-bottom: 4px; }
+    .subtitle { color: #888; margin-bottom: 32px; font-size: 14px; }
+    .section { background: #1a1a1a; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
+    .section h2 { font-size: 16px; margin-bottom: 16px; color: #ccc; }
+    input, textarea { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 14px; font-family: inherit; }
+    textarea { resize: vertical; min-height: 60px; }
+    .btn { padding: 10px 16px; border-radius: 8px; border: none; font-size: 13px; cursor: pointer; font-weight: 600; }
+    .btn-primary { background: #7c3aed; color: #fff; }
+    .btn-primary:hover { background: #6d28d9; }
+    .btn-danger { background: transparent; color: #f87171; border: 1px solid #333; padding: 6px 10px; font-size: 12px; }
+    .btn-danger:hover { background: #450a0a; }
+    .btn-sm { padding: 6px 12px; font-size: 12px; }
+    .row { display: flex; gap: 8px; margin-top: 12px; }
+    .toast { margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none; font-size: 13px; }
+    .toast.ok { background: #064e3b; color: #6ee7b7; display: block; }
+    .toast.err { background: #450a0a; color: #fca5a5; display: block; }
+    .memory-item { display: flex; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #222; gap: 12px; }
+    .memory-item:last-child { border-bottom: none; }
+    .memory-fact { flex: 1; font-size: 14px; line-height: 1.4; }
+    .memory-meta { color: #666; font-size: 11px; }
+    #memory-list { margin-bottom: 16px; }
+    .empty { color: #555; font-style: italic; font-size: 13px; padding: 8px 0; }
+    .tab-bar { display: flex; gap: 0; margin-bottom: 24px; }
+    .tab { padding: 10px 20px; background: #1a1a1a; color: #888; cursor: pointer; font-size: 14px; font-weight: 500; border: 1px solid #222; }
+    .tab:first-child { border-radius: 8px 0 0 8px; }
+    .tab:last-child { border-radius: 0 8px 8px 0; }
+    .tab.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+    .page { display: none; }
+    .page.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Norah</h1>
+    <p class="subtitle">PM Agent for LimeLight Marketing</p>
+
+    <div class="tab-bar">
+      <div class="tab active" onclick="showTab('meeting')">Meeting</div>
+      <div class="tab" onclick="showTab('memory')">Memory</div>
+    </div>
+
+    <!-- Meeting Tab -->
+    <div id="page-meeting" class="page active">
+      <div class="section">
+        <h2>Send Norah to a Zoom Meeting</h2>
+        <input id="url" placeholder="Paste Zoom meeting link..." />
+        <div class="row">
+          <button class="btn btn-primary" onclick="joinMeeting()">Send Norah</button>
+        </div>
+        <div id="join-status" class="toast"></div>
+      </div>
+    </div>
+
+    <!-- Memory Tab -->
+    <div id="page-memory" class="page">
+      <div class="section">
+        <h2>Norah's Memory</h2>
+        <div id="memory-list"></div>
+      </div>
+      <div class="section">
+        <h2>Add Memory</h2>
+        <textarea id="new-fact" placeholder="Type a fact for Norah to remember..."></textarea>
+        <div class="row">
+          <button class="btn btn-primary btn-sm" onclick="addMemory()">Add to Memory</button>
+        </div>
+        <div id="memory-status" class="toast"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function showTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      event.target.classList.add('active');
+      document.getElementById('page-' + name).classList.add('active');
+      if (name === 'memory') loadMemory();
+    }
+
+    async function joinMeeting() {
+      const s = document.getElementById('join-status');
+      const u = document.getElementById('url').value.trim();
+      if (!u) { s.className = 'toast err'; s.textContent = 'Paste a Zoom link first'; return; }
+      s.className = 'toast ok'; s.textContent = 'Sending Norah...';
+      try {
+        const r = await fetch('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_url: u }) });
+        const d = await r.json();
+        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Norah joined! Bot ID: ' + d.bot_id; }
+        else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function loadMemory() {
+      const list = document.getElementById('memory-list');
+      try {
+        const r = await fetch('/memory');
+        const memories = await r.json();
+        if (memories.length === 0) {
+          list.innerHTML = '<p class="empty">No memories yet.</p>';
+          return;
+        }
+        list.innerHTML = memories.map((m, i) => `
+          <div class="memory-item">
+            <div>
+              <div class="memory-fact">${escHtml(m.fact)}</div>
+              <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}</div>
+            </div>
+            <button class="btn btn-danger" onclick="deleteMemory(${i})">Remove</button>
+          </div>
+        `).join('');
+      } catch (e) { list.innerHTML = '<p class="empty">Failed to load memory.</p>'; }
+    }
+
+    async function addMemory() {
+      const s = document.getElementById('memory-status');
+      const fact = document.getElementById('new-fact').value.trim();
+      if (!fact) { s.className = 'toast err'; s.textContent = 'Type something first'; return; }
+      try {
+        await fetch('/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact }) });
+        document.getElementById('new-fact').value = '';
+        s.className = 'toast ok'; s.textContent = 'Memory added';
+        loadMemory();
+        setTimeout(() => s.style.display = 'none', 2000);
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function deleteMemory(idx) {
+      if (!confirm('Remove this memory?')) return;
+      await fetch('/memory/' + idx, { method: 'DELETE' });
+      loadMemory();
+    }
+
+    function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+  </script>
+</body>
+</html>
