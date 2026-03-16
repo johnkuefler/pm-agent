@@ -108,9 +108,10 @@ function addTask(task) {
 
 initMemory();
 
-function buildStableSystemPrompt(channel) {
+function buildSystemPrompt(channel = 'zoom', transcript = null) {
   let base = loadPrompt();
 
+  // Swap channel-specific framing
   if (channel === 'slack') {
     base = base.replace(
       'You are in a live Zoom meeting. Keep responses short — 2-3 sentences max. You are speaking out loud so no markdown, no bullet points, no lists. Natural spoken language only.',
@@ -122,6 +123,7 @@ function buildStableSystemPrompt(channel) {
   const projects = loadProjects();
 
   if (memory.length > 0 || projects.length > 0) {
+    // Group memories by project
     const general = memory.filter(m => !m.project);
     const byProject = {};
     for (const m of memory) {
@@ -132,15 +134,19 @@ function buildStableSystemPrompt(channel) {
     }
 
     let memoryBlock = '[Your memory]\n';
+
     if (general.length > 0) {
       memoryBlock += '\n## General\n' + general.map(m => `- ${m.fact}`).join('\n');
     }
 
+    // Include project details + project-specific memories together
     const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
     for (const name of allProjectNames) {
       memoryBlock += `\n\n## ${name}`;
       const proj = projects.find(p => p.name === name);
-      if (proj && proj.details) memoryBlock += `\n${proj.details}`;
+      if (proj && proj.details) {
+        memoryBlock += `\n${proj.details}`;
+      }
       if (byProject[name]) {
         memoryBlock += '\n' + byProject[name].map(m => `- ${m.fact}`).join('\n');
       }
@@ -149,41 +155,14 @@ function buildStableSystemPrompt(channel) {
     base = `${base}\n\n${memoryBlock}`;
   }
 
+  // Inject live transcript context if available
+  if (transcript && transcript.length > 0) {
+    const recent = transcript.slice(-30);
+    const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
+    base = `${base}\n\n[What's been discussed in this meeting so far]\n${transcriptBlock}`;
+  }
+
   return base;
-}
-
-function buildTranscriptBlock(transcript, meetingSummary) {
-  if (!transcript || transcript.length === 0) return '';
-
-  const VERBATIM_COUNT = 15;
-
-  if (transcript.length <= VERBATIM_COUNT) {
-    return '[Meeting conversation]\n' +
-      transcript.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
-  }
-
-  const recent = transcript.slice(-VERBATIM_COUNT);
-  const recentBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
-
-  if (meetingSummary) {
-    return `[Earlier in the meeting — summary]\n${meetingSummary}\n\n[Recent conversation]\n${recentBlock}`;
-  }
-
-  return `[Recent conversation]\n${recentBlock}`;
-}
-
-function buildSystemPromptCached(channel, transcript, meetingSummary) {
-  return [
-    {
-      type: 'text',
-      text: buildStableSystemPrompt(channel),
-      cache_control: { type: 'ephemeral' }
-    },
-    {
-      type: 'text',
-      text: buildTranscriptBlock(transcript, meetingSummary || '')
-    }
-  ];
 }
 
 // Dashboard
@@ -468,7 +447,7 @@ app.post('/join', async (req, res) => {
     });
 
     activeBotId = botRes.data.id;
-    if (!sessions[activeBotId]) sessions[activeBotId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0, meetingSummary: '', utterancesSinceSummary: 0, triggerDebounce: null, pendingTrigger: null };
+    if (!sessions[activeBotId]) sessions[activeBotId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
     console.log('✅ Nora joined via web. Bot ID:', activeBotId);
     res.json({ bot_id: botRes.data.id });
   } catch (err) {
@@ -507,21 +486,13 @@ app.post('/webhook/transcript', async (req, res) => {
 
   console.log(`[${speaker}]: ${text}`);
 
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0, meetingSummary: '', utterancesSinceSummary: 0, triggerDebounce: null, pendingTrigger: null };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
   const session = sessions[bot_id];
 
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
-
-  // Trigger rolling summary every ~30 utterances for long meetings
-  session.utterancesSinceSummary = (session.utterancesSinceSummary || 0) + 1;
-  if (session.utterancesSinceSummary >= 30 && session.transcript.length > 20) {
-    updateMeetingSummary(session).catch(err => {
-      console.error('Background summary error:', err.message);
-    });
-  }
 
   // Persist transcript incrementally so nothing is lost if the meeting ends abruptly
   try {
@@ -542,22 +513,15 @@ app.post('/webhook/transcript', async (req, res) => {
     return;
   }
 
-  // Wake word trigger — debounced to wait for full sentence
+  // Wake word trigger — always respond
   if (lower.includes('hey nora') || lower.includes('nora ')) {
-    clearTimeout(session.triggerDebounce);
-    session.pendingTrigger = text;
-    session.triggerDebounce = setTimeout(async () => {
-      if (session.abortController) {
-        console.log('⏭️ Aborting previous response');
-        session.abortController.abort();
-        await silenceBot(bot_id);
-      }
-      const fullTrigger = session.pendingTrigger;
-      session.pendingTrigger = null;
-      console.log('🎙️ Nora triggered (debounced):', fullTrigger);
-      const screenshot = await captureScreenshot(bot_id);
-      await handleNora(bot_id, fullTrigger, session, screenshot);
-    }, 700);
+    if (session.abortController) {
+      console.log('⏭️ Aborting previous response');
+      session.abortController.abort();
+      await silenceBot(bot_id);
+    }
+    console.log('🎙️ Nora triggered');
+    await handleNora(bot_id, text, session);
     return;
   }
 
@@ -592,9 +556,8 @@ app.post('/webhook/chat', async (req, res) => {
   if (!text.toLowerCase().startsWith('@nora')) return;
 
   const query = text.replace(/@nora/i, '').trim();
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0, meetingSummary: '', utterancesSinceSummary: 0, triggerDebounce: null, pendingTrigger: null };
-  const screenshot = await captureScreenshot(bot_id);
-  await handleNora(bot_id, query, sessions[bot_id], screenshot);
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
+  await handleNora(bot_id, query, sessions[bot_id]);
 });
 
 // Proactive mode toggle — enable/disable Nora interjecting without wake word
@@ -729,7 +692,7 @@ async function handleSlack(channel, user, text, threadTs) {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 400,
         temperature: 0.9,
-        system: buildStableSystemPrompt('slack') + '\n\n' + buildTranscriptBlock(null, ''),
+        system: buildSystemPrompt('slack'),
         messages: history
       },
       {
@@ -1150,111 +1113,24 @@ ${memoryBlock}`,
   }
 }
 
-// SSE stream parser for Claude's streaming API
-async function* parseSSEStream(stream) {
-  let buffer = '';
-  for await (const chunk of stream) {
-    buffer += chunk.toString();
-    const lines = buffer.split('\n');
-    buffer = lines.pop();
-    for (const line of lines) {
-      if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-        try {
-          yield JSON.parse(line.slice(6));
-        } catch {}
-      }
-    }
-  }
-}
-
-async function speakSentence(botId, text, prevPlaybackDone, abortController) {
-  // Start TTS immediately — don't wait for previous sentence to finish playing.
-  // This pipelines TTS generation with audio playback of the previous sentence.
-  const ttsPromise = axios.post(
-    `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}/stream`,
-    {
-      text,
-      model_id: 'eleven_flash_v2_5',
-      voice_settings: { stability: 0.6, similarity_boost: 0.75, style: 0.15 },
-      optimize_streaming_latency: 3
-    },
-    {
-      headers: {
-        'xi-api-key': process.env.ELEVENLABS_API_KEY,
-        'Content-Type': 'application/json',
-        Accept: 'audio/mpeg'
-      },
-      responseType: 'arraybuffer',
-      signal: abortController.signal
-    }
-  );
-
-  // Wait for previous sentence to finish playing before sending ours to Recall
-  await prevPlaybackDone;
-  if (abortController.signal.aborted) return;
-
-  try {
-    const ttsRes = await ttsPromise;
-    if (abortController.signal.aborted) return;
-
-    const b64Audio = Buffer.from(ttsRes.data).toString('base64');
-    await axios.post(
-      `${RECALL_BASE}/bot/${botId}/output_audio/`,
-      { kind: 'mp3', b64_data: b64Audio },
-      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
-    );
-
-    // Wait for estimated playback duration so the next sentence doesn't overlap.
-    // ElevenLabs outputs ~128kbps MP3 → ~16KB per second of audio.
-    const estimatedMs = (ttsRes.data.byteLength / 16000) * 1000;
-    console.log(`🔊 Nora spoke sentence (~${Math.round(estimatedMs)}ms):`, text.slice(0, 60));
-
-    await new Promise(resolve => {
-      const timer = setTimeout(resolve, estimatedMs);
-      const onAbort = () => { clearTimeout(timer); resolve(); };
-      abortController.signal.addEventListener('abort', onAbort, { once: true });
-    });
-  } catch (err) {
-    if (err.name !== 'CanceledError') {
-      const errData = err.response?.data;
-      const errMsg = Buffer.isBuffer(errData) ? errData.toString('utf8') : errData;
-      console.error('Sentence speak error:', errMsg || err.message);
-    }
-  }
-}
-
-async function handleNora(botId, triggerText, session, screenshot = null) {
+async function handleNora(botId, triggerText, session) {
   const abortController = new AbortController();
   session.abortController = abortController;
 
   try {
     const meetingContext = session.buffer.slice(-10).join('\n');
-    const userMessage = `[What was just said to trigger you]\n${triggerText}`;
+    const userMessage = `[Recent meeting conversation]\n${meetingContext}\n\n[What triggered you]\n${triggerText}`;
 
-    // Store text-only in history to avoid base64 bloat
     session.history.push({ role: 'user', content: userMessage });
-
-    const messages = [...session.history];
-    if (screenshot) {
-      messages[messages.length - 1] = {
-        role: 'user',
-        content: [
-          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot } },
-          { type: 'text', text: userMessage }
-        ]
-      };
-      console.log('📸 Including screenshot in Claude request');
-    }
 
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: screenshot ? 300 : 200,
+        max_tokens: 200,
         temperature: 0.9,
-        stream: true,
-        system: buildSystemPromptCached('zoom', session.transcript, session.meetingSummary),
-        messages
+        system: buildSystemPrompt('zoom', session.transcript),
+        messages: session.history
       },
       {
         headers: {
@@ -1262,49 +1138,15 @@ async function handleNora(botId, triggerText, session, screenshot = null) {
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01'
         },
-        responseType: 'stream',
         signal: abortController.signal
       }
     );
 
-    let fullReply = '';
-    let sentenceBuffer = '';
-    let playbackDone = Promise.resolve();
-    const audioQueue = [];
-
-    for await (const chunk of parseSSEStream(response.data)) {
-      if (abortController.signal.aborted) return;
-
-      if (chunk.type === 'content_block_delta' && chunk.delta?.text) {
-        fullReply += chunk.delta.text;
-        sentenceBuffer += chunk.delta.text;
-
-        // Fire TTS as soon as we have a complete sentence
-        const sentenceEnd = sentenceBuffer.match(/[.!?]\s/);
-        if (sentenceEnd) {
-          const sentence = sentenceBuffer.slice(0, sentenceEnd.index + 1).trim();
-          sentenceBuffer = sentenceBuffer.slice(sentenceEnd.index + 2);
-
-          if (sentence) {
-            const audioPromise = speakSentence(botId, sentence, playbackDone, abortController);
-            playbackDone = audioPromise.catch(() => {});
-            audioQueue.push(audioPromise);
-          }
-        }
-      }
-    }
-
-    // Flush remaining text
-    if (sentenceBuffer.trim() && !abortController.signal.aborted) {
-      const audioPromise = speakSentence(botId, sentenceBuffer.trim(), playbackDone, abortController);
-      playbackDone = audioPromise.catch(() => {});
-      audioQueue.push(audioPromise);
-    }
-
-    // Wait for all audio to finish playing
-    await Promise.all(audioQueue);
-
     if (abortController.signal.aborted) return;
+
+    const fullReply = response.data.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text).join(' ');
 
     console.log('🤖 Nora:', fullReply);
     session.history.push({ role: 'assistant', content: fullReply });
@@ -1314,15 +1156,15 @@ async function handleNora(botId, triggerText, session, screenshot = null) {
     session.transcript.push({ speaker: 'Nora', text: fullReply, timestamp: new Date().toISOString() });
     try {
       const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      fs.writeFileSync(
-        path.join(dir, `transcript-${botId}.json`),
-        JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2)
-      );
+      fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
     } catch (err) {
       console.error('Transcript incremental save error:', err.message);
     }
 
-    // Only extract if Nora gave a definitive response
+    if (abortController.signal.aborted) return;
+    await speakInMeeting(botId, fullReply);
+
+    // Only extract if Nora gave a definitive response, not clarifying questions
     if (!isAskingClarification(fullReply)) {
       extractMemory(meetingContext, triggerText, fullReply, botId).catch(() => {});
       extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
@@ -1340,36 +1182,6 @@ async function handleNora(botId, triggerText, session, screenshot = null) {
     if (session.abortController === abortController) {
       session.abortController = null;
     }
-  }
-}
-
-async function updateMeetingSummary(session) {
-  const older = session.transcript.slice(0, -15);
-  if (older.length < 20) return;
-
-  try {
-    const res = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 400,
-      temperature: 0,
-      system: 'Summarize this meeting transcript concisely. Focus on: key decisions made, action items assigned, important topics discussed, and any unresolved questions. Use short bullet points.',
-      messages: [{
-        role: 'user',
-        content: older.map(t => `[${t.speaker}]: ${t.text}`).join('\n')
-      }]
-    }, {
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      }
-    });
-
-    session.meetingSummary = res.data.content[0]?.text || '';
-    session.utterancesSinceSummary = 0;
-    console.log('📋 Meeting summary updated');
-  } catch (err) {
-    console.error('Summary update error:', err.message);
   }
 }
 
@@ -1596,44 +1408,6 @@ If there is NO gap, return: { "needed": false }`,
   }
 }
 
-// Screenshot capture via Recall.ai (auto-captured during recording)
-async function captureScreenshot(botId) {
-  try {
-    // Only grab screenshots from the last 2 minutes for relevance
-    const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
-    const listRes = await axios.get(
-      `${RECALL_BASE}/bot/${botId}/screenshots/`,
-      {
-        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
-        params: { recorded_at_after: since },
-        timeout: 5000
-      }
-    );
-    // Handle both bare array and paginated { results: [...] } response formats
-    const data = listRes.data;
-    const screenshots = Array.isArray(data) ? data : (data.results || []);
-    if (!screenshots.length) {
-      console.log('📸 No recent screenshots available');
-      return null;
-    }
-    // Get most recent screenshot by recorded_at
-    const latest = screenshots.sort((a, b) =>
-      new Date(b.recorded_at) - new Date(a.recorded_at)
-    )[0];
-    // Download the actual image from the presigned URL
-    const imgRes = await axios.get(latest.url, {
-      responseType: 'arraybuffer',
-      timeout: 5000
-    });
-    const b64 = Buffer.from(imgRes.data).toString('base64');
-    console.log('📸 Screenshot captured from', latest.recorded_at);
-    return b64;
-  } catch (err) {
-    console.log('📸 Screenshot skipped:', err.response?.status || err.message);
-    return null;
-  }
-}
-
 // Tiny silent MP3 — cuts off any playing audio
 async function silenceBot(botId) {
   try {
@@ -1648,7 +1422,42 @@ async function silenceBot(botId) {
   }
 }
 
-// speakInMeeting replaced by speakSentence (called per-sentence from streaming handleNora)
+async function speakInMeeting(botId, text) {
+  try {
+    // ElevenLabs TTS
+    const ttsRes = await axios.post(
+      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
+      {
+        text,
+        model_id: 'eleven_turbo_v2',
+        voice_settings: { stability: 0.6, similarity_boost: 0.75, style: 0.15, use_speaker_boost: true }
+      },
+      {
+        headers: {
+          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json',
+          Accept: 'audio/mpeg'
+        },
+        responseType: 'arraybuffer'
+      }
+    );
+
+    const b64Audio = Buffer.from(ttsRes.data).toString('base64');
+
+    // Push audio into Zoom via Recall.ai
+    await axios.post(
+      `${RECALL_BASE}/bot/${botId}/output_audio/`,
+      { kind: 'mp3', b64_data: b64Audio },
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+    );
+
+    console.log('🔊 Nora spoke');
+  } catch (err) {
+    const errData = err.response?.data;
+    const errMsg = Buffer.isBuffer(errData) ? errData.toString('utf8') : errData;
+    console.error('Voice error:', errMsg || err.message);
+  }
+}
 
 // Backfill transcript files that have ended: null using last utterance timestamp
 function backfillTranscriptDates() {
