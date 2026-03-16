@@ -1167,33 +1167,34 @@ async function* parseSSEStream(stream) {
   }
 }
 
-async function speakSentence(botId, text, audioQueue, abortController) {
-  // Wait for previous sentence to finish before playing this one
-  if (audioQueue.length > 0) {
-    await audioQueue[audioQueue.length - 1].catch(() => {});
-  }
+async function speakSentence(botId, text, prevPlaybackDone, abortController) {
+  // Start TTS immediately — don't wait for previous sentence to finish playing.
+  // This pipelines TTS generation with audio playback of the previous sentence.
+  const ttsPromise = axios.post(
+    `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}/stream`,
+    {
+      text,
+      model_id: 'eleven_flash_v2_5',
+      voice_settings: { stability: 0.6, similarity_boost: 0.75, style: 0.15 },
+      optimize_streaming_latency: 3
+    },
+    {
+      headers: {
+        'xi-api-key': process.env.ELEVENLABS_API_KEY,
+        'Content-Type': 'application/json',
+        Accept: 'audio/mpeg'
+      },
+      responseType: 'arraybuffer',
+      signal: abortController.signal
+    }
+  );
+
+  // Wait for previous sentence to finish playing before sending ours to Recall
+  await prevPlaybackDone;
   if (abortController.signal.aborted) return;
 
   try {
-    const ttsRes = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}/stream`,
-      {
-        text,
-        model_id: 'eleven_flash_v2_5',
-        voice_settings: { stability: 0.6, similarity_boost: 0.75, style: 0.15 },
-        optimize_streaming_latency: 3
-      },
-      {
-        headers: {
-          'xi-api-key': process.env.ELEVENLABS_API_KEY,
-          'Content-Type': 'application/json',
-          Accept: 'audio/mpeg'
-        },
-        responseType: 'arraybuffer',
-        signal: abortController.signal
-      }
-    );
-
+    const ttsRes = await ttsPromise;
     if (abortController.signal.aborted) return;
 
     const b64Audio = Buffer.from(ttsRes.data).toString('base64');
@@ -1203,7 +1204,16 @@ async function speakSentence(botId, text, audioQueue, abortController) {
       { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
     );
 
-    console.log('🔊 Nora spoke sentence:', text.slice(0, 60));
+    // Wait for estimated playback duration so the next sentence doesn't overlap.
+    // ElevenLabs outputs ~128kbps MP3 → ~16KB per second of audio.
+    const estimatedMs = (ttsRes.data.byteLength / 16000) * 1000;
+    console.log(`🔊 Nora spoke sentence (~${Math.round(estimatedMs)}ms):`, text.slice(0, 60));
+
+    await new Promise(resolve => {
+      const timer = setTimeout(resolve, estimatedMs);
+      const onAbort = () => { clearTimeout(timer); resolve(); };
+      abortController.signal.addEventListener('abort', onAbort, { once: true });
+    });
   } catch (err) {
     if (err.name !== 'CanceledError') {
       const errData = err.response?.data;
@@ -1259,6 +1269,7 @@ async function handleNora(botId, triggerText, session, screenshot = null) {
 
     let fullReply = '';
     let sentenceBuffer = '';
+    let playbackDone = Promise.resolve();
     const audioQueue = [];
 
     for await (const chunk of parseSSEStream(response.data)) {
@@ -1275,7 +1286,8 @@ async function handleNora(botId, triggerText, session, screenshot = null) {
           sentenceBuffer = sentenceBuffer.slice(sentenceEnd.index + 2);
 
           if (sentence) {
-            const audioPromise = speakSentence(botId, sentence, audioQueue, abortController);
+            const audioPromise = speakSentence(botId, sentence, playbackDone, abortController);
+            playbackDone = audioPromise.catch(() => {});
             audioQueue.push(audioPromise);
           }
         }
@@ -1284,7 +1296,8 @@ async function handleNora(botId, triggerText, session, screenshot = null) {
 
     // Flush remaining text
     if (sentenceBuffer.trim() && !abortController.signal.aborted) {
-      const audioPromise = speakSentence(botId, sentenceBuffer.trim(), audioQueue, abortController);
+      const audioPromise = speakSentence(botId, sentenceBuffer.trim(), playbackDone, abortController);
+      playbackDone = audioPromise.catch(() => {});
       audioQueue.push(audioPromise);
     }
 
