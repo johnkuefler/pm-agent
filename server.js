@@ -1066,7 +1066,7 @@ async function evaluateInterjection(botId, session) {
 
   try {
     const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-haiku-4-5-20241022',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 200,
       system: `You are an evaluation function — not a conversational assistant. Your job is to decide if Nora, an AI PM assistant in a live meeting, should interject RIGHT NOW without being called upon.
 
