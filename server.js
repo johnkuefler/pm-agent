@@ -521,7 +521,8 @@ app.post('/webhook/transcript', async (req, res) => {
       await silenceBot(bot_id);
     }
     console.log('🎙️ Nora triggered');
-    await handleNora(bot_id, text, session);
+    const screenshot = await captureScreenshot(bot_id);
+    await handleNora(bot_id, text, session, screenshot);
     return;
   }
 
@@ -557,7 +558,8 @@ app.post('/webhook/chat', async (req, res) => {
 
   const query = text.replace(/@nora/i, '').trim();
   if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
-  await handleNora(bot_id, query, sessions[bot_id]);
+  const screenshot = await captureScreenshot(bot_id);
+  await handleNora(bot_id, query, sessions[bot_id], screenshot);
 });
 
 // Proactive mode toggle — enable/disable Nora interjecting without wake word
@@ -1113,7 +1115,7 @@ ${memoryBlock}`,
   }
 }
 
-async function handleNora(botId, triggerText, session) {
+async function handleNora(botId, triggerText, session, screenshot = null) {
   const abortController = new AbortController();
   session.abortController = abortController;
 
@@ -1121,16 +1123,31 @@ async function handleNora(botId, triggerText, session) {
     const meetingContext = session.buffer.slice(-10).join('\n');
     const userMessage = `[Recent meeting conversation]\n${meetingContext}\n\n[What triggered you]\n${triggerText}`;
 
+    // Always store text-only in history to avoid base64 bloat
     session.history.push({ role: 'user', content: userMessage });
+
+    // Build messages array — include screenshot in the API call only (not in stored history)
+    const messages = [...session.history];
+    if (screenshot) {
+      // Replace the last (just-pushed) text-only entry with a multi-part content block for the API call
+      messages[messages.length - 1] = {
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: screenshot } },
+          { type: 'text', text: userMessage }
+        ]
+      };
+      console.log('📸 Including screenshot in Claude request');
+    }
 
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
+        max_tokens: screenshot ? 300 : 200,
         temperature: 0.9,
         system: buildSystemPrompt('zoom', session.transcript),
-        messages: session.history
+        messages
       },
       {
         headers: {
@@ -1405,6 +1422,44 @@ If there is NO gap, return: { "needed": false }`,
     console.log(`🔬 Research task created: ${result.topic}${result.project ? ' [' + result.project + ']' : ''}`);
   } catch (err) {
     console.error('Research extraction error:', err.message);
+  }
+}
+
+// Screenshot capture via Recall.ai (auto-captured during recording)
+async function captureScreenshot(botId) {
+  try {
+    // Only grab screenshots from the last 2 minutes for relevance
+    const since = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const listRes = await axios.get(
+      `${RECALL_BASE}/bot/${botId}/screenshots/`,
+      {
+        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+        params: { recorded_at_after: since },
+        timeout: 5000
+      }
+    );
+    // Handle both bare array and paginated { results: [...] } response formats
+    const data = listRes.data;
+    const screenshots = Array.isArray(data) ? data : (data.results || []);
+    if (!screenshots.length) {
+      console.log('📸 No recent screenshots available');
+      return null;
+    }
+    // Get most recent screenshot by recorded_at
+    const latest = screenshots.sort((a, b) =>
+      new Date(b.recorded_at) - new Date(a.recorded_at)
+    )[0];
+    // Download the actual image from the presigned URL
+    const imgRes = await axios.get(latest.url, {
+      responseType: 'arraybuffer',
+      timeout: 5000
+    });
+    const b64 = Buffer.from(imgRes.data).toString('base64');
+    console.log('📸 Screenshot captured from', latest.recorded_at);
+    return b64;
+  } catch (err) {
+    console.log('📸 Screenshot skipped:', err.response?.status || err.message);
+    return null;
   }
 }
 
