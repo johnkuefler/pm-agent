@@ -1248,7 +1248,15 @@ async function extractTasks(context, trigger, reply, source = {}) {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 300,
         temperature: 0,
-        system: `You extract action items that Nora was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, create a task for...", "Nora, remind me to...". Do NOT extract general discussion, suggestions Nora made, or things other people said they would do. Return a JSON array of objects with: action (what to do), detail (specifics), assignee (who it's for), due (deadline if mentioned, otherwise ""). Return [] if no action items.`,
+        system: `You extract action items that Nora was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, remind me to...".
+
+CRITICAL RULES:
+- Extract exactly ONE task per request. Do not create multiple tasks from a single request.
+- Extract the UNDERLYING action, not a meta-action. If someone says "create a Teamwork task for Aaron to update staging", the task is "Update staging environment" assigned to Aaron — NOT "Create a Teamwork task for Aaron". The task creation itself is just the delivery mechanism.
+- IGNORE Nora's reply when extracting. Only look at what the user asked. Nora's reply is just confirmation — do not extract tasks from her words.
+- Do NOT extract general discussion, suggestions Nora made, or things other people said they would do.
+
+Return a JSON array of objects with: action (what to do), detail (specifics), assignee (who it's for), due (deadline if mentioned, otherwise ""). Return [] if no action items.`,
         messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nAction items for Nora (JSON array or []):` }]
       },
       {
@@ -1280,7 +1288,14 @@ async function extractTasks(context, trigger, reply, source = {}) {
             model: 'claude-haiku-4-5-20251001',
             max_tokens: 200,
             temperature: 0,
-            system: `You check for duplicate tasks. Given a list of existing tasks and a list of new candidate tasks, return a JSON array of the indices (numbers) of new tasks that are NOT duplicates. A task is a duplicate if an existing task already covers the same action for the same person/purpose, even if worded differently. Be strict — if it's essentially the same request, it's a duplicate. Return only the indices of truly new tasks as a JSON array of numbers, e.g. [0, 2]. If all are duplicates, return [].`,
+            system: `You check for duplicate tasks. Given a list of existing tasks and a list of new candidate tasks, return a JSON array of the indices (numbers) of new tasks that are NOT duplicates.
+
+A task is a duplicate if:
+- An existing task already covers the same action for the same person/purpose, even if worded differently
+- A new task is a meta-version of an existing task (e.g. "create a task for Aaron to update staging" is a duplicate of "update staging environment" assigned to Aaron)
+- Two new candidate tasks are duplicates of each other — only keep one
+
+Be strict — if it's essentially the same request, it's a duplicate. Return only the indices of truly new tasks as a JSON array of numbers, e.g. [0, 2]. If all are duplicates, return [].`,
             messages: [{ role: 'user', content: `Existing pending tasks:\n${existingList}\n\nNew candidate tasks:\n${newList}\n\nIndices of non-duplicate new tasks (JSON array):` }]
           },
           {
