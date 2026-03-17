@@ -489,10 +489,10 @@ app.post('/voice-agent/response', async (req, res) => {
   }
 });
 
-// Pending transcript utterances — keyed by bot_id:speaker, holds latest partial
-// Recall streams partial transcripts (word by word). We only save when a new
-// utterance starts (different speaker or new original_transcript_id) or after
-// a debounce timeout.
+// Pending transcript utterances — keyed by bot_id:speaker
+// Recall streams partial transcripts word by word, with each segment getting its
+// own original_transcript_id. We accumulate text per-speaker and only flush when
+// the speaker changes or after a debounce timeout (3s of silence).
 const pendingUtterances = {};
 
 // Transcript relay — voice agent webpage forwards Recall's transcript WS data here
@@ -501,7 +501,6 @@ app.post('/webhook/transcript-relay', (req, res) => {
   const { bot_id, data } = req.body;
   if (!bot_id || !data) return;
 
-  const is_final = data.transcript?.is_final ?? data.is_final;
   const words = data.transcript?.words;
   const text = words?.map(w => w.text).join(' ') || data.transcript?.text;
   const speaker = data.transcript?.participant?.name || data.transcript?.speaker || 'Participant';
@@ -509,45 +508,46 @@ app.post('/webhook/transcript-relay', (req, res) => {
   if (!text) return;
 
   if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
-  const session = sessions[bot_id];
 
   const key = `${bot_id}:${speaker}`;
+
+  // Flush any pending utterances from OTHER speakers for this bot (speaker changed)
+  for (const [k, p] of Object.entries(pendingUtterances)) {
+    if (k.startsWith(bot_id + ':') && k !== key) {
+      clearTimeout(p.timer);
+      flushPendingUtterance(p);
+      delete pendingUtterances[k];
+    }
+  }
+
   const pending = pendingUtterances[key];
 
-  // If this is a continuation of the same utterance, update the pending text
-  if (pending && (!transcriptId || pending.transcriptId === transcriptId)) {
-    pending.text = text;
-    pending.timestamp = new Date().toISOString();
-    // Reset the debounce timer
+  if (pending) {
     clearTimeout(pending.timer);
-  } else {
-    // New utterance or new speaker — flush the previous pending one
-    if (pending) {
-      clearTimeout(pending.timer);
-      flushPendingUtterance(pending);
+    if (transcriptId && pending.transcriptId === transcriptId) {
+      // Same segment — partial update, replace with latest (Recall accumulates words)
+      pending.text = text;
+    } else {
+      // New segment from same speaker — append
+      pending.text = pending.text + ' ' + text;
+      pending.transcriptId = transcriptId;
     }
+    pending.timestamp = new Date().toISOString();
+  } else {
     pendingUtterances[key] = {
       bot_id, speaker, text, transcriptId,
       timestamp: new Date().toISOString()
     };
   }
 
-  // If Recall marked it final, flush immediately
-  if (is_final) {
-    clearTimeout(pendingUtterances[key]?.timer);
-    flushPendingUtterance(pendingUtterances[key]);
-    delete pendingUtterances[key];
-    return;
-  }
-
-  // Otherwise debounce — flush after 2s of no updates
+  // Debounce — flush after 3s of no updates from this speaker
   pendingUtterances[key].timer = setTimeout(() => {
     const p = pendingUtterances[key];
     if (p) {
       flushPendingUtterance(p);
       delete pendingUtterances[key];
     }
-  }, 2000);
+  }, 3000);
 });
 
 function flushPendingUtterance(pending) {
