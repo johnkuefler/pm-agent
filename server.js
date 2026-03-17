@@ -471,35 +471,89 @@ app.post('/voice-agent/response', async (req, res) => {
   }
 });
 
+// Pending transcript utterances — keyed by bot_id:speaker, holds latest partial
+// Recall streams partial transcripts (word by word). We only save when a new
+// utterance starts (different speaker or new original_transcript_id) or after
+// a debounce timeout.
+const pendingUtterances = {};
+
 // Transcript relay — voice agent webpage forwards Recall's transcript WS data here
 app.post('/webhook/transcript-relay', (req, res) => {
   res.sendStatus(200);
   const { bot_id, data } = req.body;
   if (!bot_id || !data) return;
 
+  const is_final = data.transcript?.is_final ?? data.is_final;
   const words = data.transcript?.words;
   const text = words?.map(w => w.text).join(' ') || data.transcript?.text;
-  const speaker = data.transcript?.participant?.name || 'Participant';
+  const speaker = data.transcript?.participant?.name || data.transcript?.speaker || 'Participant';
+  const transcriptId = data.transcript?.original_transcript_id || data.original_transcript_id;
   if (!text) return;
-
-  console.log(`[${speaker}]: ${text}`);
 
   if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
   const session = sessions[bot_id];
 
+  const key = `${bot_id}:${speaker}`;
+  const pending = pendingUtterances[key];
+
+  // If this is a continuation of the same utterance, update the pending text
+  if (pending && (!transcriptId || pending.transcriptId === transcriptId)) {
+    pending.text = text;
+    pending.timestamp = new Date().toISOString();
+    // Reset the debounce timer
+    clearTimeout(pending.timer);
+  } else {
+    // New utterance or new speaker — flush the previous pending one
+    if (pending) {
+      clearTimeout(pending.timer);
+      flushPendingUtterance(pending);
+    }
+    pendingUtterances[key] = {
+      bot_id, speaker, text, transcriptId,
+      timestamp: new Date().toISOString()
+    };
+  }
+
+  // If Recall marked it final, flush immediately
+  if (is_final) {
+    clearTimeout(pendingUtterances[key]?.timer);
+    flushPendingUtterance(pendingUtterances[key]);
+    delete pendingUtterances[key];
+    return;
+  }
+
+  // Otherwise debounce — flush after 2s of no updates
+  pendingUtterances[key].timer = setTimeout(() => {
+    const p = pendingUtterances[key];
+    if (p) {
+      flushPendingUtterance(p);
+      delete pendingUtterances[key];
+    }
+  }, 2000);
+});
+
+function flushPendingUtterance(pending) {
+  if (!pending || !pending.text) return;
+  const { bot_id, speaker, text, timestamp } = pending;
+
+  console.log(`[${speaker}]: ${text}`);
+
+  const session = sessions[bot_id];
+  if (!session) return;
+
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
-  session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
+  session.transcript.push({ speaker, text, timestamp });
 
-  // Persist incrementally
+  // Persist
   try {
     const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
     fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
   } catch (err) {
     console.error('Transcript save error:', err.message);
   }
-});
+}
 
 // Session tokens for voice agent auth — maps token → botId
 const sessionTokens = {};
@@ -1402,6 +1456,7 @@ wss.on('connection', async (ws, req) => {
   // Build Nora's system prompt with memory and context
   const session = sessions[botId];
   const systemPrompt = buildSystemPrompt('zoom', session?.transcript);
+  console.log(`📋 System prompt length: ${systemPrompt.length} chars`);
 
   // Connect to OpenAI Realtime API
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -1450,7 +1505,7 @@ wss.on('connection', async (ws, req) => {
           silence_duration_ms: 700
         },
         temperature: 0.9,
-        max_response_output_tokens: 300
+        max_response_output_tokens: 1024
       }
     }));
 
