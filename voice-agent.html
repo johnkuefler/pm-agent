@@ -72,42 +72,40 @@
     const statusEl = document.getElementById('status');
     const avatarEl = document.getElementById('avatar');
 
-    let audioContext = null;
+    // Separate contexts: playback can be interrupted without killing capture
+    let playbackCtx = null;
     let ws = null;
     let isSpeaking = false;
-    let pendingAudioBuffers = [];
-    let currentSourceNode = null;
     let scheduledEndTime = 0;
 
     // ---- Audio Playback ----
-    // OpenAI Realtime sends audio as base64-encoded 16-bit PCM at 24kHz mono
-    function initAudioContext() {
-      if (audioContext) return;
-      audioContext = new AudioContext({ sampleRate: 24000 });
+    function getPlaybackCtx() {
+      if (!playbackCtx || playbackCtx.state === 'closed') {
+        playbackCtx = new AudioContext({ sampleRate: 24000 });
+      }
+      return playbackCtx;
     }
 
     function playAudioChunk(base64Audio) {
-      initAudioContext();
+      const ctx = getPlaybackCtx();
       if (!base64Audio) return;
 
       const raw = atob(base64Audio);
       const bytes = new Uint8Array(raw.length);
       for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
 
-      // Convert Int16 PCM to Float32
       const int16 = new Int16Array(bytes.buffer);
       const float32 = new Float32Array(int16.length);
       for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
 
-      const buffer = audioContext.createBuffer(1, float32.length, 24000);
+      const buffer = ctx.createBuffer(1, float32.length, 24000);
       buffer.getChannelData(0).set(float32);
 
-      const source = audioContext.createBufferSource();
+      const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(audioContext.destination);
+      source.connect(ctx.destination);
 
-      // Schedule seamlessly after previous chunk
-      const now = audioContext.currentTime;
+      const now = ctx.currentTime;
       const startTime = Math.max(now, scheduledEndTime);
       source.start(startTime);
       scheduledEndTime = startTime + buffer.duration;
@@ -119,83 +117,178 @@
       }
 
       source.onended = () => {
-        if (audioContext.currentTime >= scheduledEndTime - 0.05) {
+        if (ctx.currentTime >= scheduledEndTime - 0.05) {
           isSpeaking = false;
           avatarEl.classList.remove('speaking');
+          avatarEl.classList.add('listening');
         }
       };
     }
 
     function interruptAudio() {
+      // Stop all scheduled playback by closing + recreating the playback context
+      // This does NOT affect mic capture (separate pipeline)
       scheduledEndTime = 0;
       isSpeaking = false;
       avatarEl.classList.remove('speaking');
-      // Close and recreate audio context to stop all scheduled audio
-      if (audioContext) {
-        audioContext.close().catch(() => {});
-        audioContext = null;
+      avatarEl.classList.add('listening');
+      if (playbackCtx && playbackCtx.state !== 'closed') {
+        playbackCtx.close().catch(() => {});
+        playbackCtx = null;
       }
-      initAudioContext();
     }
 
     // ---- Microphone Capture ----
+    // Uses MediaStreamTrackProcessor (recommended by Recall docs) with ScriptProcessor fallback
     async function startMicCapture() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const track = stream.getAudioTracks()[0];
+        console.log('🎤 Got audio track:', track.label, 'settings:', JSON.stringify(track.getSettings()));
 
-        initAudioContext();
+        // Try MediaStreamTrackProcessor first (recommended by Recall)
+        if (typeof MediaStreamTrackProcessor !== 'undefined') {
+          console.log('🎤 Using MediaStreamTrackProcessor');
+          await captureWithTrackProcessor(track);
+        } else {
+          console.log('🎤 Falling back to ScriptProcessor');
+          await captureWithScriptProcessor(stream);
+        }
 
-        // Use AudioWorklet for efficient PCM capture at 24kHz
-        // Fall back to ScriptProcessor if AudioWorklet isn't available
-        const source = audioContext.createMediaStreamSource(stream);
-
-        // ScriptProcessor approach (widely supported in bot environment)
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
-        let resampleBuffer = [];
-
-        processor.onaudioprocess = (e) => {
-          if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-          const inputData = e.inputBuffer.getChannelData(0);
-
-          // Resample from audioContext.sampleRate to 24000
-          const ratio = 24000 / audioContext.sampleRate;
-          const outputLength = Math.floor(inputData.length * ratio);
-          const output = new Int16Array(outputLength);
-
-          for (let i = 0; i < outputLength; i++) {
-            const srcIdx = i / ratio;
-            const idx = Math.floor(srcIdx);
-            const frac = srcIdx - idx;
-            const s0 = inputData[idx] || 0;
-            const s1 = inputData[idx + 1] || 0;
-            const sample = s0 + frac * (s1 - s0);
-            output[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
-          }
-
-          // Send as base64 to relay
-          const bytes = new Uint8Array(output.buffer);
-          let binary = '';
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-          const b64 = btoa(binary);
-
-          ws.send(JSON.stringify({
-            type: 'input_audio_buffer.append',
-            audio: b64
-          }));
-        };
-
-        source.connect(processor);
-        processor.connect(audioContext.destination); // needed for ScriptProcessor to fire
-
-        console.log('🎤 Mic capture started');
         avatarEl.classList.add('listening');
+        statusEl.textContent = 'Connected — Listening';
+        statusEl.className = 'status connected';
       } catch (err) {
         console.error('Mic capture error:', err);
         statusEl.textContent = 'Microphone error: ' + err.message;
         statusEl.className = 'status error';
       }
+    }
+
+    async function captureWithTrackProcessor(track) {
+      const processor = new MediaStreamTrackProcessor({ track });
+      const reader = processor.readable.getReader();
+      const sourceSampleRate = track.getSettings().sampleRate || 48000;
+      console.log('🎤 Source sample rate:', sourceSampleRate);
+
+      let chunkCount = 0;
+
+      const processAudio = async () => {
+        while (true) {
+          const { value: audioData, done } = await reader.read();
+          if (done) break;
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            audioData.close();
+            continue;
+          }
+
+          try {
+            const numberOfFrames = audioData.numberOfFrames;
+            const format = audioData.format; // e.g. 'f32-planar', 'f32', 's16-planar', 's16'
+
+            let float32;
+            if (format === 'f32-planar' || format === 'f32') {
+              float32 = new Float32Array(numberOfFrames);
+              audioData.copyTo(float32, { planeIndex: 0 });
+            } else if (format === 's16-planar' || format === 's16') {
+              const int16 = new Int16Array(numberOfFrames);
+              audioData.copyTo(int16, { planeIndex: 0 });
+              float32 = new Float32Array(numberOfFrames);
+              for (let i = 0; i < numberOfFrames; i++) float32[i] = int16[i] / 32768;
+            } else {
+              // Fallback: try f32
+              float32 = new Float32Array(numberOfFrames);
+              audioData.copyTo(float32, { planeIndex: 0 });
+            }
+            audioData.close();
+
+            if (chunkCount === 0) {
+              console.log('🎤 First audio chunk — format:', format, 'frames:', numberOfFrames);
+            }
+
+            // Resample to 24000 Hz
+            const ratio = 24000 / sourceSampleRate;
+            const outputLength = Math.floor(numberOfFrames * ratio);
+            const pcm16 = new Int16Array(outputLength);
+
+            for (let i = 0; i < outputLength; i++) {
+              const srcIdx = i / ratio;
+              const idx = Math.floor(srcIdx);
+              const frac = srcIdx - idx;
+              const s0 = float32[idx] || 0;
+              const s1 = float32[Math.min(idx + 1, numberOfFrames - 1)] || 0;
+              const sample = s0 + frac * (s1 - s0);
+              pcm16[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
+            }
+
+            sendAudioToRelay(pcm16);
+
+            chunkCount++;
+            if (chunkCount % 100 === 0) {
+              console.log(`🎤 Sent ${chunkCount} audio chunks`);
+            }
+          } catch (err) {
+            console.error('Audio processing error:', err);
+          }
+        }
+      };
+
+      processAudio().catch(err => console.error('Track processor loop error:', err));
+    }
+
+    async function captureWithScriptProcessor(stream) {
+      // Create a dedicated capture context at native sample rate
+      const captureCtx = new AudioContext();
+      await captureCtx.resume();
+      console.log('🎤 Capture AudioContext sample rate:', captureCtx.sampleRate, 'state:', captureCtx.state);
+
+      const source = captureCtx.createMediaStreamSource(stream);
+      const processor = captureCtx.createScriptProcessor(4096, 1, 1);
+
+      let chunkCount = 0;
+
+      processor.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        const inputData = e.inputBuffer.getChannelData(0);
+
+        // Resample to 24000 Hz
+        const ratio = 24000 / captureCtx.sampleRate;
+        const outputLength = Math.floor(inputData.length * ratio);
+        const pcm16 = new Int16Array(outputLength);
+
+        for (let i = 0; i < outputLength; i++) {
+          const srcIdx = i / ratio;
+          const idx = Math.floor(srcIdx);
+          const frac = srcIdx - idx;
+          const s0 = inputData[idx] || 0;
+          const s1 = inputData[Math.min(idx + 1, inputData.length - 1)] || 0;
+          const sample = s0 + frac * (s1 - s0);
+          pcm16[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
+        }
+
+        sendAudioToRelay(pcm16);
+
+        chunkCount++;
+        if (chunkCount % 100 === 0) {
+          console.log(`🎤 Sent ${chunkCount} audio chunks`);
+        }
+      };
+
+      source.connect(processor);
+      processor.connect(captureCtx.destination);
+    }
+
+    function sendAudioToRelay(pcm16) {
+      const bytes = new Uint8Array(pcm16.buffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      const b64 = btoa(binary);
+
+      ws.send(JSON.stringify({
+        type: 'input_audio_buffer.append',
+        audio: b64
+      }));
     }
 
     // ---- Transcript relay to server (for persistence) ----
@@ -205,7 +298,6 @@
         transcriptWs.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data);
-            // Forward to our server for transcript persistence
             if (SERVER_URL && BOT_ID) {
               fetch(`${SERVER_URL}/webhook/transcript-relay`, {
                 method: 'POST',
@@ -237,7 +329,6 @@
 
       statusEl.textContent = 'Connecting to Nora...';
 
-      // Append token as query param for the relay
       let url = WS_URL;
       const relayParams = new URLSearchParams();
       if (SESSION_TOKEN) relayParams.set('token', SESSION_TOKEN);
@@ -248,7 +339,7 @@
 
       ws.onopen = async () => {
         console.log('✅ Relay WebSocket connected');
-        statusEl.textContent = 'Connected — Listening';
+        statusEl.textContent = 'Connected — Starting mic...';
         statusEl.className = 'status connected';
         await startMicCapture();
       };
@@ -269,27 +360,22 @@
             playAudioChunk(msg.delta);
           }
 
-          // Response finished
-          if (msg.type === 'response.audio.done') {
-            // Audio will finish playing from scheduled buffers
-          }
-
-          // Handle interruption
+          // Handle interruption — user started speaking
           if (msg.type === 'input_audio_buffer.speech_started') {
             interruptAudio();
-            avatarEl.classList.add('listening');
           }
 
           // Handle errors
           if (msg.type === 'error') {
             console.error('OpenAI error:', msg.error);
+            statusEl.textContent = 'Error: ' + (msg.error?.message || 'Unknown');
+            statusEl.className = 'status error';
           }
 
-          // Session created — good to go
+          // Session events
           if (msg.type === 'session.created') {
             console.log('🧠 OpenAI session created');
           }
-
           if (msg.type === 'session.updated') {
             console.log('🧠 OpenAI session updated');
           }
@@ -299,7 +385,6 @@
             const outputItems = msg.response.output || [];
             for (const item of outputItems) {
               if (item.type === 'message' && item.role === 'assistant') {
-                // If we have a transcript of what Nora said, send it for extraction
                 const transcript = item.content?.find(c => c.type === 'audio')?.transcript;
                 if (transcript && SERVER_URL) {
                   fetch(`${SERVER_URL}/voice-agent/response`, {

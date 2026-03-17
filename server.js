@@ -1462,14 +1462,28 @@ wss.on('connection', async (ws, req) => {
   });
 
   // Relay: OpenAI → Browser
+  let openaiEventCount = 0;
   openaiWs.on('message', (data) => {
     try {
+      const str = data.toString();
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(data.toString());
+        ws.send(str);
       }
 
-      // Also track response completions for logging
-      const msg = JSON.parse(data.toString());
+      const msg = JSON.parse(str);
+      openaiEventCount++;
+
+      // Log all non-audio events (audio.delta is too noisy)
+      if (msg.type !== 'response.audio.delta') {
+        console.log(`⬅️ OpenAI → Browser [${msg.type}]`);
+      }
+
+      // Log errors in detail
+      if (msg.type === 'error') {
+        console.error('❌ OpenAI error:', JSON.stringify(msg.error));
+      }
+
+      // Track response completions
       if (msg.type === 'response.done' && msg.response) {
         const outputs = msg.response.output || [];
         for (const item of outputs) {
@@ -1487,13 +1501,28 @@ wss.on('connection', async (ws, req) => {
   });
 
   // Relay: Browser → OpenAI
+  let browserAudioChunks = 0;
   ws.on('message', (data) => {
     try {
-      const msg = data.toString();
+      const str = data.toString();
+
+      // Log non-audio events, count audio chunks
+      try {
+        const parsed = JSON.parse(str);
+        if (parsed.type === 'input_audio_buffer.append') {
+          browserAudioChunks++;
+          if (browserAudioChunks === 1 || browserAudioChunks % 50 === 0) {
+            console.log(`➡️ Browser → OpenAI [input_audio_buffer.append] (chunk #${browserAudioChunks}, ~${parsed.audio?.length || 0} base64 chars)`);
+          }
+        } else {
+          console.log(`➡️ Browser → OpenAI [${parsed.type}]`);
+        }
+      } catch {}
+
       if (openaiWs.readyState === WebSocket.OPEN) {
-        openaiWs.send(msg);
+        openaiWs.send(str);
       } else {
-        messageQueue.push(msg);
+        messageQueue.push(str);
       }
     } catch (err) {
       console.error('Browser relay error:', err.message);
