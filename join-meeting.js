@@ -9,6 +9,8 @@ const WS_URL = 'wss://pm-agent-production-c49e.up.railway.app';
 async function sendNoraToMeeting(zoomUrl) {
   const sessionToken = crypto.randomBytes(32).toString('hex');
 
+  const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}`;
+
   const res = await axios.post(`${RECALL_BASE}/bot/`, {
     meeting_url: zoomUrl,
     bot_name: "Nora",
@@ -16,7 +18,7 @@ async function sendNoraToMeeting(zoomUrl) {
       camera: {
         kind: "webpage",
         config: {
-          url: `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&bot_id=PLACEHOLDER`
+          url: voiceAgentUrl
         }
       }
     },
@@ -41,22 +43,6 @@ async function sendNoraToMeeting(zoomUrl) {
 
   // Register bot ID and session token with the server
   await axios.post(`${SERVER_URL}/register-bot`, { bot_id: botId, session_token: sessionToken }).catch(() => {});
-
-  // Update output_media URL with real bot_id
-  try {
-    await axios.post(`${RECALL_BASE}/bot/${botId}/output_media/`, {
-      camera: {
-        kind: "webpage",
-        config: {
-          url: `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&bot_id=${botId}`
-        }
-      }
-    }, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
-    });
-  } catch (err) {
-    console.error('Output media update error (non-fatal):', err.response?.data || err.message);
-  }
 
   return botId;
 }

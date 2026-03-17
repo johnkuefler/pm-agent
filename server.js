@@ -436,11 +436,12 @@ app.get('/voice-agent', (req, res) => {
 
 // Voice agent response callback — webpage POSTs Nora's transcribed responses here for extraction
 app.post('/voice-agent/response', async (req, res) => {
-  const { bot_id, text, token } = req.body;
+  const { text, token } = req.body;
   if (!text) return res.status(400).json({ error: 'text is required' });
 
-  // Validate session token
-  if (!bot_id || !sessionTokens[bot_id] || sessionTokens[bot_id] !== token) {
+  // Validate session token and look up bot_id
+  const bot_id = sessionTokens[token];
+  if (!bot_id) {
     return res.status(401).json({ error: 'invalid session' });
   }
 
@@ -500,7 +501,7 @@ app.post('/webhook/transcript-relay', (req, res) => {
   }
 });
 
-// Session tokens for voice agent auth
+// Session tokens for voice agent auth — maps token → botId
 const sessionTokens = {};
 
 // Join meeting via API — uses output_media for real-time voice agent
@@ -515,6 +516,8 @@ app.post('/join', async (req, res) => {
     // Generate a session token for this bot
     const sessionToken = crypto.randomBytes(32).toString('hex');
 
+    const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}`;
+
     const botRes = await axios.post(`${RECALL_BASE}/bot/`, {
       meeting_url,
       bot_name: 'Nora',
@@ -522,7 +525,7 @@ app.post('/join', async (req, res) => {
         camera: {
           kind: 'webpage',
           config: {
-            url: `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&bot_id=BOT_ID_PLACEHOLDER`
+            url: voiceAgentUrl
           }
         }
       },
@@ -544,24 +547,7 @@ app.post('/join', async (req, res) => {
 
     const botId = botRes.data.id;
     activeBotId = botId;
-    sessionTokens[botId] = sessionToken;
-
-    // Now update the bot's output_media URL with the real bot_id
-    // (Recall returns bot_id after creation, but we needed it in the URL)
-    try {
-      await axios.post(`${RECALL_BASE}/bot/${botId}/output_media/`, {
-        camera: {
-          kind: 'webpage',
-          config: {
-            url: `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&bot_id=${botId}`
-          }
-        }
-      }, {
-        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
-      });
-    } catch (updateErr) {
-      console.error('Output media update error (non-fatal):', updateErr.response?.data || updateErr.message);
-    }
+    sessionTokens[sessionToken] = botId;
 
     if (!sessions[botId]) sessions[botId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
     console.log('✅ Nora joined via output_media. Bot ID:', botId);
@@ -580,7 +566,7 @@ let activeBotId = null;
 app.post('/register-bot', (req, res) => {
   activeBotId = req.body.bot_id;
   if (req.body.session_token && req.body.bot_id) {
-    sessionTokens[req.body.bot_id] = req.body.session_token;
+    sessionTokens[req.body.session_token] = req.body.bot_id;
   }
   console.log('🤖 Registered bot:', activeBotId);
   res.json({ ok: true });
@@ -1398,17 +1384,20 @@ server.on('upgrade', (request, socket, head) => {
 
 wss.on('connection', async (ws, req) => {
   const url = new URL(req.url, `https://${req.headers.host}`);
-  const botId = url.searchParams.get('bot_id');
   const token = url.searchParams.get('token');
 
-  // Validate session token
-  if (!botId || !sessionTokens[botId] || sessionTokens[botId] !== token) {
-    console.error('❌ WebSocket auth failed for bot:', botId);
+  // Validate session token and look up bot_id
+  const botId = sessionTokens[token];
+  if (!botId) {
+    console.error('❌ WebSocket auth failed — invalid token');
     ws.close(4001, 'Unauthorized');
     return;
   }
 
   console.log(`🔌 Voice agent WebSocket connected for bot: ${botId}`);
+
+  // Send bot_id to the webpage so it can use it for transcript relay
+  ws.send(JSON.stringify({ type: 'nora.session', bot_id: botId }));
 
   // Build Nora's system prompt with memory and context
   const session = sessions[botId];

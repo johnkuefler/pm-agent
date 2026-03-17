@@ -64,8 +64,10 @@
     const params = new URLSearchParams(window.location.search);
     const WS_URL = params.get('wss');
     const SERVER_URL = params.get('server');
-    const BOT_ID = params.get('bot_id');
     const SESSION_TOKEN = params.get('token');
+
+    // bot_id is received from the relay after connection (avoids race condition)
+    let BOT_ID = null;
 
     const statusEl = document.getElementById('status');
     const avatarEl = document.getElementById('avatar');
@@ -235,10 +237,9 @@
 
       statusEl.textContent = 'Connecting to Nora...';
 
-      // Append bot_id and token as query params for the relay
+      // Append token as query param for the relay
       let url = WS_URL;
       const relayParams = new URLSearchParams();
-      if (BOT_ID) relayParams.set('bot_id', BOT_ID);
       if (SESSION_TOKEN) relayParams.set('token', SESSION_TOKEN);
       const qs = relayParams.toString();
       if (qs) url += (url.includes('?') ? '&' : '?') + qs;
@@ -255,6 +256,13 @@
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
+
+          // Receive bot_id from relay after auth
+          if (msg.type === 'nora.session') {
+            BOT_ID = msg.bot_id;
+            console.log('🤖 Bot ID received:', BOT_ID);
+            return;
+          }
 
           // Handle audio delta from OpenAI Realtime
           if (msg.type === 'response.audio.delta') {
@@ -298,7 +306,6 @@
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                      bot_id: BOT_ID,
                       text: transcript,
                       token: SESSION_TOKEN
                     })
