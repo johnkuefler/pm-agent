@@ -1414,7 +1414,7 @@ wss.on('connection', async (ws, req) => {
   let openaiWs;
   try {
     openaiWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview',
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
       {
         headers: {
           'Authorization': `Bearer ${OPENAI_API_KEY}`,
@@ -1476,6 +1476,17 @@ wss.on('connection', async (ws, req) => {
       // Log all non-audio events (audio.delta is too noisy)
       if (msg.type !== 'response.audio.delta') {
         console.log(`⬅️ OpenAI → Browser [${msg.type}]`);
+      }
+
+      // Log session.created and session.updated in detail to verify modalities
+      if (msg.type === 'session.created' || msg.type === 'session.updated') {
+        console.log(`🧠 Session config:`, JSON.stringify({
+          modalities: msg.session?.modalities,
+          voice: msg.session?.voice,
+          model: msg.session?.model,
+          input_audio_format: msg.session?.input_audio_format,
+          output_audio_format: msg.session?.output_audio_format
+        }));
       }
 
       // Log errors in detail
