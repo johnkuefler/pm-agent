@@ -222,11 +222,6 @@
             }
 
             sendAudioToRelay(pcm16);
-
-            chunkCount++;
-            if (chunkCount % 100 === 0) {
-              console.log(`🎤 Sent ${chunkCount} audio chunks`);
-            }
           } catch (err) {
             console.error('Audio processing error:', err);
           }
@@ -268,19 +263,46 @@
         }
 
         sendAudioToRelay(pcm16);
-
-        chunkCount++;
-        if (chunkCount % 100 === 0) {
-          console.log(`🎤 Sent ${chunkCount} audio chunks`);
-        }
       };
 
       source.connect(processor);
       processor.connect(captureCtx.destination);
     }
 
+    // ---- Audio Send Buffer ----
+    // Buffer small PCM16 chunks and send in batches of ~4800 samples (200ms at 24kHz)
+    const SEND_BUFFER_SIZE = 4800; // samples (200ms at 24kHz)
+    let sendBuffer = new Int16Array(SEND_BUFFER_SIZE);
+    let sendBufferOffset = 0;
+    let totalSentChunks = 0;
+
     function sendAudioToRelay(pcm16) {
-      const bytes = new Uint8Array(pcm16.buffer);
+      let srcOffset = 0;
+      while (srcOffset < pcm16.length) {
+        const remaining = SEND_BUFFER_SIZE - sendBufferOffset;
+        const toCopy = Math.min(remaining, pcm16.length - srcOffset);
+        sendBuffer.set(pcm16.subarray(srcOffset, srcOffset + toCopy), sendBufferOffset);
+        sendBufferOffset += toCopy;
+        srcOffset += toCopy;
+
+        if (sendBufferOffset >= SEND_BUFFER_SIZE) {
+          flushSendBuffer();
+        }
+      }
+    }
+
+    // Flush whatever is in the buffer — called on a timer to avoid stale audio
+    function flushSendBuffer() {
+      if (sendBufferOffset === 0) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        sendBufferOffset = 0;
+        return;
+      }
+
+      const toSend = sendBuffer.slice(0, sendBufferOffset);
+      sendBufferOffset = 0;
+
+      const bytes = new Uint8Array(toSend.buffer);
       let binary = '';
       for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
       const b64 = btoa(binary);
@@ -289,7 +311,15 @@
         type: 'input_audio_buffer.append',
         audio: b64
       }));
+
+      totalSentChunks++;
+      if (totalSentChunks === 1 || totalSentChunks % 50 === 0) {
+        console.log(`🎤 Sent chunk #${totalSentChunks}, ~${b64.length} base64 chars (${toSend.length} samples)`);
+      }
     }
+
+    // Flush timer — ensures partial buffers get sent within 200ms
+    setInterval(flushSendBuffer, 200);
 
     // ---- Transcript relay to server (for persistence) ----
     function connectTranscriptWs() {
