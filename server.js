@@ -155,6 +155,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
     base = `${base}\n\n${memoryBlock}`;
   }
 
+  // Inject recent tasks so Nora knows what she's been asked to do
+  const tasks = loadTasks();
+  if (tasks.length > 0) {
+    const recentTasks = tasks.slice(-5);
+    const tasksBlock = recentTasks.map(t => `- [${t.status}] ${t.action}${t.detail ? ': ' + t.detail : ''}${t.assignee ? ' (for ' + t.assignee + ')' : ''}`).join('\n');
+    base = `${base}\n\n[Your recent tasks]\n${tasksBlock}`;
+  }
+
   // Inject live transcript context if available
   if (transcript && transcript.length > 0) {
     const recent = transcript.slice(-30);
