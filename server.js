@@ -4,7 +4,10 @@ const axios = require('axios');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const { WebSocketServer, WebSocket } = require('ws');
 const app = express();
+const server = http.createServer(app);
 
 // Capture raw body for Slack signature verification
 app.use(express.json({
@@ -114,7 +117,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   // Swap channel-specific framing
   if (channel === 'slack') {
     base = base.replace(
-      'You are in a live Zoom meeting. Keep responses short — 2-3 sentences max. You are speaking out loud so no markdown, no bullet points, no lists. Natural spoken language only.',
+      'You are in a live meeting. Keep responses short — 2-3 sentences max. You are speaking out loud so no markdown, no bullet points, no lists. Natural spoken language only. You can be interrupted at any time — that\'s fine, conversations are like that.',
       'You are responding in Slack. Keep responses concise but you can use markdown formatting, bullet points, and code blocks when helpful. A few sentences is ideal — don\'t write essays.'
     );
   }
@@ -195,7 +198,7 @@ app.get('/cowork-instructions', (req, res) => {
 # Base URL: ${baseUrl}
 
 ## What is Nora?
-Nora is a voice-enabled AI project management assistant for LimeLight Marketing. She joins Zoom meetings via Recall.ai, listens to conversations, responds when triggered, and speaks back using ElevenLabs TTS. She also responds to Slack messages. She has persistent memory, a task queue, and saves full meeting transcripts. External agents (like Cowork scheduled tasks) process her task queue and analyze transcripts.
+Nora is a voice-enabled AI project management assistant for LimeLight Marketing. She joins meetings via Recall.ai's Output Media feature, using OpenAI's Realtime API for real-time voice conversations. She also responds to Slack messages. She has persistent memory, a task queue, and saves full meeting transcripts. External agents (like Cowork scheduled tasks) process her task queue and analyze transcripts.
 
 ## Base URL
 ${baseUrl}
@@ -426,38 +429,143 @@ app.get('/prompt', (req, res) => {
   res.type('text/plain').send(loadPrompt());
 });
 
-// Join meeting via API
+// Voice agent webpage — served to Recall.ai bot's output_media browser
+app.get('/voice-agent', (req, res) => {
+  res.sendFile(path.join(__dirname, 'voice-agent.html'));
+});
+
+// Voice agent response callback — webpage POSTs Nora's transcribed responses here for extraction
+app.post('/voice-agent/response', async (req, res) => {
+  const { bot_id, text, token } = req.body;
+  if (!text) return res.status(400).json({ error: 'text is required' });
+
+  // Validate session token
+  if (!bot_id || !sessionTokens[bot_id] || sessionTokens[bot_id] !== token) {
+    return res.status(401).json({ error: 'invalid session' });
+  }
+
+  res.json({ ok: true });
+
+  // Add Nora's response to transcript
+  const session = sessions[bot_id];
+  if (session) {
+    session.transcript.push({ speaker: 'Nora', text, timestamp: new Date().toISOString() });
+    try {
+      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+      fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
+    } catch (err) {
+      console.error('Transcript save error:', err.message);
+    }
+
+    // Build context from recent buffer
+    const meetingContext = session.buffer.slice(-10).join('\n');
+    const triggerText = session.buffer.slice(-3).join('\n'); // recent conversation that triggered the response
+
+    // Run extraction pipelines (memory, tasks, research)
+    if (!isAskingClarification(text)) {
+      extractMemory(meetingContext, triggerText, text, bot_id).catch(() => {});
+      extractTasks(meetingContext, triggerText, text, { channel: 'zoom', bot_id }).catch(() => {});
+      extractResearchNeeds(meetingContext, triggerText, text, { channel: 'zoom', bot_id }).catch(() => {});
+    }
+  }
+});
+
+// Transcript relay — voice agent webpage forwards Recall's transcript WS data here
+app.post('/webhook/transcript-relay', (req, res) => {
+  res.sendStatus(200);
+  const { bot_id, data } = req.body;
+  if (!bot_id || !data) return;
+
+  const words = data.transcript?.words;
+  const text = words?.map(w => w.text).join(' ') || data.transcript?.text;
+  const speaker = data.transcript?.participant?.name || 'Participant';
+  if (!text) return;
+
+  console.log(`[${speaker}]: ${text}`);
+
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
+  const session = sessions[bot_id];
+
+  session.buffer.push(`${speaker}: ${text}`);
+  if (session.buffer.length > 20) session.buffer.shift();
+
+  session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
+
+  // Persist incrementally
+  try {
+    const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
+  } catch (err) {
+    console.error('Transcript save error:', err.message);
+  }
+});
+
+// Session tokens for voice agent auth
+const sessionTokens = {};
+
+// Join meeting via API — uses output_media for real-time voice agent
 app.post('/join', async (req, res) => {
   try {
     const { meeting_url } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
 
     const SERVER_URL = `https://${req.get('host')}`;
+    const WS_URL = `wss://${req.get('host')}`;
+
+    // Generate a session token for this bot
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+
     const botRes = await axios.post(`${RECALL_BASE}/bot/`, {
       meeting_url,
       bot_name: 'Nora',
-      recording_config: {
-        transcript: { provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } } },
-        realtime_endpoints: [{
-          type: 'webhook',
-          url: `${SERVER_URL}/webhook/transcript`,
-          events: ['transcript.data']
-        }]
-      },
-      automatic_audio_output: {
-        in_call_recording: {
-          data: { kind: 'mp3', b64_data: 'SUQzAwAAAAAAJlRQRTEAAAAcAAAAU291bmRKYXkuY29tIFNvdW5kIEVmZmVjdHMA' }
+      output_media: {
+        camera: {
+          kind: 'webpage',
+          config: {
+            url: `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&bot_id=BOT_ID_PLACEHOLDER`
+          }
         }
+      },
+      recording_config: {
+        transcript: {
+          provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
+        },
+        include_bot_in_recording: { audio: true }
+      },
+      variant: {
+        zoom: 'web_4_core',
+        google_meet: 'web_4_core',
+        microsoft_teams: 'web_4_core'
       },
       webhook_url: `${SERVER_URL}/webhook/status`
     }, {
       headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
     });
 
-    activeBotId = botRes.data.id;
-    if (!sessions[activeBotId]) sessions[activeBotId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
-    console.log('✅ Nora joined via web. Bot ID:', activeBotId);
-    res.json({ bot_id: botRes.data.id });
+    const botId = botRes.data.id;
+    activeBotId = botId;
+    sessionTokens[botId] = sessionToken;
+
+    // Now update the bot's output_media URL with the real bot_id
+    // (Recall returns bot_id after creation, but we needed it in the URL)
+    try {
+      await axios.post(`${RECALL_BASE}/bot/${botId}/output_media/`, {
+        camera: {
+          kind: 'webpage',
+          config: {
+            url: `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&bot_id=${botId}`
+          }
+        }
+      }, {
+        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      });
+    } catch (updateErr) {
+      console.error('Output media update error (non-fatal):', updateErr.response?.data || updateErr.message);
+    }
+
+    if (!sessions[botId]) sessions[botId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
+    console.log('✅ Nora joined via output_media. Bot ID:', botId);
+    res.json({ bot_id: botId });
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
@@ -471,15 +579,16 @@ let activeBotId = null;
 // Register bot ID when Nora joins a meeting
 app.post('/register-bot', (req, res) => {
   activeBotId = req.body.bot_id;
+  if (req.body.session_token && req.body.bot_id) {
+    sessionTokens[req.body.bot_id] = req.body.session_token;
+  }
   console.log('🤖 Registered bot:', activeBotId);
   res.json({ ok: true });
 });
 
-// Recall.ai sends transcript chunks here
+// Recall.ai sends transcript chunks here (kept for backward compatibility / webhook-based bots)
 app.post('/webhook/transcript', async (req, res) => {
   res.sendStatus(200);
-
-  console.log('📨 Webhook received:', JSON.stringify(req.body).slice(0, 800));
 
   const event = req.body;
   if (event.event !== 'transcript.data') return;
@@ -490,8 +599,6 @@ app.post('/webhook/transcript', async (req, res) => {
   const speaker = event.data?.data?.participant?.name || 'Participant';
 
   if (!text) return;
-  console.log(`[bot_id: ${bot_id}] [${speaker}]: ${text}`);
-
   console.log(`[${speaker}]: ${text}`);
 
   if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
@@ -502,70 +609,23 @@ app.post('/webhook/transcript', async (req, res) => {
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
 
-  // Persist transcript incrementally so nothing is lost if the meeting ends abruptly
+  // Persist transcript incrementally
   try {
     const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-    const transcriptData = { bot_id, ended: null, transcript: session.transcript };
-    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify(transcriptData, null, 2));
+    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
   } catch (err) {
-    console.error('Transcript incremental save error:', err.message);
-  }
-
-  const lower = text.toLowerCase().replace(/[,\.!\?]/g, '');
-
-  // Stop/interrupt phrases — cut Nora off mid-speech
-  if (lower.includes('stop nora') || lower.includes('nora stop') || lower.includes('hold on') || lower.includes('never mind') || lower.includes('nevermind')) {
-    console.log('🛑 Stop phrase detected');
-    if (session.abortController) session.abortController.abort();
-    await silenceBot(bot_id);
-    return;
-  }
-
-  // Wake word trigger — always respond
-  if (lower.includes('hey nora') || lower.includes('nora ')) {
-    if (session.abortController) {
-      console.log('⏭️ Aborting previous response');
-      session.abortController.abort();
-      await silenceBot(bot_id);
-    }
-    console.log('🎙️ Nora triggered');
-    await handleNora(bot_id, text, session);
-    return;
-  }
-
-  // One-on-one mode — respond to everything without wake word
-  if (session.oneOnOne) {
-    if (session.abortController) {
-      session.abortController.abort();
-      await silenceBot(bot_id);
-    }
-    console.log('🎙️ Nora triggered (one-on-one mode)');
-    await handleNora(bot_id, text, session);
-    return;
-  }
-
-  // Proactive interjection — evaluate every 10 utterances if enabled
-  if (session.proactive) {
-    session.utterancesSinceEval++;
-    if (session.utterancesSinceEval >= 10) {
-      session.utterancesSinceEval = 0;
-      evaluateInterjection(bot_id, session).catch(err => {
-        console.error('Proactive eval error:', err.message);
-      });
-    }
+    console.error('Transcript save error:', err.message);
   }
 });
 
-// Zoom chat trigger — type "@nora your question" in chat
+// Zoom chat trigger — type "@nora your question" in chat (kept for backward compatibility)
 app.post('/webhook/chat', async (req, res) => {
   res.sendStatus(200);
   const { bot_id, data } = req.body;
   const text = data?.chat_message?.text || '';
   if (!text.toLowerCase().startsWith('@nora')) return;
-
-  const query = text.replace(/@nora/i, '').trim();
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
-  await handleNora(bot_id, query, sessions[bot_id]);
+  // Chat triggers are informational only with output_media — Nora handles voice directly
+  console.log(`💬 Chat message received: ${text}`);
 });
 
 // Proactive mode toggle — enable/disable Nora interjecting without wake word
@@ -1063,135 +1123,9 @@ function isAskingClarification(reply) {
   return hasQuestion && matchesPattern;
 }
 
-// Proactive interjection — evaluate whether Nora should speak up without being called
-async function evaluateInterjection(botId, session) {
-  // Don't evaluate if Nora is already speaking
-  if (session.abortController) return;
-
-  const recentBuffer = session.buffer.slice(-15).join('\n');
-  const memory = loadMemory();
-  const memoryBlock = memory.length > 0 ? memory.map(m => `- ${m.fact}`).join('\n') : 'No memories stored.';
-
-  try {
-    const response = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 200,
-      system: `You are an evaluation function — not a conversational assistant. Your job is to decide if Nora, an AI PM assistant in a live meeting, should interject RIGHT NOW without being called upon.
-
-You must respond with EXACTLY one of:
-INTERJECT: <a short natural sentence Nora should say>
-NO
-
-Rules — you must say NO unless ALL of these are true:
-1. Someone stated something factually wrong that Nora can correct using her memory below
-2. OR a direct question was asked and went unanswered for multiple exchanges and Nora has the specific answer in her memory
-3. OR a deadline, commitment, or conflict was mentioned that contradicts something in Nora's memory
-4. There is a clear pause or opening in conversation (not mid-discussion)
-5. Nora's interjection would be genuinely valuable — not just "helpful"
-
-Say NO if:
-- The conversation is flowing normally and people are handling things fine
-- Someone might answer the question themselves in the next few exchanges
-- Nora would just be agreeing, summarizing, or adding minor context
-- The topic is social, off-topic, or not related to work Nora tracks
-- You're even slightly unsure whether Nora should speak
-
-Nora's memory:
-${memoryBlock}`,
-      messages: [{ role: 'user', content: `Here are the last 15 utterances from the meeting:\n\n${recentBuffer}\n\nShould Nora interject?` }]
-    }, {
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Type': 'application/json'
-      }
-    });
-
-    const result = response.data.content[0]?.text?.trim() || 'NO';
-    console.log(`🧠 Proactive eval: ${result}`);
-
-    if (result.startsWith('INTERJECT:')) {
-      const interjection = result.replace('INTERJECT:', '').trim();
-      console.log(`💡 Nora interjecting: ${interjection}`);
-      // Use handleNora so it goes through the full pipeline (history, transcript, TTS)
-      await handleNora(botId, `[Nora is proactively interjecting because she has relevant information] ${interjection}`, session);
-    }
-  } catch (err) {
-    console.error('Proactive eval error:', err.message);
-  }
-}
-
-async function handleNora(botId, triggerText, session) {
-  const abortController = new AbortController();
-  session.abortController = abortController;
-
-  try {
-    const meetingContext = session.buffer.slice(-10).join('\n');
-    const userMessage = `[Recent meeting conversation]\n${meetingContext}\n\n[What triggered you]\n${triggerText}`;
-
-    session.history.push({ role: 'user', content: userMessage });
-
-    const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        model: 'claude-haiku-4-5-20251001',
-        max_tokens: 200,
-        temperature: 0.9,
-        system: buildSystemPrompt('zoom', session.transcript),
-        messages: session.history
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        },
-        signal: abortController.signal
-      }
-    );
-
-    if (abortController.signal.aborted) return;
-
-    const fullReply = response.data.content
-      .filter(b => b.type === 'text')
-      .map(b => b.text).join(' ');
-
-    console.log('🤖 Nora:', fullReply);
-    session.history.push({ role: 'assistant', content: fullReply });
-    if (session.history.length > 20) session.history.splice(0, 2);
-
-    // Add Nora's reply to the transcript
-    session.transcript.push({ speaker: 'Nora', text: fullReply, timestamp: new Date().toISOString() });
-    try {
-      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
-    } catch (err) {
-      console.error('Transcript incremental save error:', err.message);
-    }
-
-    if (abortController.signal.aborted) return;
-    await speakInMeeting(botId, fullReply);
-
-    // Only extract if Nora gave a definitive response, not clarifying questions
-    if (!isAskingClarification(fullReply)) {
-      extractMemory(meetingContext, triggerText, fullReply, botId).catch(() => {});
-      extractTasks(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
-      extractResearchNeeds(meetingContext, triggerText, fullReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
-    } else {
-      console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
-    }
-  } catch (err) {
-    if (err.name === 'CanceledError' || abortController.signal.aborted) {
-      console.log('🚫 Response aborted');
-      return;
-    }
-    console.error('Claude error:', err.response?.data || err.message);
-  } finally {
-    if (session.abortController === abortController) {
-      session.abortController = null;
-    }
-  }
-}
+// Note: Proactive interjection and handleNora are no longer needed for output_media.
+// OpenAI Realtime handles the voice conversation directly in the bot's browser.
+// The extraction pipelines are triggered via /voice-agent/response when OpenAI finishes a response.
 
 async function extractMemory(context, trigger, reply, sourceBotId) {
   try {
@@ -1416,56 +1350,8 @@ If there is NO gap, return: { "needed": false }`,
   }
 }
 
-// Tiny silent MP3 — cuts off any playing audio
-async function silenceBot(botId) {
-  try {
-    await axios.post(
-      `${RECALL_BASE}/bot/${botId}/output_audio/`,
-      { kind: 'mp3', b64_data: 'SUQzAwAAAAAAJlRQRTEAAAAcAAAAU291bmRKYXkuY29tIFNvdW5kIEVmZmVjdHMA' },
-      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
-    );
-    console.log('🔇 Nora silenced');
-  } catch (err) {
-    console.error('Silence error:', err.message);
-  }
-}
-
-async function speakInMeeting(botId, text) {
-  try {
-    // ElevenLabs TTS
-    const ttsRes = await axios.post(
-      `https://api.elevenlabs.io/v1/text-to-speech/${process.env.ELEVENLABS_VOICE_ID}`,
-      {
-        text,
-        model_id: 'eleven_turbo_v2',
-        voice_settings: { stability: 0.6, similarity_boost: 0.75, style: 0.15, use_speaker_boost: true }
-      },
-      {
-        headers: {
-          'xi-api-key': process.env.ELEVENLABS_API_KEY,
-          'Content-Type': 'application/json',
-          Accept: 'audio/mpeg'
-        },
-        responseType: 'arraybuffer'
-      }
-    );
-
-    const b64Audio = Buffer.from(ttsRes.data).toString('base64');
-
-    // Push audio into Zoom via Recall.ai
-    await axios.post(
-      `${RECALL_BASE}/bot/${botId}/output_audio/`,
-      { kind: 'mp3', b64_data: b64Audio },
-      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
-    );
-
-    console.log('🔊 Nora spoke');
-  } catch (err) {
-    const errData = err.response?.data;
-    const errMsg = Buffer.isBuffer(errData) ? errData.toString('utf8') : errData;
-    console.error('Voice error:', errMsg || err.message);
-  }
-}
+// Note: silenceBot() and speakInMeeting() removed — output_media handles audio directly
+// via the voice agent webpage and OpenAI Realtime API
 
 // Backfill transcript files that have ended: null using last utterance timestamp
 function backfillTranscriptDates() {
@@ -1495,7 +1381,173 @@ function backfillTranscriptDates() {
   } catch {}
 }
 
-app.listen(process.env.PORT, () => {
+// ---- WebSocket relay: proxies between voice agent webpage and OpenAI Realtime API ----
+const wss = new WebSocketServer({ noServer: true });
+
+server.on('upgrade', (request, socket, head) => {
+  const url = new URL(request.url, `https://${request.headers.host}`);
+
+  if (url.pathname === '/ws/openai-relay') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+wss.on('connection', async (ws, req) => {
+  const url = new URL(req.url, `https://${req.headers.host}`);
+  const botId = url.searchParams.get('bot_id');
+  const token = url.searchParams.get('token');
+
+  // Validate session token
+  if (!botId || !sessionTokens[botId] || sessionTokens[botId] !== token) {
+    console.error('❌ WebSocket auth failed for bot:', botId);
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+
+  console.log(`🔌 Voice agent WebSocket connected for bot: ${botId}`);
+
+  // Build Nora's system prompt with memory and context
+  const session = sessions[botId];
+  const systemPrompt = buildSystemPrompt('zoom', session?.transcript);
+
+  // Connect to OpenAI Realtime API
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  if (!OPENAI_API_KEY) {
+    console.error('❌ OPENAI_API_KEY not set');
+    ws.close(4002, 'Server misconfigured');
+    return;
+  }
+
+  let openaiWs;
+  try {
+    openaiWs = new WebSocket(
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview',
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENAI_API_KEY}`,
+          'OpenAI-Beta': 'realtime=v1'
+        }
+      }
+    );
+  } catch (err) {
+    console.error('OpenAI WebSocket creation error:', err.message);
+    ws.close(4003, 'Failed to connect to OpenAI');
+    return;
+  }
+
+  const messageQueue = [];
+
+  openaiWs.on('open', () => {
+    console.log('🧠 Connected to OpenAI Realtime API');
+
+    // Configure the session with Nora's personality and settings
+    openaiWs.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        modalities: ['text', 'audio'],
+        instructions: systemPrompt,
+        voice: 'sage',
+        input_audio_format: 'pcm16',
+        output_audio_format: 'pcm16',
+        input_audio_transcription: { model: 'whisper-1' },
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 700
+        },
+        temperature: 0.9,
+        max_response_output_tokens: 300
+      }
+    }));
+
+    // Flush queued messages
+    while (messageQueue.length) {
+      const msg = messageQueue.shift();
+      openaiWs.send(msg);
+    }
+  });
+
+  // Relay: OpenAI → Browser
+  openaiWs.on('message', (data) => {
+    try {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data.toString());
+      }
+
+      // Also track response completions for logging
+      const msg = JSON.parse(data.toString());
+      if (msg.type === 'response.done' && msg.response) {
+        const outputs = msg.response.output || [];
+        for (const item of outputs) {
+          if (item.type === 'message' && item.role === 'assistant') {
+            const transcript = item.content?.find(c => c.type === 'audio')?.transcript;
+            if (transcript) {
+              console.log('🤖 Nora (voice):', transcript.slice(0, 200));
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('OpenAI relay error:', err.message);
+    }
+  });
+
+  // Relay: Browser → OpenAI
+  ws.on('message', (data) => {
+    try {
+      const msg = data.toString();
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(msg);
+      } else {
+        messageQueue.push(msg);
+      }
+    } catch (err) {
+      console.error('Browser relay error:', err.message);
+    }
+  });
+
+  // Periodically refresh Nora's instructions with latest memory
+  const refreshInterval = setInterval(() => {
+    if (openaiWs.readyState !== WebSocket.OPEN) return;
+    const updatedPrompt = buildSystemPrompt('zoom', sessions[botId]?.transcript);
+    openaiWs.send(JSON.stringify({
+      type: 'session.update',
+      session: { instructions: updatedPrompt }
+    }));
+    console.log('🔄 Refreshed Nora instructions with latest memory');
+  }, 5 * 60 * 1000); // every 5 minutes
+
+  // Cleanup
+  ws.on('close', () => {
+    console.log(`🔌 Voice agent WebSocket closed for bot: ${botId}`);
+    clearInterval(refreshInterval);
+    if (openaiWs.readyState === WebSocket.OPEN || openaiWs.readyState === WebSocket.CONNECTING) {
+      openaiWs.close();
+    }
+  });
+
+  openaiWs.on('close', () => {
+    console.log('🧠 OpenAI Realtime connection closed');
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.close();
+    }
+  });
+
+  openaiWs.on('error', (err) => {
+    console.error('OpenAI WebSocket error:', err.message);
+  });
+
+  ws.on('error', (err) => {
+    console.error('Client WebSocket error:', err.message);
+  });
+});
+
+server.listen(process.env.PORT, () => {
   console.log(`Nora server running on port ${process.env.PORT}`);
   backfillTranscriptDates();
 });

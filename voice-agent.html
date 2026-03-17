@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Nora — Voice Agent</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #eee;
+      font-family: -apple-system, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 1280px;
+      height: 720px;
+      overflow: hidden;
+    }
+    .container {
+      text-align: center;
+    }
+    .avatar {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      background: #7c3aed;
+      margin: 0 auto 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 48px;
+      font-weight: 700;
+      color: #fff;
+      transition: box-shadow 0.3s ease;
+    }
+    .avatar.speaking {
+      box-shadow: 0 0 0 8px rgba(124, 58, 237, 0.3), 0 0 0 16px rgba(124, 58, 237, 0.15);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    .avatar.listening {
+      box-shadow: 0 0 0 8px rgba(110, 231, 183, 0.3), 0 0 0 16px rgba(110, 231, 183, 0.15);
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 8px rgba(124, 58, 237, 0.3), 0 0 0 16px rgba(124, 58, 237, 0.15); }
+      50% { box-shadow: 0 0 0 12px rgba(124, 58, 237, 0.4), 0 0 0 24px rgba(124, 58, 237, 0.2); }
+    }
+    .name { font-size: 28px; font-weight: 600; margin-bottom: 4px; }
+    .role { font-size: 14px; color: #888; margin-bottom: 16px; }
+    .status { font-size: 13px; color: #666; }
+    .status.connected { color: #6ee7b7; }
+    .status.error { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div id="avatar" class="avatar">N</div>
+    <div class="name">Nora</div>
+    <div class="role">PM Agent — LimeLight Marketing</div>
+    <div id="status" class="status">Connecting...</div>
+  </div>
+
+  <script>
+    // Parse config from URL params
+    const params = new URLSearchParams(window.location.search);
+    const WS_URL = params.get('wss');
+    const SERVER_URL = params.get('server');
+    const BOT_ID = params.get('bot_id');
+    const SESSION_TOKEN = params.get('token');
+
+    const statusEl = document.getElementById('status');
+    const avatarEl = document.getElementById('avatar');
+
+    let audioContext = null;
+    let ws = null;
+    let isSpeaking = false;
+    let pendingAudioBuffers = [];
+    let currentSourceNode = null;
+    let scheduledEndTime = 0;
+
+    // ---- Audio Playback ----
+    // OpenAI Realtime sends audio as base64-encoded 16-bit PCM at 24kHz mono
+    function initAudioContext() {
+      if (audioContext) return;
+      audioContext = new AudioContext({ sampleRate: 24000 });
+    }
+
+    function playAudioChunk(base64Audio) {
+      initAudioContext();
+      if (!base64Audio) return;
+
+      const raw = atob(base64Audio);
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+
+      // Convert Int16 PCM to Float32
+      const int16 = new Int16Array(bytes.buffer);
+      const float32 = new Float32Array(int16.length);
+      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+
+      const buffer = audioContext.createBuffer(1, float32.length, 24000);
+      buffer.getChannelData(0).set(float32);
+
+      const source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(audioContext.destination);
+
+      // Schedule seamlessly after previous chunk
+      const now = audioContext.currentTime;
+      const startTime = Math.max(now, scheduledEndTime);
+      source.start(startTime);
+      scheduledEndTime = startTime + buffer.duration;
+
+      if (!isSpeaking) {
+        isSpeaking = true;
+        avatarEl.classList.add('speaking');
+        avatarEl.classList.remove('listening');
+      }
+
+      source.onended = () => {
+        if (audioContext.currentTime >= scheduledEndTime - 0.05) {
+          isSpeaking = false;
+          avatarEl.classList.remove('speaking');
+        }
+      };
+    }
+
+    function interruptAudio() {
+      scheduledEndTime = 0;
+      isSpeaking = false;
+      avatarEl.classList.remove('speaking');
+      // Close and recreate audio context to stop all scheduled audio
+      if (audioContext) {
+        audioContext.close().catch(() => {});
+        audioContext = null;
+      }
+      initAudioContext();
+    }
+
+    // ---- Microphone Capture ----
+    async function startMicCapture() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const track = stream.getAudioTracks()[0];
+
+        initAudioContext();
+
+        // Use AudioWorklet for efficient PCM capture at 24kHz
+        // Fall back to ScriptProcessor if AudioWorklet isn't available
+        const source = audioContext.createMediaStreamSource(stream);
+
+        // ScriptProcessor approach (widely supported in bot environment)
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        let resampleBuffer = [];
+
+        processor.onaudioprocess = (e) => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+          const inputData = e.inputBuffer.getChannelData(0);
+
+          // Resample from audioContext.sampleRate to 24000
+          const ratio = 24000 / audioContext.sampleRate;
+          const outputLength = Math.floor(inputData.length * ratio);
+          const output = new Int16Array(outputLength);
+
+          for (let i = 0; i < outputLength; i++) {
+            const srcIdx = i / ratio;
+            const idx = Math.floor(srcIdx);
+            const frac = srcIdx - idx;
+            const s0 = inputData[idx] || 0;
+            const s1 = inputData[idx + 1] || 0;
+            const sample = s0 + frac * (s1 - s0);
+            output[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
+          }
+
+          // Send as base64 to relay
+          const bytes = new Uint8Array(output.buffer);
+          let binary = '';
+          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          const b64 = btoa(binary);
+
+          ws.send(JSON.stringify({
+            type: 'input_audio_buffer.append',
+            audio: b64
+          }));
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination); // needed for ScriptProcessor to fire
+
+        console.log('🎤 Mic capture started');
+        avatarEl.classList.add('listening');
+      } catch (err) {
+        console.error('Mic capture error:', err);
+        statusEl.textContent = 'Microphone error: ' + err.message;
+        statusEl.className = 'status error';
+      }
+    }
+
+    // ---- Transcript relay to server (for persistence) ----
+    function connectTranscriptWs() {
+      try {
+        const transcriptWs = new WebSocket('wss://meeting-data.bot.recall.ai/api/v1/transcript');
+        transcriptWs.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            // Forward to our server for transcript persistence
+            if (SERVER_URL && BOT_ID) {
+              fetch(`${SERVER_URL}/webhook/transcript-relay`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bot_id: BOT_ID, data })
+              }).catch(() => {});
+            }
+          } catch (err) {
+            console.error('Transcript parse error:', err);
+          }
+        };
+        transcriptWs.onopen = () => console.log('📝 Transcript WebSocket connected');
+        transcriptWs.onclose = () => {
+          console.log('📝 Transcript WebSocket disconnected, reconnecting...');
+          setTimeout(connectTranscriptWs, 3000);
+        };
+      } catch (err) {
+        console.error('Transcript WS error:', err);
+      }
+    }
+
+    // ---- WebSocket relay to OpenAI ----
+    function connectRelay() {
+      if (!WS_URL) {
+        statusEl.textContent = 'Error: Missing wss parameter';
+        statusEl.className = 'status error';
+        return;
+      }
+
+      statusEl.textContent = 'Connecting to Nora...';
+
+      // Append bot_id and token as query params for the relay
+      let url = WS_URL;
+      const relayParams = new URLSearchParams();
+      if (BOT_ID) relayParams.set('bot_id', BOT_ID);
+      if (SESSION_TOKEN) relayParams.set('token', SESSION_TOKEN);
+      const qs = relayParams.toString();
+      if (qs) url += (url.includes('?') ? '&' : '?') + qs;
+
+      ws = new WebSocket(url);
+
+      ws.onopen = async () => {
+        console.log('✅ Relay WebSocket connected');
+        statusEl.textContent = 'Connected — Listening';
+        statusEl.className = 'status connected';
+        await startMicCapture();
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+
+          // Handle audio delta from OpenAI Realtime
+          if (msg.type === 'response.audio.delta') {
+            playAudioChunk(msg.delta);
+          }
+
+          // Response finished
+          if (msg.type === 'response.audio.done') {
+            // Audio will finish playing from scheduled buffers
+          }
+
+          // Handle interruption
+          if (msg.type === 'input_audio_buffer.speech_started') {
+            interruptAudio();
+            avatarEl.classList.add('listening');
+          }
+
+          // Handle errors
+          if (msg.type === 'error') {
+            console.error('OpenAI error:', msg.error);
+          }
+
+          // Session created — good to go
+          if (msg.type === 'session.created') {
+            console.log('🧠 OpenAI session created');
+          }
+
+          if (msg.type === 'session.updated') {
+            console.log('🧠 OpenAI session updated');
+          }
+
+          // Response completed — extract tasks/memory
+          if (msg.type === 'response.done' && msg.response) {
+            const outputItems = msg.response.output || [];
+            for (const item of outputItems) {
+              if (item.type === 'message' && item.role === 'assistant') {
+                // If we have a transcript of what Nora said, send it for extraction
+                const transcript = item.content?.find(c => c.type === 'audio')?.transcript;
+                if (transcript && SERVER_URL) {
+                  fetch(`${SERVER_URL}/voice-agent/response`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      bot_id: BOT_ID,
+                      text: transcript,
+                      token: SESSION_TOKEN
+                    })
+                  }).catch(() => {});
+                }
+              }
+            }
+          }
+
+        } catch (err) {
+          console.error('WS message error:', err);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+        statusEl.textContent = 'Disconnected — Reconnecting...';
+        statusEl.className = 'status';
+        setTimeout(connectRelay, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        statusEl.textContent = 'Connection error';
+        statusEl.className = 'status error';
+      };
+    }
+
+    // ---- Boot ----
+    connectRelay();
+    connectTranscriptWs();
+  </script>
+</body>
+</html>

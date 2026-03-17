@@ -69,27 +69,19 @@
     <!-- Meeting Tab -->
     <div id="page-meeting" class="page active">
       <div class="section">
-        <h2>Send Nora to a Zoom Meeting</h2>
-        <input id="url" placeholder="Paste Zoom meeting link..." />
+        <h2>Send Nora to a Meeting</h2>
+        <input id="url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
         <div class="row">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
         <div id="join-status" class="toast"></div>
       </div>
       <div class="section">
-        <h2>Proactive Mode</h2>
-        <p style="color: #888; font-size: 13px; margin-bottom: 12px;">When enabled, Nora will evaluate the conversation every ~10 utterances and interject if she has relevant information — even without being called by name.</p>
-        <div class="row" style="align-items: center;">
-          <button id="proactive-btn" class="btn btn-sm" onclick="toggleProactive()" style="min-width: 100px;">Loading...</button>
-          <span id="proactive-status" style="color: #666; font-size: 12px; margin-left: 8px;"></span>
-        </div>
-      </div>
-      <div class="section">
-        <h2>One-on-One Mode</h2>
-        <p style="color: #888; font-size: 13px; margin-bottom: 12px;">When enabled, Nora responds to every utterance without needing her name. Great for 1:1 calls where you don't want to keep saying "Hey Nora" every time.</p>
-        <div class="row" style="align-items: center;">
-          <button id="one-on-one-btn" class="btn btn-sm" onclick="toggleOneOnOne()" style="min-width: 100px;">Loading...</button>
-          <span id="one-on-one-status" style="color: #666; font-size: 12px; margin-left: 8px;"></span>
+        <h2>Voice Agent</h2>
+        <p style="color: #888; font-size: 13px; line-height: 1.5;">Nora uses OpenAI Realtime API via Recall.ai's Output Media for real-time voice conversations. She listens continuously and responds naturally — no wake word needed. Voice Activity Detection handles turn-taking automatically.</p>
+        <div style="margin-top: 12px; padding: 12px; background: #1a1a2e; border-radius: 8px; border: 1px solid #333;">
+          <div style="font-size: 12px; color: #888; margin-bottom: 4px;">Architecture</div>
+          <div style="font-size: 13px; color: #ccc; line-height: 1.5;">Meeting audio → Bot browser → WebSocket relay → OpenAI Realtime → Audio plays on page → Streams to meeting</div>
         </div>
       </div>
     </div>
@@ -189,10 +181,6 @@
   <script>
     let currentFilter = 'pending';
 
-    // Load meeting mode statuses on page load
-    loadProactiveStatus();
-    loadOneOnOneStatus();
-
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
@@ -213,7 +201,7 @@
       try {
         const r = await fetch('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_url: u }) });
         const d = await r.json();
-        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; loadProactiveStatus(); loadOneOnOneStatus(); }
+        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
@@ -546,107 +534,7 @@
       } catch (e) { alert('Failed: ' + e.message); }
     }
 
-    // Proactive mode
-    async function loadProactiveStatus() {
-      const btn = document.getElementById('proactive-btn');
-      const status = document.getElementById('proactive-status');
-      try {
-        const r = await fetch('/proactive');
-        const data = await r.json();
-        if (!data.active_session && data.active_session !== undefined) {
-          btn.textContent = 'No Meeting';
-          btn.className = 'btn btn-sm';
-          btn.style.background = '#333'; btn.style.color = '#666';
-          btn.disabled = true;
-          status.textContent = 'Join a meeting first';
-        } else {
-          updateProactiveBtn(data.proactive);
-          btn.disabled = false;
-        }
-      } catch (e) {
-        btn.textContent = 'Error';
-        btn.className = 'btn btn-sm';
-      }
-    }
-
-    function updateProactiveBtn(enabled) {
-      const btn = document.getElementById('proactive-btn');
-      const status = document.getElementById('proactive-status');
-      if (enabled) {
-        btn.textContent = 'Enabled';
-        btn.style.background = '#064e3b'; btn.style.color = '#6ee7b7'; btn.style.border = '1px solid #064e3b';
-        status.textContent = 'Nora will interject when she has relevant info';
-      } else {
-        btn.textContent = 'Disabled';
-        btn.style.background = '#1a1a1a'; btn.style.color = '#888'; btn.style.border = '1px solid #333';
-        status.textContent = 'Nora will only respond when called by name';
-      }
-    }
-
-    async function toggleProactive() {
-      try {
-        const r = await fetch('/proactive', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        const data = await r.json();
-        if (data.error) {
-          document.getElementById('proactive-status').textContent = data.error;
-          return;
-        }
-        updateProactiveBtn(data.proactive);
-      } catch (e) {
-        document.getElementById('proactive-status').textContent = 'Failed: ' + e.message;
-      }
-    }
-
-    // One-on-one mode
-    async function loadOneOnOneStatus() {
-      const btn = document.getElementById('one-on-one-btn');
-      const status = document.getElementById('one-on-one-status');
-      try {
-        const r = await fetch('/one-on-one');
-        const data = await r.json();
-        if (!data.active_session && data.active_session !== undefined) {
-          btn.textContent = 'No Meeting';
-          btn.className = 'btn btn-sm';
-          btn.style.background = '#333'; btn.style.color = '#666';
-          btn.disabled = true;
-          status.textContent = 'Join a meeting first';
-        } else {
-          updateOneOnOneBtn(data.oneOnOne);
-          btn.disabled = false;
-        }
-      } catch (e) {
-        btn.textContent = 'Error';
-        btn.className = 'btn btn-sm';
-      }
-    }
-
-    function updateOneOnOneBtn(enabled) {
-      const btn = document.getElementById('one-on-one-btn');
-      const status = document.getElementById('one-on-one-status');
-      if (enabled) {
-        btn.textContent = 'Enabled';
-        btn.style.background = '#1e3a5f'; btn.style.color = '#7dd3fc'; btn.style.border = '1px solid #1e3a5f';
-        status.textContent = 'Nora responds to everything — no wake word needed';
-      } else {
-        btn.textContent = 'Disabled';
-        btn.style.background = '#1a1a1a'; btn.style.color = '#888'; btn.style.border = '1px solid #333';
-        status.textContent = 'Nora only responds when called by name';
-      }
-    }
-
-    async function toggleOneOnOne() {
-      try {
-        const r = await fetch('/one-on-one', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-        const data = await r.json();
-        if (data.error) {
-          document.getElementById('one-on-one-status').textContent = data.error;
-          return;
-        }
-        updateOneOnOneBtn(data.oneOnOne);
-      } catch (e) {
-        document.getElementById('one-on-one-status').textContent = 'Failed: ' + e.message;
-      }
-    }
+    // (Proactive and One-on-One modes removed — OpenAI Realtime VAD handles turn-taking)
 
     // Projects
     let editingProjectName = null; // null = adding new, string = editing existing
