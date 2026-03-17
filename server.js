@@ -122,6 +122,11 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
     );
   }
 
+  // For realtime voice, use a compact version with capped memory
+  const isRealtime = channel === 'realtime';
+  const memoryCharBudget = isRealtime ? 3000 : Infinity;
+  const maxTranscriptLines = isRealtime ? 10 : 30;
+
   const memory = loadMemory();
   const projects = loadProjects();
 
@@ -139,20 +144,28 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
     let memoryBlock = '[Your memory]\n';
 
     if (general.length > 0) {
-      memoryBlock += '\n## General\n' + general.map(m => `- ${m.fact}`).join('\n');
+      const generalItems = isRealtime ? general.slice(-15) : general;
+      memoryBlock += '\n## General\n' + generalItems.map(m => `- ${m.fact}`).join('\n');
     }
 
     // Include project details + project-specific memories together
     const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
     for (const name of allProjectNames) {
+      if (isRealtime && memoryBlock.length >= memoryCharBudget) break;
       memoryBlock += `\n\n## ${name}`;
       const proj = projects.find(p => p.name === name);
       if (proj && proj.details) {
-        memoryBlock += `\n${proj.details}`;
+        const details = isRealtime ? proj.details.slice(0, 300) : proj.details;
+        memoryBlock += `\n${details}`;
       }
       if (byProject[name]) {
-        memoryBlock += '\n' + byProject[name].map(m => `- ${m.fact}`).join('\n');
+        const items = isRealtime ? byProject[name].slice(-5) : byProject[name];
+        memoryBlock += '\n' + items.map(m => `- ${m.fact}`).join('\n');
       }
+    }
+
+    if (isRealtime && memoryBlock.length > memoryCharBudget) {
+      memoryBlock = memoryBlock.slice(0, memoryCharBudget) + '\n...';
     }
 
     base = `${base}\n\n${memoryBlock}`;
@@ -166,11 +179,16 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
     base = `${base}\n\n[Your recent tasks]\n${tasksBlock}`;
   }
 
-  // Inject live transcript context if available
-  if (transcript && transcript.length > 0) {
-    const recent = transcript.slice(-30);
+  // Inject live transcript context if available (skip for realtime — the model already hears the audio)
+  if (!isRealtime && transcript && transcript.length > 0) {
+    const recent = transcript.slice(-maxTranscriptLines);
     const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
     base = `${base}\n\n[What's been discussed in this meeting so far]\n${transcriptBlock}`;
+  }
+
+  // For realtime, add language enforcement
+  if (isRealtime) {
+    base += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
   }
 
   return base;
@@ -1455,7 +1473,7 @@ wss.on('connection', async (ws, req) => {
 
   // Build Nora's system prompt with memory and context
   const session = sessions[botId];
-  const systemPrompt = buildSystemPrompt('zoom', session?.transcript);
+  const systemPrompt = buildSystemPrompt('realtime', session?.transcript);
   console.log(`📋 System prompt length: ${systemPrompt.length} chars`);
 
   // Connect to OpenAI Realtime API
@@ -1598,7 +1616,7 @@ wss.on('connection', async (ws, req) => {
   // Periodically refresh Nora's instructions with latest memory
   const refreshInterval = setInterval(() => {
     if (openaiWs.readyState !== WebSocket.OPEN) return;
-    const updatedPrompt = buildSystemPrompt('zoom', sessions[botId]?.transcript);
+    const updatedPrompt = buildSystemPrompt('realtime', sessions[botId]?.transcript);
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: { instructions: updatedPrompt }
