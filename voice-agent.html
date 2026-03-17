@@ -139,20 +139,28 @@
     }
 
     // ---- Microphone Capture ----
-    // Uses MediaStreamTrackProcessor (recommended by Recall docs) with ScriptProcessor fallback
+    // Uses AudioContext at 24kHz so the browser handles resampling natively (high quality).
+    // AudioWorklet (primary) or ScriptProcessor (fallback) for processing.
     async function startMicCapture() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const track = stream.getAudioTracks()[0];
         console.log('🎤 Got audio track:', track.label, 'settings:', JSON.stringify(track.getSettings()));
 
-        // Try MediaStreamTrackProcessor first (recommended by Recall)
-        if (typeof MediaStreamTrackProcessor !== 'undefined') {
-          console.log('🎤 Using MediaStreamTrackProcessor');
-          await captureWithTrackProcessor(track);
-        } else {
-          console.log('🎤 Falling back to ScriptProcessor');
-          await captureWithScriptProcessor(stream);
+        // Create AudioContext at 24kHz — browser's built-in resampler handles conversion
+        const captureCtx = new AudioContext({ sampleRate: 24000 });
+        await captureCtx.resume();
+        console.log('🎤 Capture AudioContext sample rate:', captureCtx.sampleRate, 'state:', captureCtx.state);
+
+        const source = captureCtx.createMediaStreamSource(stream);
+
+        // Try AudioWorklet first (modern, matches reference impl), fall back to ScriptProcessor
+        try {
+          await setupAudioWorklet(captureCtx, source);
+          console.log('🎤 Using AudioWorklet at 24kHz');
+        } catch (err) {
+          console.log('🎤 AudioWorklet failed, using ScriptProcessor:', err.message);
+          setupScriptProcessor(captureCtx, source);
         }
 
         avatarEl.classList.add('listening');
@@ -165,108 +173,68 @@
       }
     }
 
-    async function captureWithTrackProcessor(track) {
-      const processor = new MediaStreamTrackProcessor({ track });
-      const reader = processor.readable.getReader();
-      const sourceSampleRate = track.getSettings().sampleRate || 48000;
-      console.log('🎤 Source sample rate:', sourceSampleRate);
-
-      let chunkCount = 0;
-
-      const processAudio = async () => {
-        while (true) {
-          const { value: audioData, done } = await reader.read();
-          if (done) break;
-          if (!ws || ws.readyState !== WebSocket.OPEN) {
-            audioData.close();
-            continue;
+    async function setupAudioWorklet(ctx, source) {
+      const workletCode = `
+        class NoraCaptureProcessor extends AudioWorkletProcessor {
+          constructor() {
+            super();
+            this.foundAudio = false;
           }
-
-          try {
-            const numberOfFrames = audioData.numberOfFrames;
-            const format = audioData.format; // e.g. 'f32-planar', 'f32', 's16-planar', 's16'
-
-            let float32;
-            if (format === 'f32-planar' || format === 'f32') {
-              float32 = new Float32Array(numberOfFrames);
-              audioData.copyTo(float32, { planeIndex: 0 });
-            } else if (format === 's16-planar' || format === 's16') {
-              const int16 = new Int16Array(numberOfFrames);
-              audioData.copyTo(int16, { planeIndex: 0 });
-              float32 = new Float32Array(numberOfFrames);
-              for (let i = 0; i < numberOfFrames; i++) float32[i] = int16[i] / 32768;
-            } else {
-              // Fallback: try f32
-              float32 = new Float32Array(numberOfFrames);
-              audioData.copyTo(float32, { planeIndex: 0 });
+          process(inputs) {
+            const input = inputs[0];
+            if (input && input[0] && input[0].length > 0) {
+              // Skip leading silence to avoid latency at stream start
+              if (!this.foundAudio) {
+                for (const sample of input[0]) {
+                  if (sample !== 0) { this.foundAudio = true; break; }
+                }
+                if (!this.foundAudio) return true;
+              }
+              // Send a copy of the Float32 mono samples to main thread
+              this.port.postMessage({ samples: input[0].slice() });
             }
-            audioData.close();
-
-            if (chunkCount === 0) {
-              console.log('🎤 First audio chunk — format:', format, 'frames:', numberOfFrames);
-            }
-
-            // Resample to 24000 Hz
-            const ratio = 24000 / sourceSampleRate;
-            const outputLength = Math.floor(numberOfFrames * ratio);
-            const pcm16 = new Int16Array(outputLength);
-
-            for (let i = 0; i < outputLength; i++) {
-              const srcIdx = i / ratio;
-              const idx = Math.floor(srcIdx);
-              const frac = srcIdx - idx;
-              const s0 = float32[idx] || 0;
-              const s1 = float32[Math.min(idx + 1, numberOfFrames - 1)] || 0;
-              const sample = s0 + frac * (s1 - s0);
-              pcm16[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
-            }
-
-            sendAudioToRelay(pcm16);
-          } catch (err) {
-            console.error('Audio processing error:', err);
+            return true;
           }
         }
-      };
+        registerProcessor('nora-capture', NoraCaptureProcessor);
+      `;
+      const blob = new Blob([workletCode], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      await ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
 
-      processAudio().catch(err => console.error('Track processor loop error:', err));
-    }
-
-    async function captureWithScriptProcessor(stream) {
-      // Create a dedicated capture context at native sample rate
-      const captureCtx = new AudioContext();
-      await captureCtx.resume();
-      console.log('🎤 Capture AudioContext sample rate:', captureCtx.sampleRate, 'state:', captureCtx.state);
-
-      const source = captureCtx.createMediaStreamSource(stream);
-      const processor = captureCtx.createScriptProcessor(4096, 1, 1);
-
-      let chunkCount = 0;
-
-      processor.onaudioprocess = (e) => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-
-        // Resample to 24000 Hz
-        const ratio = 24000 / captureCtx.sampleRate;
-        const outputLength = Math.floor(inputData.length * ratio);
-        const pcm16 = new Int16Array(outputLength);
-
-        for (let i = 0; i < outputLength; i++) {
-          const srcIdx = i / ratio;
-          const idx = Math.floor(srcIdx);
-          const frac = srcIdx - idx;
-          const s0 = inputData[idx] || 0;
-          const s1 = inputData[Math.min(idx + 1, inputData.length - 1)] || 0;
-          const sample = s0 + frac * (s1 - s0);
-          pcm16[i] = Math.max(-32768, Math.min(32767, Math.floor(sample * 32767)));
+      const workletNode = new AudioWorkletNode(ctx, 'nora-capture');
+      workletNode.port.onmessage = (e) => {
+        const float32 = e.data.samples;
+        // Convert Float32 [-1,1] → Int16 PCM (already at 24kHz from AudioContext)
+        const pcm16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          pcm16[i] = s < 0 ? Math.floor(s * 32768) : Math.floor(s * 32767);
         }
-
         sendAudioToRelay(pcm16);
       };
 
+      source.connect(workletNode);
+      // Connect to destination to keep the audio graph alive
+      workletNode.connect(ctx.destination);
+    }
+
+    function setupScriptProcessor(ctx, source) {
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      processor.onaudioprocess = (e) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const float32 = e.inputBuffer.getChannelData(0);
+        // Already at 24kHz from AudioContext — just convert to Int16 PCM
+        const pcm16 = new Int16Array(float32.length);
+        for (let i = 0; i < float32.length; i++) {
+          const s = Math.max(-1, Math.min(1, float32[i]));
+          pcm16[i] = s < 0 ? Math.floor(s * 32768) : Math.floor(s * 32767);
+        }
+        sendAudioToRelay(pcm16);
+      };
       source.connect(processor);
-      processor.connect(captureCtx.destination);
+      processor.connect(ctx.destination);
     }
 
     // ---- Audio Send Buffer ----
