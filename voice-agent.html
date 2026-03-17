@@ -289,34 +289,6 @@
     // Flush timer — ensures partial buffers get sent within 200ms
     setInterval(flushSendBuffer, 200);
 
-    // ---- Transcript relay to server (for persistence) ----
-    function connectTranscriptWs() {
-      try {
-        const transcriptWs = new WebSocket('wss://meeting-data.bot.recall.ai/api/v1/transcript');
-        transcriptWs.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (SERVER_URL && BOT_ID) {
-              fetch(`${SERVER_URL}/webhook/transcript-relay`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ bot_id: BOT_ID, data })
-              }).catch(() => {});
-            }
-          } catch (err) {
-            console.error('Transcript parse error:', err);
-          }
-        };
-        transcriptWs.onopen = () => console.log('📝 Transcript WebSocket connected');
-        transcriptWs.onclose = () => {
-          console.log('📝 Transcript WebSocket disconnected, reconnecting...');
-          setTimeout(connectTranscriptWs, 3000);
-        };
-      } catch (err) {
-        console.error('Transcript WS error:', err);
-      }
-    }
-
     // ---- WebSocket relay to OpenAI ----
     function connectRelay() {
       if (!WS_URL) {
@@ -419,7 +391,6 @@
 
     // ---- Boot ----
     connectRelay();
-    connectTranscriptWs();
   </script>
 </body>
 </html>

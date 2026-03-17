@@ -489,89 +489,7 @@ app.post('/voice-agent/response', async (req, res) => {
   }
 });
 
-// Pending transcript utterances — keyed by bot_id:speaker
-// Recall streams partial transcripts word by word, with each segment getting its
-// own original_transcript_id. We accumulate text per-speaker and only flush when
-// the speaker changes or after a debounce timeout (3s of silence).
-const pendingUtterances = {};
 
-// Transcript relay — voice agent webpage forwards Recall's transcript WS data here
-app.post('/webhook/transcript-relay', (req, res) => {
-  res.sendStatus(200);
-  const { bot_id, data } = req.body;
-  if (!bot_id || !data) return;
-
-  const words = data.transcript?.words;
-  const text = words?.map(w => w.text).join(' ') || data.transcript?.text;
-  const speaker = data.transcript?.participant?.name || data.transcript?.speaker || 'Participant';
-  const transcriptId = data.transcript?.original_transcript_id || data.original_transcript_id;
-  if (!text) return;
-
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
-
-  const key = `${bot_id}:${speaker}`;
-
-  // Flush any pending utterances from OTHER speakers for this bot (speaker changed)
-  for (const [k, p] of Object.entries(pendingUtterances)) {
-    if (k.startsWith(bot_id + ':') && k !== key) {
-      clearTimeout(p.timer);
-      flushPendingUtterance(p);
-      delete pendingUtterances[k];
-    }
-  }
-
-  const pending = pendingUtterances[key];
-
-  if (pending) {
-    clearTimeout(pending.timer);
-    if (transcriptId && pending.transcriptId === transcriptId) {
-      // Same segment — partial update, replace with latest (Recall accumulates words)
-      pending.text = text;
-    } else {
-      // New segment from same speaker — append
-      pending.text = pending.text + ' ' + text;
-      pending.transcriptId = transcriptId;
-    }
-    pending.timestamp = new Date().toISOString();
-  } else {
-    pendingUtterances[key] = {
-      bot_id, speaker, text, transcriptId,
-      timestamp: new Date().toISOString()
-    };
-  }
-
-  // Debounce — flush after 3s of no updates from this speaker
-  pendingUtterances[key].timer = setTimeout(() => {
-    const p = pendingUtterances[key];
-    if (p) {
-      flushPendingUtterance(p);
-      delete pendingUtterances[key];
-    }
-  }, 3000);
-});
-
-function flushPendingUtterance(pending) {
-  if (!pending || !pending.text) return;
-  const { bot_id, speaker, text, timestamp } = pending;
-
-  console.log(`[${speaker}]: ${text}`);
-
-  const session = sessions[bot_id];
-  if (!session) return;
-
-  session.buffer.push(`${speaker}: ${text}`);
-  if (session.buffer.length > 20) session.buffer.shift();
-
-  session.transcript.push({ speaker, text, timestamp });
-
-  // Persist
-  try {
-    const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
-  } catch (err) {
-    console.error('Transcript save error:', err.message);
-  }
-}
 
 // Session tokens for voice agent auth — maps token → botId
 const sessionTokens = {};
@@ -1565,6 +1483,26 @@ wss.on('connection', async (ws, req) => {
       // Log errors in detail
       if (msg.type === 'error') {
         console.error('❌ OpenAI error:', JSON.stringify(msg.error));
+      }
+
+      // Capture user speech transcription from OpenAI Whisper
+      if (msg.type === 'conversation.item.input_audio_transcription.completed') {
+        const userText = msg.transcript?.trim();
+        if (userText) {
+          console.log('🗣️ User (transcribed):', userText.slice(0, 200));
+          const session = sessions[botId];
+          if (session) {
+            session.buffer.push(`Participant: ${userText}`);
+            if (session.buffer.length > 20) session.buffer.shift();
+            session.transcript.push({ speaker: 'Participant', text: userText, timestamp: new Date().toISOString() });
+            try {
+              const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+              fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
+            } catch (err) {
+              console.error('Transcript save error:', err.message);
+            }
+          }
+        }
       }
 
       // Track response completions
