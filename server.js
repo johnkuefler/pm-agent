@@ -1198,22 +1198,42 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
 
 async function extractTasks(context, trigger, reply, source = {}) {
   try {
+    // Debounce: skip if we just ran extraction within the last 5 seconds for this bot
+    const botId = source.bot_id || 'unknown';
+    const now = Date.now();
+    if (!extractTasks._lastRun) extractTasks._lastRun = {};
+    if (extractTasks._lastRun[botId] && now - extractTasks._lastRun[botId] < 5000) {
+      console.log('⏩ Skipping task extraction (debounce)');
+      return;
+    }
+    extractTasks._lastRun[botId] = now;
+
+    const existingTasks = loadTasks().filter(t => t.status === 'pending');
+    const recentTaskList = existingTasks.slice(-10).map(t =>
+      `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`
+    ).join('\n');
+
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 300,
         temperature: 0,
-        system: `You extract action items that Nora was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, remind me to...".
+        system: `You extract action items that Nora (an AI PM assistant) was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, remind me to...".
 
 CRITICAL RULES:
-- Extract exactly ONE task per request. Do not create multiple tasks from a single request.
-- Extract the UNDERLYING action, not a meta-action. If someone says "create a Teamwork task for Aaron to update staging", the task is "Update staging environment" assigned to Aaron — NOT "Create a Teamwork task for Aaron". The task creation itself is just the delivery mechanism.
-- IGNORE Nora's reply when extracting. Only look at what the user asked. Nora's reply is just confirmation — do not extract tasks from her words.
+- Extract exactly ONE task per distinct request. Do not split a single request into multiple tasks.
+- Extract the UNDERLYING action, not a meta-action. If someone says "create a Teamwork task for Aaron to update staging", the task is "Update staging environment" assigned to Aaron — NOT "Create a Teamwork task".
+- IGNORE Nora's reply when determining what to extract. Only extract from what the user said.
 - Do NOT extract general discussion, suggestions Nora made, or things other people said they would do.
+- Do NOT extract tasks that already exist in the pending tasks list below. If something similar is already tracked, return [].
+- If the conversation is just casual/social (greetings, small talk, status updates), return [].
 
-Return a JSON array of objects with: action (what to do), detail (specifics), assignee (who it's for), due (deadline if mentioned, otherwise ""). Return [] if no action items.`,
-        messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nAction items for Nora (JSON array or []):` }]
+EXISTING PENDING TASKS (do not duplicate these):
+${recentTaskList || '(none)'}
+
+Return a JSON array of objects with: action (short verb phrase — what to do), detail (specifics, keep brief), assignee (who it's for, if mentioned), due (deadline if mentioned, otherwise ""). Return [] if no NEW action items.`,
+        messages: [{ role: 'user', content: `Meeting context:\n${context}\n\nTriggering utterance: ${trigger}\n\nNora's response: ${reply}\n\nNew action items for Nora (JSON array or []):` }]
       },
       {
         headers: {
@@ -1231,28 +1251,29 @@ Return a JSON array of objects with: action (what to do), detail (specifics), as
     const items = JSON.parse(match[0]);
     if (!Array.isArray(items) || items.length === 0) return;
 
-    // Deduplicate: ask Claude to check new tasks against existing pending tasks
-    const existingTasks = loadTasks().filter(t => t.status === 'pending');
     let filteredItems = items.filter(i => i.action && typeof i.action === 'string');
-    if (filteredItems.length > 0 && existingTasks.length > 0) {
+    if (filteredItems.length === 0) return;
+
+    // Secondary dedup check: compare against existing tasks with Claude
+    if (existingTasks.length > 0) {
       try {
-        const existingList = existingTasks.map(t => `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}`).join('\n');
-        const newList = filteredItems.map((t, i) => `${i}: ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}`).join('\n');
+        const existingList = existingTasks.map(t => `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`).join('\n');
+        const newList = filteredItems.map((t, i) => `${i}: ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`).join('\n');
         const dedupRes = await axios.post(
           'https://api.anthropic.com/v1/messages',
           {
             model: 'claude-haiku-4-5-20251001',
             max_tokens: 200,
             temperature: 0,
-            system: `You check for duplicate tasks. Given a list of existing tasks and a list of new candidate tasks, return a JSON array of the indices (numbers) of new tasks that are NOT duplicates.
+            system: `You check for duplicate tasks. Given existing tasks and new candidates, return a JSON array of indices of new tasks that are genuinely NOT duplicates.
 
-A task is a duplicate if:
-- An existing task already covers the same action for the same person/purpose, even if worded differently
-- A new task is a meta-version of an existing task (e.g. "create a task for Aaron to update staging" is a duplicate of "update staging environment" assigned to Aaron)
-- Two new candidate tasks are duplicates of each other — only keep one
+A task IS a duplicate if:
+- An existing task covers the same action for the same person/purpose, even if worded differently
+- It's a meta-version of an existing task (e.g. "create a task to update staging" duplicates "update staging environment")
+- Two new candidates cover the same thing — only keep one
 
-Be strict — if it's essentially the same request, it's a duplicate. Return only the indices of truly new tasks as a JSON array of numbers, e.g. [0, 2]. If all are duplicates, return [].`,
-            messages: [{ role: 'user', content: `Existing pending tasks:\n${existingList}\n\nNew candidate tasks:\n${newList}\n\nIndices of non-duplicate new tasks (JSON array):` }]
+Be strict — if in doubt, it's a duplicate. Return only indices of truly new tasks, e.g. [0, 2]. If all duplicates, return [].`,
+            messages: [{ role: 'user', content: `Existing pending tasks:\n${existingList}\n\nNew candidates:\n${newList}\n\nIndices of non-duplicate new tasks:` }]
           },
           {
             headers: {
