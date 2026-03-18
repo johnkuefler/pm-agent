@@ -186,9 +186,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
     base = `${base}\n\n[What's been discussed in this meeting so far]\n${transcriptBlock}`;
   }
 
-  // For realtime, add language enforcement
+  // For realtime, add voice-specific guidance
   if (isRealtime) {
     base += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
+    base += '\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name (\"Nora\") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen — do not interject. Wait for a clear pause directed at you before responding. If you\'re unsure whether someone was talking to you, stay silent.';
   }
 
   return base;
@@ -1438,7 +1439,8 @@ wss.on('connection', async (ws, req) => {
           type: 'server_vad',
           threshold: 0.5,
           prefix_padding_ms: 300,
-          silence_duration_ms: 700
+          silence_duration_ms: 1500,
+          eagerness: 'low'
         },
         temperature: 0.9,
         max_response_output_tokens: 1024
