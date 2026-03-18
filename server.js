@@ -651,6 +651,7 @@ app.post('/mute', (req, res) => {
   const session = sessions[bot_id];
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !session.muted;
   session.muted = enabled;
+  session.mutedUtteranceCount = 0;
   console.log(`🔇 Mute mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
 
   // Live-update the OpenAI Realtime session if connected
@@ -1548,6 +1549,20 @@ wss.on('connection', async (ws, req) => {
               fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
             } catch (err) {
               console.error('Transcript save error:', err.message);
+            }
+
+            // When muted, run extraction periodically on accumulated speech
+            if (session.muted) {
+              session.mutedUtteranceCount = (session.mutedUtteranceCount || 0) + 1;
+              if (session.mutedUtteranceCount >= 3) {
+                session.mutedUtteranceCount = 0;
+                const meetingContext = session.buffer.slice(-10).join('\n');
+                const triggerText = session.buffer.slice(-3).join('\n');
+                const mutedReply = '(Nora is muted and listening silently)';
+                console.log('🔇 Running muted extraction on accumulated speech');
+                extractMemory(meetingContext, triggerText, mutedReply, botId).catch(() => {});
+                extractTasks(meetingContext, triggerText, mutedReply, { channel: 'zoom', bot_id: botId }).catch(() => {});
+              }
             }
           }
         }
