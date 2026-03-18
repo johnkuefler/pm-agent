@@ -75,6 +75,10 @@
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
         <div id="join-status" class="toast"></div>
+        <div id="mute-controls" style="margin-top: 12px; display: none;">
+          <button id="mute-btn" class="btn" onclick="toggleMute()" style="background: #333; border: 1px solid #555;">🔇 Mute Nora</button>
+          <span id="mute-status" style="margin-left: 8px; font-size: 13px; color: #888;"></span>
+        </div>
       </div>
       <div class="section">
         <h2>Voice Agent</h2>
@@ -201,10 +205,52 @@
       try {
         const r = await fetch('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_url: u }) });
         const d = await r.json();
-        if (d.bot_id) { s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id; }
+        if (d.bot_id) {
+          s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id;
+          document.getElementById('mute-controls').style.display = 'block';
+          checkMuteState();
+        }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
+
+    async function toggleMute() {
+      try {
+        const r = await fetch('/mute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json();
+        updateMuteUI(d.muted);
+      } catch (e) { console.error('Mute toggle failed:', e); }
+    }
+
+    async function checkMuteState() {
+      try {
+        const r = await fetch('/mute');
+        const d = await r.json();
+        if (d.active_session === false) return;
+        document.getElementById('mute-controls').style.display = 'block';
+        updateMuteUI(d.muted);
+      } catch {}
+    }
+
+    function updateMuteUI(muted) {
+      const btn = document.getElementById('mute-btn');
+      const status = document.getElementById('mute-status');
+      if (muted) {
+        btn.textContent = '🔊 Unmute Nora';
+        btn.style.background = '#7c3aed';
+        btn.style.borderColor = '#7c3aed';
+        status.textContent = 'Muted — listening only, no voice responses';
+        status.style.color = '#f59e0b';
+      } else {
+        btn.textContent = '🔇 Mute Nora';
+        btn.style.background = '#333';
+        btn.style.borderColor = '#555';
+        status.textContent = '';
+      }
+    }
+
+    // Check mute state on page load (in case a meeting is already active)
+    checkMuteState();
 
     // Tasks
     let taskDataCache = {};

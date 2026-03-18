@@ -68,6 +68,7 @@
 
     // bot_id is received from the relay after connection (avoids race condition)
     let BOT_ID = null;
+    let isMuted = false;
 
     const statusEl = document.getElementById('status');
     const avatarEl = document.getElementById('avatar');
@@ -327,7 +328,19 @@
 
           // Handle audio delta from OpenAI Realtime
           if (msg.type === 'response.audio.delta') {
-            playAudioChunk(msg.delta);
+            if (!isMuted) playAudioChunk(msg.delta);
+          }
+
+          // Handle mute toggle from server
+          if (msg.type === 'nora.mute') {
+            isMuted = msg.muted;
+            console.log(`🔇 Mute ${isMuted ? 'enabled' : 'disabled'}`);
+            if (isMuted) {
+              interruptAudio();
+              statusEl.textContent = 'Connected — Muted (listening only)';
+            } else {
+              statusEl.textContent = 'Connected — Listening';
+            }
           }
 
           // Handle interruption — user started speaking

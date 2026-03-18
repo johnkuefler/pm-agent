@@ -540,7 +540,7 @@ app.post('/join', async (req, res) => {
     activeBotId = botId;
     sessionTokens[sessionToken] = botId;
 
-    if (!sessions[botId]) sessions[botId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
+    if (!sessions[botId]) sessions[botId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
     console.log('✅ Nora joined via output_media. Bot ID:', botId);
     res.json({ bot_id: botId });
   } catch (err) {
@@ -578,7 +578,7 @@ app.post('/webhook/transcript', async (req, res) => {
   if (!text) return;
   console.log(`[${speaker}]: ${text}`);
 
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, utterancesSinceEval: 0 };
+  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
   const session = sessions[bot_id];
 
   session.buffer.push(`${speaker}: ${text}`);
@@ -636,6 +636,43 @@ app.post('/one-on-one', (req, res) => {
   sessions[bot_id].oneOnOne = enabled;
   console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
+});
+
+// Mute mode toggle — Nora listens and captures action items but does not speak
+app.get('/mute', (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.json({ muted: false, active_session: false });
+  res.json({ muted: sessions[bot_id].muted, bot_id });
+});
+
+app.post('/mute', (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
+  const session = sessions[bot_id];
+  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !session.muted;
+  session.muted = enabled;
+  console.log(`🔇 Mute mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
+
+  // Live-update the OpenAI Realtime session if connected
+  if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
+    const updatedPrompt = buildSystemPrompt('realtime', session.transcript);
+    session.openaiWs.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        modalities: enabled ? ['text'] : ['text', 'audio'],
+        instructions: enabled
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Do not produce any response. Stay completely silent. Continue listening and tracking action items, tasks, and important information from the conversation, but do not respond to anything — even if directly addressed. Simply output nothing.'
+          : updatedPrompt
+      }
+    }));
+  }
+
+  // Notify the browser to suppress/resume audio playback
+  if (session.clientWs && session.clientWs.readyState === WebSocket.OPEN) {
+    session.clientWs.send(JSON.stringify({ type: 'nora.mute', muted: enabled }));
+  }
+
+  res.json({ ok: true, muted: enabled, bot_id });
 });
 
 // Meeting status updates — track bot_id and clean up
@@ -1420,17 +1457,27 @@ wss.on('connection', async (ws, req) => {
     return;
   }
 
+  // Store WebSocket references on the session so /mute can send live updates
+  if (session) {
+    session.openaiWs = openaiWs;
+    session.clientWs = ws;
+  }
+
   const messageQueue = [];
 
   openaiWs.on('open', () => {
     console.log('🧠 Connected to OpenAI Realtime API');
 
+    const isMuted = session?.muted;
+
     // Configure the session with Nora's personality and settings
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
-        modalities: ['text', 'audio'],
-        instructions: systemPrompt,
+        modalities: isMuted ? ['text'] : ['text', 'audio'],
+        instructions: isMuted
+          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED. Do not produce any response. Stay completely silent. Continue listening and tracking action items, tasks, and important information from the conversation, but do not respond to anything — even if directly addressed. Simply output nothing.'
+          : systemPrompt,
         voice: 'sage',
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
@@ -1555,10 +1602,17 @@ wss.on('connection', async (ws, req) => {
   // Periodically refresh Nora's instructions with latest memory
   const refreshInterval = setInterval(() => {
     if (openaiWs.readyState !== WebSocket.OPEN) return;
-    const updatedPrompt = buildSystemPrompt('realtime', sessions[botId]?.transcript);
+    const s = sessions[botId];
+    const isMuted = s?.muted;
+    const updatedPrompt = buildSystemPrompt('realtime', s?.transcript);
     openaiWs.send(JSON.stringify({
       type: 'session.update',
-      session: { instructions: updatedPrompt }
+      session: {
+        modalities: isMuted ? ['text'] : ['text', 'audio'],
+        instructions: isMuted
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Do not produce any response. Stay completely silent. Continue listening and tracking action items, tasks, and important information from the conversation, but do not respond to anything — even if directly addressed. Simply output nothing.'
+          : updatedPrompt
+      }
     }));
     console.log('🔄 Refreshed Nora instructions with latest memory');
   }, 5 * 60 * 1000); // every 5 minutes
@@ -1567,6 +1621,10 @@ wss.on('connection', async (ws, req) => {
   ws.on('close', () => {
     console.log(`🔌 Voice agent WebSocket closed for bot: ${botId}`);
     clearInterval(refreshInterval);
+    if (sessions[botId]) {
+      sessions[botId].openaiWs = null;
+      sessions[botId].clientWs = null;
+    }
     if (openaiWs.readyState === WebSocket.OPEN || openaiWs.readyState === WebSocket.CONNECTING) {
       openaiWs.close();
     }
