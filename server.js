@@ -668,7 +668,7 @@ app.post('/mute', (req, res) => {
       session: {
         modalities: enabled ? ['text'] : ['text', 'audio'],
         instructions: enabled
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. However, you must still process everything you hear. If someone asks you to do something, remember something, or gives you a task — respond with a short text note acknowledging it (e.g. "Noted — I\'ll send that email" or "Got it, remembering that for later"). These text responses won\'t be spoken aloud but help you track action items. Continue listening attentively.'
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
           : updatedPrompt
       }
     }));
@@ -1504,7 +1504,7 @@ wss.on('connection', async (ws, req) => {
       session: {
         modalities: isMuted ? ['text'] : ['text', 'audio'],
         instructions: isMuted
-          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. However, you must still process everything you hear. If someone asks you to do something, remember something, or gives you a task — respond with a short text note acknowledging it (e.g. "Noted — I\'ll send that email" or "Got it, remembering that for later"). These text responses won\'t be spoken aloud but help you track action items. Continue listening attentively.'
+          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
           : systemPrompt,
         voice: 'sage',
         input_audio_format: 'pcm16',
@@ -1590,24 +1590,29 @@ wss.on('connection', async (ws, req) => {
               console.log('🤖 Nora (voice):', audioTranscript.slice(0, 200));
             }
 
-            // Text-only responses (muted mode) — run extraction server-side
+            // Text-only responses (muted mode) — only process if Nora was directly addressed
             const textContent = item.content?.find(c => c.type === 'text')?.text;
             if (textContent && sessions[botId]?.muted) {
-              console.log('🔇 Nora (muted text):', textContent.slice(0, 200));
               const session = sessions[botId];
-              session.transcript.push({ speaker: 'Nora (muted)', text: textContent, timestamp: new Date().toISOString() });
-              try {
-                const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-                fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
-              } catch (err) {
-                console.error('Transcript save error:', err.message);
-              }
-              const meetingContext = session.buffer.slice(-10).join('\n');
-              const triggerText = session.buffer.slice(-3).join('\n');
-              if (!isAskingClarification(textContent)) {
-                extractMemory(meetingContext, triggerText, textContent, botId).catch(() => {});
-                extractTasks(meetingContext, triggerText, textContent, { channel: 'zoom', bot_id: botId }).catch(() => {});
-                extractResearchNeeds(meetingContext, triggerText, textContent, { channel: 'zoom', bot_id: botId }).catch(() => {});
+              const recentUtterances = session.buffer.slice(-5).join('\n').toLowerCase();
+              const wasAddressed = recentUtterances.includes('nora');
+
+              if (wasAddressed) {
+                console.log('🔇 Nora (muted, addressed):', textContent.slice(0, 200));
+                session.transcript.push({ speaker: 'Nora (muted)', text: textContent, timestamp: new Date().toISOString() });
+                try {
+                  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+                  fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
+                } catch (err) {
+                  console.error('Transcript save error:', err.message);
+                }
+                const meetingContext = session.buffer.slice(-10).join('\n');
+                const triggerText = session.buffer.slice(-3).join('\n');
+                if (!isAskingClarification(textContent)) {
+                  extractTasks(meetingContext, triggerText, textContent, { channel: 'zoom', bot_id: botId }).catch(() => {});
+                }
+              } else {
+                console.log('🔇 Nora (muted, discarded):', textContent.slice(0, 200));
               }
             }
           }
@@ -1658,7 +1663,7 @@ wss.on('connection', async (ws, req) => {
       session: {
         modalities: isMuted ? ['text'] : ['text', 'audio'],
         instructions: isMuted
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. However, you must still process everything you hear. If someone asks you to do something, remember something, or gives you a task — respond with a short text note acknowledging it (e.g. "Noted — I\'ll send that email" or "Got it, remembering that for later"). These text responses won\'t be spoken aloud but help you track action items. Continue listening attentively.'
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
           : updatedPrompt
       }
     }));
