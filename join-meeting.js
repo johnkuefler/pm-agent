@@ -28,6 +28,10 @@ async function sendNoraToMeeting(zoomUrl) {
       },
       include_bot_in_recording: { audio: true }
     },
+    real_time_transcription: {
+      destination_url: `${SERVER_URL}/webhook/transcript`,
+      partial_results: false
+    },
     variant: {
       zoom: "web_4_core",
       google_meet: "web_4_core",

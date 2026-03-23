@@ -526,6 +526,10 @@ app.post('/join', async (req, res) => {
         },
         include_bot_in_recording: { audio: true }
       },
+      real_time_transcription: {
+        destination_url: `${SERVER_URL}/webhook/transcript`,
+        partial_results: false
+      },
       variant: {
         zoom: 'web_4_core',
         google_meet: 'web_4_core',
@@ -563,7 +567,7 @@ app.post('/register-bot', (req, res) => {
   res.json({ ok: true });
 });
 
-// Recall.ai sends transcript chunks here (kept for backward compatibility / webhook-based bots)
+// Recall.ai sends speaker-identified transcript chunks here (primary transcript path)
 app.post('/webhook/transcript', async (req, res) => {
   res.sendStatus(200);
 
@@ -1555,21 +1559,19 @@ wss.on('connection', async (ws, req) => {
       }
 
       // Capture user speech transcription from OpenAI Whisper
+      // Note: speaker names come from Recall.ai's /webhook/transcript (via real_time_transcription).
+      // We still log Whisper transcriptions and add to buffer for Nora's context,
+      // but skip adding to session.transcript to avoid duplicates — Recall's webhook handles that with proper names.
       if (msg.type === 'conversation.item.input_audio_transcription.completed') {
         const userText = msg.transcript?.trim();
         if (userText) {
-          console.log('🗣️ User (transcribed):', userText.slice(0, 200));
+          console.log('🗣️ User (transcribed by Whisper):', userText.slice(0, 200));
           const session = sessions[botId];
           if (session) {
+            // Add to rolling buffer for Nora's conversational context
             session.buffer.push(`Participant: ${userText}`);
             if (session.buffer.length > 20) session.buffer.shift();
-            session.transcript.push({ speaker: 'Participant', text: userText, timestamp: new Date().toISOString() });
-            try {
-              const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-              fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
-            } catch (err) {
-              console.error('Transcript save error:', err.message);
-            }
+            // Transcript entry is handled by /webhook/transcript with actual speaker names
           }
         }
       }
