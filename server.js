@@ -524,11 +524,14 @@ app.post('/join', async (req, res) => {
         transcript: {
           provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
         },
+        realtime_endpoints: [
+          {
+            type: 'webhook',
+            url: `${SERVER_URL}/webhook/transcript`,
+            events: ['transcript.data']
+          }
+        ],
         include_bot_in_recording: { audio: true }
-      },
-      real_time_transcription: {
-        destination_url: `${SERVER_URL}/webhook/transcript`,
-        partial_results: false
       },
       variant: {
         zoom: 'web_4_core',
@@ -574,7 +577,7 @@ app.post('/webhook/transcript', async (req, res) => {
   const event = req.body;
   if (event.event !== 'transcript.data') return;
 
-  const bot_id = event.data?.bot_id || event.bot_id || activeBotId;
+  const bot_id = event.data?.bot?.id || event.data?.bot_id || event.bot_id || activeBotId;
   const words = event.data?.data?.words;
   const text = words?.map(w => w.text).join(' ') || event.data?.data?.text;
   const speaker = event.data?.data?.participant?.name || 'Participant';

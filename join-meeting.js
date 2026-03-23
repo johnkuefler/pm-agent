@@ -26,11 +26,14 @@ async function sendNoraToMeeting(zoomUrl) {
       transcript: {
         provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
       },
+      realtime_endpoints: [
+        {
+          type: 'webhook',
+          url: `${SERVER_URL}/webhook/transcript`,
+          events: ['transcript.data']
+        }
+      ],
       include_bot_in_recording: { audio: true }
-    },
-    real_time_transcription: {
-      destination_url: `${SERVER_URL}/webhook/transcript`,
-      partial_results: false
     },
     variant: {
       zoom: "web_4_core",
