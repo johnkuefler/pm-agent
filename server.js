@@ -195,7 +195,20 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   return base;
 }
 
-// Dashboard
+// Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header
+// Skips auth if NORA_API_KEY is not set (open access for local dev)
+// Skips auth for same-origin browser requests (dashboard/instructions pages)
+function requireAuth(req, res, next) {
+  const apiKey = process.env.NORA_API_KEY;
+  if (!apiKey) return next(); // no key configured = open access
+  // Allow same-origin browser requests (from dashboard, instructions pages)
+  if (req.headers['sec-fetch-site'] === 'same-origin') return next();
+  const provided = req.query.key || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+  if (provided === apiKey) return next();
+  return res.status(401).json({ error: 'unauthorized — provide ?key= or Authorization: Bearer header' });
+}
+
+// Public routes (no auth) — dashboard, static pages, inbound webhooks
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'dashboard.html'));
 });
@@ -211,16 +224,28 @@ app.get('/architecture', (req, res) => {
 
 // Cowork instructions — plain text reference for scheduled Cowork tasks
 app.get('/cowork-instructions', (req, res) => {
-  const baseUrl = `https://${req.get('host')}`;
   res.type('text/plain').send(`# Nora — Cowork Instructions
 # Generated: ${new Date().toISOString()}
-# Base URL: ${baseUrl}
 
 ## What is Nora?
 Nora is a voice-enabled AI project management assistant for LimeLight Marketing. She joins meetings via Recall.ai's Output Media feature, using OpenAI's Realtime API for real-time voice conversations. She also responds to Slack messages. She has persistent memory, a task queue, and saves full meeting transcripts. External agents (like Cowork scheduled tasks) process her task queue and analyze transcripts.
 
-## Base URL
-${baseUrl}
+## Authentication
+
+The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts.
+All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
+
+Pass the key as a query parameter or header:
+- Query param: ?key=YOUR_NORA_API_KEY (append to any request URL)
+- Header: Authorization: Bearer YOUR_NORA_API_KEY
+
+Examples:
+  GET /tasks?status=pending&key=YOUR_KEY
+  GET /memory?key=YOUR_KEY
+  GET /teamwork/tasks/12345/stage?stage=Done&key=YOUR_KEY
+  POST /notify  (with header: Authorization: Bearer YOUR_KEY)
+
+If NORA_API_KEY is not set in the environment, auth is disabled (open access for local dev).
 
 ## API Endpoints
 
@@ -350,10 +375,10 @@ ${baseUrl}
 ## Processing Pending Tasks
 
 1. Fetch pending tasks:
-   GET ${baseUrl}/tasks?status=pending
+   GET /tasks?status=pending
 
 2. For each pending task, read the task's "context" field first — it contains the conversation snippet around when the task was requested. If the task has a "source_bot_id", you can fetch the full meeting transcript for deeper context:
-   GET ${baseUrl}/transcripts/{source_bot_id}
+   GET /transcripts/{source_bot_id}
    Use this to understand nuances like who should be invited, what tone to use, specific details mentioned in conversation, etc.
 
 3. Determine the right action:
@@ -366,7 +391,7 @@ ${baseUrl}
 3. Execute the action using the appropriate MCP tool.
 
 4. Notify the requester that it's done:
-   POST ${baseUrl}/notify
+   POST /notify
    {
      "channel": "C0123ABCDEF",  // from task.source_channel (strip "slack:" prefix)
      "text": "Done — scheduled the follow-up with Kyle for Tuesday at 2pm."
@@ -375,19 +400,19 @@ ${baseUrl}
    - If source_channel is "zoom", use task.source_user to DM them instead.
 
 5. Mark the task as done:
-   PATCH ${baseUrl}/tasks/{task_id}/complete
+   PATCH /tasks/{task_id}/complete
 
 6. Optionally, add a memory about what was done:
-   POST ${baseUrl}/memory
+   POST /memory
    { "fact": "Sent Q2 report to Brandee on 2026-03-14", "source": "auto" }
 
 ## Processing Transcripts
 
 1. Check for new transcripts:
-   GET ${baseUrl}/transcripts
+   GET /transcripts
 
 2. For each transcript you haven't processed yet, fetch the full content:
-   GET ${baseUrl}/transcripts/{bot_id}
+   GET /transcripts/{bot_id}
 
 3. Analyze the transcript for:
    - Action items and decisions not already captured as tasks
@@ -395,11 +420,11 @@ ${baseUrl}
    - Follow-ups that need scheduling
 
 4. Create new tasks for any action items found:
-   POST ${baseUrl}/tasks
+   POST /tasks
    { "action": "...", "detail": "From meeting transcript", "assignee": "...", "due": "..." }
 
 5. Post a meeting summary to Slack:
-   POST ${baseUrl}/notify
+   POST /notify
    {
      "channel": "C0123ABCDEF",
      "text": "Meeting summary from [date]:\\n- Key decisions...\\n- Action items..."
@@ -419,7 +444,7 @@ ${baseUrl}
 Some tasks will have action: "research". These are auto-created when Nora detected a knowledge gap in her response — she didn't have enough context to answer well. The goal is to fill that gap so she's prepared next time.
 
 1. Identify research tasks:
-   GET ${baseUrl}/tasks?status=pending
+   GET /tasks?status=pending
    Filter for tasks where action === "research"
 
 2. Read the task's "detail" field — it describes what to research and may include search terms.
@@ -432,7 +457,7 @@ Some tasks will have action: "research". These are auto-created when Nora detect
    - Slack: Search channel history for discussions about the topic
 
 4. Synthesize findings into concise memory facts and save them:
-   POST ${baseUrl}/memory
+   POST /memory
    { "fact": "Concise fact learned from research", "source": "auto", "project": "ProjectName" }
 
    Guidelines for research memories:
@@ -443,12 +468,12 @@ Some tasks will have action: "research". These are auto-created when Nora detect
    - Only save facts that are accurate and clearly stated in the source docs
 
 5. Notify the original requester (if applicable):
-   POST ${baseUrl}/notify
+   POST /notify
    Use the task's source_channel/source_user to let them know Nora has updated her knowledge.
    Example: "I've done some research on [topic] and updated my notes. Ask me again anytime!"
 
 6. Mark the research task as done:
-   PATCH ${baseUrl}/tasks/{task_id}/complete
+   PATCH /tasks/{task_id}/complete
 `);
 });
 
@@ -843,7 +868,7 @@ async function handleSlack(channel, user, text, threadTs) {
 }
 
 // Notify endpoint — Claude Code calls this to have Nora post follow-ups
-app.post('/notify', async (req, res) => {
+app.post('/notify', requireAuth, async (req, res) => {
   const { channel, user, text, blocks, file_url, file_name, thread_ts } = req.body;
 
   // Determine where to send — channel ID, or DM a user
@@ -896,9 +921,9 @@ app.post('/notify', async (req, res) => {
 });
 
 // Memory API — view and edit Nora's memory
-app.get('/memory', (req, res) => res.json(loadMemory()));
+app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
 
-app.post('/memory', (req, res) => {
+app.post('/memory', requireAuth, (req, res) => {
   const { fact, source, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
   const memory = loadMemory();
@@ -908,7 +933,7 @@ app.post('/memory', (req, res) => {
   res.json({ ok: true, memory });
 });
 
-app.delete('/memory/:index', (req, res) => {
+app.delete('/memory/:index', requireAuth, (req, res) => {
   const memory = loadMemory();
   const idx = parseInt(req.params.index);
   if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
@@ -918,7 +943,7 @@ app.delete('/memory/:index', (req, res) => {
   res.json({ ok: true, memory });
 });
 
-app.put('/memory/:index', (req, res) => {
+app.put('/memory/:index', requireAuth, (req, res) => {
   const memory = loadMemory();
   const idx = parseInt(req.params.index);
   if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
@@ -931,16 +956,16 @@ app.put('/memory/:index', (req, res) => {
   res.json({ ok: true, memory });
 });
 
-app.delete('/memory', (req, res) => {
+app.delete('/memory', requireAuth, (req, res) => {
   saveMemory([]);
   console.log('🧠 Memory cleared');
   res.json({ ok: true, memory: [] });
 });
 
 // Projects API — manage project knowledge bases
-app.get('/projects', (req, res) => res.json(loadProjects()));
+app.get('/projects', requireAuth, (req, res) => res.json(loadProjects()));
 
-app.get('/projects/:name', (req, res) => {
+app.get('/projects/:name', requireAuth, (req, res) => {
   const projects = loadProjects();
   const project = projects.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
   if (!project) return res.status(404).json({ error: 'Project not found' });
@@ -950,7 +975,7 @@ app.get('/projects/:name', (req, res) => {
   res.json({ ...project, memories: projectMemories });
 });
 
-app.post('/projects', (req, res) => {
+app.post('/projects', requireAuth, (req, res) => {
   const { name, details } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
   const projects = loadProjects();
@@ -963,7 +988,7 @@ app.post('/projects', (req, res) => {
   res.json({ ok: true, project });
 });
 
-app.put('/projects/:name', (req, res) => {
+app.put('/projects/:name', requireAuth, (req, res) => {
   const projects = loadProjects();
   const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
@@ -976,7 +1001,7 @@ app.put('/projects/:name', (req, res) => {
   res.json({ ok: true, project: projects[idx] });
 });
 
-app.delete('/projects/:name', (req, res) => {
+app.delete('/projects/:name', requireAuth, (req, res) => {
   const projects = loadProjects();
   const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
@@ -987,21 +1012,21 @@ app.delete('/projects/:name', (req, res) => {
 });
 
 // Task queue API
-app.get('/tasks', (req, res) => {
+app.get('/tasks', requireAuth, (req, res) => {
   const tasks = loadTasks();
   const status = req.query.status; // ?status=pending or ?status=done
   if (status) return res.json(tasks.filter(t => t.status === status));
   res.json(tasks);
 });
 
-app.post('/tasks', (req, res) => {
+app.post('/tasks', requireAuth, (req, res) => {
   const { action, detail, assignee, due } = req.body;
   if (!action) return res.status(400).json({ error: 'action is required' });
   const id = addTask({ action, detail: detail || '', assignee: assignee || '', due: due || '' });
   res.json({ ok: true, id });
 });
 
-app.patch('/tasks/:id/complete', (req, res) => {
+app.patch('/tasks/:id/complete', requireAuth, (req, res) => {
   const tasks = loadTasks();
   const task = tasks.find(t => t.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'task not found' });
@@ -1013,7 +1038,7 @@ app.patch('/tasks/:id/complete', (req, res) => {
   res.json({ ok: true, task });
 });
 
-app.delete('/tasks/:id', (req, res) => {
+app.delete('/tasks/:id', requireAuth, (req, res) => {
   const tasks = loadTasks();
   const idx = tasks.findIndex(t => t.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: 'task not found' });
@@ -1023,7 +1048,7 @@ app.delete('/tasks/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-app.put('/tasks/:id', (req, res) => {
+app.put('/tasks/:id', requireAuth, (req, res) => {
   const tasks = loadTasks();
   const task = tasks.find(t => t.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'task not found' });
@@ -1038,7 +1063,7 @@ app.put('/tasks/:id', (req, res) => {
 });
 
 // Teamwork: update a task's workflow stage by task ID and stage name
-app.get('/teamwork/tasks/:taskId/stage', async (req, res) => {
+app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
   const stage = req.query.stage;
   const { taskId } = req.params;
   if (!stage) return res.status(400).json({ error: 'stage is required' });
@@ -1096,7 +1121,7 @@ app.get('/teamwork/tasks/:taskId/stage', async (req, res) => {
 });
 
 // Transcript API — list and retrieve saved meeting transcripts
-app.get('/transcripts', (req, res) => {
+app.get('/transcripts', requireAuth, (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   try {
     const files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json'));
@@ -1125,7 +1150,7 @@ app.get('/transcripts', (req, res) => {
   }
 });
 
-app.get('/transcripts/:botId', (req, res) => {
+app.get('/transcripts/:botId', requireAuth, (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
   try {
@@ -1137,7 +1162,7 @@ app.get('/transcripts/:botId', (req, res) => {
   }
 });
 
-app.delete('/transcripts/:botId', (req, res) => {
+app.delete('/transcripts/:botId', requireAuth, (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
   try {
@@ -1150,7 +1175,7 @@ app.delete('/transcripts/:botId', (req, res) => {
   }
 });
 
-app.put('/transcripts/:botId/utterances/:index', (req, res) => {
+app.put('/transcripts/:botId/utterances/:index', requireAuth, (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
   try {
@@ -1169,7 +1194,7 @@ app.put('/transcripts/:botId/utterances/:index', (req, res) => {
   }
 });
 
-app.delete('/transcripts/:botId/utterances/:index', (req, res) => {
+app.delete('/transcripts/:botId/utterances/:index', requireAuth, (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
   try {

@@ -60,6 +60,22 @@
 
     <!-- Nora's Brain -->
     <div class="section">
+      <h2>Authentication</h2>
+      <p>The following endpoints require an API key: <code>/memory</code>, <code>/projects</code>, <code>/tasks</code>, <code>/teamwork</code>, <code>/notify</code>, and <code>/transcripts</code>. All other endpoints (dashboard, webhooks, join, mute, etc.) are open.</p>
+      <p>Pass the API key in one of two ways:</p>
+      <ul>
+        <li><strong>Query parameter:</strong> <code>?key=YOUR_NORA_API_KEY</code> — simplest for GET requests and tools</li>
+        <li><strong>Header:</strong> <code>Authorization: Bearer YOUR_NORA_API_KEY</code></li>
+      </ul>
+      <p>If <code>NORA_API_KEY</code> is not set in the environment, auth is disabled (open access for local dev).</p>
+      <pre>// Examples:
+GET /tasks?status=pending&amp;key=YOUR_KEY
+GET /memory?key=YOUR_KEY
+GET /teamwork/tasks/12345/stage?stage=Done&amp;key=YOUR_KEY
+POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
+    </div>
+
+    <div class="section">
       <h2>Nora's System Prompt</h2>
       <p>This is loaded from <code>nora-prompt.md</code> and injected as the system prompt on every Claude call. Memory facts are appended at the end. Also available as raw text at <code>/prompt</code>.</p>
       <div id="prompt-content" class="prompt-box">Loading...</div>
@@ -402,6 +418,7 @@ ELEVENLABS_API_KEY  — ElevenLabs API key for TTS
 ELEVENLABS_VOICE_ID — ElevenLabs voice ID (vVbAf9jRhIe9lro41Tgc)
 TEAMWORK_API_KEY    — Teamwork API key (for workflow stage updates)
 TEAMWORK_BASE_URL   — Teamwork base URL (e.g. https://yourcompany.teamwork.com)
+NORA_API_KEY        — API key for authenticating requests (omit to disable auth)
 PORT                — Server port (Railway sets automatically)</pre>
     </div>
 
