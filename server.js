@@ -295,6 +295,15 @@ ${baseUrl}
 - GET  /instructions            — Full HTML reference page
 - POST /join                    — Send Nora to a Zoom meeting. Body: { "meeting_url": "..." }
 
+### Teamwork Integration
+- GET  /teamwork/tasks/:taskId/stage?stage=In+Progress — Move a Teamwork task to a different workflow stage
+  Query param: stage (required, case-insensitive)
+  The taskId is the Teamwork task ID (numeric). Stage name matching is case-insensitive.
+  Automatically looks up the task's project, finds the workflow, and moves the task to the matching stage.
+  Use this instead of Teamwork MCP for stage/board column changes — the MCP does not support workflow operations.
+  Response: { "ok": true, "taskId": "...", "stage": "...", "workflowId": ..., "stageId": ... }
+  Returns 404 if stage name not found in any workflow for the task's project.
+
 ## Schemas
 
 ### Task Schema
@@ -1026,6 +1035,64 @@ app.put('/tasks/:id', (req, res) => {
   saveTasks(tasks);
   console.log('✏️ Task updated:', task.id, task.action);
   res.json({ ok: true, task });
+});
+
+// Teamwork: update a task's workflow stage by task ID and stage name
+app.get('/teamwork/tasks/:taskId/stage', async (req, res) => {
+  const stage = req.query.stage;
+  const { taskId } = req.params;
+  if (!stage) return res.status(400).json({ error: 'stage is required' });
+
+  const twKey = process.env.TEAMWORK_API_KEY;
+  const twBase = process.env.TEAMWORK_BASE_URL; // e.g. https://yourcompany.teamwork.com
+  if (!twKey || !twBase) return res.status(500).json({ error: 'TEAMWORK_API_KEY and TEAMWORK_BASE_URL must be set' });
+
+  const twAuth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
+  const twHeaders = { Authorization: twAuth, 'Content-Type': 'application/json' };
+
+  try {
+    // 1. Get the task to find its project ID — try v1 endpoint first (known structure from existing client)
+    const taskRes = await axios.get(`${twBase}/tasks/${taskId}.json`, { headers: twHeaders });
+    const taskData = taskRes.data;
+    const todoItem = taskData?.['todo-item'] || taskData?.task;
+    const projectId = todoItem?.['project-id'] || todoItem?.project?.id || todoItem?.projectId;
+    if (!projectId) return res.status(404).json({ error: 'could not determine project for task' });
+
+    // 2. Get workflows for the project
+    const wfRes = await axios.get(`${twBase}/projects/api/v3/projects/${projectId}/workflows.json`, { headers: twHeaders });
+    const workflows = wfRes.data?.workflows || [];
+    if (workflows.length === 0) return res.status(404).json({ error: 'no workflows found for this project' });
+
+    // 3. Search each workflow's stages for a matching stage name
+    let targetWorkflowId = null;
+    let targetStageId = null;
+
+    for (const wf of workflows) {
+      const stagesRes = await axios.get(`${twBase}/projects/api/v3/workflows/${wf.id}/stages.json`, { headers: twHeaders });
+      const stages = stagesRes.data?.stages || [];
+      const match = stages.find(s => s.name.toLowerCase() === stage.toLowerCase());
+      if (match) {
+        targetWorkflowId = wf.id;
+        targetStageId = match.id;
+        break;
+      }
+    }
+
+    if (!targetStageId) return res.status(404).json({ error: `stage "${stage}" not found in any workflow for this project` });
+
+    // 4. Move the task to the target stage
+    await axios.post(
+      `${twBase}/projects/api/v3/workflows/${targetWorkflowId}/stages/${targetStageId}/tasks.json`,
+      { taskIds: [parseInt(taskId, 10)] },
+      { headers: twHeaders }
+    );
+
+    console.log(`✅ Teamwork task ${taskId} moved to stage "${stage}"`);
+    res.json({ ok: true, taskId, stage, workflowId: targetWorkflowId, stageId: targetStageId });
+  } catch (err) {
+    console.error('Teamwork stage update error:', err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ error: err.response?.data || err.message });
+  }
 });
 
 // Transcript API — list and retrieve saved meeting transcripts

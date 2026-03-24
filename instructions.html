@@ -341,6 +341,57 @@
       </div>
     </div>
 
+    <!-- Teamwork Integration -->
+    <div class="section">
+      <h2>Teamwork Integration</h2>
+      <p>Direct Teamwork API endpoints for operations not supported by the Teamwork MCP. These endpoints proxy requests to the Teamwork API using server-side credentials.</p>
+
+      <h3>Move a Task to a Workflow Stage</h3>
+      <p>Use this endpoint to move a Teamwork task to a different board/workflow stage (e.g. "To Do" → "In Progress" → "Done"). The Teamwork MCP (<code>twprojects</code>) does not support workflow stage changes, so use this endpoint instead.</p>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/teamwork/tasks/:taskId/stage?stage=In+Progress</span></div>
+        <div class="endpoint-desc">Move a Teamwork task to a different workflow stage by stage name (via query param)</div>
+        <pre>// Example:
+GET /teamwork/tasks/12345678/stage?stage=In+Progress
+
+// Response:
+{
+  "ok": true,
+  "taskId": "12345678",
+  "stage": "In Progress",
+  "workflowId": 98765,
+  "stageId": 54321
+}</pre>
+      </div>
+
+      <h3>How it works</h3>
+      <ul>
+        <li>Looks up the task to find its project ID</li>
+        <li>Fetches all workflows (boards) for that project</li>
+        <li>Searches each workflow's stages for a case-insensitive match on the stage name</li>
+        <li>Moves the task to the matched stage</li>
+      </ul>
+
+      <h3>Usage notes</h3>
+      <ul>
+        <li>The <code>taskId</code> is the Teamwork task ID (numeric), not a Nora task ID</li>
+        <li>Stage name matching is case-insensitive (e.g. "in progress" matches "In Progress")</li>
+        <li>If the project has multiple workflows/boards, all are searched until a matching stage is found</li>
+        <li>Returns <code>404</code> if the stage name doesn't exist in any workflow for the task's project</li>
+      </ul>
+
+      <h3>Example workflow</h3>
+      <pre>// 1. Find the Teamwork task ID (via Teamwork MCP or from a task's detail field)
+const teamworkTaskId = "12345678";
+
+// 2. Move it to a new stage
+GET {BASE_URL}/teamwork/tasks/12345678/stage?stage=In+Progress
+
+// 3. Common stage names: "Backlog", "To Do", "In Progress", "In Review", "Done"
+//    (actual names depend on how the board is configured in Teamwork)</pre>
+    </div>
+
     <!-- Environment -->
     <div class="section">
       <h2>Environment Variables</h2>
@@ -349,6 +400,8 @@ RECALL_REGION       — Recall.ai region (us-west-2)
 ANTHROPIC_API_KEY   — Anthropic API key for Claude
 ELEVENLABS_API_KEY  — ElevenLabs API key for TTS
 ELEVENLABS_VOICE_ID — ElevenLabs voice ID (vVbAf9jRhIe9lro41Tgc)
+TEAMWORK_API_KEY    — Teamwork API key (for workflow stage updates)
+TEAMWORK_BASE_URL   — Teamwork base URL (e.g. https://yourcompany.teamwork.com)
 PORT                — Server port (Railway sets automatically)</pre>
     </div>
 
