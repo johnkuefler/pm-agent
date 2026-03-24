@@ -563,6 +563,11 @@ app.post('/join', async (req, res) => {
             type: 'webhook',
             url: `${SERVER_URL}/webhook/transcript`,
             events: ['transcript.data']
+          },
+          {
+            type: 'webhook',
+            url: `${SERVER_URL}/webhook/chat`,
+            events: ['participant_events.chat_message']
           }
         ],
         include_bot_in_recording: { audio: true }
@@ -636,14 +641,124 @@ app.post('/webhook/transcript', async (req, res) => {
   }
 });
 
-// Zoom chat trigger — type "@nora your question" in chat (kept for backward compatibility)
+// Zoom chat trigger — type "@nora your question" in chat, Nora replies via chat
+const chatSessions = {}; // bot_id → conversation history for chat context
+
 app.post('/webhook/chat', async (req, res) => {
   res.sendStatus(200);
-  const { bot_id, data } = req.body;
-  const text = data?.chat_message?.text || '';
-  if (!text.toLowerCase().startsWith('@nora')) return;
-  // Chat triggers are informational only with output_media — Nora handles voice directly
-  console.log(`💬 Chat message received: ${text}`);
+
+  // Recall.ai participant_events.chat_message payload
+  const eventType = req.body?.event;
+  const eventData = req.body?.data?.data;
+
+  if (eventType !== 'participant_events.chat_message') return;
+
+  const participant = eventData?.participant;
+  const chatData = eventData?.data;
+  const text = chatData?.text || '';
+  const speaker = participant?.name || 'Unknown';
+
+  // Also try legacy format for backward compatibility
+  const legacyText = req.body?.data?.chat_message?.text;
+  const finalText = text || legacyText || '';
+
+  if (!finalText) return;
+
+  // Determine bot_id from the webhook payload
+  const bot_id = req.body?.data?.bot?.id;
+  if (!bot_id) {
+    console.log(`💬 Chat (no bot_id): [${speaker}]: ${finalText}`);
+    return;
+  }
+
+  console.log(`💬 Zoom chat [${speaker}]: ${finalText}`);
+
+  // Add to transcript if session exists
+  const session = sessions[bot_id];
+  if (session) {
+    session.transcript.push({ speaker: `${speaker} (chat)`, text: finalText, timestamp: new Date().toISOString() });
+    session.buffer.push(`${speaker} (chat): ${finalText}`);
+    if (session.buffer.length > 20) session.buffer.shift();
+  }
+
+  // Only respond if message contains @nora (case-insensitive)
+  if (!finalText.toLowerCase().includes('@nora') && !finalText.toLowerCase().includes('nora')) return;
+
+  // Strip "@nora" or "nora" from the beginning and clean up
+  const query = finalText.replace(/@?nora/gi, '').trim();
+  if (!query) return;
+
+  console.log(`💬 Chat trigger from ${speaker}: ${query}`);
+
+  try {
+    // Maintain per-bot chat conversation history
+    if (!chatSessions[bot_id]) chatSessions[bot_id] = [];
+    const history = chatSessions[bot_id];
+
+    history.push({ role: 'user', content: `[${speaker} via Zoom chat]: ${query}` });
+
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 300,
+        temperature: 0.9,
+        system: buildSystemPrompt('slack'), // use slack-style formatting (markdown ok, concise)
+        messages: history
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        }
+      }
+    );
+
+    const reply = response.data.content
+      .filter(b => b.type === 'text')
+      .map(b => b.text).join(' ');
+
+    console.log('🤖 Nora (chat):', reply);
+    history.push({ role: 'assistant', content: reply });
+    if (history.length > 20) history.splice(0, 2);
+
+    // Send reply back to Zoom chat via Recall.ai
+    await axios.post(
+      `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
+      { message: reply },
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+    );
+
+    // Add Nora's chat reply to transcript
+    if (session) {
+      session.transcript.push({ speaker: 'Nora (chat)', text: reply, timestamp: new Date().toISOString() });
+      try {
+        const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+        fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
+      } catch (err) {
+        console.error('Transcript save error:', err.message);
+      }
+    }
+
+    // Extract tasks/memory from chat interaction
+    const meetingContext = session ? session.buffer.slice(-10).join('\n') : query;
+    if (!isAskingClarification(reply)) {
+      extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
+      extractMemory(meetingContext, query, reply, bot_id).catch(() => {});
+      extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
+    }
+  } catch (err) {
+    console.error('Chat response error:', err.response?.data || err.message);
+    // Try to send error message back to chat
+    try {
+      await axios.post(
+        `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
+        { message: "Sorry, I hit an error processing that." },
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+      );
+    } catch {}
+  }
 });
 
 // Proactive mode toggle — enable/disable Nora interjecting without wake word
@@ -744,6 +859,7 @@ app.post('/webhook/status', async (req, res) => {
       }
     }
     delete sessions[bot_id];
+    delete chatSessions[bot_id];
     if (activeBotId === bot_id) activeBotId = null;
   }
 });
