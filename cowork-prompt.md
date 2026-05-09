@@ -223,22 +223,33 @@ For each email that looks relevant (not automated notifications, not marketing):
 
 ## Step 5: Check Slack for Missed Messages (Safety Net)
 
-The Slack live handler now handles DMs, @mentions, AND follow-ups in any thread Nora has joined (with auto-stale, heuristic skips, and a Claude gate to prevent spam). Most Slack activity directed at Nora is already handled live by the time this run starts — this step is a **safety net** for the rare case where the live handler missed something (server restart, signature failure, app subscription gap, etc.).
+The Slack live handler handles DMs, @mentions, AND follow-ups in any thread Nora has joined (with auto-stale, heuristic skips, and a Claude gate to prevent spam). Most Slack activity directed at Nora is already handled live by the time this run starts — this step is a **safety net** for the rare case where the live handler missed something (server restart, signature failure, app subscription gap, etc.).
 
-Search Slack for recent activity directed at Nora using `slack_search_public_and_private` for "nora".
+**Use Nora's API, not `slack_search_public_and_private`.** The user account that cowork is connected to may not be a member of every channel the Nora bot is in, so a user-account search can silently miss @mentions in channels the bot is in but the user isn't. Hit the server-side endpoint that uses the bot's point of view instead:
 
-Before responding, check whether it's already been handled:
+```
+GET /slack/unhandled-mentions?minutes=120
+```
 
-1. **Only look at messages from the last 2 hours.** Anything older was either handled live, replied to in-thread, or is too stale to surface now.
-2. **Check if there's already a reply from Nora in the thread** — if the thread already has a Nora-bot response, skip it.
-3. **Check `/slack/threads`** — if Nora is currently joined to that thread (`active: true`), the live handler is responsible. Don't double-respond.
-4. **Check memory for a marker** — look for "Responded to Slack msg [timestamp]" in memory. If it exists, skip.
+This already filters out:
+- Channels the bot isn't a member of
+- DMs (those go through the live handler reliably)
+- Bot-authored messages
+- Mentions whose thread is in `/slack/threads` (already responded to)
 
-For messages that genuinely slipped through:
+So whatever comes back is a genuine miss. For each item:
 
-- Respond in-thread using `/notify` with `thread_ts` (which also marks Nora as joined to that thread, so future replies will reach her live).
-- Use Nora's tone: direct, specific, no fluff
-- After responding, save a memory: `POST /memory { "fact": "Responded to Slack msg [timestamp] in #channel from [user] re: [topic]", "source": "auto" }`
+1. **Respond in-thread via `/notify` with `thread_ts`.** Use the mention's `thread_ts` if set, otherwise its `ts` (which starts a new thread on that message). The `/notify` endpoint auto-marks Nora as joined to the thread, so the same mention won't reappear next run, and any user follow-ups will reach the live handler without re-mention.
+2. Use Nora's tone: direct, specific, no fluff. The mention sat unanswered for a while — acknowledge briefly without over-apologizing ("Catching up on this — ..." beats "So sorry I missed this!").
+3. After responding, save a memory: `POST /memory { "fact": "Responded (late) to Slack msg [ts] in #[channel] from [user] re: [topic]", "source": "auto" }`
+
+If a returned mention is genuinely not actionable (cold outreach, automated cross-post, etc.), don't respond — but suppress it from future runs by manually marking the thread joined:
+
+```
+POST /slack/threads/{channel}/{thread_ts_or_ts}
+```
+
+This silently records that the mention was seen and decided not to act on, without posting anything. The same mention won't reappear in `/slack/unhandled-mentions` next run.
 
 ## Step 6: Proactive Follow-ups
 

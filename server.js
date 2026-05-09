@@ -529,6 +529,32 @@ For DMs and explicit @mentions, none of the spam guards apply — those always r
   Use when she's been pulled into a thread that doesn't actually need her ongoing presence.
   Response: { "ok": true }
 
+- POST /slack/threads/:channel/:ts — Manually mark a thread as joined WITHOUT posting.
+  Use when /slack/unhandled-mentions surfaces something cowork deliberately wants to skip
+  (cold outreach, automated cross-post, etc.) — calling this suppresses the mention from
+  future unhandled-mentions calls without sending a response.
+  Response: { "ok": true, "joined": { "channel", "thread_ts" } }
+
+- GET  /slack/unhandled-mentions — Find @mentions of the Nora bot that the live handler
+  missed (server restart, signature failure, subscription gap, etc.). Uses the BOT'S
+  point of view via SLACK_BOT_TOKEN, not the user account's — important because the
+  user account cowork is connected to may not be a member of every channel the bot is
+  in, so slack_search_public_and_private would falsely report "0 unhandled."
+  Filters out:
+    - Channels where the bot isn't a member
+    - DMs (those go through the live handler reliably)
+    - Bot-authored messages and message subtype edits
+    - Mentions whose thread is already in /slack/threads (the bot already responded)
+  Query params:
+    ?minutes=120                (look back N minutes, default 120)
+  Response: { "bot_user_id", "since_minutes", "channels_scanned", "channels_total",
+              "scan_errors", "unhandled_count",
+              "unhandled": [{ "channel", "channel_name", "is_private", "ts",
+                               "thread_ts", "user", "text", "permalink_path" }] }
+  Use this in cowork's Slack safety-net step instead of slack_search_public_and_private.
+  Once cowork responds via /notify (with thread_ts = ts or thread_ts), the thread gets
+  auto-marked joined and the same mention won't reappear on the next run.
+
 Slack app config requirement: For thread continuation in channels to work, the Slack app
 must subscribe to message.channels (and message.groups for private channels) — not just
 app_mention. Without those subscriptions, Slack only delivers @mention events and Nora
@@ -1542,6 +1568,126 @@ app.delete('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
   saveSlackThreads(slackJoinedThreads);
   console.log('💬 Slack thread untracked:', key);
   res.json({ ok: true });
+});
+
+// Manually mark a thread as joined without posting. Used by the cowork loop to suppress
+// /slack/unhandled-mentions hits that it deliberately wants to skip (cold outreach,
+// automated cross-posts, etc.) without sending a response. The thread will be filtered
+// out of subsequent unhandled-mentions calls and treated as "active" for thread
+// continuation by the live handler.
+app.post('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
+  const { channel, ts } = req.params;
+  if (!channel || !ts) return res.status(400).json({ error: 'channel and ts are required' });
+  markThreadJoined(channel, ts);
+  console.log('💬 Slack thread manually marked joined:', `${channel}:${ts}`);
+  res.json({ ok: true, joined: { channel, thread_ts: ts } });
+});
+
+// Resolve Nora's bot user ID, falling back to auth.test if it hasn't been
+// captured from a webhook payload yet (e.g., fresh boot with no incoming events).
+async function getNoraBotUserId() {
+  if (noraBotUserId) return noraBotUserId;
+  const r = await axios.post('https://slack.com/api/auth.test', null, {
+    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+  });
+  if (!r.data.ok) throw new Error(`auth.test failed: ${r.data.error}`);
+  noraBotUserId = r.data.user_id;
+  console.log('🤖 Resolved Nora bot user ID via auth.test:', noraBotUserId);
+  return noraBotUserId;
+}
+
+// Find @mentions of the bot in channels Nora's app is a member of that haven't been
+// responded to. This uses the BOT'S point of view (via SLACK_BOT_TOKEN), not the user
+// account's, which is the right perspective for "what did the live handler miss?" —
+// the user account that cowork is connected to may not be a member of the same
+// channels as the bot, so a user-account search would falsely report "0 unhandled."
+//
+// A mention is "unhandled" if the bot hasn't joined its thread (slackJoinedThreads).
+// Since the bot auto-marks threads joined after replying, anything missing from
+// that set is a mention the live handler dropped.
+//
+// Skips DMs entirely — those go through the live handler reliably and there's no
+// channel-membership gap to worry about.
+app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
+  const minutes = Math.max(1, parseInt(req.query.minutes || '120', 10));
+  const sinceUnix = Math.floor((Date.now() - minutes * 60 * 1000) / 1000);
+  const botToken = process.env.SLACK_BOT_TOKEN;
+  if (!botToken) return res.status(500).json({ error: 'SLACK_BOT_TOKEN not set' });
+
+  try {
+    const botUserId = await getNoraBotUserId();
+    const headers = { Authorization: `Bearer ${botToken}` };
+    const mentionToken = `<@${botUserId}>`;
+
+    // List the bot's channel memberships (skip DMs and group DMs).
+    const channels = [];
+    let cursor = '';
+    do {
+      const url = `https://slack.com/api/users.conversations?types=public_channel,private_channel&limit=200${cursor ? `&cursor=${cursor}` : ''}`;
+      const r = await axios.get(url, { headers });
+      if (!r.data.ok) throw new Error(`users.conversations failed: ${r.data.error}`);
+      for (const c of r.data.channels) channels.push(c);
+      cursor = r.data.response_metadata?.next_cursor || '';
+    } while (cursor);
+
+    const unhandled = [];
+    let scanned = 0;
+    let scanErrors = 0;
+
+    for (const channel of channels) {
+      try {
+        const histRes = await axios.get(
+          `https://slack.com/api/conversations.history?channel=${channel.id}&oldest=${sinceUnix}&limit=100`,
+          { headers }
+        );
+        if (!histRes.data.ok) {
+          scanErrors++;
+          continue;
+        }
+        scanned++;
+        for (const msg of histRes.data.messages || []) {
+          // Skip bot-authored messages (including Nora's own replies) and edits/system events
+          if (msg.bot_id || msg.subtype === 'bot_message') continue;
+          if (msg.subtype && msg.subtype !== 'thread_broadcast') continue;
+          if (!msg.text || !msg.text.includes(mentionToken)) continue;
+
+          // The thread the bot would have joined when responding
+          const effectiveThreadTs = msg.thread_ts || msg.ts;
+          if (isThreadJoined(channel.id, effectiveThreadTs)) continue;
+
+          unhandled.push({
+            channel: channel.id,
+            channel_name: channel.name || null,
+            is_private: !!channel.is_private,
+            ts: msg.ts,
+            thread_ts: msg.thread_ts || null,
+            user: msg.user || null,
+            text: msg.text,
+            permalink_path: `archives/${channel.id}/p${msg.ts.replace('.', '')}${msg.thread_ts ? `?thread_ts=${msg.thread_ts}` : ''}`
+          });
+        }
+      } catch (err) {
+        scanErrors++;
+        console.error(`history fetch failed for ${channel.id}:`, err.message);
+      }
+    }
+
+    // Newest first — most actionable mentions surface at the top
+    unhandled.sort((a, b) => parseFloat(b.ts) - parseFloat(a.ts));
+
+    res.json({
+      bot_user_id: botUserId,
+      since_minutes: minutes,
+      channels_scanned: scanned,
+      channels_total: channels.length,
+      scan_errors: scanErrors,
+      unhandled_count: unhandled.length,
+      unhandled
+    });
+  } catch (err) {
+    console.error('unhandled-mentions error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Notify endpoint — Claude Code calls this to have Nora post follow-ups
