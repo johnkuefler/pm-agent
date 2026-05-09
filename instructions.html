@@ -553,6 +553,7 @@ GET /projects/coverage?limit=5
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/unhandled-mentions</span></div>
         <div class="endpoint-desc">Find @mentions of the Nora bot the live handler missed. Uses the bot's POV (via SLACK_BOT_TOKEN), not the user account's — important because the user account cowork is connected to may not be a member of every channel the bot is in. Replaces the cowork loop's old <code>slack_search_public_and_private</code> safety-net check.</div>
+        <p><strong>Slack scopes required:</strong> <code>channels:read</code> + <code>channels:history</code> for public channels; <code>groups:read</code> + <code>groups:history</code> for private channels. Add via OAuth &amp; Permissions and <strong>reinstall the app</strong>. The endpoint degrades gracefully if some scopes are missing — it returns whatever it could read and populates <code>scope_warnings</code>.</p>
         <pre>// Query params (optional):
 //   minutes=120                  look back N minutes (default 120)
 
@@ -566,6 +567,7 @@ GET /slack/unhandled-mentions?minutes=120
   "channels_scanned": 42,
   "channels_total": 42,
   "scan_errors": 0,
+  "scope_warnings": [],     // non-empty if bot is missing scopes (response is partial)
   "unhandled_count": 1,
   "unhandled": [
     {
