@@ -520,7 +520,7 @@ GET /projects/coverage?limit=5
         <li><strong>Output scrubber</strong> — regex check at egress; unapproved + financial pattern detected → reply replaced with safe redirect before posting.</li>
         <li><strong>Memory hygiene</strong> — <code>POST /memory</code> and <code>PUT /memory/:index</code> hard-reject (422) facts containing financial patterns. <code>extractMemory</code> drops auto-extracted financial facts as a backstop on top of the prompt rule.</li>
       </ol>
-      <p>Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy). The list starts empty on first deploy — until populated, ALL users are treated as unapproved (fail-closed). Cowork bootstraps the list on its first run after deploy via <code>slack_search_users</code> lookups.</p>
+      <p>Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy) + account managers (Kyle Tapper, Kayla Clark, Caitlin Blackwell). The list starts empty on first deploy — until populated, ALL users are treated as unapproved (fail-closed). Cowork bootstraps the list on its first run after deploy via <code>slack_search_users</code> lookups.</p>
 
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/financial-approved</span></div>
