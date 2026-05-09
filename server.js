@@ -258,6 +258,63 @@ function markProactivePost(channel) {
   slackProactiveCooldown[channel] = Date.now();
 }
 
+// Financial-info access control. Only users on this approved list may receive replies
+// containing dollar amounts, rates, fees, budgets, or margins from the live Slack handler.
+// Everyone else gets a polite redirect. Approved set = LimeLight PM team + executives.
+//
+// Stored as { userId: displayName } so admin views show who's on the list. The live handler
+// reads this every message; cowork populates it via the admin endpoints (the bootstrap is
+// in cowork-prompt.md so user IDs get looked up once and persisted).
+const SLACK_FINANCIAL_APPROVED_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-financial-approved.json');
+const SLACK_FINANCIAL_APPROVED_PATH_LOCAL = path.join(__dirname, 'slack-financial-approved.json');
+
+function getSlackFinancialApprovedPath() {
+  if (fs.existsSync(VOLUME_DIR)) return SLACK_FINANCIAL_APPROVED_PATH_VOLUME;
+  return SLACK_FINANCIAL_APPROVED_PATH_LOCAL;
+}
+
+function loadFinancialApproved() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(getSlackFinancialApprovedPath(), 'utf8'));
+    // Accept either an array of IDs or an object map for forward-compat
+    if (Array.isArray(raw)) {
+      const map = {};
+      for (const id of raw) map[id] = '';
+      return map;
+    }
+    return raw || {};
+  } catch { return {}; }
+}
+
+function saveFinancialApproved(map) {
+  fs.writeFileSync(getSlackFinancialApprovedPath(), JSON.stringify(map, null, 2));
+}
+
+let slackFinancialApproved = loadFinancialApproved();
+
+function isFinancialApproved(userId) {
+  if (!userId) return false;
+  return Object.prototype.hasOwnProperty.call(slackFinancialApproved, userId);
+}
+
+// Output scrubber: regex check on Nora's reply before posting. Belt-and-suspenders defense
+// when the system prompt's financial restriction fails for an unapproved recipient.
+// Patterns target the obvious leak shapes:
+//   - "$5,000", "$5K", "$5.5M", "$ 5"
+//   - "5000 dollars", "USD 5000"
+//   - financial keywords adjacent to digits ("budget: 5000", "rate of $50")
+const FINANCIAL_PATTERNS = [
+  /\$\s*\d/,
+  /\b\d+(?:[.,]\d+)?\s*(?:dollars?|USD|cents?)\b/i,
+  /\b(?:budget|fee|rate|margin|markup|invoice|burn\s*rate|revenue|spend|estimate|sow|retainer|hourly|salary|comp|compensation|payroll)\b[^.\n]{0,40}\d/i,
+  /\b(?:profitability|utilization|over[-\s]?service|target\s*margin)\b[^.\n]{0,30}\d/i
+];
+
+function containsFinancialContent(text) {
+  if (!text) return false;
+  return FINANCIAL_PATTERNS.some(p => p.test(text));
+}
+
 function addTask(task) {
   const tasks = loadTasks();
   const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -601,6 +658,51 @@ When proactive is enabled for a channel:
 
 - DELETE /slack/proactive-channels/:channel — Disable proactive speaking and clear cooldown.
   Response: { "ok": true, "channel", "enabled": false }
+
+### Financial-info access control
+
+The live Slack handler enforces a per-user gate on financial information. Replies to users
+NOT on the approved list have dollar amounts / rates / fees / budgets / margins stripped
+or replaced with a polite redirect. Three layers of defense:
+
+  1. System-prompt gate — the handler tells the model the recipient's approval status
+     before generating; unapproved → "never share financial figures, redirect instead."
+  2. Output scrubber — regex check on the generated reply at egress; if recipient is
+     unapproved AND reply contains financial patterns, the whole reply is replaced
+     with the safe redirect before posting. Catches model rule-violations.
+  3. Memory hygiene — POST /memory and PUT /memory/:index reject facts containing
+     financial patterns (422). extractMemory's prompt tells the model to rephrase
+     qualitatively, and a regex backstop drops financial facts that slip through.
+
+Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy).
+
+- GET  /slack/financial-approved — List approved Slack user IDs and names.
+  Response: { "count", "approved": [{ "user_id", "name" }] }
+
+- POST /slack/financial-approved/:userId — Add a user.
+  Body (optional): { "name": "John Kuefler" }
+  Response: { "ok": true, "user_id", "name" }
+
+- DELETE /slack/financial-approved/:userId — Remove a user.
+  Response: { "ok": true, "user_id" }
+
+### Approved-list bootstrap (run once on first cowork run after deploy)
+
+The financial-approved list starts empty. On the first cowork run after this feature deploys,
+populate it via slack_search_users lookups for each approved person, then POST each user_id
+with their name. Save a memory marker once done so future runs don't repeat the lookup:
+
+  Approved names to look up: John Kuefler, Mallory Maryman, Gracie Krokroskia, Kinsey Landry,
+  Brandee Johnson, Andy Warren.
+
+  For each, slack_search_users by name → POST /slack/financial-approved/{user_id} with
+  body { "name": "<name>" }. Then save:
+    POST /memory { "fact": "Bootstrapped slack-financial-approved list on YYYY-MM-DD with
+                            the 6 PM/exec users", "source": "auto" }
+
+Until the list is populated, ALL users are treated as unapproved (fail-closed). That's safe
+behavior for the gap window but means John can't get financial details via Slack live until
+his ID is added — populate the list ASAP after the deploy.
 
 - GET  /slack/unhandled-mentions — Find @mentions of the Nora bot that the live handler
   missed (server restart, signature failure, subscription gap, etc.). Uses the BOT'S
@@ -1595,6 +1697,16 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       systemPrompt += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
     }
 
+    // Financial-info access control. The recipient (`user`) is checked against the approved
+    // list; the system prompt is told what the recipient can see. The output scrubber after
+    // Claude responds is defense in depth.
+    const financialApproved = isFinancialApproved(user);
+    if (financialApproved) {
+      systemPrompt += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list — you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
+    } else {
+      systemPrompt += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context — those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack — reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
+    }
+
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
@@ -1613,7 +1725,7 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       }
     );
 
-    const reply = response.data.content
+    let reply = response.data.content
       .filter(b => b.type === 'text')
       .map(b => b.text).join(' ');
 
@@ -1623,6 +1735,14 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       // Don't pollute history with the user-line + nothing; pop the user message we just added
       history.pop();
       return;
+    }
+
+    // Defense-in-depth output scrubber: if the system prompt's financial restriction failed
+    // for an unapproved recipient, catch the leak at egress before posting. Also store the
+    // scrubbed version in history so future replies don't re-leak the same content.
+    if (!financialApproved && containsFinancialContent(reply)) {
+      console.warn(`💰 Financial scrubber blocked leak to unapproved user ${user}; original reply length=${reply.length}`);
+      reply = "I can't share financial details over Slack — reach out to John or Mallory and they can help.";
     }
 
     console.log('🤖 Nora (Slack):', reply);
@@ -1755,6 +1875,36 @@ app.delete('/slack/proactive-channels/:channel', requireAuth, (req, res) => {
   delete slackProactiveCooldown[channel];
   console.log('💬 Slack proactive speaking disabled for channel:', channel);
   res.json({ ok: true, channel, enabled: false });
+});
+
+// Financial-info approved list admin. Anyone NOT on this list gets financial details
+// stripped from live Slack handler responses (system-prompt gate + output scrubber).
+// Source of truth for who can receive dollar amounts / margins / rates / budgets:
+// LimeLight PM team (John, Mallory, Gracie, Kinsey) + executives (John, Brandee, Andy).
+app.get('/slack/financial-approved', requireAuth, (req, res) => {
+  const list = Object.entries(slackFinancialApproved).map(([id, name]) => ({ user_id: id, name }));
+  res.json({ count: list.length, approved: list });
+});
+
+app.post('/slack/financial-approved/:userId', requireAuth, (req, res) => {
+  const { userId } = req.params;
+  if (!userId) return res.status(400).json({ error: 'userId required' });
+  const name = (req.body && typeof req.body.name === 'string') ? req.body.name : '';
+  slackFinancialApproved[userId] = name;
+  saveFinancialApproved(slackFinancialApproved);
+  console.log(`💰 Financial-approved user added: ${userId}${name ? ` (${name})` : ''}`);
+  res.json({ ok: true, user_id: userId, name });
+});
+
+app.delete('/slack/financial-approved/:userId', requireAuth, (req, res) => {
+  const { userId } = req.params;
+  if (!Object.prototype.hasOwnProperty.call(slackFinancialApproved, userId)) {
+    return res.status(404).json({ error: 'user not on approved list' });
+  }
+  delete slackFinancialApproved[userId];
+  saveFinancialApproved(slackFinancialApproved);
+  console.log('💰 Financial-approved user removed:', userId);
+  res.json({ ok: true, user_id: userId });
 });
 
 // Resolve Nora's bot user ID, falling back to auth.test if it hasn't been
@@ -1931,6 +2081,16 @@ app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
 app.post('/memory', requireAuth, (req, res) => {
   const { fact, source, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
+  // Reject facts containing financial content — memory entries get inlined into the
+  // live handler's system prompt and could be shared with users not on the financial
+  // approved list. Rephrase qualitatively ("project is in active scoping") instead of
+  // including specifics ("project quoted at $47K").
+  if (containsFinancialContent(fact)) {
+    return res.status(422).json({
+      error: 'financial content blocked',
+      message: 'Facts containing dollar amounts, rates, fees, budgets, or margins cannot be saved to memory because memory is shared across all live responses. Rephrase qualitatively or skip saving.'
+    });
+  }
   // Normalize project to canonical casing (creating a stub record if needed).
   // This stops the drift the cowork loop has to clean up daily — projects referenced
   // by memories are guaranteed to exist in /projects.
@@ -1959,6 +2119,12 @@ app.put('/memory/:index', requireAuth, (req, res) => {
   if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
   const { fact, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
+  if (containsFinancialContent(fact)) {
+    return res.status(422).json({
+      error: 'financial content blocked',
+      message: 'Facts containing dollar amounts, rates, fees, budgets, or margins cannot be saved to memory because memory is shared across all live responses. Rephrase qualitatively or skip saving.'
+    });
+  }
   memory[idx].fact = fact;
   if (project !== undefined) {
     memory[idx].project = project ? ensureProject(project) : '';
@@ -2419,7 +2585,11 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 300,
         temperature: 0,
-        system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return []. Respond with a JSON array of objects with "fact" (string) and "project" (string — project name if relevant, empty string if general).${projectHint}`,
+        system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return [].
+
+CRITICAL: NEVER save facts that contain dollar amounts, rates, fees, budgets, margins, hourly rates, salary/comp figures, or any specific financial figures. Memory entries get inlined into prompts that respond to anyone in Slack — including contractors and vendors who shouldn't see financials. If a fact would contain financial specifics, EITHER rephrase qualitatively (e.g., "Pitsco has an established budget for the rebrand" instead of "Pitsco budget is $50K"; "the SOW for Acme is in active review" instead of "Acme SOW is $47,500") OR skip saving it entirely. The qualitative rephrase is the only acceptable form for financial-adjacent facts.
+
+Respond with a JSON array of objects with "fact" (string) and "project" (string — project name if relevant, empty string if general).${projectHint}`,
         messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
       },
       {
@@ -2441,11 +2611,20 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
     const memory = loadMemory();
     const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
     let added = 0;
+    let blockedFinancial = 0;
     const projectsTouched = new Set();
     for (const item of items) {
       // Support both old format (plain strings) and new format (objects with fact + project)
       const fact = typeof item === 'string' ? item : item.fact;
       const rawProject = typeof item === 'string' ? '' : (item.project || '');
+      // Defense-in-depth: drop facts that contain financial content even after the prompt
+      // told the model to rephrase qualitatively. Memory entries get inlined into prompts
+      // that respond to anyone in Slack — financial leaks via memory are exactly what
+      // the live handler's scrubber is also guarding against.
+      if (containsFinancialContent(fact)) {
+        blockedFinancial++;
+        continue;
+      }
       // Normalize project name to canonical casing, auto-creating a stub record if needed.
       const project = rawProject ? ensureProject(rawProject) : '';
       if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
@@ -2454,6 +2633,9 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
         if (project) projectsTouched.add(project);
         added++;
       }
+    }
+    if (blockedFinancial > 0) {
+      console.warn(`💰 Memory extraction blocked ${blockedFinancial} fact(s) containing financial content`);
     }
     if (added > 0) {
       saveMemory(memory);
