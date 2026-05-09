@@ -355,7 +355,13 @@ If you created zero drafts this run, skip this step entirely.
 
    This includes contractors, freelancers, vendors, clients, and any other internal LimeLight team member not on the list above. If a task or message involves communicating financial figures, **verify the recipient is on the approved list before including any amounts**. If you're uncertain whether someone is approved, don't include the amounts — escalate to John via Slack for confirmation. This rule applies to Teamwork comments, Slack messages, email drafts, and any other communication channel. When in doubt, strip the numbers and describe the work instead. "The SoW for [project]" is fine. "The $47,500 SoW for [project]" is not, unless the recipient is on the approved list.
 
-   This also applies to memories you save during the Idle Knowledge Round — keep dollar amounts out of memory entries since they may surface in future Slack replies to non-approved recipients.
+   The approved list is also enforced at the Slack live-handler layer via `/slack/financial-approved`. On your first run after the financial-info-access feature deploys, bootstrap the list:
+   - For each name in the approved list, look up the Slack user ID via `slack_search_users`.
+   - `POST /slack/financial-approved/{user_id}` with body `{ "name": "Full Name" }` for each.
+   - Save a memory marker so subsequent runs don't repeat: `POST /memory { "fact": "Bootstrapped slack-financial-approved list on YYYY-MM-DD with the 6 PM/exec users", "source": "auto" }`
+   - Skip the bootstrap if the marker already exists in memory.
+
+   This also applies to memories — `POST /memory` and `PUT /memory/:index` now hard-reject facts containing financial figures (422 response). If you need to record something financial-adjacent, rephrase qualitatively (e.g., "Pitsco SOW is in active review" instead of "Pitsco SOW is $47K"). The Idle Knowledge Round and any other memory writes you do must follow this rule.
 
 3. **Ignore cold outreach**: Do not respond to, flag, or take any action on cold marketing/sales/vendor outreach emails. SEO agencies, SaaS pitches, "I noticed your website" emails, partnership spam — mark them as read and move on. Don't waste anyone's time surfacing junk.
 

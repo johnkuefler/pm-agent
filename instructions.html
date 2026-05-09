@@ -513,6 +513,43 @@ GET /projects/coverage?limit=5
 // Response: { "ok": true, "channel": "C0123DESIGN", "enabled": false }</pre>
       </div>
 
+      <h4>Financial-info access control</h4>
+      <p>Live Slack handler replies are gated on a per-user approved list. Users <strong>not</strong> on the list have dollar amounts, rates, fees, budgets, and margins stripped from Nora's responses (or replaced with a polite redirect). Three layers of defense:</p>
+      <ol>
+        <li><strong>System-prompt gate</strong> — handler tells the model the recipient's status before generating; unapproved → "never share, redirect instead."</li>
+        <li><strong>Output scrubber</strong> — regex check at egress; unapproved + financial pattern detected → reply replaced with safe redirect before posting.</li>
+        <li><strong>Memory hygiene</strong> — <code>POST /memory</code> and <code>PUT /memory/:index</code> hard-reject (422) facts containing financial patterns. <code>extractMemory</code> drops auto-extracted financial facts as a backstop on top of the prompt rule.</li>
+      </ol>
+      <p>Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy). The list starts empty on first deploy — until populated, ALL users are treated as unapproved (fail-closed). Cowork bootstraps the list on its first run after deploy via <code>slack_search_users</code> lookups.</p>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/financial-approved</span></div>
+        <div class="endpoint-desc">List approved Slack user IDs (and names if recorded).</div>
+        <pre>{
+  "count": 6,
+  "approved": [
+    { "user_id": "U0123ABCDEF", "name": "John Kuefler" },
+    { "user_id": "U0987XYZ", "name": "Mallory Maryman" }
+  ]
+}</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/slack/financial-approved/:userId</span></div>
+        <div class="endpoint-desc">Add a user to the approved list. Optional <code>name</code> body for human-readable listing.</div>
+        <pre>POST /slack/financial-approved/U0123ABCDEF
+{ "name": "John Kuefler" }
+
+// Response: { "ok": true, "user_id": "U0123ABCDEF", "name": "John Kuefler" }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge delete">DELETE</span> <span class="endpoint-path">/slack/financial-approved/:userId</span></div>
+        <div class="endpoint-desc">Remove a user from the approved list.</div>
+        <pre>DELETE /slack/financial-approved/U0123ABCDEF
+// Response: { "ok": true, "user_id": "U0123ABCDEF" }</pre>
+      </div>
+
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/unhandled-mentions</span></div>
         <div class="endpoint-desc">Find @mentions of the Nora bot the live handler missed. Uses the bot's POV (via SLACK_BOT_TOKEN), not the user account's — important because the user account cowork is connected to may not be a member of every channel the bot is in. Replaces the cowork loop's old <code>slack_search_public_and_private</code> safety-net check.</div>
