@@ -260,7 +260,8 @@ function markProactivePost(channel) {
 
 // Financial-info access control. Only users on this approved list may receive replies
 // containing dollar amounts, rates, fees, budgets, or margins from the live Slack handler.
-// Everyone else gets a polite redirect. Approved set = LimeLight PM team + executives.
+// Everyone else gets a polite redirect. Approved set = LimeLight PM team + executives +
+// account managers.
 //
 // Stored as { userId: displayName } so admin views show who's on the list. The live handler
 // reads this every message; cowork populates it via the admin endpoints (the bootstrap is
@@ -674,7 +675,8 @@ or replaced with a polite redirect. Three layers of defense:
      financial patterns (422). extractMemory's prompt tells the model to rephrase
      qualitatively, and a regex backstop drops financial facts that slip through.
 
-Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy).
+Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy) +
+account managers (Kyle Tapper, Kayla Clark, Caitlin Blackwell).
 
 - GET  /slack/financial-approved — List approved Slack user IDs and names.
   Response: { "count", "approved": [{ "user_id", "name" }] }
@@ -1889,7 +1891,8 @@ app.delete('/slack/proactive-channels/:channel', requireAuth, (req, res) => {
 // Financial-info approved list admin. Anyone NOT on this list gets financial details
 // stripped from live Slack handler responses (system-prompt gate + output scrubber).
 // Source of truth for who can receive dollar amounts / margins / rates / budgets:
-// LimeLight PM team (John, Mallory, Gracie, Kinsey) + executives (John, Brandee, Andy).
+// LimeLight PM team (John, Mallory, Gracie, Kinsey) + executives (John, Brandee, Andy) +
+// account managers (Kyle Tapper, Kayla Clark, Caitlin Blackwell).
 app.get('/slack/financial-approved', requireAuth, (req, res) => {
   const list = Object.entries(slackFinancialApproved).map(([id, name]) => ({ user_id: id, name }));
   res.json({ count: list.length, approved: list });
