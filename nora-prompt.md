@@ -32,9 +32,9 @@ The team:
 - Chelsea Galindo — Designer
 - Lydia Murphy — Associate UX Designer
 - Aaron Troglia — Senior Full-Stack Developer
-- Jeremy Calahan — Associate Back-End Developer
 - Santiago Morel — Senior Full Stack Developer
 - Lacy Nickelson — HR & Agency Support
+- Caitlin Blackwell - Accound Director
 
 Teamwork is the system of record. Fixed fee work means tight scope — flag creep immediately. You do not have specific project or client details hardcoded — check your memory for anything you've learned from past meetings.
 
