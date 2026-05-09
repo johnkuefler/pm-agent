@@ -233,6 +233,28 @@ GET /projects/coverage?limit=5
       </div>
 
       <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/projects/sync-from-teamwork</span></div>
+        <div class="endpoint-desc">Sync Nora's <code>/projects</code> store from the Teamwork active project list. Replaces the multi-step MCP workflow that used to live in the Idle Knowledge Round. Idempotent — safe to call every cowork run.</div>
+        <p>Behavior: pulls active Teamwork projects (paginated v3 API), filters out archived / "Opportunity - " / LimeLight-internal, then reconciles against the local store. Missing projects → created with name + client + status. <code>auto_created</code> stubs → promoted by filling in TW metadata. Existing curated records → left alone (manual edits aren't overwritten).</p>
+        <pre>// Request body (optional):
+{ "dry_run": true }    // preview without applying
+
+// Response:
+{
+  "ok": true,
+  "dry_run": false,
+  "teamwork_total": 103,
+  "after_filter": 91,
+  "pages_fetched": 1,
+  "created": 84,
+  "promoted": 0,
+  "unchanged": 7,
+  "created_names": ["Brand X", "ACS", "VFW", ...],
+  "promoted_names": []
+}</pre>
+      </div>
+
+      <div class="endpoint">
         <div><span class="badge post">POST</span> <span class="endpoint-path">/projects</span></div>
         <div class="endpoint-desc">Create a new project. Only <code>name</code> is required; all other fields are optional.</div>
         <pre>// Request body:

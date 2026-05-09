@@ -98,7 +98,20 @@ curl -s "${BASE}/projects?key=${KEY}" | jq .
 
 ## Step 2: Memory and Task Cleanup
 
-Before doing any operational work, clean up duplicates to keep Nora's context sharp.
+Before doing any operational work, clean up duplicates and sync project context to keep Nora's data sharp.
+
+### Sync /projects from Teamwork (every run)
+
+Teamwork is the source of truth for what LimeLight is actively working on. Sync any new active projects into Nora's local store so they show up in `/projects/coverage` and the Idle Knowledge Round picks them up.
+
+```bash
+curl -s -X POST "${BASE}/projects/sync-from-teamwork?key=${KEY}" \
+  -H 'Content-Type: application/json' -d '{}'
+```
+
+The endpoint pulls active Teamwork projects, filters out archived/Opportunity-/LimeLight-internal, and either creates new records or promotes auto_created stubs with metadata from Teamwork. It's idempotent — safe to run every hour. Existing curated records (manual edits) are left alone.
+
+Response fields: `created` (new records), `promoted` (stubs filled in), `unchanged` (already current), plus `created_names` / `promoted_names` for visibility. Log this in the end-of-run summary if anything was created or promoted.
 
 ### Quick Duplicate Task Cleanup (every run)
 
@@ -361,30 +374,25 @@ Guardrails:
 
 If the rest of this run was genuinely idle — no pending tasks processed, no relevant emails handled, no Slack responses sent, no proactive follow-ups, no team warmth — spend the remaining time on knowledge enrichment. Otherwise skip this step. Over time this turns "I don't have specifics on Pitsco" into "Pitsco's launch is May 14, blocked on QA."
 
-ONE project per run. 3–5 memories max. See the "Idle Knowledge Round" section in `/cowork-instructions` for the full procedure. TL;DR:
+ONE project per run. 3–5 memories max. The Teamwork-to-`/projects` reconciliation that used to live here has been moved to Step 2 (cleanup) where it runs every hour regardless of busyness — so by the time you get here, `/projects/coverage` already reflects the full active Teamwork project list.
 
-1. **Start with Teamwork — it's the source of truth for what's actually active.** Use `twprojects-list_projects` to pull the current list of LimeLight's active projects. Filter out archived/deleted ones, anything starting with "Opportunity - " (sales pipeline), and anything that's clearly LimeLight-internal work (name starts with "LimeLight" or the project is for LimeLight as the client — internal tools, agency website, HR/ops, etc.). Research focus is client engagements, not internal agency operations.
+1. **Pick a research target.** `GET /projects/coverage?limit=5` — list is pre-sorted thinnest-first and excludes archived/opportunity/LimeLight-internal projects and anything researched in the last day. Newly-synced records (auto_created false, no memories yet) rank highest. If empty, skip the round entirely.
 
-2. **Reconcile against Nora's project store.** `GET /projects`. For each active Teamwork project:
-   - If Nora doesn't have it → `POST /projects` with `name`, `client`, `status: "active"`, `pm`, plus a brief `details` line from Teamwork. This fills the biggest gaps first (entire projects Nora doesn't know about).
-   - If Nora has it but with `auto_created: true` → `PUT /projects/:name` with the metadata from Teamwork to clear the stub flag.
-   - If Nora has a project that's no longer active in Teamwork → consider `PUT /projects/:name {"status": "wrapped"}` so coverage stops surfacing it.
+2. **Pull what Nora already knows about the target.** `GET /projects/{name}` returns the project record + all scoped memories — your "what's already covered" baseline. Don't add memories that duplicate it.
 
-3. **Pick a research target.** `GET /projects/coverage?limit=5` — list is pre-sorted thinnest-first and excludes archived/opportunity projects and anything researched in the last day. The reconciliation in step 2 means newly-created records (the gaps) will rank highest. If empty after that, skip the rest.
-
-4. **Research, leading with Teamwork.** Take the first coverage item. `GET /projects/{name}` to see what Nora already knows. Then:
+3. **Research, leading with Teamwork.**
    - `twprojects-get_project` for official description, dates, members
    - `twprojects-list_tasks` for the project — active work, blockers, recent activity
    - `twprojects-list_milestones` for upcoming deliverables and deadlines
    - Then supplement with Confluence "LLM Client Space", Google Drive, recent Gmail (last 30 days), and Slack channel activity for what's not in Teamwork.
 
-5. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
+4. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
 
-6. **`POST /projects/{name}/research-touch`** with a brief `summary` of where you looked. This bumps `last_research_at` and prevents re-picking tomorrow.
+5. **`POST /projects/{name}/research-touch`** with a brief `summary` of where you looked. This bumps `last_research_at` and prevents re-picking tomorrow.
 
-7. Optionally save a one-line general meta-memory: "Idle research round on {project} on {date}: added N memories from {sources}."
+6. Optionally save a one-line general meta-memory: "Idle research round on {project} on {date}: added N memories from {sources}."
 
-The cooldown filter on `/projects/coverage` prevents re-picking the same project tomorrow — don't track that yourself, trust the API's sort. Don't include this round in the end-of-run summary unless something noteworthy was discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory" or "Reconciled 2 new Teamwork projects into Nora's store").
+The cooldown filter on `/projects/coverage` prevents re-picking the same project tomorrow — don't track that yourself, trust the API's sort. Don't include this round in the end-of-run summary unless something noteworthy was discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory").
 
 ## Step 8: End-of-Run Summary
 

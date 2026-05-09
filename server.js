@@ -547,6 +547,20 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
   Cooldown filtering on /projects/coverage uses last_research_at to avoid re-picks.
   Response: { "ok": true, "project": {...} }
 
+- POST /projects/sync-from-teamwork — Sync /projects from the Teamwork active project list.
+  Pulls active Teamwork projects (paginated v3 API), filters out archived/opportunity/
+  LimeLight-internal, then reconciles against Nora's store:
+    - Missing → created with name, client (from TW company), status='active', details (from
+      TW description)
+    - auto_created stubs → promoted by filling in TW metadata (clears auto_created flag)
+    - Existing curated records → left alone (don't overwrite manual edits)
+  Idempotent — safe to call every cowork run. Replaces the multi-step MCP workflow that
+  used to live in the Idle Knowledge Round.
+  Body (optional): { "dry_run": true } to preview without applying changes.
+  Response: { "ok", "dry_run", "teamwork_total", "after_filter", "pages_fetched",
+              "created", "promoted", "unchanged",
+              "created_names": [...], "promoted_names": [...] }
+
 - POST /projects                — Create a new project. Optional fields are first-class.
   Body: { "name": "string (required)", "details": "string (optional)",
           "client": "string", "status": "string", "pm": "string",
@@ -2352,6 +2366,143 @@ app.post('/projects/:name/research-touch', requireAuth, (req, res) => {
   saveProjects(projects);
   console.log('🔬 Project research-touched:', projects[idx].name);
   res.json({ ok: true, project: projects[idx] });
+});
+
+// Sync Nora's /projects store from Teamwork. Pulls active Teamwork projects, filters out
+// archived/opportunity/LimeLight-internal, and reconciles against the local store:
+//   - Missing Teamwork projects → created in /projects with metadata from TW
+//   - Auto-created stubs that match a TW project → promoted with TW metadata (clears auto_created)
+//   - Existing curated records → left alone (don't overwrite manual edits)
+//
+// Replaces the multi-step MCP workflow that was in the cowork prompt's Idle Knowledge Round.
+// Server-side gives us: one HTTP call from cowork, structured error reporting, and reliable
+// idempotent execution that doesn't depend on cowork honoring a multi-step procedure.
+//
+// Body (optional): { "dry_run": true } to see what would change without applying.
+app.post('/projects/sync-from-teamwork', requireAuth, async (req, res) => {
+  const twKey = process.env.TEAMWORK_API_KEY;
+  const twBase = process.env.TEAMWORK_BASE_URL;
+  if (!twKey || !twBase) {
+    return res.status(500).json({ error: 'TEAMWORK_API_KEY and TEAMWORK_BASE_URL must be set' });
+  }
+  const dryRun = !!(req.body && req.body.dry_run === true);
+
+  const twAuth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
+  const twHeaders = { Authorization: twAuth, 'Content-Type': 'application/json' };
+
+  try {
+    // Pull active Teamwork projects with pagination. v3 endpoint returns up to 50 by default;
+    // we ask for the larger pageSize. status=ACTIVE filters out archived/completed.
+    const twProjects = [];
+    let page = 1;
+    const pageSize = 250;
+    let hasMore = true;
+    let pagesFetched = 0;
+    const MAX_PAGES = 20; // safety cap (~5000 projects)
+    while (hasMore && pagesFetched < MAX_PAGES) {
+      const url = `${twBase}/projects/api/v3/projects.json?status=ACTIVE&pageSize=${pageSize}&page=${page}&include=companies`;
+      const r = await axios.get(url, { headers: twHeaders });
+      const projects = r.data?.projects || [];
+      const companies = r.data?.included?.companies || {};
+      for (const p of projects) {
+        // Resolve company name from the included sideload
+        const companyId = p.company?.id || p.companyId;
+        const companyName = companyId && companies[companyId]?.name || p.company?.name || '';
+        twProjects.push({
+          name: (p.name || '').trim(),
+          description: p.description || '',
+          company: companyName
+        });
+      }
+      hasMore = projects.length === pageSize;
+      page++;
+      pagesFetched++;
+    }
+
+    // Filter out the categories Nora doesn't research:
+    //   - "Opportunity - " sales pipeline
+    //   - LimeLight-internal (name prefix or company = LimeLight)
+    const filtered = twProjects.filter(p => {
+      const name = (p.name || '').toLowerCase();
+      if (!name) return false;
+      if (name.startsWith('opportunity - ')) return false;
+      if (name.startsWith('limelight ') || name === 'limelight') return false;
+      const company = (p.company || '').toLowerCase().trim();
+      if (company === 'limelight' || company === 'limelight marketing') return false;
+      return true;
+    });
+
+    // Reconcile against the local store
+    const existing = loadProjects();
+    const now = new Date().toISOString();
+    let created = 0;
+    let promoted = 0;
+    let unchanged = 0;
+    const createdNames = [];
+    const promotedNames = [];
+
+    for (const tw of filtered) {
+      const lcName = tw.name.toLowerCase();
+      const existingIdx = existing.findIndex(p => p.name.toLowerCase() === lcName);
+
+      if (existingIdx === -1) {
+        // Missing — create a new record
+        if (!dryRun) {
+          existing.push({
+            name: tw.name,
+            details: tw.description || '',
+            client: tw.company || '',
+            status: 'active',
+            created: now,
+            last_activity: now
+          });
+        }
+        created++;
+        createdNames.push(tw.name);
+      } else {
+        const proj = existing[existingIdx];
+        if (proj.auto_created) {
+          // Stub created by a memory reference — promote with TW metadata
+          if (!dryRun) {
+            if (!proj.client && tw.company) proj.client = tw.company;
+            if (!proj.status) proj.status = 'active';
+            if (!proj.details && tw.description) proj.details = tw.description;
+            proj.updated = now;
+            delete proj.auto_created;
+          }
+          promoted++;
+          promotedNames.push(tw.name);
+        } else {
+          // Curated record — leave alone, don't overwrite manual edits
+          unchanged++;
+        }
+      }
+    }
+
+    if (!dryRun && (created > 0 || promoted > 0)) {
+      saveProjects(existing);
+      console.log(`📁 Sync from Teamwork: created ${created}, promoted ${promoted}, unchanged ${unchanged}`);
+    }
+
+    res.json({
+      ok: true,
+      dry_run: dryRun,
+      teamwork_total: twProjects.length,
+      after_filter: filtered.length,
+      pages_fetched: pagesFetched,
+      created,
+      promoted,
+      unchanged,
+      created_names: createdNames.slice(0, 20),
+      promoted_names: promotedNames.slice(0, 20)
+    });
+  } catch (err) {
+    console.error('sync-from-teamwork error:', err.response?.data || err.message);
+    res.status(500).json({
+      error: err.response?.data?.message || err.message,
+      details: err.response?.data || null
+    });
+  }
 });
 
 app.post('/projects', requireAuth, (req, res) => {
