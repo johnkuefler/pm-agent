@@ -717,12 +717,21 @@ his ID is added — populate the list ASAP after the deploy.
   Query params:
     ?minutes=120                (look back N minutes, default 120)
   Response: { "bot_user_id", "since_minutes", "channels_scanned", "channels_total",
-              "scan_errors", "unhandled_count",
+              "scan_errors", "scope_warnings": [...],
+              "unhandled_count",
               "unhandled": [{ "channel", "channel_name", "is_private", "ts",
                                "thread_ts", "user", "text", "permalink_path" }] }
   Use this in cowork's Slack safety-net step instead of slack_search_public_and_private.
   Once cowork responds via /notify (with thread_ts = ts or thread_ts), the thread gets
   auto-marked joined and the same mention won't reappear on the next run.
+
+  Slack bot scopes required (Bot Token Scopes in OAuth & Permissions):
+    channels:read  + channels:history   for public channels
+    groups:read    + groups:history     for private channels (e.g., #pm-team)
+  After adding scopes, REINSTALL the app in the workspace. The endpoint degrades
+  gracefully if some scopes are missing — it returns whatever it could read and
+  populates "scope_warnings" with what's missing. If scope_warnings is non-empty,
+  the response is partial and you should treat the missing channel types as opaque.
 
 Slack app config requirement: For thread continuation in channels to work, the Slack app
 must subscribe to message.channels (and message.groups for private channels) — not just
@@ -1942,21 +1951,38 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
     const botUserId = await getNoraBotUserId();
     const headers = { Authorization: `Bearer ${botToken}` };
     const mentionToken = `<@${botUserId}>`;
+    const scopeWarnings = [];
 
-    // List the bot's channel memberships (skip DMs and group DMs).
-    const channels = [];
-    let cursor = '';
-    do {
-      const url = `https://slack.com/api/users.conversations?types=public_channel,private_channel&limit=200${cursor ? `&cursor=${cursor}` : ''}`;
-      const r = await axios.get(url, { headers });
-      if (!r.data.ok) throw new Error(`users.conversations failed: ${r.data.error}`);
-      for (const c of r.data.channels) channels.push(c);
-      cursor = r.data.response_metadata?.next_cursor || '';
-    } while (cursor);
+    // List the bot's channel memberships per type. Splitting public vs. private lets us
+    // degrade gracefully if only one of channels:read / groups:read is granted.
+    async function listChannelsOfType(type) {
+      const out = [];
+      let cursor = '';
+      do {
+        const url = `https://slack.com/api/users.conversations?types=${type}&limit=200${cursor ? `&cursor=${cursor}` : ''}`;
+        const r = await axios.get(url, { headers });
+        if (!r.data.ok) {
+          if (r.data.error === 'missing_scope') {
+            const need = type === 'public_channel' ? 'channels:read' : 'groups:read';
+            scopeWarnings.push(`Skipped ${type} listing — Slack bot is missing scope ${need} (needed: ${r.data.needed || need}). Add it in OAuth & Permissions and reinstall the app.`);
+            return [];
+          }
+          throw new Error(`users.conversations(${type}) failed: ${r.data.error}`);
+        }
+        for (const c of r.data.channels) out.push(c);
+        cursor = r.data.response_metadata?.next_cursor || '';
+      } while (cursor);
+      return out;
+    }
+
+    const publicChannels = await listChannelsOfType('public_channel');
+    const privateChannels = await listChannelsOfType('private_channel');
+    const channels = [...publicChannels, ...privateChannels];
 
     const unhandled = [];
     let scanned = 0;
     let scanErrors = 0;
+    let historyScopeFailures = { public: 0, private: 0 };
 
     for (const channel of channels) {
       try {
@@ -1966,6 +1992,10 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
         );
         if (!histRes.data.ok) {
           scanErrors++;
+          if (histRes.data.error === 'missing_scope') {
+            if (channel.is_private) historyScopeFailures.private++;
+            else historyScopeFailures.public++;
+          }
           continue;
         }
         scanned++;
@@ -1999,12 +2029,22 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
     // Newest first — most actionable mentions surface at the top
     unhandled.sort((a, b) => parseFloat(b.ts) - parseFloat(a.ts));
 
+    // Roll up history-fetch scope failures into the warning list so the caller knows
+    // the response is partial.
+    if (historyScopeFailures.public > 0) {
+      scopeWarnings.push(`Couldn't read history in ${historyScopeFailures.public} public channel(s) — bot missing channels:history scope. Add it in OAuth & Permissions and reinstall the app.`);
+    }
+    if (historyScopeFailures.private > 0) {
+      scopeWarnings.push(`Couldn't read history in ${historyScopeFailures.private} private channel(s) — bot missing groups:history scope. Add it in OAuth & Permissions and reinstall the app.`);
+    }
+
     res.json({
       bot_user_id: botUserId,
       since_minutes: minutes,
       channels_scanned: scanned,
       channels_total: channels.length,
       scan_errors: scanErrors,
+      scope_warnings: scopeWarnings,
       unhandled_count: unhandled.length,
       unhandled
     });
