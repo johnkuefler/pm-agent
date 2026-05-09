@@ -468,6 +468,45 @@ GET /projects/coverage?limit=5
       </div>
 
       <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/slack/threads/:channel/:ts</span></div>
+        <div class="endpoint-desc">Manually mark a thread as joined without posting. Used by the cowork loop to suppress unhandled-mentions hits it deliberately skips (cold outreach, automated cross-posts, etc.) without sending a response.</div>
+        <pre>POST /slack/threads/C0123ABC/1710432000.000100
+// Response: { "ok": true, "joined": { "channel": "C0123ABC", "thread_ts": "1710432000.000100" } }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/unhandled-mentions</span></div>
+        <div class="endpoint-desc">Find @mentions of the Nora bot the live handler missed. Uses the bot's POV (via SLACK_BOT_TOKEN), not the user account's — important because the user account cowork is connected to may not be a member of every channel the bot is in. Replaces the cowork loop's old <code>slack_search_public_and_private</code> safety-net check.</div>
+        <pre>// Query params (optional):
+//   minutes=120                  look back N minutes (default 120)
+
+GET /slack/unhandled-mentions?minutes=120
+
+// Response (filters out: non-bot channels, DMs, bot-authored messages,
+//                        and mentions whose thread is in /slack/threads):
+{
+  "bot_user_id": "U0123ABCDEF",
+  "since_minutes": 120,
+  "channels_scanned": 42,
+  "channels_total": 42,
+  "scan_errors": 0,
+  "unhandled_count": 1,
+  "unhandled": [
+    {
+      "channel": "C0123ABC",
+      "channel_name": "design-pitsco",
+      "is_private": false,
+      "ts": "1710432000.000100",
+      "thread_ts": null,
+      "user": "U0987XYZ",
+      "text": "&lt;@U0123ABCDEF&gt; can you check on the launch date?",
+      "permalink_path": "archives/C0123ABC/p1710432000000100"
+    }
+  ]
+}</pre>
+      </div>
+
+      <div class="endpoint">
         <div><span class="badge post">POST</span> <span class="endpoint-path">/join</span></div>
         <div class="endpoint-desc">Send Nora to a Zoom meeting</div>
         <pre>{ "meeting_url": "https://us02web.zoom.us/j/123456?pwd=abc" }</pre>
