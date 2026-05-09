@@ -164,12 +164,13 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
 
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/projects/coverage</span></div>
-        <div class="endpoint-desc">Bulk coverage view sorted "most in need first" — drives the cowork idle-time research loop. Skips archived/wrapped projects, "Opportunity - " sales pipeline projects, and projects researched within the cooldown window (default 1 day). Pick the first item to research next.</div>
+        <div class="endpoint-desc">Bulk coverage view sorted "most in need first" — drives the cowork idle-time research loop. Skips archived/wrapped projects, "Opportunity - " sales pipeline projects, LimeLight-internal projects (name starts with "LimeLight" or client is "LimeLight" / "LimeLight Marketing"), and projects researched within the cooldown window (default 1 day). Pick the first item to research next.</div>
         <pre>// Query params (all optional):
 //   limit=20                     max results
 //   cooldown_days=1              skip projects researched within N days
 //   include_archived=true        default false
 //   include_opportunities=true   default false
+//   include_internal=true        default false (include LimeLight-internal projects)
 
 GET /projects/coverage?limit=5
 

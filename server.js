@@ -408,13 +408,19 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
 
 - GET  /projects/coverage       — Bulk coverage view, sorted "most in need first".
   Drives the idle-time research loop — pick the first item, research it, touch it.
-  By default skips archived/wrapped/completed projects and "Opportunity - " sales pipeline projects.
-  Skips projects researched within the cooldown window (default 1 day) to prevent re-picks.
+  By default skips:
+    - archived/wrapped/completed projects
+    - "Opportunity - " sales pipeline projects
+    - LimeLight-internal projects (name starts with "LimeLight" or client is "LimeLight" /
+      "LimeLight Marketing") — these are the agency's own work, not client engagements,
+      and aren't the focus of proactive research
+    - projects researched within the cooldown window (default 1 day)
   Query params:
     ?limit=20                 (max results)
     ?cooldown_days=1          (skip projects researched within N days)
     ?include_archived=true    (default false)
     ?include_opportunities=true  (default false)
+    ?include_internal=true    (default false — include LimeLight-internal projects)
   Response: { "count": N, "cooldown_days": 1, "projects": [<coverage row>, ...] }
 
 - GET  /projects/:name/coverage — Single-project coverage row.
@@ -723,7 +729,11 @@ know about) get prioritized over deepening already-known projects.
 
 1. Pull active Teamwork projects:
    Use the Teamwork MCP — twprojects-list_projects (filter for active, not archived/deleted).
-   Skip anything starting with "Opportunity - " (sales pipeline, not Nora's concern).
+   Skip anything starting with "Opportunity - " (sales pipeline, not Nora's concern) and
+   anything that's clearly LimeLight-internal work (name starts with "LimeLight" or the
+   project is for LimeLight as the client, e.g. internal tooling, agency website,
+   internal HR/ops projects). Nora's research focus is client engagements, not internal
+   agency operations.
 
 2. Reconcile against Nora's project store:
    GET /projects
@@ -1633,12 +1643,14 @@ function computeProjectCoverage(project, allMemories) {
 
 // Bulk coverage view — drives the cowork idle-time research loop.
 // Sorted "most in need first": never-researched bubbles up, then thinness, then oldest research.
-// By default skips archived/wrapped/completed projects and "Opportunity - " sales pipeline projects,
-// since those don't benefit from proactive research.
+// By default skips archived/wrapped/completed projects, "Opportunity - " sales pipeline projects,
+// and LimeLight-internal projects (the agency's own work, not client work) since those don't
+// benefit from proactive research focused on client engagements.
 app.get('/projects/coverage', requireAuth, (req, res) => {
   const limit = parseInt(req.query.limit || '20', 10);
   const includeArchived = req.query.include_archived === 'true';
   const includeOpportunities = req.query.include_opportunities === 'true';
+  const includeInternal = req.query.include_internal === 'true';
   const cooldownDays = parseInt(req.query.cooldown_days || '1', 10);
 
   const projects = loadProjects();
@@ -1655,6 +1667,19 @@ app.get('/projects/coverage', requireAuth, (req, res) => {
   }
   if (!includeOpportunities) {
     rows = rows.filter(r => !r.name.toLowerCase().startsWith('opportunity - '));
+  }
+  if (!includeInternal) {
+    // Detect LimeLight-internal projects by name prefix or client field. Two heuristics
+    // because some internal projects use the "LimeLight ..." name convention while others
+    // are tagged via client = "LimeLight" / "LimeLight Marketing".
+    rows = rows.filter(r => {
+      const name = r.name.toLowerCase();
+      if (name.startsWith('limelight ') || name === 'limelight') return false;
+      const project = projects.find(p => p.name === r.name);
+      const client = (project?.client || '').toLowerCase().trim();
+      if (client === 'limelight' || client === 'limelight marketing') return false;
+      return true;
+    });
   }
 
   // Filter out projects researched within the cooldown window — prevents same-project

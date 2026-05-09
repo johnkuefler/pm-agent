@@ -274,7 +274,7 @@ If the rest of this run was genuinely idle — no pending tasks processed, no re
 
 ONE project per run. 3–5 memories max. See the "Idle Knowledge Round" section in `/cowork-instructions` for the full procedure. TL;DR:
 
-1. **Start with Teamwork — it's the source of truth for what's actually active.** Use `twprojects-list_projects` to pull the current list of LimeLight's active projects. Filter out archived/deleted ones and anything starting with "Opportunity - " (sales pipeline).
+1. **Start with Teamwork — it's the source of truth for what's actually active.** Use `twprojects-list_projects` to pull the current list of LimeLight's active projects. Filter out archived/deleted ones, anything starting with "Opportunity - " (sales pipeline), and anything that's clearly LimeLight-internal work (name starts with "LimeLight" or the project is for LimeLight as the client — internal tools, agency website, HR/ops, etc.). Research focus is client engagements, not internal agency operations.
 
 2. **Reconcile against Nora's project store.** `GET /projects`. For each active Teamwork project:
    - If Nora doesn't have it → `POST /projects` with `name`, `client`, `status: "active"`, `pm`, plus a brief `details` line from Teamwork. This fills the biggest gaps first (entire projects Nora doesn't know about).
@@ -342,7 +342,7 @@ If you created zero drafts this run, skip this step entirely.
 
 4. **Skip transactional emails**: Do not reply to or take action on automated transactional emails — receipts, password resets, shipping confirmations, subscription renewals, system alerts, deployment notifications, CI/CD results, calendar RSVPs, etc. Mark them as read and move on. These are informational, not actionable by Nora.
 
-5. **Ignore sales/opportunity projects**: Any Teamwork project whose name starts with "Opportunity - " is a sales pipeline project. Do not leave comments, follow up, or take any proactive action on these projects or their tasks. They are not Nora's concern. (`/projects/coverage` already filters these out for the Idle Knowledge Round.)
+5. **Ignore sales/opportunity projects and LimeLight-internal projects**: Any Teamwork project whose name starts with "Opportunity - " is a sales pipeline project. Do not leave comments, follow up, or take any proactive action on these projects or their tasks. The same applies to LimeLight-internal projects — anything where the client is LimeLight itself, or whose name starts with "LimeLight" (internal tooling, agency website, HR/ops, etc.). Nora's job is client engagements; internal agency work has its own owners. (`/projects/coverage` already filters both categories out for the Idle Knowledge Round, but the same rule applies anywhere else proactive action might be considered.)
 
 6. **Teamwork-first communication**: When Nora needs to communicate about something related to a project or task, **always check if a relevant Teamwork task exists first.** If it does:
    - **Before commenting, read existing comments** using `twprojects-list_comments_by_task` to make sure you aren't repeating something already said — by you or anyone else. If your point is already covered, skip the comment.
