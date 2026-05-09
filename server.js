@@ -90,6 +90,37 @@ function saveProjects(projects) {
   fs.writeFileSync(getProjectsPath(), JSON.stringify(projects, null, 2));
 }
 
+// Ensure a project record exists for a given name. Creates a stub if missing.
+// Returns the canonical project name (existing record wins on case mismatch) so callers
+// can normalize memory entries against the canonical casing.
+function ensureProject(name) {
+  if (!name || !name.trim()) return '';
+  const trimmed = name.trim();
+  const projects = loadProjects();
+  const existing = projects.find(p => p.name.toLowerCase() === trimmed.toLowerCase());
+  if (existing) return existing.name;
+  projects.push({
+    name: trimmed,
+    details: '',
+    created: new Date().toISOString(),
+    last_activity: new Date().toISOString(),
+    auto_created: true
+  });
+  saveProjects(projects);
+  console.log('📁 Project auto-created from memory scoping:', trimmed);
+  return trimmed;
+}
+
+// Bump a project's last_activity timestamp. No-op if project doesn't exist.
+function bumpProjectActivity(name) {
+  if (!name || !name.trim()) return;
+  const projects = loadProjects();
+  const proj = projects.find(p => p.name.toLowerCase() === name.toLowerCase());
+  if (!proj) return;
+  proj.last_activity = new Date().toISOString();
+  saveProjects(projects);
+}
+
 function addTask(task) {
   const tasks = loadTasks();
   const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -154,9 +185,17 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
       if (isRealtime && memoryBlock.length >= memoryCharBudget) break;
       memoryBlock += `\n\n## ${name}`;
       const proj = projects.find(p => p.name === name);
-      if (proj && proj.details) {
-        const details = isRealtime ? proj.details.slice(0, 300) : proj.details;
-        memoryBlock += `\n${details}`;
+      if (proj) {
+        const meta = [];
+        if (proj.client) meta.push(`client: ${proj.client}`);
+        if (proj.status) meta.push(`status: ${proj.status}`);
+        if (proj.pm) meta.push(`PM: ${proj.pm}`);
+        if (proj.phase) meta.push(`phase: ${proj.phase}`);
+        if (meta.length > 0) memoryBlock += `\n(${meta.join(' · ')})`;
+        if (proj.details) {
+          const details = isRealtime ? proj.details.slice(0, 300) : proj.details;
+          memoryBlock += `\n${details}`;
+        }
       }
       if (byProject[name]) {
         const items = isRealtime ? byProject[name].slice(-5) : byProject[name];
@@ -265,21 +304,38 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
 
 ### Projects
 - GET  /projects                — Returns all projects
-  Response: [{ "name": "string", "details": "string", "created": "ISO 8601" }]
+  Response: [{ "name", "details", "created", "client?", "status?", "pm?", "phase?", "tags?", "last_activity?", "auto_created?" }]
 
-- GET  /projects/:name          — Returns a project with its associated memories
-  Response: { "name": "string", "details": "string", "created": "ISO 8601", "memories": [...] }
+- GET  /projects/:name          — Returns a project with its associated memories + summary
+  Response: { ...project, "memory_count": N, "last_memory_at": "YYYY-MM-DD", "memories": [...] }
 
-- POST /projects                — Create a new project
-  Body: { "name": "string", "details": "string" }
+- GET  /projects/:name/coverage — Lightweight metrics for ranking projects by knowledge thinness.
+  Use this to pick which project to deepen during idle-time research rounds.
+  Response: { "name", "memory_count", "last_memory_at", "days_since_last_memory",
+              "details_length", "last_activity", "updated", "auto_created",
+              "has_client", "has_status", "has_pm", "has_phase",
+              "thinness_score" (lower = thinner; sort ascending to prioritize) }
+
+- POST /projects                — Create a new project. Optional fields are first-class.
+  Body: { "name": "string (required)", "details": "string (optional)",
+          "client": "string", "status": "string", "pm": "string",
+          "phase": "string", "tags": ["string", ...] }
   Response: { "ok": true, "project": {...} }
 
-- PUT  /projects/:name          — Update a project's name or details
-  Body: { "name": "string (optional)", "details": "string (optional)" }
+- PUT  /projects/:name          — Update any project field. Same optional fields as POST.
+  Body: { "name?", "details?", "client?", "status?", "pm?", "phase?", "tags?" }
+  Setting any of details/client/status/pm/phase on an auto-created stub clears the auto_created flag.
   Response: { "ok": true, "project": {...} }
 
 - DELETE /projects/:name        — Delete a project
   Response: { "ok": true }
+
+Note: When you POST/PUT a memory with a "project" field that doesn't exist yet, the server now
+auto-creates a stub project record (with auto_created: true) and normalizes the project name to
+canonical casing. This means /memory and /projects can no longer drift out of sync — every
+project-scoped memory has a corresponding project record. The cowork loop's daily "validate
+project consistency" pass should now mostly find auto-created stubs that need details filled in
+rather than orphaned references.
 
 ### Tasks
 - GET  /tasks                   — List all tasks. Filter: ?status=pending or ?status=done
@@ -367,9 +423,17 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
 
 ### Project Schema
 {
-  "name": "Project name",
+  "name": "Project name (canonical casing — referenced by memories)",
   "details": "Free-text project details — stakeholders, timelines, context, etc.",
-  "created": "ISO 8601 timestamp"
+  "created": "ISO 8601 timestamp",
+  "updated": "ISO 8601 timestamp (set on PUT)",
+  "last_activity": "ISO 8601 timestamp (auto-bumped when a memory references this project)",
+  "client": "Client name (optional)",
+  "status": "active | on-hold | wrapped | archived (optional, free-form)",
+  "pm": "Project manager name (optional)",
+  "phase": "discovery | design | build | launch | post-launch (optional, free-form)",
+  "tags": ["optional", "string", "array"],
+  "auto_created": "true if the record was created as a stub when a memory referenced an unknown project (clear by PUT'ing details/client/status/pm/phase)"
 }
 
 ## Processing Pending Tasks
@@ -1042,9 +1106,14 @@ app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
 app.post('/memory', requireAuth, (req, res) => {
   const { fact, source, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
+  // Normalize project to canonical casing (creating a stub record if needed).
+  // This stops the drift the cowork loop has to clean up daily — projects referenced
+  // by memories are guaranteed to exist in /projects.
+  const canonicalProject = project ? ensureProject(project) : '';
   const memory = loadMemory();
-  memory.push({ fact, project: project || '', added: new Date().toISOString().split('T')[0], source: source || 'manual' });
+  memory.push({ fact, project: canonicalProject, added: new Date().toISOString().split('T')[0], source: source || 'manual' });
   saveMemory(memory);
+  if (canonicalProject) bumpProjectActivity(canonicalProject);
   console.log('🧠 Memory added:', fact);
   res.json({ ok: true, memory });
 });
@@ -1066,8 +1135,11 @@ app.put('/memory/:index', requireAuth, (req, res) => {
   const { fact, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
   memory[idx].fact = fact;
-  if (project !== undefined) memory[idx].project = project;
+  if (project !== undefined) {
+    memory[idx].project = project ? ensureProject(project) : '';
+  }
   saveMemory(memory);
+  if (memory[idx].project) bumpProjectActivity(memory[idx].project);
   console.log('🧠 Memory updated:', fact);
   res.json({ ok: true, memory });
 });
@@ -1088,16 +1160,66 @@ app.get('/projects/:name', requireAuth, (req, res) => {
   // Include project-specific memories
   const memory = loadMemory();
   const projectMemories = memory.filter(m => m.project && m.project.toLowerCase() === req.params.name.toLowerCase());
-  res.json({ ...project, memories: projectMemories });
+  // Summary: most recent memory date, count
+  const memory_count = projectMemories.length;
+  const last_memory_at = projectMemories.reduce((max, m) => (m.added && m.added > max) ? m.added : max, '');
+  res.json({ ...project, memory_count, last_memory_at, memories: projectMemories });
+});
+
+// Coverage view — used by the cowork loop to identify projects needing more research.
+// Returns metrics that help rank "thin" or "stale" projects without pulling all memories.
+app.get('/projects/:name/coverage', requireAuth, (req, res) => {
+  const projects = loadProjects();
+  const project = projects.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  const memory = loadMemory();
+  const projectMemories = memory.filter(m => m.project && m.project.toLowerCase() === req.params.name.toLowerCase());
+  const last_memory_at = projectMemories.reduce((max, m) => (m.added && m.added > max) ? m.added : max, '');
+  const detailsLen = (project.details || '').length;
+  const daysSince = last_memory_at
+    ? Math.floor((Date.now() - new Date(last_memory_at).getTime()) / 86400000)
+    : null;
+  // Simple thinness score: lower = thinner. Used as a sort key by the cowork loop.
+  // Penalizes few memories, short details, and lack of curated metadata.
+  const thinness =
+    Math.min(projectMemories.length, 20) * 5 +
+    Math.min(detailsLen, 1000) / 50 +
+    (project.client ? 5 : 0) +
+    (project.status ? 5 : 0) +
+    (project.pm ? 5 : 0);
+  res.json({
+    name: project.name,
+    memory_count: projectMemories.length,
+    last_memory_at,
+    days_since_last_memory: daysSince,
+    details_length: detailsLen,
+    last_activity: project.last_activity || null,
+    updated: project.updated || null,
+    auto_created: !!project.auto_created,
+    has_client: !!project.client,
+    has_status: !!project.status,
+    has_pm: !!project.pm,
+    has_phase: !!project.phase,
+    thinness_score: Math.round(thinness)
+  });
 });
 
 app.post('/projects', requireAuth, (req, res) => {
-  const { name, details } = req.body;
+  const { name, details, client, status, pm, phase, tags } = req.body;
   if (!name) return res.status(400).json({ error: 'name is required' });
   const projects = loadProjects();
   const existing = projects.find(p => p.name.toLowerCase() === name.toLowerCase());
   if (existing) return res.status(409).json({ error: 'Project already exists', project: existing });
-  const project = { name, details: details || '', created: new Date().toISOString() };
+  const project = {
+    name,
+    details: details || '',
+    created: new Date().toISOString()
+  };
+  if (client !== undefined) project.client = client;
+  if (status !== undefined) project.status = status;
+  if (pm !== undefined) project.pm = pm;
+  if (phase !== undefined) project.phase = phase;
+  if (tags !== undefined) project.tags = Array.isArray(tags) ? tags : [];
   projects.push(project);
   saveProjects(projects);
   console.log('📁 Project added:', name);
@@ -1108,10 +1230,19 @@ app.put('/projects/:name', requireAuth, (req, res) => {
   const projects = loadProjects();
   const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
   if (idx === -1) return res.status(404).json({ error: 'Project not found' });
-  const { name, details } = req.body;
+  const { name, details, client, status, pm, phase, tags } = req.body;
   if (name) projects[idx].name = name;
   if (details !== undefined) projects[idx].details = details;
+  if (client !== undefined) projects[idx].client = client;
+  if (status !== undefined) projects[idx].status = status;
+  if (pm !== undefined) projects[idx].pm = pm;
+  if (phase !== undefined) projects[idx].phase = phase;
+  if (tags !== undefined) projects[idx].tags = Array.isArray(tags) ? tags : [];
   projects[idx].updated = new Date().toISOString();
+  // Promoting a stub to a curated record clears the auto_created flag
+  if (projects[idx].auto_created && (details || client || status || pm || phase)) {
+    delete projects[idx].auto_created;
+  }
   saveProjects(projects);
   console.log('📁 Project updated:', projects[idx].name);
   res.json({ ok: true, project: projects[idx] });
@@ -1392,18 +1523,23 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
     const memory = loadMemory();
     const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
     let added = 0;
+    const projectsTouched = new Set();
     for (const item of items) {
       // Support both old format (plain strings) and new format (objects with fact + project)
       const fact = typeof item === 'string' ? item : item.fact;
-      const project = typeof item === 'string' ? '' : (item.project || '');
+      const rawProject = typeof item === 'string' ? '' : (item.project || '');
+      // Normalize project name to canonical casing, auto-creating a stub record if needed.
+      const project = rawProject ? ensureProject(rawProject) : '';
       if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
         memory.push({ fact, project, added: new Date().toISOString().split('T')[0], source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '' });
         existingFacts.add(fact.toLowerCase());
+        if (project) projectsTouched.add(project);
         added++;
       }
     }
     if (added > 0) {
       saveMemory(memory);
+      for (const p of projectsTouched) bumpProjectActivity(p);
       console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, items);
     }
   } catch (err) {

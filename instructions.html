@@ -124,7 +124,7 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
     <!-- Projects -->
     <div class="section">
       <h2>Projects</h2>
-      <p>Projects give Nora deeper context on specific initiatives. Each project has a name and free-text details (stakeholders, timelines, goals, etc.). Memories can be tagged with a project name to organize knowledge. Project details and project-specific memories are grouped together in Nora's system prompt.</p>
+      <p>Projects give Nora deeper context on specific initiatives. Each project has a name and a set of structured fields (client, status, PM, phase, tags) plus free-text details. Memories tagged with a project name are grouped under it in Nora's system prompt. When a memory references a project that doesn't yet exist, the server auto-creates a stub record (marked <code>auto_created: true</code>) so <code>/projects</code> and <code>/memory</code> never drift apart.</p>
       <p><strong>Storage:</strong> <code>/data/nora-projects.json</code> on Railway Volume</p>
 
       <h3>Projects API</h3>
@@ -135,29 +135,65 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
         <pre>[
   {
     "name": "Pitsco",
-    "details": "Client rebrand project. Stakeholders: Kyle, Brandee. Deadline: April 15.",
-    "created": "2026-03-15T18:00:00.000Z"
+    "details": "Client rebrand project. Stakeholders: Kyle, Brandee.",
+    "created": "2026-03-15T18:00:00.000Z",
+    "client": "Pitsco Education",
+    "status": "active",
+    "pm": "Mallory",
+    "phase": "design",
+    "tags": ["rebrand", "fixed-fee"],
+    "last_activity": "2026-05-08T14:22:11.000Z"
   }
 ]</pre>
       </div>
 
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/projects/:name</span></div>
-        <div class="endpoint-desc">Get a project with its associated memories</div>
-        <pre>// Response includes project details + all memories tagged with this project
-{
+        <div class="endpoint-desc">Get a project with its associated memories and a summary count</div>
+        <pre>{
   "name": "Pitsco",
   "details": "Client rebrand project...",
-  "created": "2026-03-15T18:00:00.000Z",
-  "memories": [{ "fact": "...", "project": "Pitsco", "added": "2026-03-15", "source": "meeting" }]
+  "client": "Pitsco Education",
+  "status": "active",
+  "pm": "Mallory",
+  "memory_count": 12,
+  "last_memory_at": "2026-05-08",
+  "memories": [{ "fact": "...", "project": "Pitsco", "added": "2026-05-08", "source": "meeting" }]
+}</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/projects/:name/coverage</span></div>
+        <div class="endpoint-desc">Lightweight metrics for ranking projects by knowledge thinness — used by the cowork loop to pick which project to research during idle time. Sort ascending by <code>thinness_score</code> to prioritize.</div>
+        <pre>{
+  "name": "Pitsco",
+  "memory_count": 12,
+  "last_memory_at": "2026-05-08",
+  "days_since_last_memory": 1,
+  "details_length": 412,
+  "last_activity": "2026-05-08T14:22:11.000Z",
+  "auto_created": false,
+  "has_client": true,
+  "has_status": true,
+  "has_pm": true,
+  "has_phase": true,
+  "thinness_score": 88
 }</pre>
       </div>
 
       <div class="endpoint">
         <div><span class="badge post">POST</span> <span class="endpoint-path">/projects</span></div>
-        <div class="endpoint-desc">Create a new project</div>
+        <div class="endpoint-desc">Create a new project. Only <code>name</code> is required; all other fields are optional.</div>
         <pre>// Request body:
-{ "name": "Pitsco", "details": "Client rebrand project. Stakeholders: Kyle, Brandee." }
+{
+  "name": "Pitsco",
+  "details": "Client rebrand project. Stakeholders: Kyle, Brandee.",
+  "client": "Pitsco Education",
+  "status": "active",
+  "pm": "Mallory",
+  "phase": "design",
+  "tags": ["rebrand", "fixed-fee"]
+}
 
 // Response:
 { "ok": true, "project": {...} }</pre>
@@ -165,9 +201,9 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
 
       <div class="endpoint">
         <div><span class="badge patch">PUT</span> <span class="endpoint-path">/projects/:name</span></div>
-        <div class="endpoint-desc">Update a project's name or details</div>
+        <div class="endpoint-desc">Update any project field. All fields optional. Setting any of <code>details</code>/<code>client</code>/<code>status</code>/<code>pm</code>/<code>phase</code> on an auto-created stub clears the <code>auto_created</code> flag.</div>
         <pre>// Request body (all fields optional):
-{ "name": "New Name", "details": "Updated details..." }
+{ "details": "Updated details...", "status": "wrapped", "phase": "post-launch" }
 
 // Response:
 { "ok": true, "project": {...} }</pre>
