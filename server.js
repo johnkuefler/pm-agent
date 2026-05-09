@@ -606,14 +606,13 @@ won't see follow-ups in threads she's joined.
    GET /transcripts/{source_bot_id}
    Use this to understand nuances like who should be invited, what tone to use, specific details mentioned in conversation, etc.
 
-3. Determine the right action:
+3. Determine the right action and execute it using the appropriate MCP tool:
    - "Schedule a meeting..." → use Google Calendar MCP (gcal) to create event
    - "Send an email to..." → use Gmail MCP to draft/send
    - "Create a task in Teamwork..." → use Teamwork MCP (twprojects) to create task
    - "Send a Slack message..." → use Slack MCP to post message
    - "Remind [person] about..." → determine best channel and notify
-
-3. Execute the action using the appropriate MCP tool.
+   - Stage/workflow changes → use GET /teamwork/tasks/:taskId/stage (the Teamwork MCP can't do stages)
 
 4. Notify the requester that it's done:
    POST /notify
