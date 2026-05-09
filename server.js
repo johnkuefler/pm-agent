@@ -354,8 +354,20 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   const memoryCharBudget = isRealtime ? 3000 : Infinity;
   const maxTranscriptLines = isRealtime ? 10 : 30;
 
-  const memory = loadMemory();
+  const allMemory = loadMemory();
   const projects = loadProjects();
+
+  // Split opinions out of the memory pool. They render as a distinct [Your takes] block
+  // so Nora can frame them as her own opinions ("honestly I think...", "from what I've watched...")
+  // rather than as facts. Opinions are formed by the cowork loop's weekly Reflection Round
+  // and saved with source='opinion'.
+  const opinions = allMemory.filter(m => m.source === 'opinion');
+  const memory = allMemory.filter(m => m.source !== 'opinion');
+
+  if (opinions.length > 0) {
+    const opinionItems = isRealtime ? opinions.slice(-8) : opinions;
+    base = `${base}\n\n[Your takes — opinions you've formed from watching how things go around here]\n${opinionItems.map(m => `- ${m.fact}`).join('\n')}`;
+  }
 
   if (memory.length > 0 || projects.length > 0) {
     // Group memories by project
@@ -785,12 +797,18 @@ won't see follow-ups in threads she's joined.
 
 ### Memory Schema
 {
-  "fact": "Short fact string",
+  "fact": "Short fact string (or, when source='opinion', a take/take-like opinion phrased as Nora's view)",
   "project": "Project name (empty string if general)",
   "added": "YYYY-MM-DD",
-  "source": "meeting | slack | manual | system | auto",
+  "source": "meeting | slack | manual | system | auto | opinion",
   "source_bot_id": "Recall.ai bot ID linking to the meeting transcript this memory was extracted from (empty string if not from a meeting). Use GET /transcripts/{source_bot_id} to fetch the full transcript."
 }
+
+Note: memories with source='opinion' are rendered separately in Nora's system prompt as a
+[Your takes] block (vs. the [Your memory] block for everything else). Opinions are formed by
+the cowork loop's weekly Reflection Round — they're Nora's interpretations, not raw facts.
+The live handler distinguishes them so Nora frames opinions as opinions ("honestly I think...",
+"from what I've watched...") rather than as facts.
 
 ### Project Schema
 {
@@ -1299,7 +1317,9 @@ app.post('/webhook/chat', async (req, res) => {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-haiku-4-5-20251001',
+        // Sonnet 4.6 for Zoom chat replies — same voice-fidelity reasoning as the
+        // Slack handler. Voice (Realtime) stays on its own model where latency is critical.
+        model: 'claude-sonnet-4-6',
         max_tokens: 300,
         temperature: 0.9,
         system: buildSystemPrompt('slack'), // use slack-style formatting (markdown ok, concise)
@@ -1721,7 +1741,10 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-haiku-4-5-20251001',
+        // Sonnet 4.6 for Slack — voice fidelity matters more than the latency cost here
+        // (Slack interactions tolerate ~1s extra). Haiku lives on for the gates and
+        // extraction pipelines where speed/cost dominate and voice doesn't matter.
+        model: 'claude-sonnet-4-6',
         max_tokens: 400,
         temperature: 0.9,
         system: systemPrompt,
