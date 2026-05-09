@@ -366,6 +366,56 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
 // Response: { "ok": true, "channel": "C0123ABCDEF", "ts": "1710432000.000200" }</pre>
       </div>
 
+      <h3>Slack Conversations</h3>
+      <p>Nora supports real back-and-forth conversations in Slack — not just one-shot @mention replies. She responds to:</p>
+      <ul>
+        <li>Every message in a DM</li>
+        <li>@mentions in channels (replies in a new thread)</li>
+        <li>Follow-up messages in any thread she has joined — no re-mention required, until the thread goes stale</li>
+      </ul>
+
+      <h4>Spam guards</h4>
+      <p>Three layers protect against runaway chatter on thread continuation. None apply to DMs or explicit @mentions — those always respond.</p>
+      <ol>
+        <li><strong>Auto-stale</strong> — a thread cools off after 5 messages without Nora being directly addressed, or 30 minutes since her last engagement. Stale threads require a re-mention to wake her back up.</li>
+        <li><strong>Heuristic skip</strong> — sub-4-character messages, emoji-only reactions, and messages mentioning another user (not Nora) are dropped before any LLM cost.</li>
+        <li><strong>Claude gate</strong> — every thread continuation passes through a cheap Haiku call asking "is this directed at Nora?" — defaults to no on uncertainty or error, so the failure mode is silence rather than spam.</li>
+      </ol>
+
+      <h4>Bridge to cowork (the routing fix)</h4>
+      <p>The live Slack handler only has memory + prompt — no MCP tools. To keep conversations useful, when Nora hits a knowledge gap she queues a task and tells the user she'll follow up <em>in this thread</em>. Tasks queued from a Slack thread now carry <code>source_thread_ts</code>, which the cowork loop passes to <code>/notify</code> as <code>thread_ts</code> so the resolution lands in the original thread within the hour. From the user's side, the conversation is continuous; they don't need to know cowork ran.</p>
+
+      <p>Joined threads are persisted to <code>/data/slack-threads.json</code> so a deploy/restart doesn't drop active conversations. The list is capped at 1000 threads (oldest evicted).</p>
+      <p><strong>Slack app config requirement:</strong> for thread continuation to work, the Slack app must subscribe to <code>message.channels</code> (and <code>message.groups</code> for private channels) in addition to <code>app_mention</code> and <code>message.im</code>. Without those, Slack only delivers explicit @mention events.</p>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/threads</span></div>
+        <div class="endpoint-desc">List threads Nora is currently joined to, newest activity first, with staleness flags</div>
+        <pre>{
+  "count": 17,
+  "active": 12,
+  "stale": 5,
+  "stale_thresholds": { "msg_count": 5, "age_minutes": 30 },
+  "threads": [
+    {
+      "channel": "C0123ABC",
+      "thread_ts": "1710432000.000100",
+      "joined_at": "2026-05-09T14:22:11.000Z",
+      "last_addressed": "2026-05-09T14:48:02.000Z",
+      "msgs_since_addressed": 2,
+      "stale": false
+    }
+  ]
+}</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge delete">DELETE</span> <span class="endpoint-path">/slack/threads/:channel/:ts</span></div>
+        <div class="endpoint-desc">Untrack a thread so Nora stops auto-responding (use if she's been pulled into something that doesn't need her)</div>
+        <pre>DELETE /slack/threads/C0123ABC/1710432000.000100
+// Response: { "ok": true }</pre>
+      </div>
+
       <div class="endpoint">
         <div><span class="badge post">POST</span> <span class="endpoint-path">/join</span></div>
         <div class="endpoint-desc">Send Nora to a Zoom meeting</div>
