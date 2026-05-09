@@ -673,6 +673,65 @@ won't see follow-ups in threads she's joined.
 - Slack: Send messages, search channels, read threads
 - Confluence: Search pages, read content, find project documentation
 - Google Drive: Search files, read documents/sheets, find shared resources
+- LimeLight PM MCP: Forecasts, estimates, and project profitability — see below
+
+## LimeLight PM MCP Overview
+
+Three internal LimeLight apps wrapped behind a single connector. Use REACTIVELY only —
+invoke when a queued task or live request explicitly asks for it. Don't run profitability
+or forecast scans proactively (that's exactly the kind of repetitive margin noise that
+trains people to ignore Nora). Tool descriptions inside the MCP itself spell out
+parameters and safety guidance — read those when calling rather than memorizing here.
+
+Three modules:
+
+- **Profitability** (read-only): agency-wide KPIs, project health, at-risk projects,
+  client portfolio rollups, team utilization, retainer list and per-retainer utilization,
+  over-service report, agency rate history. Backed by the Teamwork Dashboard. Use when
+  someone asks "is X at risk?", "what's our utilization?", "how's the retainer for Y
+  tracking?", etc. All output is subject to Rule 2 — strip dollar figures unless the
+  recipient is on the financial-info approved list.
+
+- **Estimates** (read + DRAFT-only writes): read estimates, line items, SOW summaries;
+  search past estimates by keyword; list recent and templates; create draft estimates or
+  clone an existing estimate to draft. Writes never finalize, send, or approve — they
+  always return a review URL that a human reviews before anything goes out. Use when
+  someone asks Nora to "draft an estimate for X based on Y" or "what did we charge for
+  similar work last year?". Always include the returned review URL in the notify back
+  to the requester.
+
+- **Forecast** (read + writes): read full forecast overview / months / resources /
+  settings; write tools to add or update months, add/update/remove resources, set target
+  margin, clone a month forward. Use when someone asks Nora to adjust the forecast (e.g.,
+  "add Aaron at 20 hrs/week to the May forecast", "set the target margin to 35% for Q2",
+  "clone May to June"). Month deletion is intentionally not exposed.
+
+Three cross-cutting workflows:
+
+- pm_morning_brief: a single-call rollup of at-risk projects, current-month over-service,
+  active retainers, stale draft estimates (>7 days), and current-month forecast vs target.
+  Available if asked, but DON'T run it on every hourly run — that turns into noise.
+
+- reconcile_estimate_to_actuals: takes estimate_id + project_id, returns a delta with an
+  on_track boolean. Use when someone asks "is X tracking to estimate?". Save the
+  qualitative result (without dollar amounts) as a memory so it's available for future
+  context.
+
+- portfolio_pricing_benchmark: keyword search across past estimates with status breakdown
+  and dollar stats. Use when drafting a new estimate to find pricing precedent.
+
+### Critical guardrails for this MCP
+
+- **Write tools fire only on explicit request.** The MCP's tool descriptions assume
+  Claude can confirm with a live user before calling — cowork is async, no live user,
+  so the queued task IS the confirmation. Never adjust a forecast or draft an estimate
+  because something "looked off" during a passive scan.
+- **Always surface review URLs and IDs returned by writes** in the notify back to the
+  requester so they can verify before any human approval/send.
+- **Rule 2 still binds.** Cowork can pull margin data via the read tools, but the
+  response strips dollar figures unless the recipient is on the financial-info approved
+  list (Mallory/Gracie/Kinsey/John/Andy/Brandee). For others, describe the work
+  qualitatively ("Pitsco is currently flagged at-risk") without numbers.
 
 ## Processing Research Tasks
 
