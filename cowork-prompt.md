@@ -274,14 +274,28 @@ If the rest of this run was genuinely idle — no pending tasks processed, no re
 
 ONE project per run. 3–5 memories max. See the "Idle Knowledge Round" section in `/cowork-instructions` for the full procedure. TL;DR:
 
-1. `GET /projects/coverage?limit=5` — list is pre-sorted thinnest-first and excludes archived/opportunity projects and anything researched in the last day. If empty, skip.
-2. Take the first item. `GET /projects/{name}` to see what's already known.
-3. Search Confluence (LLM Client Space), Google Drive, Teamwork, Gmail, and Slack for fresh material on this project.
-4. Write 3–5 concise project-scoped memories via `POST /memory`. Don't restate existing facts. Skip the round if you can't find 3 substantive items — don't pad.
-5. `POST /projects/{name}/research-touch` with a brief `summary` of where you looked.
-6. Optionally save a one-line general meta-memory: "Idle research round on {project} on {date}: added N memories from {sources}."
+1. **Start with Teamwork — it's the source of truth for what's actually active.** Use `twprojects-list_projects` to pull the current list of LimeLight's active projects. Filter out archived/deleted ones and anything starting with "Opportunity - " (sales pipeline).
 
-The cooldown filter on `/projects/coverage` prevents re-picking the same project tomorrow — don't track that yourself, trust the API's sort. Don't include this round in the end-of-run summary unless something noteworthy was discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory").
+2. **Reconcile against Nora's project store.** `GET /projects`. For each active Teamwork project:
+   - If Nora doesn't have it → `POST /projects` with `name`, `client`, `status: "active"`, `pm`, plus a brief `details` line from Teamwork. This fills the biggest gaps first (entire projects Nora doesn't know about).
+   - If Nora has it but with `auto_created: true` → `PUT /projects/:name` with the metadata from Teamwork to clear the stub flag.
+   - If Nora has a project that's no longer active in Teamwork → consider `PUT /projects/:name {"status": "wrapped"}` so coverage stops surfacing it.
+
+3. **Pick a research target.** `GET /projects/coverage?limit=5` — list is pre-sorted thinnest-first and excludes archived/opportunity projects and anything researched in the last day. The reconciliation in step 2 means newly-created records (the gaps) will rank highest. If empty after that, skip the rest.
+
+4. **Research, leading with Teamwork.** Take the first coverage item. `GET /projects/{name}` to see what Nora already knows. Then:
+   - `twprojects-get_project` for official description, dates, members
+   - `twprojects-list_tasks` for the project — active work, blockers, recent activity
+   - `twprojects-list_milestones` for upcoming deliverables and deadlines
+   - Then supplement with Confluence "LLM Client Space", Google Drive, recent Gmail (last 30 days), and Slack channel activity for what's not in Teamwork.
+
+5. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
+
+6. **`POST /projects/{name}/research-touch`** with a brief `summary` of where you looked. This bumps `last_research_at` and prevents re-picking tomorrow.
+
+7. Optionally save a one-line general meta-memory: "Idle research round on {project} on {date}: added N memories from {sources}."
+
+The cooldown filter on `/projects/coverage` prevents re-picking the same project tomorrow — don't track that yourself, trust the API's sort. Don't include this round in the end-of-run summary unless something noteworthy was discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory" or "Reconciled 2 new Teamwork projects into Nora's store").
 
 ## Step 8: End-of-Run Summary
 

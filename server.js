@@ -715,26 +715,54 @@ turns "I don't have specifics on Pitsco" into "Pitsco's launch is May 14, blocke
 Run this AT MOST once per hourly run. ONE project per round. 3–5 memories max.
 Skip if the run has already done substantive work — it's only for genuinely idle hours.
 
-1. Pick a target:
-   GET /projects/coverage?limit=5
-   Take the first item. The list is pre-sorted "most in need first" and already excludes
-   archived/wrapped/completed projects, "Opportunity - " sales pipeline, and projects
-   researched in the last day. If the list is empty, skip the round entirely.
+The round leads with Teamwork because Teamwork is the source of truth for what LimeLight
+is actively working on. Nora's local /projects store is just whatever has been mentioned
+in conversations or manually added — entire active projects may be missing. Reconciling
+against Teamwork first ensures the biggest knowledge gaps (whole projects Nora doesn't
+know about) get prioritized over deepening already-known projects.
 
-2. Pull what you already know:
+1. Pull active Teamwork projects:
+   Use the Teamwork MCP — twprojects-list_projects (filter for active, not archived/deleted).
+   Skip anything starting with "Opportunity - " (sales pipeline, not Nora's concern).
+
+2. Reconcile against Nora's project store:
+   GET /projects
+   For each active Teamwork project:
+   - If Nora doesn't have a record at all → POST /projects with name, client, status: "active",
+     pm (from Teamwork project members or owner), and a brief details line from Teamwork's
+     project description. This fills the biggest gaps first.
+   - If Nora's record has auto_created: true → PUT /projects/:name with the metadata from
+     Teamwork to promote the stub. Setting any of details/client/status/pm/phase clears the
+     auto_created flag automatically.
+   - If a Nora project is no longer active in Teamwork (status archived/deleted there) →
+     consider PUT /projects/:name { "status": "wrapped" } so /projects/coverage stops
+     surfacing it for future research rounds.
+
+3. Pick a research target:
+   GET /projects/coverage?limit=5
+   The list is pre-sorted "most in need first" and excludes archived/wrapped/completed
+   projects, "Opportunity - " sales pipeline, and projects researched in the last day.
+   After step 2's reconciliation, newly-created records will rank near the top because
+   they're brand-new with zero memories. If the list is empty, skip the rest of the round.
+
+4. Pull what Nora already knows about the target:
    GET /projects/{name}  (returns project record + all scoped memories)
    This is your "what's already covered" baseline — don't add memories that duplicate it.
 
-3. Search authoritative sources for fresh material:
+5. Research, leading with Teamwork:
+   - twprojects-get_project — official description, dates, members, owner
+   - twprojects-list_tasks (filter to this project) — active work, blockers, recent activity
+   - twprojects-list_milestones — upcoming deliverables and deadlines
+   - twprojects-list_comments_by_task on key tasks — actual conversation context
+
+   Then supplement with sources Teamwork doesn't capture:
    - Confluence "LLM Client Space": client briefs, project briefs, campaign briefs, process docs
-   - Google Drive: project deliverables, decks, specs, SOWs (strip $ amounts unless recipient
-     is on the financial-info approved list — but you're not posting these anywhere, so just
-     leave amounts out of memory entries since they may surface in future Slack replies)
-   - Teamwork: recent task comments, milestones, completed work — for live status / blockers
+   - Google Drive: project deliverables, decks, specs (leave $ amounts out of memory entries
+     since they may surface in future Slack replies to non-approved recipients)
    - Gmail: recent threads (last 30 days) mentioning the project name
    - Slack: recent channel activity if the project has a known channel
 
-4. Synthesize 3–5 concise project-scoped memories:
+6. Synthesize 3–5 concise project-scoped memories:
    POST /memory
    { "fact": "Pitsco launch target is May 14 per Q2 plan deck (last updated by Andy 2026-04-22).",
      "source": "auto",
@@ -745,24 +773,29 @@ Skip if the run has already done substantive work — it's only for genuinely id
    - Don't restate what's already in project.details or existing memories
    - Don't synthesize speculation — if a doc says "we may launch in May," save that hedge,
      don't promote it to "launching in May"
+   - Prefer current state from Teamwork over older docs from Drive/Confluence when they conflict
    - Skip the round if you can't find 3 substantive facts. Don't pad.
 
-5. Mark the project as researched:
+7. Mark the project as researched:
    POST /projects/{name}/research-touch
-   { "summary": "Deepened from Confluence client brief + Q1 SOW review + Teamwork milestones" }
+   { "summary": "Reconciled from Teamwork + deepened with Confluence brief + recent task comments" }
    This bumps last_research_at and prevents re-picking the same project tomorrow.
 
-6. (Optional) Save a one-line general memory recording that the round happened:
+8. (Optional) Save a one-line general memory recording that the round happened:
    POST /memory
-   { "fact": "Idle research round on Pitsco on 2026-05-09: added 4 memories (sources: Confluence brief, Teamwork milestones)",
+   { "fact": "Idle research round on Pitsco on 2026-05-09: added 4 memories (sources: Teamwork tasks/milestones, Confluence brief)",
      "source": "auto" }
 
 Guardrails:
 - The cooldown_days filter on /projects/coverage already prevents re-picking the same
   project tomorrow. You don't need to track this yourself — trust the API's sort.
+- The Teamwork reconciliation in step 2 is the most valuable side effect of this round —
+  even if you don't proceed to deep research, just reconciling new active projects into
+  Nora's store is a meaningful improvement. If you reconcile but find no good research
+  target, that's still a successful round.
 - Don't include this round in the end-of-run summary unless something noteworthy was
-  discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory").
-  Otherwise it's just a quiet enrichment.
+  discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory"
+  or "Reconciled 2 new Teamwork projects into Nora's store").
 - Never run this round on a project the user has flagged "do not touch" (check memory
   for any "skip Nora research on X" entries before picking).
 `);
