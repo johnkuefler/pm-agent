@@ -474,6 +474,45 @@ GET /projects/coverage?limit=5
 // Response: { "ok": true, "joined": { "channel": "C0123ABC", "thread_ts": "1710432000.000100" } }</pre>
       </div>
 
+      <h4>Proactive channel speaking (opt-in)</h4>
+      <p>Nora can chime in on channel messages even without being @mentioned, when her live handler's stricter Claude gate decides she has substantive context to add. <strong>Strict opt-in per channel</strong> — default everywhere is off, because unsolicited interjections are a fast trust-breaker.</p>
+      <p>When enabled for a channel: every non-mention, non-thread message runs a stricter "is this a specific question Nora has specific context for?" Claude gate (defaults harder to "no" than the thread-continuation gate). The model gets a second chance to abort at generation time by returning empty. After each successful proactive post, the channel cools down for 30 minutes.</p>
+
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/proactive-channels</span></div>
+        <div class="endpoint-desc">List channels with proactive speaking enabled, plus current cooldown status per channel.</div>
+        <pre>{
+  "count": 2,
+  "cooldown_minutes": 30,
+  "channels": [
+    {
+      "channel": "C0123DESIGN",
+      "cooldown_active": false,
+      "last_proactive_post": "2026-05-09T14:22:11.000Z"
+    },
+    {
+      "channel": "C0987PROJECTS",
+      "cooldown_active": true,
+      "last_proactive_post": "2026-05-09T15:40:00.000Z"
+    }
+  ]
+}</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/slack/proactive-channels/:channel</span></div>
+        <div class="endpoint-desc">Enable proactive speaking in a channel. Nora will start considering chime-ins on every non-mention, non-thread message there (still gated by the strict Claude check + cooldown).</div>
+        <pre>POST /slack/proactive-channels/C0123DESIGN
+// Response: { "ok": true, "channel": "C0123DESIGN", "enabled": true }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge delete">DELETE</span> <span class="endpoint-path">/slack/proactive-channels/:channel</span></div>
+        <div class="endpoint-desc">Disable proactive speaking in a channel and clear its cooldown.</div>
+        <pre>DELETE /slack/proactive-channels/C0123DESIGN
+// Response: { "ok": true, "channel": "C0123DESIGN", "enabled": false }</pre>
+      </div>
+
       <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/slack/unhandled-mentions</span></div>
         <div class="endpoint-desc">Find @mentions of the Nora bot the live handler missed. Uses the bot's POV (via SLACK_BOT_TOKEN), not the user account's — important because the user account cowork is connected to may not be a member of every channel the bot is in. Replaces the cowork loop's old <code>slack_search_public_and_private</code> safety-net check.</div>

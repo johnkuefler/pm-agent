@@ -216,6 +216,48 @@ function isThreadActive(channel, threadTs) {
   return isThreadJoined(channel, threadTs) && !isThreadStale(channel, threadTs);
 }
 
+// Channels where Nora is allowed to speak proactively (interject without being @mentioned)
+// when she has substantive context to add. STRICT opt-in by channel — default everywhere is off.
+// Unsolicited interjections are a fast trust-breaker, so this is gated on:
+//   1. Channel must be in this allow-list (via POST /slack/proactive-channels/:channel)
+//   2. A stricter Claude gate than thread-continuation runs every time
+//   3. Per-channel cooldown after each successful proactive post
+const SLACK_PROACTIVE_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-proactive-channels.json');
+const SLACK_PROACTIVE_PATH_LOCAL = path.join(__dirname, 'slack-proactive-channels.json');
+const PROACTIVE_COOLDOWN_MS = 30 * 60 * 1000; // 30 min between proactive posts in the same channel
+
+function getSlackProactivePath() {
+  if (fs.existsSync(VOLUME_DIR)) return SLACK_PROACTIVE_PATH_VOLUME;
+  return SLACK_PROACTIVE_PATH_LOCAL;
+}
+
+function loadSlackProactiveChannels() {
+  try {
+    return new Set(JSON.parse(fs.readFileSync(getSlackProactivePath(), 'utf8')));
+  } catch { return new Set(); }
+}
+
+function saveSlackProactiveChannels(set) {
+  fs.writeFileSync(getSlackProactivePath(), JSON.stringify([...set], null, 2));
+}
+
+let slackProactiveChannels = loadSlackProactiveChannels();
+const slackProactiveCooldown = {}; // channel → ms timestamp of last proactive post (in-memory, resets on restart)
+
+function isProactiveEnabled(channel) {
+  return slackProactiveChannels.has(channel);
+}
+
+function isProactiveCooldownActive(channel) {
+  const last = slackProactiveCooldown[channel];
+  if (!last) return false;
+  return (Date.now() - last) < PROACTIVE_COOLDOWN_MS;
+}
+
+function markProactivePost(channel) {
+  slackProactiveCooldown[channel] = Date.now();
+}
+
 function addTask(task) {
   const tasks = loadTasks();
   const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -534,6 +576,31 @@ For DMs and explicit @mentions, none of the spam guards apply — those always r
   (cold outreach, automated cross-post, etc.) — calling this suppresses the mention from
   future unhandled-mentions calls without sending a response.
   Response: { "ok": true, "joined": { "channel", "thread_ts" } }
+
+### Proactive Channel Speaking (opt-in)
+Nora can speak proactively in specific channels without being @mentioned, when her live
+handler's stricter Claude gate decides she has substantive context to add. STRICT opt-in
+by channel — default everywhere is off, because unsolicited interjections are a fast
+trust-breaker.
+
+When proactive is enabled for a channel:
+  - Every non-mention, non-thread message in that channel runs through a stricter Claude
+    gate than the thread-continuation one (defaults harder to "no", looks for SPECIFIC
+    facts Nora can contribute, not generic helpfulness).
+  - The model gets a final chance to abort at generation time by returning empty.
+  - After a successful proactive post, the channel is cooled down for 30 minutes — Nora
+    won't chime in again until then, even if the gate would otherwise pass.
+
+- GET  /slack/proactive-channels — List channels with proactive speaking enabled, plus
+  current cooldown status per channel.
+  Response: { "count", "cooldown_minutes", "channels": [{ "channel", "cooldown_active",
+              "last_proactive_post" }] }
+
+- POST /slack/proactive-channels/:channel — Enable proactive speaking in a channel.
+  Response: { "ok": true, "channel", "enabled": true }
+
+- DELETE /slack/proactive-channels/:channel — Disable proactive speaking and clear cooldown.
+  Response: { "ok": true, "channel", "enabled": false }
 
 - GET  /slack/unhandled-mentions — Find @mentions of the Nora bot that the live handler
   missed (server restart, signature failure, subscription gap, etc.). Uses the BOT'S
@@ -1365,8 +1432,41 @@ async function shouldEngageInThread(history, newMessage) {
   }
 }
 
+// Stricter Claude gate for proactive channel speaking — Nora is uninvited here, so the
+// bar is much higher than thread continuation. Defaults to no on any ambiguity. The
+// gate is told to look for SPECIFIC facts Nora can add from memory, not generic helpfulness.
+async function shouldEngageProactively(newMessage) {
+  try {
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 5,
+        temperature: 0,
+        system: 'You decide if Nora (an AI project manager for LimeLight Marketing) should chime in unsolicited on a Slack channel message. Nora was NOT mentioned and NOT addressed — she would be interjecting on her own initiative. The bar is very high: reply "yes" ONLY if the message asks a specific factual question that Nora has substantive, specific context to answer (concrete project facts, dates, decisions, names). Reply "no" for: greetings, social chatter, opinions/discussion, vague questions, anything where her contribution would be generic, anything she has no specific memory about, or anything ambiguous. When in doubt, ALWAYS "no". Unsolicited interjections fast-break trust — silence is the safe default. Reply with exactly "yes" or "no".',
+        messages: [{ role: 'user', content: `Channel message (Nora was NOT mentioned): "${newMessage}"\n\nShould Nora chime in unsolicited?` }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        timeout: 5000
+      }
+    );
+    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('').toLowerCase().trim();
+    return text.startsWith('yes');
+  } catch (err) {
+    console.error('shouldEngageProactively error:', err.message);
+    return false;
+  }
+}
+
 // Decide whether Nora should respond to this Slack event.
-// She responds if: (a) it's a DM, (b) she was @mentioned, or (c) it's an active joined thread.
+// She responds if: (a) it's a DM, (b) she was @mentioned, (c) it's an active joined thread,
+// or (d) the channel is on the proactive-speaking allow-list and not in cooldown (still
+// subject to the proactive Claude gate downstream).
 //
 // Dedup note: when the Slack app subscribes to both app_mention and message.channels, every
 // @mention fires BOTH events with the same content. We let app_mention own those replies and
@@ -1382,6 +1482,10 @@ function shouldRespond(event) {
   }
   // Follow-up in an active (joined + not stale) thread
   if (event.thread_ts && isThreadActive(event.channel, event.thread_ts)) return true;
+  // Proactive channel speaking — only if explicitly enabled for this channel and not in cooldown
+  if (event.type === 'message' && isProactiveEnabled(event.channel) && !isProactiveCooldownActive(event.channel)) {
+    return true;
+  }
   return false;
 }
 
@@ -1436,33 +1540,45 @@ app.post('/webhook/slack', async (req, res) => {
     recordThreadInbound(channel, event.thread_ts);
   }
 
-  // Decide whether to respond at the routing level (DM, mention, or active thread)
+  // Decide whether to respond at the routing level (DM, mention, active thread, or
+  // proactive-enabled channel)
   if (!shouldRespond(event)) return;
 
-  // For thread continuations (not DMs, not @mentions), apply the heuristic + Claude gate
-  // before committing to a response. This is the spam guard.
+  // For non-DM, non-mention messages, apply heuristic + Claude gate before committing
+  // to a response. The gate differs based on whether this is thread continuation
+  // (Nora was already invited) or proactive interjection (Nora was not invited at all).
   const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
   const isMention = event.type === 'app_mention';
+  const inActiveThread = !!event.thread_ts && isThreadActive(channel, event.thread_ts);
+  const isProactive = !isDM && !isMention && !inActiveThread; // implies proactive-enabled by shouldRespond
+
+  let mode = 'normal';
   if (!isDM && !isMention) {
     if (isObviouslyNotForNora(query, noraBotUserId)) {
       console.log(`💬 Slack skip (heuristic): ${query.slice(0, 60)}`);
       return;
     }
-    const sessionKey = slackSessionKey(channel, event.thread_ts, event.channel_type);
-    const history = slackSessions[sessionKey] || [];
-    const engage = await shouldEngageInThread(history, query);
+    let engage;
+    if (isProactive) {
+      engage = await shouldEngageProactively(query);
+      mode = 'proactive';
+    } else {
+      const sessionKey = slackSessionKey(channel, event.thread_ts, event.channel_type);
+      const history = slackSessions[sessionKey] || [];
+      engage = await shouldEngageInThread(history, query);
+    }
     if (!engage) {
-      console.log(`💬 Slack skip (Claude gate): ${query.slice(0, 60)}`);
+      console.log(`💬 Slack skip (${isProactive ? 'proactive' : 'thread'} gate): ${query.slice(0, 60)}`);
       return;
     }
   }
 
-  console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}] from ${user}: ${query.slice(0, 100)}`);
+  console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}${mode === 'proactive' ? '/proactive' : ''}] from ${user}: ${query.slice(0, 100)}`);
 
-  await handleSlack(channel, user, query, threadTs, event.channel_type);
+  await handleSlack(channel, user, query, threadTs, event.channel_type, mode);
 });
 
-async function handleSlack(channel, user, text, threadTs, channelType) {
+async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal') {
   try {
     // Per-thread (or per-DM) conversation history so distinct conversations don't bleed
     const key = slackSessionKey(channel, threadTs, channelType);
@@ -1471,13 +1587,21 @@ async function handleSlack(channel, user, text, threadTs, channelType) {
 
     history.push({ role: 'user', content: `[Slack user <@${user}>]: ${text}` });
 
+    // Proactive mode: tell the model it's chiming in unsolicited and give it explicit
+    // permission to abort (output nothing) if on reflection it doesn't have something
+    // specific to add. This is a second chance to stay quiet after the gate fired.
+    let systemPrompt = buildSystemPrompt('slack');
+    if (mode === 'proactive') {
+      systemPrompt += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
+    }
+
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 400,
         temperature: 0.9,
-        system: buildSystemPrompt('slack'),
+        system: systemPrompt,
         messages: history
       },
       {
@@ -1492,6 +1616,14 @@ async function handleSlack(channel, user, text, threadTs, channelType) {
     const reply = response.data.content
       .filter(b => b.type === 'text')
       .map(b => b.text).join(' ');
+
+    // Allow proactive mode to opt out at generation time by returning nothing.
+    if (mode === 'proactive' && !reply.trim()) {
+      console.log('💬 Slack proactive abort (empty reply): model declined to chime in');
+      // Don't pollute history with the user-line + nothing; pop the user message we just added
+      history.pop();
+      return;
+    }
 
     console.log('🤖 Nora (Slack):', reply);
     history.push({ role: 'assistant', content: reply });
@@ -1510,6 +1642,12 @@ async function handleSlack(channel, user, text, threadTs, channelType) {
     // DMs aren't tracked (every DM message is responded to via channel_type check).
     if (channelType !== 'im' && channelType !== 'mpim') {
       markThreadJoined(channel, threadTs);
+    }
+
+    // Proactive cooldown: after a successful unsolicited post, suppress further proactive
+    // posts in this channel for PROACTIVE_COOLDOWN_MS so Nora doesn't chatter.
+    if (mode === 'proactive') {
+      markProactivePost(channel);
     }
 
     // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
@@ -1581,6 +1719,42 @@ app.post('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
   markThreadJoined(channel, ts);
   console.log('💬 Slack thread manually marked joined:', `${channel}:${ts}`);
   res.json({ ok: true, joined: { channel, thread_ts: ts } });
+});
+
+// Proactive channel admin — control which channels Nora is allowed to speak in proactively
+// (without being @mentioned). DEFAULT IS OFF for every channel — strict opt-in.
+app.get('/slack/proactive-channels', requireAuth, (req, res) => {
+  const channels = [...slackProactiveChannels].map(c => ({
+    channel: c,
+    cooldown_active: isProactiveCooldownActive(c),
+    last_proactive_post: slackProactiveCooldown[c] ? new Date(slackProactiveCooldown[c]).toISOString() : null
+  }));
+  res.json({
+    count: channels.length,
+    cooldown_minutes: PROACTIVE_COOLDOWN_MS / 60000,
+    channels
+  });
+});
+
+app.post('/slack/proactive-channels/:channel', requireAuth, (req, res) => {
+  const { channel } = req.params;
+  if (!channel) return res.status(400).json({ error: 'channel is required' });
+  slackProactiveChannels.add(channel);
+  saveSlackProactiveChannels(slackProactiveChannels);
+  console.log('💬 Slack proactive speaking enabled for channel:', channel);
+  res.json({ ok: true, channel, enabled: true });
+});
+
+app.delete('/slack/proactive-channels/:channel', requireAuth, (req, res) => {
+  const { channel } = req.params;
+  if (!slackProactiveChannels.has(channel)) {
+    return res.status(404).json({ error: 'channel not currently enabled for proactive speaking' });
+  }
+  slackProactiveChannels.delete(channel);
+  saveSlackProactiveChannels(slackProactiveChannels);
+  delete slackProactiveCooldown[channel];
+  console.log('💬 Slack proactive speaking disabled for channel:', channel);
+  res.json({ ok: true, channel, enabled: false });
 });
 
 // Resolve Nora's bot user ID, falling back to auth.test if it hasn't been
