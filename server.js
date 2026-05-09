@@ -121,6 +121,101 @@ function bumpProjectActivity(name) {
   saveProjects(projects);
 }
 
+// Slack threads Nora has replied in. Used to keep conversations going without re-mention.
+// Persisted so a deploy/restart doesn't drop active conversations.
+//
+// Each entry tracks: when joined, when Nora was last actively addressed/responded, and a
+// counter of inbound messages since. Threads "go stale" once the counter or time gap exceeds
+// thresholds — at which point Nora drops out and a re-mention is required to wake her back up.
+const SLACK_THREADS_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-threads.json');
+const SLACK_THREADS_PATH_LOCAL = path.join(__dirname, 'slack-threads.json');
+const SLACK_THREADS_CAP = 1000; // hard cap on tracked threads, oldest evicted
+const THREAD_STALE_MSG_COUNT = 5; // messages since last addressed before going stale
+const THREAD_STALE_AGE_MS = 30 * 60 * 1000; // 30 minutes since last addressed before going stale
+
+function getSlackThreadsPath() {
+  if (fs.existsSync(VOLUME_DIR)) return SLACK_THREADS_PATH_VOLUME;
+  return SLACK_THREADS_PATH_LOCAL;
+}
+
+function loadSlackThreads() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(getSlackThreadsPath(), 'utf8'));
+    // Migrate legacy shape (string ISO → object)
+    const migrated = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'string') {
+        migrated[k] = { joined_at: v, last_addressed: v, msgs_since_addressed: 0 };
+      } else {
+        migrated[k] = v;
+      }
+    }
+    return migrated;
+  } catch { return {}; }
+}
+
+function saveSlackThreads(threads) {
+  fs.writeFileSync(getSlackThreadsPath(), JSON.stringify(threads, null, 2));
+}
+
+// In-memory cache of joined threads. Key format: `${channel}:${thread_ts}`
+// DMs aren't tracked here — every DM message gets a response.
+let slackJoinedThreads = loadSlackThreads();
+
+// Called when Nora has either been directly addressed or has just responded in a thread.
+// Resets the staleness counter so the conversation stays warm.
+function markThreadJoined(channel, threadTs) {
+  if (!channel || !threadTs) return;
+  const key = `${channel}:${threadTs}`;
+  const now = new Date().toISOString();
+  const existing = slackJoinedThreads[key];
+  slackJoinedThreads[key] = {
+    joined_at: existing?.joined_at || now,
+    last_addressed: now,
+    msgs_since_addressed: 0
+  };
+  // Evict oldest if over cap
+  const keys = Object.keys(slackJoinedThreads);
+  if (keys.length > SLACK_THREADS_CAP) {
+    const sorted = keys.sort((a, b) => slackJoinedThreads[a].last_addressed.localeCompare(slackJoinedThreads[b].last_addressed));
+    const toEvict = keys.length - SLACK_THREADS_CAP;
+    for (let i = 0; i < toEvict; i++) delete slackJoinedThreads[sorted[i]];
+  }
+  saveSlackThreads(slackJoinedThreads);
+}
+
+// Called when an inbound message arrives in a joined thread but Nora doesn't respond.
+// Drives the staleness counter so eventually the thread cools off.
+function recordThreadInbound(channel, threadTs) {
+  if (!channel || !threadTs) return;
+  const key = `${channel}:${threadTs}`;
+  const entry = slackJoinedThreads[key];
+  if (!entry) return;
+  entry.msgs_since_addressed = (entry.msgs_since_addressed || 0) + 1;
+  saveSlackThreads(slackJoinedThreads);
+}
+
+function isThreadJoined(channel, threadTs) {
+  if (!channel || !threadTs) return false;
+  return !!slackJoinedThreads[`${channel}:${threadTs}`];
+}
+
+// A thread is "stale" if Nora has gone too many messages or too long without being addressed.
+// Stale threads require a re-mention to re-engage — protects against drift and side chatter.
+function isThreadStale(channel, threadTs) {
+  if (!channel || !threadTs) return false;
+  const entry = slackJoinedThreads[`${channel}:${threadTs}`];
+  if (!entry) return false;
+  if ((entry.msgs_since_addressed || 0) >= THREAD_STALE_MSG_COUNT) return true;
+  const ageMs = Date.now() - new Date(entry.last_addressed).getTime();
+  if (ageMs > THREAD_STALE_AGE_MS) return true;
+  return false;
+}
+
+function isThreadActive(channel, threadTs) {
+  return isThreadJoined(channel, threadTs) && !isThreadStale(channel, threadTs);
+}
+
 function addTask(task) {
   const tasks = loadTasks();
   const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
@@ -130,6 +225,7 @@ function addTask(task) {
     source_channel: task.source_channel || '',
     source_user: task.source_user || '',
     source_bot_id: task.source_bot_id || '',
+    source_thread_ts: task.source_thread_ts || '',
     context: task.context || '',
     status: 'pending',
     created: new Date().toISOString(),
@@ -339,7 +435,16 @@ rather than orphaned references.
 
 ### Tasks
 - GET  /tasks                   — List all tasks. Filter: ?status=pending or ?status=done
-  Response: [{ "id", "action", "detail", "assignee", "due", "source_channel", "source_user", "status", "created", "completed" }]
+  Response: [{ "id", "action", "detail", "assignee", "due",
+                "source_channel", "source_user", "source_thread_ts",
+                "status", "created", "completed" }]
+
+  Important: tasks queued from a Slack thread now include "source_thread_ts". When you
+  notify the requester (POST /notify), pass that value as "thread_ts" so the resolution
+  posts back into the original thread instead of as a fresh channel message. This is what
+  makes the conversation feel continuous from the user's side: they ask Nora something live,
+  she promises a follow-up, then the answer lands in the same thread within the hour.
+  If "source_thread_ts" is empty (Zoom tasks, DMs), omit thread_ts and notify normally.
 
 - POST /tasks                   — Add a task
   Body: { "action": "string", "detail": "string", "assignee": "string", "due": "string" }
@@ -369,6 +474,42 @@ rather than orphaned references.
   Body: { "channel": "C...", "text": "string" }  (or "user": "U..." for DMs)
   Optional: "blocks" (Block Kit), "file_url" + "file_name", "thread_ts"
   Response: { "ok": true, "channel": "...", "ts": "..." }
+  Note: When this posts in a channel thread (not a DM), Nora is automatically marked
+  as joined to that thread — meaning users can reply in-thread and reach her without
+  having to @mention her again. See /slack/threads to inspect or prune.
+
+### Slack Conversation State
+Nora supports real back-and-forth conversations in Slack:
+  - DMs: every message gets a reply (always).
+  - Channel @mention: replies and joins the thread.
+  - Thread follow-up (no re-mention): if Nora has replied in a thread and it hasn't gone
+    stale, she keeps responding without re-mention. A thread "goes stale" after 5 messages
+    where Nora wasn't directly addressed, or after 30 minutes since her last engagement.
+    Stale threads require a re-mention to wake her up. Persisted across restarts.
+
+Three spam guards layered on top of thread continuation:
+  1. Auto-stale (above) — drops her out of long-drifted threads
+  2. Heuristic skip — sub-4-char messages, emoji-only reactions, or messages mentioning
+     someone other than Nora are dropped before any LLM cost
+  3. Claude gate — a cheap Haiku call asks "is this directed at Nora?" on every thread
+     continuation; defaults to "no" on uncertainty/error
+
+For DMs and explicit @mentions, none of the spam guards apply — those always respond.
+
+- GET  /slack/threads           — List threads Nora is currently joined to (newest first).
+  Response: { "count": N, "active": N, "stale": N,
+              "stale_thresholds": { "msg_count": 5, "age_minutes": 30 },
+              "threads": [{ "channel", "thread_ts", "joined_at", "last_addressed",
+                            "msgs_since_addressed", "stale" }] }
+
+- DELETE /slack/threads/:channel/:ts — Untrack a thread so Nora stops auto-responding there.
+  Use when she's been pulled into a thread that doesn't actually need her ongoing presence.
+  Response: { "ok": true }
+
+Slack app config requirement: For thread continuation in channels to work, the Slack app
+must subscribe to message.channels (and message.groups for private channels) — not just
+app_mention. Without those subscriptions, Slack only delivers @mention events and Nora
+won't see follow-ups in threads she's joined.
 
 ### Other
 - GET  /                        — Dashboard web UI
@@ -397,6 +538,7 @@ rather than orphaned references.
   "source_channel": "slack:C0123... or zoom",
   "source_user": "U0123... (Slack user ID)",
   "source_bot_id": "Recall.ai bot ID if task came from a meeting (use to fetch full transcript via GET /transcripts/{bot_id})",
+  "source_thread_ts": "Slack thread timestamp if task originated in a channel thread (empty for DMs/Zoom). Pass as thread_ts to /notify so the resolution lands in the original thread.",
   "context": "Conversation snippet surrounding the task request — includes the trigger, Nora's reply, and recent utterances",
   "status": "pending | done",
   "created": "ISO 8601 timestamp",
@@ -458,10 +600,15 @@ rather than orphaned references.
    POST /notify
    {
      "channel": "C0123ABCDEF",  // from task.source_channel (strip "slack:" prefix)
-     "text": "Done — scheduled the follow-up with Kyle for Tuesday at 2pm."
+     "text": "Done — scheduled the follow-up with Kyle for Tuesday at 2pm.",
+     "thread_ts": "1710432000.000100"  // pass task.source_thread_ts when present
    }
    - If source_channel starts with "slack:", strip the prefix to get the channel ID.
    - If source_channel is "zoom", use task.source_user to DM them instead.
+   - If task.source_thread_ts is non-empty, ALWAYS pass it as thread_ts so your reply
+     lands in the same thread where the conversation started. This is what makes Nora
+     feel responsive: a user asks her live, she promises a follow-up, the answer arrives
+     in-thread within the hour. Skipping thread_ts breaks that experience.
 
 5. Mark the task as done:
    PATCH /tasks/{task_id}/complete
@@ -928,8 +1075,13 @@ app.post('/webhook/status', async (req, res) => {
   }
 });
 
-// Slack webhook — @mentions and DMs
-const slackSessions = {}; // channel/DM conversation history
+// Slack webhook — @mentions, DMs, and follow-ups in threads Nora has joined
+// Session history is keyed per-thread (or per-DM-channel) so concurrent conversations stay isolated.
+const slackSessions = {};
+
+// Cached Nora bot user ID, resolved lazily from the first event payload's authorizations.
+// Used to detect @mentions in raw `message.channels` events (which arrive as type=message, not app_mention).
+let noraBotUserId = null;
 
 function verifySlackSignature(req) {
   const sigSecret = process.env.SLACK_SIGNING_SECRET;
@@ -942,6 +1094,87 @@ function verifySlackSignature(req) {
   const basestring = `v0:${timestamp}:${req.rawBody}`;
   const hash = 'v0=' + crypto.createHmac('sha256', sigSecret).update(basestring).digest('hex');
   return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(sig));
+}
+
+// Build a session key that scopes conversation history correctly.
+// - DMs: per-channel (a DM channel = one conversation)
+// - Channel threads: per-thread (so distinct threads in same channel don't bleed)
+function slackSessionKey(channel, threadTs, channelType) {
+  if (channelType === 'im' || channelType === 'mpim') return `dm:${channel}`;
+  if (threadTs) return `thread:${channel}:${threadTs}`;
+  return `channel:${channel}`;
+}
+
+// Cheap heuristic to drop obvious non-Nora-directed chatter before spending a Claude call.
+// Returns true if the message is clearly not for Nora (acknowledgments, emoji-only, side chatter).
+function isObviouslyNotForNora(text, botUserId) {
+  const trimmed = (text || '').trim();
+  // Very short messages — usually "ok", "lol", "yes", reactions
+  if (trimmed.length < 4) return true;
+  // Strip Slack-style :emoji: codes and unicode emoji; if there's nothing meaningful left, skip
+  const stripped = trimmed
+    .replace(/:[a-z0-9_+-]+:/gi, '')
+    .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/\s+/g, '');
+  if (stripped.length < 4) return true;
+  // Mentions another user but not Nora — message is directed elsewhere
+  const mentions = trimmed.match(/<@[A-Z0-9]+>/g) || [];
+  if (mentions.length > 0 && botUserId && !mentions.some(m => m.includes(botUserId))) {
+    return true;
+  }
+  return false;
+}
+
+// Claude gate: ask Haiku whether the new message is actually directed at Nora before responding.
+// Used only for thread continuation (DMs and explicit @mentions skip the gate). Defaults to no
+// on errors or ambiguity — better to stay quiet than to chime in unwanted.
+async function shouldEngageInThread(history, newMessage) {
+  try {
+    const recent = history.slice(-6).map(m => `${m.role === 'assistant' ? 'Nora' : 'User'}: ${typeof m.content === 'string' ? m.content : ''}`).join('\n');
+    const response = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 5,
+        temperature: 0,
+        system: 'You decide whether a new Slack message in a thread is directed at Nora (an AI project manager) and warrants a response from her. Reply with exactly "yes" or "no" — nothing else. Default to "no" if uncertain. Reply "yes" only when the message is clearly asking Nora something, addressing her directly, or seeking her input on the topic of the thread. Reply "no" for: thanks/acknowledgments, side chatter between humans, messages directed at other people, status updates not seeking input, or anything ambiguous.',
+        messages: [{ role: 'user', content: `Recent thread:\n${recent}\n\nNew message: "${newMessage}"\n\nDirected at Nora and warrants a response?` }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        timeout: 5000
+      }
+    );
+    const text = response.data.content.filter(b => b.type === 'text').map(b => b.text).join('').toLowerCase().trim();
+    return text.startsWith('yes');
+  } catch (err) {
+    console.error('shouldEngageInThread error:', err.message);
+    return false; // err on the side of silence
+  }
+}
+
+// Decide whether Nora should respond to this Slack event.
+// She responds if: (a) it's a DM, (b) she was @mentioned, or (c) it's an active joined thread.
+//
+// Dedup note: when the Slack app subscribes to both app_mention and message.channels, every
+// @mention fires BOTH events with the same content. We let app_mention own those replies and
+// skip duplicate message events that contain a Nora @mention.
+function shouldRespond(event) {
+  // DMs always
+  if (event.channel_type === 'im' || event.channel_type === 'mpim') return true;
+  // Explicit app_mention event type — Slack delivers this when the bot is mentioned
+  if (event.type === 'app_mention') return true;
+  // Skip duplicate message event for an @mention — app_mention already handled it
+  if (event.type === 'message' && noraBotUserId && event.text && event.text.includes(`<@${noraBotUserId}>`)) {
+    return false;
+  }
+  // Follow-up in an active (joined + not stale) thread
+  if (event.thread_ts && isThreadActive(event.channel, event.thread_ts)) return true;
+  return false;
 }
 
 app.post('/webhook/slack', async (req, res) => {
@@ -958,34 +1191,75 @@ app.post('/webhook/slack', async (req, res) => {
 
   res.sendStatus(200);
 
+  // Cache Nora's bot user ID from authorizations on first event — needed to detect
+  // @mentions in raw `message.channels` events (which arrive as type=message, not app_mention)
+  if (!noraBotUserId && req.body.authorizations && req.body.authorizations[0]) {
+    noraBotUserId = req.body.authorizations[0].user_id;
+    console.log('🤖 Resolved Nora bot user ID:', noraBotUserId);
+  }
+
   const event = req.body.event;
   if (!event) return;
 
-  // Ignore bot messages (prevent loops)
+  // Ignore bot messages (prevent loops, including Nora's own posts)
   if (event.bot_id || event.subtype === 'bot_message') return;
 
-  // Handle app_mention and direct messages
+  // Only handle app_mention and message event types
   if (event.type !== 'app_mention' && event.type !== 'message') return;
+
+  // Skip irrelevant message subtypes (channel_join, message_changed, etc.)
+  if (event.subtype && event.subtype !== 'thread_broadcast') return;
 
   const text = event.text || '';
   const channel = event.channel;
   const user = event.user;
-  const threadTs = event.thread_ts || event.ts; // reply in thread
+  // For top-level messages, replying with thread_ts=event.ts starts a new thread on that message.
+  // For thread replies, we get event.thread_ts.
+  const threadTs = event.thread_ts || event.ts;
 
-  // Strip the @mention tag from the text
+  // Strip @mention tags from the text
   const query = text.replace(/<@[A-Z0-9]+>/g, '').trim();
   if (!query) return;
 
-  console.log(`💬 Slack [${event.type}] from ${user}: ${query}`);
+  // Track every inbound to a joined thread regardless of whether we end up responding.
+  // This drives the staleness counter so the thread eventually cools off if Nora isn't being addressed.
+  const inJoinedThread = !!event.thread_ts && isThreadJoined(channel, event.thread_ts);
+  if (inJoinedThread && event.type === 'message') {
+    recordThreadInbound(channel, event.thread_ts);
+  }
 
-  await handleSlack(channel, user, query, threadTs);
+  // Decide whether to respond at the routing level (DM, mention, or active thread)
+  if (!shouldRespond(event)) return;
+
+  // For thread continuations (not DMs, not @mentions), apply the heuristic + Claude gate
+  // before committing to a response. This is the spam guard.
+  const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
+  const isMention = event.type === 'app_mention';
+  if (!isDM && !isMention) {
+    if (isObviouslyNotForNora(query, noraBotUserId)) {
+      console.log(`💬 Slack skip (heuristic): ${query.slice(0, 60)}`);
+      return;
+    }
+    const sessionKey = slackSessionKey(channel, event.thread_ts, event.channel_type);
+    const history = slackSessions[sessionKey] || [];
+    const engage = await shouldEngageInThread(history, query);
+    if (!engage) {
+      console.log(`💬 Slack skip (Claude gate): ${query.slice(0, 60)}`);
+      return;
+    }
+  }
+
+  console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}] from ${user}: ${query.slice(0, 100)}`);
+
+  await handleSlack(channel, user, query, threadTs, event.channel_type);
 });
 
-async function handleSlack(channel, user, text, threadTs) {
+async function handleSlack(channel, user, text, threadTs, channelType) {
   try {
-    // Per-channel conversation history
-    if (!slackSessions[channel]) slackSessions[channel] = [];
-    const history = slackSessions[channel];
+    // Per-thread (or per-DM) conversation history so distinct conversations don't bleed
+    const key = slackSessionKey(channel, threadTs, channelType);
+    if (!slackSessions[key]) slackSessions[key] = [];
+    const history = slackSessions[key];
 
     history.push({ role: 'user', content: `[Slack user <@${user}>]: ${text}` });
 
@@ -1024,11 +1298,20 @@ async function handleSlack(channel, user, text, threadTs) {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
     });
 
+    // Mark this thread as one Nora has joined so follow-ups don't require re-mention.
+    // DMs aren't tracked (every DM message is responded to via channel_type check).
+    if (channelType !== 'im' && channelType !== 'mpim') {
+      markThreadJoined(channel, threadTs);
+    }
+
     // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
     if (!isAskingClarification(reply)) {
-      extractTasks(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
+      // Pass thread_ts through so cowork can post the resolution back into this same thread.
+      // DMs don't have meaningful threads — pass empty string so /notify uses default behavior.
+      const sourceThreadTs = (channelType === 'im' || channelType === 'mpim') ? '' : threadTs;
+      extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
       extractMemory(text, text, reply).catch(() => {});
-      extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user }).catch(() => {});
+      extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -1046,6 +1329,38 @@ async function handleSlack(channel, user, text, threadTs) {
     } catch {}
   }
 }
+
+// Slack thread admin — view and prune which threads Nora is "in" (will respond without re-mention)
+app.get('/slack/threads', requireAuth, (req, res) => {
+  const list = Object.entries(slackJoinedThreads).map(([key, entry]) => {
+    const [channel, ts] = key.split(':');
+    return {
+      channel,
+      thread_ts: ts,
+      joined_at: entry.joined_at,
+      last_addressed: entry.last_addressed,
+      msgs_since_addressed: entry.msgs_since_addressed || 0,
+      stale: isThreadStale(channel, ts)
+    };
+  });
+  list.sort((a, b) => b.last_addressed.localeCompare(a.last_addressed));
+  res.json({
+    count: list.length,
+    active: list.filter(t => !t.stale).length,
+    stale: list.filter(t => t.stale).length,
+    stale_thresholds: { msg_count: THREAD_STALE_MSG_COUNT, age_minutes: THREAD_STALE_AGE_MS / 60000 },
+    threads: list
+  });
+});
+
+app.delete('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
+  const key = `${req.params.channel}:${req.params.ts}`;
+  if (!slackJoinedThreads[key]) return res.status(404).json({ error: 'thread not tracked' });
+  delete slackJoinedThreads[key];
+  saveSlackThreads(slackJoinedThreads);
+  console.log('💬 Slack thread untracked:', key);
+  res.json({ ok: true });
+});
 
 // Notify endpoint — Claude Code calls this to have Nora post follow-ups
 app.post('/notify', requireAuth, async (req, res) => {
@@ -1092,8 +1407,16 @@ app.post('/notify', requireAuth, async (req, res) => {
       });
     }
 
+    // If we posted in a channel thread (not a DM), mark Nora as joined so user follow-ups
+    // in that thread reach her without re-mention. DMs (channelId starts with 'D') skip this.
+    const postedTs = msgRes.data.ts;
+    const effectiveThread = thread_ts || postedTs;
+    if (channelId && !channelId.startsWith('D') && effectiveThread) {
+      markThreadJoined(channelId, effectiveThread);
+    }
+
     console.log('📤 Nora notified:', channelId, text.slice(0, 100));
-    res.json({ ok: true, channel: channelId, ts: msgRes.data.ts });
+    res.json({ ok: true, channel: channelId, ts: postedTs });
   } catch (err) {
     console.error('Notify error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
@@ -1663,6 +1986,7 @@ Be strict — if in doubt, it's a duplicate. Return only indices of truly new ta
         source_channel: source.channel || '',
         source_user: source.user || '',
         source_bot_id: source.bot_id || '',
+        source_thread_ts: source.thread_ts || '',
         context: contextSnippet
       });
     }
@@ -1728,6 +2052,7 @@ If there is NO gap, return: { "needed": false }`,
       source_channel: source.channel || '',
       source_user: source.user || '',
       source_bot_id: source.bot_id || '',
+      source_thread_ts: source.thread_ts || '',
       context: `${context}\n\n[Trigger]: ${trigger}\n[Nora replied]: ${reply}\n[Knowledge gap detected]: ${result.topic}`
     });
     console.log(`🔬 Research task created: ${result.topic}${result.project ? ' [' + result.project + ']' : ''}`);
