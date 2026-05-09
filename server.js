@@ -400,17 +400,40 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
 
 ### Projects
 - GET  /projects                — Returns all projects
-  Response: [{ "name", "details", "created", "client?", "status?", "pm?", "phase?", "tags?", "last_activity?", "auto_created?" }]
+  Response: [{ "name", "details", "created", "client?", "status?", "pm?", "phase?", "tags?",
+                "last_activity?", "last_research_at?", "last_research_summary?", "auto_created?" }]
 
 - GET  /projects/:name          — Returns a project with its associated memories + summary
   Response: { ...project, "memory_count": N, "last_memory_at": "YYYY-MM-DD", "memories": [...] }
 
-- GET  /projects/:name/coverage — Lightweight metrics for ranking projects by knowledge thinness.
-  Use this to pick which project to deepen during idle-time research rounds.
-  Response: { "name", "memory_count", "last_memory_at", "days_since_last_memory",
-              "details_length", "last_activity", "updated", "auto_created",
-              "has_client", "has_status", "has_pm", "has_phase",
+- GET  /projects/coverage       — Bulk coverage view, sorted "most in need first".
+  Drives the idle-time research loop — pick the first item, research it, touch it.
+  By default skips:
+    - archived/wrapped/completed projects
+    - "Opportunity - " sales pipeline projects
+    - LimeLight-internal projects (name starts with "LimeLight" or client is "LimeLight" /
+      "LimeLight Marketing") — these are the agency's own work, not client engagements,
+      and aren't the focus of proactive research
+    - projects researched within the cooldown window (default 1 day)
+  Query params:
+    ?limit=20                 (max results)
+    ?cooldown_days=1          (skip projects researched within N days)
+    ?include_archived=true    (default false)
+    ?include_opportunities=true  (default false)
+    ?include_internal=true    (default false — include LimeLight-internal projects)
+  Response: { "count": N, "cooldown_days": 1, "projects": [<coverage row>, ...] }
+
+- GET  /projects/:name/coverage — Single-project coverage row.
+  Response: { "name", "status", "memory_count", "last_memory_at", "days_since_last_memory",
+              "details_length", "last_activity", "updated",
+              "last_research_at", "days_since_last_research",
+              "auto_created", "has_client", "has_status", "has_pm", "has_phase",
               "thinness_score" (lower = thinner; sort ascending to prioritize) }
+
+- POST /projects/:name/research-touch — Mark a project as researched (after an idle round).
+  Bumps last_research_at to now. Optional body: { "summary": "what you found / where" }.
+  Cooldown filtering on /projects/coverage uses last_research_at to avoid re-picks.
+  Response: { "ok": true, "project": {...} }
 
 - POST /projects                — Create a new project. Optional fields are first-class.
   Body: { "name": "string (required)", "details": "string (optional)",
@@ -575,7 +598,9 @@ won't see follow-ups in threads she's joined.
   "pm": "Project manager name (optional)",
   "phase": "discovery | design | build | launch | post-launch (optional, free-form)",
   "tags": ["optional", "string", "array"],
-  "auto_created": "true if the record was created as a stub when a memory referenced an unknown project (clear by PUT'ing details/client/status/pm/phase)"
+  "auto_created": "true if the record was created as a stub when a memory referenced an unknown project (clear by PUT'ing details/client/status/pm/phase)",
+  "last_research_at": "ISO 8601 timestamp of the most recent idle-round research touch (set by POST /projects/:name/research-touch)",
+  "last_research_summary": "Optional free-text summary of the most recent research round"
 }
 
 ## Processing Pending Tasks
@@ -587,14 +612,13 @@ won't see follow-ups in threads she's joined.
    GET /transcripts/{source_bot_id}
    Use this to understand nuances like who should be invited, what tone to use, specific details mentioned in conversation, etc.
 
-3. Determine the right action:
+3. Determine the right action and execute it using the appropriate MCP tool:
    - "Schedule a meeting..." → use Google Calendar MCP (gcal) to create event
    - "Send an email to..." → use Gmail MCP to draft/send
    - "Create a task in Teamwork..." → use Teamwork MCP (twprojects) to create task
    - "Send a Slack message..." → use Slack MCP to post message
    - "Remind [person] about..." → determine best channel and notify
-
-3. Execute the action using the appropriate MCP tool.
+   - Stage/workflow changes → use GET /teamwork/tasks/:taskId/stage (the Teamwork MCP can't do stages)
 
 4. Notify the requester that it's done:
    POST /notify
@@ -681,10 +705,109 @@ Some tasks will have action: "research". These are auto-created when Nora detect
 5. Notify the original requester (if applicable):
    POST /notify
    Use the task's source_channel/source_user to let them know Nora has updated her knowledge.
+   If task.source_thread_ts is set, pass it as thread_ts so the reply lands in-thread.
    Example: "I've done some research on [topic] and updated my notes. Ask me again anytime!"
 
 6. Mark the research task as done:
    PATCH /tasks/{task_id}/complete
+
+## Idle Knowledge Round
+
+Nora's hourly run shouldn't end with "nothing to do." When the rest of the run was quiet
+— no pending tasks worth processing, no relevant emails, no Slack to handle, no follow-ups
+due — spend the idle time deepening Nora's knowledge on a single project. Over time this
+turns "I don't have specifics on Pitsco" into "Pitsco's launch is May 14, blocked on QA."
+
+Run this AT MOST once per hourly run. ONE project per round. 3–5 memories max.
+Skip if the run has already done substantive work — it's only for genuinely idle hours.
+
+The round leads with Teamwork because Teamwork is the source of truth for what LimeLight
+is actively working on. Nora's local /projects store is just whatever has been mentioned
+in conversations or manually added — entire active projects may be missing. Reconciling
+against Teamwork first ensures the biggest knowledge gaps (whole projects Nora doesn't
+know about) get prioritized over deepening already-known projects.
+
+1. Pull active Teamwork projects:
+   Use the Teamwork MCP — twprojects-list_projects (filter for active, not archived/deleted).
+   Skip anything starting with "Opportunity - " (sales pipeline, not Nora's concern) and
+   anything that's clearly LimeLight-internal work (name starts with "LimeLight" or the
+   project is for LimeLight as the client, e.g. internal tooling, agency website,
+   internal HR/ops projects). Nora's research focus is client engagements, not internal
+   agency operations.
+
+2. Reconcile against Nora's project store:
+   GET /projects
+   For each active Teamwork project:
+   - If Nora doesn't have a record at all → POST /projects with name, client, status: "active",
+     pm (from Teamwork project members or owner), and a brief details line from Teamwork's
+     project description. This fills the biggest gaps first.
+   - If Nora's record has auto_created: true → PUT /projects/:name with the metadata from
+     Teamwork to promote the stub. Setting any of details/client/status/pm/phase clears the
+     auto_created flag automatically.
+   - If a Nora project is no longer active in Teamwork (status archived/deleted there) →
+     consider PUT /projects/:name { "status": "wrapped" } so /projects/coverage stops
+     surfacing it for future research rounds.
+
+3. Pick a research target:
+   GET /projects/coverage?limit=5
+   The list is pre-sorted "most in need first" and excludes archived/wrapped/completed
+   projects, "Opportunity - " sales pipeline, and projects researched in the last day.
+   After step 2's reconciliation, newly-created records will rank near the top because
+   they're brand-new with zero memories. If the list is empty, skip the rest of the round.
+
+4. Pull what Nora already knows about the target:
+   GET /projects/{name}  (returns project record + all scoped memories)
+   This is your "what's already covered" baseline — don't add memories that duplicate it.
+
+5. Research, leading with Teamwork:
+   - twprojects-get_project — official description, dates, members, owner
+   - twprojects-list_tasks (filter to this project) — active work, blockers, recent activity
+   - twprojects-list_milestones — upcoming deliverables and deadlines
+   - twprojects-list_comments_by_task on key tasks — actual conversation context
+
+   Then supplement with sources Teamwork doesn't capture:
+   - Confluence "LLM Client Space": client briefs, project briefs, campaign briefs, process docs
+   - Google Drive: project deliverables, decks, specs (leave $ amounts out of memory entries
+     since they may surface in future Slack replies to non-approved recipients)
+   - Gmail: recent threads (last 30 days) mentioning the project name
+   - Slack: recent channel activity if the project has a known channel
+
+6. Synthesize 3–5 concise project-scoped memories:
+   POST /memory
+   { "fact": "Pitsco launch target is May 14 per Q2 plan deck (last updated by Andy 2026-04-22).",
+     "source": "auto",
+     "project": "Pitsco" }
+
+   Guidelines:
+   - Each fact: 1–2 sentences, concrete (names, dates, decisions, blockers, status)
+   - Don't restate what's already in project.details or existing memories
+   - Don't synthesize speculation — if a doc says "we may launch in May," save that hedge,
+     don't promote it to "launching in May"
+   - Prefer current state from Teamwork over older docs from Drive/Confluence when they conflict
+   - Skip the round if you can't find 3 substantive facts. Don't pad.
+
+7. Mark the project as researched:
+   POST /projects/{name}/research-touch
+   { "summary": "Reconciled from Teamwork + deepened with Confluence brief + recent task comments" }
+   This bumps last_research_at and prevents re-picking the same project tomorrow.
+
+8. (Optional) Save a one-line general memory recording that the round happened:
+   POST /memory
+   { "fact": "Idle research round on Pitsco on 2026-05-09: added 4 memories (sources: Teamwork tasks/milestones, Confluence brief)",
+     "source": "auto" }
+
+Guardrails:
+- The cooldown_days filter on /projects/coverage already prevents re-picking the same
+  project tomorrow. You don't need to track this yourself — trust the API's sort.
+- The Teamwork reconciliation in step 2 is the most valuable side effect of this round —
+  even if you don't proceed to deep research, just reconciling new active projects into
+  Nora's store is a meaningful improvement. If you reconcile but find no good research
+  target, that's still a successful round.
+- Don't include this round in the end-of-run summary unless something noteworthy was
+  discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory"
+  or "Reconciled 2 new Teamwork projects into Nora's store").
+- Never run this round on a project the user has flagged "do not touch" (check memory
+  for any "skip Nora research on X" entries before picking).
 `);
 });
 
@@ -1476,6 +1599,111 @@ app.delete('/memory', requireAuth, (req, res) => {
 // Projects API — manage project knowledge bases
 app.get('/projects', requireAuth, (req, res) => res.json(loadProjects()));
 
+// Compute the coverage row for a single project — shared by /projects/:name/coverage
+// and the bulk /projects/coverage endpoint that drives idle-time research.
+function computeProjectCoverage(project, allMemories) {
+  const projectMemories = allMemories.filter(m =>
+    m.project && m.project.toLowerCase() === project.name.toLowerCase()
+  );
+  const last_memory_at = projectMemories.reduce(
+    (max, m) => (m.added && m.added > max) ? m.added : max, ''
+  );
+  const detailsLen = (project.details || '').length;
+  const days_since_last_memory = last_memory_at
+    ? Math.floor((Date.now() - new Date(last_memory_at).getTime()) / 86400000)
+    : null;
+  const days_since_last_research = project.last_research_at
+    ? Math.floor((Date.now() - new Date(project.last_research_at).getTime()) / 86400000)
+    : null;
+  const thinness =
+    Math.min(projectMemories.length, 20) * 5 +
+    Math.min(detailsLen, 1000) / 50 +
+    (project.client ? 5 : 0) +
+    (project.status ? 5 : 0) +
+    (project.pm ? 5 : 0);
+  return {
+    name: project.name,
+    status: project.status || null,
+    memory_count: projectMemories.length,
+    last_memory_at,
+    days_since_last_memory,
+    details_length: detailsLen,
+    last_activity: project.last_activity || null,
+    updated: project.updated || null,
+    last_research_at: project.last_research_at || null,
+    days_since_last_research,
+    auto_created: !!project.auto_created,
+    has_client: !!project.client,
+    has_status: !!project.status,
+    has_pm: !!project.pm,
+    has_phase: !!project.phase,
+    thinness_score: Math.round(thinness)
+  };
+}
+
+// Bulk coverage view — drives the cowork idle-time research loop.
+// Sorted "most in need first": never-researched bubbles up, then thinness, then oldest research.
+// By default skips archived/wrapped/completed projects, "Opportunity - " sales pipeline projects,
+// and LimeLight-internal projects (the agency's own work, not client work) since those don't
+// benefit from proactive research focused on client engagements.
+app.get('/projects/coverage', requireAuth, (req, res) => {
+  const limit = parseInt(req.query.limit || '20', 10);
+  const includeArchived = req.query.include_archived === 'true';
+  const includeOpportunities = req.query.include_opportunities === 'true';
+  const includeInternal = req.query.include_internal === 'true';
+  const cooldownDays = parseInt(req.query.cooldown_days || '1', 10);
+
+  const projects = loadProjects();
+  const memory = loadMemory();
+  const cooldownMs = cooldownDays * 86400000;
+
+  let rows = projects.map(p => computeProjectCoverage(p, memory));
+
+  if (!includeArchived) {
+    rows = rows.filter(r => {
+      const s = (r.status || '').toLowerCase();
+      return !['archived', 'wrapped', 'completed', 'done'].includes(s);
+    });
+  }
+  if (!includeOpportunities) {
+    rows = rows.filter(r => !r.name.toLowerCase().startsWith('opportunity - '));
+  }
+  if (!includeInternal) {
+    // Detect LimeLight-internal projects by name prefix or client field. Two heuristics
+    // because some internal projects use the "LimeLight ..." name convention while others
+    // are tagged via client = "LimeLight" / "LimeLight Marketing".
+    rows = rows.filter(r => {
+      const name = r.name.toLowerCase();
+      if (name.startsWith('limelight ') || name === 'limelight') return false;
+      const project = projects.find(p => p.name === r.name);
+      const client = (project?.client || '').toLowerCase().trim();
+      if (client === 'limelight' || client === 'limelight marketing') return false;
+      return true;
+    });
+  }
+
+  // Filter out projects researched within the cooldown window — prevents same-project
+  // re-pick on the next hourly run after the cowork loop touches it.
+  rows = rows.filter(r => {
+    if (!r.last_research_at) return true; // never researched, fair game
+    return (Date.now() - new Date(r.last_research_at).getTime()) > cooldownMs;
+  });
+
+  // Sort: never-researched first, then thinnest, then oldest research date as tiebreaker
+  rows.sort((a, b) => {
+    if (!a.last_research_at && b.last_research_at) return -1;
+    if (a.last_research_at && !b.last_research_at) return 1;
+    if (a.thinness_score !== b.thinness_score) return a.thinness_score - b.thinness_score;
+    return (a.last_research_at || '').localeCompare(b.last_research_at || '');
+  });
+
+  res.json({
+    count: rows.length,
+    cooldown_days: cooldownDays,
+    projects: rows.slice(0, limit)
+  });
+});
+
 app.get('/projects/:name', requireAuth, (req, res) => {
   const projects = loadProjects();
   const project = projects.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
@@ -1495,36 +1723,24 @@ app.get('/projects/:name/coverage', requireAuth, (req, res) => {
   const projects = loadProjects();
   const project = projects.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
   if (!project) return res.status(404).json({ error: 'Project not found' });
-  const memory = loadMemory();
-  const projectMemories = memory.filter(m => m.project && m.project.toLowerCase() === req.params.name.toLowerCase());
-  const last_memory_at = projectMemories.reduce((max, m) => (m.added && m.added > max) ? m.added : max, '');
-  const detailsLen = (project.details || '').length;
-  const daysSince = last_memory_at
-    ? Math.floor((Date.now() - new Date(last_memory_at).getTime()) / 86400000)
-    : null;
-  // Simple thinness score: lower = thinner. Used as a sort key by the cowork loop.
-  // Penalizes few memories, short details, and lack of curated metadata.
-  const thinness =
-    Math.min(projectMemories.length, 20) * 5 +
-    Math.min(detailsLen, 1000) / 50 +
-    (project.client ? 5 : 0) +
-    (project.status ? 5 : 0) +
-    (project.pm ? 5 : 0);
-  res.json({
-    name: project.name,
-    memory_count: projectMemories.length,
-    last_memory_at,
-    days_since_last_memory: daysSince,
-    details_length: detailsLen,
-    last_activity: project.last_activity || null,
-    updated: project.updated || null,
-    auto_created: !!project.auto_created,
-    has_client: !!project.client,
-    has_status: !!project.status,
-    has_pm: !!project.pm,
-    has_phase: !!project.phase,
-    thinness_score: Math.round(thinness)
-  });
+  res.json(computeProjectCoverage(project, loadMemory()));
+});
+
+// Mark a project as researched. Cowork calls this after completing an idle-research round
+// so the same project doesn't get re-picked on the next hourly run.
+// Optionally accepts a free-text "summary" describing what was found / where, stored on
+// the project for context.
+app.post('/projects/:name/research-touch', requireAuth, (req, res) => {
+  const projects = loadProjects();
+  const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
+  if (idx === -1) return res.status(404).json({ error: 'Project not found' });
+  projects[idx].last_research_at = new Date().toISOString();
+  if (req.body && typeof req.body.summary === 'string') {
+    projects[idx].last_research_summary = req.body.summary;
+  }
+  saveProjects(projects);
+  console.log('🔬 Project research-touched:', projects[idx].name);
+  res.json({ ok: true, project: projects[idx] });
 });
 
 app.post('/projects', requireAuth, (req, res) => {

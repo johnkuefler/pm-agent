@@ -163,15 +163,56 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
       </div>
 
       <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/projects/coverage</span></div>
+        <div class="endpoint-desc">Bulk coverage view sorted "most in need first" — drives the cowork idle-time research loop. Skips archived/wrapped projects, "Opportunity - " sales pipeline projects, LimeLight-internal projects (name starts with "LimeLight" or client is "LimeLight" / "LimeLight Marketing"), and projects researched within the cooldown window (default 1 day). Pick the first item to research next.</div>
+        <pre>// Query params (all optional):
+//   limit=20                     max results
+//   cooldown_days=1              skip projects researched within N days
+//   include_archived=true        default false
+//   include_opportunities=true   default false
+//   include_internal=true        default false (include LimeLight-internal projects)
+
+GET /projects/coverage?limit=5
+
+// Response:
+{
+  "count": 14,
+  "cooldown_days": 1,
+  "projects": [
+    {
+      "name": "BrandX",
+      "status": "active",
+      "memory_count": 1,
+      "last_memory_at": "2026-04-22",
+      "days_since_last_memory": 17,
+      "details_length": 0,
+      "last_activity": "2026-04-22T14:22:11.000Z",
+      "last_research_at": null,
+      "days_since_last_research": null,
+      "auto_created": true,
+      "has_client": false,
+      "has_status": false,
+      "has_pm": false,
+      "has_phase": false,
+      "thinness_score": 5
+    }
+  ]
+}</pre>
+      </div>
+
+      <div class="endpoint">
         <div><span class="badge get">GET</span> <span class="endpoint-path">/projects/:name/coverage</span></div>
-        <div class="endpoint-desc">Lightweight metrics for ranking projects by knowledge thinness — used by the cowork loop to pick which project to research during idle time. Sort ascending by <code>thinness_score</code> to prioritize.</div>
+        <div class="endpoint-desc">Single-project coverage row. Same shape as one entry in <code>/projects/coverage</code>.</div>
         <pre>{
   "name": "Pitsco",
+  "status": "active",
   "memory_count": 12,
   "last_memory_at": "2026-05-08",
   "days_since_last_memory": 1,
   "details_length": 412,
   "last_activity": "2026-05-08T14:22:11.000Z",
+  "last_research_at": "2026-05-07T09:00:00.000Z",
+  "days_since_last_research": 2,
   "auto_created": false,
   "has_client": true,
   "has_status": true,
@@ -179,6 +220,16 @@ POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
   "has_phase": true,
   "thinness_score": 88
 }</pre>
+      </div>
+
+      <div class="endpoint">
+        <div><span class="badge post">POST</span> <span class="endpoint-path">/projects/:name/research-touch</span></div>
+        <div class="endpoint-desc">Mark a project as researched after an idle-round enrichment. Bumps <code>last_research_at</code> to now so <code>/projects/coverage</code> won't re-pick the same project tomorrow. Optional summary describes what was found.</div>
+        <pre>// Request body (optional):
+{ "summary": "Deepened from Confluence client brief + Q1 SOW review" }
+
+// Response:
+{ "ok": true, "project": {...} }</pre>
       </div>
 
       <div class="endpoint">
