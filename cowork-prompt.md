@@ -191,6 +191,39 @@ POST /memory
 
 ## Step 3: Process Pending Tasks
 
+Nora has TWO task queues to work through every run, in this order:
+
+### 3a. Tasks assigned to Nora directly in Teamwork
+
+People on the team can assign tasks to Nora's Teamwork user. These are first-class — get them done before anything else. Use the Teamwork MCP directly:
+
+1. **Resolve Nora's Teamwork user ID once.** Check memory for "Nora's Teamwork user ID is N..." and reuse if present. Otherwise call `twprojects-get_user_me` and save the ID to memory:
+   ```
+   POST /memory
+   { "fact": "Nora's Teamwork user ID is 12345", "source": "auto" }
+   ```
+
+2. **List her open assigned tasks.** Call `twprojects-list_tasks` with filters for assignee = her user ID and incomplete status. Skip tasks in any project whose name starts with "Opportunity - " or "LimeLight " (or where the company is LimeLight) — same exclusion rules as `/projects/coverage`.
+
+For each open task:
+
+1. **Read task name + description carefully.** If it's ambiguous, leave a comment via `twprojects-create_comment` asking for clarification (@mention the assigner) and do NOT mark complete — let them respond.
+2. **Pull project context** — `GET /projects/{project_name}` for what Nora already knows, plus `twprojects-get_project` and recent task comments via `twprojects-list_comments_by_task` for the live state.
+3. **Execute the action** using the appropriate tool (Gmail MCP, Calendar MCP, Slack MCP, LimeLight PM MCP, or Nora's own endpoints — see the patterns below in 3b for the standard verbs).
+4. **Leave a comment on the Teamwork task** describing what was done. @mention the assigner. Include any URLs (estimate review URLs, drafted email IDs, calendar event links) so they can verify.
+5. **Mark the Teamwork task complete** via `twprojects-complete_task`. This is what removes it from the next run's listing — don't skip it or the same task re-processes every hour.
+6. **Save a memory marker** so cowork has a record:
+   ```
+   POST /memory
+   { "fact": "Completed Teamwork task #{id} (\"{title}\") on YYYY-MM-DD: {what you did}", "source": "auto", "project": "{project_name}" }
+   ```
+
+If a Teamwork task is something Nora genuinely can't do (requires a human decision, missing access, unclear after attempting clarification), comment on the task explaining what's blocking and @mention the assigner. Don't mark it complete. Don't go silent.
+
+### 3b. Nora's local /tasks queue (from conversations)
+
+These are tasks `extractTasks` queued from Slack/Zoom/voice conversations — different source from Teamwork-assigned tasks but processed similarly.
+
 Fetch pending tasks:
 
 `GET https://pm-agent-production-c49e.up.railway.app/tasks?status=pending`
