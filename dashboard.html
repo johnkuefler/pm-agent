@@ -64,6 +64,7 @@
       <div class="tab" onclick="showTab('memory')">Memory</div>
       <div class="tab" onclick="showTab('projects')">Projects</div>
       <div class="tab" onclick="showTab('transcripts')">Transcripts</div>
+      <div class="tab" onclick="showTab('admin')">Admin</div>
     </div>
 
     <!-- Meeting Tab -->
@@ -165,6 +166,67 @@
       </div>
     </div>
 
+    <!-- Admin Tab -->
+    <div id="page-admin" class="page">
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Financial-Approved Slack Users
+          <span style="font-size: 11px; color: #666; font-weight: 400;">who can receive dollar amounts / margins / rates</span>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Slack users on this list can ask Nora about financial details and get real answers. Everyone else gets a redirect ("I can't share financial details, reach out to John or Mallory"). The output scrubber catches any leaks the model misses.
+        </p>
+        <div id="financial-approved-list"></div>
+        <div style="margin-top: 12px; display: flex; gap: 8px;">
+          <input id="new-approved-userid" placeholder="Slack user ID (U...)" style="flex: 1;" />
+          <input id="new-approved-name" placeholder="Display name (optional)" style="flex: 1;" />
+          <button class="btn btn-primary btn-sm" onclick="addApprovedUser()">Add</button>
+        </div>
+        <div id="approved-status" class="toast"></div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Proactive Slack Channels
+          <span style="font-size: 11px; color: #666; font-weight: 400;">where Nora can chime in unsolicited</span>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Strict opt-in per channel. In channels on this list, every non-mention message runs through a stricter Claude gate (defaults to no) before Nora considers chiming in. After any successful proactive post, the channel cools down for 30 minutes.
+        </p>
+        <div id="proactive-channels-list"></div>
+        <div style="margin-top: 12px; display: flex; gap: 8px;">
+          <input id="new-proactive-channel" placeholder="Slack channel ID (C... or G...)" style="flex: 1;" />
+          <button class="btn btn-primary btn-sm" onclick="addProactiveChannel()">Add</button>
+        </div>
+        <div id="proactive-status" class="toast"></div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Joined Slack Threads
+          <span style="font-size: 11px; color: #666; font-weight: 400;">conversations Nora is currently following</span>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Once Nora replies in a thread, follow-up messages reach her without re-mention until the thread goes stale (5 unaddressed messages or 30 min idle). Untrack any thread she shouldn't be following.
+        </p>
+        <div id="joined-threads-summary" style="font-size: 12px; color: #888; margin-bottom: 8px;"></div>
+        <div id="joined-threads-list"></div>
+      </div>
+
+      <div class="section">
+        <h2>Project Sync from Teamwork</h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Pull Nora's <code style="color: #a78bfa;">/projects</code> store into sync with Teamwork's active project list. Idempotent — runs every cowork hour but you can also trigger it manually here. Dry-run shows what would change without applying.
+        </p>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-sm" onclick="runTeamworkSync(true)" style="background: #1e1b4b; color: #a78bfa; border: 1px solid #4338ca;">Dry Run</button>
+          <button class="btn btn-primary btn-sm" onclick="runTeamworkSync(false)">Sync Now</button>
+        </div>
+        <div id="sync-status" class="toast"></div>
+        <pre id="sync-result" style="display: none; margin-top: 12px; background: #0a0a0a; padding: 12px; border-radius: 8px; font-size: 11px; line-height: 1.5; color: #aaa; max-height: 300px; overflow: auto; white-space: pre-wrap;"></pre>
+      </div>
+    </div>
+
     <!-- Transcripts Tab -->
     <div id="page-transcripts" class="page">
       <div class="section">
@@ -195,6 +257,7 @@
       if (name === 'tasks') loadTasks();
       if (name === 'projects') loadProjects();
       if (name === 'transcripts') loadTranscripts();
+      if (name === 'admin') loadAdmin();
     }
 
     async function joinMeeting() {
@@ -713,6 +776,203 @@
         await fetch('/projects/' + encodeURIComponent(name), { method: 'DELETE' });
         loadProjects();
       } catch (e) { alert('Failed to delete: ' + e.message); }
+    }
+
+    // ===== Admin tab =====
+
+    async function loadAdmin() {
+      // Run all sub-loaders in parallel for snappy refresh
+      await Promise.all([loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+    }
+
+    // Financial-approved Slack users
+    async function loadFinancialApproved() {
+      const list = document.getElementById('financial-approved-list');
+      try {
+        const r = await fetch('/slack/financial-approved');
+        const d = await r.json();
+        if (!d.approved || d.approved.length === 0) {
+          list.innerHTML = '<p class="empty">No users on the approved list yet — every Slack user is currently treated as unapproved (fail-closed).</p>';
+          return;
+        }
+        list.innerHTML = d.approved.map(u => `
+          <div class="memory-item">
+            <div style="flex: 1;">
+              <div class="memory-fact">${escHtml(u.name || '(no name recorded)')}</div>
+              <div class="memory-meta">${escHtml(u.user_id)}</div>
+            </div>
+            <div style="display: flex; gap: 6px; flex-shrink: 0;">
+              <button class="btn btn-danger" onclick="removeApprovedUser('${escHtml(u.user_id)}', '${escHtml(u.name || u.user_id)}')">Remove</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load approved list.</p>';
+      }
+    }
+
+    async function addApprovedUser() {
+      const s = document.getElementById('approved-status');
+      const userId = document.getElementById('new-approved-userid').value.trim();
+      const name = document.getElementById('new-approved-name').value.trim();
+      if (!userId) { s.className = 'toast err'; s.textContent = 'Slack user ID required (starts with U)'; return; }
+      if (!/^U[A-Z0-9]+$/.test(userId)) { s.className = 'toast err'; s.textContent = 'User IDs start with U and are alphanumeric (e.g. U07ABC123)'; return; }
+      try {
+        const r = await fetch('/slack/financial-approved/' + encodeURIComponent(userId), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(name ? { name } : {})
+        });
+        const d = await r.json();
+        if (d.ok) {
+          s.className = 'toast ok'; s.textContent = `Added ${name || userId}`;
+          document.getElementById('new-approved-userid').value = '';
+          document.getElementById('new-approved-name').value = '';
+          loadFinancialApproved();
+          setTimeout(() => s.className = 'toast', 2500);
+        } else {
+          s.className = 'toast err'; s.textContent = d.error || 'Failed to add';
+        }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function removeApprovedUser(userId, displayName) {
+      if (!confirm(`Remove ${displayName} from the financial-approved list? They'll start getting redirected on financial questions.`)) return;
+      try {
+        await fetch('/slack/financial-approved/' + encodeURIComponent(userId), { method: 'DELETE' });
+        loadFinancialApproved();
+      } catch (e) { alert('Failed: ' + e.message); }
+    }
+
+    // Proactive Slack channels
+    async function loadProactiveChannels() {
+      const list = document.getElementById('proactive-channels-list');
+      try {
+        const r = await fetch('/slack/proactive-channels');
+        const d = await r.json();
+        if (!d.channels || d.channels.length === 0) {
+          list.innerHTML = '<p class="empty">No channels enabled. Nora only responds to @mentions and DMs by default.</p>';
+          return;
+        }
+        list.innerHTML = d.channels.map(c => {
+          const lastPost = c.last_proactive_post ? new Date(c.last_proactive_post).toLocaleString() : 'never';
+          const cooldownLabel = c.cooldown_active ? '<span style="color: #fbbf24;">cooldown active</span>' : '<span style="color: #6ee7b7;">ready</span>';
+          return `
+            <div class="memory-item">
+              <div style="flex: 1;">
+                <div class="memory-fact">${escHtml(c.channel)}</div>
+                <div class="memory-meta">${cooldownLabel} · last proactive post: ${lastPost}</div>
+              </div>
+              <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                <button class="btn btn-danger" onclick="removeProactiveChannel('${escHtml(c.channel)}')">Disable</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load proactive channels.</p>';
+      }
+    }
+
+    async function addProactiveChannel() {
+      const s = document.getElementById('proactive-status');
+      const channel = document.getElementById('new-proactive-channel').value.trim();
+      if (!channel) { s.className = 'toast err'; s.textContent = 'Channel ID required'; return; }
+      if (!/^[CG][A-Z0-9]+$/.test(channel)) { s.className = 'toast err'; s.textContent = 'Channel IDs start with C (public) or G (private) and are alphanumeric'; return; }
+      try {
+        const r = await fetch('/slack/proactive-channels/' + encodeURIComponent(channel), { method: 'POST' });
+        const d = await r.json();
+        if (d.ok) {
+          s.className = 'toast ok'; s.textContent = `Enabled ${channel}`;
+          document.getElementById('new-proactive-channel').value = '';
+          loadProactiveChannels();
+          setTimeout(() => s.className = 'toast', 2500);
+        } else {
+          s.className = 'toast err'; s.textContent = d.error || 'Failed to enable';
+        }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function removeProactiveChannel(channel) {
+      if (!confirm(`Disable proactive speaking in ${channel}? Nora will go back to @mention-only there.`)) return;
+      try {
+        await fetch('/slack/proactive-channels/' + encodeURIComponent(channel), { method: 'DELETE' });
+        loadProactiveChannels();
+      } catch (e) { alert('Failed: ' + e.message); }
+    }
+
+    // Joined Slack threads
+    async function loadJoinedThreads() {
+      const list = document.getElementById('joined-threads-list');
+      const summary = document.getElementById('joined-threads-summary');
+      try {
+        const r = await fetch('/slack/threads');
+        const d = await r.json();
+        const t = d.stale_thresholds || {};
+        summary.textContent = `${d.count || 0} total · ${d.active || 0} active · ${d.stale || 0} stale (stale = ${t.msg_count || 5} msgs unaddressed or ${t.age_minutes || 30}+ min idle)`;
+        if (!d.threads || d.threads.length === 0) {
+          list.innerHTML = '<p class="empty">No threads currently being followed.</p>';
+          return;
+        }
+        list.innerHTML = d.threads.map(th => {
+          const last = th.last_addressed ? new Date(th.last_addressed).toLocaleString() : 'unknown';
+          const stalePill = th.stale
+            ? '<span style="color: #fbbf24; font-weight: 600;">STALE</span>'
+            : '<span style="color: #6ee7b7; font-weight: 600;">active</span>';
+          return `
+            <div class="memory-item">
+              <div style="flex: 1;">
+                <div class="memory-fact" style="font-family: monospace; font-size: 12px;">${escHtml(th.channel)} / ${escHtml(th.thread_ts)}</div>
+                <div class="memory-meta">${stalePill} · last addressed: ${last} · ${th.msgs_since_addressed || 0} msgs since</div>
+              </div>
+              <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                <button class="btn btn-danger" onclick="unjoinThread('${escHtml(th.channel)}', '${escHtml(th.thread_ts)}')">Untrack</button>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load joined threads.</p>';
+      }
+    }
+
+    async function unjoinThread(channel, ts) {
+      if (!confirm('Untrack this thread? Nora will require a re-mention to engage there again.')) return;
+      try {
+        await fetch('/slack/threads/' + encodeURIComponent(channel) + '/' + encodeURIComponent(ts), { method: 'DELETE' });
+        loadJoinedThreads();
+      } catch (e) { alert('Failed: ' + e.message); }
+    }
+
+    // Teamwork project sync
+    async function runTeamworkSync(dryRun) {
+      const s = document.getElementById('sync-status');
+      const out = document.getElementById('sync-result');
+      s.className = 'toast ok'; s.textContent = dryRun ? 'Running dry-run...' : 'Syncing from Teamwork...';
+      out.style.display = 'none';
+      try {
+        const r = await fetch('/projects/sync-from-teamwork', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ dry_run: !!dryRun })
+        });
+        const d = await r.json();
+        if (d.ok) {
+          const verb = dryRun ? 'Would create' : 'Created';
+          s.className = 'toast ok';
+          s.textContent = `${verb} ${d.created}, promoted ${d.promoted}, ${d.unchanged} unchanged · scanned ${d.after_filter} of ${d.teamwork_total} TW projects (${d.pages_fetched} page${d.pages_fetched === 1 ? '' : 's'})`;
+          out.textContent = JSON.stringify(d, null, 2);
+          out.style.display = 'block';
+          // Refresh projects tab data if user clicks back
+          if (typeof loadProjects === 'function') loadProjects();
+        } else {
+          s.className = 'toast err'; s.textContent = d.error || 'Sync failed';
+          out.textContent = JSON.stringify(d, null, 2);
+          out.style.display = 'block';
+        }
+      } catch (e) {
+        s.className = 'toast err'; s.textContent = 'Failed: ' + e.message;
+      }
     }
 
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
