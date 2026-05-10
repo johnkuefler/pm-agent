@@ -657,6 +657,39 @@ GET /teamwork/tasks/12345678/stage?stage=In+Progress
 }</pre>
       </div>
 
+      <div class="endpoint">
+        <div><span class="badge get">GET</span> <span class="endpoint-path">/teamwork/my-tasks</span></div>
+        <div class="endpoint-desc">List Nora's open Teamwork tasks (incomplete, assigned to her). Used by the cowork loop's Step 3 to process tasks people assign to Nora directly in Teamwork — separate from the conversation-driven <code>/tasks</code> queue. Filtered to client work; Opportunity- / LimeLight-internal projects skipped automatically.</div>
+        <pre>// Response:
+{
+  "ok": true,
+  "teamwork_user_id": "12345",
+  "total": 8,
+  "after_filter": 7,
+  "pages_fetched": 1,
+  "tasks": [
+    {
+      "id": 987654321,
+      "name": "Schedule Q2 review with Pitsco",
+      "description": "...",
+      "due_date": "2026-05-15",
+      "priority": "normal",
+      "status": "new",
+      "project_id": 1234567,
+      "project_name": "Pitsco",
+      "company_name": "Pitsco Education",
+      "created_at": "2026-05-09T14:22:11Z",
+      "updated_at": "2026-05-09T14:22:11Z",
+      "tags": [],
+      "tw_url": "https://limelight.teamwork.com/app/tasks/987654321"
+    }
+  ]
+}
+
+// To remove a task from this list, complete it in Teamwork
+// (twprojects-complete_task) — that's what removes it on subsequent calls.</pre>
+      </div>
+
       <h3>How it works</h3>
       <ul>
         <li>Looks up the task to find its project ID</li>

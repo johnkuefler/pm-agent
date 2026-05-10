@@ -781,6 +781,19 @@ won't see follow-ups in threads she's joined.
   Response: { "ok": true, "taskId": "...", "stage": "...", "workflowId": ..., "stageId": ... }
   Returns 404 if stage name not found in any workflow for the task's project.
 
+- GET  /teamwork/my-tasks — List Nora's open Teamwork tasks (incomplete, assigned to her).
+  Source of truth for tasks people assign to Nora directly in Teamwork (separate from
+  the /tasks queue that's populated from conversations). Use this in the cowork loop's
+  Step 3 task processing. Filtered to client work — Opportunity- / LimeLight-internal
+  projects skipped automatically.
+  Response: { "ok": true, "teamwork_user_id", "total", "after_filter", "pages_fetched",
+              "tasks": [{ "id", "name", "description", "due_date", "priority", "status",
+                          "project_id", "project_name", "company_name", "created_at",
+                          "updated_at", "tags": [...], "tw_url" }] }
+  Sorted due-soonest first, then by project name. To clear an item from this list,
+  complete the task in Teamwork (twprojects-complete_task) — that's what removes it
+  from subsequent calls.
+
 ## Schemas
 
 ### Task Schema
@@ -2608,6 +2621,119 @@ app.put('/tasks/:id', requireAuth, (req, res) => {
   saveTasks(tasks);
   console.log('✏️ Task updated:', task.id, task.action);
   res.json({ ok: true, task });
+});
+
+// Cached Teamwork user ID for the API key's authenticated user (Nora's TW account).
+// Resolved lazily via /me.json on the first request that needs it.
+let teamworkMeId = null;
+
+async function getTeamworkMeId(twHeaders, twBase) {
+  if (teamworkMeId) return teamworkMeId;
+  const r = await axios.get(`${twBase}/me.json`, { headers: twHeaders });
+  const id = r.data?.person?.id || r.data?.user?.id;
+  if (!id) throw new Error('could not resolve Teamwork user id from /me.json');
+  teamworkMeId = String(id);
+  console.log('🔐 Resolved Teamwork user ID for Nora:', teamworkMeId);
+  return teamworkMeId;
+}
+
+// List Nora's open Teamwork tasks. Cowork hits this every run as part of Step 3 task
+// processing — it's the source of truth for tasks assigned to Nora directly in Teamwork
+// (separate from the local /tasks queue which is populated from conversations).
+//
+// Filters out tasks in archived / "Opportunity - " / LimeLight-internal projects (same
+// rules as /projects/coverage and /projects/sync-from-teamwork).
+//
+// Returns structured task data with project context so cowork can act on each task
+// without needing to make per-task lookup calls.
+app.get('/teamwork/my-tasks', requireAuth, async (req, res) => {
+  const twKey = process.env.TEAMWORK_API_KEY;
+  const twBase = process.env.TEAMWORK_BASE_URL;
+  if (!twKey || !twBase) {
+    return res.status(500).json({ error: 'TEAMWORK_API_KEY and TEAMWORK_BASE_URL must be set' });
+  }
+
+  const twAuth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
+  const twHeaders = { Authorization: twAuth, 'Content-Type': 'application/json' };
+
+  try {
+    const userId = await getTeamworkMeId(twHeaders, twBase);
+
+    // List incomplete tasks assigned to Nora. v3 includes project metadata via sideloads.
+    const tasks = [];
+    let page = 1;
+    const pageSize = 100;
+    let hasMore = true;
+    let pagesFetched = 0;
+    const MAX_PAGES = 10;
+    while (hasMore && pagesFetched < MAX_PAGES) {
+      const url = `${twBase}/projects/api/v3/tasks.json?assignedToUserIds=${userId}&completedFilter=incomplete&pageSize=${pageSize}&page=${page}&include=projects,companies`;
+      const r = await axios.get(url, { headers: twHeaders });
+      const items = r.data?.tasks || [];
+      const projects = r.data?.included?.projects || {};
+      const companies = r.data?.included?.companies || {};
+      for (const t of items) {
+        const projectId = t.projectId || t.project?.id;
+        const project = projectId && projects[projectId];
+        const projectName = project?.name || '';
+        const companyId = project?.company?.id || project?.companyId;
+        const companyName = (companyId && companies[companyId]?.name) || '';
+
+        tasks.push({
+          id: t.id,
+          name: t.name || '',
+          description: t.description || '',
+          due_date: t.dueDate || null,
+          priority: t.priority || null,
+          status: t.status || null,
+          project_id: projectId,
+          project_name: projectName,
+          company_name: companyName,
+          created_at: t.createdAt || null,
+          updated_at: t.updatedAt || null,
+          tags: (t.tags || []).map(tag => tag.name).filter(Boolean),
+          tw_url: `${twBase}/app/tasks/${t.id}`
+        });
+      }
+      hasMore = items.length === pageSize;
+      page++;
+      pagesFetched++;
+    }
+
+    // Filter out skip categories (same rules as other Teamwork-facing endpoints)
+    const filtered = tasks.filter(t => {
+      const projectName = (t.project_name || '').toLowerCase();
+      const companyName = (t.company_name || '').toLowerCase().trim();
+      if (!projectName) return true; // keep tasks without project context — let cowork decide
+      if (projectName.startsWith('opportunity - ')) return false;
+      if (projectName.startsWith('limelight ') || projectName === 'limelight') return false;
+      if (companyName === 'limelight' || companyName === 'limelight marketing') return false;
+      return true;
+    });
+
+    // Sort: due-soonest first, then by project name for grouping
+    filtered.sort((a, b) => {
+      const aDue = a.due_date || '9999-99-99';
+      const bDue = b.due_date || '9999-99-99';
+      if (aDue !== bDue) return aDue.localeCompare(bDue);
+      return (a.project_name || '').localeCompare(b.project_name || '');
+    });
+
+    res.json({
+      ok: true,
+      teamwork_user_id: userId,
+      total: tasks.length,
+      after_filter: filtered.length,
+      pages_fetched: pagesFetched,
+      tasks: filtered
+    });
+  } catch (err) {
+    console.error('my-tasks error:', err.response?.data || err.message);
+    res.status(500).json({
+      error: err.response?.data?.message || err.message,
+      details: err.response?.data || null
+    });
+  }
 });
 
 // Teamwork: update a task's workflow stage by task ID and stage name
