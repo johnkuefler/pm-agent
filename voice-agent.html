@@ -348,8 +348,8 @@
             return;
           }
 
-          // Handle audio delta from OpenAI Realtime
-          if (msg.type === 'response.audio.delta') {
+          // Handle audio delta from OpenAI Realtime (GA event name)
+          if (msg.type === 'response.output_audio.delta') {
             if (!isMuted) playAudioChunk(msg.delta);
           }
 

@@ -349,12 +349,25 @@ Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). Th
 
    For each transcript, check memory for a fact matching `"Filed transcript {bot_id}"` — if present, skip (already filed). Otherwise it's a candidate.
 
-2. **Identify which client the transcript is for.** Read the transcript via `GET /transcripts/{bot_id}` and look for clear signals:
+2. **Decide whether this transcript is even worth filing.** Read it via `GET /transcripts/{bot_id}` first and triage:
+
+   **Skip — testing / internal chatter.** Don't file these to any client drive. Signals (any one is usually enough):
+   - Transcript is very short (under ~10 substantive utterances)
+   - Only John is speaking, or only John + Nora, with no other participants
+   - The content is mostly "can you hear me", "testing", "say something", mic checks, "1 2 3", repeated greetings, or Nora being asked to repeat herself — i.e., no actual project discussion
+   - John explicitly says it's a test ("just testing", "ignore this meeting", etc.)
+   - No client team members present and no substantive project content
+   
+   When you skip for this reason, save a marker so it won't be re-evaluated every hour: `POST /memory { "fact": "Skipped filing transcript {bot_id} — test/internal meeting on {YYYY-MM-DD}", "source": "auto" }`. Then move to the next transcript.
+
+   **Skip — LimeLight-internal meeting.** PM standup, team syncs, "Opportunity - " prefix meetings, anything where LimeLight is the only party. Same marker pattern: `"Skipped filing transcript {bot_id} — LimeLight-internal meeting"`.
+
+   **File it — client meeting.** Identify which client the transcript is for. Signals:
    - Speaker names that match a client team (cross-reference with project context)
    - Project name mentions in the conversation
    - Meeting context Nora has from memory about who she met with
 
-   If you can't confidently identify the client from the transcript content + project memory, skip the filing for this run. Better to leave it unfiled than file in the wrong drive. (Save a memory `"Skipped filing transcript {bot_id} — couldn't identify client"` so you don't keep re-evaluating it every hour.)
+   If you can't confidently identify the client from the transcript content + project memory, skip the filing for this run. Better to leave it unfiled than file in the wrong drive. Save a memory `"Skipped filing transcript {bot_id} — couldn't identify client"` so you don't keep re-evaluating it every hour.
 
 3. **Look up the client's `Meeting Notes` folder ID.** Check memory for a fact like `"{Client} Meeting Notes folder: {id}"`. If not cached, follow the discovery procedure from "Writing Files to Client Shared Drives" — search by known client content, trace up to the shared drive root, list the root's folders to find `Meeting Notes`. Cache the resulting ID with a memory `POST` so the next run doesn't re-discover it.
 
@@ -392,7 +405,7 @@ Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). Th
 Guardrails:
 - ONE transcript filing per run unless you've got time. Filing 5 in one cowork run can spike Drive API usage.
 - If `copy_file` fails on a specific drive (e.g., Nora's account isn't in the right group for that drive), note it in memory and surface to John in the end-of-run summary so he can fix the access. Don't keep retrying.
-- Don't file transcripts for LimeLight-internal meetings (PM standup, etc.) — only client meetings. Use the same skip logic as Idle Knowledge Round (project status, "Opportunity - " prefix, LimeLight as client).
+- Only file **client** meetings. Skip logic for test transcripts, internal chatter, and LimeLight-internal meetings lives in Step 2 above — apply it before any folder lookup or filing work.
 - The transcript content might contain financials. Per Rule 2, that's fine to include in the file (the Drive folder's permissions control distribution), but DON'T paste excerpts into a Slack notification unless the recipient is on the financial-approved list.
 
 ## Step 4: Check Gmail for Items Needing Attention
