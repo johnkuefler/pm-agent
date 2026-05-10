@@ -96,6 +96,61 @@ curl -s "${BASE}/memory?key=${KEY}" | jq .
 curl -s "${BASE}/projects?key=${KEY}" | jq .
 ```
 
+## Writing Files to Client Shared Drives
+
+Whenever you need to put a file in a client's shared drive — meeting transcripts, briefs, status reports, deliverables, anything — use this pattern. **Do NOT call `create_file` with a shared drive folder as the parent.** Anthropic's Drive connector has a confirmed bug where `create_file` doesn't pass `supportsAllDrives=true` on the underlying Drive API call, so it fails on shared drives with `"User cannot add children to the specified folder"` regardless of permissions. Confirmed on multiple drives 2026-05-10.
+
+`copy_file` works fine on shared drives via the same connector. So the workaround is a two-hop pattern:
+
+### The two-hop pattern
+
+1. **`create_file`** the file with its full content into a staging folder in your own My Drive. This works because My Drive isn't a shared drive — `create_file` succeeds there.
+2. **`copy_file`** from the staged file into the client's destination folder in their shared drive. This works because `copy_file` correctly handles shared drives.
+
+### Staging folder bootstrap
+
+Maintain one folder in your My Drive called `Nora Drive Staging` for this purpose. On first use ever:
+
+- `search_files` for `title = 'Nora Drive Staging' and mimeType = 'application/vnd.google-apps.folder'`
+- If not found, `create_file` with `title="Nora Drive Staging"`, `contentMimeType="application/vnd.google-apps.folder"`, no parentId (lands in My Drive root)
+- Save the resulting folder ID to memory: `POST /memory { "fact": "Nora Drive Staging folder ID is {id}", "source": "auto" }`
+
+Subsequent runs read the ID from memory — no re-searching. Files in staging accumulate; clean up periodically if it gets large.
+
+### Caching client drive locations
+
+Client shared drive root IDs and per-client folder IDs (Meeting Notes, Briefs, etc.) don't change. Cache them in memory the first time you discover them:
+
+```
+POST /memory
+{ "fact": "DMC Service shared drive root: 0AD-ZgCkN-Z1vUk9PVA", "source": "auto", "project": "DMC" }
+
+POST /memory
+{ "fact": "DMC Service Meeting Notes folder: 1KqaFoHFajvVwP9OJ4DSzhszvXRtIPcaX", "source": "auto", "project": "DMC" }
+```
+
+To discover a client's shared drive when not in memory: `search_files` for known client content (e.g., a brand asset filename), then `get_file_metadata` on the parent chain until you hit a parent ID matching `0A...PVA` (that's the shared drive root). List its top-level folders with `parentId = '0A...PVA' and mimeType = 'application/vnd.google-apps.folder'` to find Meeting Notes / Branding / etc.
+
+### End-to-end example (filing a transcript)
+
+```bash
+# 1. Look up staging folder ID from memory (cached on prior run)
+STAGING_ID="1abcXXXXXXXXX"  # from memory: "Nora Drive Staging folder ID"
+
+# 2. Create the transcript content in staging (via Drive MCP)
+#    create_file(title="...", parentId=STAGING_ID, textContent=<transcript>, contentMimeType="text/markdown")
+#    Returns staged file ID, e.g., "1stagedYYYY"
+
+# 3. Copy from staging into the client's Meeting Notes folder
+#    copy_file(fileId="1stagedYYYY", parentId="1KqaFoHFajvVwP9OJ4DSzhszvXRtIPcaX", title="DMC Service - Meeting - 2026-05-10")
+#    Returns final file ID + view URL
+
+# 4. Save a memory marker so we don't re-file the same transcript next run
+#    POST /memory { "fact": "Filed transcript {bot_id} for DMC Service on 2026-05-10 at {drive_url}", "source": "auto", "project": "DMC" }
+```
+
+This same pattern applies to ANY task asking Nora to "drop a file in [client]'s drive" — briefs, status reports, deliverables, summaries. Two hops, with the destination being whatever folder is appropriate (Meeting Notes / Briefs / Strategy / etc.). The cache + staging setup is shared across all of them.
+
 ## Step 2: Memory and Task Cleanup
 
 Before doing any operational work, clean up duplicates and sync project context to keep Nora's data sharp.
@@ -279,6 +334,66 @@ For each pending task:
    POST /memory
    { "fact": "<what you did and when>", "source": "auto", "project": "<project name if relevant>" }
    ```
+
+## Step 3.5: File New Meeting Transcripts to Client Drives
+
+For each new meeting Nora joined, file the transcript into the client's `Meeting Notes` folder in their shared drive. This is what gives the team a durable record of what was discussed without anyone having to manually save anything.
+
+Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). The staging folder + caching guidance is shared with any other Drive-write task.
+
+1. **List recent transcripts** that haven't been filed yet:
+
+   ```bash
+   curl -s "${BASE}/transcripts?key=${KEY}" | jq .
+   ```
+
+   For each transcript, check memory for a fact matching `"Filed transcript {bot_id}"` — if present, skip (already filed). Otherwise it's a candidate.
+
+2. **Identify which client the transcript is for.** Read the transcript via `GET /transcripts/{bot_id}` and look for clear signals:
+   - Speaker names that match a client team (cross-reference with project context)
+   - Project name mentions in the conversation
+   - Meeting context Nora has from memory about who she met with
+
+   If you can't confidently identify the client from the transcript content + project memory, skip the filing for this run. Better to leave it unfiled than file in the wrong drive. (Save a memory `"Skipped filing transcript {bot_id} — couldn't identify client"` so you don't keep re-evaluating it every hour.)
+
+3. **Look up the client's `Meeting Notes` folder ID.** Check memory for a fact like `"{Client} Meeting Notes folder: {id}"`. If not cached, follow the discovery procedure from "Writing Files to Client Shared Drives" — search by known client content, trace up to the shared drive root, list the root's folders to find `Meeting Notes`. Cache the resulting ID with a memory `POST` so the next run doesn't re-discover it.
+
+4. **File the transcript via the two-hop pattern:**
+
+   - Look up the staging folder ID from memory (`"Nora Drive Staging folder ID is {id}"`). Bootstrap if absent.
+   - `create_file` the transcript content into staging:
+     ```
+     title: "{Client} - Meeting - {YYYY-MM-DD}"
+     parentId: <staging folder id>
+     textContent: <full transcript, formatted as markdown with [Speaker]: text per line>
+     contentMimeType: "text/markdown"
+     ```
+   - `copy_file` from the staged file ID into the client's Meeting Notes folder:
+     ```
+     fileId: <staged file id>
+     parentId: <client's Meeting Notes folder id>
+     title: "{Client} - Meeting - {YYYY-MM-DD}"
+     ```
+   - Capture the resulting `viewUrl` from the copy response.
+
+5. **Save the marker memory** so this transcript doesn't get re-filed next run:
+
+   ```
+   POST /memory
+   {
+     "fact": "Filed transcript {bot_id} for {Client} on {YYYY-MM-DD} at {viewUrl}",
+     "source": "auto",
+     "project": "{Client}"
+   }
+   ```
+
+6. **Notify the client's PM in Slack** (optional, but useful) — a brief "transcript from today's call is filed at {url}" DM via `/notify`. Skip if the meeting was small/internal.
+
+Guardrails:
+- ONE transcript filing per run unless you've got time. Filing 5 in one cowork run can spike Drive API usage.
+- If `copy_file` fails on a specific drive (e.g., Nora's account isn't in the right group for that drive), note it in memory and surface to John in the end-of-run summary so he can fix the access. Don't keep retrying.
+- Don't file transcripts for LimeLight-internal meetings (PM standup, etc.) — only client meetings. Use the same skip logic as Idle Knowledge Round (project status, "Opportunity - " prefix, LimeLight as client).
+- The transcript content might contain financials. Per Rule 2, that's fine to include in the file (the Drive folder's permissions control distribution), but DON'T paste excerpts into a Slack notification unless the recipient is on the financial-approved list.
 
 ## Step 4: Check Gmail for Items Needing Attention
 
