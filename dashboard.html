@@ -80,7 +80,11 @@
       <div class="section">
         <h2>Send Nora to a Meeting</h2>
         <input id="url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
-        <div class="row">
+        <select id="project-hint" style="width:100%;margin-top:8px;padding:10px;background:#1a1a1a;color:#eee;border:1px solid #333;border-radius:8px;font-size:14px;">
+          <option value="">No project hint (general meeting)</option>
+        </select>
+        <div style="font-size:12px;color:#888;margin-top:4px;">Optional. Picks one project to prime Nora's context for this meeting — she'll have full memory + details for it loaded.</div>
+        <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
         <div id="join-status" class="toast"></div>
@@ -282,19 +286,48 @@
     async function joinMeeting() {
       const s = document.getElementById('join-status');
       const u = document.getElementById('url').value.trim();
+      const project = document.getElementById('project-hint').value;
       if (!u) { s.className = 'toast err'; s.textContent = 'Paste a Zoom link first'; return; }
       s.className = 'toast ok'; s.textContent = 'Sending Nora...';
       try {
-        const r = await api('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meeting_url: u }) });
+        const body = { meeting_url: u };
+        if (project) body.project = project;
+        const r = await api('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await r.json();
         if (d.bot_id) {
-          s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id;
+          const hint = d.project_hint ? ` (project: ${d.project_hint})` : '';
+          s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id + hint;
           document.getElementById('mute-controls').style.display = 'block';
           checkMuteState();
         }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
+
+    async function loadProjectHintOptions() {
+      const sel = document.getElementById('project-hint');
+      if (!sel) return;
+      try {
+        const r = await api('/projects');
+        const projects = await r.json();
+        if (!Array.isArray(projects)) return;
+        const prev = sel.value;
+        // Active first, then alpha
+        projects.sort((a, b) => {
+          const aa = (a.status || '').toLowerCase() === 'active' ? 0 : 1;
+          const bb = (b.status || '').toLowerCase() === 'active' ? 0 : 1;
+          if (aa !== bb) return aa - bb;
+          return (a.name || '').localeCompare(b.name || '');
+        });
+        sel.innerHTML = '<option value="">No project hint (general meeting)</option>' +
+          projects.map(p => {
+            const label = p.status && p.status.toLowerCase() !== 'active' ? `${p.name} (${p.status})` : p.name;
+            return `<option value="${p.name.replace(/"/g, '&quot;')}">${label}</option>`;
+          }).join('');
+        if (prev) sel.value = prev;
+      } catch (e) { /* dropdown is optional — leave empty on failure */ }
+    }
+    loadProjectHintOptions();
 
     async function toggleMute() {
       try {

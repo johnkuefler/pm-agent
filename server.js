@@ -338,7 +338,7 @@ function addTask(task) {
 
 initMemory();
 
-function buildSystemPrompt(channel = 'zoom', transcript = null) {
+function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null) {
   let base = loadPrompt();
 
   // Swap channel-specific framing
@@ -349,10 +349,22 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
     );
   }
 
-  // For realtime voice, use a compact version with capped memory
+  // For realtime voice, use a higher (but bounded) memory budget. Previously 3000 chars
+  // (~0.5% of gpt-realtime-2's 128K context) — way too small after the Teamwork sync
+  // brought project count past 100. 20K chars is still under 5% of context and gives
+  // her room for the full picture of a typical agency book.
   const isRealtime = channel === 'realtime';
-  const memoryCharBudget = isRealtime ? 3000 : Infinity;
+  const memoryCharBudget = isRealtime ? 20000 : Infinity;
   const maxTranscriptLines = isRealtime ? 10 : 30;
+
+  // Normalize the projectHint to canonical casing if it matches a known project name,
+  // so callers can pass loose strings (e.g., from a /join body) without exact match.
+  let hintCanonical = null;
+  if (projectHint) {
+    const projects = loadProjects();
+    const match = projects.find(p => p.name.toLowerCase() === projectHint.toLowerCase());
+    hintCanonical = match ? match.name : projectHint;
+  }
 
   const allMemory = loadMemory();
   const projects = loadProjects();
@@ -382,14 +394,47 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
 
     let memoryBlock = '[Your memory]\n';
 
-    if (general.length > 0) {
-      const generalItems = isRealtime ? general.slice(-15) : general;
-      memoryBlock += '\n## General\n' + generalItems.map(m => `- ${m.fact}`).join('\n');
+    // If a project hint is set (e.g., "/join with project=Pitsco"), render that project
+    // first with FULL memory + full details — that's the meeting Nora's actually in.
+    if (hintCanonical) {
+      const proj = projects.find(p => p.name === hintCanonical);
+      const projMemories = byProject[hintCanonical] || [];
+      memoryBlock += `\n## ${hintCanonical}  ← THIS MEETING IS ABOUT THIS PROJECT`;
+      if (proj) {
+        const meta = [];
+        if (proj.client) meta.push(`client: ${proj.client}`);
+        if (proj.status) meta.push(`status: ${proj.status}`);
+        if (proj.pm) meta.push(`PM: ${proj.pm}`);
+        if (proj.phase) meta.push(`phase: ${proj.phase}`);
+        if (meta.length > 0) memoryBlock += `\n(${meta.join(' · ')})`;
+        if (proj.details) memoryBlock += `\n${proj.details}`;
+      }
+      if (projMemories.length > 0) {
+        memoryBlock += '\n' + projMemories.map(m => `- ${m.fact}`).join('\n');
+      }
     }
 
-    // Include project details + project-specific memories together
+    if (general.length > 0) {
+      // Pre-hint era used slice(-15). With a higher budget we can include all general
+      // memories in realtime too — they're high-signal (team roster, process facts).
+      memoryBlock += '\n\n## General\n' + general.map(m => `- ${m.fact}`).join('\n');
+    }
+
+    // Include the rest of the project list, skipping the hinted one (already rendered above).
+    // For realtime: prioritize active-status projects first, then others, so the budget
+    // skews toward what's live.
     const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
-    for (const name of allProjectNames) {
+    let projectNames = [...allProjectNames].filter(n => n !== hintCanonical);
+    if (isRealtime) {
+      projectNames.sort((a, b) => {
+        const pa = projects.find(p => p.name === a);
+        const pb = projects.find(p => p.name === b);
+        const sa = (pa?.status || '').toLowerCase() === 'active' ? 0 : 1;
+        const sb = (pb?.status || '').toLowerCase() === 'active' ? 0 : 1;
+        return sa - sb;
+      });
+    }
+    for (const name of projectNames) {
       if (isRealtime && memoryBlock.length >= memoryCharBudget) break;
       memoryBlock += `\n\n## ${name}`;
       const proj = projects.find(p => p.name === name);
@@ -406,7 +451,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
         }
       }
       if (byProject[name]) {
-        const items = isRealtime ? byProject[name].slice(-5) : byProject[name];
+        // With a higher budget, realtime can include more per-project memories than
+        // the old slice(-5). For non-hinted projects, cap at 10 to keep room for breadth.
+        const items = isRealtime ? byProject[name].slice(-10) : byProject[name];
         memoryBlock += '\n' + items.map(m => `- ${m.fact}`).join('\n');
       }
     }
@@ -436,7 +483,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   // For realtime, add voice-specific guidance
   if (isRealtime) {
     base += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
-    base += '\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name (\"Nora\") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen — do not interject. Wait for a clear pause directed at you before responding. If you\'re unsure whether someone was talking to you, stay silent.';
+    base += '\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name ("Nora") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen — do not interject. Wait for a clear pause directed at you before responding. If you\'re unsure whether someone was talking to you, stay silent. If someone in the room is already starting to answer a question, defer to them — don\'t step on humans.';
+    base += '\n\nSPOKEN RESPONSE STYLE: This is live conversation, not a written reply. Keep it short — 1-2 sentences MAX as your default. Never explain unless asked; give the one-sentence answer first, then offer detail if they want it ("want me to walk through it?"). Asked a yes/no question? Answer yes or no first, then maybe one more sentence. Lead with a quick acknowledgment when you start ("yeah", "right", "ok so") — sounds more natural than diving in cold. Do NOT recite memory unprompted. Do NOT preface with "I think" or "I believe" on every sentence — just say the thing.';
   }
 
   return base;
@@ -1213,8 +1261,18 @@ const sessionTokens = {};
 // Join meeting via API — uses output_media for real-time voice agent
 app.post('/join', requireAuth, async (req, res) => {
   try {
-    const { meeting_url } = req.body;
+    const { meeting_url, project } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
+
+    // Normalize project hint to canonical project name if it matches a known project (case-insensitive).
+    // Unknown/free-text values are still passed through so Nora can use them as a soft hint.
+    let projectHint = null;
+    if (project && typeof project === 'string' && project.trim()) {
+      const trimmed = project.trim();
+      const projects = loadProjects();
+      const match = projects.find(p => p.name.toLowerCase() === trimmed.toLowerCase());
+      projectHint = match ? match.name : trimmed;
+    }
 
     const SERVER_URL = `https://${req.get('host')}`;
     const WS_URL = `wss://${req.get('host')}`;
@@ -1268,8 +1326,9 @@ app.post('/join', requireAuth, async (req, res) => {
     sessionTokens[sessionToken] = botId;
 
     if (!sessions[botId]) sessions[botId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
-    console.log('✅ Nora joined via output_media. Bot ID:', botId);
-    res.json({ bot_id: botId });
+    if (projectHint) sessions[botId].project_hint = projectHint;
+    console.log(`✅ Nora joined via output_media. Bot ID: ${botId}${projectHint ? ` (project hint: ${projectHint})` : ''}`);
+    res.json({ bot_id: botId, project_hint: projectHint || null });
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
@@ -1494,7 +1553,7 @@ app.post('/mute', requireAuth, (req, res) => {
 
   // Live-update the OpenAI Realtime session if connected
   if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
-    const updatedPrompt = buildSystemPrompt('realtime', session.transcript);
+    const updatedPrompt = buildSystemPrompt('realtime', session.transcript, session.project_hint);
     session.openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
@@ -3200,8 +3259,8 @@ wss.on('connection', async (ws, req) => {
 
   // Build Nora's system prompt with memory and context
   const session = sessions[botId];
-  const systemPrompt = buildSystemPrompt('realtime', session?.transcript);
-  console.log(`📋 System prompt length: ${systemPrompt.length} chars`);
+  const systemPrompt = buildSystemPrompt('realtime', session?.transcript, session?.project_hint);
+  console.log(`📋 System prompt length: ${systemPrompt.length} chars${session?.project_hint ? ` (project hint: ${session.project_hint})` : ''}`);
 
   // Connect to OpenAI Realtime API
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -3213,8 +3272,12 @@ wss.on('connection', async (ws, req) => {
 
   let openaiWs;
   try {
+    // gpt-realtime-2: GPT-5-class reasoning, "keeps the conversation moving while it
+    // reasons through a request" — released May 2026, replaces gpt-4o-realtime-preview.
+    // 128K context, designed for production voice agents. If this ever starts misbehaving,
+    // fallback options: 'gpt-realtime' (stable Aug 2025), 'gpt-realtime-mini' (cheaper).
     openaiWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime-2',
       {
         headers: {
           'Authorization': `Bearer ${OPENAI_API_KEY}`,
@@ -3253,14 +3316,23 @@ wss.on('connection', async (ws, req) => {
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
         input_audio_transcription: { model: 'whisper-1' },
+        // Semantic VAD uses the model's own understanding of utterance completion to
+        // detect turn boundaries — much better than raw silence timeouts. "medium"
+        // eagerness is the balanced default; bump to "high" if Nora still feels slow,
+        // drop to "low" if she's cutting people off mid-thought.
+        // Previous config (server_vad, silence_duration_ms: 1500) was 3x OpenAI's
+        // default silence window — the biggest single source of her "beat-behind" feel.
         turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 1500
+          type: 'semantic_vad',
+          eagerness: 'medium',
+          create_response: true,
+          interrupt_response: true
         },
         temperature: 0.9,
-        max_response_output_tokens: 1024
+        // Capped tighter than OpenAI's default. Spoken responses should be 1-2 sentences
+        // (~80 tokens); 400 is plenty of headroom while still committing the model to
+        // brevity early — which materially speeds up first-audio-chunk latency.
+        max_response_output_tokens: 400
       }
     }));
 
@@ -3400,7 +3472,7 @@ wss.on('connection', async (ws, req) => {
     if (openaiWs.readyState !== WebSocket.OPEN) return;
     const s = sessions[botId];
     const isMuted = s?.muted;
-    const updatedPrompt = buildSystemPrompt('realtime', s?.transcript);
+    const updatedPrompt = buildSystemPrompt('realtime', s?.transcript, s?.project_hint);
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
