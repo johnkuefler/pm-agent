@@ -1880,7 +1880,7 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
 }
 
 // Slack thread admin — view and prune which threads Nora is "in" (will respond without re-mention)
-app.get('/slack/threads', requireAuth, (req, res) => {
+app.get('/slack/threads', requireAuth, async (req, res) => {
   const list = Object.entries(slackJoinedThreads).map(([key, entry]) => {
     const [channel, ts] = key.split(':');
     return {
@@ -1893,6 +1893,9 @@ app.get('/slack/threads', requireAuth, (req, res) => {
     };
   });
   list.sort((a, b) => b.last_addressed.localeCompare(a.last_addressed));
+  // Enrich each thread with the human channel name (cached, falls back to null)
+  const nameMap = await resolveChannelNames(list.map(t => t.channel));
+  for (const t of list) t.channel_name = nameMap[t.channel] || null;
   res.json({
     count: list.length,
     active: list.filter(t => !t.stale).length,
@@ -1926,12 +1929,15 @@ app.post('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
 
 // Proactive channel admin — control which channels Nora is allowed to speak in proactively
 // (without being @mentioned). DEFAULT IS OFF for every channel — strict opt-in.
-app.get('/slack/proactive-channels', requireAuth, (req, res) => {
+app.get('/slack/proactive-channels', requireAuth, async (req, res) => {
   const channels = [...slackProactiveChannels].map(c => ({
     channel: c,
     cooldown_active: isProactiveCooldownActive(c),
     last_proactive_post: slackProactiveCooldown[c] ? new Date(slackProactiveCooldown[c]).toISOString() : null
   }));
+  // Enrich with human channel names so the dashboard can show "#pm-team" alongside the ID
+  const nameMap = await resolveChannelNames(channels.map(c => c.channel));
+  for (const c of channels) c.channel_name = nameMap[c.channel] || null;
   res.json({
     count: channels.length,
     cooldown_minutes: PROACTIVE_COOLDOWN_MS / 60000,
@@ -2002,6 +2008,42 @@ async function getNoraBotUserId() {
   noraBotUserId = r.data.user_id;
   console.log('🤖 Resolved Nora bot user ID via auth.test:', noraBotUserId);
   return noraBotUserId;
+}
+
+// In-memory cache of Slack channel ID → channel name. Channel names rarely change so we
+// cache indefinitely per process; restarts just rebuild the cache on first hit. Returns
+// the cached name on hit, calls Slack conversations.info on miss, and writes either
+// the resolved name (success) or null (failure — bot not in channel, archived, etc.) so
+// we don't keep re-asking. Failures will retry on next process restart.
+const slackChannelNameCache = {};
+
+async function resolveChannelName(channelId) {
+  if (!channelId) return null;
+  if (Object.prototype.hasOwnProperty.call(slackChannelNameCache, channelId)) {
+    return slackChannelNameCache[channelId];
+  }
+  const botToken = process.env.SLACK_BOT_TOKEN;
+  if (!botToken) return null;
+  try {
+    const r = await axios.get(`https://slack.com/api/conversations.info?channel=${channelId}`, {
+      headers: { Authorization: `Bearer ${botToken}` },
+      timeout: 5000
+    });
+    const name = (r.data && r.data.ok && r.data.channel && r.data.channel.name) || null;
+    slackChannelNameCache[channelId] = name;
+    return name;
+  } catch (err) {
+    slackChannelNameCache[channelId] = null;
+    return null;
+  }
+}
+
+// Resolve names for a list of channel IDs in parallel. Cache hits are instant; misses
+// fan out to Slack with one request per channel (Slack doesn't expose a batch info call).
+async function resolveChannelNames(channelIds) {
+  const unique = [...new Set(channelIds.filter(Boolean))];
+  const entries = await Promise.all(unique.map(async id => [id, await resolveChannelName(id)]));
+  return Object.fromEntries(entries);
 }
 
 // Find @mentions of the bot in channels Nora's app is a member of that haven't been
