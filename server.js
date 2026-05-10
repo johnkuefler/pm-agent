@@ -546,7 +546,8 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
 ### Projects
 - GET  /projects                — Returns all projects
   Response: [{ "name", "details", "created", "client?", "status?", "pm?", "phase?", "tags?",
-                "last_activity?", "last_research_at?", "last_research_summary?", "auto_created?" }]
+                "last_activity?", "last_research_at?", "last_research_summary?",
+                "teamwork_id?", "auto_created?" }]
 
 - GET  /projects/:name          — Returns a project with its associated memories + summary
   Response: { ...project, "memory_count": N, "last_memory_at": "YYYY-MM-DD", "memories": [...] }
@@ -873,7 +874,8 @@ The live handler distinguishes them so Nora frames opinions as opinions ("honest
   "tags": ["optional", "string", "array"],
   "auto_created": "true if the record was created as a stub when a memory referenced an unknown project (clear by PUT'ing details/client/status/pm/phase)",
   "last_research_at": "ISO 8601 timestamp of the most recent idle-round research touch (set by POST /projects/:name/research-touch)",
-  "last_research_summary": "Optional free-text summary of the most recent research round"
+  "last_research_summary": "Optional free-text summary of the most recent research round",
+  "teamwork_id": "Numeric Teamwork project ID, captured by /projects/sync-from-teamwork. Use as the project_id filter for twprojects-list_tasks / list_tasklists / list_milestones (which all work). Workaround for known MCP bugs: twprojects-get_project always 500s, twprojects-search fails on most queries (Go decode errors on comments/calendar events), and twprojects-list_projects 500s when given any page/page_size/search_term param. /projects/sync-from-teamwork uses Teamwork's REST API directly so it's unaffected by the MCP issues."
 }
 
 ## Processing Pending Tasks
@@ -2474,6 +2476,7 @@ app.post('/projects/sync-from-teamwork', requireAuth, async (req, res) => {
         const companyId = p.company?.id || p.companyId;
         const companyName = companyId && companies[companyId]?.name || p.company?.name || '';
         twProjects.push({
+          id: p.id || null,
           name: (p.name || '').trim(),
           description: p.description || '',
           company: companyName
@@ -2503,6 +2506,7 @@ app.post('/projects/sync-from-teamwork', requireAuth, async (req, res) => {
     let created = 0;
     let promoted = 0;
     let unchanged = 0;
+    let idBackfilled = 0;
     const createdNames = [];
     const promotedNames = [];
 
@@ -2519,7 +2523,8 @@ app.post('/projects/sync-from-teamwork', requireAuth, async (req, res) => {
             client: tw.company || '',
             status: 'active',
             created: now,
-            last_activity: now
+            last_activity: now,
+            teamwork_id: tw.id || null
           });
         }
         created++;
@@ -2532,21 +2537,29 @@ app.post('/projects/sync-from-teamwork', requireAuth, async (req, res) => {
             if (!proj.client && tw.company) proj.client = tw.company;
             if (!proj.status) proj.status = 'active';
             if (!proj.details && tw.description) proj.details = tw.description;
+            if (!proj.teamwork_id && tw.id) proj.teamwork_id = tw.id;
             proj.updated = now;
             delete proj.auto_created;
           }
           promoted++;
           promotedNames.push(tw.name);
         } else {
-          // Curated record — leave alone, don't overwrite manual edits
+          // Curated record — leave manual edits alone, but backfill teamwork_id if missing.
+          // The TW ID is an objective fact, not subjective metadata, so this is safe to set
+          // without overwriting anything the user touched. Useful when the Teamwork MCP is
+          // unhealthy and Nora needs the project ID some other way.
+          if (!dryRun && !proj.teamwork_id && tw.id) {
+            proj.teamwork_id = tw.id;
+            idBackfilled++;
+          }
           unchanged++;
         }
       }
     }
 
-    if (!dryRun && (created > 0 || promoted > 0)) {
+    if (!dryRun && (created > 0 || promoted > 0 || idBackfilled > 0)) {
       saveProjects(existing);
-      console.log(`📁 Sync from Teamwork: created ${created}, promoted ${promoted}, unchanged ${unchanged}`);
+      console.log(`📁 Sync from Teamwork: created ${created}, promoted ${promoted}, id_backfilled ${idBackfilled}, unchanged ${unchanged}`);
     }
 
     res.json({
@@ -2557,6 +2570,7 @@ app.post('/projects/sync-from-teamwork', requireAuth, async (req, res) => {
       pages_fetched: pagesFetched,
       created,
       promoted,
+      id_backfilled: idBackfilled,
       unchanged,
       created_names: createdNames.slice(0, 20),
       promoted_names: promotedNames.slice(0, 20)
