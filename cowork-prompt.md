@@ -419,7 +419,14 @@ ONE project per run. 3–5 memories max. The Teamwork-to-`/projects` reconciliat
    - `twprojects-list_milestones` (with `project_id`) for upcoming deliverables and deadlines
    - Then supplement with Confluence "LLM Client Space", Google Drive, recent Gmail (last 30 days), and Slack channel activity.
 
-   **Known MCP issue: project-level reads are broken.** `twprojects-list_projects`, `twprojects-search`, and `twprojects-get_project` return 500 reliably right now (connector-side, not a transient hiccup). Don't try them. The entity-scoped list calls above (`list_tasks`/`list_tasklists`/`list_milestones` filtered by `project_id`) work fine, as do single-entity reads. For project metadata (name, client, description, status), rely on Nora's `/projects/{name}` response — it has everything `get_project` would have given you.
+   **Known Teamwork MCP issues** (server-side Go struct decoding bugs in the connector — not flaky, just consistently broken on certain shapes):
+   - ✗ `twprojects-get_project` always 500s. Use `/projects/{name}` from Nora's API for project metadata instead — it has name, client, description, status, and `teamwork_id`. Step 2's sync keeps it current.
+   - ✗ `twprojects-search` decodes incorrectly when results include comments or calendar events (which is most queries).
+   - ✗ `twprojects-list_projects` with `page`/`page_size`/`search_term` params 500s.
+   - ✓ `twprojects-list_projects` with **NO args** works and returns ~50 active projects. Useful as a last-resort enumeration if Nora's `/projects` is somehow stale.
+   - ✓ Entity-scoped list calls (`list_tasks`, `list_tasklists`, `list_milestones`) with `project_id` filter all work fine.
+
+   The reliable pattern: `/projects/{name}` for metadata + `teamwork_id` for the project_id filter, then the working entity-scoped calls. Don't go through the MCP for project enumeration unless Nora's /projects is empty — the sync-from-teamwork endpoint hits Teamwork's REST API directly (not the MCP) so it isn't affected by these decoding bugs.
 
 4. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
 

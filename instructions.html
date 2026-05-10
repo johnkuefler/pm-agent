@@ -242,7 +242,15 @@ GET /projects/coverage?limit=5
         <div><span class="badge post">POST</span> <span class="endpoint-path">/projects/sync-from-teamwork</span></div>
         <div class="endpoint-desc">Sync Nora's <code>/projects</code> store from the Teamwork active project list. Replaces the multi-step MCP workflow that used to live in the Idle Knowledge Round. Idempotent — safe to call every cowork run.</div>
         <p>Behavior: pulls active Teamwork projects (paginated v3 API), filters out archived / "Opportunity - " / LimeLight-internal, then reconciles against the local store. Missing projects → created with name + client + status + <code>teamwork_id</code>. <code>auto_created</code> stubs → promoted by filling in TW metadata. Existing curated records → left alone except for backfilling <code>teamwork_id</code> if missing (the TW ID is an objective fact, not subjective metadata).</p>
-        <p>The <code>teamwork_id</code> field is the workaround for a known MCP connector issue: <code>twprojects-list_projects</code>, <code>twprojects-search</code>, and <code>twprojects-get_project</code> all return 500 reliably right now (project-level reads are broken). The entity-scoped list calls — <code>twprojects-list_tasks</code>, <code>twprojects-list_tasklists</code>, <code>twprojects-list_milestones</code> with a <code>project_id</code> filter — work fine. So use <code>project.teamwork_id</code> from Nora's <code>/projects/{name}</code> response as the <code>project_id</code> filter, and rely on Nora's project record (not <code>get_project</code>) for project-level metadata.</p>
+        <p>The <code>teamwork_id</code> field is the workaround for known Teamwork MCP server-side decoding bugs:</p>
+        <ul>
+          <li><code>twprojects-get_project</code> always 500s</li>
+          <li><code>twprojects-search</code> fails on most queries (Go struct decode errors when results include comments or calendar events)</li>
+          <li><code>twprojects-list_projects</code> with any <code>page</code>/<code>page_size</code>/<code>search_term</code> param 500s</li>
+          <li><code>twprojects-list_projects</code> with no args works (returns ~50 active projects)</li>
+          <li>Entity-scoped list calls with <code>project_id</code> filter (<code>list_tasks</code>, <code>list_tasklists</code>, <code>list_milestones</code>) all work fine</li>
+        </ul>
+        <p>So the reliable pattern is: read <code>project.teamwork_id</code> from Nora's <code>/projects/{name}</code> response (which has all the metadata <code>get_project</code> would have given), then use it as the <code>project_id</code> filter on the working entity-scoped calls. <code>/projects/sync-from-teamwork</code> uses Teamwork's REST API directly (not the MCP) so it isn't affected by these decoding bugs.</p>
         <pre>// Request body (optional):
 { "dry_run": true }    // preview without applying
 

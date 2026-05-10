@@ -875,7 +875,7 @@ The live handler distinguishes them so Nora frames opinions as opinions ("honest
   "auto_created": "true if the record was created as a stub when a memory referenced an unknown project (clear by PUT'ing details/client/status/pm/phase)",
   "last_research_at": "ISO 8601 timestamp of the most recent idle-round research touch (set by POST /projects/:name/research-touch)",
   "last_research_summary": "Optional free-text summary of the most recent research round",
-  "teamwork_id": "Numeric Teamwork project ID, captured by /projects/sync-from-teamwork. Use as the project_id filter for twprojects-list_tasks / list_tasklists / list_milestones — those work even though twprojects-list_projects, twprojects-search, and twprojects-get_project are reliably 500'ing right now (connector-side issue with the Teamwork MCP)."
+  "teamwork_id": "Numeric Teamwork project ID, captured by /projects/sync-from-teamwork. Use as the project_id filter for twprojects-list_tasks / list_tasklists / list_milestones (which all work). Workaround for known MCP bugs: twprojects-get_project always 500s, twprojects-search fails on most queries (Go decode errors on comments/calendar events), and twprojects-list_projects 500s when given any page/page_size/search_term param. /projects/sync-from-teamwork uses Teamwork's REST API directly so it's unaffected by the MCP issues."
 }
 
 ## Processing Pending Tasks
