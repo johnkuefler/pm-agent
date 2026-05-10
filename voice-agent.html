@@ -390,7 +390,11 @@
             const outputItems = msg.response.output || [];
             for (const item of outputItems) {
               if (item.type === 'message' && item.role === 'assistant') {
-                const transcript = item.content?.find(c => c.type === 'audio')?.transcript;
+                // GA API renamed audio content type 'audio' → 'output_audio' (and
+                // 'text' → 'output_text'); accept both so this works across API versions.
+                const audioPart = item.content?.find(c => c.type === 'output_audio' || c.type === 'audio');
+                const textPart = item.content?.find(c => c.type === 'output_text' || c.type === 'text');
+                const transcript = audioPart?.transcript || textPart?.text;
                 if (transcript && SERVER_URL) {
                   fetch(`${SERVER_URL}/voice-agent/response`, {
                     method: 'POST',
