@@ -478,7 +478,7 @@ If you created zero drafts this run, skip this step entirely.
    - Otherwise look up each approved person's Slack user ID via `slack_search_users` and `POST /slack/financial-approved/{user_id}` with body `{ "name": "Full Name" }`.
    - Save a memory marker so subsequent runs don't repeat: `POST /memory { "fact": "Bootstrapped slack-financial-approved list on YYYY-MM-DD with N users", "source": "auto" }`.
 
-   This also applies to memories — `POST /memory` and `PUT /memory/:index` now hard-reject facts containing financial figures (422 response). If you need to record something financial-adjacent, rephrase qualitatively (e.g., "Pitsco SOW is in active review" instead of "Pitsco SOW is $47K"). The Idle Knowledge Round and any other memory writes you do must follow this rule.
+   Memory writes (`POST /memory`, `PUT /memory/:index`, and the auto-extraction pipeline) accept facts containing financial figures — distribution is the gate, not storage. Save what's true and let the live handler's per-recipient gate decide what flows out. The Idle Knowledge Round can save retainer values, SOW amounts, burn details, etc. when they're material to a project's context.
 
 3. **Ignore cold outreach**: Do not respond to, flag, or take any action on cold marketing/sales/vendor outreach emails. SEO agencies, SaaS pitches, "I noticed your website" emails, partnership spam — mark them as read and move on. Don't waste anyone's time surfacing junk.
 

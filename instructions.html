@@ -540,7 +540,7 @@ GET /projects/coverage?limit=5
       <ol>
         <li><strong>System-prompt gate</strong> — handler tells the model the recipient's status before generating; unapproved → "never share, redirect instead."</li>
         <li><strong>Output scrubber</strong> — regex check at egress; unapproved + financial pattern detected → reply replaced with safe redirect before posting.</li>
-        <li><strong>Memory hygiene</strong> — <code>POST /memory</code> and <code>PUT /memory/:index</code> hard-reject (422) facts containing financial patterns. <code>extractMemory</code> drops auto-extracted financial facts as a backstop on top of the prompt rule.</li>
+        <li><strong>Memory accepts financial content</strong> — distribution is the gate, not storage. <code>POST /memory</code>, <code>PUT /memory/:index</code>, and the auto-extraction pipeline all accept facts containing dollar amounts, rates, budgets, etc. The output scrubber + per-recipient prompt gate above are what protect distribution to non-approved users. (Earlier behavior rejected these writes with 422; that turned out to be too aggressive — false positives like "Marketing Retainer 2026" were getting blocked.)</li>
       </ol>
       <p>Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy) + account managers (Kyle Tapper, Kayla Clark, Caitlin Blackwell). The list starts empty on first deploy — until populated, ALL users are treated as unapproved (fail-closed). Cowork bootstraps the list on its first run after deploy via <code>slack_search_users</code> lookups.</p>
 
