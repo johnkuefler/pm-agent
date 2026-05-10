@@ -875,7 +875,7 @@ The live handler distinguishes them so Nora frames opinions as opinions ("honest
   "auto_created": "true if the record was created as a stub when a memory referenced an unknown project (clear by PUT'ing details/client/status/pm/phase)",
   "last_research_at": "ISO 8601 timestamp of the most recent idle-round research touch (set by POST /projects/:name/research-touch)",
   "last_research_summary": "Optional free-text summary of the most recent research round",
-  "teamwork_id": "Numeric Teamwork project ID, captured by /projects/sync-from-teamwork. Useful as a fallback when twprojects-list_projects or twprojects-search are unhealthy (the Teamwork-published MCP returns 500 on those endpoints periodically)."
+  "teamwork_id": "Numeric Teamwork project ID, captured by /projects/sync-from-teamwork. Use as the project_id filter for twprojects-list_tasks / list_tasklists / list_milestones — those work even though twprojects-list_projects, twprojects-search, and twprojects-get_project are reliably 500'ing right now (connector-side issue with the Teamwork MCP)."
 }
 
 ## Processing Pending Tasks
