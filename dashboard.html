@@ -876,10 +876,13 @@
         list.innerHTML = d.channels.map(c => {
           const lastPost = c.last_proactive_post ? new Date(c.last_proactive_post).toLocaleString() : 'never';
           const cooldownLabel = c.cooldown_active ? '<span style="color: #fbbf24;">cooldown active</span>' : '<span style="color: #6ee7b7;">ready</span>';
+          const heading = c.channel_name
+            ? `<span>#${escHtml(c.channel_name)}</span> <span style="color: #555; font-weight: 400; font-family: monospace; font-size: 11px; margin-left: 6px;">${escHtml(c.channel)}</span>`
+            : `<span style="font-family: monospace;">${escHtml(c.channel)}</span>`;
           return `
             <div class="memory-item">
               <div style="flex: 1;">
-                <div class="memory-fact">${escHtml(c.channel)}</div>
+                <div class="memory-fact">${heading}</div>
                 <div class="memory-meta">${cooldownLabel} · last proactive post: ${lastPost}</div>
               </div>
               <div style="display: flex; gap: 6px; flex-shrink: 0;">
@@ -938,10 +941,14 @@
           const stalePill = th.stale
             ? '<span style="color: #fbbf24; font-weight: 600;">STALE</span>'
             : '<span style="color: #6ee7b7; font-weight: 600;">active</span>';
+          const channelLabel = th.channel_name
+            ? `#${escHtml(th.channel_name)}`
+            : escHtml(th.channel);
+          const heading = `<span style="font-size: 14px;">${channelLabel}</span> <span style="font-family: monospace; font-size: 11px; color: #555; margin-left: 6px;">${escHtml(th.thread_ts)}</span>`;
           return `
             <div class="memory-item">
               <div style="flex: 1;">
-                <div class="memory-fact" style="font-family: monospace; font-size: 12px;">${escHtml(th.channel)} / ${escHtml(th.thread_ts)}</div>
+                <div class="memory-fact">${heading}</div>
                 <div class="memory-meta">${stalePill} · last addressed: ${last} · ${th.msgs_since_addressed || 0} msgs since</div>
               </div>
               <div style="display: flex; gap: 6px; flex-shrink: 0;">
