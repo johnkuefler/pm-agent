@@ -3404,14 +3404,15 @@ wss.on('connection', async (ws, req) => {
         const outputs = msg.response.output || [];
         for (const item of outputs) {
           if (item.type === 'message' && item.role === 'assistant') {
-            // Audio responses (normal mode)
-            const audioTranscript = item.content?.find(c => c.type === 'audio')?.transcript;
+            // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
+            // Accept both so this works across API versions.
+            const audioTranscript = item.content?.find(c => c.type === 'output_audio' || c.type === 'audio')?.transcript;
             if (audioTranscript) {
               console.log('🤖 Nora (voice):', audioTranscript.slice(0, 200));
             }
 
             // Text-only responses (muted mode) — only process if Nora was directly addressed
-            const textContent = item.content?.find(c => c.type === 'text')?.text;
+            const textContent = item.content?.find(c => c.type === 'output_text' || c.type === 'text')?.text;
             if (textContent && sessions[botId]?.muted) {
               const session = sessions[botId];
               const recentUtterances = session.buffer.slice(-5).join('\n').toLowerCase();
