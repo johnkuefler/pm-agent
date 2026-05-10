@@ -61,7 +61,13 @@
     <!-- Nora's Brain -->
     <div class="section">
       <h2>Authentication</h2>
-      <p>The following endpoints require an API key: <code>/memory</code>, <code>/projects</code>, <code>/tasks</code>, <code>/teamwork</code>, <code>/notify</code>, and <code>/transcripts</code>. All other endpoints (dashboard, webhooks, join, mute, etc.) are open.</p>
+      <p>The auth model has two layers:</p>
+      <ul>
+        <li><strong>API key</strong> (<code>NORA_API_KEY</code>) protects all data + action endpoints: <code>/memory</code>, <code>/projects</code>, <code>/tasks</code>, <code>/teamwork</code>, <code>/notify</code>, <code>/transcripts</code>, <code>/slack/*</code>, plus <code>/join</code>, <code>/proactive</code>, <code>/mute</code>, <code>/one-on-one</code>, <code>/register-bot</code>. Pass via <code>?key=</code> query param or <code>Authorization: Bearer</code> header.</li>
+        <li><strong>Basic auth password</strong> (<code>DASHBOARD_PASSWORD</code>) protects the UI pages: <code>/</code>, <code>/instructions</code>, <code>/architecture</code>. Username is ignored; only the password is checked. Once authenticated, the dashboard HTML is rendered with <code>NORA_API_KEY</code> embedded so its JS can call API endpoints with the key.</li>
+      </ul>
+      <p>Open (no auth) by design: <code>/cowork-instructions</code>, <code>/prompt</code> (cowork pulls these — no secret content); <code>/voice-agent</code>, <code>/voice-agent/response</code> (token-validated); <code>/webhook/*</code> (signature/token-validated by Slack and Recall.ai).</p>
+      <p>The previous <code>Sec-Fetch-Site: same-origin</code> bypass on <code>requireAuth</code> was removed — that header is browser-set in normal use but trivially spoofable from curl, so it never provided real protection. Browser fetches from the dashboard now carry the embedded API key as a Bearer header instead.</p>
       <p>Pass the API key in one of two ways:</p>
       <ul>
         <li><strong>Query parameter:</strong> <code>?key=YOUR_NORA_API_KEY</code> — simplest for GET requests and tools</li>
