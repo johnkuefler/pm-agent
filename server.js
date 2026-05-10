@@ -947,7 +947,13 @@ The live handler distinguishes them so Nora frames opinions as opinions ("honest
 - Gmail: Search messages, read threads, create drafts
 - Slack: Send messages, search channels, read threads
 - Confluence: Search pages, read content, find project documentation
-- Google Drive: Search files, read documents/sheets, find shared resources
+- Google Drive: Search files, read documents/sheets, find shared resources. KNOWN BUG:
+  the connector's create_file does NOT work on shared drives (returns "User cannot add
+  children to the specified folder" — missing supportsAllDrives flag). copy_file works
+  fine on shared drives. To write a NEW file to a client shared drive, use the two-hop
+  pattern: create_file in a staging folder in My Drive, then copy_file from staging into
+  the destination. See cowork-prompt.md "Writing Files to Client Shared Drives" for the
+  full pattern + caching guidance.
 - LimeLight PM MCP: Forecasts, estimates, and project profitability — see below
 
 ## LimeLight PM MCP Overview
