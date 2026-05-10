@@ -436,7 +436,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   // For realtime, add voice-specific guidance
   if (isRealtime) {
     base += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
-    base += '\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name (\"Nora\") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen — do not interject. Wait for a clear pause directed at you before responding. If you\'re unsure whether someone was talking to you, stay silent.';
+    base += '\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name ("Nora") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen — do not interject. Wait for a clear pause directed at you before responding. If you\'re unsure whether someone was talking to you, stay silent. If someone in the room is already starting to answer a question, defer to them — don\'t step on humans.';
+    base += '\n\nSPOKEN RESPONSE STYLE: This is live conversation, not a written reply. Keep it short — 1-2 sentences MAX as your default. Never explain unless asked; give the one-sentence answer first, then offer detail if they want it ("want me to walk through it?"). Asked a yes/no question? Answer yes or no first, then maybe one more sentence. Lead with a quick acknowledgment when you start ("yeah", "right", "ok so") — sounds more natural than diving in cold. Do NOT recite memory unprompted. Do NOT preface with "I think" or "I believe" on every sentence — just say the thing.';
   }
 
   return base;
@@ -3213,8 +3214,12 @@ wss.on('connection', async (ws, req) => {
 
   let openaiWs;
   try {
+    // gpt-realtime-2: GPT-5-class reasoning, "keeps the conversation moving while it
+    // reasons through a request" — released May 2026, replaces gpt-4o-realtime-preview.
+    // 128K context, designed for production voice agents. If this ever starts misbehaving,
+    // fallback options: 'gpt-realtime' (stable Aug 2025), 'gpt-realtime-mini' (cheaper).
     openaiWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime-2',
       {
         headers: {
           'Authorization': `Bearer ${OPENAI_API_KEY}`,
@@ -3253,14 +3258,23 @@ wss.on('connection', async (ws, req) => {
         input_audio_format: 'pcm16',
         output_audio_format: 'pcm16',
         input_audio_transcription: { model: 'whisper-1' },
+        // Semantic VAD uses the model's own understanding of utterance completion to
+        // detect turn boundaries — much better than raw silence timeouts. "medium"
+        // eagerness is the balanced default; bump to "high" if Nora still feels slow,
+        // drop to "low" if she's cutting people off mid-thought.
+        // Previous config (server_vad, silence_duration_ms: 1500) was 3x OpenAI's
+        // default silence window — the biggest single source of her "beat-behind" feel.
         turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 1500
+          type: 'semantic_vad',
+          eagerness: 'medium',
+          create_response: true,
+          interrupt_response: true
         },
         temperature: 0.9,
-        max_response_output_tokens: 1024
+        // Capped tighter than OpenAI's default. Spoken responses should be 1-2 sentences
+        // (~80 tokens); 400 is plenty of headroom while still committing the model to
+        // brevity early — which materially speeds up first-audio-chunk latency.
+        max_response_output_tokens: 400
       }
     }));
 
