@@ -3272,12 +3272,11 @@ wss.on('connection', async (ws, req) => {
 
   let openaiWs;
   try {
-    // gpt-realtime-2: GPT-5-class reasoning, "keeps the conversation moving while it
-    // reasons through a request" — released May 2026, replaces gpt-4o-realtime-preview.
-    // 128K context, designed for production voice agents. If this ever starts misbehaving,
-    // fallback options: 'gpt-realtime' (stable Aug 2025), 'gpt-realtime-mini' (cheaper).
+    // gpt-realtime: GA Realtime model (Aug 2025), replaces gpt-4o-realtime-preview.
+    // Designed for production voice agents — better turn-taking, faster, supports
+    // semantic_vad. Fallback option: 'gpt-realtime-mini' (cheaper, lower quality).
     openaiWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-realtime-2',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
       {
         headers: {
           'Authorization': `Bearer ${OPENAI_API_KEY}`,
