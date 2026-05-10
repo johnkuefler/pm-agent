@@ -442,30 +442,63 @@ function buildSystemPrompt(channel = 'zoom', transcript = null) {
   return base;
 }
 
-// Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header
-// Skips auth if NORA_API_KEY is not set (open access for local dev)
-// Skips auth for same-origin browser requests (dashboard/instructions pages)
+// Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header.
+// Skips auth if NORA_API_KEY is not set (open access for local dev). The previous
+// "same-origin" bypass was removed because the Sec-Fetch-Site header is trivially spoofable
+// from curl/scripts — it never provided real protection. The dashboard now injects the API
+// key into its HTML after passing Basic auth, and includes it as a Bearer header on fetches.
 function requireAuth(req, res, next) {
   const apiKey = process.env.NORA_API_KEY;
-  if (!apiKey) return next(); // no key configured = open access
-  // Allow same-origin browser requests (from dashboard, instructions pages)
-  if (req.headers['sec-fetch-site'] === 'same-origin') return next();
+  if (!apiKey) return next(); // no key configured = open access (dev)
   const provided = req.query.key || (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
   if (provided === apiKey) return next();
   return res.status(401).json({ error: 'unauthorized — provide ?key= or Authorization: Bearer header' });
 }
 
-// Public routes (no auth) — dashboard, static pages, inbound webhooks
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'dashboard.html'));
+// Basic auth middleware for the dashboard UI pages. Username is ignored (any value works);
+// the password check is against DASHBOARD_PASSWORD env var. If unset, auth is skipped (dev).
+//
+// This protects /, /instructions, /architecture from unauthenticated browsing. Once a user
+// passes Basic auth, the dashboard HTML is rendered with NORA_API_KEY embedded so the
+// dashboard JS can call API endpoints with the key.
+function requireDashboardAuth(req, res, next) {
+  const password = process.env.DASHBOARD_PASSWORD;
+  if (!password) return next(); // no password configured = open access (dev)
+  const auth = req.headers.authorization || '';
+  if (auth.startsWith('Basic ')) {
+    const decoded = Buffer.from(auth.slice(6), 'base64').toString('utf8');
+    const colonIdx = decoded.indexOf(':');
+    const provided = colonIdx === -1 ? decoded : decoded.slice(colonIdx + 1);
+    if (provided === password) return next();
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Nora Dashboard", charset="UTF-8"');
+  return res.status(401).send('Authentication required');
+}
+
+// Render dashboard.html with the NORA_API_KEY injected so the page's JS can authenticate
+// API calls. The placeholder {{NORA_API_KEY}} in the HTML gets replaced at request time.
+function serveDashboardWithKey(filePath, req, res) {
+  try {
+    const html = fs.readFileSync(filePath, 'utf8');
+    const apiKey = process.env.NORA_API_KEY || '';
+    res.type('html').send(html.replace('{{NORA_API_KEY}}', apiKey));
+  } catch (err) {
+    console.error('Failed to serve dashboard:', err.message);
+    res.status(500).send('dashboard unavailable');
+  }
+}
+
+// Dashboard UI pages — all gated by Basic auth (DASHBOARD_PASSWORD)
+app.get('/', requireDashboardAuth, (req, res) => {
+  serveDashboardWithKey(path.join(__dirname, 'dashboard.html'), req, res);
 });
 
 // Claude instructions page — serves prompt + API docs for scheduled Claude Code sessions
-app.get('/instructions', (req, res) => {
+app.get('/instructions', requireDashboardAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'instructions.html'));
 });
 
-app.get('/architecture', (req, res) => {
+app.get('/architecture', requireDashboardAuth, (req, res) => {
   res.sendFile(path.join(__dirname, 'architecture.html'));
 });
 
@@ -1163,7 +1196,7 @@ app.post('/voice-agent/response', async (req, res) => {
 const sessionTokens = {};
 
 // Join meeting via API — uses output_media for real-time voice agent
-app.post('/join', async (req, res) => {
+app.post('/join', requireAuth, async (req, res) => {
   try {
     const { meeting_url } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
@@ -1233,7 +1266,7 @@ const sessions = {};
 let activeBotId = null;
 
 // Register bot ID when Nora joins a meeting
-app.post('/register-bot', (req, res) => {
+app.post('/register-bot', requireAuth, (req, res) => {
   activeBotId = req.body.bot_id;
   if (req.body.session_token && req.body.bot_id) {
     sessionTokens[req.body.session_token] = req.body.bot_id;
@@ -1397,13 +1430,13 @@ app.post('/webhook/chat', async (req, res) => {
 });
 
 // Proactive mode toggle — enable/disable Nora interjecting without wake word
-app.get('/proactive', (req, res) => {
+app.get('/proactive', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.json({ proactive: false, active_session: false });
   res.json({ proactive: sessions[bot_id].proactive, bot_id });
 });
 
-app.post('/proactive', (req, res) => {
+app.post('/proactive', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].proactive;
@@ -1414,13 +1447,13 @@ app.post('/proactive', (req, res) => {
 });
 
 // One-on-one mode toggle — Nora responds to every utterance without wake word
-app.get('/one-on-one', (req, res) => {
+app.get('/one-on-one', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.json({ oneOnOne: false, active_session: false });
   res.json({ oneOnOne: sessions[bot_id].oneOnOne, bot_id });
 });
 
-app.post('/one-on-one', (req, res) => {
+app.post('/one-on-one', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].oneOnOne;
@@ -1430,13 +1463,13 @@ app.post('/one-on-one', (req, res) => {
 });
 
 // Mute mode toggle — Nora listens and captures action items but does not speak
-app.get('/mute', (req, res) => {
+app.get('/mute', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.json({ muted: false, active_session: false });
   res.json({ muted: sessions[bot_id].muted, bot_id });
 });
 
-app.post('/mute', (req, res) => {
+app.post('/mute', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const session = sessions[bot_id];
