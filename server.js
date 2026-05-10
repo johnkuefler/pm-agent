@@ -1557,7 +1557,8 @@ app.post('/mute', requireAuth, (req, res) => {
     session.openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
-        modalities: enabled ? ['text'] : ['text', 'audio'],
+        type: 'realtime',
+        output_modalities: enabled ? ['text'] : ['audio'],
         instructions: enabled
           ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
           : updatedPrompt
@@ -3272,15 +3273,15 @@ wss.on('connection', async (ws, req) => {
 
   let openaiWs;
   try {
-    // gpt-realtime: GA Realtime model (Aug 2025), replaces gpt-4o-realtime-preview.
-    // Designed for production voice agents — better turn-taking, faster, supports
-    // semantic_vad. Fallback option: 'gpt-realtime-mini' (cheaper, lower quality).
+    // gpt-realtime-2 is GA-only — the OpenAI-Beta header below is intentionally
+    // omitted (sending realtime=v1 pins the connection to the beta API where
+    // gpt-realtime-2 isn't available). Fallbacks: 'gpt-realtime' (GA, Aug 2025)
+    // or 'gpt-realtime-mini' (cheaper).
     openaiWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-realtime',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime-2',
       {
         headers: {
-          'Authorization': `Bearer ${OPENAI_API_KEY}`,
-          'OpenAI-Beta': 'realtime=v1'
+          'Authorization': `Bearer ${OPENAI_API_KEY}`
         }
       }
     );
@@ -3303,35 +3304,40 @@ wss.on('connection', async (ws, req) => {
 
     const isMuted = session?.muted;
 
-    // Configure the session with Nora's personality and settings
+    // GA Realtime session shape: audio config nested under audio.input/audio.output,
+    // modalities renamed to output_modalities, max_response_output_tokens → max_output_tokens.
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
-        modalities: isMuted ? ['text'] : ['text', 'audio'],
+        type: 'realtime',
+        output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
           ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
           : systemPrompt,
-        voice: 'sage',
-        input_audio_format: 'pcm16',
-        output_audio_format: 'pcm16',
-        input_audio_transcription: { model: 'whisper-1' },
-        // Semantic VAD uses the model's own understanding of utterance completion to
-        // detect turn boundaries — much better than raw silence timeouts. "medium"
-        // eagerness is the balanced default; bump to "high" if Nora still feels slow,
-        // drop to "low" if she's cutting people off mid-thought.
-        // Previous config (server_vad, silence_duration_ms: 1500) was 3x OpenAI's
-        // default silence window — the biggest single source of her "beat-behind" feel.
-        turn_detection: {
-          type: 'semantic_vad',
-          eagerness: 'medium',
-          create_response: true,
-          interrupt_response: true
+        audio: {
+          input: {
+            format: { type: 'audio/pcm', rate: 24000 },
+            transcription: { model: 'whisper-1' },
+            // Semantic VAD uses the model's own sense of utterance completion to
+            // detect turn boundaries — much better than raw silence timeouts.
+            // "medium" eagerness is balanced; bump to "high" if Nora feels slow,
+            // drop to "low" if she's cutting people off mid-thought.
+            turn_detection: {
+              type: 'semantic_vad',
+              eagerness: 'medium',
+              create_response: true,
+              interrupt_response: true
+            }
+          },
+          output: {
+            format: { type: 'audio/pcm' },
+            voice: 'sage'
+          }
         },
-        temperature: 0.9,
-        // Capped tighter than OpenAI's default. Spoken responses should be 1-2 sentences
-        // (~80 tokens); 400 is plenty of headroom while still committing the model to
-        // brevity early — which materially speeds up first-audio-chunk latency.
-        max_response_output_tokens: 400
+        // Capped tighter than default. Spoken responses should be 1-2 sentences
+        // (~80 tokens); 400 is headroom while committing the model to brevity early —
+        // which materially speeds up first-audio-chunk latency.
+        max_output_tokens: 400
       }
     }));
 
@@ -3354,19 +3360,19 @@ wss.on('connection', async (ws, req) => {
       const msg = JSON.parse(str);
       openaiEventCount++;
 
-      // Log all non-audio events (audio.delta is too noisy)
-      if (msg.type !== 'response.audio.delta') {
+      // Log all non-audio events (audio delta is too noisy)
+      if (msg.type !== 'response.output_audio.delta') {
         console.log(`⬅️ OpenAI → Browser [${msg.type}]`);
       }
 
-      // Log session.created and session.updated in detail to verify modalities
+      // Log session.created and session.updated in detail to verify config
       if (msg.type === 'session.created' || msg.type === 'session.updated') {
         console.log(`🧠 Session config:`, JSON.stringify({
-          modalities: msg.session?.modalities,
-          voice: msg.session?.voice,
+          output_modalities: msg.session?.output_modalities,
+          voice: msg.session?.audio?.output?.voice,
           model: msg.session?.model,
-          input_audio_format: msg.session?.input_audio_format,
-          output_audio_format: msg.session?.output_audio_format
+          input_format: msg.session?.audio?.input?.format,
+          output_format: msg.session?.audio?.output?.format
         }));
       }
 
@@ -3475,7 +3481,8 @@ wss.on('connection', async (ws, req) => {
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
-        modalities: isMuted ? ['text'] : ['text', 'audio'],
+        type: 'realtime',
+        output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
           ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
           : updatedPrompt
