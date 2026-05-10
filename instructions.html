@@ -241,7 +241,8 @@ GET /projects/coverage?limit=5
       <div class="endpoint">
         <div><span class="badge post">POST</span> <span class="endpoint-path">/projects/sync-from-teamwork</span></div>
         <div class="endpoint-desc">Sync Nora's <code>/projects</code> store from the Teamwork active project list. Replaces the multi-step MCP workflow that used to live in the Idle Knowledge Round. Idempotent — safe to call every cowork run.</div>
-        <p>Behavior: pulls active Teamwork projects (paginated v3 API), filters out archived / "Opportunity - " / LimeLight-internal, then reconciles against the local store. Missing projects → created with name + client + status. <code>auto_created</code> stubs → promoted by filling in TW metadata. Existing curated records → left alone (manual edits aren't overwritten).</p>
+        <p>Behavior: pulls active Teamwork projects (paginated v3 API), filters out archived / "Opportunity - " / LimeLight-internal, then reconciles against the local store. Missing projects → created with name + client + status + <code>teamwork_id</code>. <code>auto_created</code> stubs → promoted by filling in TW metadata. Existing curated records → left alone except for backfilling <code>teamwork_id</code> if missing (the TW ID is an objective fact, not subjective metadata).</p>
+        <p>The <code>teamwork_id</code> field is useful as a fallback when the Teamwork-published MCP is unhealthy — <code>twprojects-list_projects</code> and <code>twprojects-search</code> periodically return 500, but the single-entity calls (<code>twprojects-get_project</code>, <code>twprojects-list_tasks</code>) tend to work as long as you have the project ID. Read it from <code>project.teamwork_id</code> on the <code>/projects/{name}</code> response.</p>
         <pre>// Request body (optional):
 { "dry_run": true }    // preview without applying
 
@@ -254,6 +255,7 @@ GET /projects/coverage?limit=5
   "pages_fetched": 1,
   "created": 84,
   "promoted": 0,
+  "id_backfilled": 9,    // existing curated records that gained a teamwork_id this run
   "unchanged": 7,
   "created_names": ["Brand X", "ACS", "VFW", ...],
   "promoted_names": []

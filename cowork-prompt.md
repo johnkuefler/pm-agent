@@ -413,11 +413,12 @@ ONE project per run. 3–5 memories max. The Teamwork-to-`/projects` reconciliat
 
 2. **Pull what Nora already knows about the target.** `GET /projects/{name}` returns the project record + all scoped memories — your "what's already covered" baseline. Don't add memories that duplicate it.
 
-3. **Research, leading with Teamwork.**
+3. **Research, leading with Teamwork.** You'll need the Teamwork project ID to call most of these — read it from `project.teamwork_id` on the `/projects/{name}` response (populated by Step 2's sync).
    - `twprojects-get_project` for official description, dates, members
    - `twprojects-list_tasks` for the project — active work, blockers, recent activity
    - `twprojects-list_milestones` for upcoming deliverables and deadlines
    - Then supplement with Confluence "LLM Client Space", Google Drive, recent Gmail (last 30 days), and Slack channel activity for what's not in Teamwork.
+   - **Fallback if the MCP returns 500:** `twprojects-list_projects` and `twprojects-search` periodically 500 (connector-side issue, intermittent). The single-entity calls (`twprojects-get_project`, `twprojects-list_tasks`, `twprojects-list_milestones`) work via project ID and tend to be more reliable. Lean on `project.teamwork_id` from Nora's `/projects` store rather than searching Teamwork live. If `get_project` itself is failing, note it in the round summary and continue from Confluence/Drive — don't abandon the round.
 
 4. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
 
