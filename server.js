@@ -697,9 +697,11 @@ or replaced with a polite redirect. Three layers of defense:
   2. Output scrubber — regex check on the generated reply at egress; if recipient is
      unapproved AND reply contains financial patterns, the whole reply is replaced
      with the safe redirect before posting. Catches model rule-violations.
-  3. Memory hygiene — POST /memory and PUT /memory/:index reject facts containing
-     financial patterns (422). extractMemory's prompt tells the model to rephrase
-     qualitatively, and a regex backstop drops financial facts that slip through.
+  3. Memory CAN contain financial content — distribution is gated at the output side,
+     not at the memory layer. Save what's true; the live handler decides who can see it.
+     (Earlier behavior rejected financial-content writes with 422; that turned out to
+     be too aggressive — false positives like "Marketing Retainer 2026" were getting
+     blocked because "retainer" + a 4-digit year matched the pattern.)
 
 Approved set: LimeLight PM team (John, Mallory, Gracie, Kinsey) + execs (Brandee, Andy) +
 account managers (Kyle Tapper, Kayla Clark, Caitlin Blackwell).
@@ -2161,16 +2163,10 @@ app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
 app.post('/memory', requireAuth, (req, res) => {
   const { fact, source, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
-  // Reject facts containing financial content — memory entries get inlined into the
-  // live handler's system prompt and could be shared with users not on the financial
-  // approved list. Rephrase qualitatively ("project is in active scoping") instead of
-  // including specifics ("project quoted at $47K").
-  if (containsFinancialContent(fact)) {
-    return res.status(422).json({
-      error: 'financial content blocked',
-      message: 'Facts containing dollar amounts, rates, fees, budgets, or margins cannot be saved to memory because memory is shared across all live responses. Rephrase qualitatively or skip saving.'
-    });
-  }
+  // Memory CAN contain financial content. Distribution is gated at the live handler's
+  // output side — see handleSlack's scrubber and the per-recipient system-prompt gate
+  // in /slack/financial-approved. Memory is the source of truth; output is where the
+  // approval check happens.
   // Normalize project to canonical casing (creating a stub record if needed).
   // This stops the drift the cowork loop has to clean up daily — projects referenced
   // by memories are guaranteed to exist in /projects.
@@ -2199,12 +2195,6 @@ app.put('/memory/:index', requireAuth, (req, res) => {
   if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
   const { fact, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
-  if (containsFinancialContent(fact)) {
-    return res.status(422).json({
-      error: 'financial content blocked',
-      message: 'Facts containing dollar amounts, rates, fees, budgets, or margins cannot be saved to memory because memory is shared across all live responses. Rephrase qualitatively or skip saving.'
-    });
-  }
   memory[idx].fact = fact;
   if (project !== undefined) {
     memory[idx].project = project ? ensureProject(project) : '';
@@ -2804,7 +2794,7 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
         temperature: 0,
         system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return [].
 
-CRITICAL: NEVER save facts that contain dollar amounts, rates, fees, budgets, margins, hourly rates, salary/comp figures, or any specific financial figures. Memory entries get inlined into prompts that respond to anyone in Slack — including contractors and vendors who shouldn't see financials. If a fact would contain financial specifics, EITHER rephrase qualitatively (e.g., "Pitsco has an established budget for the rebrand" instead of "Pitsco budget is $50K"; "the SOW for Acme is in active review" instead of "Acme SOW is $47,500") OR skip saving it entirely. The qualitative rephrase is the only acceptable form for financial-adjacent facts.
+Financial figures (dollar amounts, rates, budgets, margins) are FINE to include in memory if they're relevant to the fact being saved. Distribution to non-approved recipients is gated separately at Nora's live-handler output — don't self-censor at the memory layer.
 
 Respond with a JSON array of objects with "fact" (string) and "project" (string — project name if relevant, empty string if general).${projectHint}`,
         messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
@@ -2828,20 +2818,11 @@ Respond with a JSON array of objects with "fact" (string) and "project" (string 
     const memory = loadMemory();
     const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
     let added = 0;
-    let blockedFinancial = 0;
     const projectsTouched = new Set();
     for (const item of items) {
       // Support both old format (plain strings) and new format (objects with fact + project)
       const fact = typeof item === 'string' ? item : item.fact;
       const rawProject = typeof item === 'string' ? '' : (item.project || '');
-      // Defense-in-depth: drop facts that contain financial content even after the prompt
-      // told the model to rephrase qualitatively. Memory entries get inlined into prompts
-      // that respond to anyone in Slack — financial leaks via memory are exactly what
-      // the live handler's scrubber is also guarding against.
-      if (containsFinancialContent(fact)) {
-        blockedFinancial++;
-        continue;
-      }
       // Normalize project name to canonical casing, auto-creating a stub record if needed.
       const project = rawProject ? ensureProject(rawProject) : '';
       if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
@@ -2850,9 +2831,6 @@ Respond with a JSON array of objects with "fact" (string) and "project" (string 
         if (project) projectsTouched.add(project);
         added++;
       }
-    }
-    if (blockedFinancial > 0) {
-      console.warn(`💰 Memory extraction blocked ${blockedFinancial} fact(s) containing financial content`);
     }
     if (added > 0) {
       saveMemory(memory);
