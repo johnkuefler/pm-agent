@@ -1161,6 +1161,13 @@ app.get('/voice-agent', (req, res) => {
   res.sendFile(path.join(__dirname, 'voice-agent.html'));
 });
 
+// Nora's profile image, displayed on the voice-agent page (which Recall.ai bots open
+// as their video feed in meetings). 404s gracefully if the file isn't present so the
+// page falls back to the letter-N placeholder via its onerror handler.
+app.get('/nora-profile.png', (req, res) => {
+  res.sendFile(path.join(__dirname, 'nora-profile.png'));
+});
+
 // Voice agent response callback — webpage POSTs Nora's transcribed responses here for extraction
 app.post('/voice-agent/response', async (req, res) => {
   const { text, token } = req.body;
