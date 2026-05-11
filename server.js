@@ -1744,12 +1744,30 @@ app.post('/webhook/recall-calendar', async (req, res) => {
       const endTs = ev.end_time ? new Date(ev.end_time).getTime() : null;
       if (endTs && endTs < Date.now() - 5 * 60 * 1000) continue;
 
-      // Inclusion rule: Nora must be explicitly invited (not just on the host's calendar
-      // because it's their account). She is invited iff her email is in event.attendees.
-      const attendees = Array.isArray(ev.attendees) ? ev.attendees : [];
-      const noraInvited = attendees.some(a => (a?.email || '').toLowerCase() === noraEmail);
+      // Inclusion rule: Nora must be explicitly invited. Recall surfaces attendee data
+      // in several spots depending on provider — gather everything plausible and match
+      // against any of them.
+      const collectEmails = (event) => {
+        const out = new Set();
+        const pushEmail = v => { if (v && typeof v === 'string') out.add(v.toLowerCase()); };
+        const visitAttendee = a => {
+          if (!a) return;
+          pushEmail(a.email);
+          pushEmail(a.emailAddress?.address);  // Microsoft Graph shape
+          pushEmail(a.address);
+        };
+        (event.attendees || []).forEach(visitAttendee);
+        (event.raw?.attendees || []).forEach(visitAttendee);
+        visitAttendee(event.organizer);
+        visitAttendee(event.raw?.organizer);
+        visitAttendee(event.raw?.creator);
+        pushEmail(event.organizer_email);
+        return out;
+      };
+      const eventEmails = collectEmails(ev);
+      const noraInvited = eventEmails.has(noraEmail);
       if (!noraInvited) {
-        console.log(`📅 Skipping event ${ev.id} — Nora not in attendees`);
+        console.log(`📅 Skipping event ${ev.id} — Nora (${noraEmail}) not found. Emails on event: [${[...eventEmails].join(', ') || '(none)'}]`);
         continue;
       }
 
