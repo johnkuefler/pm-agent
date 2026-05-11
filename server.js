@@ -3860,6 +3860,14 @@ wss.on('connection', async (ws, req) => {
   // Send bot_id to the webpage so it can use it for transcript relay
   ws.send(JSON.stringify({ type: 'nora.session', bot_id: botId }));
 
+  // Send initial mute state so the in-meeting voice-agent UI reflects reality
+  // immediately on connect — important now that she joins muted by default.
+  // Without this, the page would show 'Connected — Listening' even when she's
+  // muted until the first toggle.
+  if (sessions[botId]) {
+    ws.send(JSON.stringify({ type: 'nora.mute', muted: !!sessions[botId].muted }));
+  }
+
   // Build Nora's system prompt with memory and context
   const session = sessions[botId];
   const systemPrompt = buildSystemPrompt('realtime', session?.transcript, session?.project_hint);

@@ -165,7 +165,10 @@
         }
 
         avatarEl.classList.add('listening');
-        statusEl.textContent = 'Connected — Listening';
+        // Respect the current mute state if the server already told us — otherwise
+        // mic-setup completing would overwrite the muted-status text written by the
+        // initial nora.mute handshake event.
+        statusEl.textContent = isMuted ? 'Connected — Muted (listening only)' : 'Connected — Listening';
         statusEl.className = 'status connected';
       } catch (err) {
         console.error('Mic capture error:', err);
