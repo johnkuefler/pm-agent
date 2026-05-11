@@ -338,6 +338,139 @@ function addTask(task) {
 
 initMemory();
 
+// Tools exposed to Nora in realtime voice sessions. These let her fetch detail on
+// demand instead of carrying every project + memory in the system prompt — keeps
+// first-token latency down while preserving access to the full picture.
+const NORA_REALTIME_TOOLS = [
+  {
+    type: 'function',
+    name: 'lookup_project',
+    description: 'Get full details and memories for a specific project. Use when someone asks about a project — status, PM, phase, recent context, anything beyond the bare name in your Projects index.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'The project name. Partial matches work — e.g. "Pitsco" or "Adidas".' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    type: 'function',
+    name: 'search_memory',
+    description: 'Search your full memory for facts matching a query. Use when you might know something but don\'t have it loaded — team capacity, past decisions, deadlines, client preferences.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to look up. Keywords or short phrases — "Mallory capacity", "Adidas blockers", "influencer budget".' }
+      },
+      required: ['query']
+    }
+  },
+  {
+    type: 'function',
+    name: 'list_projects',
+    description: 'List your projects, optionally filtered by status. Use when someone asks "what are we working on" or wants a portfolio overview.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status_filter: { type: 'string', enum: ['active', 'all'], description: 'Filter to active projects only, or all. Default active.' }
+      }
+    }
+  },
+  {
+    type: 'function',
+    name: 'list_my_tasks',
+    description: 'List tasks assigned to you (Nora). Use when someone asks what you\'ve been working on, what\'s on your plate, or what you did recently.',
+    parameters: {
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['pending', 'done'], description: 'Filter to pending or done. Default pending.' },
+        limit: { type: 'number', description: 'Max results. Default 5.' }
+      }
+    }
+  }
+];
+
+function executeNoraTool(name, argsJson) {
+  let args = {};
+  try { args = typeof argsJson === 'string' ? JSON.parse(argsJson || '{}') : (argsJson || {}); }
+  catch { return JSON.stringify({ error: 'invalid arguments JSON' }); }
+
+  try {
+    if (name === 'lookup_project') {
+      const q = String(args.name || '').trim().toLowerCase();
+      if (!q) return JSON.stringify({ error: 'name is required' });
+      const projects = loadProjects();
+      const memory = loadMemory();
+      const proj = projects.find(p => p.name.toLowerCase() === q)
+                || projects.find(p => p.name.toLowerCase().includes(q));
+      if (!proj) return JSON.stringify({ found: false, searched: args.name });
+      const projMemories = memory.filter(m => m.project === proj.name).map(m => m.fact);
+      return JSON.stringify({
+        found: true,
+        name: proj.name,
+        status: proj.status || null,
+        client: proj.client || null,
+        pm: proj.pm || null,
+        phase: proj.phase || null,
+        details: proj.details || null,
+        memories: projMemories
+      });
+    }
+
+    if (name === 'search_memory') {
+      const q = String(args.query || '').trim().toLowerCase();
+      if (!q) return JSON.stringify({ error: 'query is required' });
+      const memory = loadMemory();
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const matches = memory
+        .map(m => {
+          const hay = `${m.fact} ${m.project || ''}`.toLowerCase();
+          const score = tokens.reduce((n, t) => n + (hay.includes(t) ? 1 : 0), 0);
+          return { m, score };
+        })
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 10)
+        .map(x => ({ fact: x.m.fact, project: x.m.project || null }));
+      return JSON.stringify({ count: matches.length, results: matches });
+    }
+
+    if (name === 'list_projects') {
+      const filter = (args.status_filter || 'active').toLowerCase();
+      const projects = loadProjects();
+      const filtered = filter === 'all'
+        ? projects
+        : projects.filter(p => (p.status || '').toLowerCase() === filter);
+      return JSON.stringify({
+        count: filtered.length,
+        projects: filtered.map(p => ({
+          name: p.name, status: p.status || null, client: p.client || null, pm: p.pm || null
+        }))
+      });
+    }
+
+    if (name === 'list_my_tasks') {
+      const status = (args.status || 'pending').toLowerCase();
+      const limit = Math.max(1, Math.min(20, Number(args.limit) || 5));
+      const tasks = loadTasks();
+      const filtered = tasks
+        .filter(t => t.status === status && (t.assignee || '').toLowerCase().includes('nora'))
+        .slice(-limit)
+        .reverse()
+        .map(t => ({
+          action: t.action, detail: t.detail || null,
+          created: t.created, completed: t.completed || null
+        }));
+      return JSON.stringify({ count: filtered.length, tasks: filtered });
+    }
+
+    return JSON.stringify({ error: 'unknown tool', name });
+  } catch (err) {
+    return JSON.stringify({ error: err.message || 'tool execution failed' });
+  }
+}
+
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null) {
   let base = loadPrompt();
 
@@ -349,12 +482,11 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     );
   }
 
-  // For realtime voice, use a higher (but bounded) memory budget. Previously 3000 chars
-  // (~0.5% of gpt-realtime-2's 128K context) — way too small after the Teamwork sync
-  // brought project count past 100. 20K chars is still under 5% of context and gives
-  // her room for the full picture of a typical agency book.
+  // For realtime, the prompt now stays lean — full per-project memory is fetched on
+  // demand via the lookup_project / search_memory tools. The budget cap is a safety net
+  // for the general-memory block, which is small in practice.
   const isRealtime = channel === 'realtime';
-  const memoryCharBudget = isRealtime ? 20000 : Infinity;
+  const memoryCharBudget = isRealtime ? 8000 : Infinity;
   const maxTranscriptLines = isRealtime ? 10 : 30;
 
   // Normalize the projectHint to canonical casing if it matches a known project name,
@@ -420,9 +552,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       memoryBlock += '\n\n## General\n' + general.map(m => `- ${m.fact}`).join('\n');
     }
 
-    // Include the rest of the project list, skipping the hinted one (already rendered above).
-    // For realtime: prioritize active-status projects first, then others, so the budget
-    // skews toward what's live.
+    // Project list. For realtime we only render a tiny index (name + status + PM) — the
+    // full per-project details and memories balloon the prompt and slow first-token latency.
+    // She fetches details on demand via the lookup_project / search_memory tools.
+    // For non-realtime (slack), keep the full per-project memory dump.
     const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
     let projectNames = [...allProjectNames].filter(n => n !== hintCanonical);
     if (isRealtime) {
@@ -433,33 +566,33 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
         const sb = (pb?.status || '').toLowerCase() === 'active' ? 0 : 1;
         return sa - sb;
       });
-    }
-    for (const name of projectNames) {
-      if (isRealtime && memoryBlock.length >= memoryCharBudget) break;
-      memoryBlock += `\n\n## ${name}`;
-      const proj = projects.find(p => p.name === name);
-      if (proj) {
-        const meta = [];
-        if (proj.client) meta.push(`client: ${proj.client}`);
-        if (proj.status) meta.push(`status: ${proj.status}`);
-        if (proj.pm) meta.push(`PM: ${proj.pm}`);
-        if (proj.phase) meta.push(`phase: ${proj.phase}`);
-        if (meta.length > 0) memoryBlock += `\n(${meta.join(' · ')})`;
-        if (proj.details) {
-          const details = isRealtime ? proj.details.slice(0, 300) : proj.details;
-          memoryBlock += `\n${details}`;
+
+      if (projectNames.length > 0) {
+        memoryBlock += '\n\n## Projects you know about (use lookup_project for full details)';
+        for (const name of projectNames) {
+          const proj = projects.find(p => p.name === name);
+          const status = proj?.status ? ` [${proj.status}]` : '';
+          const pm = proj?.pm ? ` — PM: ${proj.pm}` : '';
+          memoryBlock += `\n- ${name}${status}${pm}`;
         }
       }
-      if (byProject[name]) {
-        // With a higher budget, realtime can include more per-project memories than
-        // the old slice(-5). For non-hinted projects, cap at 10 to keep room for breadth.
-        const items = isRealtime ? byProject[name].slice(-10) : byProject[name];
-        memoryBlock += '\n' + items.map(m => `- ${m.fact}`).join('\n');
+    } else {
+      for (const name of projectNames) {
+        memoryBlock += `\n\n## ${name}`;
+        const proj = projects.find(p => p.name === name);
+        if (proj) {
+          const meta = [];
+          if (proj.client) meta.push(`client: ${proj.client}`);
+          if (proj.status) meta.push(`status: ${proj.status}`);
+          if (proj.pm) meta.push(`PM: ${proj.pm}`);
+          if (proj.phase) meta.push(`phase: ${proj.phase}`);
+          if (meta.length > 0) memoryBlock += `\n(${meta.join(' · ')})`;
+          if (proj.details) memoryBlock += `\n${proj.details}`;
+        }
+        if (byProject[name]) {
+          memoryBlock += '\n' + byProject[name].map(m => `- ${m.fact}`).join('\n');
+        }
       }
-    }
-
-    if (isRealtime && memoryBlock.length > memoryCharBudget) {
-      memoryBlock = memoryBlock.slice(0, memoryCharBudget) + '\n...';
     }
 
     base = `${base}\n\n${memoryBlock}`;
@@ -524,7 +657,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       '',
       'Humor. Dry, sparing, never performative. Occasional aside that lands ("I admire the optimism" before explaining why a timeline won\'t work). If you\'re not sure it\'ll land, don\'t reach for it — better to be quietly competent than awkwardly funny.',
       '',
-      'What never happens. You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t offer to "help you with anything else" at the end of a turn — that\'s service-desk language, not colleague language. The conversation ends when it ends.'
+      'What never happens. You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t offer to "help you with anything else" at the end of a turn — that\'s service-desk language, not colleague language. The conversation ends when it ends.',
+      '',
+      'TOOLS — look it up before you guess. You have lookup tools for project details, memory search, project listing, and your own task list. Use them when the answer would benefit from specifics you don\'t already have loaded:',
+      '- Someone asks about a specific project (status, PM, recent context) → call lookup_project with the name.',
+      '- Someone asks something where you might have a relevant fact buried in memory ("what did we say about influencer budget?") → call search_memory.',
+      '- Someone asks "what are we working on" or wants a portfolio view → call list_projects.',
+      '- Someone asks what you\'ve been working on or what\'s on your plate → call list_my_tasks.',
+      'Cover the call with a natural bridge so it doesn\'t feel dead: "let me check Pitsco real quick" or "one sec, let me grab that" — then answer. Never bluff specifics. The Projects you know about index in your memory is a directory, not full context; tap lookup_project whenever someone wants more than the name and status.'
     ].join('\n');
   }
 
@@ -3386,7 +3526,12 @@ wss.on('connection', async (ws, req) => {
         // describes 90% of Nora's voice turns (status checks, quick lookups, casual
         // back-and-forth). Bump to 'low' or 'medium' only if she starts giving shallow
         // answers to complex prompts.
-        reasoning: { effort: 'minimal' }
+        reasoning: { effort: 'minimal' },
+        // Lookup tools — let Nora fetch project/memory/task detail on demand instead of
+        // carrying everything in the system prompt. Server-side handler intercepts
+        // function_call items in response.done events below.
+        tools: NORA_REALTIME_TOOLS,
+        tool_choice: 'auto'
       }
     }));
 
@@ -3452,6 +3597,38 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'response.done' && msg.response) {
         const outputs = msg.response.output || [];
         for (const item of outputs) {
+          // Function call — Nora asked to run a tool. Execute it locally and feed
+          // the result back so she can continue with the answer.
+          if (item.type === 'function_call' && item.name && item.call_id) {
+            const argsPreview = String(item.arguments || '').slice(0, 200);
+            console.log(`🔧 Tool call: ${item.name}(${argsPreview})`);
+            try {
+              const output = executeNoraTool(item.name, item.arguments || '{}');
+              console.log(`🔧 Tool result (${item.name}): ${output.slice(0, 200)}`);
+              openaiWs.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'function_call_output',
+                  call_id: item.call_id,
+                  output
+                }
+              }));
+              openaiWs.send(JSON.stringify({ type: 'response.create' }));
+            } catch (err) {
+              console.error(`❌ Tool execution failed (${item.name}):`, err.message);
+              openaiWs.send(JSON.stringify({
+                type: 'conversation.item.create',
+                item: {
+                  type: 'function_call_output',
+                  call_id: item.call_id,
+                  output: JSON.stringify({ error: err.message || 'tool failed' })
+                }
+              }));
+              openaiWs.send(JSON.stringify({ type: 'response.create' }));
+            }
+            continue;
+          }
+
           if (item.type === 'message' && item.role === 'assistant') {
             // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
             // Accept both so this works across API versions.
