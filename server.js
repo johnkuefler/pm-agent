@@ -1531,7 +1531,12 @@ function buildBotConfig(serverHost, sessionToken) {
 }
 
 function newSession(projectHint = null) {
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
+  // Nora joins muted by default. The mute UI on the dashboard polls /mute every 20s
+  // and surfaces an unmute button as soon as the bot connects, so flipping her on
+  // is one click when she's actually needed to speak. Combined with the muted-mode
+  // chat-confirm path in /voice-agent/response, she's still useful when muted:
+  // present, listening, files tasks when explicitly asked, confirms via chat.
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -1869,7 +1874,7 @@ app.post('/webhook/transcript', async (req, res) => {
   if (!text) return;
   console.log(`[${speaker}]: ${text}`);
 
-  if (!sessions[bot_id]) sessions[bot_id] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
+  if (!sessions[bot_id]) sessions[bot_id] = newSession();
   const session = sessions[bot_id];
 
   session.buffer.push(`${speaker}: ${text}`);
