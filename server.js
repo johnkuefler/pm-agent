@@ -3337,7 +3337,12 @@ wss.on('connection', async (ws, req) => {
         // Capped tighter than default. Spoken responses should be 1-2 sentences
         // (~80 tokens); 400 is headroom while committing the model to brevity early —
         // which materially speeds up first-audio-chunk latency.
-        max_output_tokens: 400
+        max_output_tokens: 400,
+        // gpt-realtime-2 has GPT-5-class reasoning; the default effort adds noticeable
+        // "thinking time" before every utterance. OpenAI's own guidance: start at 'low'
+        // for production voice agents. Drop to 'minimal' if she still feels laggy;
+        // bump to 'medium' only if she starts giving shallow answers to complex prompts.
+        reasoning: { effort: 'low' }
       }
     }));
 
