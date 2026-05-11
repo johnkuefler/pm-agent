@@ -187,6 +187,18 @@
     <div id="page-admin" class="page">
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Calendar Auto-Join
+          <span style="font-size: 11px; color: #666; font-weight: 400;">connect Nora's Google Calendar so she joins invited meetings automatically</span>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          When connected, Nora auto-joins any meeting on her calendar where her email is in the attendee list and the event has a Zoom / Meet / Teams link. Add <code>[no-nora]</code> or <code>[skip-nora]</code> to the event title to opt a specific meeting out.
+        </p>
+        <div id="calendar-status">Loading…</div>
+        <div id="calendar-status-toast" class="toast"></div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Financial-Approved Slack Users
           <span style="font-size: 11px; color: #666; font-weight: 400;">who can receive dollar amounts / margins / rates</span>
         </h2>
@@ -910,8 +922,77 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
     }
+
+    // Calendar auto-join
+    async function loadCalendarStatus() {
+      const el = document.getElementById('calendar-status');
+      try {
+        const r = await api('/calendar/status');
+        const d = await r.json();
+        if (!d.connected) {
+          el.innerHTML = `
+            <p class="empty" style="margin-bottom: 10px;">No calendar connected.</p>
+            <button class="btn btn-primary btn-sm" onclick="connectCalendar()">Connect Nora's Google Calendar</button>`;
+          return;
+        }
+        const connectedAt = d.connected_at ? new Date(d.connected_at).toLocaleString() : 'unknown';
+        const lastSync = d.last_sync ? new Date(d.last_sync).toLocaleString() : 'never';
+        el.innerHTML = `
+          <div class="memory-item">
+            <div style="flex: 1;">
+              <div class="memory-fact">${escHtml(d.google_email)}</div>
+              <div class="memory-meta">Connected ${escHtml(connectedAt)} · Last sync ${escHtml(lastSync)}</div>
+            </div>
+            <div style="display: flex; gap: 6px; flex-shrink: 0;">
+              <button class="btn btn-danger" onclick="disconnectCalendar()">Disconnect</button>
+            </div>
+          </div>`;
+      } catch (e) {
+        el.innerHTML = '<p class="empty">Failed to load calendar status.</p>';
+      }
+    }
+
+    async function connectCalendar() {
+      const s = document.getElementById('calendar-status-toast');
+      try {
+        const r = await api('/calendar/connect');
+        const d = await r.json();
+        if (d.authorize_url) {
+          // Top-level redirect to Google's consent screen. After consent, Google bounces
+          // back to /calendar/oauth/callback which then redirects to '/?calendar_connected=1'.
+          window.location.href = d.authorize_url;
+        } else {
+          s.className = 'toast err'; s.textContent = d.error || 'Failed to start OAuth';
+        }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function disconnectCalendar() {
+      if (!confirm("Disconnect Nora's calendar? She'll stop auto-joining meetings until you reconnect.")) return;
+      const s = document.getElementById('calendar-status-toast');
+      try {
+        await api('/calendar', { method: 'DELETE' });
+        s.className = 'toast ok'; s.textContent = 'Calendar disconnected';
+        loadCalendarStatus();
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    // After the OAuth callback bounces back to '/?calendar_connected=1', show a toast
+    // and refresh the admin view (if visible).
+    (function handleCalendarConnectedRedirect() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('calendar_connected') === '1') {
+        // Clean the URL so a refresh doesn't re-toast.
+        history.replaceState({}, '', window.location.pathname);
+        setTimeout(() => {
+          const s = document.getElementById('calendar-status-toast');
+          if (s) { s.className = 'toast ok'; s.textContent = 'Calendar connected — Nora will start auto-joining invited meetings.'; }
+          showTab('admin');
+        }, 200);
+      }
+    })();
 
     // Financial-approved Slack users
     async function loadFinancialApproved() {
