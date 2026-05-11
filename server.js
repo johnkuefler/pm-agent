@@ -1545,19 +1545,16 @@ function buildBotConfig(serverHost, sessionToken) {
       },
       realtime_endpoints: [
         { type: 'webhook', url: `${SERVER_URL}/webhook/transcript`, events: ['transcript.data'] },
-        { type: 'webhook', url: `${SERVER_URL}/webhook/chat`, events: ['participant_events.chat_message'] }
+        { type: 'webhook', url: `${SERVER_URL}/webhook/chat`, events: ['participant_events.chat_message'] },
+        // Live video frames — Recall opens this websocket and pushes 2fps PNG frames
+        // (one stream per participant + a separate stream for screen-share). We filter
+        // to screen-share frames by dimensions in the websocket handler and forward at
+        // 30s cadence as image inputs to Nora's realtime session (gpt-realtime-2 takes
+        // vision natively).
+        { type: 'websocket', url: `${WS_URL}/ws/recall-video?token=${sessionToken}`, events: ['video_separate_png.data'] }
       ],
       include_bot_in_recording: { audio: true }
     },
-    // Subscribe to the live video stream so we can forward screen-share frames into
-    // Nora's realtime session as image inputs (gpt-realtime-2 takes native vision).
-    // gallery_view gives us separate streams per participant + a dedicated screenshare
-    // stream — which we filter on by frame dimensions (1280x720 = screenshare,
-    // 480x360 = participant face). 2 fps from Recall; we forward at 30s cadence.
-    real_time_media: {
-      websocket_video_destination_url: `${WS_URL}/ws/recall-video?token=${sessionToken}`
-    },
-    recording_mode: 'gallery_view',
     variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
     webhook_url: `${SERVER_URL}/webhook/status`
   };
