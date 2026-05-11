@@ -313,7 +313,7 @@
         const d = await r.json();
         if (d.bot_id) {
           const hint = d.project_hint ? ` (project: ${d.project_hint})` : '';
-          s.className = 'toast ok'; s.textContent = 'Nora joined! Bot ID: ' + d.bot_id + hint;
+          s.className = 'toast ok'; s.textContent = 'Nora joined (muted by default — use the button below to unmute). Bot ID: ' + d.bot_id + hint;
           document.getElementById('mute-controls').style.display = 'block';
           checkMuteState();
         }
