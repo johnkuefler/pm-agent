@@ -90,6 +90,25 @@ function saveProjects(projects) {
   fs.writeFileSync(getProjectsPath(), JSON.stringify(projects, null, 2));
 }
 
+// Calendar connection state — recall_calendar_id + connected metadata for Nora's
+// Google Calendar auto-join integration. Single-record file (Nora has one mailbox).
+const CALENDAR_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-calendar.json');
+const CALENDAR_PATH_LOCAL = path.join(__dirname, 'nora-calendar.json');
+function getCalendarPath() {
+  if (fs.existsSync(VOLUME_DIR)) return CALENDAR_PATH_VOLUME;
+  return CALENDAR_PATH_LOCAL;
+}
+function loadCalendarState() {
+  try { return JSON.parse(fs.readFileSync(getCalendarPath(), 'utf8')); }
+  catch { return null; }
+}
+function saveCalendarState(state) {
+  fs.writeFileSync(getCalendarPath(), JSON.stringify(state, null, 2));
+}
+function clearCalendarState() {
+  try { fs.unlinkSync(getCalendarPath()); } catch {}
+}
+
 // Ensure a project record exists for a given name. Creates a stub if missing.
 // Returns the canonical project name (existing record wins on case mismatch) so callers
 // can normalize memory entries against the canonical casing.
@@ -747,6 +766,9 @@ app.get('/cowork-instructions', (req, res) => {
 
 ## What is Nora?
 Nora is a voice-enabled AI project management assistant for LimeLight Marketing. She joins meetings via Recall.ai's Output Media feature, using OpenAI's Realtime API for real-time voice conversations. She also responds to Slack messages. She has persistent memory, a task queue, and saves full meeting transcripts. External agents (like Cowork scheduled tasks) process her task queue and analyze transcripts.
+
+## Calendar auto-join
+Nora's Google Calendar (nora@limelightmarketing.com) is connected to Recall.ai Calendar V2. When she's invited to a meeting with a Zoom/Meet/Teams URL, the server auto-schedules her bot via the calendar.sync_events webhook — so calendar-invited meetings appear in her transcripts without anyone pressing "Send Nora." Inclusion rule: she must be in the event's attendee list. Opt-out: include "[no-nora]" or "[skip-nora]" anywhere in the event title. You do NOT need to schedule recurring tasks to make this work; it's handled live by the webhook.
 
 ## Authentication
 
@@ -1467,6 +1489,39 @@ app.post('/voice-agent/response', async (req, res) => {
 // Session tokens for voice agent auth — maps token → botId
 const sessionTokens = {};
 
+// Shared builder for the Recall bot config (used by manual /join and calendar
+// auto-join). Includes everything except meeting_url, which Recall auto-populates
+// for calendar-event bots and is passed explicitly for direct bot creates.
+function buildBotConfig(serverHost, sessionToken) {
+  const SERVER_URL = `https://${serverHost}`;
+  const WS_URL = `wss://${serverHost}`;
+  const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}`;
+  return {
+    bot_name: 'Nora',
+    output_media: {
+      camera: { kind: 'webpage', config: { url: voiceAgentUrl } }
+    },
+    recording_config: {
+      transcript: {
+        provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
+      },
+      realtime_endpoints: [
+        { type: 'webhook', url: `${SERVER_URL}/webhook/transcript`, events: ['transcript.data'] },
+        { type: 'webhook', url: `${SERVER_URL}/webhook/chat`, events: ['participant_events.chat_message'] }
+      ],
+      include_bot_in_recording: { audio: true }
+    },
+    variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
+    webhook_url: `${SERVER_URL}/webhook/status`
+  };
+}
+
+function newSession(projectHint = null) {
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
+  if (projectHint) s.project_hint = projectHint;
+  return s;
+}
+
 // Join meeting via API — uses output_media for real-time voice agent
 app.post('/join', requireAuth, async (req, res) => {
   try {
@@ -1483,49 +1538,12 @@ app.post('/join', requireAuth, async (req, res) => {
       projectHint = match ? match.name : trimmed;
     }
 
-    const SERVER_URL = `https://${req.get('host')}`;
-    const WS_URL = `wss://${req.get('host')}`;
-
-    // Generate a session token for this bot
     const sessionToken = crypto.randomBytes(32).toString('hex');
-
-    const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}`;
+    const botConfig = buildBotConfig(req.get('host'), sessionToken);
 
     const botRes = await axios.post(`${RECALL_BASE}/bot/`, {
       meeting_url,
-      bot_name: 'Nora',
-      output_media: {
-        camera: {
-          kind: 'webpage',
-          config: {
-            url: voiceAgentUrl
-          }
-        }
-      },
-      recording_config: {
-        transcript: {
-          provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
-        },
-        realtime_endpoints: [
-          {
-            type: 'webhook',
-            url: `${SERVER_URL}/webhook/transcript`,
-            events: ['transcript.data']
-          },
-          {
-            type: 'webhook',
-            url: `${SERVER_URL}/webhook/chat`,
-            events: ['participant_events.chat_message']
-          }
-        ],
-        include_bot_in_recording: { audio: true }
-      },
-      variant: {
-        zoom: 'web_4_core',
-        google_meet: 'web_4_core',
-        microsoft_teams: 'web_4_core'
-      },
-      webhook_url: `${SERVER_URL}/webhook/status`
+      ...botConfig
     }, {
       headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
     });
@@ -1534,13 +1552,249 @@ app.post('/join', requireAuth, async (req, res) => {
     activeBotId = botId;
     sessionTokens[sessionToken] = botId;
 
-    if (!sessions[botId]) sessions[botId] = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: false, utterancesSinceEval: 0 };
-    if (projectHint) sessions[botId].project_hint = projectHint;
+    if (!sessions[botId]) sessions[botId] = newSession(projectHint);
+    else if (projectHint) sessions[botId].project_hint = projectHint;
     console.log(`✅ Nora joined via output_media. Bot ID: ${botId}${projectHint ? ` (project hint: ${projectHint})` : ''}`);
     res.json({ bot_id: botId, project_hint: projectHint || null });
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
+// ============================================================
+// Calendar auto-join (Recall Calendar V2 + Google OAuth)
+// ============================================================
+// Flow:
+//   1. User clicks "Connect Calendar" → GET /calendar/connect → returns Google OAuth URL
+//   2. User authorizes, Google → GET /calendar/oauth/callback?code=... on us
+//   3. We exchange code for refresh_token, POST to Recall /api/v2/calendars/
+//   4. Store the returned recall_calendar_id in nora-calendar.json
+//   5. Recall watches the calendar; on calendar.sync_events webhook we re-list events
+//   6. For each new/updated event where nora@... is in attendees and has a meeting_url,
+//      we schedule a bot via POST /api/v2/calendar-events/{id}/bot/ (deduplicated by event id)
+
+const RECALL_V2_BASE = `https://${process.env.RECALL_REGION || 'us-east-1'}.recall.ai/api/v2`;
+const GOOGLE_OAUTH_SCOPES = [
+  'https://www.googleapis.com/auth/calendar.events.readonly',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'openid'
+];
+// Short-lived state tokens for OAuth CSRF protection. Cleared after use; auto-expires
+// after 10 minutes if the callback never comes back.
+const oauthStates = new Map();
+function newOAuthState() {
+  const s = crypto.randomBytes(24).toString('hex');
+  oauthStates.set(s, { created: Date.now() });
+  // GC expired states
+  for (const [k, v] of oauthStates) if (Date.now() - v.created > 10 * 60 * 1000) oauthStates.delete(k);
+  return s;
+}
+
+function getGoogleOAuthRedirectUri(reqHost) {
+  // Allow override for cases where the server is behind a tunnel / different public host.
+  if (process.env.GOOGLE_OAUTH_REDIRECT_URI) return process.env.GOOGLE_OAUTH_REDIRECT_URI;
+  return `https://${reqHost}/calendar/oauth/callback`;
+}
+
+// GET /calendar/connect — kicks off the OAuth handshake. Returns the URL to redirect to.
+// Dashboard calls this via authed fetch, then window.location's to the returned authorize_url.
+app.get('/calendar/connect', requireAuth, (req, res) => {
+  const clientId = process.env.GOOGLE_OAUTH_CLIENT_ID;
+  if (!clientId) return res.status(500).json({ error: 'GOOGLE_OAUTH_CLIENT_ID not set' });
+  const state = newOAuthState();
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: getGoogleOAuthRedirectUri(req.get('host')),
+    response_type: 'code',
+    scope: GOOGLE_OAUTH_SCOPES.join(' '),
+    access_type: 'offline',
+    prompt: 'consent', // force consent so we always get a refresh_token, even on reconnect
+    state
+  });
+  const authorize_url = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+  res.json({ authorize_url });
+});
+
+// GET /calendar/oauth/callback — Google redirects here with ?code=&state=
+app.get('/calendar/oauth/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error) return res.status(400).send(`Google OAuth error: ${error}`);
+  if (!code || !state) return res.status(400).send('Missing code or state');
+  if (!oauthStates.has(state)) return res.status(400).send('Invalid or expired state');
+  oauthStates.delete(state);
+
+  try {
+    // 1. Exchange the auth code for a refresh_token + access_token
+    const tokenRes = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
+      code,
+      client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+      client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+      redirect_uri: getGoogleOAuthRedirectUri(req.get('host')),
+      grant_type: 'authorization_code'
+    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    const { refresh_token, access_token } = tokenRes.data;
+    if (!refresh_token) {
+      return res.status(400).send('Google did not return a refresh_token. If you previously connected this account, revoke access at https://myaccount.google.com/permissions and try again.');
+    }
+
+    // 2. Fetch the user's email so we know whose calendar this is (and for the attendee match later).
+    const userinfoRes = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
+      headers: { Authorization: `Bearer ${access_token}` }
+    });
+    const googleEmail = userinfoRes.data.email;
+
+    // 3. Hand the refresh token to Recall, which will manage it from here on.
+    const SERVER_URL = `https://${req.get('host')}`;
+    const recallRes = await axios.post(`${RECALL_V2_BASE}/calendars/`, {
+      oauth_client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+      oauth_client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+      oauth_refresh_token: refresh_token,
+      platform: 'google_calendar',
+      oauth_email: googleEmail,
+      // webhook_url is deprecated on this endpoint but still functional. Cleanest path
+      // until workspace-level webhook config is required.
+      webhook_url: `${SERVER_URL}/webhook/recall-calendar`
+    }, {
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' }
+    });
+
+    saveCalendarState({
+      recall_calendar_id: recallRes.data.id,
+      google_email: googleEmail,
+      connected_at: new Date().toISOString(),
+      last_sync: null
+    });
+    console.log(`📅 Calendar connected: ${googleEmail} (recall_id: ${recallRes.data.id})`);
+
+    // Bounce back to the dashboard with a success flag the UI can show.
+    res.redirect('/?calendar_connected=1');
+  } catch (err) {
+    console.error('Calendar connect failed:', err.response?.data || err.message);
+    res.status(500).send(`Calendar connect failed: ${JSON.stringify(err.response?.data || err.message)}`);
+  }
+});
+
+// GET /calendar/status — read-only state for the dashboard UI
+app.get('/calendar/status', requireAuth, (req, res) => {
+  const state = loadCalendarState();
+  if (!state) return res.json({ connected: false });
+  res.json({
+    connected: true,
+    google_email: state.google_email,
+    recall_calendar_id: state.recall_calendar_id,
+    connected_at: state.connected_at,
+    last_sync: state.last_sync
+  });
+});
+
+// DELETE /calendar — disconnect (drops local state; does not delete on Recall side
+// — call Recall's DELETE /calendars/{id}/ manually if you want it removed there too).
+app.delete('/calendar', requireAuth, async (req, res) => {
+  const state = loadCalendarState();
+  if (!state) return res.json({ ok: true, already: true });
+  if (req.query.also_delete_on_recall === '1' && state.recall_calendar_id) {
+    try {
+      await axios.delete(`${RECALL_V2_BASE}/calendars/${state.recall_calendar_id}/`, {
+        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      });
+    } catch (err) {
+      console.warn('Recall calendar delete failed (continuing with local clear):', err.response?.data || err.message);
+    }
+  }
+  clearCalendarState();
+  res.json({ ok: true });
+});
+
+// POST /webhook/recall-calendar — fires on calendar.update / calendar.sync_events.
+// For sync_events: re-list events updated since last_sync, find ones Nora is invited
+// to that have a meeting URL, schedule a bot for each (deduped by event id).
+app.post('/webhook/recall-calendar', async (req, res) => {
+  // Always 200 quickly so Recall doesn't retry; do the work async.
+  res.json({ ok: true });
+
+  const { event, data } = req.body || {};
+  if (!event || !data) return;
+  console.log(`📅 Recall calendar webhook: ${event}`);
+  if (event !== 'calendar.sync_events') return;
+
+  try {
+    const state = loadCalendarState();
+    if (!state || state.recall_calendar_id !== data.calendar_id) {
+      console.warn(`📅 Webhook for unknown/mismatched calendar ${data.calendar_id}; ignoring`);
+      return;
+    }
+
+    const updatedSince = data.last_updated_ts || state.last_sync || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const params = new URLSearchParams({ calendar_id: state.recall_calendar_id, updated_at__gte: updatedSince });
+    const listRes = await axios.get(`${RECALL_V2_BASE}/calendar-events/?${params.toString()}`, {
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+    });
+    const events = listRes.data?.results || [];
+    console.log(`📅 Re-listed ${events.length} calendar events since ${updatedSince}`);
+
+    const noraEmail = (state.google_email || '').toLowerCase();
+    const SERVER_HOST = req.get('host');
+
+    for (const ev of events) {
+      if (ev.is_deleted) continue;
+      if (!ev.meeting_url) continue;
+
+      // Skip past meetings (end time in the past). Slight grace window for late starts.
+      const endTs = ev.end_time ? new Date(ev.end_time).getTime() : null;
+      if (endTs && endTs < Date.now() - 5 * 60 * 1000) continue;
+
+      // Inclusion rule: Nora must be explicitly invited (not just on the host's calendar
+      // because it's their account). She is invited iff her email is in event.attendees.
+      const attendees = Array.isArray(ev.attendees) ? ev.attendees : [];
+      const noraInvited = attendees.some(a => (a?.email || '').toLowerCase() === noraEmail);
+      if (!noraInvited) {
+        console.log(`📅 Skipping event ${ev.id} — Nora not in attendees`);
+        continue;
+      }
+
+      // Opt-out keyword in event title
+      const title = (ev.raw?.summary || ev.summary || '').toLowerCase();
+      if (title.includes('[no-nora]') || title.includes('[skip-nora]')) {
+        console.log(`📅 Skipping event ${ev.id} — opt-out keyword in title`);
+        continue;
+      }
+
+      // Build the bot config with a fresh session token for this event's bot.
+      const sessionToken = crypto.randomBytes(32).toString('hex');
+      const botConfig = buildBotConfig(SERVER_HOST, sessionToken);
+
+      try {
+        const scheduleRes = await axios.post(
+          `${RECALL_V2_BASE}/calendar-events/${ev.id}/bot/`,
+          {
+            // Deduplication_key keyed by event id. If Recall already has a bot scheduled
+            // with this key for the event, it returns the existing one instead of creating.
+            deduplication_key: `nora-auto-${ev.id}`,
+            bot_config: botConfig
+          },
+          { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' } }
+        );
+        // The bot id lives inside the returned event's bots[] array (most recent last).
+        const bots = scheduleRes.data?.bots || [];
+        const botId = bots[bots.length - 1]?.id;
+        if (botId) {
+          sessionTokens[sessionToken] = botId;
+          if (!sessions[botId]) sessions[botId] = newSession();
+          console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}" → bot ${botId}`);
+        } else {
+          console.warn(`📅 Schedule succeeded for event ${ev.id} but no bot id in response`);
+        }
+      } catch (botErr) {
+        // Don't crash the whole sync if one event fails — log and continue.
+        console.error(`📅 Failed to schedule bot for event ${ev.id}:`, botErr.response?.data || botErr.message);
+      }
+    }
+
+    state.last_sync = new Date().toISOString();
+    saveCalendarState(state);
+  } catch (err) {
+    console.error('Calendar webhook processing error:', err.response?.data || err.message);
   }
 });
 
