@@ -1500,8 +1500,26 @@ app.post('/voice-agent/response', async (req, res) => {
 
 
 
-// Session tokens for voice agent auth — maps token → botId
-const sessionTokens = {};
+// Session tokens for voice agent auth — maps token → botId. Persisted to disk
+// because calendar-auto-joined bots are scheduled in advance (sometimes hours
+// before the meeting), and any server redeploy in between would wipe an in-memory
+// map and break the bot's WS auth when it eventually tries to connect.
+const TOKENS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-tokens.json');
+const TOKENS_PATH_LOCAL = path.join(__dirname, 'nora-tokens.json');
+function getTokensPath() {
+  if (fs.existsSync(VOLUME_DIR)) return TOKENS_PATH_VOLUME;
+  return TOKENS_PATH_LOCAL;
+}
+function loadSessionTokens() {
+  try { return JSON.parse(fs.readFileSync(getTokensPath(), 'utf8')); }
+  catch { return {}; }
+}
+function persistSessionTokens() {
+  try { fs.writeFileSync(getTokensPath(), JSON.stringify(sessionTokens, null, 2)); }
+  catch (err) { console.error('Failed to persist session tokens:', err.message); }
+}
+const sessionTokens = loadSessionTokens();
+console.log(`🔑 Loaded ${Object.keys(sessionTokens).length} persisted session tokens`);
 
 // Shared builder for the Recall bot config (used by manual /join and calendar
 // auto-join). Includes everything except meeting_url, which Recall auto-populates
@@ -1570,6 +1588,7 @@ app.post('/join', requireAuth, async (req, res) => {
     const botId = botRes.data.id;
     activeBotId = botId;
     sessionTokens[sessionToken] = botId;
+    persistSessionTokens();
 
     if (!sessions[botId]) sessions[botId] = newSession(projectHint);
     else if (projectHint) sessions[botId].project_hint = projectHint;
@@ -1823,6 +1842,7 @@ app.post('/webhook/recall-calendar', async (req, res) => {
                    || rd.bot_id || rd.id || rd.bot?.id || null;
         if (botId) {
           sessionTokens[sessionToken] = botId;
+          persistSessionTokens();
           if (!sessions[botId]) sessions[botId] = newSession();
           console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}" → bot ${botId}`);
         } else {
@@ -1854,6 +1874,7 @@ app.post('/register-bot', requireAuth, (req, res) => {
   activeBotId = req.body.bot_id;
   if (req.body.session_token && req.body.bot_id) {
     sessionTokens[req.body.session_token] = req.body.bot_id;
+    persistSessionTokens();
   }
   console.log('🤖 Registered bot:', activeBotId);
   res.json({ ok: true });
