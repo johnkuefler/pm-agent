@@ -1543,14 +1543,14 @@ function buildBotConfig(serverHost, sessionToken) {
       transcript: {
         provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
       },
+      // Enable the per-participant video_separate_png artifact (required before any
+      // realtime_endpoint can subscribe to its events — same pattern as transcript).
+      // Empty object {} is the valid config; no tunable fields. Recall ships PNG
+      // frames at 2fps; we filter and throttle in the /ws/recall-video handler.
+      video_separate_png: {},
       realtime_endpoints: [
         { type: 'webhook', url: `${SERVER_URL}/webhook/transcript`, events: ['transcript.data'] },
         { type: 'webhook', url: `${SERVER_URL}/webhook/chat`, events: ['participant_events.chat_message'] },
-        // Live video frames — Recall opens this websocket and pushes 2fps PNG frames
-        // (one stream per participant + a separate stream for screen-share). We filter
-        // to screen-share frames by dimensions in the websocket handler and forward at
-        // 30s cadence as image inputs to Nora's realtime session (gpt-realtime-2 takes
-        // vision natively).
         { type: 'websocket', url: `${WS_URL}/ws/recall-video?token=${sessionToken}`, events: ['video_separate_png.data'] }
       ],
       include_bot_in_recording: { audio: true }
@@ -3905,20 +3905,36 @@ videoWss.on('connection', (ws, req) => {
   }
   console.log(`📹 Recall video WS connected for bot: ${botId}`);
 
+  // Track largest frame dimensions seen on this connection — useful for diagnostics
+  // and for adaptive screen-share detection (the biggest stream is the share).
+  let maxPixelsSeen = 0;
+  let frameLogCount = 0;
+
   ws.on('message', (data, isBinary) => {
     if (!isBinary) return; // initial JSON handshake — ignore
     if (data.length < 8) return;
 
     // Skip 8 bytes of header (participant_id + timestamp), rest is PNG.
+    const participantId = data.readUInt32LE(0);
     const pngBytes = data.slice(8);
     const dims = pngDimensions(pngBytes);
     if (!dims) return;
 
-    // Recall sends participant video at 480x360 and screen-share at 1280x720.
-    // We only care about screen-share — face frames don't add useful context for a PM
-    // agent and would burn token budget. Anything noticeably larger than face-feed size
-    // is treated as screen-share.
-    const isScreenshare = dims.width >= 1000 && dims.height >= 600;
+    const pixels = dims.width * dims.height;
+    maxPixelsSeen = Math.max(maxPixelsSeen, pixels);
+
+    // Lightweight visibility — log the first few frames and then every 100th so the
+    // logs aren't a firehose but we can still see what's flowing.
+    if (frameLogCount < 5 || frameLogCount % 100 === 0) {
+      console.log(`📹 Frame #${frameLogCount} from participant ${participantId}: ${dims.width}x${dims.height} (${(pngBytes.length / 1024).toFixed(1)}KB, ${(pixels / 1000).toFixed(0)}Kpx)`);
+    }
+    frameLogCount++;
+
+    // Forward only frames that look like screen-share. Screen-shares are noticeably
+    // bigger than participant face tiles — typical face is ~360x640 or ~480x360
+    // (~230Kpx); screen-shares are typically 1280x720 (~920Kpx) or 1920x1080 (~2Mpx).
+    // Use a pixel-count floor of ~500Kpx; safely above any face tile, below any share.
+    const isScreenshare = pixels >= 500_000;
     if (!isScreenshare) return;
 
     // Throttle to one frame per FRAME_FORWARD_INTERVAL_MS per bot.
