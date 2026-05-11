@@ -1793,15 +1793,25 @@ app.post('/webhook/recall-calendar', async (req, res) => {
           },
           { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' } }
         );
-        // The bot id lives inside the returned event's bots[] array (most recent last).
-        const bots = scheduleRes.data?.bots || [];
-        const botId = bots[bots.length - 1]?.id;
+        // Bot id could live in several spots depending on Recall response shape.
+        // Try all the plausible paths and log the actual response if we miss — the
+        // session token MUST get registered or the bot can't authenticate to the
+        // WebSocket relay when the voice agent page tries to connect.
+        const rd = scheduleRes.data || {};
+        const bots = rd.bots || rd.bot_data || [];
+        const latest = Array.isArray(bots) ? bots[bots.length - 1] : null;
+        const botId = latest?.bot_id || latest?.id || latest?.bot?.id
+                   || rd.bot_id || rd.id || rd.bot?.id || null;
         if (botId) {
           sessionTokens[sessionToken] = botId;
           if (!sessions[botId]) sessions[botId] = newSession();
           console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}" → bot ${botId}`);
         } else {
-          console.warn(`📅 Schedule succeeded for event ${ev.id} but no bot id in response`);
+          // Diagnostic: dump the keys and a truncated JSON sample so we can see what
+          // shape we actually got. Once we know, we can stop logging and just pick
+          // the right path.
+          const sample = JSON.stringify(rd).slice(0, 500);
+          console.warn(`📅 Schedule succeeded for event ${ev.id} but no bot id. Response top-level keys: [${Object.keys(rd).join(', ')}]. Sample: ${sample}`);
         }
       } catch (botErr) {
         // Don't crash the whole sync if one event fails — log and continue.
