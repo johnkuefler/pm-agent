@@ -2051,7 +2051,7 @@ app.post('/mute', requireAuth, (req, res) => {
         type: 'realtime',
         output_modalities: enabled ? ['text'] : ['audio'],
         instructions: enabled
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message — one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
           : updatedPrompt
       }
     }));
@@ -3832,6 +3832,12 @@ wss.on('connection', async (ws, req) => {
 
   console.log(`🔌 Voice agent WebSocket connected for bot: ${botId}`);
 
+  // Mark this bot as the active session for dashboard controls (mute, proactive,
+  // one-on-one). Done at WS-connect time so calendar-auto-joined bots show up in
+  // the dashboard the moment they actually join — not when they were scheduled
+  // hours earlier.
+  activeBotId = botId;
+
   // Send bot_id to the webpage so it can use it for transcript relay
   ws.send(JSON.stringify({ type: 'nora.session', bot_id: botId }));
 
@@ -3889,7 +3895,7 @@ wss.on('connection', async (ws, req) => {
         type: 'realtime',
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
-          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
+          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message — one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
           : systemPrompt,
         audio: {
           input: {
@@ -4012,6 +4018,16 @@ wss.on('connection', async (ws, req) => {
                 } catch (err) {
                   console.error('Transcript save error:', err.message);
                 }
+                // Surface her muted reply in the meeting chat so the asker actually sees
+                // it — otherwise being muted means she's silent both ways and you'd never
+                // know your task landed. Failure is non-fatal; the task extraction below
+                // still runs regardless.
+                axios.post(
+                  `${RECALL_BASE}/bot/${botId}/send_chat_message/`,
+                  { message: textContent },
+                  { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+                ).then(() => console.log('💬 Posted muted reply to meeting chat'))
+                 .catch(err => console.warn('Muted-reply chat post failed:', err.response?.data || err.message));
                 const meetingContext = session.buffer.slice(-10).join('\n');
                 const triggerText = session.buffer.slice(-3).join('\n');
                 if (!isAskingClarification(textContent)) {
@@ -4070,7 +4086,7 @@ wss.on('connection', async (ws, req) => {
         type: 'realtime',
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text note. Otherwise, produce absolutely no output.'
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message — one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
           : updatedPrompt
       }
     }));
