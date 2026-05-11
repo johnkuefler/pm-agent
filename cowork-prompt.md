@@ -277,9 +277,9 @@ If a Teamwork task is something Nora genuinely can't do (requires a human decisi
 
 ### 3b. Nora's local /tasks queue (from conversations)
 
-These are tasks `extractTasks` queued from Slack/Zoom/voice conversations — different source from Teamwork-assigned tasks but processed similarly.
+These are tasks `extractTasks` queued from Slack/Zoom/voice conversations — different source from Teamwork-assigned tasks but processed similarly. **Some tasks here may be scheduled or recurring** — `GET /tasks?status=pending` hides anything whose `scheduled_for` is still in the future, so the list you receive is always the eligible-now queue. After completing a recurring task with `PATCH /tasks/:id/complete`, the server automatically rolls its `scheduled_for` to the next fire time and resets it to pending — you don't need to recreate it.
 
-Fetch pending tasks:
+Fetch pending tasks (eligible-now only):
 
 `GET https://pm-agent-production-c49e.up.railway.app/tasks?status=pending`
 

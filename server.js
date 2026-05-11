@@ -329,11 +329,160 @@ function addTask(task) {
     context: task.context || '',
     status: 'pending',
     created: new Date().toISOString(),
-    completed: null
+    completed: null,
+    scheduled_for: task.scheduled_for || null,
+    recurrence: task.recurrence || null,
+    last_run: task.last_run || null
   });
   saveTasks(tasks);
-  console.log('📋 Task added:', id, task.action);
+  const sched = task.scheduled_for ? ` (scheduled ${task.scheduled_for})` : '';
+  const recur = task.recurrence ? ` [${task.recurrence}]` : '';
+  console.log('📋 Task added:', id, task.action + sched + recur);
   return id;
+}
+
+// Scheduling helpers
+// ------------------
+// Recurrence rules use a small keyword DSL (all times America/Chicago):
+//   daily:HH:MM             — every day at HH:MM
+//   weekdays:HH:MM          — Mon-Fri at HH:MM
+//   weekly:dayname:HH:MM    — e.g., weekly:friday:16:00 (sunday..saturday)
+//   monthly:N:HH:MM         — Nth day of month at HH:MM (1-31; clamped to last day)
+const SCHEDULE_TZ = 'America/Chicago';
+const WEEKDAY_INDEX = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+
+function getTzOffsetMinutes(date, tz) {
+  // Returns the offset in minutes for the given instant in the given tz.
+  // Example: during CDT, returns -300 (UTC-5 means tz time is 300min behind UTC).
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(date).map(p => [p.type, p.value]));
+  const asIfUtc = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour), Number(parts.minute), Number(parts.second)
+  );
+  return Math.round((asIfUtc - date.getTime()) / 60000);
+}
+
+function getDatePartsInTz(date, tz) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false, weekday: 'long',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(date).map(p => [p.type, p.value]));
+  return {
+    year: Number(parts.year),
+    month: Number(parts.month),
+    day: Number(parts.day),
+    hour: Number(parts.hour) % 24,
+    minute: Number(parts.minute),
+    weekday: parts.weekday.toLowerCase()
+  };
+}
+
+function tzDateToUtc(year, month, day, hour, minute, tz) {
+  // Build a Date instant whose local wall-clock time in tz equals the given values.
+  // We first guess a UTC moment, then correct by the tz offset at that moment.
+  const guess = new Date(Date.UTC(year, month - 1, day, hour, minute, 0));
+  const offsetMin = getTzOffsetMinutes(guess, tz);
+  return new Date(guess.getTime() - offsetMin * 60000);
+}
+
+function daysInMonth(year, month /* 1-12 */) {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function computeNextRun(rule, fromTime = new Date()) {
+  if (!rule || typeof rule !== 'string') return null;
+  const parts = rule.trim().toLowerCase().split(':');
+  const kind = parts[0];
+  const tz = SCHEDULE_TZ;
+  const now = getDatePartsInTz(fromTime, tz);
+
+  const tryBuild = (year, month, day, hh, mm) => {
+    // Clamp to month length so monthly:31 in Feb falls on Feb 28/29.
+    const safeDay = Math.min(day, daysInMonth(year, month));
+    return tzDateToUtc(year, month, safeDay, hh, mm, tz);
+  };
+
+  if (kind === 'daily') {
+    const hh = Number(parts[1]); const mm = Number(parts[2]);
+    if (isNaN(hh) || isNaN(mm)) return null;
+    let candidate = tryBuild(now.year, now.month, now.day, hh, mm);
+    if (candidate.getTime() <= fromTime.getTime()) {
+      // Advance by adding 24h to fromTime then reading the tz date — going through
+      // Date.UTC(now.year, now.month-1, now.day+1) yields midnight UTC which is
+      // still the *same calendar day* in Chicago for any tz behind UTC.
+      const next = new Date(fromTime.getTime() + 24 * 60 * 60 * 1000);
+      const np = getDatePartsInTz(next, tz);
+      candidate = tryBuild(np.year, np.month, np.day, hh, mm);
+    }
+    return candidate.toISOString();
+  }
+
+  if (kind === 'weekdays') {
+    const hh = Number(parts[1]); const mm = Number(parts[2]);
+    if (isNaN(hh) || isNaN(mm)) return null;
+    let cursor = new Date(fromTime);
+    for (let i = 0; i < 8; i++) {
+      const p = getDatePartsInTz(cursor, tz);
+      const wIdx = WEEKDAY_INDEX[p.weekday];
+      if (wIdx >= 1 && wIdx <= 5) {
+        const candidate = tryBuild(p.year, p.month, p.day, hh, mm);
+        if (candidate.getTime() > fromTime.getTime()) return candidate.toISOString();
+      }
+      cursor = new Date(cursor.getTime() + 24 * 60 * 60 * 1000);
+    }
+    return null;
+  }
+
+  if (kind === 'weekly') {
+    const dayName = parts[1]; const hh = Number(parts[2]); const mm = Number(parts[3]);
+    if (!(dayName in WEEKDAY_INDEX) || isNaN(hh) || isNaN(mm)) return null;
+    const target = WEEKDAY_INDEX[dayName];
+    const todayIdx = WEEKDAY_INDEX[now.weekday];
+    let daysAhead = (target - todayIdx + 7) % 7;
+    // Build candidate by walking forward in tz-days. Going through Date.UTC with
+    // an arbitrary day offset can land on midnight UTC, which is still yesterday
+    // in Chicago — produce a wrong year/month/day. Step forward via fromTime + ms.
+    const stepTo = new Date(fromTime.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+    let sp = getDatePartsInTz(stepTo, tz);
+    let candidate = tryBuild(sp.year, sp.month, sp.day, hh, mm);
+    if (candidate.getTime() <= fromTime.getTime()) {
+      const nextWeek = new Date(stepTo.getTime() + 7 * 24 * 60 * 60 * 1000);
+      sp = getDatePartsInTz(nextWeek, tz);
+      candidate = tryBuild(sp.year, sp.month, sp.day, hh, mm);
+    }
+    return candidate.toISOString();
+  }
+
+  if (kind === 'monthly') {
+    const dom = Number(parts[1]); const hh = Number(parts[2]); const mm = Number(parts[3]);
+    if (isNaN(dom) || dom < 1 || dom > 31 || isNaN(hh) || isNaN(mm)) return null;
+    let candidate = tryBuild(now.year, now.month, dom, hh, mm);
+    if (candidate.getTime() <= fromTime.getTime()) {
+      const nextMonth = now.month === 12 ? 1 : now.month + 1;
+      const nextYear = now.month === 12 ? now.year + 1 : now.year;
+      candidate = tryBuild(nextYear, nextMonth, dom, hh, mm);
+    }
+    return candidate.toISOString();
+  }
+
+  return null;
+}
+
+function isValidRecurrence(rule) {
+  return rule == null || rule === '' || computeNextRun(rule) !== null;
+}
+
+function isTaskEligibleNow(task, now = new Date()) {
+  if (task.status !== 'pending') return false;
+  if (!task.scheduled_for) return true;
+  return new Date(task.scheduled_for).getTime() <= now.getTime();
 }
 
 initMemory();
@@ -718,16 +867,35 @@ rather than orphaned references.
   she promises a follow-up, then the answer lands in the same thread within the hour.
   If "source_thread_ts" is empty (Zoom tasks, DMs), omit thread_ts and notify normally.
 
-- POST /tasks                   — Add a task
-  Body: { "action": "string", "detail": "string", "assignee": "string", "due": "string" }
-  Response: { "ok": true, "id": "nora-..." }
+- POST /tasks                   — Add a task. Supports one-shot scheduled tasks and
+  recurring ones. The cowork loop polls GET /tasks?status=pending, which by default
+  HIDES tasks whose "scheduled_for" is still in the future — those reappear in the
+  queue once their fire time has passed. Use ?include=all to see scheduled+pending.
+  Body fields:
+    action          — required, the verb/short label
+    detail          — freeform context
+    assignee        — usually "nora" for things she should run
+    due             — optional human-readable due note (unrelated to scheduled_for)
+    scheduled_for   — optional ISO datetime. Task is filtered out of the queue until
+                      this moment has passed. Omit for "do now".
+    recurrence      — optional. Keyword DSL, all times America/Chicago:
+                        daily:HH:MM             — every day
+                        weekdays:HH:MM          — Mon-Fri only
+                        weekly:dayname:HH:MM    — e.g., weekly:friday:16:00
+                        monthly:N:HH:MM         — Nth day (1-31, clamped to month length)
+                      When set, completion auto-rolls scheduled_for to the next fire time
+                      and resets the task to pending. If you set recurrence without
+                      scheduled_for, the server seeds the first fire time from the rule.
+  Response: { "ok": true, "id": "nora-...", "scheduled_for": "...", "recurrence": "..." }
 
-- PATCH /tasks/:id/complete     — Mark task done (idempotent)
-  Response: { "ok": true, "task": {...} }
-  If already done: { "ok": true, "already": true, "task": {...} }
+- PATCH /tasks/:id/complete     — Mark task done (idempotent).
+  For one-shot tasks: status flips to "done".
+  For recurring tasks: same row recycles — scheduled_for advances, status returns to
+  pending, last_run records the completion. Response includes "rolled_to" with the
+  next fire time when this happens.
 
-- DELETE /tasks/:id             — Delete a task
-  Response: { "ok": true }
+- DELETE /tasks/:id             — Delete a task (use this to stop a recurring task
+  entirely; PATCH/complete on a recurring task will keep rolling it forward).
 
 ### Transcripts
 - GET  /transcripts             — List all saved transcripts, newest first
@@ -2756,15 +2924,39 @@ app.delete('/projects/:name', requireAuth, (req, res) => {
 app.get('/tasks', requireAuth, (req, res) => {
   const tasks = loadTasks();
   const status = req.query.status; // ?status=pending or ?status=done
-  if (status) return res.json(tasks.filter(t => t.status === status));
-  res.json(tasks);
+  // ?include=all returns everything (used by the dashboard). Default behavior for
+  // ?status=pending hides tasks whose scheduled_for is still in the future — those
+  // aren't eligible yet and would noise the cowork loop's queue.
+  const includeAll = req.query.include === 'all';
+  let result = tasks;
+  if (status) result = result.filter(t => t.status === status);
+  if (status === 'pending' && !includeAll) {
+    const now = new Date();
+    result = result.filter(t => isTaskEligibleNow(t, now));
+  }
+  res.json(result);
 });
 
 app.post('/tasks', requireAuth, (req, res) => {
-  const { action, detail, assignee, due } = req.body;
+  const { action, detail, assignee, due, scheduled_for, recurrence } = req.body;
   if (!action) return res.status(400).json({ error: 'action is required' });
-  const id = addTask({ action, detail: detail || '', assignee: assignee || '', due: due || '' });
-  res.json({ ok: true, id });
+  if (recurrence && !isValidRecurrence(recurrence)) {
+    return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, or monthly:N:HH:MM' });
+  }
+  let effectiveScheduledFor = scheduled_for || null;
+  // If a recurrence is set but no explicit first-fire time, seed scheduled_for from the rule.
+  if (recurrence && !effectiveScheduledFor) {
+    effectiveScheduledFor = computeNextRun(recurrence);
+  }
+  const id = addTask({
+    action,
+    detail: detail || '',
+    assignee: assignee || '',
+    due: due || '',
+    scheduled_for: effectiveScheduledFor,
+    recurrence: recurrence || null
+  });
+  res.json({ ok: true, id, scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
 });
 
 app.patch('/tasks/:id/complete', requireAuth, (req, res) => {
@@ -2772,8 +2964,25 @@ app.patch('/tasks/:id/complete', requireAuth, (req, res) => {
   const task = tasks.find(t => t.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'task not found' });
   if (task.status === 'done') return res.json({ ok: true, already: true, task });
+  const completedAt = new Date().toISOString();
+  // Recurring tasks recycle: same row, next scheduled_for, status back to pending.
+  // last_run records the most recent completion for audit.
+  if (task.recurrence) {
+    const next = computeNextRun(task.recurrence, new Date());
+    if (next) {
+      task.last_run = completedAt;
+      task.scheduled_for = next;
+      task.completed = null;
+      task.status = 'pending';
+      saveTasks(tasks);
+      console.log(`🔁 Recurring task fired and rolled: ${task.id} ${task.action} → next ${next}`);
+      return res.json({ ok: true, task, rolled_to: next });
+    }
+    // If recurrence somehow fails to compute, fall through to a normal completion.
+    console.warn(`⚠️ Recurring task ${task.id} has unparseable recurrence "${task.recurrence}" — completing as one-shot`);
+  }
   task.status = 'done';
-  task.completed = new Date().toISOString();
+  task.completed = completedAt;
   saveTasks(tasks);
   console.log('✅ Task completed:', task.id, task.action);
   res.json({ ok: true, task });
@@ -2793,11 +3002,16 @@ app.put('/tasks/:id', requireAuth, (req, res) => {
   const tasks = loadTasks();
   const task = tasks.find(t => t.id === req.params.id);
   if (!task) return res.status(404).json({ error: 'task not found' });
-  const { action, detail, assignee, due } = req.body;
+  const { action, detail, assignee, due, scheduled_for, recurrence } = req.body;
+  if (recurrence !== undefined && recurrence !== null && recurrence !== '' && !isValidRecurrence(recurrence)) {
+    return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, or monthly:N:HH:MM' });
+  }
   if (action !== undefined) task.action = action;
   if (detail !== undefined) task.detail = detail;
   if (assignee !== undefined) task.assignee = assignee;
   if (due !== undefined) task.due = due;
+  if (scheduled_for !== undefined) task.scheduled_for = scheduled_for || null;
+  if (recurrence !== undefined) task.recurrence = recurrence || null;
   saveTasks(tasks);
   console.log('✏️ Task updated:', task.id, task.action);
   res.json({ ok: true, task });
@@ -3062,13 +3276,22 @@ async function extractTasks(context, trigger, reply, source = {}) {
       `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`
     ).join('\n');
 
+    // Current Chicago-local time, so Claude can resolve relative dates like
+    // "next Tuesday" or "tomorrow morning" into an ISO datetime.
+    const nowCT = new Intl.DateTimeFormat('en-US', {
+      timeZone: SCHEDULE_TZ, weekday: 'long', year: 'numeric', month: 'long',
+      day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
+    }).format(new Date());
+
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
+        max_tokens: 400,
         temperature: 0,
         system: `You extract action items that Nora (an AI PM assistant) was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, remind me to...".
+
+Current time (Nora's local timezone, America/Chicago): ${nowCT}.
 
 CRITICAL RULES:
 - Extract exactly ONE task per distinct request. Do not split a single request into multiple tasks.
@@ -3078,10 +3301,19 @@ CRITICAL RULES:
 - Do NOT extract tasks that already exist in the pending tasks list below. If something similar is already tracked, return [].
 - If the conversation is just casual/social (greetings, small talk, status updates), return [].
 
+SCHEDULING — only set scheduled_for / recurrence when the user gave an explicit time signal. Leave both empty otherwise.
+- One-shot deferred ("send it Monday", "follow up next Tuesday morning", "remind me in an hour") → scheduled_for = ISO datetime, computed from current time above. Default time = 09:00 America/Chicago unless the speaker specified a clock time. Pass timezone offset in the ISO string.
+- Recurring ("every Friday at 4", "daily at 9", "weekdays at 8:30", "monthly on the 1st at 9") → recurrence = one of these keyword forms:
+    daily:HH:MM             — every day at HH:MM Central
+    weekdays:HH:MM          — Mon-Fri at HH:MM Central
+    weekly:dayname:HH:MM    — e.g. weekly:friday:16:00 (lowercase day name)
+    monthly:N:HH:MM         — Nth day of month (1-31; auto-clamps to month length)
+  Leave scheduled_for empty when recurrence is set — the server seeds the first fire time from the rule.
+
 EXISTING PENDING TASKS (do not duplicate these):
 ${recentTaskList || '(none)'}
 
-Return a JSON array of objects with: action (short verb phrase — what to do), detail (specifics, keep brief), assignee (who it's for, if mentioned), due (deadline if mentioned, otherwise ""). Return [] if no NEW action items.`,
+Return a JSON array of objects with: action (short verb phrase — what to do), detail (specifics, keep brief), assignee (who it's for, if mentioned), due (deadline note if mentioned, otherwise ""), scheduled_for (ISO datetime string or ""), recurrence (keyword form above or ""). Return [] if no NEW action items.`,
         messages: [{ role: 'user', content: `Meeting context:\n${context}\n\nTriggering utterance: ${trigger}\n\nNora's response: ${reply}\n\nNew action items for Nora (JSON array or []):` }]
       },
       {
@@ -3153,11 +3385,33 @@ Be strict — if in doubt, it's a duplicate. Return only indices of truly new ta
     const contextSnippet = `${context}\n\n[Trigger]: ${trigger}\n[Nora replied]: ${reply}`;
 
     for (const item of filteredItems) {
+      // Validate scheduling fields — drop them silently if malformed so a bad
+      // extraction doesn't lose the task itself.
+      let scheduledFor = item.scheduled_for || null;
+      if (scheduledFor) {
+        const d = new Date(scheduledFor);
+        if (isNaN(d.getTime())) {
+          console.warn(`⚠️ extractTasks: dropping invalid scheduled_for "${scheduledFor}"`);
+          scheduledFor = null;
+        } else {
+          scheduledFor = d.toISOString();
+        }
+      }
+      let recurrence = item.recurrence || null;
+      if (recurrence && !isValidRecurrence(recurrence)) {
+        console.warn(`⚠️ extractTasks: dropping invalid recurrence "${recurrence}"`);
+        recurrence = null;
+      }
+      if (recurrence && !scheduledFor) {
+        scheduledFor = computeNextRun(recurrence);
+      }
       addTask({
         action: item.action,
         detail: item.detail || '',
         assignee: item.assignee || '',
         due: item.due || '',
+        scheduled_for: scheduledFor,
+        recurrence: recurrence,
         source_channel: source.channel || '',
         source_user: source.user || '',
         source_bot_id: source.bot_id || '',
