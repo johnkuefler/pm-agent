@@ -692,7 +692,13 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       '',
       'Humor. Dry, sparing, never performative. Occasional aside that lands ("I admire the optimism" before explaining why a timeline won\'t work). If you\'re not sure it\'ll land, don\'t reach for it — better to be quietly competent than awkwardly funny.',
       '',
-      'What never happens. You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t offer to "help you with anything else" at the end of a turn — that\'s service-desk language, not colleague language. The conversation ends when it ends.'
+      'What never happens. You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t offer to "help you with anything else" at the end of a turn — that\'s service-desk language, not colleague language. The conversation ends when it ends.',
+      '',
+      'SCREEN SHARES — you can see them. When someone is sharing their screen, you receive a fresh image of what they are showing roughly every 30 seconds, injected into the conversation. Use that visual context naturally:',
+      '- If someone says "as you can see here" or "on this slide" or asks about something on the screen, reference what is visible.',
+      '- Do not narrate or describe the screen unprompted ("I see a slide showing..."). That sounds like a screen reader. Only mention what is on screen when it adds something to the conversation.',
+      '- Latest frame wins. If the share changed between turns, what you see in the most recent image is what to reference.',
+      '- If screen content is critical to answering a specific question someone asked, describe specifics — names, numbers, the actual content. Otherwise stay light.'
     ].join('\n');
   }
 
@@ -1543,6 +1549,15 @@ function buildBotConfig(serverHost, sessionToken) {
       ],
       include_bot_in_recording: { audio: true }
     },
+    // Subscribe to the live video stream so we can forward screen-share frames into
+    // Nora's realtime session as image inputs (gpt-realtime-2 takes native vision).
+    // gallery_view gives us separate streams per participant + a dedicated screenshare
+    // stream — which we filter on by frame dimensions (1280x720 = screenshare,
+    // 480x360 = participant face). 2 fps from Recall; we forward at 30s cadence.
+    real_time_media: {
+      websocket_video_destination_url: `${WS_URL}/ws/recall-video?token=${sessionToken}`
+    },
+    recording_mode: 'gallery_view',
     variant: { zoom: 'web_4_core', google_meet: 'web_4_core', microsoft_teams: 'web_4_core' },
     webhook_url: `${SERVER_URL}/webhook/status`
   };
@@ -3845,6 +3860,7 @@ function backfillTranscriptDates() {
 
 // ---- WebSocket relay: proxies between voice agent webpage and OpenAI Realtime API ----
 const wss = new WebSocketServer({ noServer: true });
+const videoWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `https://${request.headers.host}`);
@@ -3853,9 +3869,94 @@ server.on('upgrade', (request, socket, head) => {
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request);
     });
+  } else if (url.pathname === '/ws/recall-video') {
+    // Recall.ai connects here to stream meeting video frames (2fps PNGs).
+    // We pick screen-share frames and forward to Nora's OpenAI Realtime session.
+    videoWss.handleUpgrade(request, socket, head, (ws) => {
+      videoWss.emit('connection', ws, request);
+    });
   } else {
     socket.destroy();
   }
+});
+
+// ---- Screen-share vision pipeline ----
+// Recall sends binary frames: [4B participant_id LE][4B ms_timestamp LE][PNG bytes].
+// Screen-share frames are 1280x720; participant streams are 480x360.
+// We forward only screen-share frames, throttled to one per FRAME_FORWARD_INTERVAL_MS
+// per bot, as image conversation items in the bot's existing realtime session.
+const FRAME_FORWARD_INTERVAL_MS = 30 * 1000;
+const lastFrameSentAt = {}; // botId → ms timestamp
+
+// Parse PNG IHDR to get width/height. PNG signature is 8 bytes; first chunk after is
+// IHDR (4B length + 4B 'IHDR' type + 4B width + 4B height + ...). So width is at
+// byte 16 (big-endian) and height at byte 20.
+function pngDimensions(buffer) {
+  if (buffer.length < 24) return null;
+  if (buffer[0] !== 0x89 || buffer[1] !== 0x50 || buffer[2] !== 0x4E || buffer[3] !== 0x47) return null;
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+videoWss.on('connection', (ws, req) => {
+  const url = new URL(req.url, `https://${req.headers.host}`);
+  const token = url.searchParams.get('token');
+  const botId = sessionTokens[token];
+  if (!botId) {
+    console.error('❌ Recall video WS auth failed — invalid token');
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+  console.log(`📹 Recall video WS connected for bot: ${botId}`);
+
+  ws.on('message', (data, isBinary) => {
+    if (!isBinary) return; // initial JSON handshake — ignore
+    if (data.length < 8) return;
+
+    // Skip 8 bytes of header (participant_id + timestamp), rest is PNG.
+    const pngBytes = data.slice(8);
+    const dims = pngDimensions(pngBytes);
+    if (!dims) return;
+
+    // Recall sends participant video at 480x360 and screen-share at 1280x720.
+    // We only care about screen-share — face frames don't add useful context for a PM
+    // agent and would burn token budget. Anything noticeably larger than face-feed size
+    // is treated as screen-share.
+    const isScreenshare = dims.width >= 1000 && dims.height >= 600;
+    if (!isScreenshare) return;
+
+    // Throttle to one frame per FRAME_FORWARD_INTERVAL_MS per bot.
+    const now = Date.now();
+    if (lastFrameSentAt[botId] && now - lastFrameSentAt[botId] < FRAME_FORWARD_INTERVAL_MS) return;
+
+    // Need an open Realtime session on this bot to inject into.
+    const session = sessions[botId];
+    if (!session?.openaiWs || session.openaiWs.readyState !== WebSocket.OPEN) return;
+
+    const dataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`;
+    try {
+      session.openaiWs.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_image', image_url: dataUrl }]
+        }
+      }));
+      lastFrameSentAt[botId] = now;
+      console.log(`📹 Forwarded screen-share frame → OpenAI (bot ${botId}, ${dims.width}x${dims.height}, ${(pngBytes.length / 1024).toFixed(1)}KB)`);
+    } catch (err) {
+      console.warn('Frame forward failed:', err.message);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`📹 Recall video WS closed for bot: ${botId}`);
+    delete lastFrameSentAt[botId];
+  });
+
+  ws.on('error', (err) => {
+    console.error('Recall video WS error:', err.message);
+  });
 });
 
 wss.on('connection', async (ws, req) => {
