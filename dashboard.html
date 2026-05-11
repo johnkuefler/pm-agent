@@ -346,8 +346,14 @@
       try {
         const r = await api('/mute');
         const d = await r.json();
-        if (d.active_session === false) return;
-        document.getElementById('mute-controls').style.display = 'block';
+        const controls = document.getElementById('mute-controls');
+        if (d.active_session === false || !d.bot_id) {
+          // No active meeting — hide the mute UI so it doesn't show stale state
+          // after a meeting ends or before one starts.
+          controls.style.display = 'none';
+          return;
+        }
+        controls.style.display = 'block';
         updateMuteUI(d.muted);
       } catch {}
     }
@@ -369,8 +375,11 @@
       }
     }
 
-    // Check mute state on page load (in case a meeting is already active)
+    // Check mute state on page load (in case a meeting is already active), and
+    // poll every 20s so calendar-auto-joined meetings surface the mute control
+    // without requiring a manual page refresh.
     checkMuteState();
+    setInterval(checkMuteState, 20000);
 
     // Tasks
     let taskDataCache = {};

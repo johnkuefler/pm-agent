@@ -3550,6 +3550,12 @@ wss.on('connection', async (ws, req) => {
 
   console.log(`🔌 Voice agent WebSocket connected for bot: ${botId}`);
 
+  // Mark this bot as the active session for dashboard controls (mute, proactive,
+  // one-on-one). Done at WS-connect time so calendar-auto-joined bots show up in
+  // the dashboard the moment they actually join — not when they were scheduled
+  // hours earlier.
+  activeBotId = botId;
+
   // Send bot_id to the webpage so it can use it for transcript relay
   ws.send(JSON.stringify({ type: 'nora.session', bot_id: botId }));
 
