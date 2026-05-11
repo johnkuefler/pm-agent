@@ -3529,6 +3529,71 @@ function isAskingClarification(reply) {
 // OpenAI Realtime handles the voice conversation directly in the bot's browser.
 // The extraction pipelines are triggered via /voice-agent/response when OpenAI finishes a response.
 
+// Per-bot dedup state for screen-share descriptions: avoids appending ten near-identical
+// transcript entries when the same slide stays up for minutes. Keyed by botId, value is
+// the last description text we appended.
+const lastScreenshareDescription = {};
+
+// Generates a brief text description of a screen-share frame using Claude Haiku vision
+// and appends it to the meeting transcript so future readers (the cowork loop, Drive
+// filing, research tasks) get the visual context that the live realtime model had in
+// the moment but doesn't persist. Fire-and-forget — the live session is unaffected.
+async function describeScreenshareForTranscript(base64Png, botId) {
+  if (!process.env.ANTHROPIC_API_KEY) return;
+  try {
+    const res = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      {
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 200,
+        temperature: 0,
+        system: 'You describe screen-share content from a business meeting in 1-3 short sentences. Focus on substantive content — what app/document is shown, key text or numbers visible, what the user is looking at or working on. Skip cosmetic details (UI chrome, theme, scroll position) unless they matter. Be terse and factual; this is logged context, not narration. If the frame is mostly blank, a loading state, or an idle desktop, say so briefly.',
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: base64Png } },
+            { type: 'text', text: 'Describe what is on screen.' }
+          ]
+        }]
+      },
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        timeout: 15000
+      }
+    );
+    const description = res.data?.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim();
+    if (!description) return;
+
+    // Dedup against last appended description for this bot — if the first ~60 chars
+    // are the same we treat it as effectively duplicate (static slide, repeated frame).
+    const sig = description.slice(0, 60).toLowerCase();
+    const lastSig = (lastScreenshareDescription[botId] || '').slice(0, 60).toLowerCase();
+    if (sig === lastSig) {
+      console.log(`📹 Screen-share description skipped (near-duplicate of last): "${description.slice(0, 80)}..."`);
+      return;
+    }
+    lastScreenshareDescription[botId] = description;
+
+    const session = sessions[botId];
+    if (!session) return;
+    session.transcript.push({ speaker: 'Screen share', text: description, timestamp: new Date().toISOString() });
+    try {
+      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+      fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
+    } catch (err) {
+      console.error('Transcript save error (screen-share desc):', err.message);
+    }
+    console.log(`📹 Screen-share described: "${description.slice(0, 120)}${description.length > 120 ? '...' : ''}"`);
+  } catch (err) {
+    // Non-fatal — description failures shouldn't disturb the live session.
+    console.warn('Screen-share description failed:', err.response?.data?.error?.message || err.message);
+  }
+}
+
 async function extractMemory(context, trigger, reply, sourceBotId) {
   try {
     const projects = loadProjects();
@@ -3981,11 +4046,17 @@ videoWss.on('connection', (ws, req) => {
     } catch (err) {
       console.warn('Frame forward failed:', err.message);
     }
+
+    // In parallel, generate a brief text description of the frame and append it to the
+    // transcript so future readers (cowork loop, Drive filing, research) get the visual
+    // context. Fire-and-forget — doesn't slow Nora's live session.
+    describeScreenshareForTranscript(base64Png, botId);
   });
 
   ws.on('close', () => {
     console.log(`📹 Recall video WS closed for bot: ${botId}`);
     delete lastFrameSentAt[botId];
+    delete lastScreenshareDescription[botId];
   });
 
   ws.on('error', (err) => {
