@@ -3908,13 +3908,14 @@ videoWss.on('connection', (ws, req) => {
   }
   console.log(`📹 Recall video WS connected for bot: ${botId}`);
 
-  let frameLogCount = 0;
+  let msgCount = 0; // counts every WS message, incremented up front so logs aren't stuck on #0
 
   ws.on('message', (data, isBinary) => {
-    // Recall ships frames as JSON text. Binary would be a protocol surprise — log
-    // and move on if it ever happens.
+    const myIndex = msgCount++;
+
+    // Recall ships frames as JSON text. Binary would be a protocol surprise — log once.
     if (isBinary) {
-      if (frameLogCount < 3) console.warn('📹 Unexpected binary message from Recall; ignoring');
+      if (myIndex < 3) console.warn('📹 Unexpected binary message from Recall; ignoring');
       return;
     }
 
@@ -3922,41 +3923,38 @@ videoWss.on('connection', (ws, req) => {
     try { msg = JSON.parse(data.toString()); } catch { return; }
 
     // Log the shape of the first few messages (with buffer truncated so we can read it).
-    if (frameLogCount < 3) {
+    if (myIndex < 3) {
       const sample = JSON.stringify(msg, (k, v) => {
         if (k === 'buffer' && typeof v === 'string') return `<base64 ${v.length} chars>`;
         return v;
-      }).slice(0, 800);
-      console.log(`📹 WS message #${frameLogCount}: ${sample}`);
+      }).slice(0, 1000);
+      console.log(`📹 WS msg #${myIndex}: ${sample}`);
     }
 
-    // Two kinds of messages from Recall: an initial JSON handshake (no `event`) and
-    // frame events with `event: "video_separate_png.data"`. Only the latter has a buffer.
-    if (msg.event !== 'video_separate_png.data') {
-      if (frameLogCount < 3) console.log(`📹 Non-frame message: keys=[${Object.keys(msg).join(', ')}]`);
-      return;
-    }
+    if (msg.event !== 'video_separate_png.data') return;
 
-    const base64Png = msg.data?.buffer;
+    // Recall nests the actual frame data: msg.data.data.{buffer, participant, type, timestamp}.
+    // msg.data also has sibling wrappers (video_separate, realtime_endpoint, recording, bot).
+    const frameData = msg.data?.data;
+    const base64Png = frameData?.buffer;
     if (!base64Png) return;
 
-    // Decode just enough to read PNG IHDR (first 24 bytes) — we don't need the whole
-    // image as a Buffer for forwarding since the existing base64 string is what we want
-    // in the data URL anyway.
+    // Decode just enough of the base64 to read the PNG IHDR (first 24 bytes of the PNG).
     const headerBytes = Buffer.from(base64Png.slice(0, 40), 'base64');
     const dims = pngDimensions(headerBytes);
     if (!dims) return;
 
     const pixels = dims.width * dims.height;
-    const participantInfo = msg.data?.participant?.id ?? msg.data?.participant?.name ?? 'unknown';
+    const participantInfo = frameData?.participant?.name ?? frameData?.participant?.id ?? 'unknown';
+    const frameType = frameData?.type ?? 'unknown';
 
-    if (frameLogCount < 5 || frameLogCount % 100 === 0) {
-      console.log(`📹 Frame #${frameLogCount} participant ${participantInfo}: ${dims.width}x${dims.height} (${(pixels / 1000).toFixed(0)}Kpx, base64 ${(base64Png.length / 1024).toFixed(1)}KB)`);
+    if (myIndex < 10 || myIndex % 200 === 0) {
+      console.log(`📹 Frame #${myIndex} type=${frameType} participant=${participantInfo}: ${dims.width}x${dims.height} (${(pixels / 1000).toFixed(0)}Kpx)`);
     }
-    frameLogCount++;
 
-    // Filter to screen-share frames. Face streams are 360x640 (~230Kpx); screen-shares
-    // are typically 1280x720 (~920Kpx) or larger. 500Kpx threshold separates them.
+    // Type label is unreliable on Zoom — screen-shares come through tagged 'webcam' too,
+    // distinguished only by size (face stream ≈ 360x640 / ~230Kpx, share ≈ 1080p+ / 2Mpx+).
+    // Pixel-count threshold is the reliable signal.
     const isScreenshare = pixels >= 500_000;
     if (!isScreenshare) return;
 
