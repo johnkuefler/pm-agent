@@ -1441,12 +1441,26 @@ app.post('/voice-agent/response', async (req, res) => {
   // Add Nora's response to transcript
   const session = sessions[bot_id];
   if (session) {
-    session.transcript.push({ speaker: 'Nora', text, timestamp: new Date().toISOString() });
+    const isMuted = !!session.muted;
+    session.transcript.push({ speaker: isMuted ? 'Nora (muted)' : 'Nora', text, timestamp: new Date().toISOString() });
     try {
       const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
       fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
     } catch (err) {
       console.error('Transcript save error:', err.message);
+    }
+
+    // When muted, surface the reply in the meeting chat so the asker actually sees the
+    // confirmation. The model is already gated by the muted-mode system prompt to only
+    // emit text when it judges it was directly addressed — if text reached us, we trust
+    // that and post it. Failure is non-fatal; extraction still runs below.
+    if (isMuted) {
+      axios.post(
+        `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
+        { message: text },
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+      ).then(() => console.log('💬 Posted muted reply to meeting chat:', text.slice(0, 120)))
+       .catch(err => console.warn('Muted-reply chat post failed:', err.response?.data || err.message));
     }
 
     // Build context from recent buffer
@@ -3720,40 +3734,13 @@ wss.on('connection', async (ws, req) => {
               console.log('🤖 Nora (voice):', audioTranscript.slice(0, 200));
             }
 
-            // Text-only responses (muted mode) — only process if Nora was directly addressed
+            // Text content (muted mode primarily, but also any text the model emits)
+            // is fully handled via the browser → /voice-agent/response path, which
+            // saves the transcript entry, posts the muted reply to chat, and runs
+            // extraction. Just log here for visibility.
             const textContent = item.content?.find(c => c.type === 'output_text' || c.type === 'text')?.text;
-            if (textContent && sessions[botId]?.muted) {
-              const session = sessions[botId];
-              const recentUtterances = session.buffer.slice(-5).join('\n').toLowerCase();
-              const wasAddressed = recentUtterances.includes('nora');
-
-              if (wasAddressed) {
-                console.log('🔇 Nora (muted, addressed):', textContent.slice(0, 200));
-                session.transcript.push({ speaker: 'Nora (muted)', text: textContent, timestamp: new Date().toISOString() });
-                try {
-                  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-                  fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
-                } catch (err) {
-                  console.error('Transcript save error:', err.message);
-                }
-                // Surface her muted reply in the meeting chat so the asker actually sees
-                // it — otherwise being muted means she's silent both ways and you'd never
-                // know your task landed. Failure is non-fatal; the task extraction below
-                // still runs regardless.
-                axios.post(
-                  `${RECALL_BASE}/bot/${botId}/send_chat_message/`,
-                  { message: textContent },
-                  { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
-                ).then(() => console.log('💬 Posted muted reply to meeting chat'))
-                 .catch(err => console.warn('Muted-reply chat post failed:', err.response?.data || err.message));
-                const meetingContext = session.buffer.slice(-10).join('\n');
-                const triggerText = session.buffer.slice(-3).join('\n');
-                if (!isAskingClarification(textContent)) {
-                  extractTasks(meetingContext, triggerText, textContent, { channel: 'zoom', bot_id: botId }).catch(() => {});
-                }
-              } else {
-                console.log('🔇 Nora (muted, discarded):', textContent.slice(0, 200));
-              }
+            if (textContent) {
+              console.log(`${sessions[botId]?.muted ? '🔇' : '💬'} Nora (text):`, textContent.slice(0, 200));
             }
           }
         }
