@@ -3878,10 +3878,13 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 // ---- Screen-share vision pipeline ----
-// Recall sends binary frames: [4B participant_id LE][4B ms_timestamp LE][PNG bytes].
-// Screen-share frames are 1280x720; participant streams are 480x360.
-// We forward only screen-share frames, throttled to one per FRAME_FORWARD_INTERVAL_MS
-// per bot, as image conversation items in the bot's existing realtime session.
+// Recall ships video_separate_png.data as JSON text messages (NOT raw binary,
+// despite what an older v1.10 docs page suggests). Payload shape:
+//   { event: "video_separate_png.data",
+//     data: { timestamp: {...}, participant: {...}, buffer: "<base64 PNG>" } }
+// We parse, decode base64 just enough to read PNG dimensions, filter to screen-share
+// frames (pixel-count threshold), and forward at FRAME_FORWARD_INTERVAL_MS cadence
+// as image conversation items in the bot's existing OpenAI Realtime session.
 const FRAME_FORWARD_INTERVAL_MS = 30 * 1000;
 const lastFrameSentAt = {}; // botId → ms timestamp
 
@@ -3905,35 +3908,55 @@ videoWss.on('connection', (ws, req) => {
   }
   console.log(`📹 Recall video WS connected for bot: ${botId}`);
 
-  // Track largest frame dimensions seen on this connection — useful for diagnostics
-  // and for adaptive screen-share detection (the biggest stream is the share).
-  let maxPixelsSeen = 0;
   let frameLogCount = 0;
 
   ws.on('message', (data, isBinary) => {
-    if (!isBinary) return; // initial JSON handshake — ignore
-    if (data.length < 8) return;
+    // Recall ships frames as JSON text. Binary would be a protocol surprise — log
+    // and move on if it ever happens.
+    if (isBinary) {
+      if (frameLogCount < 3) console.warn('📹 Unexpected binary message from Recall; ignoring');
+      return;
+    }
 
-    // Skip 8 bytes of header (participant_id + timestamp), rest is PNG.
-    const participantId = data.readUInt32LE(0);
-    const pngBytes = data.slice(8);
-    const dims = pngDimensions(pngBytes);
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+
+    // Log the shape of the first few messages (with buffer truncated so we can read it).
+    if (frameLogCount < 3) {
+      const sample = JSON.stringify(msg, (k, v) => {
+        if (k === 'buffer' && typeof v === 'string') return `<base64 ${v.length} chars>`;
+        return v;
+      }).slice(0, 800);
+      console.log(`📹 WS message #${frameLogCount}: ${sample}`);
+    }
+
+    // Two kinds of messages from Recall: an initial JSON handshake (no `event`) and
+    // frame events with `event: "video_separate_png.data"`. Only the latter has a buffer.
+    if (msg.event !== 'video_separate_png.data') {
+      if (frameLogCount < 3) console.log(`📹 Non-frame message: keys=[${Object.keys(msg).join(', ')}]`);
+      return;
+    }
+
+    const base64Png = msg.data?.buffer;
+    if (!base64Png) return;
+
+    // Decode just enough to read PNG IHDR (first 24 bytes) — we don't need the whole
+    // image as a Buffer for forwarding since the existing base64 string is what we want
+    // in the data URL anyway.
+    const headerBytes = Buffer.from(base64Png.slice(0, 40), 'base64');
+    const dims = pngDimensions(headerBytes);
     if (!dims) return;
 
     const pixels = dims.width * dims.height;
-    maxPixelsSeen = Math.max(maxPixelsSeen, pixels);
+    const participantInfo = msg.data?.participant?.id ?? msg.data?.participant?.name ?? 'unknown';
 
-    // Lightweight visibility — log the first few frames and then every 100th so the
-    // logs aren't a firehose but we can still see what's flowing.
     if (frameLogCount < 5 || frameLogCount % 100 === 0) {
-      console.log(`📹 Frame #${frameLogCount} from participant ${participantId}: ${dims.width}x${dims.height} (${(pngBytes.length / 1024).toFixed(1)}KB, ${(pixels / 1000).toFixed(0)}Kpx)`);
+      console.log(`📹 Frame #${frameLogCount} participant ${participantInfo}: ${dims.width}x${dims.height} (${(pixels / 1000).toFixed(0)}Kpx, base64 ${(base64Png.length / 1024).toFixed(1)}KB)`);
     }
     frameLogCount++;
 
-    // Forward only frames that look like screen-share. Screen-shares are noticeably
-    // bigger than participant face tiles — typical face is ~360x640 or ~480x360
-    // (~230Kpx); screen-shares are typically 1280x720 (~920Kpx) or 1920x1080 (~2Mpx).
-    // Use a pixel-count floor of ~500Kpx; safely above any face tile, below any share.
+    // Filter to screen-share frames. Face streams are 360x640 (~230Kpx); screen-shares
+    // are typically 1280x720 (~920Kpx) or larger. 500Kpx threshold separates them.
     const isScreenshare = pixels >= 500_000;
     if (!isScreenshare) return;
 
@@ -3945,7 +3968,7 @@ videoWss.on('connection', (ws, req) => {
     const session = sessions[botId];
     if (!session?.openaiWs || session.openaiWs.readyState !== WebSocket.OPEN) return;
 
-    const dataUrl = `data:image/png;base64,${pngBytes.toString('base64')}`;
+    const dataUrl = `data:image/png;base64,${base64Png}`;
     try {
       session.openaiWs.send(JSON.stringify({
         type: 'conversation.item.create',
@@ -3956,7 +3979,7 @@ videoWss.on('connection', (ws, req) => {
         }
       }));
       lastFrameSentAt[botId] = now;
-      console.log(`📹 Forwarded screen-share frame → OpenAI (bot ${botId}, ${dims.width}x${dims.height}, ${(pngBytes.length / 1024).toFixed(1)}KB)`);
+      console.log(`📹 Forwarded screen-share frame → OpenAI (bot ${botId}, ${dims.width}x${dims.height})`);
     } catch (err) {
       console.warn('Frame forward failed:', err.message);
     }
