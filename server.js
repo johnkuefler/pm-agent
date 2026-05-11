@@ -3365,7 +3365,10 @@ wss.on('connection', async (ws, req) => {
             // drop to "low" if she's cutting people off mid-thought.
             turn_detection: {
               type: 'semantic_vad',
-              eagerness: 'medium',
+              // 'high' = VAD commits faster that the user is done speaking, which
+              // is the dominant source of the "beat behind" feel after you stop.
+              // Drop back to 'medium' if she starts stepping on mid-sentence pauses.
+              eagerness: 'high',
               create_response: true,
               interrupt_response: true
             }
@@ -3379,11 +3382,11 @@ wss.on('connection', async (ws, req) => {
         // (~80 tokens); 400 is headroom while committing the model to brevity early —
         // which materially speeds up first-audio-chunk latency.
         max_output_tokens: 400,
-        // gpt-realtime-2 has GPT-5-class reasoning; the default effort adds noticeable
-        // "thinking time" before every utterance. OpenAI's own guidance: start at 'low'
-        // for production voice agents. Drop to 'minimal' if she still feels laggy;
-        // bump to 'medium' only if she starts giving shallow answers to complex prompts.
-        reasoning: { effort: 'low' }
+        // 'minimal' is the fastest reasoning level — designed for simple tasks, which
+        // describes 90% of Nora's voice turns (status checks, quick lookups, casual
+        // back-and-forth). Bump to 'low' or 'medium' only if she starts giving shallow
+        // answers to complex prompts.
+        reasoning: { effort: 'minimal' }
       }
     }));
 
