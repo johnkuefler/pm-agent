@@ -3351,6 +3351,63 @@ app.put('/tasks/:id', requireAuth, (req, res) => {
   res.json({ ok: true, task });
 });
 
+// List bots that are currently active (ready, joining, or in a call). Used by the
+// Admin UI to show what meetings Nora is in / on her way to, with a kick button.
+app.get('/admin/active-bots', requireAuth, async (req, res) => {
+  try {
+    const params = new URLSearchParams();
+    for (const s of ['ready', 'joining_call', 'in_call_not_recording', 'in_call_recording']) {
+      params.append('status', s);
+    }
+    const r = await axios.get(`${RECALL_BASE}/bot/?${params.toString()}`, {
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+    });
+    // Recall paginates; for our scale the first page is more than enough. Slim the
+    // shape down to what the UI actually needs.
+    const raw = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : [];
+    const bots = raw.map(b => {
+      const latest = Array.isArray(b.status_changes) && b.status_changes.length
+        ? b.status_changes[b.status_changes.length - 1]
+        : null;
+      return {
+        id: b.id,
+        bot_name: b.bot_name || 'Nora',
+        meeting_url: b.meeting_url || null,
+        status: latest?.code || b.status || 'unknown',
+        status_at: latest?.created_at || null,
+        join_at: b.join_at || null
+      };
+    });
+    res.json({ count: bots.length, bots });
+  } catch (err) {
+    console.error('Active bots fetch failed:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
+// Tell Recall to remove a bot from its meeting (graceful leave). Idempotent enough
+// in practice — if the bot is already gone, Recall returns an error which we surface.
+app.post('/admin/bots/:id/leave', requireAuth, async (req, res) => {
+  const botId = req.params.id;
+  try {
+    await axios.post(
+      `${RECALL_BASE}/bot/${botId}/leave_call/`,
+      {},
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+    );
+    console.log(`👋 Admin asked bot ${botId} to leave its call`);
+    // Local cleanup so dashboard controls (mute, etc.) stop referencing this bot.
+    if (activeBotId === botId) activeBotId = null;
+    if (sessions[botId]?.openaiWs) {
+      try { sessions[botId].openaiWs.close(); } catch {}
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(`Leave-call failed for ${botId}:`, err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({ error: err.response?.data || err.message });
+  }
+});
+
 // Teamwork: update a task's workflow stage by task ID and stage name
 app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
   const stage = req.query.stage;

@@ -187,6 +187,18 @@
     <div id="page-admin" class="page">
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Active Bots
+          <button class="btn btn-success btn-sm" onclick="loadActiveBots()">Refresh</button>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Bots Nora has out in meetings right now (or on their way). Use Remove to make a duplicate or wrong-meeting bot leave the call.
+        </p>
+        <div id="active-bots-list">Loading…</div>
+        <div id="active-bots-toast" class="toast"></div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Calendar Auto-Join
           <span style="font-size: 11px; color: #666; font-weight: 400;">connect Nora's Google Calendar so she joins invited meetings automatically</span>
         </h2>
@@ -931,7 +943,64 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadActiveBots(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+    }
+
+    // Active bots — list + remove
+    function fmtBotStatus(s) {
+      const map = {
+        ready: 'Ready',
+        joining_call: 'Joining',
+        in_call_recording: 'In call (recording)',
+        in_call_not_recording: 'In call'
+      };
+      return map[s] || s || 'unknown';
+    }
+    function fmtBotMeetingUrl(u) {
+      if (!u) return '';
+      try {
+        const url = new URL(u);
+        return url.hostname + url.pathname;
+      } catch { return u; }
+    }
+    async function loadActiveBots() {
+      const list = document.getElementById('active-bots-list');
+      try {
+        const r = await api('/admin/active-bots');
+        const d = await r.json();
+        if (!Array.isArray(d.bots) || d.bots.length === 0) {
+          list.innerHTML = '<p class="empty">No active bots.</p>';
+          return;
+        }
+        list.innerHTML = d.bots.map(b => `
+          <div class="memory-item">
+            <div style="flex: 1; min-width: 0;">
+              <div class="memory-fact" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}</div>
+              <div class="memory-meta">${escHtml(fmtBotStatus(b.status))}${b.join_at ? ' · joins ' + escHtml(new Date(b.join_at).toLocaleString()) : ''} · ${escHtml(b.id)}</div>
+            </div>
+            <div style="display: flex; gap: 6px; flex-shrink: 0;">
+              <button class="btn btn-danger" onclick="removeBot('${escHtml(b.id)}', '${escHtml(fmtBotMeetingUrl(b.meeting_url))}')">Remove</button>
+            </div>
+          </div>
+        `).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load active bots.</p>';
+      }
+    }
+    async function removeBot(botId, label) {
+      if (!confirm(`Remove Nora from "${label || botId}"?`)) return;
+      const s = document.getElementById('active-bots-toast');
+      try {
+        const r = await api('/admin/bots/' + botId + '/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          s.className = 'toast err'; s.textContent = 'Remove failed: ' + (d.error ? JSON.stringify(d.error) : r.status);
+          return;
+        }
+        s.className = 'toast ok'; s.textContent = 'Removed.';
+        loadActiveBots();
+        setTimeout(() => s.style.display = 'none', 2500);
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
 
     // Calendar auto-join
