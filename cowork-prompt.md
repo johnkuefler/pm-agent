@@ -408,6 +408,42 @@ Guardrails:
 - Only file **client** meetings. Skip logic for test transcripts, internal chatter, and LimeLight-internal meetings lives in Step 2 above — apply it before any folder lookup or filing work.
 - The transcript content might contain financials. Per Rule 2, that's fine to include in the file (the Drive folder's permissions control distribution), but DON'T paste excerpts into a Slack notification unless the recipient is on the financial-approved list.
 
+## Step 3.7: Process Slack File Inbox
+
+Anything someone Slacked Nora as a file landed in her local inbox and is waiting in the task queue as `"File ... from Slack"`. The server already downloaded the file and acknowledged the sender; your job is to upload it to the right Drive folder and reply with the link.
+
+1. **Look up inbox contents.** Tasks beginning with `File ... from Slack` will appear in `GET /tasks?status=pending`. The task's `detail` field lists each attached file's `inbox_id`. You can also list everything currently in the inbox:
+
+   ```bash
+   curl -s "${BASE}/admin/inbox?key=${KEY}" | jq .
+   ```
+
+2. **For each file referenced in the task:** fetch the bytes from the inbox endpoint:
+
+   ```bash
+   curl -s -H "Authorization: Bearer ${KEY}" \
+     "${BASE}/admin/inbox/file/{inbox_id}" -o /tmp/{filename}
+   ```
+
+3. **Figure out where it goes.** Read the task's `context` and `detail` for the user's instruction (e.g., "file in DMC drive in Branding folder"). If the destination is ambiguous, ask the user via a Slack reply in the original thread (use `task.source_thread_ts` and `task.source_channel`) and skip the task for now — better to leave it pending than to file it wrong.
+
+4. **Upload to Drive via the two-hop pattern** ("Writing Files to Client Shared Drives" above). For binary files (PDFs, decks, images), pass the file content as base64 to `create_file` with the right `contentMimeType` and the local `/tmp/{filename}` path; the Drive MCP handles uploads of arbitrary binary content this way. Then `copy_file` from staging into the client's shared drive folder.
+
+5. **Reply in the original Slack thread with the Drive link** — use `/notify` with `channel` = stripped `task.source_channel`, `thread_ts` = `task.source_thread_ts`, and `text` = "Filed at {viewUrl}". Keep it terse.
+
+6. **Clean up the inbox entry** so the server volume doesn't grow forever:
+
+   ```bash
+   curl -s -X DELETE "${BASE}/admin/inbox/file/{inbox_id}?key=${KEY}"
+   ```
+
+7. **Mark the task done** and save a memory marker: `"Filed Slack inbox file {filename} on {YYYY-MM-DD} to {Client} at {viewUrl}"`.
+
+Guardrails:
+- If the user's instruction names a client/project, file in that client's drive. If they just sent a file with no instruction, ask in the thread before guessing.
+- Same as transcripts: ONE filing per run is the typical pace, batch processing OK if the inbox has piled up.
+- If a file's mimetype is unrecognized or its content is concerning (executables, archives with unclear contents), don't auto-upload — surface to John instead.
+
 ## Step 4: Check Gmail for Items Needing Attention
 
 Search Gmail for unread messages that may need Nora's attention. Use unread status as the processing flag — once you've addressed an email, mark it as read so it doesn't get re-processed on the next run.
