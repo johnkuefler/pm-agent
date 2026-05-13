@@ -2594,10 +2594,17 @@ app.post('/webhook/slack', async (req, res) => {
   // intent and we route to the file inbox path below. Otherwise still bail.
   if (!query && !hasFiles) return;
 
-  // File-share path: download every attachment to the local inbox, create a task for
-  // the cowork loop to upload to Drive, and acknowledge in the thread immediately so
-  // the sender knows we received it. Skips all the normal text-handling flow below.
+  // File-share path: ONLY in DMs. Without this gate, every file drop in a
+  // proactive-enabled channel triggered Nora to download and ask what to do with it,
+  // which is noisy and inappropriate for general channel activity. File handling is
+  // strictly opt-in via DM — if someone wants Nora to do something with a file in a
+  // channel, they should DM it to her.
   if (hasFiles) {
+    const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
+    if (!isDM) {
+      console.log(`📎 Ignoring channel file drop (channel_type=${event.channel_type}, channel=${channel}) — file handling is DM-only`);
+      return;
+    }
     await handleSlackFiles(event, channel, user, threadTs, query);
     return;
   }
