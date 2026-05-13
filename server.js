@@ -2386,20 +2386,29 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText) {
     return;
   }
 
-  // Create a single task that captures all files in this message (typical case is one
-  // file per message, but Slack does support multi-upload). The cowork loop reads the
-  // task's detail to know which inbox files to fetch.
+  // Create a single task that captures all files in this message. The action describes
+  // what the user actually asked for (or "Handle attachment(s)" if they sent files with
+  // no text). The cowork loop reads the detail to know what to do — file to Drive,
+  // review, summarize, answer questions about it, or ask for clarification — based on
+  // the user's instruction, NOT a hardcoded assumption.
   const fileList = savedFiles.map(f => `- ${f.filename} (${f.mimetype || 'unknown'}, ${(f.size / 1024).toFixed(1)}KB) — inbox_id: ${f.inbox_id}`).join('\n');
-  const action = savedFiles.length === 1
-    ? `File "${savedFiles[0].filename}" from Slack`
-    : `File ${savedFiles.length} attachments from Slack`;
+  const fileNoun = savedFiles.length > 1 ? `${savedFiles.length} attachments` : `"${savedFiles[0].filename}"`;
+  // Compact action — first line of instruction if short, else a generic phrase. The
+  // detail field carries the full instruction verbatim so we never lose information.
+  let action;
+  if (queryText) {
+    const firstLine = queryText.split('\n')[0].trim();
+    action = firstLine.length <= 80 ? firstLine : firstLine.slice(0, 77) + '...';
+  } else {
+    action = `Handle Slack attachment${savedFiles.length > 1 ? 's' : ''} (${fileNoun})`;
+  }
   const detail = [
-    queryText ? `User instruction: "${queryText}"` : 'No accompanying text — infer destination from context.',
+    queryText ? `User asked: "${queryText}"` : 'User sent the file(s) with no accompanying message — ask them in the thread what they want done before acting.',
     '',
-    'Attached files (fetch each via GET /admin/inbox/file/{inbox_id} with the API key):',
+    `Attached file${savedFiles.length > 1 ? 's' : ''} (fetch each via GET /admin/inbox/file/{inbox_id} with the API key):`,
     fileList,
     '',
-    'Once filed to Drive, reply in the Slack thread with the Drive link(s) and delete the inbox file(s) via DELETE /admin/inbox/file/{inbox_id}.'
+    'Interpret the user request and do what they asked. Could be: file to Drive, review the contents and answer, summarize, flag risks, find specific info, etc. If ambiguous, reply in the original Slack thread and ask before acting. Reply in the thread with the result and DELETE the inbox file(s) once done.'
   ].join('\n');
   const taskId = addTask({
     action,
@@ -2408,24 +2417,51 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText) {
     source_channel: `slack:${channel}`,
     source_user: user,
     source_thread_ts: threadTs,
-    context: `[Slack file upload]\n${queryText || '(no text)'}\nFiles: ${savedFiles.map(f => f.filename).join(', ')}`
+    context: `[Slack file upload]\nUser said: ${queryText || '(no text — file only)'}\nFiles: ${savedFiles.map(f => f.filename).join(', ')}`
   });
 
-  // Acknowledge in Slack so the user knows we got it.
+  // Acknowledge in Slack so the user knows we got it. Use Haiku to generate a brief,
+  // natural reply that reflects what they actually asked — sounds more like Nora than
+  // a templated "got the file" string would. Fail-soft to a generic ack if Haiku errors.
+  let ackText;
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const fileMeta = savedFiles.map(f => `${f.filename} (${f.mimetype || 'unknown'})`).join(', ');
+      const ackRes = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 80,
+          temperature: 0.6,
+          system: 'You are Nora — LimeLight\'s PM agent. Someone just sent you file(s) in Slack with an instruction. Reply with ONE short sentence (under 20 words) acknowledging you got it and what you\'ll do, matching your direct, no-corporate-fluff voice. If they didn\'t give an instruction (file only, no text), ask briefly what they want done. Never say "got it" — vary the opener. No emoji. No "I\'ll be sure to" or "happy to help". Plain text only, no markdown.',
+          messages: [{
+            role: 'user',
+            content: `Files received: ${fileMeta}\nUser said: ${queryText || '(no message text — they just dropped the file)'}`
+          }]
+        },
+        { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 10000 }
+      );
+      ackText = ackRes.data?.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim() || null;
+    } catch (err) {
+      console.warn('📎 Slack ACK Haiku call failed; using generic:', err.response?.data?.error?.message || err.message);
+    }
+  }
+  if (!ackText) {
+    ackText = queryText
+      ? `On it — I'll handle ${fileNoun} and follow up in this thread.`
+      : `Got the file${savedFiles.length > 1 ? 's' : ''}. What would you like me to do with ${savedFiles.length > 1 ? 'them' : 'it'}?`;
+  }
   try {
-    const ackText = queryText
-      ? `Got the file${savedFiles.length > 1 ? 's' : ''} — I'll get them filed and post the Drive link${savedFiles.length > 1 ? 's' : ''} back in this thread.`
-      : `Got the file${savedFiles.length > 1 ? 's' : ''}. Where would you like ${savedFiles.length > 1 ? 'them' : 'it'} filed?`;
     await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       thread_ts: threadTs,
       text: ackText
     }, { headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' } });
   } catch (err) {
-    console.warn('📎 Slack ACK failed:', err.response?.data || err.message);
+    console.warn('📎 Slack ACK post failed:', err.response?.data || err.message);
   }
 
-  console.log(`📎 Created inbox task ${taskId} for ${savedFiles.length} file(s) from Slack`);
+  console.log(`📎 Created inbox task ${taskId} for ${savedFiles.length} file(s) — action: "${action}"`);
 }
 
 // Inbox endpoints — used by the cowork loop to pull files back out for Drive upload.
