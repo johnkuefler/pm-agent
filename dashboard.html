@@ -199,6 +199,17 @@
 
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Slack — Bot Channels
+          <button class="btn btn-success btn-sm" onclick="loadBotChannels()">Refresh</button>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Channels Nora's Slack bot is currently a member of. To add her to a new channel: <code>/invite @Nora</code> from that channel.
+        </p>
+        <div id="bot-channels-list">Loading…</div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Calendar Auto-Join
           <span style="font-size: 11px; color: #666; font-weight: 400;">connect Nora's Google Calendar so she joins invited meetings automatically</span>
         </h2>
@@ -943,7 +954,38 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadActiveBots(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadActiveBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+    }
+
+    // Slack — channels the Nora bot is a member of
+    async function loadBotChannels() {
+      const el = document.getElementById('bot-channels-list');
+      try {
+        const r = await api('/admin/slack/bot-channels');
+        const d = await r.json();
+        if (!r.ok || d.error) {
+          el.innerHTML = `<p class="empty">Failed to load: ${escHtml(typeof d.error === 'string' ? d.error : JSON.stringify(d.error || 'error'))}</p>`;
+          return;
+        }
+        if (!d.channels || d.channels.length === 0) {
+          el.innerHTML = '<p class="empty">Nora isn\'t a member of any channels yet.</p>';
+          return;
+        }
+        const more = d.next_cursor ? '<div class="memory-meta" style="margin-top:8px;">More channels exist (pagination not yet shown — first 200 listed).</div>' : '';
+        el.innerHTML = `
+          <div class="memory-meta" style="margin-bottom: 8px;">${d.channels.length} channel${d.channels.length === 1 ? '' : 's'}</div>
+          ${d.channels.map(c => `
+            <div class="memory-item">
+              <div style="flex: 1; min-width: 0;">
+                <div class="memory-fact">#${escHtml(c.name)}${c.is_private ? ' <span style="color:#666;font-size:11px;">(private)</span>' : ''}</div>
+                <div class="memory-meta">${escHtml(c.id)}${c.num_members != null ? ' · ' + c.num_members + ' member' + (c.num_members === 1 ? '' : 's') : ''}${c.topic ? ' · ' + escHtml(c.topic) : ''}</div>
+              </div>
+            </div>
+          `).join('')}
+          ${more}`;
+      } catch (e) {
+        el.innerHTML = `<p class="empty">Failed to load bot channels: ${escHtml(e.message)}</p>`;
+      }
     }
 
     // Active bots — list + remove

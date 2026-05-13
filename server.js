@@ -3634,6 +3634,38 @@ app.post('/admin/bots/:id/leave', requireAuth, async (req, res) => {
 });
 
 // Teamwork: update a task's workflow stage by task ID and stage name
+// List Slack channels Nora's bot is a member of. Uses the bot token to call
+// users.conversations on Slack — that's the only auth identity that returns *bot*
+// memberships rather than the caller's. Public + private channels; one page (200)
+// is plenty for typical workspaces, but surface the next_cursor if there's more.
+app.get('/admin/slack/bot-channels', requireAuth, async (req, res) => {
+  const token = process.env.SLACK_BOT_TOKEN;
+  if (!token) return res.status(500).json({ error: 'SLACK_BOT_TOKEN not set' });
+  try {
+    const r = await axios.get('https://slack.com/api/users.conversations', {
+      headers: { Authorization: `Bearer ${token}` },
+      params: { types: 'public_channel,private_channel', limit: 200, exclude_archived: true }
+    });
+    if (!r.data?.ok) return res.status(502).json({ error: r.data?.error || 'slack api error' });
+    const channels = (r.data.channels || []).map(c => ({
+      id: c.id,
+      name: c.name,
+      is_private: !!c.is_private,
+      is_archived: !!c.is_archived,
+      num_members: c.num_members ?? null,
+      topic: c.topic?.value || null
+    })).sort((a, b) => a.name.localeCompare(b.name));
+    res.json({
+      count: channels.length,
+      channels,
+      next_cursor: r.data.response_metadata?.next_cursor || null
+    });
+  } catch (err) {
+    console.error('Bot channels fetch failed:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
 app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
   const stage = req.query.stage;
   const { taskId } = req.params;
