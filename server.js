@@ -2328,6 +2328,48 @@ function sanitizeFilename(name) {
 
 const MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024; // 25MB — covers typical decks/PDFs/images
 
+// Download a Slack file by url_private_download. We manually follow redirects so the
+// Authorization header is preserved across them — axios's default auto-follow strips
+// auth on cross-origin redirects (slack.com → files.slack.com etc.), causing Slack to
+// respond with a sign-in HTML page instead of the file bytes. After the final response
+// we also sanity-check the content-type and first bytes; if Slack served us HTML
+// anyway (e.g., missing files:read scope), surface a clear error rather than write
+// garbage to disk.
+async function downloadSlackFile(downloadUrl, token, maxBytes) {
+  let url = downloadUrl;
+  let lastStatus;
+  for (let hop = 0; hop < 6; hop++) {
+    const res = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      responseType: 'arraybuffer',
+      maxRedirects: 0,            // we follow them manually so auth is preserved
+      maxContentLength: maxBytes,
+      timeout: 60000,
+      validateStatus: s => (s >= 200 && s < 400)
+    });
+    lastStatus = res.status;
+    if (res.status >= 300 && res.status < 400) {
+      const next = res.headers.location;
+      if (!next) throw new Error(`Slack redirected (${res.status}) with no Location header`);
+      url = new URL(next, url).toString();
+      continue;
+    }
+    // 2xx — final response
+    const body = Buffer.from(res.data);
+    const ct = String(res.headers['content-type'] || '').toLowerCase();
+    const looksHtml = ct.startsWith('text/html')
+      || (body.length >= 5 && body.slice(0, 14).toString('utf8').trimStart().toLowerCase().startsWith('<!doctype html'))
+      || (body.length >= 5 && body.slice(0, 6).toString('utf8').toLowerCase() === '<html ')
+      || (body.length >= 5 && body.slice(0, 5).toString('utf8').toLowerCase() === '<html');
+    if (looksHtml) {
+      const preview = body.slice(0, 200).toString('utf8').replace(/\s+/g, ' ');
+      throw new Error(`Slack served HTML instead of the file (likely missing files:read scope or no channel access). Preview: ${preview.slice(0, 160)}`);
+    }
+    return { body, contentType: res.headers['content-type'] || null };
+  }
+  throw new Error(`Too many redirects (last status ${lastStatus})`);
+}
+
 async function handleSlackFiles(event, channel, user, threadTs, queryText) {
   console.log(`📎 Slack file event from ${user} (channel ${channel}): ${event.files.length} file(s), text="${queryText.slice(0, 80)}"`);
   const slackToken = process.env.SLACK_BOT_TOKEN;
@@ -2338,49 +2380,51 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText) {
   ensureInboxDir();
 
   const savedFiles = [];
+  const failedFiles = [];
   for (const f of event.files) {
     const downloadUrl = f.url_private_download || f.url_private;
     if (!downloadUrl) {
       console.warn(`📎 File ${f.id} has no download URL; skipping`);
+      failedFiles.push({ name: f.name, reason: 'no download URL' });
       continue;
     }
     if (typeof f.size === 'number' && f.size > MAX_INBOX_FILE_BYTES) {
       console.warn(`📎 File ${f.name} is ${(f.size / 1024 / 1024).toFixed(1)}MB, over the ${MAX_INBOX_FILE_BYTES / 1024 / 1024}MB limit; skipping`);
+      failedFiles.push({ name: f.name, reason: `over ${MAX_INBOX_FILE_BYTES / 1024 / 1024}MB size limit` });
       continue;
     }
     try {
-      const dlRes = await axios.get(downloadUrl, {
-        headers: { Authorization: `Bearer ${slackToken}` },
-        responseType: 'arraybuffer',
-        maxContentLength: MAX_INBOX_FILE_BYTES,
-        timeout: 60000
-      });
+      const { body } = await downloadSlackFile(downloadUrl, slackToken, MAX_INBOX_FILE_BYTES);
       const inboxId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const safeName = sanitizeFilename(f.name || f.title || `file-${f.id}`);
       const filename = `${inboxId}__${safeName}`;
       const fullPath = path.join(getInboxDir(), filename);
-      fs.writeFileSync(fullPath, Buffer.from(dlRes.data));
-      console.log(`📎 Saved Slack file to inbox: ${filename} (${dlRes.data.byteLength} bytes, ${f.mimetype || 'unknown mime'})`);
+      fs.writeFileSync(fullPath, body);
+      console.log(`📎 Saved Slack file to inbox: ${filename} (${body.length} bytes, ${f.mimetype || 'unknown mime'})`);
       savedFiles.push({
         inbox_id: inboxId,
         filename: safeName,
         original_name: f.name || f.title || null,
         mimetype: f.mimetype || null,
-        size: dlRes.data.byteLength,
+        size: body.length,
         slack_file_id: f.id
       });
     } catch (err) {
-      console.error(`📎 Failed to download file ${f.id} (${f.name}):`, err.response?.status || err.message);
+      const reason = err.message || String(err);
+      console.error(`📎 Failed to download file ${f.id} (${f.name}): ${reason}`);
+      failedFiles.push({ name: f.name, reason });
     }
   }
 
   if (savedFiles.length === 0) {
     // Nothing we could save — surface that back to the sender so they don't wait forever.
+    const reasons = failedFiles.map(f => `${f.name}: ${f.reason}`).join('; ').slice(0, 400);
+    const text = `I saw the file${event.files.length > 1 ? 's' : ''} you sent but couldn't pull ${event.files.length > 1 ? 'any of them' : 'it'} down. Reason: ${reasons}. If the error mentions HTML or sign-in, the bot likely needs the files:read scope (or to be in the channel where the file was originally shared).`;
     try {
       await axios.post('https://slack.com/api/chat.postMessage', {
         channel,
         thread_ts: threadTs,
-        text: "I saw you sent files but I couldn't pull them down — check the size (limit is 25MB each) or that I have files:read."
+        text
       }, { headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' } });
     } catch {}
     return;
@@ -2550,10 +2594,17 @@ app.post('/webhook/slack', async (req, res) => {
   // intent and we route to the file inbox path below. Otherwise still bail.
   if (!query && !hasFiles) return;
 
-  // File-share path: download every attachment to the local inbox, create a task for
-  // the cowork loop to upload to Drive, and acknowledge in the thread immediately so
-  // the sender knows we received it. Skips all the normal text-handling flow below.
+  // File-share path: ONLY in DMs. Without this gate, every file drop in a
+  // proactive-enabled channel triggered Nora to download and ask what to do with it,
+  // which is noisy and inappropriate for general channel activity. File handling is
+  // strictly opt-in via DM — if someone wants Nora to do something with a file in a
+  // channel, they should DM it to her.
   if (hasFiles) {
+    const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
+    if (!isDM) {
+      console.log(`📎 Ignoring channel file drop (channel_type=${event.channel_type}, channel=${channel}) — file handling is DM-only`);
+      return;
+    }
     await handleSlackFiles(event, channel, user, threadTs, query);
     return;
   }
