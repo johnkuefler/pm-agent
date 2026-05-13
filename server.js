@@ -937,6 +937,13 @@ Drive link in the original Slack thread, and clean up the inbox entries.
   Response: { "files": [{ "inbox_id", "filename", "size", "created" }, ...] }
 - GET    /admin/inbox/file/:inbox_id        — Download the raw file bytes (with
   Content-Disposition so curl writes the original filename).
+- POST   /admin/inbox/file/:inbox_id/upload-to-drive
+  — Server-side upload of the inbox file to Google Drive using Nora's stored OAuth
+  refresh token. Use this for BINARY files (PNG, JPG, PDF, decks, images) — the
+  Drive MCP's create_file path only handles text content reliably. Body:
+  { "parent_folder_id": "<folder id>", "filename": "<final name>", "mimetype": "<optional>" }
+  Response: { "ok": true, "file": { "id", "name", "webViewLink", "mimeType", "parents" } }
+  The returned webViewLink is what you paste in the Slack thread.
 - DELETE /admin/inbox/file/:inbox_id        — Delete the file from the inbox after
   successful Drive upload so the volume doesn't grow forever.
 
@@ -1643,7 +1650,11 @@ const RECALL_V2_BASE = `https://${process.env.RECALL_REGION || 'us-east-1'}.reca
 const GOOGLE_OAUTH_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events.readonly',
   'https://www.googleapis.com/auth/userinfo.email',
-  'openid'
+  'openid',
+  // drive.file lets us create files (including binary uploads) under any parent folder
+  // Nora can access — narrower than full drive scope but sufficient for inbox→Drive
+  // uploads. The cowork loop uses /admin/inbox/file/:inbox_id/upload-to-drive below.
+  'https://www.googleapis.com/auth/drive.file'
 ];
 // Short-lived state tokens for OAuth CSRF protection. Cleared after use; auto-expires
 // after 10 minutes if the callback never comes back.
@@ -1728,7 +1739,11 @@ app.get('/calendar/oauth/callback', async (req, res) => {
       recall_calendar_id: recallRes.data.id,
       google_email: googleEmail,
       connected_at: new Date().toISOString(),
-      last_sync: null
+      last_sync: null,
+      // Persist Nora's Google refresh token so we can mint access tokens for Drive
+      // uploads (and any other Google API calls we layer in later). Recall has its own
+      // copy for calendar sync; this one is for our server-side use.
+      oauth_refresh_token: refresh_token
     });
     console.log(`📅 Calendar connected: ${googleEmail} (recall_id: ${recallRes.data.id})`);
 
@@ -2544,6 +2559,111 @@ app.delete('/admin/inbox/file/:inboxId', requireAuth, (req, res) => {
     fs.unlinkSync(path.join(dir, match));
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ---- Google Drive upload via Nora's OAuth (server-side, supports binary) ----
+// The Drive MCP path the cowork loop uses works fine for textContent (markdown, txt)
+// but doesn't have a clean way to upload arbitrary binary bytes (PNG, PDF, etc.). So
+// for binary files we punt: the cowork loop calls this endpoint with the inbox_id +
+// destination folder + filename, and the server does a Drive multipart upload using
+// Nora's OAuth refresh token (collected during /calendar/connect, now also scoped
+// for drive.file). One round trip, real bytes, no MCP intermediary.
+
+// Refresh-token-to-access-token with a tiny in-memory cache to avoid re-minting on
+// every call (access tokens last ~1 hour; we conservatively cache for 50 min).
+let googleAccessTokenCache = null;
+async function getGoogleAccessToken() {
+  if (googleAccessTokenCache && Date.now() < googleAccessTokenCache.expiresAt) {
+    return googleAccessTokenCache.token;
+  }
+  const state = loadCalendarState();
+  const refreshToken = state?.oauth_refresh_token;
+  if (!refreshToken) {
+    throw new Error('No Google OAuth refresh token on file. Reconnect calendar from Admin to grant Drive scope.');
+  }
+  const r = await axios.post('https://oauth2.googleapis.com/token', new URLSearchParams({
+    client_id: process.env.GOOGLE_OAUTH_CLIENT_ID,
+    client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token'
+  }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  if (!r.data?.access_token) {
+    throw new Error('Google token refresh failed: ' + JSON.stringify(r.data));
+  }
+  googleAccessTokenCache = {
+    token: r.data.access_token,
+    expiresAt: Date.now() + 50 * 60 * 1000
+  };
+  return r.data.access_token;
+}
+
+async function driveMultipartUpload({ bytes, name, parentId, mimetype }) {
+  const accessToken = await getGoogleAccessToken();
+  const boundary = '------NORABOUNDARY' + crypto.randomBytes(8).toString('hex');
+  const metadata = JSON.stringify({ name, parents: parentId ? [parentId] : undefined });
+  const body = Buffer.concat([
+    Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`, 'utf8'),
+    Buffer.from(`--${boundary}\r\nContent-Type: ${mimetype || 'application/octet-stream'}\r\n\r\n`, 'utf8'),
+    bytes,
+    Buffer.from(`\r\n--${boundary}--`, 'utf8')
+  ]);
+  // supportsAllDrives=true is required when uploading into a shared drive folder.
+  const r = await axios.post(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,webViewLink,mimeType,parents',
+    body,
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+        'Content-Length': body.length
+      },
+      maxBodyLength: 30 * 1024 * 1024,
+      maxContentLength: 30 * 1024 * 1024
+    }
+  );
+  return r.data;
+}
+
+// POST /admin/inbox/file/:inboxId/upload-to-drive
+// Body: { parent_folder_id, filename?, mimetype? }
+// Uploads the inbox file to Drive and returns { id, webViewLink, name, mimeType }.
+// Filename defaults to the original inbox filename; mimetype is auto-detected by Drive
+// based on the file extension if omitted.
+app.post('/admin/inbox/file/:inboxId/upload-to-drive', requireAuth, async (req, res) => {
+  try {
+    const { parent_folder_id, filename, mimetype } = req.body || {};
+    if (!parent_folder_id) return res.status(400).json({ error: 'parent_folder_id is required' });
+
+    const dir = getInboxDir();
+    const match = fs.readdirSync(dir).find(name => name.startsWith(req.params.inboxId + '__'));
+    if (!match) return res.status(404).json({ error: 'inbox file not found' });
+    const originalName = match.slice(match.indexOf('__') + 2);
+    const finalName = (typeof filename === 'string' && filename.trim()) ? filename.trim() : originalName;
+
+    // Light mime guess from extension if caller didn't pass one — Drive can usually
+    // figure it out too, but being explicit helps for things like PNGs that we want
+    // to land with the right content-type for viewing.
+    const ext = (finalName.split('.').pop() || '').toLowerCase();
+    const guessedMime = mimetype || ({
+      png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+      pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain', csv: 'text/csv',
+      json: 'application/json', html: 'text/html',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      zip: 'application/zip'
+    })[ext] || 'application/octet-stream';
+
+    const bytes = fs.readFileSync(path.join(dir, match));
+    console.log(`📁 Drive upload: ${finalName} (${bytes.length} bytes, ${guessedMime}) → folder ${parent_folder_id}`);
+    const driveFile = await driveMultipartUpload({ bytes, name: finalName, parentId: parent_folder_id, mimetype: guessedMime });
+    console.log(`📁 Drive upload OK: ${driveFile.id} ${driveFile.webViewLink}`);
+    res.json({ ok: true, file: driveFile });
+  } catch (err) {
+    const detail = err.response?.data || err.message;
+    console.error('📁 Drive upload failed:', detail);
+    res.status(err.response?.status || 500).json({ error: detail });
+  }
 });
 
 app.post('/webhook/slack', async (req, res) => {

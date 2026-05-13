@@ -429,12 +429,36 @@ When someone Slacks Nora a file, the server downloads it to her local inbox and 
 
 4. **Do what the user asked.** Common patterns:
 
-   - **"File this in {client}'s {folder} drive"** → upload via the two-hop pattern ("Writing Files to Client Shared Drives" above), reply with the Drive link.
+   - **"File this in {client}'s {folder} drive"** → see "Filing files to Drive" below — DO NOT use the Drive MCP `create_file` for anything that isn't plain text/markdown; binary uploads (PNG, PDF, decks, images) go through the server-side upload endpoint.
    - **"Review this and tell me what you think"** / **"Look at this brief"** / **"Summarize"** → use the `Read` tool on the local file (handles PDFs and images natively). Form an opinion in Nora's voice — direct, specific, no corporate fluff. Reply in the thread.
    - **"What does it say about X?"** / specific questions → read the file, answer the question, cite the relevant section. Don't file anything.
    - **"Find me the numbers for Y"** / data extraction → read, pull out what they asked, reply with the figures.
    - **Ambiguous request** → ask in the thread, leave the task pending.
    - **Combined ask** (e.g., "Review this and file it in DMC's drive") → do both: respond with your take AND upload, in that order in the thread.
+
+### Filing files to Drive (from the inbox)
+
+Two paths depending on whether the file is text or binary. **The Drive MCP's `create_file` can't reliably upload arbitrary binary content — past attempts on PNG/PDF have produced corrupt or empty files. Don't try that path for binary; use the server endpoint instead.**
+
+**Binary files (PNG, JPG, PDF, decks, images, anything non-text):**
+
+```bash
+# parent_folder_id is the Drive folder ID (the last segment of the folder URL).
+# filename is what the file should be called once it lands — typically renamed per
+# client naming conventions (Confluence usually has a doc about this per client).
+curl -s -X POST "${BASE}/admin/inbox/file/{inbox_id}/upload-to-drive?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"parent_folder_id": "1Ge01p3v30o5xH4...", "filename": "LE-1485262_Website Build_Timeline_jk.png"}' \
+  | jq .
+```
+
+The response includes `file.webViewLink` — that's the Drive URL to paste in the Slack thread. The server handles auth (uses Nora's stored Google refresh token), mimetype detection from the extension, and shared-drive uploads automatically. No two-hop pattern needed.
+
+**Text files (markdown, txt, csv, json):**
+
+The Drive MCP's `create_file` with `textContent` still works fine for these. Use the two-hop pattern ("Writing Files to Client Shared Drives" above) — read the inbox file, pass its content as `textContent` to `create_file` (staging folder), then `copy_file` into the client's drive folder.
+
+**If unsure which path:** check the file's extension and the inbox `mimetype` field from `GET /admin/inbox`. Anything starting with `image/`, `application/pdf`, `application/vnd.openxmlformats`, or `application/zip` is binary — use the server endpoint.
 
 5. **Reply in the original Slack thread.** Use `/notify` with `channel` = stripped `task.source_channel`, `thread_ts` = `task.source_thread_ts`. Keep it in your voice — concise, specific. If you uploaded to Drive, include the link. If you reviewed, give the actual take, not "I have reviewed the document."
 
