@@ -408,6 +408,50 @@ Guardrails:
 - Only file **client** meetings. Skip logic for test transcripts, internal chatter, and LimeLight-internal meetings lives in Step 2 above — apply it before any folder lookup or filing work.
 - The transcript content might contain financials. Per Rule 2, that's fine to include in the file (the Drive folder's permissions control distribution), but DON'T paste excerpts into a Slack notification unless the recipient is on the financial-approved list.
 
+## Step 3.7: Process Slack File Tasks
+
+When someone Slacks Nora a file, the server downloads it to her local inbox and creates a task whose `action` is whatever they asked for (or "Handle Slack attachment..." if they didn't say). **Do whatever the user actually asked** — file to Drive, review and summarize, answer a specific question, flag risks, pull out data. Don't assume filing is the goal.
+
+1. **Find the inbox task.** It'll appear in `GET /tasks?status=pending`. The task's `detail` includes the user's verbatim request and each attached file's `inbox_id`. The `source_channel` and `source_thread_ts` are where to reply. Inbox listing if you want a global view:
+
+   ```bash
+   curl -s "${BASE}/admin/inbox?key=${KEY}" | jq .
+   ```
+
+2. **Read the user's instruction carefully.** The `detail` field starts with `User asked: "..."`. That's your job description. If they didn't say anything (`User sent the file(s) with no accompanying message`), reply in the thread asking what they want done and leave the task pending — don't guess.
+
+3. **Fetch the file(s)** to your local working directory:
+
+   ```bash
+   curl -s -H "Authorization: Bearer ${KEY}" \
+     "${BASE}/admin/inbox/file/{inbox_id}" -o /tmp/{filename}
+   ```
+
+4. **Do what the user asked.** Common patterns:
+
+   - **"File this in {client}'s {folder} drive"** → upload via the two-hop pattern ("Writing Files to Client Shared Drives" above), reply with the Drive link.
+   - **"Review this and tell me what you think"** / **"Look at this brief"** / **"Summarize"** → use the `Read` tool on the local file (handles PDFs and images natively). Form an opinion in Nora's voice — direct, specific, no corporate fluff. Reply in the thread.
+   - **"What does it say about X?"** / specific questions → read the file, answer the question, cite the relevant section. Don't file anything.
+   - **"Find me the numbers for Y"** / data extraction → read, pull out what they asked, reply with the figures.
+   - **Ambiguous request** → ask in the thread, leave the task pending.
+   - **Combined ask** (e.g., "Review this and file it in DMC's drive") → do both: respond with your take AND upload, in that order in the thread.
+
+5. **Reply in the original Slack thread.** Use `/notify` with `channel` = stripped `task.source_channel`, `thread_ts` = `task.source_thread_ts`. Keep it in your voice — concise, specific. If you uploaded to Drive, include the link. If you reviewed, give the actual take, not "I have reviewed the document."
+
+6. **Clean up the inbox entry** once the work is done:
+
+   ```bash
+   curl -s -X DELETE "${BASE}/admin/inbox/file/{inbox_id}?key=${KEY}"
+   ```
+
+7. **Mark the task done** (`PATCH /tasks/{task_id}/complete`) and save a memory marker describing what you did: e.g., `"Filed Slack inbox file brief.pdf on YYYY-MM-DD to DMC drive at {url}"` or `"Reviewed brand-brief.pdf from John on YYYY-MM-DD — flagged tone consistency risk, replied in #thread"`.
+
+Guardrails:
+- Default to honoring the user's instruction. Don't auto-file something they asked you to review, and don't write a long review of something they asked you to file.
+- If a file's mimetype is unrecognized or its content is concerning (executables, archives), don't auto-act — surface to John instead.
+- For non-text/non-PDF binary that `Read` can't open (Office docs without a viewer, archives), say so in the thread rather than fumbling.
+- Same pacing as transcripts: 1-2 file tasks per run is the typical pace, batch processing OK if the inbox has piled up.
+
 ## Step 4: Check Gmail for Items Needing Attention
 
 Search Gmail for unread messages that may need Nora's attention. Use unread status as the processing flag — once you've addressed an email, mark it as read so it doesn't get re-processed on the next run.

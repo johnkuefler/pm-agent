@@ -925,6 +925,21 @@ rather than orphaned references.
 - DELETE /tasks/:id             — Delete a task (use this to stop a recurring task
   entirely; PATCH/complete on a recurring task will keep rolling it forward).
 
+### Slack file inbox
+When someone Slacks Nora a file, the server downloads it to a local inbox and creates
+a task whose action starts with "File ... from Slack". The task's detail lists every
+attached file's inbox_id. Cowork loop's job is to fetch each file via this inbox
+endpoint, upload it to the right Drive folder (use the two-hop pattern documented in
+the cowork prompt — staging folder → copy_file into client drive), reply with the
+Drive link in the original Slack thread, and clean up the inbox entries.
+
+- GET    /admin/inbox                       — List all files currently in the inbox.
+  Response: { "files": [{ "inbox_id", "filename", "size", "created" }, ...] }
+- GET    /admin/inbox/file/:inbox_id        — Download the raw file bytes (with
+  Content-Disposition so curl writes the original filename).
+- DELETE /admin/inbox/file/:inbox_id        — Delete the file from the inbox after
+  successful Drive upload so the volume doesn't grow forever.
+
 ### Transcripts
 - GET  /transcripts             — List all saved transcripts, newest first
   Response: [{ "bot_id", "ended", "file", "url", "utterance_count" }]
@@ -2289,6 +2304,204 @@ function shouldRespond(event) {
   return false;
 }
 
+// ---- Slack file inbox ----
+// When someone Slacks Nora a file, we download it to a server-side inbox folder and
+// create a cowork task. The cowork loop then fetches the file back from us (via the
+// authed /admin/inbox endpoint below) and uploads it to the right Drive folder using
+// the existing Drive MCP two-hop pattern. Storing locally first means we own the file
+// even if Slack later expires its URL, and decouples the (fast) Slack ACK from the
+// (slow, mcp-driven) Drive upload.
+
+const INBOX_DIR_VOLUME = path.join(VOLUME_DIR, 'nora-inbox');
+const INBOX_DIR_LOCAL = path.join(__dirname, 'nora-inbox');
+function getInboxDir() {
+  return fs.existsSync(VOLUME_DIR) ? INBOX_DIR_VOLUME : INBOX_DIR_LOCAL;
+}
+function ensureInboxDir() {
+  const dir = getInboxDir();
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+function sanitizeFilename(name) {
+  return String(name || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 120) || 'file';
+}
+
+const MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024; // 25MB — covers typical decks/PDFs/images
+
+async function handleSlackFiles(event, channel, user, threadTs, queryText) {
+  console.log(`📎 Slack file event from ${user} (channel ${channel}): ${event.files.length} file(s), text="${queryText.slice(0, 80)}"`);
+  const slackToken = process.env.SLACK_BOT_TOKEN;
+  if (!slackToken) {
+    console.warn('📎 SLACK_BOT_TOKEN not set — cannot download Slack files');
+    return;
+  }
+  ensureInboxDir();
+
+  const savedFiles = [];
+  for (const f of event.files) {
+    const downloadUrl = f.url_private_download || f.url_private;
+    if (!downloadUrl) {
+      console.warn(`📎 File ${f.id} has no download URL; skipping`);
+      continue;
+    }
+    if (typeof f.size === 'number' && f.size > MAX_INBOX_FILE_BYTES) {
+      console.warn(`📎 File ${f.name} is ${(f.size / 1024 / 1024).toFixed(1)}MB, over the ${MAX_INBOX_FILE_BYTES / 1024 / 1024}MB limit; skipping`);
+      continue;
+    }
+    try {
+      const dlRes = await axios.get(downloadUrl, {
+        headers: { Authorization: `Bearer ${slackToken}` },
+        responseType: 'arraybuffer',
+        maxContentLength: MAX_INBOX_FILE_BYTES,
+        timeout: 60000
+      });
+      const inboxId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const safeName = sanitizeFilename(f.name || f.title || `file-${f.id}`);
+      const filename = `${inboxId}__${safeName}`;
+      const fullPath = path.join(getInboxDir(), filename);
+      fs.writeFileSync(fullPath, Buffer.from(dlRes.data));
+      console.log(`📎 Saved Slack file to inbox: ${filename} (${dlRes.data.byteLength} bytes, ${f.mimetype || 'unknown mime'})`);
+      savedFiles.push({
+        inbox_id: inboxId,
+        filename: safeName,
+        original_name: f.name || f.title || null,
+        mimetype: f.mimetype || null,
+        size: dlRes.data.byteLength,
+        slack_file_id: f.id
+      });
+    } catch (err) {
+      console.error(`📎 Failed to download file ${f.id} (${f.name}):`, err.response?.status || err.message);
+    }
+  }
+
+  if (savedFiles.length === 0) {
+    // Nothing we could save — surface that back to the sender so they don't wait forever.
+    try {
+      await axios.post('https://slack.com/api/chat.postMessage', {
+        channel,
+        thread_ts: threadTs,
+        text: "I saw you sent files but I couldn't pull them down — check the size (limit is 25MB each) or that I have files:read."
+      }, { headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' } });
+    } catch {}
+    return;
+  }
+
+  // Create a single task that captures all files in this message. The action describes
+  // what the user actually asked for (or "Handle attachment(s)" if they sent files with
+  // no text). The cowork loop reads the detail to know what to do — file to Drive,
+  // review, summarize, answer questions about it, or ask for clarification — based on
+  // the user's instruction, NOT a hardcoded assumption.
+  const fileList = savedFiles.map(f => `- ${f.filename} (${f.mimetype || 'unknown'}, ${(f.size / 1024).toFixed(1)}KB) — inbox_id: ${f.inbox_id}`).join('\n');
+  const fileNoun = savedFiles.length > 1 ? `${savedFiles.length} attachments` : `"${savedFiles[0].filename}"`;
+  // Compact action — first line of instruction if short, else a generic phrase. The
+  // detail field carries the full instruction verbatim so we never lose information.
+  let action;
+  if (queryText) {
+    const firstLine = queryText.split('\n')[0].trim();
+    action = firstLine.length <= 80 ? firstLine : firstLine.slice(0, 77) + '...';
+  } else {
+    action = `Handle Slack attachment${savedFiles.length > 1 ? 's' : ''} (${fileNoun})`;
+  }
+  const detail = [
+    queryText ? `User asked: "${queryText}"` : 'User sent the file(s) with no accompanying message — ask them in the thread what they want done before acting.',
+    '',
+    `Attached file${savedFiles.length > 1 ? 's' : ''} (fetch each via GET /admin/inbox/file/{inbox_id} with the API key):`,
+    fileList,
+    '',
+    'Interpret the user request and do what they asked. Could be: file to Drive, review the contents and answer, summarize, flag risks, find specific info, etc. If ambiguous, reply in the original Slack thread and ask before acting. Reply in the thread with the result and DELETE the inbox file(s) once done.'
+  ].join('\n');
+  const taskId = addTask({
+    action,
+    detail,
+    assignee: 'nora',
+    source_channel: `slack:${channel}`,
+    source_user: user,
+    source_thread_ts: threadTs,
+    context: `[Slack file upload]\nUser said: ${queryText || '(no text — file only)'}\nFiles: ${savedFiles.map(f => f.filename).join(', ')}`
+  });
+
+  // Acknowledge in Slack so the user knows we got it. Use Haiku to generate a brief,
+  // natural reply that reflects what they actually asked — sounds more like Nora than
+  // a templated "got the file" string would. Fail-soft to a generic ack if Haiku errors.
+  let ackText;
+  if (process.env.ANTHROPIC_API_KEY) {
+    try {
+      const fileMeta = savedFiles.map(f => `${f.filename} (${f.mimetype || 'unknown'})`).join(', ');
+      const ackRes = await axios.post(
+        'https://api.anthropic.com/v1/messages',
+        {
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: 80,
+          temperature: 0.6,
+          system: 'You are Nora — LimeLight\'s PM agent. Someone just sent you file(s) in Slack with an instruction. Reply with ONE short sentence (under 20 words) acknowledging you got it and what you\'ll do, matching your direct, no-corporate-fluff voice. If they didn\'t give an instruction (file only, no text), ask briefly what they want done. Never say "got it" — vary the opener. No emoji. No "I\'ll be sure to" or "happy to help". Plain text only, no markdown.',
+          messages: [{
+            role: 'user',
+            content: `Files received: ${fileMeta}\nUser said: ${queryText || '(no message text — they just dropped the file)'}`
+          }]
+        },
+        { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 10000 }
+      );
+      ackText = ackRes.data?.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim() || null;
+    } catch (err) {
+      console.warn('📎 Slack ACK Haiku call failed; using generic:', err.response?.data?.error?.message || err.message);
+    }
+  }
+  if (!ackText) {
+    ackText = queryText
+      ? `On it — I'll handle ${fileNoun} and follow up in this thread.`
+      : `Got the file${savedFiles.length > 1 ? 's' : ''}. What would you like me to do with ${savedFiles.length > 1 ? 'them' : 'it'}?`;
+  }
+  try {
+    await axios.post('https://slack.com/api/chat.postMessage', {
+      channel,
+      thread_ts: threadTs,
+      text: ackText
+    }, { headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' } });
+  } catch (err) {
+    console.warn('📎 Slack ACK post failed:', err.response?.data || err.message);
+  }
+
+  console.log(`📎 Created inbox task ${taskId} for ${savedFiles.length} file(s) — action: "${action}"`);
+}
+
+// Inbox endpoints — used by the cowork loop to pull files back out for Drive upload.
+// All require the standard NORA_API_KEY auth.
+app.get('/admin/inbox', requireAuth, (req, res) => {
+  try {
+    const dir = getInboxDir();
+    if (!fs.existsSync(dir)) return res.json({ files: [] });
+    const files = fs.readdirSync(dir).map(name => {
+      const stat = fs.statSync(path.join(dir, name));
+      const sep = name.indexOf('__');
+      const inboxId = sep > 0 ? name.slice(0, sep) : name;
+      const filename = sep > 0 ? name.slice(sep + 2) : name;
+      return { inbox_id: inboxId, filename, size: stat.size, created: stat.mtime.toISOString() };
+    });
+    res.json({ files });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/admin/inbox/file/:inboxId', requireAuth, (req, res) => {
+  try {
+    const dir = getInboxDir();
+    const match = fs.readdirSync(dir).find(name => name.startsWith(req.params.inboxId + '__'));
+    if (!match) return res.status(404).json({ error: 'not found' });
+    const filename = match.slice(match.indexOf('__') + 2);
+    res.set('Content-Disposition', `attachment; filename="${filename}"`);
+    res.sendFile(path.join(dir, match));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/admin/inbox/file/:inboxId', requireAuth, (req, res) => {
+  try {
+    const dir = getInboxDir();
+    const match = fs.readdirSync(dir).find(name => name.startsWith(req.params.inboxId + '__'));
+    if (!match) return res.json({ ok: true, already: true });
+    fs.unlinkSync(path.join(dir, match));
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/webhook/slack', async (req, res) => {
   // URL verification challenge
   if (req.body.type === 'url_verification') {
@@ -2319,8 +2532,10 @@ app.post('/webhook/slack', async (req, res) => {
   // Only handle app_mention and message event types
   if (event.type !== 'app_mention' && event.type !== 'message') return;
 
-  // Skip irrelevant message subtypes (channel_join, message_changed, etc.)
-  if (event.subtype && event.subtype !== 'thread_broadcast') return;
+  // File-share messages arrive with subtype: 'file_share' and a files[] array. We
+  // want to handle those, so don't lump them in with the irrelevant subtypes below.
+  const hasFiles = Array.isArray(event.files) && event.files.length > 0;
+  if (event.subtype && event.subtype !== 'thread_broadcast' && event.subtype !== 'file_share') return;
 
   const text = event.text || '';
   const channel = event.channel;
@@ -2331,7 +2546,17 @@ app.post('/webhook/slack', async (req, res) => {
 
   // Strip @mention tags from the text
   const query = text.replace(/<@[A-Z0-9]+>/g, '').trim();
-  if (!query) return;
+  // Empty text is fine when files are attached — that's a "do something with this file"
+  // intent and we route to the file inbox path below. Otherwise still bail.
+  if (!query && !hasFiles) return;
+
+  // File-share path: download every attachment to the local inbox, create a task for
+  // the cowork loop to upload to Drive, and acknowledge in the thread immediately so
+  // the sender knows we received it. Skips all the normal text-handling flow below.
+  if (hasFiles) {
+    await handleSlackFiles(event, channel, user, threadTs, query);
+    return;
+  }
 
   // Track every inbound to a joined thread regardless of whether we end up responding.
   // This drives the staleness counter so the thread eventually cools off if Nora isn't being addressed.
