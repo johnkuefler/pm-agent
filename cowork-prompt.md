@@ -341,13 +341,15 @@ For each new meeting Nora joined, file the transcript into the client's `Meeting
 
 Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). The staging folder + caching guidance is shared with any other Drive-write task.
 
-1. **List recent transcripts** that haven't been filed yet:
+1. **List recent transcripts** that haven't been filed yet. **Always pass `?status=ended`** — this excludes meetings that are still live (Recall hasn't sent the done webhook yet). Filing a transcript mid-meeting captures only what's happened so far and produces a partial Drive file:
 
    ```bash
-   curl -s "${BASE}/transcripts?key=${KEY}" | jq .
+   curl -s "${BASE}/transcripts?status=ended&key=${KEY}" | jq .
    ```
 
    For each transcript, check memory for a fact matching `"Filed transcript {bot_id}"` — if present, skip (already filed). Otherwise it's a candidate.
+
+   **Belt-and-suspenders check:** every transcript in the response has an `in_progress` field. If you see `in_progress: true` on a candidate (e.g., the filter param was dropped or the API changed), DO NOT file. Wait for the next hourly run.
 
 2. **Decide whether this transcript is even worth filing.** Read it via `GET /transcripts/{bot_id}` first and triage:
 
@@ -400,7 +402,19 @@ Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). Th
    }
    ```
 
-6. **Notify the client's PM in Slack** (optional, but useful) — a brief "transcript from today's call is filed at {url}" DM via `/notify`. Skip if the meeting was small/internal.
+6. **DM the project's PM with the Drive link** — but only if you're 100% certain who the PM is. Pattern:
+
+   a. Look up the project record (`GET /projects/{Client}`) and check the `pm` field. If empty, "TBD", "unknown", or anything other than a clearly-named human, **skip the DM entirely** — better silence than waking up the wrong person.
+
+   b. Cross-check the PM name against your team roster (see "Your team" in your base prompt). If the name doesn't match a current team member exactly, **skip** — the project record may be stale.
+
+   c. Resolve their Slack user ID with `slack_search_users` against the PM's name. If there's a single confident match, proceed. If zero matches, multiple matches, or any ambiguity (similar-name colleagues), **skip**.
+
+   d. DM them via `/notify` with `user: <Slack U... id>` (NOT `channel`). Keep the message tight and in Nora's voice — a single line like "filed today's {Client} meeting notes — {drive_link}". No preamble, no "happy to" / "let me know if". One line, the link, done.
+
+   e. Save a memory marker: `"DMed {pm name} the {Client} {YYYY-MM-DD} meeting notes link"`.
+
+   If the PM is John, skip the DM — he's already going to see things via the end-of-run summary.
 
 Guardrails:
 - ONE transcript filing per run unless you've got time. Filing 5 in one cowork run can spike Drive API usage.

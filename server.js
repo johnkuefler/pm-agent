@@ -948,8 +948,14 @@ Drive link in the original Slack thread, and clean up the inbox entries.
   successful Drive upload so the volume doesn't grow forever.
 
 ### Transcripts
-- GET  /transcripts             — List all saved transcripts, newest first
-  Response: [{ "bot_id", "ended", "file", "url", "utterance_count" }]
+- GET  /transcripts             — List saved transcripts, newest first. Default is
+  all (in_progress + ended). Pass ?status=ended to see only meetings that have
+  actually finished — REQUIRED before filing a transcript to Drive, otherwise the
+  hourly run can yank a transcript mid-meeting. ?status=in_progress shows only live.
+  Response: [{ "bot_id", "ended", "in_progress", "last_activity", "file", "url",
+              "utterance_count" }]
+  in_progress=true means Recall hasn't sent the meeting's done webhook yet — DO NOT
+  file these. Wait for the next hourly run.
 
 - GET  /transcripts/:botId      — Full transcript for a meeting
   Response: { "bot_id", "ended", "transcript": [{ "speaker", "text", "timestamp" }] }
@@ -3899,23 +3905,40 @@ app.get('/transcripts', requireAuth, (req, res) => {
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   try {
     const files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json'));
-    const list = files.map(f => {
+    let list = files.map(f => {
       try {
         const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-        // Derive ended from last utterance if null (orphaned sessions)
-        let ended = data.ended;
-        if (!ended && data.transcript && data.transcript.length > 0) {
-          ended = data.transcript[data.transcript.length - 1].timestamp || null;
-        }
+        // `in_progress` is the source of truth for "is this meeting still live?" — it
+        // flips to false only when Recall's done webhook fires and we write `ended`.
+        // The cowork loop MUST filter on this before filing transcripts (default
+        // ?status=ended below) so an hourly run doesn't yank a transcript mid-meeting.
+        const inProgress = !data.ended;
+        // For display, fall back to the last utterance timestamp so dashboards have
+        // something meaningful to show even if the done webhook never fired.
+        const lastActivity = (data.transcript && data.transcript.length > 0)
+          ? data.transcript[data.transcript.length - 1].timestamp || null
+          : null;
+        const endedForDisplay = data.ended || lastActivity;
         return {
           bot_id: data.bot_id,
-          ended,
+          ended: endedForDisplay,
+          in_progress: inProgress,
+          last_activity: lastActivity,
           file: f,
           url: `/transcripts/${data.bot_id}`,
           utterance_count: data.transcript ? data.transcript.length : 0
         };
       } catch { return null; }
     }).filter(Boolean);
+
+    // Filtering. Default is "all" so the dashboard (and any other existing caller)
+    // keeps working unchanged. Cowork loop passes ?status=ended explicitly before
+    // filing so mid-meeting transcripts don't get yanked into Drive.
+    const status = req.query.status || 'all';
+    if (status === 'ended') list = list.filter(t => !t.in_progress);
+    else if (status === 'in_progress') list = list.filter(t => t.in_progress);
+    // status === 'all' falls through with no filter.
+
     // Sort newest first — null (in-progress) sorts to top
     list.sort((a, b) => (b.ended ? new Date(b.ended).getTime() : Infinity) - (a.ended ? new Date(a.ended).getTime() : Infinity));
     res.json(list);
