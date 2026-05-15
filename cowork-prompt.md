@@ -610,19 +610,27 @@ ONE project per run. 3–5 memories max. The Teamwork-to-`/projects` reconciliat
 2. **Pull what Nora already knows about the target.** `GET /projects/{name}` returns the project record + all scoped memories — your "what's already covered" baseline. Don't add memories that duplicate it.
 
 3. **Research, leading with Teamwork.** Read the Teamwork project ID from `project.teamwork_id` on the `/projects/{name}` response (populated by Step 2's sync) and use it as the `project_id` filter on the entity list calls below.
-   - `twprojects-list_tasks` (with `project_id`) for active work, blockers, recent activity
-   - `twprojects-list_tasklists` (with `project_id`) for the project's organizational structure (Admin / Paid Media / Email / etc.) — useful for understanding how the work is grouped
-   - `twprojects-list_milestones` (with `project_id`) for upcoming deliverables and deadlines
+   - `twprojects-list_tasks` (with or without `project_id`) for active work, blockers, recent activity. Pass `page_size: 50` or smaller to keep responses tight.
+   - `twprojects-list_tasklists` (with or without `project_id`) for the project's organizational structure (Admin / Paid Media / Email / etc.) — useful for understanding how the work is grouped
+   - `twprojects-list_milestones` (with or without `project_id`) for upcoming deliverables and deadlines
    - Then supplement with Confluence "LLM Client Space", Google Drive, recent Gmail (last 30 days), and Slack channel activity.
 
-   **Known Teamwork MCP issues** (server-side Go struct decoding bugs in the connector — not flaky, just consistently broken on certain shapes):
-   - ✗ `twprojects-get_project` always 500s. Use `/projects/{name}` from Nora's API for project metadata instead — it has name, client, description, status, and `teamwork_id`. Step 2's sync keeps it current.
-   - ✗ `twprojects-search` decodes incorrectly when results include comments or calendar events (which is most queries).
-   - ✗ `twprojects-list_projects` with `page`/`page_size`/`search_term` params 500s.
-   - ✓ `twprojects-list_projects` with **NO args** works and returns ~50 active projects. Useful as a last-resort enumeration if Nora's `/projects` is somehow stale.
-   - ✓ Entity-scoped list calls (`list_tasks`, `list_tasklists`, `list_milestones`) with `project_id` filter all work fine.
+   **What works vs. what doesn't on the Teamwork MCP.** Verified by direct testing — do NOT generalize a single 500 into "the MCP is down." Most 500s are transient (Teamwork's API or the MCP layer hiccuping) and clear on retry.
 
-   The reliable pattern: `/projects/{name}` for metadata + `teamwork_id` for the project_id filter, then the working entity-scoped calls. Don't go through the MCP for project enumeration unless Nora's /projects is empty — the sync-from-teamwork endpoint hits Teamwork's REST API directly (not the MCP) so it isn't affected by these decoding bugs.
+   ✓ Works reliably (don't avoid these):
+   - `twprojects-list_tasks` — site-wide AND project-scoped (any combo of `project_id`, `tasklist_id`, `assignee_user_ids`, date filters, `page_size`)
+   - `twprojects-list_tasklists` — site-wide and project-scoped
+   - `twprojects-list_milestones` — site-wide and project-scoped
+   - `twprojects-list_projects` with **no args** (returns ~50 active projects)
+   - `twprojects-get_task`, `twprojects-list_comments_by_task`, `twprojects-create_comment`, `twprojects-complete_task`, `twprojects-create_task`
+   - `twprojects-get_user_me`, `twprojects-list_users`
+
+   ✗ Known persistently broken — use documented workaround:
+   - `twprojects-get_project` always 500s. Use `GET /projects/{name}` from Nora's API for project metadata (has `name`, `client`, `description`, `status`, `teamwork_id`). Step 2's sync keeps it current.
+   - `twprojects-search` decodes incorrectly when results include comments or calendar events (most queries). Prefer entity-specific list calls with filters.
+   - `twprojects-list_projects` with `page` / `page_size` / `search_term` params 500s. No-args form works.
+
+   **When a working call 500s anyway — retry once before reporting an outage.** Wait 2-3 seconds, retry the exact same call with the exact same args. Transient hiccups happen on Teamwork's side. Only after a confirmed second failure should it appear in the end-of-run summary, and even then as "transient TW MCP error on list_tasks at HH:MM, retried once" — not "the MCP is broken." That generalization has been wrong every time it's been made.
 
 4. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
 
