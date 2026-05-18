@@ -3846,6 +3846,84 @@ app.get('/admin/scheduled-bots', requireAuth, async (req, res) => {
   }
 });
 
+// Bulk-remove duplicate scheduled bots. Re-fetches the scheduled list, groups by
+// meeting_url, walks each group's bots in join_at order, and for any sub-cluster of
+// bots whose join_at values are within an hour of each other keeps the earliest and
+// calls leave_call on the rest. Idempotent in practice — running it twice in a row
+// returns 0 removed the second time.
+app.post('/admin/scheduled-bots/dedupe', requireAuth, async (req, res) => {
+  try {
+    const nowIso = new Date().toISOString();
+    const horizonIso = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+    const params = new URLSearchParams();
+    params.append('join_at_after', nowIso);
+    params.append('join_at_before', horizonIso);
+
+    const listRes = await axios.get(`${RECALL_BASE}/bot/?${params.toString()}`, {
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+    });
+    const raw = Array.isArray(listRes.data?.results) ? listRes.data.results : Array.isArray(listRes.data) ? listRes.data : [];
+    const bots = raw
+      .map(b => ({ id: b.id, meeting_url: b.meeting_url || null, join_at: b.join_at || null }))
+      .filter(b => b.meeting_url && b.join_at);
+
+    // Group by meeting_url, then walk each group looking for within-hour clusters.
+    const groups = {};
+    for (const b of bots) {
+      groups[b.meeting_url] = groups[b.meeting_url] || [];
+      groups[b.meeting_url].push(b);
+    }
+    const toRemove = [];
+    for (const list of Object.values(groups)) {
+      if (list.length < 2) continue;
+      list.sort((a, b) => {
+        const cmp = (a.join_at || '').localeCompare(b.join_at || '');
+        return cmp !== 0 ? cmp : (a.id || '').localeCompare(b.id || '');
+      });
+      let cluster = [list[0]];
+      const flushCluster = () => {
+        if (cluster.length > 1) toRemove.push(...cluster.slice(1).map(b => b.id));
+      };
+      for (let i = 1; i < list.length; i++) {
+        const dt = new Date(list[i].join_at).getTime() - new Date(cluster[cluster.length - 1].join_at).getTime();
+        if (dt <= 60 * 60 * 1000) {
+          cluster.push(list[i]);
+        } else {
+          flushCluster();
+          cluster = [list[i]];
+        }
+      }
+      flushCluster();
+    }
+
+    if (toRemove.length === 0) {
+      return res.json({ ok: true, removed: 0, removed_bot_ids: [], failed: [] });
+    }
+
+    // Series, not parallel — keeps the request rate civil to Recall and the failure
+    // signal cleaner if anything goes sideways mid-batch.
+    const removed = [];
+    const failed = [];
+    for (const botId of toRemove) {
+      try {
+        await axios.post(`${RECALL_BASE}/bot/${botId}/leave_call/`, {}, {
+          headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+        });
+        removed.push(botId);
+        if (activeBotId === botId) activeBotId = null;
+        if (sessions[botId]?.openaiWs) { try { sessions[botId].openaiWs.close(); } catch {} }
+      } catch (err) {
+        failed.push({ id: botId, error: err.response?.data || err.message });
+      }
+    }
+    console.log(`👥 Scheduled-bot dedupe: removed ${removed.length}/${toRemove.length} (failed ${failed.length})`);
+    res.json({ ok: true, removed: removed.length, removed_bot_ids: removed, failed });
+  } catch (err) {
+    console.error('Scheduled-bot dedupe failed:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
 // Tell Recall to remove a bot from its meeting (graceful leave). Idempotent enough
 // in practice — if the bot is already gone, Recall returns an error which we surface.
 app.post('/admin/bots/:id/leave', requireAuth, async (req, res) => {
