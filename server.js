@@ -3747,6 +3747,27 @@ app.put('/tasks/:id', requireAuth, (req, res) => {
   res.json({ ok: true, task });
 });
 
+// Recall's bot list/get endpoints sometimes return meeting_url as a plain string and
+// sometimes as a structured object (Zoom in particular: { meeting_id, meeting_password,
+// platform }). The dashboard needs a string to display and our duplicate-detection
+// needs a stable key to group on. Normalize to a string here.
+function normalizeMeetingUrl(mu) {
+  if (mu == null) return null;
+  if (typeof mu === 'string') return mu;
+  if (typeof mu === 'object') {
+    if (typeof mu.link === 'string') return mu.link;
+    if (typeof mu.url === 'string') return mu.url;
+    if (typeof mu.meeting_url === 'string') return mu.meeting_url;
+    const platform = mu.platform || 'meeting';
+    if (typeof mu.meeting_id === 'string' || typeof mu.meeting_id === 'number') {
+      return `${platform}:${mu.meeting_id}`;
+    }
+    // Last resort — at least it won't render as "[object Object]"
+    try { return JSON.stringify(mu); } catch { return String(mu); }
+  }
+  return String(mu);
+}
+
 // List bots that are currently active (ready, joining, or in a call). Used by the
 // Admin UI to show what meetings Nora is in / on her way to, with a kick button.
 app.get('/admin/active-bots', requireAuth, async (req, res) => {
@@ -3768,7 +3789,7 @@ app.get('/admin/active-bots', requireAuth, async (req, res) => {
       return {
         id: b.id,
         bot_name: b.bot_name || 'Nora',
-        meeting_url: b.meeting_url || null,
+        meeting_url: normalizeMeetingUrl(b.meeting_url),
         status: latest?.code || b.status || 'unknown',
         status_at: latest?.created_at || null,
         join_at: b.join_at || null
@@ -3805,7 +3826,7 @@ app.get('/admin/scheduled-bots', requireAuth, async (req, res) => {
       return {
         id: b.id,
         bot_name: b.bot_name || 'Nora',
-        meeting_url: b.meeting_url || null,
+        meeting_url: normalizeMeetingUrl(b.meeting_url),
         status: latest?.code || b.status || 'scheduled',
         join_at: b.join_at || null
       };
@@ -3864,7 +3885,7 @@ app.post('/admin/scheduled-bots/dedupe', requireAuth, async (req, res) => {
     });
     const raw = Array.isArray(listRes.data?.results) ? listRes.data.results : Array.isArray(listRes.data) ? listRes.data : [];
     const bots = raw
-      .map(b => ({ id: b.id, meeting_url: b.meeting_url || null, join_at: b.join_at || null }))
+      .map(b => ({ id: b.id, meeting_url: normalizeMeetingUrl(b.meeting_url), join_at: b.join_at || null }))
       .filter(b => b.meeting_url && b.join_at);
 
     // Group by meeting_url, then walk each group looking for within-hour clusters.
