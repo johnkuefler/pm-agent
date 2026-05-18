@@ -1015,6 +1015,12 @@
     }
     function fmtBotMeetingUrl(u) {
       if (!u) return '';
+      // The server normalizes meeting_url to a string, but be defensive: if some
+      // future code path passes an object through, render it readably instead of
+      // letting JS stringify it as "[object Object]".
+      if (typeof u !== 'string') {
+        try { return JSON.stringify(u); } catch { return ''; }
+      }
       try {
         const url = new URL(u);
         return url.hostname + url.pathname;
