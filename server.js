@@ -3781,6 +3781,71 @@ app.get('/admin/active-bots', requireAuth, async (req, res) => {
   }
 });
 
+// List bots scheduled to join in the future. The calendar auto-join queue lives here
+// — bots that Recall has queued for a future join_at but haven't fired yet. Useful for
+// spotting duplicate schedules (two bots queued for the same meeting) BEFORE they
+// both fire, so you can remove one with the existing /admin/bots/:id/leave path.
+app.get('/admin/scheduled-bots', requireAuth, async (req, res) => {
+  try {
+    const nowIso = new Date().toISOString();
+    // 60 days is generous — covers any realistic recurring-meeting horizon while
+    // keeping the response from including stale scheduled bots that never fired.
+    const horizonIso = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString();
+    const params = new URLSearchParams();
+    params.append('join_at_after', nowIso);
+    params.append('join_at_before', horizonIso);
+
+    const r = await axios.get(`${RECALL_BASE}/bot/?${params.toString()}`, {
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+    });
+    const raw = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : [];
+    const bots = raw.map(b => {
+      const latest = Array.isArray(b.status_changes) && b.status_changes.length
+        ? b.status_changes[b.status_changes.length - 1] : null;
+      return {
+        id: b.id,
+        bot_name: b.bot_name || 'Nora',
+        meeting_url: b.meeting_url || null,
+        status: latest?.code || b.status || 'scheduled',
+        join_at: b.join_at || null
+      };
+    });
+    // Sort by join_at ascending — soonest first.
+    bots.sort((a, b) => (a.join_at || '').localeCompare(b.join_at || ''));
+
+    // Flag duplicates: bots with the same meeting_url that fire within an hour of each
+    // other. Same meeting + close in time = the schedule glitch the user wants to spot.
+    const groups = {};
+    for (const b of bots) {
+      if (!b.meeting_url) continue;
+      const key = b.meeting_url;
+      groups[key] = groups[key] || [];
+      groups[key].push(b);
+    }
+    const duplicateBotIds = new Set();
+    for (const list of Object.values(groups)) {
+      if (list.length < 2) continue;
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const t1 = new Date(list[i].join_at || 0).getTime();
+          const t2 = new Date(list[j].join_at || 0).getTime();
+          if (Math.abs(t1 - t2) <= 60 * 60 * 1000) {
+            duplicateBotIds.add(list[i].id);
+            duplicateBotIds.add(list[j].id);
+          }
+        }
+      }
+    }
+    for (const b of bots) {
+      b.is_duplicate = duplicateBotIds.has(b.id);
+    }
+    res.json({ count: bots.length, bots, duplicate_count: duplicateBotIds.size });
+  } catch (err) {
+    console.error('Scheduled bots fetch failed:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
 // Tell Recall to remove a bot from its meeting (graceful leave). Idempotent enough
 // in practice — if the bot is already gone, Recall returns an error which we surface.
 app.post('/admin/bots/:id/leave', requireAuth, async (req, res) => {
