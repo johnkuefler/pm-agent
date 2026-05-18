@@ -3747,6 +3747,25 @@ app.put('/tasks/:id', requireAuth, (req, res) => {
   res.json({ ok: true, task });
 });
 
+// Cancel/remove a Recall bot regardless of state. leave_call is for bots already in
+// flight (status ready/joining/in_call); scheduled-but-not-started bots return
+// 'cannot_command_unstarted_bot' on leave_call and need a DELETE on the bot record.
+// Try leave_call first, fall back to DELETE if that error fires.
+async function cancelRecallBot(botId) {
+  const authHeader = { Authorization: `Token ${process.env.RECALL_API_KEY}` };
+  try {
+    await axios.post(`${RECALL_BASE}/bot/${botId}/leave_call/`, {}, { headers: authHeader });
+    return { method: 'leave_call' };
+  } catch (err) {
+    const code = err.response?.data?.code;
+    const isUnstarted = code === 'cannot_command_unstarted_bot';
+    if (!isUnstarted) throw err;
+    // Bot hasn't started yet — DELETE removes the scheduled record entirely.
+    await axios.delete(`${RECALL_BASE}/bot/${botId}/`, { headers: authHeader });
+    return { method: 'delete' };
+  }
+}
+
 // Recall's bot list/get endpoints sometimes return meeting_url as a plain string and
 // sometimes as a structured object (Zoom in particular: { meeting_id, meeting_password,
 // platform }). The dashboard needs a string to display and our duplicate-detection
@@ -3927,12 +3946,11 @@ app.post('/admin/scheduled-bots/dedupe', requireAuth, async (req, res) => {
     const failed = [];
     for (const botId of toRemove) {
       try {
-        await axios.post(`${RECALL_BASE}/bot/${botId}/leave_call/`, {}, {
-          headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
-        });
+        const { method } = await cancelRecallBot(botId);
         removed.push(botId);
         if (activeBotId === botId) activeBotId = null;
         if (sessions[botId]?.openaiWs) { try { sessions[botId].openaiWs.close(); } catch {} }
+        if (method === 'delete') console.log(`👥 Dedupe: deleted unstarted bot ${botId}`);
       } catch (err) {
         failed.push({ id: botId, error: err.response?.data || err.message });
       }
@@ -3945,25 +3963,21 @@ app.post('/admin/scheduled-bots/dedupe', requireAuth, async (req, res) => {
   }
 });
 
-// Tell Recall to remove a bot from its meeting (graceful leave). Idempotent enough
-// in practice — if the bot is already gone, Recall returns an error which we surface.
+// Remove a Recall bot — works for both in-flight (leave_call) and scheduled
+// (DELETE) bots. The cancelRecallBot helper handles the fallback automatically.
 app.post('/admin/bots/:id/leave', requireAuth, async (req, res) => {
   const botId = req.params.id;
   try {
-    await axios.post(
-      `${RECALL_BASE}/bot/${botId}/leave_call/`,
-      {},
-      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
-    );
-    console.log(`👋 Admin asked bot ${botId} to leave its call`);
+    const { method } = await cancelRecallBot(botId);
+    console.log(`👋 Admin removed bot ${botId} via ${method}`);
     // Local cleanup so dashboard controls (mute, etc.) stop referencing this bot.
     if (activeBotId === botId) activeBotId = null;
     if (sessions[botId]?.openaiWs) {
       try { sessions[botId].openaiWs.close(); } catch {}
     }
-    res.json({ ok: true });
+    res.json({ ok: true, method });
   } catch (err) {
-    console.error(`Leave-call failed for ${botId}:`, err.response?.data || err.message);
+    console.error(`Bot cancel failed for ${botId}:`, err.response?.data || err.message);
     res.status(err.response?.status || 500).json({ error: err.response?.data || err.message });
   }
 });
