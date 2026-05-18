@@ -199,6 +199,21 @@
 
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          Scheduled Bots
+          <span style="display:flex; gap:6px;">
+            <button id="scheduled-dedupe-btn" class="btn btn-danger" style="display:none;" onclick="dedupeScheduledBots()">Remove all duplicates</button>
+            <button class="btn btn-success btn-sm" onclick="loadScheduledBots()">Refresh</button>
+          </span>
+        </h2>
+        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Bots queued to join a future meeting (from calendar auto-join or manual scheduling). Rows flagged <span style="color:#f87171;font-weight:600;">DUPLICATE</span> have another bot queued for the same meeting within an hour — use Remove on a single one, or Remove all duplicates above to bulk-cancel.
+        </p>
+        <div id="scheduled-bots-list">Loading…</div>
+        <div id="scheduled-bots-toast" class="toast"></div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Slack — Bot Channels
           <button class="btn btn-success btn-sm" onclick="loadBotChannels()">Refresh</button>
         </h2>
@@ -954,7 +969,7 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadActiveBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
     }
 
     // Slack — channels the Nora bot is a member of
@@ -1042,6 +1057,78 @@
         s.className = 'toast ok'; s.textContent = 'Removed.';
         loadActiveBots();
         setTimeout(() => s.style.display = 'none', 2500);
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    // Scheduled bots — list with duplicate detection + remove
+    async function loadScheduledBots() {
+      const list = document.getElementById('scheduled-bots-list');
+      const dedupeBtn = document.getElementById('scheduled-dedupe-btn');
+      try {
+        const r = await api('/admin/scheduled-bots');
+        const d = await r.json();
+        if (!Array.isArray(d.bots) || d.bots.length === 0) {
+          list.innerHTML = '<p class="empty">No scheduled bots.</p>';
+          if (dedupeBtn) dedupeBtn.style.display = 'none';
+          return;
+        }
+        // Show the bulk-dedupe button only when there are duplicates to clear.
+        if (dedupeBtn) dedupeBtn.style.display = d.duplicate_count > 0 ? '' : 'none';
+        const dupNote = d.duplicate_count > 0
+          ? `<div style="background:#450a0a;color:#fca5a5;padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px;">⚠️ ${d.duplicate_count} duplicate bot${d.duplicate_count === 1 ? '' : 's'} detected — two or more bots queued for the same meeting within an hour. Remove individually below, or use Remove all duplicates above.</div>`
+          : '';
+        list.innerHTML = dupNote + d.bots.map(b => {
+          const dupBadge = b.is_duplicate
+            ? ' <span style="background:#7f1d1d;color:#fca5a5;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;letter-spacing:0.5px;">DUPLICATE</span>'
+            : '';
+          const joinAt = b.join_at ? new Date(b.join_at).toLocaleString() : 'unknown';
+          return `
+            <div class="memory-item">
+              <div style="flex: 1; min-width: 0;">
+                <div class="memory-fact" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}${dupBadge}</div>
+                <div class="memory-meta">joins ${escHtml(joinAt)} · ${escHtml(fmtBotStatus(b.status))} · ${escHtml(b.id)}</div>
+              </div>
+              <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                <button class="btn btn-danger" onclick="removeScheduledBot('${escHtml(b.id)}', '${escHtml(fmtBotMeetingUrl(b.meeting_url))}')">Remove</button>
+              </div>
+            </div>`;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load scheduled bots.</p>';
+      }
+    }
+    async function removeScheduledBot(botId, label) {
+      if (!confirm(`Cancel the scheduled bot for "${label || botId}"?`)) return;
+      const s = document.getElementById('scheduled-bots-toast');
+      try {
+        const r = await api('/admin/bots/' + botId + '/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        if (!r.ok) {
+          const d = await r.json().catch(() => ({}));
+          s.className = 'toast err'; s.textContent = 'Remove failed: ' + (d.error ? JSON.stringify(d.error) : r.status);
+          return;
+        }
+        s.className = 'toast ok'; s.textContent = 'Removed.';
+        loadScheduledBots();
+        setTimeout(() => s.style.display = 'none', 2500);
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+    async function dedupeScheduledBots() {
+      if (!confirm('Remove all duplicate scheduled bots? One bot is kept per meeting (the earliest-joining one); the rest are cancelled.')) return;
+      const s = document.getElementById('scheduled-bots-toast');
+      s.className = 'toast ok'; s.textContent = 'Removing duplicates…';
+      try {
+        const r = await api('/admin/scheduled-bots/dedupe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json();
+        if (!r.ok || d.error) {
+          s.className = 'toast err'; s.textContent = 'Dedupe failed: ' + (d.error ? JSON.stringify(d.error) : r.status);
+          return;
+        }
+        const failedCount = Array.isArray(d.failed) ? d.failed.length : 0;
+        const failedNote = failedCount > 0 ? ` (${failedCount} failed — see logs)` : '';
+        s.className = failedCount > 0 ? 'toast err' : 'toast ok';
+        s.textContent = `Removed ${d.removed} duplicate bot${d.removed === 1 ? '' : 's'}${failedNote}.`;
+        loadScheduledBots();
+        setTimeout(() => s.style.display = 'none', 4000);
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
 
