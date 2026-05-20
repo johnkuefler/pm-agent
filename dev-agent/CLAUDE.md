@@ -93,7 +93,7 @@ Execute and report on the mechanics. Never write to GitHub or Teamwork beyond th
 
 ## Connections
 
-`connections.md` documents what systems this agent can reach and the write posture for each. Read freely on Teamwork and GitHub. Write to Teamwork only at the three documented exceptions. Write to GitHub only via `gh issue create` in the dispatch path. Write to Slack only to #pm-team.
+`connections.md` documents what systems this agent can reach and the write posture for each. Read freely on Teamwork and GitHub. Write to Teamwork only at the three documented exceptions. Write to GitHub only via `gh issue create` in the dispatch path. Post to Slack only to #pm-team, and **only through Nora's `/notify` endpoint** so it goes out as the Nora app, not the connected Slack user — never via the `slack_send_message` MCP tool. (Reviewer DMs are the one exception: those are drafts a human sends, via `slack_send_message_draft`.)
 
 ## North star
 

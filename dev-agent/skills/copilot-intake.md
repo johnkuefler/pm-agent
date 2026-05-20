@@ -41,7 +41,7 @@ Classify each task into one of four buckets:
 | **Ready** | Clear bug or small enhancement. Reproducer or expected behavior is obvious from the description. Scope is bounded (one feature, one screen, one bug). | Enrich and queue. |
 | **Needs clarification** | Symptom described but no repro steps. Or the ask is ambiguous ("the page is broken"). Or scope is unclear. | Queue with `status: needs-clarification` and a one-line note on what is missing. Do not enrich. |
 | **Out of scope** | Strategy, design, content writing, anything not bug/code. Or it is a duplicate of an existing open queue item. | Queue with `status: skipped` and the reason. Comment is NOT posted to TW for skipped items. |
-| **Unknown repo** | Task content does not match any row in `context/repo-mapping.md`. | Queue with `status: unknown-repo`. Surface in the Slack post for John to map. |
+| **Unknown repo** | Task content does not match any row in `context/repo-mapping.md`. | Queue with `status: unknown-repo`. Surface in the #pm-team post for a human to map. |
 
 When in doubt between Ready and Needs-clarification, default to Needs-clarification. A wrong dispatch is worse than a delayed one.
 
@@ -132,7 +132,14 @@ This is where the new posture lives: clean Ready items dispatch automatically; t
 
 ### 6. Post to #pm-team
 
-Post a single message to **#pm-team** (`C031HHSBM1Q`) summarizing this run. Use `slack_send_message`.
+Post a single message to **#pm-team** (`C031HHSBM1Q`) summarizing this run, **via Nora's `/notify` endpoint so it sends as the Nora app** (not the connected Slack user — see `connections.md`):
+
+```bash
+curl -s -X POST "${BASE}/notify?key=${KEY}" -H 'Content-Type: application/json' \
+  -d '{"channel":"C031HHSBM1Q","text":"<the summary below>"}'
+```
+
+Do NOT use the `slack_send_message` MCP tool — that posts as the Slack user. Message body:
 
 ```
 *Dev intake, [HH:MM CDT]*

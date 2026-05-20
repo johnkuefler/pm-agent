@@ -65,10 +65,17 @@ Reads are open: `gh issue view`, `gh pr view`, `gh api repos/...`, `gh search co
 
 ## Slack
 
+**Channel posts go out as the Nora app, not the connected Slack user.** That means posting through Nora's `/notify` HTTP endpoint (which sends via the Slack bot token), NOT the `slack_send_message` MCP tool (which posts as whatever Slack user the MCP is connected to). Nora passes you the API base URL + key when she spawns you.
+
 Authorized writes:
 
-- `slack_send_message` to channel `C031HHSBM1Q` (#pm-team) is the agent's notification channel. Used by intake (run summary), dispatch (confirmations), followup (state transitions, ambiguous closes).
-- `slack_send_message_draft` for reviewer DMs. Drafts only; never auto-send a DM to a reviewer (a human sends it).
+- **#pm-team channel posts** (`C031HHSBM1Q`) — intake run summary, dispatch confirmations, followup transitions, ambiguous closes — via:
+  ```bash
+  curl -s -X POST "${BASE}/notify?key=${KEY}" -H 'Content-Type: application/json' \
+    -d '{"channel":"C031HHSBM1Q","text":"<message>"}'
+  ```
+  This is the only Nora API endpoint you use, and only for posting to #pm-team. Do NOT touch `/memory`, `/projects`, `/tasks`, or any other Nora API surface.
+- **Reviewer DMs** — `slack_send_message_draft`, drafts only; a human sends them. (A draft lands in a person's Slack and is sent by them, so the app-vs-user identity question doesn't apply here.)
 
 Default reviewer for dispatches is whoever `repo-mapping.md` lists for the repo (`UJYKB4788` / John on v1 rows). Reviewer assignment is config, not identity — it changes per repo as the curated mapping grows.
 
