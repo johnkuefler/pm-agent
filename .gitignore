@@ -147,3 +147,4 @@ vite.config.ts.timestamp-*
 # means code updates (git pull/reset) never clobber accumulated dispatch history.
 dev-agent/memory/copilot-queue.md
 dev-agent/memory/run-log.md
+dev-agent/context/repo-mapping-learned.md

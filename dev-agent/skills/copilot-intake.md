@@ -49,14 +49,15 @@ When in doubt between Ready and Needs-clarification, default to Needs-clarificat
 
 For each Ready task, produce a proposed GitHub issue body. Read the target repo to inform it.
 
-**Step A: Identify the repo.** Look up the task's TW project **by exact project-name match** in `context/repo-mapping.md`.
+**Step A: Identify the repo.** Look up the task's TW project **by exact project-name match** in `context/repo-mapping.md` (the curated, human-vetted file). The curated file always wins.
 
 - If the project is mapped to a single repo, use that repo.
 - If the project is mapped to multiple repos with routing rules (e.g., `GB - Dev Support`, `PE - Website Retainer 2026`), concatenate the TW task title and body, lowercase, and evaluate each routing rule in order. First match wins. Use the matched repo.
 - If the project is mapped but the routing rules return no match AND no safe default is specified, classify the task as `unknown-repo` and surface in step 5 with reason "ambiguous repo within mapped project; need disambiguation". Do NOT pick a default repo silently.
-- If the TW project does not appear in the file at all, classify as `unknown-repo` with reason "TW project '<name>' not in repo-mapping.md".
+- **If the TW project does not appear in the curated file, check the learned file** `context/repo-mapping-learned.md` (disk-only; may not exist). If the project is mapped there, use that repo BUT mark this as a learned mapping: set `mapping_source: learned` in the queue block and surface it in the step 5 proposal with `repo via learned mapping (confidence X, source Y) — confirm before approving`. The approval gate is the backstop; a learned mapping never auto-dispatches.
+- If the TW project appears in neither file, classify as `unknown-repo` with reason "TW project '<name>' not in repo-mapping.md or repo-mapping-learned.md".
 
-Reviewer and agent come from the matched row (or, for multi-repo projects, from the project block).
+Reviewer and agent come from the matched row (curated or learned).
 
 **Staleness check.** If this task already has a `ready` block in `memory/copilot-queue.md` that is more than 48 hours old (comparing `created` to now), the prior issue body's "Likely files" may be stale. Re-run step B to refresh the repo scan before writing a new issue body. Note `re-enriched: true` in the queue block.
 

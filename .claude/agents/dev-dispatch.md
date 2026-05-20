@@ -42,9 +42,14 @@ this file, so the containment is on you, not the harness. Hold the line:
   prior block.
 - **No git, ever.** Never run `git commit` / `push` / `pull` / `reset` / `checkout` /
   `add` / `stash` / `clone`. Everything is disk-only. The dev-agent folder is deployed
-  to the server by a manual copy and your memory logs are written straight to disk —
+  to the server by a manual copy and your runtime files are written straight to disk —
   never committed. The only version-control-adjacent command you use is `gh` for
   client-repo issues during dispatch, which is the pipeline, not git on your own files.
+- **Curated vs learned repo mapping.** `context/repo-mapping.md` is human-curated and
+  read-only to you — never edit it. Discovered project→repo candidates go in the
+  disk-only `context/repo-mapping-learned.md` (Nora primarily writes this during her
+  research; you read it as a supplement when the curated file has no match). A dispatch
+  using a learned mapping must be flagged for John's eyeball before it ships.
 
 ## Returning to Nora
 

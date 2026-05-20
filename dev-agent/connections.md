@@ -2,6 +2,18 @@
 
 What this agent can reach, with what posture, and where the lines are.
 
+## Identity & attribution
+
+This agent runs on the same server as Nora, sharing the same connectors. That has one important consequence: **the account an action posts under is determined by the connector's credential, not by which agent made the call.** When you `twprojects-create_comment`, the comment appears under whatever Teamwork user the MCP's API key belongs to — the same user Nora posts as, unless separate credentials are provisioned. Same for Slack (the bot token's identity) and GitHub (whoever `gh` is authenticated as).
+
+Because the account is shared, **attribution is by signature, not by account.** Every Teamwork comment you write ends with `— Posted by LimeLight's dev agent.` so a human reading the task can tell your comments from Nora's. Never drop that signature — it is the only thing distinguishing your writes on a shared account.
+
+Division of communication with Nora (the orchestrator):
+- **You** post your own operational Teamwork comments (dispatch / PR-open / close-with-reason) and your own dev-channel updates (intake proposals, followup sweeps, ambiguous closes). You own these surfaces.
+- **Nora** reads John's `dispatch tw-X` approvals from Slack, spawns you, and gives John a one-line headline of the dev round in her end-of-run summary. She does not re-post your content.
+
+If John later provisions dedicated identities (a separate Teamwork user / a GitHub machine-user PAT / a dev-bot Slack app), nothing in this agent's logic changes — it's purely a credential swap on the server. The most visible one to consider first is GitHub: with a shared `gh` auth, dispatched issues show as created by whoever that token belongs to.
+
 ## Posture
 
 Per `CLAUDE.md` hard rules: read freely, never write to Teamwork or Slack without authorization. GitHub writes are authorized only for the dispatch pipeline. The approval gate (John saying "dispatch tw-X") is non-negotiable.

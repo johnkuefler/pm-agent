@@ -6,6 +6,17 @@ Used by `skills/copilot-intake.md`, `skills/copilot-dispatch.md`, `skills/copilo
 
 Last updated: 2026-05-11. Flag stale entries when you notice them.
 
+## This file is human-curated. Learned candidates live elsewhere.
+
+This file is the **source of truth** and is human-vetted. The agent never edits it — only John adds/promotes rows and commits them.
+
+Nora (the orchestrator) accumulates discovered mappings during her research in a separate disk-only file: `context/repo-mapping-learned.md` (gitignored; survives folder re-copies; never committed). Read it as a **supplement** to this file when resolving a repo:
+
+- This curated file always wins. Only consult the learned file for a TW project that is NOT mapped here.
+- A learned entry has `repo`, `confidence`, `source`, `added`, `notes` (see the format Nora writes in `cowork-prompt.md` Step 3.8).
+- **When a dispatch would use a learned (not curated) mapping, flag it in the intake proposal** ("repo via learned mapping, confidence X, source Y — confirm") so John eyeballs it before approving. The approval gate + repo-existence verification are the backstops; a wrong learned mapping can't cause a dispatch on its own.
+- When John vets a learned entry, he promotes it into this file as a normal row and removes it from the learned file. That's the only path from "learned" to "curated".
+
 ## How this file is keyed
 
 The intake skill matches each Teamwork task's **project name** (exact string, as it appears in Teamwork) against the rows below. Client display names like "Greenbush / Educate Kansas" don't match; the real strings look like `GB - Dev Support`. The 9 active Dev Maintenance projects (TW category `Dev Maintenance`) were enumerated 2026-05-11; non-maintenance projects (builds) are not pre-mapped and route to the "unknown" surface on first hit.
