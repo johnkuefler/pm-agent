@@ -45,10 +45,11 @@ All other Teamwork writes (status changes, time logs, task creation, task assign
 
 ## GitHub
 
-Two access paths. Use whichever the session has loaded:
+**Access is the `gh` CLI via Bash. That is the path — there is no GitHub MCP/connector in the cowork loop, so don't look for one.** Anthropic's managed GitHub connector (the OAuth integration for Chat / Projects / remote Claude Code) is a separate product and is not part of this cowork environment; it is not how you reach GitHub.
 
-- **`gh` CLI via Bash (primary).** Authenticated via `gh auth login` for interactive sessions. For unattended cron, via `GH_TOKEN` env var with a fine-grained PAT. Required scopes: `repo` (issue create) and `read:org` (resolve @copilot assignee on org repos).
-- **GitHub MCP (preferred if available).** Use structured tool calls when an MCP server is connected. As of 2026-05-11 not connected; check `/mcp` in Claude Code.
+`gh` is installed on the cowork server and authenticates non-interactively from the `GH_TOKEN` env var (a PAT set on that server). Required scopes: `repo` (issue create) and `read:org` (resolve the `@copilot` assignee on org repos); a fine-grained PAT scoped to the `LimeLight-Marketing` org with Issues read/write + Contents read + Pull requests read + Metadata read works too.
+
+If a `gh` call fails with an auth error, the PAT isn't set or is expired — surface that to #pm-team (the dispatch can't proceed without it); don't try to find an alternate GitHub path.
 
 Authorized writes (dispatch pipeline only):
 
