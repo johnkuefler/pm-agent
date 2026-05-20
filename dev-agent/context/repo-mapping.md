@@ -14,7 +14,7 @@ Nora (the orchestrator) accumulates discovered mappings during her research in a
 
 - This curated file always wins. Only consult the learned file for a TW project that is NOT mapped here.
 - A learned entry has `repo`, `confidence`, `source`, `added`, `notes` (see the format Nora writes in `cowork-prompt.md` Step 3.8).
-- **When a dispatch would use a learned (not curated) mapping, flag it in the intake proposal** ("repo via learned mapping, confidence X, source Y — confirm") so John eyeballs it before approving. The approval gate + repo-existence verification are the backstops; a wrong learned mapping can't cause a dispatch on its own.
+- **A learned (not curated) mapping does NOT auto-dispatch.** The item goes to Nora for a greenlight (she has project context), and the dispatch is flagged in the #pm-team post ("repo via learned mapping, confidence X, source Y"). Nora's greenlight + repo-existence verification + human PR review are the backstops; a wrong learned mapping can't ship code on its own.
 - When John vets a learned entry, he promotes it into this file as a normal row and removes it from the learned file. That's the only path from "learned" to "curated".
 
 ## How this file is keyed
@@ -116,8 +116,8 @@ Use this when a new TW project comes in via the "unknown" surface and you need t
 If a Teamwork task assigned to development@ does not match any TW-project row above:
 
 1. Do NOT auto-dispatch.
-2. Surface to John in the intake Slack post as "unknown repo, need mapping".
-3. John adds the row here and re-runs intake.
+2. Surface to #pm-team in the intake post as "unknown repo, need mapping".
+3. A human adds the row here (and commits it) before that project will dispatch.
 
 If a TW project matches but the multi-repo routing rules return no match (and there is no safe default):
 

@@ -9,22 +9,22 @@ This agent runs on the same server as Nora, sharing the same connectors. That ha
 Because the account is shared, **attribution is by signature, not by account.** Every Teamwork comment you write ends with `— Posted by LimeLight's dev agent.` so a human reading the task can tell your comments from Nora's. Never drop that signature — it is the only thing distinguishing your writes on a shared account.
 
 Division of communication with Nora (the orchestrator):
-- **You** post your own operational Teamwork comments (dispatch / PR-open / close-with-reason) and your own dev-channel updates (intake proposals, followup sweeps, ambiguous closes). You own these surfaces.
-- **Nora** reads John's `dispatch tw-X` approvals from Slack, spawns you, and gives John a one-line headline of the dev round in her end-of-run summary. She does not re-post your content.
+- **You** post your own operational Teamwork comments (dispatch / PR-open / close-with-reason) and your own #pm-team updates (intake summaries, followup sweeps, ambiguous closes). You own these surfaces.
+- **Nora** spawns you, greenlights learned-mapping items, and gives a one-line headline of the dev round in her end-of-run summary. She does not re-post your content.
 
-If John later provisions dedicated identities (a separate Teamwork user / a GitHub machine-user PAT / a dev-bot Slack app), nothing in this agent's logic changes — it's purely a credential swap on the server. The most visible one to consider first is GitHub: with a shared `gh` auth, dispatched issues show as created by whoever that token belongs to.
+If dedicated identities get provisioned later (a separate Teamwork user / a GitHub machine-user PAT / a dev-bot Slack app), nothing in this agent's logic changes — it's purely a credential swap on the server. The most visible one to consider first is GitHub: with a shared `gh` auth, dispatched issues show as created by whoever that token belongs to.
 
 ## Posture
 
-Per `CLAUDE.md` hard rules: read freely, never write to Teamwork or Slack without authorization. GitHub writes are authorized only for the dispatch pipeline. The approval gate (John saying "dispatch tw-X") is non-negotiable.
+Per `CLAUDE.md` hard rules: read freely, write only the authorized actions below. GitHub writes are authorized only for the dispatch pipeline. Assignment to development@ plus a clean Ready triage is the dispatch go-ahead; learned-mapping items need Nora's greenlight.
 
 | Action class | Default |
 |---|---|
 | Read any system in this doc | Yes |
-| Create a GitHub issue (dispatch path only) | Yes, after John's go-ahead |
+| Create a GitHub issue (dispatch path) | Yes, for a clean Ready item (curated mapping) or a Nora-greenlit learned-mapping item |
 | Comment on a Teamwork task (3 documented exceptions) | Yes, at confirmed state transitions |
-| Post to #john-ea | Yes (the agent's notification channel) |
-| Draft a Slack DM to a non-John reviewer | Yes, as a draft only; John sends |
+| Post to #pm-team | Yes (the agent's notification channel) |
+| Draft a Slack DM to a reviewer | Yes, as a draft only; a human sends |
 | Anything else | **No.** Surface, ask, or stop. |
 
 ## Teamwork — projects
@@ -67,20 +67,20 @@ Reads are open: `gh issue view`, `gh pr view`, `gh api repos/...`, `gh search co
 
 Authorized writes:
 
-- `slack_send_message` to channel `C0B2YH78281` (#john-ea) is the agent's notification channel. Used by intake (proposals), dispatch (confirmations), followup (state transitions, ambiguous closes).
-- `slack_send_message_draft` for reviewer DMs that are NOT John. Drafts only; never auto-send a DM to a non-John reviewer.
+- `slack_send_message` to channel `C031HHSBM1Q` (#pm-team) is the agent's notification channel. Used by intake (run summary), dispatch (confirmations), followup (state transitions, ambiguous closes).
+- `slack_send_message_draft` for reviewer DMs. Drafts only; never auto-send a DM to a reviewer (a human sends it).
 
-John's user ID: `UJYKB4788`. He is the default reviewer for all dispatches in `repo-mapping.md` v1.
+Default reviewer for dispatches is whoever `repo-mapping.md` lists for the repo (`UJYKB4788` / John on v1 rows). Reviewer assignment is config, not identity — it changes per repo as the curated mapping grows.
 
 ## Invocation (no self-scheduling)
 
-This agent does not register its own cron. Nora (the PM agent) spawns it as a subagent during her hourly cowork loop and on John's approvals. See `CLAUDE.md` → "How you are invoked" for the mode table.
+This agent does not register its own cron. Nora (the PM agent) spawns it as a subagent during her hourly cowork loop. See `CLAUDE.md` → "How you are invoked" for the mode table.
 
-- `intake` and `followup` run once per Nora cowork loop (hourly).
-- `dispatch tw-<id>` runs when Nora has confirmed John's approval (he replied `dispatch tw-<id>` in the dev channel or to Nora).
-- `disposition tw-<id>: <reason>` runs when John resolves an ambiguous close.
+- `intake` and `followup` run once per Nora cowork loop (hourly). Intake auto-dispatches clean Ready items.
+- `dispatch tw-<id>` runs on Nora's greenlight for a learned-mapping item, or on an explicit team request for a specific id.
+- `disposition tw-<id>: <reason>` runs when the team resolves an ambiguous close.
 
-Cadence note: under Nora's loop, intake/followup run hourly rather than the q15/q30 the standalone design assumed. That is fine for dev tickets — every dispatch is human-gated anyway, and PRs don't open on a 15-minute clock. The only mild effect is reviewer pings on PR-open land within the hour.
+Cadence note: under Nora's loop, intake/followup run hourly rather than the q15/q30 the standalone design assumed. That is fine for dev tickets — readiness triage gates dispatch, and PRs don't open on a 15-minute clock. The only mild effect is reviewer pings on PR-open land within the hour.
 
 Because Nora owns the schedule, the standalone-cron reliability issues (duplicate fires, missed fires, out-of-window cutoffs) no longer apply to this agent directly. This agent still keeps its own idempotency guards (queue dedup, the dispatch idempotency check) as defense in depth in case Nora spawns it twice in one loop.
 

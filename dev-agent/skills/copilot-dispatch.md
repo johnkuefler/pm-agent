@@ -2,17 +2,27 @@
 
 ## When to use this
 
-Nora spawns this agent in `dispatch tw-[id]` mode after she has confirmed John's approval. John approves by saying "dispatch tw-[id]", "ship tw-[id]", "go on tw-[id]", or any variant referencing a queue id from `memory/copilot-queue.md`, in the dev channel or directly to Nora. Nora reads those approvals from Slack and spawns this agent with the specific id(s).
+This is the dispatch action — it ships a Ready item. It runs in three ways:
 
-John may also say "dispatch all ready" to bulk-approve everything in the current queue with `status: ready`. When Nora relays a bulk approval, confirm the count first ("you're approving 5 items, confirm?") before acting — Nora surfaces that confirmation back to John.
+1. **Automatically during intake** for a clean Ready item (clear scope + confident *curated* repo mapping). `copilot-intake` calls this skill directly for each. Assignment to development@ plus a clean triage is the go-ahead; no separate approval.
+2. **On Nora's greenlight** for a learned-mapping item she reviewed and OK'd.
+3. **On an explicit team request** for a specific id ("dispatch tw-[id]", "ship tw-[id]") — e.g. to re-dispatch a held item after its blocker is resolved. Someone on the team can also say "dispatch all ready" to ship every `status: ready` item with a curated mapping at once; confirm the count back in #pm-team before bulk-acting.
 
-This skill is the gated action layer. `copilot-intake` produces proposals; this skill ships them. The approval gate is unchanged by the orchestration: no dispatch without John's explicit go-ahead, now relayed through Nora.
+This skill is the action layer. The protection is upstream (only clean Ready items reach auto-dispatch; learned mappings need Nora's eyes) and downstream (repo-existence verification here, human PR review before merge). No per-task human pre-approval.
 
 ## Pre-flight
 
 ### Read the queue entry
 
 Open `memory/copilot-queue.md`. Find the entry matching the requested id (e.g., `tw-12345`). Confirm `status: ready`. If status is anything else, refuse and explain.
+
+### Confirm this item is clear to dispatch
+
+Two ways an item reaches this skill, both already cleared:
+- **Auto** — `copilot-intake` triaged it Ready with a confident *curated* repo mapping. That triage IS the go-ahead; no further confirmation needed.
+- **Greenlit** — it's a learned-mapping item Nora reviewed and greenlit, or someone on the team explicitly asked to dispatch this id.
+
+Either way: confirm the queue entry's mapping source. If `mapping_source: learned` and there's no Nora greenlight recorded (`awaiting_nora_greenlight` still true), STOP — a learned mapping must not dispatch without her go-ahead. Otherwise proceed.
 
 ### Idempotency check
 
@@ -22,15 +32,7 @@ Before any write, search the target repo for an existing open issue with `[tw-<i
 gh issue list --repo OWNER/REPO --state open --search "[tw-<id>]" --json number,title,url
 ```
 
-If a match is found, do NOT create a second issue. Surface the existing issue URL to John and ask whether to re-use it or close it and re-dispatch. A duplicate issue confuses the coding agent and splits the PR trail.
-
-### Confirm the dispatch payload with John
-
-Before any write, echo back the key facts in a single line:
-
-> Dispatching `tw-12345`: issue → `owner/repo`, agent `copilot`, reviewer `<@U0XXX>`. Confirm?
-
-Wait for affirmative ("yes", "go", "ship it"). If anything in the payload looks wrong (repo, reviewer, agent), let John correct it before proceeding.
+If a match is found, do NOT create a second issue. Note the existing issue URL in the queue and #pm-team post; do not re-create. A duplicate issue confuses the coding agent and splits the PR trail.
 
 ## Process
 
@@ -63,7 +65,7 @@ Do not leave issue bodies on disk. They may contain verbatim TW task content.
 
 #### 1b. Claude-code remote dispatch (only if agent=claude-code)
 
-If the queue entry says `agent: claude-code`, use the Anthropic remote-agent dispatch path instead of `--assignee @copilot`. The exact mechanism depends on which remote-agent product is enabled on the account. If not verified, stop and ask John before proceeding. Do NOT improvise (no spinning up a Chrome session to drive claude.com manually).
+If the queue entry says `agent: claude-code`, use the Anthropic remote-agent dispatch path instead of `--assignee @copilot`. The exact mechanism depends on which remote-agent product is enabled on the account. If not verified, stop and surface to #pm-team before proceeding. Do NOT improvise (no spinning up a Chrome session to drive claude.com manually).
 
 ### 2. Comment on the Teamwork task
 
@@ -85,7 +87,7 @@ Keep it factual. No marketing language. No AI tells.
 
 ### 3. Ping the reviewer in Slack
 
-Send a DM to the reviewer (the Slack user ID from the queue entry). Use `slack_send_message_draft` to land it as a draft for John to send. Per `connections.md` we do not auto-send DMs to other team members.
+Send a DM to the reviewer (the Slack user ID from the queue entry). Use `slack_send_message_draft` to land it as a draft for a human to send. Per `connections.md` we do not auto-send DMs to other team members.
 
 Draft template:
 
@@ -98,7 +100,7 @@ Heads up: [coding agent] is taking a first pass at this dev task.
 
 When the draft PR opens, you are the reviewer. I will ping again with the link.
 
-— John (via LimeLight's dev agent)
+— LimeLight's dev agent
 ```
 
 ### 4. Update the queue
@@ -113,21 +115,21 @@ dispatched: [YYYY-MM-DD HH:MM CDT]
 gh_issue_url: [URL]
 gh_issue_number: [N]
 tw_comment_id: [comment ID from twprojects-create_comment response, if available]
-slack_dm_draft_id: [the draft ID for John's reference]
+slack_dm_draft_id: [the draft ID for reference]
 ---
 ```
 
 Append, do not edit in place. The queue file is an event log.
 
-### 5. Confirm to John
+### 5. Confirm in #pm-team
 
-Post a short confirmation in the channel John used to invoke this skill (typically chat in Claude Code, or `#john-ea` if John triggered via a Slack-based interaction):
+Post a short confirmation to **#pm-team** (`C031HHSBM1Q`). For auto-dispatches during intake, this can be rolled into the single intake summary post (don't double-post per item); for a standalone/greenlit dispatch, post its own line:
 
 ```
 *Dispatched tw-[id]*
 - Issue: <gh_issue_url|owner/repo#N>
 - Teamwork comment posted
-- Reviewer ping drafted in your Slack drafts (review and send)
+- Reviewer: [Reviewer name] (DM drafted for whoever sends reviewer pings)
 ```
 
 Three lines. No more.
@@ -143,8 +145,8 @@ Append to `memory/run-log.md`:
 ## Verification before any write
 
 - [ ] Queue entry exists and `status: ready`
-- [ ] John gave explicit "go" in the chat (or Slack message) — not inferred, not implied
-- [ ] Repo is in `context/repo-mapping.md` (re-verify; do not trust the queue entry alone)
+- [ ] If `mapping_source: learned`, Nora has greenlit it (not still `awaiting_nora_greenlight`)
+- [ ] Repo is in `context/repo-mapping.md` (curated) or a greenlit learned mapping — re-verify the repo exists; do not trust the queue entry alone
 - [ ] Reviewer Slack ID resolves to a real user (sanity check via `slack_search_users` if uncertain)
 - [ ] Issue body cites the TW task URL as source
 - [ ] No invented context or files in the issue body
@@ -152,13 +154,14 @@ Append to `memory/run-log.md`:
 ## Hard rules specific to this skill
 
 - **One TW comment per dispatch.** Idempotent: if the queue shows the dispatch already happened, refuse to re-dispatch.
-- **Reviewer DM is a draft, never a send.** Per `connections.md`, only `#john-ea` is auto-send authorized.
-- **No issue edits after creation.** If the issue needs changes, John or the reviewer handles it in GitHub.
+- **Never dispatch a learned-mapping item without Nora's greenlight.** Curated-mapping Ready items dispatch automatically; learned ones don't.
+- **Reviewer DM is a draft, never a send.** Per `connections.md`, only #pm-team is auto-send authorized.
+- **No issue edits after creation.** If the issue needs changes, the reviewer handles it in GitHub.
 - **No PR creation.** That is the coding agent's job. This skill only creates the issue and assigns the agent.
 
 ## What this skill does NOT do
 
 - Does not poll for PR status after dispatch. `copilot-followup` handles that.
 - Does not run the original TW triage. That is `copilot-intake`.
-- Does not handle non-Ready queue items. If John says "dispatch tw-X" and the entry is `needs-clarification`, refuse and explain.
+- Does not handle non-Ready queue items. If asked to dispatch an entry that is `needs-clarification`, refuse and explain.
 - Does not touch any system outside GitHub (one write), Teamwork (one comment), and Slack (one draft).

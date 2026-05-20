@@ -35,7 +35,7 @@ Possible state transitions to detect:
 - `dispatched` → `issue-closed-no-pr`: the GitHub issue was closed and no PR was ever linked
 - `dispatched` → `stale`: more than 24 hours have passed and no PR exists yet (do NOT auto-transition; surface as a question)
 
-For `dispatched` items: if `gh issue view N` returns `state: closed` and `linkedPullRequests` is empty, classify as `dispatched` → `issue-closed-no-pr`. Do not silently ignore it. Surface to John in the sweep post (same section as ambiguous closes). Append queue block: `status: closed`, `closed_reason: issue-closed-no-pr`, `awaiting_john_disposition: true`. This is always treated as ambiguous — no TW comment without John's call.
+For `dispatched` items: if `gh issue view N` returns `state: closed` and `linkedPullRequests` is empty, classify as `dispatched` → `issue-closed-no-pr`. Do not silently ignore it. Surface to #pm-team in the sweep post (same section as ambiguous closes). Append queue block: `status: closed`, `closed_reason: issue-closed-no-pr`, `awaiting_disposition: true`. This is always treated as ambiguous — no TW comment without a human's call.
 
 ### 2. On `dispatched` → `pr-open`
 
@@ -53,7 +53,7 @@ Reviewer: [Reviewer name]. They will review and merge or send back.
 — Posted by LimeLight's dev agent.
 ```
 
-**Step B: Ping the reviewer.** Draft a Slack DM (per `connections.md`, drafts only for non-`#john-ea` channels):
+**Step B: Ping the reviewer.** Draft a Slack DM (per `connections.md`, DMs to a reviewer are drafts only; #pm-team is the only auto-send channel):
 
 ```
 PR is ready for review.
@@ -62,7 +62,7 @@ PR is ready for review.
 
 This is the coding agent's first pass on [TW task URL]. Review it on its merits. If it is close, merge it. If it is not, close it with a comment so the queue updates.
 
-— John (via LimeLight's dev agent)
+— LimeLight's dev agent
 ```
 
 **Step C: Update the queue.** Append:
@@ -110,8 +110,8 @@ A PR closed without merging can mean different things. Do NOT assume rejection. 
 |---|---|
 | Latest review is `CHANGES_REQUESTED` or `COMMENTED` with substantive text | **Explicit rejection.** Use the review body as the reason. |
 | A non-bot human left a closing comment on the PR or the linked issue | **Explicit close with reason.** Use the comment body as the reason. |
-| No comments, no reviews, PR just closed (possibly with the issue also closed by the same person within ~60 sec) | **Ambiguous close.** No conclusion about quality. Could be a test, scope change, parallel work, or silent rejection. Surface to John, do NOT auto-post to Teamwork. |
-| PR closed by someone other than the listed reviewer for this dispatch | **Out-of-band close.** Always surface to John regardless of comment state. |
+| No comments, no reviews, PR just closed (possibly with the issue also closed by the same person within ~60 sec) | **Ambiguous close.** No conclusion about quality. Could be a test, scope change, parallel work, or silent rejection. Surface to #pm-team, do NOT auto-post to Teamwork. |
+| PR closed by someone other than the listed reviewer for this dispatch | **Out-of-band close.** Always surface to #pm-team regardless of comment state. |
 
 **Step C: Branch on classification.**
 
@@ -136,9 +136,9 @@ Append queue block: `status: closed`, `closed_reason: explicit-rejection` (or `e
 Do NOT post a Teamwork comment. The skill's job is to track state truthfully; if we don't know why a PR closed, we don't get to invent a reason on a public task surface.
 
 Instead:
-- Append queue block: `status: closed`, `closed_reason: ambiguous`, `tw_comment_posted: false`, `awaiting_john_disposition: true`.
-- Add a line to the next sweep post under a new section `*Ambiguous closes (need your call)*` with the PR URL, the TW task URL, and a one-line summary of what was in the PR diff (so John can decide without clicking). Include the prompt: `Tell me: "tw-[id]: test close" / "scope changed" / "rejected because [reason]"`.
-- John's response is handled by `skills/copilot-disposition.md`, not this skill.
+- Append queue block: `status: closed`, `closed_reason: ambiguous`, `tw_comment_posted: false`, `awaiting_disposition: true`.
+- Add a line to the next sweep post under a new section `*Ambiguous closes (need a human call)*` with the PR URL, the TW task URL, and a one-line summary of what was in the PR diff (so a human can decide without clicking). Include the prompt: `Tell me: "tw-[id]: test close" / "scope changed" / "rejected because [reason]"`.
+- The disposition reply is handled by `skills/copilot-disposition.md`, not this skill.
 
 **C3. Out-of-band close (closed by someone other than the listed reviewer):**
 
@@ -146,7 +146,7 @@ Treat as ambiguous (path C2) by default, but flag in the queue block: `closed_by
 
 **Step D: Pipeline-health flag.** Independent of classification, count `explicit-rejection` closes (NOT ambiguous, NOT explicit-close-with-reason) in the trailing 7 days. If 3 or more, surface in the sweep post as "pipeline review needed" with the following response path:
 
-> Recommended actions: (1) John reviews the 3 rejected issues to identify a common pattern. (2) If the pattern is scope/complexity, consider tightening the triage criteria in `skills/copilot-intake.md` step 2. (3) If the pattern is enrichment quality (wrong files, wrong context), consider whether the pre-flight scan in intake step B needs a different search strategy for the affected repo. (4) If the pattern is repo-specific, add a note to that repo's row in `context/repo-mapping.md`. Hold off on new dispatches to that repo until the pattern is understood.
+> Recommended actions: (1) A human (or you, surfacing it) reviews the 3 rejected issues to identify a common pattern. (2) If the pattern is scope/complexity, consider tightening the triage criteria in `skills/copilot-intake.md` step 2. (3) If the pattern is enrichment quality (wrong files, wrong context), consider whether the pre-flight scan in intake step B needs a different search strategy for the affected repo. (4) If the pattern is repo-specific, add a note to that repo's row in `context/repo-mapping.md`. Hold off on new dispatches to that repo until the pattern is understood.
 
 Ambiguous closes do NOT count toward this signal because they may be test or scope closes that say nothing about agent quality.
 
@@ -161,11 +161,11 @@ Do NOT auto-retry. Surface in the next sweep post:
 - `tw-[id]` [task title] → [issue URL]: dispatched [time ago], no PR yet
 ```
 
-If John wants to retry, he says so. The skill does not assume.
+If someone on the team wants to retry, they say so. The skill does not assume.
 
 ### 6. Decision: post or silent
 
-Post to `#john-ea` if ANY of these are true since the last run:
+Post to **#pm-team** (`C031HHSBM1Q`) if ANY of these are true since the last run:
 - A PR opened (any item transitioned `dispatched` → `pr-open`)
 - A PR merged
 - A PR closed with explicit rejection or explicit close reason
@@ -193,7 +193,7 @@ Stay silent if the sweep found no transitions.
 - `tw-[id]` [task title] → <PR URL|owner/repo#N>: [closing reason in 1 line, preserving reviewer wording]
 - ...
 
-*Ambiguous closes (need your call)* ([N])
+*Ambiguous closes (need a human call)* ([N])
 - `tw-[id]` [task title] → <PR URL|owner/repo#N>: closed by [login], no comment/review. PR diff was [1-line summary of files changed]. Tell Claude what happened: "test", "scope changed", "actually rejection: <reason>".
 - ...
 
@@ -225,8 +225,8 @@ Skip empty sections.
 ## Hard rules specific to this skill
 
 - **No PR review or approval.** This skill never comments on the PR itself, never approves, never merges. Reviewer is a human.
-- **No coding agent retries.** Stalled dispatches surface to John, do not silently re-dispatch.
-- **Teamwork comments only at confirmed state transitions with confirmed reasons.** PR-open, merged, and explicit closes are the only auto-post triggers. Ambiguous closes do NOT trigger an auto-comment; they wait for John's disposition.
+- **No coding agent retries.** Stalled dispatches surface to #pm-team, do not silently re-dispatch.
+- **Teamwork comments only at confirmed state transitions with confirmed reasons.** PR-open, merged, and explicit closes are the only auto-post triggers. Ambiguous closes do NOT trigger an auto-comment; they wait for a human disposition.
 - **No editorializing in Teamwork comments.** When posting a close-with-reason comment, preserve the reviewer's wording. Do not paraphrase, do not add AI gloss, do not soften criticism.
 - **One DM per state transition.** Idempotent: if the queue already shows the reviewer was DM'd for this PR, do not re-draft.
 

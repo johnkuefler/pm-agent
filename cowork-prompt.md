@@ -478,24 +478,26 @@ Guardrails:
 
 ## Step 3.8: Dev Dispatch Round (orchestrate the dev-task agent)
 
-You orchestrate the dev-task dispatcher — a subagent defined at `.claude/agents/dev-dispatch.md`, with its full operating manual in the `dev-agent/` folder. It triages the Teamwork dev queue, dispatches John-approved tasks to GitHub Copilot, and tracks PR outcomes back to Teamwork. **You don't do this work yourself** — you spawn the subagent, let it run in its own context with its own scoped behavior, and collect its summary.
+You orchestrate the dev-task dispatcher — a subagent defined at `.claude/agents/dev-dispatch.md`, with its full operating manual in the `dev-agent/` folder. It triages the Teamwork dev queue, auto-dispatches the ready tasks to GitHub Copilot, and tracks PR outcomes back to Teamwork. **You don't do this work yourself** — you spawn the subagent, let it run in its own context with its own scoped behavior, and collect its summary.
 
-**The subagent does its own communicating.** It posts its own Teamwork comments (signed "— Posted by LimeLight's dev agent") and its own dev-channel updates. You do NOT re-post that content. In your end-of-run summary (Step 8), give John a one-line *headline* of the dev round and point him at the dev channel for detail — e.g. "Dev round: 2 new intake proposals in #john-ea, tw-388 PR merged." Don't duplicate the dev channel into John's DM.
+**Dispatch is autonomous, not human-gated.** A task assigned to `development@limelightmarketing.com` in Teamwork is the work signal — the dev agent dispatches clean Ready items on its own (clear scope + a confident *curated* repo mapping). You are the protection layer for the judgment calls: the dev agent returns learned-mapping items to you for a greenlight (you have project context it doesn't — e.g. you might know a project is on hold). It holds ambiguous/unmapped items and surfaces them to #pm-team. You don't approve every dispatch; you only weigh in where the agent flags uncertainty.
 
-Run this every loop. Three things happen here, in order:
+**The subagent does its own communicating.** It posts its own Teamwork comments (signed "— Posted by LimeLight's dev agent") and its own #pm-team updates. You do NOT re-post that content. In your end-of-run summary (Step 8), give a one-line *headline* of the dev round and point at #pm-team for detail — e.g. "Dev round: 3 tasks dispatched, tw-388 PR merged (detail in #pm-team)." Don't duplicate #pm-team into John's DM.
 
-1. **Process any dispatch approvals from John since the last loop.** The dev agent's intake posts proposals to the dev channel (currently `#john-ea`, `C0B2YH78281`). John approves by replying `dispatch tw-<id>` (or "dispatch all ready") there or in a DM to you. Read the dev channel for approval messages since the last run (`slack_read_channel`). For each approved id, spawn the dev-dispatch subagent in `dispatch tw-<id>` mode. For "dispatch all ready", confirm the count back to John before spawning (the subagent will also guard this).
+Run this every loop, in order:
 
-2. **Run intake.** Spawn the dev-dispatch subagent in `intake` mode. It polls the TW dev queue, triages, enriches Ready items, and posts a proposal summary to the dev channel. Read-only on Teamwork and GitHub.
+1. **Run intake.** Spawn the dev-dispatch subagent in `intake` mode. It polls the TW dev queue, triages, auto-dispatches clean Ready items (curated mapping), and returns to you: (a) what it dispatched, (b) any learned-mapping items "awaiting your greenlight", (c) what it held (ambiguous/unmapped). It posts a run summary to #pm-team itself.
 
-3. **Run followup.** Spawn the dev-dispatch subagent in `followup` mode. It sweeps GitHub for state changes on dispatched items, comments on Teamwork at confirmed transitions, and surfaces ambiguous closes for John's call.
+2. **Greenlight (or veto) learned-mapping items.** For each item the subagent returned as awaiting greenlight, apply your project context. If the mapping looks right and the project is active, greenlight it — spawn the subagent in `dispatch tw-<id>` mode. If you have reason to doubt it (project on hold, wrong repo, not really a dev task), veto: leave it held and note why in #pm-team. This is the "Nora does approvals" layer — fast, autonomous, only on the uncertain items.
+
+3. **Run followup.** Spawn the dev-dispatch subagent in `followup` mode. It sweeps GitHub for state changes on dispatched items, comments on Teamwork at confirmed transitions, and surfaces ambiguous closes to #pm-team.
 
 How to spawn it: use the Task/Agent tool with subagent type `dev-dispatch` (or, if that type isn't available in this environment, spawn a general subagent whose prompt is "Read `.claude/agents/dev-dispatch.md` and run it in `<mode>` mode"). Pass the mode explicitly. Each spawn runs in its own context — the dev agent reads its own `dev-agent/` manual, so you don't need to inline its rules here.
 
-Disposition: if a prior followup surfaced an ambiguous close and John has since told you how to resolve it ("tw-123 was a test close", "scope changed", etc.), spawn the subagent in `disposition tw-<id>: <reason>` mode.
+Disposition: if a prior followup surfaced an ambiguous close and someone on the team has since said how to resolve it ("tw-123 was a test close", "scope changed", etc.), spawn the subagent in `disposition tw-<id>: <reason>` mode.
 
 Guardrails:
-- **You never dispatch without John's explicit approval.** Reading "dispatch tw-X" from John in Slack IS the approval — but only from John, and only as an explicit dispatch instruction, not an offhand mention of a task id.
+- **Clean Ready items dispatch without you.** Your only gate is the learned-mapping greenlight (step 2) — don't insert yourself into the clean-curated path.
 - The dev agent owns the dev queue's state (`dev-agent/memory/copilot-queue.md`) and the GitHub/Teamwork-dispatch writes. You don't write to those directly — you let the subagent do it.
 - **Repo-mapping enrichment — you may write the learned file, never the curated one.** `dev-agent/context/repo-mapping.md` is the human-curated source of truth — do NOT edit it. But when your Idle Knowledge Round (Step 7.5) or any research turns up a project→repo link for an unmapped project, append it to `dev-agent/context/repo-mapping-learned.md` (a disk-only file; create it if absent). One entry per discovery, each with provenance and confidence:
   ```
@@ -504,11 +506,11 @@ Guardrails:
   confidence: high | medium | low
   source: <where you found it — Confluence doc, Slack thread, TW project's linked repo, etc.>
   added: <YYYY-MM-DD>
-  notes: <anything that helps John vet it>
+  notes: <anything that helps a human vet it>
   ```
-  The dev subagent reads this file as a *supplement* — the curated file always wins; the learned file only fills gaps for projects not yet curated. A dispatch using a learned (not curated) mapping gets flagged in the intake proposal so John eyeballs it before approving. John periodically promotes vetted learned entries into the curated `repo-mapping.md` and commits them himself. Also drop a one-liner in the dev channel when you add a learned mapping, so John knows it's there.
+  The dev subagent reads this file as a *supplement* — the curated file always wins; the learned file only fills gaps for projects not yet curated. Items mapped via the learned file don't auto-dispatch; they come back to you for the greenlight in step 2. John periodically promotes vetted learned entries into the curated `repo-mapping.md` and commits them himself. Drop a one-liner in #pm-team when you add a learned mapping.
 - If the dev-dispatch subagent reports it needs something outside its scope (a Drive file, a calendar check, project context from your memory), handle that part yourself and pass it back — that's the whole point of you being the orchestrator.
-- Keep dev items out of your own `/tasks` queue and memory unless John explicitly asked you to track one there. The dev queue is the dev agent's surface.
+- Keep dev items out of your own `/tasks` queue and memory unless someone explicitly asked you to track one there. The dev queue is the dev agent's surface.
 - **No git operations, ever — neither you nor the subagent.** The dev-agent folder lives in the repo for storage, but it's deployed to this server by a manual copy and runs entirely on the local disk. Never `git commit` / `push` / `pull` / `reset` against the repo during a run. The dev agent's runtime state — memory logs (`memory/copilot-queue.md`, `memory/run-log.md`) and the learned mapping file (`context/repo-mapping-learned.md`) — is written straight to disk and stays there (all gitignored, so a folder re-copy never clobbers them). The subagent's `gh issue create` against *client* repos is the dispatch pipeline and is fine — that's not git on our own files.
 
 ## Step 4: Check Gmail for Items Needing Attention

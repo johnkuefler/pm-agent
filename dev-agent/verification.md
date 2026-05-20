@@ -4,8 +4,8 @@ Cross-cutting pre-flight checks. Run against every outbound action before delive
 
 ## Before any GitHub write
 
-- [ ] John has explicitly authorized this dispatch (chat or Slack message, this session)
-- [ ] The repo exists in `context/repo-mapping.md` (re-verify; do not trust the queue entry alone)
+- [ ] This item is cleared to dispatch: a clean Ready item with a *curated* mapping (auto), OR a learned-mapping item Nora greenlit, OR an explicit team request for this id. A learned mapping still `awaiting_nora_greenlight` is NOT cleared.
+- [ ] The repo exists (re-verify via `gh` — curated mapping, or a greenlit learned mapping; do not trust the queue entry alone)
 - [ ] Issue body cites the Teamwork task URL as `## Source`
 - [ ] "Likely files" paths in the issue body were actually confirmed in the repo this run (not invented, not pulled from cache)
 - [ ] `@copilot` or the claude-code remote dispatch path resolves
@@ -23,11 +23,11 @@ Cross-cutting pre-flight checks. Run against every outbound action before delive
 
 ## Before any Slack post
 
-- [ ] Target is `#john-ea` (`C0B2YH78281`), or a reviewer DM as a draft only
+- [ ] Target is `#pm-team` (`C031HHSBM1Q`), or a reviewer DM as a draft only
 - [ ] Every claim cites a source (issue URL, PR URL, TW task URL)
 - [ ] Slack mrkdwn (single asterisks for bold, not double)
 - [ ] No em dashes
-- [ ] Post threshold met (something John needs to see or act on)
+- [ ] Post threshold met (something the team needs to see or act on)
 
 ## Before appending to `memory/copilot-queue.md`
 

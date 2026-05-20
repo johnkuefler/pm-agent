@@ -2,7 +2,7 @@
 
 ## When to use this
 
-John provides a disposition for a queue item with `awaiting_john_disposition: true`. Triggered when he says things like:
+Someone on the team provides a disposition for a queue item with `awaiting_disposition: true`. Triggered when he says things like:
 
 - "tw-[id] was a test close"
 - "tw-[id]: scope changed"
@@ -14,15 +14,15 @@ This skill only operates on items already in the queue. It does not triage or di
 
 ## Pre-flight
 
-Open `memory/copilot-queue.md`. Find the most recent block for the specified `id`. Confirm it has `awaiting_john_disposition: true`. If not, the close is already resolved — say so and stop.
+Open `memory/copilot-queue.md`. Find the most recent block for the specified `id`. Confirm it has `awaiting_disposition: true`. If not, the close is already resolved — say so and stop.
 
 Also confirm the `pr_url` and `tw_url` are present in any prior block for this id. You will need both.
 
 ## Process
 
-### 1. Classify John's disposition
+### 1. Classify the disposition
 
-| What John said | Classification | TW comment |
+| What was said | Classification | TW comment |
 |---|---|---|
 | "test close", "testing", "just checking", "ignore it" | `test-close` | None |
 | "scope changed", "won't fix", "not doing this", "pulled from queue" | `scope-change` | Yes, `notify=true` |
@@ -40,7 +40,7 @@ Use `twprojects-create_comment` on the original TW task.
 ```
 The draft PR was closed: [PR URL]
 
-Not proceeding. [John's reason, verbatim or as he stated it.]
+Not proceeding. [the stated reason, verbatim.]
 
 This task can be closed or reassigned.
 
@@ -52,7 +52,7 @@ This task can be closed or reassigned.
 ```
 The draft PR was closed without merging: [PR URL]
 
-Reason: [John's reason, verbatim.]
+Reason: [the stated reason, verbatim.]
 
 This task is back on the human queue.
 
@@ -70,8 +70,8 @@ Append a new block with the same `id`:
 id: tw-[id]
 status: closed
 disposition: test-close | scope-change | explicit-rejection
-disposition_source: john-manual
-disposition_note: [John's verbatim reason, or "test close per John"]
+disposition_source: manual
+disposition_note: [the stated reason verbatim, or "test close per the team"]
 tw_comment_posted: true | false
 resolved: [YYYY-MM-DD HH:MM CDT]
 ---
@@ -88,6 +88,6 @@ Append to `memory/run-log.md`:
 ## Hard rules
 
 - Never post a TW comment on a test close. It creates noise on a task that was already handled.
-- Never paraphrase John's reason when posting to TW. Use his words.
-- If the TW task was already closed by a PM or John before this skill runs, skip the TW comment and note it in the queue block (`tw_task_already_closed: true`).
-- One disposition per item. If the queue already has a block with `disposition_source: john-manual`, refuse and show John the existing disposition.
+- Never paraphrase the stated reason. Use their words.
+- If the TW task was already closed by a human before this skill runs, skip the TW comment and note it in the queue block (`tw_task_already_closed: true`).
+- One disposition per item. If the queue already has a block with `disposition_source: manual`, refuse and show the existing disposition.

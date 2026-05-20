@@ -6,7 +6,7 @@ Nora runs this once per cowork loop (hourly) when she spawns this agent in `inta
 
 Also: when John says "check the dev queue", "run intake", "any new dev tasks" — Nora spawns this agent in intake mode in response.
 
-This skill never dispatches on its own. It produces a proposal. Dispatch happens via `skills/copilot-dispatch.md` after John approves and Nora spawns the dispatch mode.
+This skill auto-dispatches clean Ready items (clear scope + a confident curated repo mapping) by running `skills/copilot-dispatch.md` for each. Learned-mapping items wait for Nora's greenlight; ambiguous and unmapped items are held and surfaced to #pm-team. Assignment to development@ plus a clean triage is the go-ahead — no per-task human approval.
 
 ## Pre-flight
 
@@ -54,7 +54,7 @@ For each Ready task, produce a proposed GitHub issue body. Read the target repo 
 - If the project is mapped to a single repo, use that repo.
 - If the project is mapped to multiple repos with routing rules (e.g., `GB - Dev Support`, `PE - Website Retainer 2026`), concatenate the TW task title and body, lowercase, and evaluate each routing rule in order. First match wins. Use the matched repo.
 - If the project is mapped but the routing rules return no match AND no safe default is specified, classify the task as `unknown-repo` and surface in step 5 with reason "ambiguous repo within mapped project; need disambiguation". Do NOT pick a default repo silently.
-- **If the TW project does not appear in the curated file, check the learned file** `context/repo-mapping-learned.md` (disk-only; may not exist). If the project is mapped there, use that repo BUT mark this as a learned mapping: set `mapping_source: learned` in the queue block and surface it in the step 5 proposal with `repo via learned mapping (confidence X, source Y) — confirm before approving`. The approval gate is the backstop; a learned mapping never auto-dispatches.
+- **If the TW project does not appear in the curated file, check the learned file** `context/repo-mapping-learned.md` (disk-only; may not exist). If the project is mapped there, use that repo BUT mark it `mapping_source: learned` in the queue block. Learned-mapping items do NOT auto-dispatch — they go to the "Awaiting Nora's greenlight" bucket in step 5. Nora is the second set of eyes specifically because a learned mapping is a guess until vetted.
 - If the TW project appears in neither file, classify as `unknown-repo` with reason "TW project '<name>' not in repo-mapping.md or repo-mapping-learned.md".
 
 Reviewer and agent come from the matched row (curated or learned).
@@ -121,40 +121,46 @@ notes: [one-line reason for needs-clarification / skipped / unknown-repo]
 
 This is the audit log. Every TW task that hits this skill produces exactly one entry, even if the action is "skip".
 
-### 5. Build the Slack proposal
+### 5. Act on each bucket
 
-Post a single message to John's EA channel (`C0B2YH78281`) with all proposals from this run. Use `slack_send_message` (authorized for this channel per `connections.md`).
+This is where the new posture lives: clean Ready items dispatch automatically; the rest are handled per their bucket.
 
-Template:
+- **Ready, curated mapping** → **dispatch now.** Follow `skills/copilot-dispatch.md` for each one (idempotency check, create GH issue, comment on TW, append the queue block). You don't wait for a human — assignment to development@ plus a clean triage IS the go-ahead.
+- **Ready, learned mapping** (repo came from `context/repo-mapping-learned.md`) → **do NOT dispatch yet.** Return it to Nora in your summary as "awaiting greenlight: tw-X → repo (learned, confidence/source)". Nora greenlights or vetoes; if she greenlights, she spawns dispatch mode for it. Append a queue block with `status: ready`, `mapping_source: learned`, `awaiting_nora_greenlight: true`.
+- **Needs clarification / Unknown repo** → hold (no dispatch), include in the #pm-team post below.
+- **Skipped** → log only, no post.
+
+### 6. Post to #pm-team
+
+Post a single message to **#pm-team** (`C031HHSBM1Q`) summarizing this run. Use `slack_send_message`.
 
 ```
 *Dev intake, [HH:MM CDT]*
 
-*Ready to dispatch* ([N])
-- `tw-[id]` [task title] → [owner/repo] (reviewer: <@U-id>, agent: [copilot|claude-code])
-  > [one-line summary of the issue body]
-  > To ship: tell Claude "dispatch tw-[id]"
+*Dispatched* ([N])
+- `tw-[id]` [task title] → <issue URL|owner/repo#N> (reviewer: <@U-id>, agent: [copilot|claude-code])
 - ...
 
-*Needs clarification from the PM* ([N])
+*Dispatched via learned mapping — flag if wrong* ([N])
+- `tw-[id]` [task title] → <issue URL|owner/repo#N> (mapping: learned, confidence [X], source [Y])
+- ...
+
+*Awaiting Nora's greenlight* ([N])
+- `tw-[id]` [task title] → [owner/repo] (learned mapping, confidence [X])
+- ...
+
+*Needs clarification* ([N])
 - `tw-[id]` [task title]: [what is missing]
 - ...
 
 *Unknown repo* ([N])
-- `tw-[id]` [task title]: project "[TW project]" is not in repo-mapping.md
+- `tw-[id]` [task title]: project "[TW project]" not in repo-mapping.md or repo-mapping-learned.md
 - ...
-
-*Skipped* ([N])
-- `tw-[id]` [task title]: [reason]
 
 Queue state: memory/copilot-queue.md
 ```
 
-Skip empty sections. If everything in this run was skipped or empty, do not post; log only.
-
-### 6. Decision: post or silent
-
-Post if any bucket has at least one item that needs John's attention (ready, needs-clarification, unknown-repo). Stay silent if the run was 0 new tasks, or only skipped (duplicates / out-of-scope).
+Skip empty sections. Post if anything was dispatched, is awaiting greenlight, or needs human attention (clarification / unknown-repo). Stay silent if the run was 0 new tasks or only skipped items.
 
 Logging always happens (step 7).
 
@@ -174,22 +180,21 @@ Append one line to `memory/run-log.md`:
 - [ ] Reviewer Slack ID is from `context/repo-mapping.md`, not invented
 - [ ] No em dashes anywhere
 - [ ] Queue file has one entry per task processed (no duplicates, no gaps)
-- [ ] Slack post explicitly tells John how to dispatch (the "tell Claude" line)
-- [ ] Nothing was created in GitHub. Nothing was commented on Teamwork. This skill is read-only on both systems.
+- [ ] Every dispatched item ran the full `copilot-dispatch` verification (repo verified, issue cites TW URL, idempotency checked)
+- [ ] Learned-mapping items were NOT dispatched — they're returned to Nora for greenlight
 
 ## Hard rules specific to this skill
 
-- **No autonomous dispatch.** Never call `gh issue create` or any GitHub write. Dispatch is `copilot-dispatch`, gated on John's go-ahead.
-- **No Teamwork writes.** Per `connections.md`, Teamwork is read-only for this agent. The post-dispatch TW comment happens in `copilot-dispatch`, not here.
-- **No issue creation on `unknown-repo` items.** Surface them; let John add the mapping row first.
-- **Voice rules apply to the issue body.** No AI tells, no em dashes, plain technical English. The issue body is going to live in a public-ish (internal) GitHub repo, so it represents John's team.
+- **Auto-dispatch ONLY clean Ready items** (clear scope + confident curated mapping). Everything else holds: learned-mapping items wait for Nora's greenlight; ambiguous/unmapped items surface to #pm-team.
+- **Never auto-dispatch a learned-mapping item.** That one still needs Nora's eyes.
+- **No issue creation on `unknown-repo` items.** Surface them; someone adds the mapping first.
+- **Voice rules apply to the issue body.** No AI tells, no em dashes, plain technical English. The issue body lives in an internal GitHub repo, so it represents the agency.
 
 ## What this skill does NOT do
 
-- Does not create GitHub issues. (`copilot-dispatch` does that.)
-- Does not comment on Teamwork. (`copilot-dispatch` does that.)
-- Does not chase down clarification from PMs. Surfaces the gap; John or the PM decides what to do.
+- Does not chase down clarification from PMs. Surfaces the gap to #pm-team; a human decides.
 - Does not retry "needs-clarification" items automatically. If the TW task gets updated with more detail, the next intake pass picks it up.
+- Does not dispatch learned-mapping items on its own (Nora greenlights those).
 - Does not handle Teamwork Desk (support tickets). Only Teamwork Projects tasks.
 
 ## Template for memory/copilot-queue.md (first-run)
