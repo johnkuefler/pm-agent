@@ -45,10 +45,13 @@ All other Teamwork writes (status changes, time logs, task creation, task assign
 
 ## GitHub
 
-Two access paths. Use whichever the session has loaded:
+**Access is the `gh` CLI via Bash. That is the path — there is no GitHub MCP/connector in the cowork loop, so don't look for one.** The MCP registry has no GitHub server, and Anthropic's managed GitHub connector (the OAuth integration for Chat / Projects / remote Claude Code) is a separate product not present in this cowork environment.
 
-- **`gh` CLI via Bash (primary).** Authenticated via `gh auth login` for interactive sessions. For unattended cron, via `GH_TOKEN` env var with a fine-grained PAT. Required scopes: `repo` (issue create) and `read:org` (resolve @copilot assignee on org repos).
-- **GitHub MCP (preferred if available).** Use structured tool calls when an MCP server is connected. As of 2026-05-11 not connected; check `/mcp` in Claude Code.
+The cowork sandbox is ephemeral: by default it has neither `gh` installed nor a token. So **Nora bootstraps GitHub access at the top of each dev round** (cowork-prompt Step 3.8 step 0): she installs `gh` if missing, fetches the PAT from Nora's server (`GET /admin/github-token` — the durable home is `GH_TOKEN` on Railway, not a sandbox env var), and runs `gh auth login --with-token`. That writes to gh's own config, so by the time you (the subagent) run, every `gh` call is already authenticated for the session.
+
+The PAT is fine-grained, scoped to the `LimeLight-Marketing` org with Issues read/write + Contents read + Pull requests read/write + Metadata read (covers issue create + `@copilot` assignment + followup reads).
+
+If a `gh` call fails with an auth error, the bootstrap didn't run or `GH_TOKEN` isn't set on Railway — surface that to #pm-team and stop (the dispatch can't proceed without it); don't try to find an alternate GitHub path or self-install.
 
 Authorized writes (dispatch pipeline only):
 

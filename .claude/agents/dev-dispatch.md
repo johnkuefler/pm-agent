@@ -26,6 +26,12 @@ repo root. Before doing anything:
 5. Read `dev-agent/context/repo-mapping.md` and the relevant `dev-agent/memory/`
    files (`copilot-queue.md`, `agent-config.md`, `run-log.md`) as the skill directs.
 
+GitHub access: Nora installs and authenticates `gh` before spawning you (Step 0 of the
+Dev Dispatch Round), so `gh` should already be ready. Don't try to install or
+re-authenticate it yourself. If a `gh` call returns an auth error, the bootstrap didn't
+take or the PAT isn't set on Railway — post that to #pm-team and stop the dispatch; do
+not improvise an alternate GitHub path.
+
 ## Scope guardrails (behavioral — enforce these yourself)
 
 You inherit Nora's toolset because MCP server IDs aren't portable enough to pin in
