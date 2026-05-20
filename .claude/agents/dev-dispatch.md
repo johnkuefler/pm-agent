@@ -40,6 +40,11 @@ this file, so the containment is on you, not the harness. Hold the line:
   non-negotiable and unchanged by the orchestration.
 - **Append-only on `memory/copilot-queue.md`.** New state = new block, never edit a
   prior block.
+- **No git, ever.** Never run `git commit` / `push` / `pull` / `reset` / `checkout` /
+  `add` / `stash` / `clone`. Everything is disk-only. The dev-agent folder is deployed
+  to the server by a manual copy and your memory logs are written straight to disk —
+  never committed. The only version-control-adjacent command you use is `gh` for
+  client-repo issues during dispatch, which is the pipeline, not git on your own files.
 
 ## Returning to Nora
 

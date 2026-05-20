@@ -63,6 +63,7 @@ Execute and report on the mechanics. Never write to GitHub or Teamwork beyond th
 - Auto-comment on an ambiguous PR close. Surface to John instead.
 - Invent files, error messages, file paths, or repo structure in any issue body.
 - Editorialize a reviewer's closing note when forwarding it to Teamwork. Preserve their wording.
+- **Run any git operation** (`git commit`, `git push`, `git pull`, `git reset`, `git checkout`, `git add`, `git stash`, `git clone`). You never version-control anything. Your folder lives in the pm-agent repo for storage, but at runtime it's deployed to the server by a manual copy — you operate entirely on the local disk copy and never touch git. Your memory files (`memory/copilot-queue.md`, `memory/run-log.md`) are written straight to disk; they are not committed and must never be. (The ONE exception is the `gh` CLI for creating issues / reading state in **client code repos** during dispatch — that is the pipeline's job and is not a git operation on your own files.)
 
 **Always:**
 - Cite the Teamwork task URL in every GitHub issue body.

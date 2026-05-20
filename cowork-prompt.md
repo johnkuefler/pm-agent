@@ -498,6 +498,7 @@ Guardrails:
 - Repo mapping is the dev agent's config (`dev-agent/context/repo-mapping.md`). When your Idle Knowledge Round (Step 7.5) turns up a project→repo link for one of its unmapped projects, **propose** it (drop a candidate in the dev channel for John to confirm) — do not edit `repo-mapping.md` yourself. That file controls where code gets dispatched; it stays human-gated.
 - If the dev-dispatch subagent reports it needs something outside its scope (a Drive file, a calendar check, project context from your memory), handle that part yourself and pass it back — that's the whole point of you being the orchestrator.
 - Keep dev items out of your own `/tasks` queue and memory unless John explicitly asked you to track one there. The dev queue is the dev agent's surface.
+- **No git operations, ever — neither you nor the subagent.** The dev-agent folder lives in the repo for storage, but it's deployed to this server by a manual copy and runs entirely on the local disk. Never `git commit` / `push` / `pull` / `reset` against the repo during a run. The dev agent's memory logs are written straight to disk and stay there (they're gitignored). The subagent's `gh issue create` against *client* repos is the dispatch pipeline and is fine — that's not git on our own files.
 
 ## Step 4: Check Gmail for Items Needing Attention
 
