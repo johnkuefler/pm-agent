@@ -476,6 +476,29 @@ Guardrails:
 - For non-text/non-PDF binary that `Read` can't open (Office docs without a viewer, archives), say so in the thread rather than fumbling.
 - Same pacing as transcripts: 1-2 file tasks per run is the typical pace, batch processing OK if the inbox has piled up.
 
+## Step 3.8: Dev Dispatch Round (orchestrate the dev-task agent)
+
+You orchestrate the dev-task dispatcher — a subagent defined at `.claude/agents/dev-dispatch.md`, with its full operating manual in the `dev-agent/` folder. It triages the Teamwork dev queue, dispatches John-approved tasks to GitHub Copilot, and tracks PR outcomes back to Teamwork. **You don't do this work yourself** — you spawn the subagent, let it run in its own context with its own scoped behavior, and fold its summary into your end-of-run report.
+
+Run this every loop. Three things happen here, in order:
+
+1. **Process any dispatch approvals from John since the last loop.** The dev agent's intake posts proposals to the dev channel (currently `#john-ea`, `C0B2YH78281`). John approves by replying `dispatch tw-<id>` (or "dispatch all ready") there or in a DM to you. Read the dev channel for approval messages since the last run (`slack_read_channel`). For each approved id, spawn the dev-dispatch subagent in `dispatch tw-<id>` mode. For "dispatch all ready", confirm the count back to John before spawning (the subagent will also guard this).
+
+2. **Run intake.** Spawn the dev-dispatch subagent in `intake` mode. It polls the TW dev queue, triages, enriches Ready items, and posts a proposal summary to the dev channel. Read-only on Teamwork and GitHub.
+
+3. **Run followup.** Spawn the dev-dispatch subagent in `followup` mode. It sweeps GitHub for state changes on dispatched items, comments on Teamwork at confirmed transitions, and surfaces ambiguous closes for John's call.
+
+How to spawn it: use the Task/Agent tool with subagent type `dev-dispatch` (or, if that type isn't available in this environment, spawn a general subagent whose prompt is "Read `.claude/agents/dev-dispatch.md` and run it in `<mode>` mode"). Pass the mode explicitly. Each spawn runs in its own context — the dev agent reads its own `dev-agent/` manual, so you don't need to inline its rules here.
+
+Disposition: if a prior followup surfaced an ambiguous close and John has since told you how to resolve it ("tw-123 was a test close", "scope changed", etc.), spawn the subagent in `disposition tw-<id>: <reason>` mode.
+
+Guardrails:
+- **You never dispatch without John's explicit approval.** Reading "dispatch tw-X" from John in Slack IS the approval — but only from John, and only as an explicit dispatch instruction, not an offhand mention of a task id.
+- The dev agent owns the dev queue's state (`dev-agent/memory/copilot-queue.md`) and the GitHub/Teamwork-dispatch writes. You don't write to those directly — you let the subagent do it.
+- Repo mapping is the dev agent's config (`dev-agent/context/repo-mapping.md`). When your Idle Knowledge Round (Step 7.5) turns up a project→repo link for one of its unmapped projects, **propose** it (drop a candidate in the dev channel for John to confirm) — do not edit `repo-mapping.md` yourself. That file controls where code gets dispatched; it stays human-gated.
+- If the dev-dispatch subagent reports it needs something outside its scope (a Drive file, a calendar check, project context from your memory), handle that part yourself and pass it back — that's the whole point of you being the orchestrator.
+- Keep dev items out of your own `/tasks` queue and memory unless John explicitly asked you to track one there. The dev queue is the dev agent's surface.
+
 ## Step 4: Check Gmail for Items Needing Attention
 
 Search Gmail for unread messages that may need Nora's attention. Use unread status as the processing flag — once you've addressed an email, mark it as read so it doesn't get re-processed on the next run.
