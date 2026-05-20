@@ -142,3 +142,8 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+# dev-agent runtime state — lives on the cowork server disk, not deployed via git.
+# Append-only logs the dev-dispatch subagent writes each run; keeping them untracked
+# means code updates (git pull/reset) never clobber accumulated dispatch history.
+dev-agent/memory/copilot-queue.md
+dev-agent/memory/run-log.md
