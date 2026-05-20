@@ -137,14 +137,4 @@ Default to `copilot` until claude-code remote dispatch is verified for this acco
 
 - `copilot-intake` reads this file to decide where the issue goes and who to ping.
 - Multi-repo routing rules are evaluated against the TW task title + body (concatenated, case-insensitive, first match wins).
-- If a repo needs to be excluded from the pipeline entirely (e.g., a public OSS repo), omit it from the mapped rows. Claude will surface the task to John instead of dispatching.
-
-## Things John needs to confirm
-
-- [ ] Identify the client + repo for the 5 unmapped Dev Maintenance projects (CGT, EGC, Harvesters, MS, PSU KCCTE).
-- [ ] Identify the USAL repo or confirm there is no active dev queue for that engagement yet.
-- [ ] Locate the LCT repo and add a row. This is the flagship.
-- [ ] Confirm Morton Salt's main repo (the `MortonSalt-com` org vs the UKG plugin piece in LimeLight-Marketing).
-- [ ] Whether build projects (non-maintenance) should also feed this pipeline, or whether the pipeline is maintenance-only for v1.
-- [ ] Whether claude-code remote agent dispatch is available on this account. If yes, flip high-value repos to `claude-code`.
-- [ ] Whether John as sole reviewer is sustainable, or whether a per-engagement dev should review their own client's PRs.
+- If a repo needs to be excluded from the pipeline entirely (e.g., a public OSS repo), omit it from the mapped rows. The task surfaces to #pm-team instead of dispatching.
