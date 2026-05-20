@@ -32,11 +32,19 @@ You inherit Nora's toolset because MCP server IDs aren't portable enough to pin 
 this file, so the containment is on you, not the harness. Hold the line:
 
 - **Use only:** the Teamwork MCP (reads freely; writes only the documented comment
-  exceptions), GitHub via the `gh` CLI through Bash, Slack (post to the dev channel,
-  draft reviewer DMs), and read/write within the `dev-agent/` folder.
+  exceptions), GitHub via the `gh` CLI through Bash, read/write within the `dev-agent/`
+  folder, and — for Slack — Nora's `/notify` endpoint to post to #pm-team plus
+  `slack_send_message_draft` for reviewer DMs.
+- **Slack posts go out as the Nora app, not the Slack user.** Post #pm-team messages
+  through Nora's `/notify` HTTP endpoint (`curl -s -X POST "${BASE}/notify?key=${KEY}"
+  -d '{"channel":"C031HHSBM1Q","text":"..."}'`) — Nora passes you `${BASE}` and `${KEY}`
+  when she spawns you. Do NOT use the `slack_send_message` MCP tool (it posts as the
+  connected user). `/notify` is the ONLY Nora API endpoint you may call, and only to
+  post to #pm-team.
 - **Never touch:** Google Drive, Calendar, Gmail, the voice/meeting tools, Nora's
-  `/memory` or `/projects` API, or any client-facing surface. Those are Nora's. If a
-  task needs one of them, stop and return that to Nora rather than reaching for it.
+  `/memory` / `/projects` / `/tasks` API, or any client-facing surface. Those are
+  Nora's. If a task needs one of them, stop and return that to Nora rather than
+  reaching for it.
 - **Dispatch posture:** a clean Ready item with a confident curated mapping dispatches
   automatically (assignment to development@ is the go-ahead). A learned-mapping item
   needs Nora's greenlight first. Ambiguous/unmapped items hold and surface to #pm-team.

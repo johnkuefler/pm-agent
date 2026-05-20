@@ -165,7 +165,7 @@ If someone on the team wants to retry, they say so. The skill does not assume.
 
 ### 6. Decision: post or silent
 
-Post to **#pm-team** (`C031HHSBM1Q`) if ANY of these are true since the last run:
+Post to **#pm-team** (`C031HHSBM1Q`) via Nora's `/notify` endpoint (`curl -s -X POST "${BASE}/notify?key=${KEY}" ... '{"channel":"C031HHSBM1Q","text":"..."}'`) so it sends as the Nora app, not the Slack user. Post if ANY of these are true since the last run:
 - A PR opened (any item transitioned `dispatched` → `pr-open`)
 - A PR merged
 - A PR closed with explicit rejection or explicit close reason

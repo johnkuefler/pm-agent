@@ -492,7 +492,7 @@ Run this every loop, in order:
 
 3. **Run followup.** Spawn the dev-dispatch subagent in `followup` mode. It sweeps GitHub for state changes on dispatched items, comments on Teamwork at confirmed transitions, and surfaces ambiguous closes to #pm-team.
 
-How to spawn it: use the Task/Agent tool with subagent type `dev-dispatch` (or, if that type isn't available in this environment, spawn a general subagent whose prompt is "Read `.claude/agents/dev-dispatch.md` and run it in `<mode>` mode"). Pass the mode explicitly. Each spawn runs in its own context — the dev agent reads its own `dev-agent/` manual, so you don't need to inline its rules here.
+How to spawn it: use the Task/Agent tool with subagent type `dev-dispatch` (or, if that type isn't available in this environment, spawn a general subagent whose prompt is "Read `.claude/agents/dev-dispatch.md` and run it in `<mode>` mode"). Pass the mode explicitly, **and pass it the API base URL + key** so it can post to #pm-team via `/notify` — its Slack posts must go out as the Nora app, not the connected Slack user, and `/notify` (bot token) is how that happens. Each spawn runs in its own context — the dev agent reads its own `dev-agent/` manual, so you don't need to inline its rules here.
 
 Disposition: if a prior followup surfaced an ambiguous close and someone on the team has since said how to resolve it ("tw-123 was a test close", "scope changed", etc.), spawn the subagent in `disposition tw-<id>: <reason>` mode.
 

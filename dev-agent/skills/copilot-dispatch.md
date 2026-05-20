@@ -123,7 +123,7 @@ Append, do not edit in place. The queue file is an event log.
 
 ### 5. Confirm in #pm-team
 
-Post a short confirmation to **#pm-team** (`C031HHSBM1Q`). For auto-dispatches during intake, this can be rolled into the single intake summary post (don't double-post per item); for a standalone/greenlit dispatch, post its own line:
+Post a short confirmation to **#pm-team** (`C031HHSBM1Q`) via Nora's `/notify` endpoint (so it sends as the Nora app, not the Slack user — see `connections.md`). For auto-dispatches during intake, this can be rolled into the single intake summary post (don't double-post per item); for a standalone/greenlit dispatch, post its own line:
 
 ```
 *Dispatched tw-[id]*
