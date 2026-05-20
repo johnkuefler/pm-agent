@@ -486,6 +486,25 @@ You orchestrate the dev-task dispatcher — a subagent defined at `.claude/agent
 
 Run this every loop, in order:
 
+0. **Bootstrap GitHub access (the cowork sandbox is ephemeral — no `gh`, no token by default).** Before spawning the subagent, make sure `gh` is installed and authenticated:
+   ```bash
+   if gh auth status >/dev/null 2>&1; then
+     echo "gh ready"
+   else
+     # install gh if missing (download the linux_amd64 release binary to a PATH dir;
+     # adapt to whatever the sandbox provides — apt if available, else the tarball)
+     command -v gh >/dev/null 2>&1 || {
+       ver=$(curl -fsSL https://api.github.com/repos/cli/cli/releases/latest | grep -oP '"tag_name": "v\K[^"]+'); \
+       curl -fsSL "https://github.com/cli/cli/releases/download/v${ver}/gh_${ver}_linux_amd64.tar.gz" -o /tmp/gh.tgz && \
+       tar -xzf /tmp/gh.tgz -C /tmp && mkdir -p ~/.local/bin && cp /tmp/gh_${ver}_linux_amd64/bin/gh ~/.local/bin/ && export PATH="$HOME/.local/bin:$PATH"; }
+     # fetch the PAT from Nora's server (durable secret home) and auth gh with it
+     tok=$(curl -s "${BASE}/admin/github-token?key=${KEY}" | jq -r '.token // empty')
+     if [ -n "$tok" ]; then echo "$tok" | gh auth login --with-token && echo "gh authed"; \
+     else echo "NO GH TOKEN — set GH_TOKEN on Railway"; fi
+   fi
+   ```
+   `gh auth login --with-token` writes to gh's own config, so once it's done at the top of the round, every subsequent `gh` call in this session (including inside the subagent) is authenticated. If the token fetch returns nothing, GH_TOKEN isn't set on Railway — skip the dev round and note it in your end-of-run summary; dispatch can't proceed without it.
+
 1. **Run intake.** Spawn the dev-dispatch subagent in `intake` mode. It polls the TW dev queue, triages, auto-dispatches clean Ready items (curated mapping), and returns to you: (a) what it dispatched, (b) any learned-mapping items "awaiting your greenlight", (c) what it held (ambiguous/unmapped). It posts a run summary to #pm-team itself.
 
 2. **Greenlight (or veto) learned-mapping items.** For each item the subagent returned as awaiting greenlight, apply your project context. If the mapping looks right and the project is active, greenlight it — spawn the subagent in `dispatch tw-<id>` mode. If you have reason to doubt it (project on hold, wrong repo, not really a dev task), veto: leave it held and note why in #pm-team. This is the "Nora does approvals" layer — fast, autonomous, only on the uncertain items.

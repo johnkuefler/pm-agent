@@ -3787,6 +3787,17 @@ function normalizeMeetingUrl(mu) {
   return String(mu);
 }
 
+// Hand the dev-dispatch agent its GitHub PAT. The cowork sandbox is ephemeral and has
+// no persistent secret surface, so the durable home for the token is here on Railway
+// (process.env.GH_TOKEN). The dev round's bootstrap step fetches it with the API key it
+// already has, then runs `gh auth login --with-token`. Returns 404 if not configured so
+// the dev round can surface a clear "GH token not set on Railway" message.
+app.get('/admin/github-token', requireAuth, (req, res) => {
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (!token) return res.status(404).json({ error: 'GH_TOKEN not configured on the server' });
+  res.json({ token });
+});
+
 // List bots that are currently active (ready, joining, or in a call). Used by the
 // Admin UI to show what meetings Nora is in / on her way to, with a kick button.
 app.get('/admin/active-bots', requireAuth, async (req, res) => {
