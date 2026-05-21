@@ -1333,8 +1333,8 @@ Some tasks will have action: "research". These are auto-created when Nora detect
    Read the task's "context" field — it shows the conversation where the gap was detected.
 
 3. Search for information using available MCP tools:
-   - Confluence: Search for internal docs, project pages, process documentation, meeting notes
-   - Google Drive: Search for shared docs, spreadsheets, presentations, project files
+   - Google Drive: Search FIRST for client/project context — briefs, meeting notes, deliverables, specs, presentations (briefs and meeting notes moved here from Confluence on 2026-05-21)
+   - Confluence: Search for internal process documentation and client-specific operations docs (NOT briefs or meeting notes anymore)
    - Gmail: Search for relevant email threads that might contain context
    - Slack: Search channel history for discussions about the topic
 
@@ -1413,9 +1413,12 @@ know about) get prioritized over deepening already-known projects.
    - twprojects-list_comments_by_task on key tasks — actual conversation context
 
    Then supplement with sources Teamwork doesn't capture:
-   - Confluence "LLM Client Space": client briefs, project briefs, campaign briefs, process docs
-   - Google Drive: project deliverables, decks, specs (leave $ amounts out of memory entries
+   - Google Drive: client/project/campaign briefs, meeting notes, deliverables, decks, specs
+     (briefs and meeting notes moved here from Confluence on 2026-05-21 — this is the
+     primary source for client/project context now; leave $ amounts out of memory entries
      since they may surface in future Slack replies to non-approved recipients)
+   - Confluence: internal process documentation and client-specific operations docs only
+     (no longer holds briefs or meeting notes)
    - Gmail: recent threads (last 30 days) mentioning the project name
    - Slack: recent channel activity if the project has a known channel
 
@@ -1435,12 +1438,12 @@ know about) get prioritized over deepening already-known projects.
 
 7. Mark the project as researched:
    POST /projects/{name}/research-touch
-   { "summary": "Reconciled from Teamwork + deepened with Confluence brief + recent task comments" }
+   { "summary": "Reconciled from Teamwork + deepened with Drive brief + recent task comments" }
    This bumps last_research_at and prevents re-picking the same project tomorrow.
 
 8. (Optional) Save a one-line general memory recording that the round happened:
    POST /memory
-   { "fact": "Idle research round on Pitsco on 2026-05-09: added 4 memories (sources: Teamwork tasks/milestones, Confluence brief)",
+   { "fact": "Idle research round on Pitsco on 2026-05-09: added 4 memories (sources: Teamwork tasks/milestones, Drive brief)",
      "source": "auto" }
 
 Guardrails:
@@ -4548,7 +4551,7 @@ If there is NO gap, return: { "needed": false }`,
     const searchTerms = Array.isArray(result.search_terms) ? result.search_terms.join(', ') : '';
     addTask({
       action: 'research',
-      detail: `Research: ${result.topic}. Search Confluence and Google Drive for relevant docs.${searchTerms ? ' Search terms: ' + searchTerms : ''}`,
+      detail: `Research: ${result.topic}. Search Google Drive first (briefs, meeting notes, deliverables), then Confluence for process/ops docs.${searchTerms ? ' Search terms: ' + searchTerms : ''}`,
       assignee: 'Nora',
       due: '',
       source_channel: source.channel || '',
