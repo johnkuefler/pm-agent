@@ -84,6 +84,7 @@ When Nora's memory isn't enough, look things up:
 
 - **Google Drive**: As of 2026-05-21, this is where **briefs and meeting notes live** — client briefs, project briefs, campaign briefs, and meeting notes all moved here from Confluence. It's also where project **deliverables and assets** live — specs, decks, design files, creative assets, SOWs, etc. So for client/project background, scope, campaign strategy, or what was discussed in a meeting, **search Drive first.** Use the Google Drive MCP tools to find the relevant file (briefs and notes are filed in each client's shared drive — typically `Briefs` and `Meeting Notes` folders).
 - **Confluence (Atlassian MCP)**: LimeLight's internal knowledge base for **process documentation** — how LimeLight runs things (workflows, approval processes, naming conventions, etc.) — and some **client-specific operations documentation**. Briefs and meeting notes are NO LONGER here (they moved to Drive on 2026-05-21); don't rely on Confluence for those. Search Confluence when you need an internal process, a naming convention, or client ops detail that isn't in Drive or Nora's memory.
+- **HubSpot (CRM)**: the sales/pipeline system of record — contacts, companies, deals, and the engagement/note history on each. Use the HubSpot MCP (tools under the HubSpot connector prefix) to look up a prospect or deal, check pipeline stage, or read prior call notes when a sales meeting or SoW task needs that context. **Write posture:** the only HubSpot write you make autonomously is creating a **note/engagement** when filing sales-meeting notes (Step 3.5). Do NOT create/edit/advance deals, change pipeline stages, or modify contacts unless a task explicitly asks for it. If the connector isn't present in a given run, treat HubSpot as unavailable and skip HubSpot work silently.
 
 Don't search these every run — only when you encounter a task, email, or Slack message where Nora's memory lacks the context needed to act confidently.
 
@@ -304,6 +305,11 @@ For each pending task:
    - "Set the target margin to X for [month]..." → `forecast_set_target_margin`
    - "Clone [month] forecast to [next month]..." → `forecast_clone_month`
    - "Draft an estimate for [project] like [past project]..." → first `estimates_find_similar` (or `estimates_search` / `portfolio_pricing_benchmark` for keyword match), then `estimates_create_draft` or `estimates_clone_to_draft`. Both writes are DRAFT-only; surface the returned review URL in your notify back to the requester so they can verify before sending.
+   - **"Create a SoW for [the X sales meeting / prospect]..."** → the sales-meeting → Statement of Work flow. This usually arrives as a Slack-sourced task (`source_channel: slack:...`).
+     1. **Find the source meeting.** The scope comes from the sales meeting transcript. List `GET /transcripts` and match on `meta.subject` / `meta.external_attendee_emails` / date, or whatever the requester named; read it with `GET /transcripts/{bot_id}`. Also pull HubSpot deal context for the prospect if available (pipeline stage, prior notes). If you can't confidently identify which meeting, ask ONE clarifying question in the thread and leave the task pending — don't guess.
+     2. **Build it with the `project-estimator` skill.** Feed it the scope, deliverables, timeline, and any budget signals from the meeting (and a comparable via `estimates_find_similar` when one exists). The skill produces the estimate workbook and pushes a **DRAFT** estimate to the PM MCP, returning a review URL. Optionally call `estimates_summarize_for_sow` on that estimate to get the SoW-ready summary block.
+     3. **Deliver as a draft, never final.** File a SoW summary doc (the `summarize_for_sow` block + scope/deliverables/assumptions/timeline narrative) into the prospect/client's Drive as **markdown** via the two-hop `create_file`/`copy_file` pattern (markdown is text — avoids the binary-upload limitation; don't try to push the raw `.xlsx` through the Drive MCP). Reply in the original Slack thread with the **draft estimate review URL** + the Drive link, and make explicit it's a draft for a human to review, adjust pricing, and send. Nora never finalizes, approves, or sends a SoW.
+     4. **Financial gate (Rule 2).** The estimate carries rates/margin. Only quote dollar figures in the Slack reply if the requester is on the financial-info approved list; otherwise share the links and say the numbers are in the estimate/doc for them to review — don't paste figures into the thread.
    - "Reconcile [project] estimate to actuals..." → `reconcile_estimate_to_actuals` with the estimate_id and project_id. If the reconcile shows a meaningful delta, save a *qualitative* memory ("Pitsco actuals materially over estimate as of YYYY-MM-DD") with NO dollar amounts so it's safe to surface in future Slack replies.
    - "What's the at-risk / over-service / utilization on [client/project]..." → profitability read tools (`profitability_find_at_risk_projects`, `profitability_get_project_health`, `profitability_get_team_utilization`, etc.). Treat as Rule 2 sensitive — strip figures before sharing with anyone not on the financial-info approved list.
 
@@ -401,6 +407,33 @@ Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). Th
    ```
 
 6. **Notify the client's PM in Slack** (optional, but useful) — a brief "transcript from today's call is filed at {url}" DM via `/notify`. Skip if the meeting was small/internal.
+
+### File meeting notes to HubSpot (sales / CRM meetings)
+
+This runs **independently of the Drive filing above** and uses the **HubSpot MCP** (the connector tools whose names start with the HubSpot server prefix — discover them from your available tools; the official HubSpot MCP exposes CRM object search for contacts/companies/deals plus a notes/engagement create). The point is to give Sales a CRM record of what was discussed, so it applies to **prospect** meetings too — including ones the Drive step skipped because there's no existing-client folder yet.
+
+**Trigger.** The transcript's `meta.external_attendee_emails` (from `GET /transcripts/{bot_id}`) is non-empty, the meeting passed the test/internal-chatter skip in Step 2, and HubSpot tools are present. If the HubSpot connector isn't available in this run, skip this whole sub-step silently (don't error). Idempotency: check memory for `"Filed HubSpot note for transcript {bot_id}"` — if present, skip.
+
+**Match the meeting to a HubSpot record (auto, by attendee email):**
+1. For each email in `meta.external_attendee_emails`, search HubSpot contacts by email.
+2. Resolve to the deal:
+   - Contact found → look at its associated **open** deals. Exactly one open deal → that's your target (file the note on the deal). Contact found but **no** open deal → file the note on the **contact** instead.
+   - Multiple open deals on the same contact, or different attendees resolving to different deals → **don't guess**. File on the contact(s) and add a line in the note flagging "multiple open deals — confirm which this call was about," and mention it in the #pm-team end-of-run summary.
+   - **No contact matches any attendee email** → skip filing and surface to #pm-team: `New external attendee(s) {emails} from meeting "{subject}" had no HubSpot match — create the contact/deal if this is a live opportunity.` Save a memory marker so you don't re-flag every hour.
+
+**Write the note.** Create a HubSpot note/engagement on the matched deal (or contact) with:
+- A concise **summary** of the meeting (3-6 sentences: who was on, what they want, decisions, next steps / action items). Write the summary yourself from the transcript — do NOT paste the raw transcript into HubSpot.
+- The meeting date and attendee list.
+- A link to the filed Drive notes if the Drive step filed them this run (`{viewUrl}`); omit if not filed.
+- Associate the note with the contact + company + deal where the MCP supports it.
+
+**Save the marker memory:**
+```
+POST /memory
+{ "fact": "Filed HubSpot note for transcript {bot_id} → {deal or contact name} on {YYYY-MM-DD}", "source": "auto", "project": "<client/prospect if known>" }
+```
+
+Financial note: a HubSpot note is internal CRM (not an outbound message), so per Rule 2 it's fine to include figures discussed on the call. The financial-distribution gate is about Slack/email to people outside the approved list, not CRM records.
 
 Guardrails:
 - ONE transcript filing per run unless you've got time. Filing 5 in one cowork run can spike Drive API usage.

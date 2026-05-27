@@ -991,11 +991,20 @@ Drive link in the original Slack thread, and clean up the inbox entries.
 
 ### Transcripts
 - GET  /transcripts             — List all saved transcripts, newest first
-  Response: [{ "bot_id", "ended", "file", "url", "utterance_count" }]
+  Response: [{ "bot_id", "ended", "file", "url", "utterance_count",
+                "subject" (meeting title if known, else null),
+                "external_attendee_emails" (prospect/client emails, [] if none) }]
 
 - GET  /transcripts/:botId      — Full transcript for a meeting
-  Response: { "bot_id", "ended", "transcript": [{ "speaker", "text", "timestamp" }] }
+  Response: { "bot_id", "ended",
+              "meta": { "subject", "start_time", "calendar_event_id",
+                        "attendee_emails": [...], "external_attendee_emails": [...] } | null,
+              "transcript": [{ "speaker", "text", "timestamp" }] }
   404 if not found.
+  Note: "meta" is populated for calendar-auto-joined meetings (captured from the invite's
+  attendee list). It's null for manually-joined meetings and dummy test bots. The
+  "external_attendee_emails" (non-LimeLight, non-Nora) are what the HubSpot notes-filing
+  flow matches against to find the right contact/deal. See cowork-prompt Step 3.5.
 
 - DELETE /transcripts/:botId    — Delete a transcript
   Response: { "ok": true }
@@ -1296,6 +1305,12 @@ The live handler distinguishes them so Nora frames opinions as opinions ("honest
 - Gmail: Search messages, read threads, create drafts
 - Slack: Send messages, search channels, read threads
 - Confluence: Search pages, read content, find project documentation
+- HubSpot (CRM): Look up contacts/companies/deals, read pipeline stage + prior notes;
+  file a meeting note/engagement on a deal. Sales/CRM system of record. Read freely; the
+  only autonomous write is creating a note when filing sales-meeting notes (cowork-prompt
+  Step 3.5). Do NOT create/advance deals, change pipeline stages, or edit contacts unless a
+  task explicitly asks. If the connector isn't present in a run, treat HubSpot as
+  unavailable and skip HubSpot work silently.
 - Google Drive: Search files, read documents/sheets, find shared resources. KNOWN BUG:
   the connector's create_file does NOT work on shared drives (returns "User cannot add
   children to the specified folder" — missing supportsAllDrives flag). copy_file works
@@ -1329,6 +1344,14 @@ Three modules:
   someone asks Nora to "draft an estimate for X based on Y" or "what did we charge for
   similar work last year?". Always include the returned review URL in the notify back
   to the requester.
+  - **SoW from a sales meeting** (Slack-requested): when someone asks Nora to "create a
+    SoW for the X sales meeting," the source material is that meeting's transcript
+    (GET /transcripts → match on meta.subject / external_attendee_emails / date). Build it
+    with the project-estimator skill (full estimate-backed SoW → DRAFT estimate + review
+    URL), optionally shape with estimates_summarize_for_sow, file a markdown SoW summary to
+    the prospect's Drive, and reply in-thread with the draft links. DRAFT only — a human
+    finalizes pricing and sends. Rule 2 gate applies to figures in the Slack reply. Full
+    steps in cowork-prompt.md (LimeLight PM MCP → "Create a SoW").
 
 - **Forecast** (read + writes): read full forecast overview / months / resources /
   settings; write tools to add or update months, add/update/remove resources, set target
@@ -1543,12 +1566,7 @@ app.post('/voice-agent/response', async (req, res) => {
   if (session) {
     const isMuted = !!session.muted;
     session.transcript.push({ speaker: isMuted ? 'Nora (muted)' : 'Nora', text, timestamp: new Date().toISOString() });
-    try {
-      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
-    } catch (err) {
-      console.error('Transcript save error:', err.message);
-    }
+    writeTranscript(bot_id, null);
 
     // When muted, surface the reply in the meeting chat so the asker actually sees the
     // confirmation. The model is already gated by the muted-mode system prompt to only
@@ -1598,6 +1616,47 @@ function persistSessionTokens() {
 }
 const sessionTokens = loadSessionTokens();
 console.log(`🔑 Loaded ${Object.keys(sessionTokens).length} persisted session tokens`);
+
+// Meeting metadata store: botId → { subject, start_time, attendee_emails, external_attendee_emails,
+// calendar_event_id }. Captured at calendar-join time and persisted to disk (mirroring
+// sessionTokens) so it survives the Railway redeploys that wipe in-memory `sessions`. The cowork
+// loop reads it off the transcript file to match a meeting to the right HubSpot contact/deal by
+// external attendee email when filing notes. In-memory `sessions` carry a live copy; this map is
+// the durable backstop and the source writeTranscript() falls back to.
+const META_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-meeting-meta.json');
+const META_PATH_LOCAL = path.join(__dirname, 'nora-meeting-meta.json');
+function getMetaPath() {
+  return fs.existsSync(VOLUME_DIR) ? META_PATH_VOLUME : META_PATH_LOCAL;
+}
+function loadMeetingMeta() {
+  try { return JSON.parse(fs.readFileSync(getMetaPath(), 'utf8')); }
+  catch { return {}; }
+}
+function persistMeetingMeta() {
+  try { fs.writeFileSync(getMetaPath(), JSON.stringify(meetingMetaStore, null, 2)); }
+  catch (err) { console.error('Failed to persist meeting meta:', err.message); }
+}
+const meetingMetaStore = loadMeetingMeta();
+
+// Single writer for the per-bot transcript file. Always co-persists meeting metadata so the
+// cowork loop has the attendee emails (for HubSpot matching) even after the live session is gone.
+// Meta resolution order: live session → durable meetingMetaStore → whatever's already on disk
+// (so an incremental write never clobbers meta written by an earlier pass).
+function writeTranscript(bot_id, ended) {
+  const session = sessions[bot_id];
+  if (!session) return;
+  try {
+    const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+    const filePath = path.join(dir, `transcript-${bot_id}.json`);
+    let meta = session.meetingMeta || meetingMetaStore[bot_id] || null;
+    if (!meta && fs.existsSync(filePath)) {
+      try { meta = JSON.parse(fs.readFileSync(filePath, 'utf8')).meta || null; } catch {}
+    }
+    fs.writeFileSync(filePath, JSON.stringify({ bot_id, ended: ended ?? null, meta, transcript: session.transcript }, null, 2));
+  } catch (err) {
+    console.error('Transcript save error:', err.message);
+  }
+}
 
 // Shared builder for the Recall bot config (used by manual /join and calendar
 // auto-join). Includes everything except meeting_url, which Recall auto-populates
@@ -1981,7 +2040,22 @@ app.post('/webhook/recall-calendar', async (req, res) => {
           sessionTokens[sessionToken] = botId;
           persistSessionTokens();
           if (!sessions[botId]) sessions[botId] = newSession();
-          console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}" → bot ${botId}`);
+          // Capture meeting metadata for downstream HubSpot matching. External attendees =
+          // everyone who isn't Nora and isn't on the LimeLight domain (i.e. the prospect/client
+          // side), which is what we match against HubSpot contacts/deals.
+          const allEmails = [...eventEmails];
+          const externalEmails = allEmails.filter(e => e !== noraEmail && !e.endsWith('@limelightmarketing.com'));
+          const meta = {
+            subject: ev.raw?.summary || ev.summary || null,
+            start_time: ev.start_time || ev.raw?.start?.dateTime || null,
+            calendar_event_id: ev.id || null,
+            attendee_emails: allEmails,
+            external_attendee_emails: externalEmails
+          };
+          sessions[botId].meetingMeta = meta;
+          meetingMetaStore[botId] = meta;
+          persistMeetingMeta();
+          console.log(`📅 Auto-scheduled Nora for event "${meta.subject}" → bot ${botId}${externalEmails.length ? ` (external: ${externalEmails.join(', ')})` : ''}`);
         } else {
           // Diagnostic: dump the keys and a truncated JSON sample so we can see what
           // shape we actually got. Once we know, we can stop logging and just pick
@@ -2045,12 +2119,7 @@ app.post('/webhook/transcript', async (req, res) => {
   if (session.dummy) return;
 
   // Persist transcript incrementally
-  try {
-    const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
-  } catch (err) {
-    console.error('Transcript save error:', err.message);
-  }
+  writeTranscript(bot_id, null);
 });
 
 // Zoom chat trigger — type "@nora your question" in chat, Nora replies via chat
@@ -2151,12 +2220,7 @@ app.post('/webhook/chat', async (req, res) => {
     // Add Nora's chat reply to transcript
     if (session) {
       session.transcript.push({ speaker: 'Nora (chat)', text: reply, timestamp: new Date().toISOString() });
-      try {
-        const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-        fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
-      } catch (err) {
-        console.error('Transcript save error:', err.message);
-      }
+      writeTranscript(bot_id, null);
     }
 
     // Extract tasks/memory from chat interaction
@@ -2265,21 +2329,16 @@ app.post('/webhook/status', async (req, res) => {
     // stateless rehearsals and should leave no transcript file behind.
     const session = sessions[bot_id];
     if (session && !session.dummy && session.transcript && session.transcript.length > 0) {
-      try {
-        const transcriptData = {
-          bot_id,
-          ended: new Date().toISOString(),
-          transcript: session.transcript
-        };
-        const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-        fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify(transcriptData, null, 2));
-        console.log(`📝 Transcript saved: transcript-${bot_id}.json (${session.transcript.length} utterances)`);
-      } catch (err) {
-        console.error('Transcript save error:', err.message);
-      }
+      // writeTranscript bakes meeting meta into the final file, so the cowork loop has the
+      // attendee emails for HubSpot matching after we tear the session down below.
+      writeTranscript(bot_id, new Date().toISOString());
+      console.log(`📝 Transcript saved: transcript-${bot_id}.json (${session.transcript.length} utterances)`);
     }
     delete sessions[bot_id];
     delete chatSessions[bot_id];
+    // Meta is now persisted in the transcript file; drop the durable backstop entry so the
+    // store doesn't grow without bound.
+    if (meetingMetaStore[bot_id]) { delete meetingMetaStore[bot_id]; persistMeetingMeta(); }
     if (activeBotId === bot_id) activeBotId = null;
   }
 });
@@ -4205,7 +4264,9 @@ app.get('/transcripts', requireAuth, (req, res) => {
           ended,
           file: f,
           url: `/transcripts/${data.bot_id}`,
-          utterance_count: data.transcript ? data.transcript.length : 0
+          utterance_count: data.transcript ? data.transcript.length : 0,
+          subject: data.meta?.subject || null,
+          external_attendee_emails: data.meta?.external_attendee_emails || []
         };
       } catch { return null; }
     }).filter(Boolean);
@@ -4362,12 +4423,7 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     const session = sessions[botId];
     if (!session) return;
     session.transcript.push({ speaker: 'Screen share', text: description, timestamp: new Date().toISOString() });
-    try {
-      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
-    } catch (err) {
-      console.error('Transcript save error (screen-share desc):', err.message);
-    }
+    writeTranscript(botId, null);
     console.log(`📹 Screen-share described: "${description.slice(0, 120)}${description.length > 120 ? '...' : ''}"`);
   } catch (err) {
     // Non-fatal — description failures shouldn't disturb the live session.
