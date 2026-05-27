@@ -93,6 +93,25 @@
           <span id="mute-status" style="margin-left: 8px; font-size: 13px; color: #888;"></span>
         </div>
       </div>
+
+      <div class="section">
+        <h2>🧪 Send a Test Bot</h2>
+        <p style="color:#888;font-size:12px;line-height:1.5;margin-bottom:10px;">
+          Spin up a throwaway voice agent that joins a meeting and talks just like Nora — but with
+          no memory, projects, or integrations. Give it a quick brief and a meeting link to rehearse
+          scenarios (mock client call, role-play a stakeholder, etc.). Nothing it says is saved or
+          extracted. Remove it from <strong>Admin → Active Bots</strong> when you're done.
+        </p>
+        <input id="dummy-url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
+        <input id="dummy-name" placeholder="Bot display name (default: Nora (Test))" style="margin-top:8px;" />
+        <textarea id="dummy-prompt" placeholder="Brief / knowledge base for this test bot. e.g. 'You are a skeptical client named Dave from Acme Co. You're unhappy about a missed deadline and want answers about the website launch slipping two weeks. Push back on excuses.'" style="margin-top:8px;min-height:120px;"></textarea>
+        <div style="font-size:12px;color:#888;margin-top:4px;">The bot joins unmuted and speaks. Everything it knows comes from this brief.</div>
+        <div class="row" style="margin-top:8px;">
+          <button class="btn btn-primary" onclick="joinDummy()">Send Test Bot</button>
+        </div>
+        <div id="dummy-status" class="toast"></div>
+      </div>
+
       <div class="section">
         <h2>Voice Agent</h2>
         <p style="color: #888; font-size: 13px; line-height: 1.5;">Nora uses OpenAI Realtime API via Recall.ai's Output Media for real-time voice conversations. She listens continuously and responds naturally — no wake word needed. Voice Activity Detection handles turn-taking automatically.</p>
@@ -356,6 +375,27 @@
           checkMuteState();
         }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
+    }
+
+    async function joinDummy() {
+      const s = document.getElementById('dummy-status');
+      const u = document.getElementById('dummy-url').value.trim();
+      const name = document.getElementById('dummy-name').value.trim();
+      const prompt = document.getElementById('dummy-prompt').value.trim();
+      if (!u) { s.className = 'toast err'; s.textContent = 'Paste a meeting link first'; return; }
+      s.className = 'toast ok'; s.textContent = 'Sending test bot...';
+      try {
+        const body = { meeting_url: u };
+        if (name) body.bot_name = name;
+        if (prompt) body.prompt = prompt;
+        const r = await api('/dummy/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json();
+        if (d.bot_id) {
+          s.className = 'toast ok'; s.textContent = `Test bot "${d.bot_name}" joined (unmuted). Bot ID: ${d.bot_id}. Remove it from Admin → Active Bots when done.`;
+        } else {
+          s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d));
+        }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
 
