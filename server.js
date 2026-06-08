@@ -4938,14 +4938,13 @@ wss.on('connection', async (ws, req) => {
             transcription: { model: 'whisper-1' },
             // Semantic VAD uses the model's own sense of utterance completion to
             // detect turn boundaries — much better than raw silence timeouts.
-            // "medium" eagerness is balanced; bump to "high" if Nora feels slow,
-            // drop to "low" if she's cutting people off mid-thought.
             turn_detection: {
               type: 'semantic_vad',
-              // 'high' = VAD commits faster that the user is done speaking, which
-              // is the dominant source of the "beat behind" feel after you stop.
-              // Drop back to 'medium' if she starts stepping on mid-sentence pauses.
-              eagerness: 'high',
+              // 'medium' is the balanced default per OpenAI's docs. We tried 'high' to
+              // shave latency and it didn't move the needle perceptibly, while making her
+              // more prone to stepping on mid-sentence pauses. 'medium' = she hears more
+              // of what someone's saying before responding, which feeds smarter answers.
+              eagerness: 'medium',
               create_response: true,
               interrupt_response: true
             }
@@ -4955,15 +4954,17 @@ wss.on('connection', async (ws, req) => {
             voice: 'sage'
           }
         },
-        // Capped tighter than default. Spoken responses should be 1-2 sentences
-        // (~80 tokens); 400 is headroom while committing the model to brevity early —
-        // which materially speeds up first-audio-chunk latency.
-        max_output_tokens: 400,
-        // 'minimal' is the fastest reasoning level — designed for simple tasks, which
-        // describes 90% of Nora's voice turns (status checks, quick lookups, casual
-        // back-and-forth). Bump to 'low' or 'medium' only if she starts giving shallow
-        // answers to complex prompts.
-        reasoning: { effort: 'minimal' }
+        // Headroom for substantive answers when the moment calls for "tell me everything
+        // about X" or "walk me through Y". The voice-delivery guidance in her prompt still
+        // tells her to default short (one-line for status checks, 2-4 sentences for most
+        // questions). This cap just removes the artificial ceiling on the long-form turns
+        // — at 400 we were truncating real thoughts.
+        max_output_tokens: 1200,
+        // 'very high' = maximum GPT-5-class reasoning per gpt-realtime-2's effort dial
+        // (options: minimal/low/medium/high/very high). We previously ran 'minimal' for
+        // latency; it didn't actually feel faster, and the quality cost was real. Dial back
+        // toward 'high' or 'medium' only if her replies start arriving noticeably late.
+        reasoning: { effort: 'very high' }
       }
     }));
 
