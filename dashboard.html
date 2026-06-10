@@ -72,6 +72,7 @@
       <div class="tab" onclick="showTab('memory')">Memory</div>
       <div class="tab" onclick="showTab('projects')">Projects</div>
       <div class="tab" onclick="showTab('transcripts')">Transcripts</div>
+      <div class="tab" onclick="showTab('dreams')">Dreams</div>
       <div class="tab" onclick="showTab('admin')">Admin</div>
     </div>
 
@@ -328,6 +329,20 @@
         <div id="transcript-content" style="font-size: 13px; line-height: 1.6;"></div>
       </div>
     </div>
+
+    <!-- Dreams Tab -->
+    <div id="page-dreams" class="page">
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          💤 Dreams
+          <button class="btn btn-success btn-sm" onclick="loadDreams()">Refresh</button>
+        </h2>
+        <p style="color:#888; font-size:12px; line-height:1.5; margin-bottom:16px;">
+          Each night Nora consolidates her memory (merges duplicates, resolves contradictions, prunes stale facts) and reflects — forming opinions and noticing patterns. This is the log of what she did while "asleep."
+        </p>
+        <div id="dreams-list">Loading…</div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -354,6 +369,7 @@
       if (name === 'tasks') loadTasks();
       if (name === 'projects') loadProjects();
       if (name === 'transcripts') loadTranscripts();
+      if (name === 'dreams') loadDreams();
       if (name === 'admin') loadAdmin();
     }
 
@@ -788,6 +804,79 @@
           </div>
         `).join('');
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load transcripts.</p>'; }
+    }
+
+    // ===== Dreams tab =====
+    function dreamStat(label, value, color) {
+      if (value === undefined || value === null) return '';
+      return `<span style="display:inline-block; margin-right:14px; font-size:12px; color:#888;">${label} <strong style="color:${color || '#ccc'};">${value}</strong></span>`;
+    }
+
+    async function loadDreams() {
+      const list = document.getElementById('dreams-list');
+      list.innerHTML = 'Loading…';
+      try {
+        const r = await api('/dreams');
+        const dreams = await r.json();
+        if (!Array.isArray(dreams) || dreams.length === 0) {
+          list.innerHTML = '<p class="empty">No dreams yet. Nora dreams nightly once the cowork loop runs the Dreaming Round.</p>';
+          return;
+        }
+        list.innerHTML = dreams.map(d => {
+          const c = d.consolidation || {};
+          const ref = d.reflection || {};
+          const when = d.finished || d.started || d.date;
+          const whenStr = when ? new Date(when).toLocaleString() : (d.date || '');
+          const beforeAfter = (c.memories_before != null && c.memories_after != null)
+            ? `<span style="color:#a78bfa; font-weight:600;">${c.memories_before} → ${c.memories_after}</span> memories`
+            : '';
+          const takesAdded = (ref.takes_added || []);
+          const takesRetired = (ref.takes_retired || []);
+          const ideas = (ref.ideas || []);
+          const examples = (c.examples || []);
+
+          const takesHtml = takesAdded.length ? `
+            <div style="margin-top:12px;">
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">New takes formed</div>
+              ${takesAdded.map(t => `<div style="font-size:13px; color:#e9d5ff; border-left:2px solid #7c3aed; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
+            </div>` : '';
+          const ideasHtml = ideas.length ? `
+            <div style="margin-top:12px;">
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Ideas / sparks</div>
+              ${ideas.map(t => `<div style="font-size:13px; color:#bfdbfe; border-left:2px solid #2563eb; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
+            </div>` : '';
+          const retiredHtml = takesRetired.length ? `
+            <div style="margin-top:12px;">
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Takes retired</div>
+              ${takesRetired.map(t => `<div style="font-size:13px; color:#9ca3af; border-left:2px solid #4b5563; padding-left:10px; margin-bottom:6px; text-decoration:line-through;">${escHtml(t)}</div>`).join('')}
+            </div>` : '';
+          const examplesHtml = examples.length ? `
+            <div style="margin-top:12px;">
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Consolidation examples</div>
+              ${examples.map(t => `<div style="font-size:12px; color:#9ca3af; margin-bottom:4px;">• ${escHtml(t)}</div>`).join('')}
+            </div>` : '';
+
+          return `
+            <div class="section" style="background:#15131f; border:1px solid #2a2440; margin-bottom:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
+                <div style="font-size:15px; font-weight:600; color:#c4b5fd;">💤 ${escHtml(d.date || '')}</div>
+                <div style="font-size:11px; color:#666;">${escHtml(whenStr)}</div>
+              </div>
+              ${d.narrative ? `<div style="font-size:14px; line-height:1.6; color:#ddd; font-style:italic; border-left:3px solid #7c3aed; padding:4px 0 4px 14px; margin-bottom:12px;">"${escHtml(d.narrative)}"</div>` : ''}
+              <div style="margin-bottom:4px;">
+                ${beforeAfter ? `<span style="font-size:12px; margin-right:14px;">${beforeAfter}</span>` : ''}
+                ${dreamStat('merged', c.duplicates_removed, '#f0abfc')}
+                ${dreamStat('fragments', c.fragments_merged, '#f0abfc')}
+                ${dreamStat('pruned', c.stale_pruned, '#fca5a5')}
+                ${dreamStat('contradictions', c.contradictions_resolved, '#fcd34d')}
+                ${dreamStat('+takes', takesAdded.length || undefined, '#a78bfa')}
+              </div>
+              ${takesHtml}${ideasHtml}${retiredHtml}${examplesHtml}
+            </div>`;
+        }).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load dreams.</p>';
+      }
     }
 
     let currentTranscriptBotId = null;
