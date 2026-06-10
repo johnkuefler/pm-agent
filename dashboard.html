@@ -366,6 +366,11 @@
       try {
         const body = { meeting_url: u };
         if (project) body.project = project;
+        // Pass who's sending Nora so the realtime prompt knows who she's about to
+        // talk to. John is the primary dashboard operator; in 90%+ of manual sends
+        // he is also the person on the call. The realtime prompt frames this as
+        // "most likely talking to" so it's still correct when he sends her elsewhere.
+        body.sender = 'John Kuefler';
         const r = await api('/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await r.json();
         if (d.bot_id) {
