@@ -736,9 +736,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     if (meetingContext.requester && meetingContext.requester.name) {
       const r = meetingContext.requester;
       const roleHint = r.role ? ` (${r.role})` : '';
-      const intro = meetingContext.source === 'slack'
-        ? `You're replying to **${r.name}**${roleHint} in Slack right now.`
-        : `The person who sent you to this meeting is **${r.name}**${roleHint}. They're who you're most likely about to talk to.`;
+      let intro;
+      if (meetingContext.source === 'slack') {
+        intro = `You're replying to **${r.name}**${roleHint} in Slack right now.`;
+      } else if (meetingContext.source === 'zoom-chat') {
+        intro = `You're replying to **${r.name}**${roleHint} in the Zoom meeting chat. They typed at you while you're on a call together.`;
+      } else {
+        intro = `The person who sent you to this meeting is **${r.name}**${roleHint}. They're who you're most likely about to talk to.`;
+      }
       lines.push(`${intro} Use their first name naturally. Don't ask who they are, don't ask their role, don't ask what they do — you already know them (cross-reference your memory + team list).`);
     }
     if (Array.isArray(meetingContext.expectedAttendees) && meetingContext.expectedAttendees.length > 0) {
@@ -2244,7 +2249,10 @@ app.post('/webhook/chat', async (req, res) => {
         model: 'claude-sonnet-4-6',
         max_tokens: 300,
         temperature: 0.9,
-        system: buildSystemPrompt('slack'), // use slack-style formatting (markdown ok, concise)
+        // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender
+        // as the requester so the [Who you're talking to right now] block lights up with
+        // their actual name. Speaker came from Recall's participant data.
+        system: buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }),
         messages: history
       },
       {
