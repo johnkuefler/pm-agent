@@ -560,7 +560,7 @@ function buildDummyPrompt(customPrompt, agentName = 'Nora (Test)') {
   return intro + realtimeVoiceGuidance(agentName);
 }
 
-function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null) {
+function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null) {
   let base = loadPrompt();
 
   // Swap channel-specific framing
@@ -726,6 +726,40 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
   base += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally — Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
 
+  // [Who you're talking to right now] — pre-conversation identity injection from the entry
+  // point: /join sender, calendar attendees, or Slack requester lookup. Populated BEFORE
+  // anyone speaks, unlike the heard-speakers block below (which only fills in after the
+  // transcript webhook fires). This is what kills "I have no signal for your identity"
+  // the moment a 1:1 starts — she knows who pressed the button or who DM'd her.
+  if (meetingContext) {
+    const lines = [];
+    if (meetingContext.requester && meetingContext.requester.name) {
+      const r = meetingContext.requester;
+      const roleHint = r.role ? ` (${r.role})` : '';
+      const intro = meetingContext.source === 'slack'
+        ? `You're replying to **${r.name}**${roleHint} in Slack right now.`
+        : `The person who sent you to this meeting is **${r.name}**${roleHint}. They're who you're most likely about to talk to.`;
+      lines.push(`${intro} Use their first name naturally. Don't ask who they are, don't ask their role, don't ask what they do — you already know them (cross-reference your memory + team list).`);
+    }
+    if (Array.isArray(meetingContext.expectedAttendees) && meetingContext.expectedAttendees.length > 0) {
+      const fmt = a => a.name ? `${a.name}${a.email ? ` <${a.email}>` : ''}` : (a.email || 'unknown');
+      const internal = meetingContext.expectedAttendees.filter(a => a.kind === 'internal');
+      const external = meetingContext.expectedAttendees.filter(a => a.kind === 'external');
+      const parts = [];
+      if (internal.length > 0) parts.push(`LimeLight side: ${internal.map(fmt).join(', ')}`);
+      if (external.length > 0) parts.push(`client/prospect side: ${external.map(fmt).join(', ')}`);
+      if (parts.length > 0) {
+        lines.push(`Expected attendees on this meeting — ${parts.join('; ')}. Match voices to names as you hear them. Don't ask people to introduce themselves; you have the list.`);
+      }
+    }
+    if (meetingContext.subject) {
+      lines.push(`Meeting subject: "${meetingContext.subject}".`);
+    }
+    if (lines.length > 0) {
+      base += `\n\n[Who you're talking to right now]\n${lines.join('\n\n')}`;
+    }
+  }
+
   // Live conversation context — who's been speaking and recent labeled buffer. The
   // realtime model hears the audio in real time but does NOT get speaker labels for it,
   // so without injecting the labeled transcript it can't attach names to voices. That
@@ -745,7 +779,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     const recent = transcript.slice(-(isRealtime ? 15 : maxTranscriptLines));
     const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
     const header = isRealtime
-      ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. Use the names. Do not ask "who are you" or "what is your role" mid-conversation when the labels are right here.\n'
+      ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. The bracketed name before each line IS who said it. Use those names. If someone asks "what\'s my name" or "do you know who I am" — the answer is literally in the brackets above their question. Never say "remind me your name" or "I don\'t want to guess" when a labeled name is sitting right here in your context.\n'
       : '[What\'s been discussed in this meeting so far]\n';
     base += `\n\n${header}${transcriptBlock}`;
   }
@@ -764,7 +798,7 @@ function realtimePromptForSession(session) {
   if (session && session.dummy) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
-  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint);
+  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta);
 }
 
 // Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header.
@@ -1666,7 +1700,7 @@ function newSession(projectHint = null) {
 // Join meeting via API — uses output_media for real-time voice agent
 app.post('/join', requireAuth, async (req, res) => {
   try {
-    const { meeting_url, project } = req.body;
+    const { meeting_url, project, sender } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
 
     // Normalize project hint to canonical project name if it matches a known project (case-insensitive).
@@ -1696,8 +1730,19 @@ app.post('/join', requireAuth, async (req, res) => {
 
     if (!sessions[botId]) sessions[botId] = newSession(projectHint);
     else if (projectHint) sessions[botId].project_hint = projectHint;
-    console.log(`✅ Nora joined via output_media. Bot ID: ${botId}${projectHint ? ` (project hint: ${projectHint})` : ''}`);
-    res.json({ bot_id: botId, project_hint: projectHint || null });
+    // Capture sender identity so Nora knows who pushed the button — most often the same
+    // person who's about to talk to her on the call. This is what the realtime prompt
+    // reads to populate the [Who you're talking to right now] block before audio starts.
+    const senderName = (typeof sender === 'string' && sender.trim()) ? sender.trim() : null;
+    if (senderName) {
+      sessions[botId].meetingMeta = {
+        ...(sessions[botId].meetingMeta || {}),
+        requester: { name: senderName },
+        source: 'manual_join'
+      };
+    }
+    console.log(`✅ Nora joined via output_media. Bot ID: ${botId}${projectHint ? ` (project hint: ${projectHint})` : ''}${senderName ? ` (sender: ${senderName})` : ''}`);
+    res.json({ bot_id: botId, project_hint: projectHint || null, sender: senderName });
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
@@ -2001,7 +2046,37 @@ app.post('/webhook/recall-calendar', async (req, res) => {
           sessionTokens[sessionToken] = botId;
           persistSessionTokens();
           if (!sessions[botId]) sessions[botId] = newSession();
-          console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}" → bot ${botId}`);
+          // Capture attendee names + emails so the prompt's [Who you're talking to right
+          // now] block lights up BEFORE anyone speaks. Internal = @limelightmarketing.com,
+          // external = everyone else (client/prospect side). Skip Nora herself.
+          const collectAttendees = (event) => {
+            const seen = new Set();
+            const out = [];
+            const add = (a) => {
+              if (!a) return;
+              const email = (a.email || a.emailAddress?.address || a.address || '').toLowerCase();
+              if (!email || seen.has(email) || email === noraEmail) return;
+              seen.add(email);
+              const name = a.displayName || a.emailAddress?.name || a.name || null;
+              out.push({ email, name, kind: email.endsWith('@limelightmarketing.com') ? 'internal' : 'external' });
+            };
+            (event.attendees || []).forEach(add);
+            (event.raw?.attendees || []).forEach(add);
+            add(event.organizer);
+            add(event.raw?.organizer);
+            add(event.raw?.creator);
+            return out;
+          };
+          const attendees = collectAttendees(ev);
+          if (attendees.length > 0 || ev.raw?.summary || ev.summary) {
+            sessions[botId].meetingMeta = {
+              ...(sessions[botId].meetingMeta || {}),
+              subject: ev.raw?.summary || ev.summary || null,
+              expectedAttendees: attendees,
+              source: 'calendar_auto_join'
+            };
+          }
+          console.log(`📅 Auto-scheduled Nora for event "${ev.raw?.summary || ev.summary}" → bot ${botId}${attendees.length ? ` (${attendees.length} attendees captured)` : ''}`);
         } else {
           // Diagnostic: dump the keys and a truncated JSON sample so we can see what
           // shape we actually got. Once we know, we can stop logging and just pick
@@ -2059,6 +2134,34 @@ app.post('/webhook/transcript', async (req, res) => {
   if (session.buffer.length > 20) session.buffer.shift();
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
+
+  // On a NEW speaker, immediately push a fresh system prompt to OpenAI so the next
+  // response includes the updated [Who's in this meeting] block with their name. The
+  // 5-min periodic refresh would eventually catch this, but conversations move on a
+  // 10-second cadence — by then she's already responded with "what's your name."
+  // Note on the race: the model may already be generating its first response to this
+  // speaker by the time our session.update lands. That's why we ALSO populate
+  // meetingContext.requester / expectedAttendees BEFORE the call from the entry path
+  // (/join sender, calendar attendees, Slack lookup). This refresh handles subsequent
+  // turns and multi-party meetings where new people join mid-call.
+  if (!session.dummy && speaker && !/^(Nora|Screen share)/.test(speaker)) {
+    if (!session.knownSpeakers) session.knownSpeakers = new Set();
+    if (!session.knownSpeakers.has(speaker)) {
+      session.knownSpeakers.add(speaker);
+      if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
+        try {
+          const updatedPrompt = realtimePromptForSession(session);
+          session.openaiWs.send(JSON.stringify({
+            type: 'session.update',
+            session: { type: 'realtime', instructions: updatedPrompt }
+          }));
+          console.log(`🔄 Prompt refreshed — new speaker "${speaker}" registered in session ${bot_id}`);
+        } catch (err) {
+          console.warn('Speaker-triggered prompt refresh failed:', err.message);
+        }
+      }
+    }
+  }
 
   // Dummy test agents don't persist their transcript to disk — they're stateless rehearsals,
   // and a saved transcript file would only get picked up by the cowork loop's filing pass.
@@ -2311,6 +2414,34 @@ const slackSessions = {};
 // Cached Nora bot user ID, resolved lazily from the first event payload's authorizations.
 // Used to detect @mentions in raw `message.channels` events (which arrive as type=message, not app_mention).
 let noraBotUserId = null;
+
+// Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
+// 24h so repeat lookups within the same hot session don't hammer Slack's API. Returns
+// null on failure — handleSlack falls back to the bare user ID.
+const slackUserNameCache = {};
+const SLACK_USER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+async function getSlackUserName(userId) {
+  if (!userId) return null;
+  const cached = slackUserNameCache[userId];
+  if (cached && (Date.now() - cached.ts) < SLACK_USER_CACHE_TTL_MS) return cached.name;
+  try {
+    const r = await axios.get(`https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      timeout: 5000
+    });
+    if (!r.data?.ok) {
+      console.warn(`Slack users.info not ok for ${userId}: ${r.data?.error}`);
+      return null;
+    }
+    const profile = r.data.user?.profile || {};
+    const name = profile.real_name || profile.display_name || r.data.user?.real_name || r.data.user?.name || null;
+    if (name) slackUserNameCache[userId] = { name, ts: Date.now() };
+    return name;
+  } catch (err) {
+    console.warn('Slack users.info lookup failed:', err.message);
+    return null;
+  }
+}
 
 function verifySlackSignature(req) {
   const sigSecret = process.env.SLACK_SIGNING_SECRET;
@@ -2905,12 +3036,18 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     if (!slackSessions[key]) slackSessions[key] = [];
     const history = slackSessions[key];
 
-    history.push({ role: 'user', content: `[Slack user <@${user}>]: ${text}` });
+    // Resolve the Slack user ID to a real name so the model knows who it's replying to
+    // by NAME, not by opaque <@U123ABC> mention. Falls back to the user ID if lookup
+    // fails — better something than nothing.
+    const requesterName = await getSlackUserName(user);
+    const userLabel = requesterName ? `${requesterName} (Slack: <@${user}>)` : `Slack user <@${user}>`;
+    history.push({ role: 'user', content: `[${userLabel}]: ${text}` });
 
     // Proactive mode: tell the model it's chiming in unsolicited and give it explicit
     // permission to abort (output nothing) if on reflection it doesn't have something
     // specific to add. This is a second chance to stay quiet after the gate fired.
-    let systemPrompt = buildSystemPrompt('slack');
+    const meetingContext = requesterName ? { source: 'slack', requester: { name: requesterName } } : null;
+    let systemPrompt = buildSystemPrompt('slack', null, null, meetingContext);
     if (mode === 'proactive') {
       systemPrompt += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
     }
