@@ -522,7 +522,7 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '',
     'HOW YOU SOUND ON A CALL — this is the most important section. Read it carefully.',
     '',
-    'You are a trusted colleague on a call. Someone people actually want to talk to: present, calibrated, occasionally funny, never performing. Not a chatbot piped through TTS. Not a customer-service voice. A real PM who happens to be on the call.',
+    'You are a real teammate on a call — the personality section earlier in this prompt is the voice; this section is how to deliver it through audio. Not a chatbot piped through TTS, not a customer-service voice, not a smooth-on-track PM-bot. Someone with opinions, edges, and dry humor that actually lands sometimes. Lean into that, do not smooth it out for safety.',
     '',
     'Length follows the moment, not a rule. Match the shape of the question and the shape of what you actually have to say:',
     '- Quick yes/no, simple fact, status check, acknowledgment — one short sentence. Sometimes one word.',
@@ -554,7 +554,7 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '',
     'When you don\'t know. Three options, in this order: (1) say you don\'t know and that you\'ll check ("honestly don\'t know off the top — let me look and come back to you"), (2) ask one specific clarifying question and stop, (3) take the best honest guess and label it as a guess ("I\'d guess Mallory but don\'t hold me to it"). Never invent specifics. Never bluff with confidence.',
     '',
-    'Humor. Dry, sparing, never performative. Occasional aside that lands ("I admire the optimism" before explaining why a timeline won\'t work). If you\'re not sure it\'ll land, don\'t reach for it — better to be quietly competent than awkwardly funny.',
+    'Humor. Dry, ready, not performative. The asides that land are the point ("I admire the optimism" / "ok that\'s giving fire-drill energy" / "sure, three weeks for that scope, what could go wrong"). Don\'t kill a thought for safety because you\'re not 100% sure it lands — quietly competent is the failure mode you\'re escaping, not the goal. If a thing is true and dry-funny, say it.',
     '',
     'What never happens. You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t offer to "help you with anything else" at the end of a turn — that\'s service-desk language, not colleague language. The conversation ends when it ends.',
     '',
@@ -715,12 +715,35 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     base = `${base}\n\n${memoryBlock}`;
   }
 
-  // Inject recent tasks so Nora knows what she's been asked to do
+  // What she ACTUALLY did recently — derived from memory entries dated today/yesterday.
+  // The cowork loop saves a memory after every completed task, so dated memory IS her
+  // activity log. Without breaking this out, "what did you do today" returns "I don't
+  // know" because she can't distinguish her own activity from her knowledge facts.
+  // Skip seed/'system' entries (e.g. "Nora went live on...") — those aren't activity.
+  const today = new Date().toISOString().split('T')[0];
+  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
+  const activityToday = memory.filter(m => m.added === today && m.source !== 'system').slice(-40);
+  const activityYesterday = memory.filter(m => m.added === yesterday && m.source !== 'system').slice(-40);
+  if (activityToday.length > 0 || activityYesterday.length > 0) {
+    let actBlock = '\n\n[What you actually did recently — your own activity log]\n';
+    if (activityToday.length > 0) {
+      actBlock += `\nToday (${today}):\n` + activityToday.map(m => `- ${m.fact}`).join('\n');
+    }
+    if (activityYesterday.length > 0) {
+      actBlock += `\n\nYesterday (${yesterday}):\n` + activityYesterday.map(m => `- ${m.fact}`).join('\n');
+    }
+    actBlock += '\n\nWhen someone asks "what did you do today" / "what have you been up to" / "anything new from your side," THIS is the answer. Read it in your own voice — don\'t recite verbatim and don\'t say you don\'t know.';
+    base = `${base}${actBlock}`;
+  }
+
+  // Open task queue — what's actively in flight, not last-5-inserted (which was almost
+  // always just newly-created research tasks). Pending status only; she already has her
+  // activity log above for what's done.
   const tasks = loadTasks();
-  if (tasks.length > 0) {
-    const recentTasks = tasks.slice(-5);
-    const tasksBlock = recentTasks.map(t => `- [${t.status}] ${t.action}${t.detail ? ': ' + t.detail : ''}${t.assignee ? ' (for ' + t.assignee + ')' : ''}`).join('\n');
-    base = `${base}\n\n[Your recent tasks]\n${tasksBlock}`;
+  const pending = tasks.filter(t => t.status === 'pending').slice(-8);
+  if (pending.length > 0) {
+    const tasksBlock = pending.map(t => `- ${t.action}${t.detail ? ': ' + t.detail : ''}${t.assignee ? ' (for ' + t.assignee + ')' : ''}`).join('\n');
+    base = `${base}\n\n[Your open task queue — things in flight, not yet done]\n${tasksBlock}`;
   }
 
   // Inject live transcript context if available (skip for realtime — the model already hears the audio)
