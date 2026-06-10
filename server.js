@@ -779,7 +779,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     const recent = transcript.slice(-(isRealtime ? 15 : maxTranscriptLines));
     const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
     const header = isRealtime
-      ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. Use the names. Do not ask "who are you" or "what is your role" mid-conversation when the labels are right here.\n'
+      ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. The bracketed name before each line IS who said it. Use those names. If someone asks "what\'s my name" or "do you know who I am" — the answer is literally in the brackets above their question. Never say "remind me your name" or "I don\'t want to guess" when a labeled name is sitting right here in your context.\n'
       : '[What\'s been discussed in this meeting so far]\n';
     base += `\n\n${header}${transcriptBlock}`;
   }
@@ -2134,6 +2134,34 @@ app.post('/webhook/transcript', async (req, res) => {
   if (session.buffer.length > 20) session.buffer.shift();
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
+
+  // On a NEW speaker, immediately push a fresh system prompt to OpenAI so the next
+  // response includes the updated [Who's in this meeting] block with their name. The
+  // 5-min periodic refresh would eventually catch this, but conversations move on a
+  // 10-second cadence — by then she's already responded with "what's your name."
+  // Note on the race: the model may already be generating its first response to this
+  // speaker by the time our session.update lands. That's why we ALSO populate
+  // meetingContext.requester / expectedAttendees BEFORE the call from the entry path
+  // (/join sender, calendar attendees, Slack lookup). This refresh handles subsequent
+  // turns and multi-party meetings where new people join mid-call.
+  if (!session.dummy && speaker && !/^(Nora|Screen share)/.test(speaker)) {
+    if (!session.knownSpeakers) session.knownSpeakers = new Set();
+    if (!session.knownSpeakers.has(speaker)) {
+      session.knownSpeakers.add(speaker);
+      if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
+        try {
+          const updatedPrompt = realtimePromptForSession(session);
+          session.openaiWs.send(JSON.stringify({
+            type: 'session.update',
+            session: { type: 'realtime', instructions: updatedPrompt }
+          }));
+          console.log(`🔄 Prompt refreshed — new speaker "${speaker}" registered in session ${bot_id}`);
+        } catch (err) {
+          console.warn('Speaker-triggered prompt refresh failed:', err.message);
+        }
+      }
+    }
+  }
 
   // Dummy test agents don't persist their transcript to disk — they're stateless rehearsals,
   // and a saved transcript file would only get picked up by the cowork loop's filing pass.
