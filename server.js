@@ -820,7 +820,7 @@ Nora's Google Calendar (nora@limelightmarketing.com) is connected to Recall.ai C
 
 ## Authentication
 
-The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts.
+The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams.
 All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
 
 Pass the key as a query parameter or header:
@@ -1000,6 +1000,27 @@ Drive link in the original Slack thread, and clean up the inbox entries.
 - DELETE /transcripts/:botId    — Delete a transcript
   Response: { "ok": true }
   404 if not found.
+
+### Dreams (nightly memory consolidation + reflection log)
+- GET  /dreams                  — List all recorded dreams, newest first
+  Response: [{ "id", "date", "started", "finished", "consolidation": {...}, "reflection": {...}, "narrative" }]
+
+- POST /dreams                  — Record a completed dream (cowork loop calls this at the end of the Dreaming Round)
+  Body: {
+    "date": "YYYY-MM-DD",
+    "started": "<ISO>", "finished": "<ISO>",
+    "consolidation": { "memories_before": N, "memories_after": M, "duplicates_removed": X,
+                       "fragments_merged": Y, "stale_pruned": Z, "contradictions_resolved": W,
+                       "examples": ["merged 'Gracie is PM' + 'Gracie Krokroskia, APM' → kept detailed", ...] },
+    "reflection": { "takes_added": ["<take>", ...], "takes_retired": ["<old take>", ...],
+                    "ideas": ["<idea/thought>", ...] },
+    "narrative": "<first-person 'what I dreamed about' summary in Nora's voice>"
+  }
+  Server stamps id + finished if omitted. Caps stored dreams at the newest ~120.
+  Response: { "ok": true, "dream": {...} }
+
+- GET    /dreams/:id            — Full detail for one dream. 404 if not found.
+- DELETE /dreams/:id            — Delete a dream entry. 404 if not found.
 
 ### Notifications
 - POST /notify                  — Post a message to Slack as Nora
@@ -4276,6 +4297,85 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ============================================================
+// Dreams — Nora's nightly memory-consolidation + reflection log
+// ============================================================
+// "Dreaming" (à la Anthropic's agent-memory consolidation) is a nightly pass the cowork
+// loop runs: it consolidates memory (semantic dedup, contradiction resolution, pruning,
+// reorganization) AND reflects (forms new [Your takes] opinions, surfaces ideas). The
+// actual work happens in the cowork loop with Claude reasoning + the /memory API; these
+// endpoints are just the durable LOG of each dream so the dashboard can show what she did
+// while "asleep." Stored on the Railway volume like the other runtime state, append-style
+// (newest dreams kept, capped to avoid unbounded growth).
+const DREAMS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-dreams.json');
+const DREAMS_PATH_LOCAL = path.join(__dirname, 'nora-dreams.json');
+function getDreamsPath() {
+  return fs.existsSync(VOLUME_DIR) ? DREAMS_PATH_VOLUME : DREAMS_PATH_LOCAL;
+}
+function loadDreams() {
+  try { return JSON.parse(fs.readFileSync(getDreamsPath(), 'utf8')); }
+  catch { return []; }
+}
+function saveDreams(dreams) {
+  try { fs.writeFileSync(getDreamsPath(), JSON.stringify(dreams, null, 2)); }
+  catch (err) { console.error('Failed to persist dreams:', err.message); }
+}
+const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
+
+// GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
+// dashboard can render without a second round-trip per dream.
+app.get('/dreams', requireAuth, (req, res) => {
+  const dreams = loadDreams();
+  dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
+  res.json(dreams);
+});
+
+// GET /dreams/:id — a single dream's full detail.
+app.get('/dreams/:id', requireAuth, (req, res) => {
+  const dream = loadDreams().find(d => d.id === req.params.id);
+  if (!dream) return res.status(404).json({ error: 'dream not found' });
+  res.json(dream);
+});
+
+// POST /dreams — record a completed dream. The cowork loop calls this at the end of its
+// Dreaming Round with the consolidation stats, reflection results, and a first-person
+// narrative ("what I dreamed about"). Server stamps id + finished if absent.
+app.post('/dreams', requireAuth, (req, res) => {
+  const body = req.body || {};
+  const now = new Date().toISOString();
+  const dream = {
+    id: body.id || `dream-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+    date: body.date || now.split('T')[0],
+    started: body.started || now,
+    finished: body.finished || now,
+    // { memories_before, memories_after, duplicates_removed, fragments_merged,
+    //   stale_pruned, contradictions_resolved, examples: [..] }
+    consolidation: body.consolidation || {},
+    // { takes_added: [..], takes_retired: [..], ideas: [..] }
+    reflection: body.reflection || {},
+    // First-person "what I dreamed about" summary in Nora's voice.
+    narrative: body.narrative || ''
+  };
+  const dreams = loadDreams();
+  dreams.push(dream);
+  // Trim oldest beyond the cap.
+  dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
+  const trimmed = dreams.slice(0, MAX_DREAMS_KEPT);
+  saveDreams(trimmed);
+  console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before ?? '?'}→${dream.consolidation.memories_after ?? '?'} memories, +${(dream.reflection.takes_added || []).length} takes`);
+  res.json({ ok: true, dream });
+});
+
+// DELETE /dreams/:id — admin cleanup of a single dream entry.
+app.delete('/dreams/:id', requireAuth, (req, res) => {
+  const dreams = loadDreams();
+  const idx = dreams.findIndex(d => d.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'dream not found' });
+  dreams.splice(idx, 1);
+  saveDreams(dreams);
+  res.json({ ok: true });
 });
 
 // Detect if Nora's reply is asking clarifying questions rather than confirming an action

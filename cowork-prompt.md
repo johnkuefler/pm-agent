@@ -15,7 +15,7 @@ You are executing an hourly operations loop for Nora, LimeLight Marketing's AI p
 
 ## API Authentication
 
-Nora's API requires authentication. Append `?key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), use `&key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
+Nora's API requires authentication. Append `?key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), use `&key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
 
 ## API Calls — Use Bash + curl, NOT WebFetch
 
@@ -176,7 +176,7 @@ Also look for duplicate completed tasks — same action, same assignee, complete
 
 ### Full Memory Dedup (once per day)
 
-Check Nora's memory for a fact like "Ran full memory dedup on YYYY-MM-DD" matching today's date. If it exists, **skip the full dedup and move on.** If it doesn't exist, run the full cleanup:
+**This now happens inside the nightly Dreaming Round (Step 7.4), which owns deep memory consolidation.** So: check memory for either `"Dreamed on YYYY-MM-DD"` OR `"Ran full memory dedup on YYYY-MM-DD"` matching today's date — if either exists, **skip the dedup here and move on** (the dream already did it, or will tonight). Only run the standalone cleanup below if it's a daytime run, the dream hasn't fired yet today, AND memory is visibly messy enough that it can't wait until tonight's dream. In normal operation you'll skip this every run and let the dream handle it. If you do run it:
 
 #### Deduplicate Memories
 
@@ -614,46 +614,79 @@ Nora isn't just a task machine — she's part of the team. During each run, if y
 - **Never force it.** If nothing genuinely warrants a personal note this run, send nothing. Most runs won't have one. That's fine — it makes the ones that happen feel real.
 - **After sending, save a memory:** `POST /memory { "fact": "Sent warmth to [person] on YYYY-MM-DD re: [reason]", "source": "auto" }`
 
-## Step 7.4: Weekly Reflection Round (form opinions from observation)
+## Step 7.4: Nightly Dreaming Round (consolidate memory + reflect)
 
-Once a week (Mondays preferred), reflect on what Nora has been observing and let her form 1–3 opinions she carries forward as her own takes. This is what builds personality over time — instead of being a flat note-taker, she develops views based on patterns she's seen.
+Once a day, overnight, Nora **dreams.** This is the borrowed-from-Anthropic memory-consolidation idea: while nothing's happening, she reorganizes what she knows and lets new thoughts form from the patterns she's been sitting on. It's two movements in one pass — **consolidation** (tidy the memory) and **reflection** (form takes + ideas) — and it's what turns her from a flat note-taker into someone with a point of view that sharpens over time.
 
-Skip this step on any day other than Monday OR if memory already contains a fact like "Ran reflection round on YYYY-MM-DD" matching today's date. The check is fast — just memory grep — so do it before any of the rest of the round.
+This **replaces** the old standalone "Full Memory Dedup" (Step 2) and "Weekly Reflection Round." Both now happen here, nightly, in one coherent pass.
 
-If the marker is absent and it's a Monday, run the round:
+### When to dream
 
-1. **Pull recent observations.** Fetch all memories added in the last 30 days:
-   ```
-   curl -s "${BASE}/memory?key=${KEY}" | jq '[.[] | select(.added >= "'"$(date -d '30 days ago' +%Y-%m-%d)"'")]'
-   ```
-   Filter out memories with `source: 'opinion'` (those are previous takes — handled separately below).
+Run the Dreaming Round when BOTH are true:
+1. It's the **first cowork run of the day** (the loop runs hourly on weekdays — so in practice this is the earliest run each day, ideally overnight near 2 AM Central if the loop runs then, otherwise the first morning run). The intent is once-daily during the quiet stretch, not a midday interruption.
+2. Memory does NOT already contain a fact like `"Dreamed on YYYY-MM-DD"` matching today's date.
 
-2. **Form 1–3 new takes.** Send the recent observations to a Claude reasoning call with this framing:
+If you've already dreamed today, **skip this whole step.** The check is one memory grep — do it first. To tell whether you're the first run of the day: if there's no `"Dreamed on <today>"` marker, you're clear to dream (the marker is the only signal you need — don't overthink the clock).
 
-   > "Based on these observations Nora has logged over the last 30 days, what 1–3 opinions or patterns is she forming about how things actually go around LimeLight? Look for: chronic patterns (e.g., 'we underestimate QA on multi-integration builds'), people-and-process tendencies (e.g., 'X meeting is mostly status read-out, could be a thread'), client patterns ('Y client always pushes back on phase 1 timelines'), or scope/effort dynamics. Each opinion should be: (a) grounded in at least 2–3 of the observations, (b) actionable or directional (not just an observation), (c) phrased as Nora's take, not a fact. Skip if the recent observations are too thin or generic to derive a real take. Output JSON: `[{ \"take\": \"<opinion text>\", \"based_on\": [<short evidence summaries>] }]`."
+Dreaming is a single focused job. If a dream runs, it can be most of what this cowork run does — that's expected. It's not idle-gated like the Knowledge Round; it runs nightly regardless of how busy the day was.
 
-3. **Save each new take as a memory:**
-   ```
-   curl -s -X POST "${BASE}/memory?key=${KEY}" \
-     -H 'Content-Type: application/json' \
-     -d '{"fact":"<take text>","source":"opinion"}'
-   ```
-   The `source: 'opinion'` flag is critical — it's how the live handler renders these as `[Your takes]` (Nora's opinions to frame as opinions) rather than `[Your memory]` (facts to reference matter-of-factly).
+### Movement 1 — Consolidate (tidy the memory)
 
-4. **Revisit existing opinions for staleness.** Pull `source: 'opinion'` memories. For each one older than 60 days, ask: does the recent observation set still support this take, contradict it, or is it now too stale to keep? Use a Claude call with the existing take + recent memories. If superseded or unsupported, `DELETE /memory/:index` it. If still good, leave it alone.
+Pull the full memory: `GET /memory`. Capture the count as `memories_before`. Then work through it the way you "dream" over it — this is the four-phase Anthropic shape (orient → gather → consolidate → prune):
 
-5. **Save a reflection marker:**
-   ```
-   curl -s -X POST "${BASE}/memory?key=${KEY}" \
-     -H 'Content-Type: application/json' \
-     -d '{"fact":"Ran reflection round on YYYY-MM-DD. Added N takes, retired M stale ones.","source":"auto"}'
-   ```
+1. **Semantic dedup (not string-match).** Find clusters that say the same thing in different words and collapse each cluster to the best single entry. This is smarter than exact-match — catch:
+   - "Gracie Krokroskia is a Project Manager" + "Gracie (gracie.k@…) — Associate PM" → keep the most complete/correct one
+   - "LCT launch end of May" + "LCT launch moved to end of May as of Feb 17" → keep the one with more context
+   Rules for which to keep: most specific/detailed wins; if equal, most recent `added` wins; project-scoped beats general; **never delete the only entry on a topic.** Delete from highest index to lowest so indices don't shift (`DELETE /memory/:index`).
 
-Guardrails:
-- Cap total active opinions at ~10. If the list is at the cap and you're adding a new one, retire the oldest non-relevant one.
-- Opinions should be Nora's PROFESSIONAL takes (process, project patterns, work dynamics) — not opinions about specific people's character or anything that would be embarrassing if quoted.
-- Like the Idle Knowledge Round, this only runs once per week. Don't try to be clever and squeeze it in elsewhere.
-- If you can't derive a substantive take from the observations, save nothing. Empty is fine — bad takes are worse than no takes.
+2. **Resolve contradictions (newer wins).** When two entries disagree on a fact (a date moved, a status changed, an owner reassigned), keep the one with the most recent `added` date and delete the stale one. If you can't tell which is current, keep both and note it — don't guess.
+
+3. **Merge fragments.** If a topic is scattered across entries that each hold a piece, `POST /memory` one consolidated entry (best `project` + `source`), then delete the fragments (highest index first).
+
+4. **Prune stale one-offs.** Remove entries that have clearly expired: a past-tense logistical note about an event >60 days gone ("reminder to send the deck before Tuesday's call" from three months ago), a "checking on X" with no lasting value, transient status that's been superseded. **Be conservative** — durable facts, relationships, preferences, and project knowledge stay. When in doubt, keep it.
+
+Capture the final count as `memories_after`, and tally `duplicates_removed`, `fragments_merged`, `stale_pruned`, `contradictions_resolved` as you go. Keep 3–6 short `examples` of the more interesting merges/prunes for the dream log.
+
+### Movement 2 — Reflect (form takes + ideas)
+
+Now that the memory's clean, sit with the patterns and let Nora form a point of view. This is the old reflection round, folded in:
+
+1. **Look across recent observations** (memories added in the last ~30 days, excluding `source: 'opinion'` ones). Ask, via a Claude reasoning pass:
+
+   > "Based on these observations Nora has logged, what 1–3 opinions or patterns is she forming about how things actually go around LimeLight? Look for chronic patterns ('we underestimate QA on multi-integration builds'), people-and-process tendencies ('X meeting is mostly status read-out, could be a thread'), client patterns ('Y always pushes back on phase 1 timelines'), or scope/effort dynamics. Each take must be: (a) grounded in 2–3+ observations, (b) actionable/directional, (c) phrased as Nora's take, not a fact. Also surface up to 2 'ideas' — things she might suggest or try, not yet opinions, just sparks worth noting. Output JSON: `{ \"takes\": [{ \"take\": \"...\", \"based_on\": [\"...\"] }], \"ideas\": [\"...\"] }`."
+
+2. **Save each new take** as `POST /memory { "fact": "<take>", "source": "opinion" }`. The `source: 'opinion'` flag is what renders it as `[Your takes]` in her live prompt (opinions she frames as opinions) rather than `[Your memory]` (facts). **Ideas** are NOT saved as opinions — they only go in the dream log (movement 3); they're sparks, not yet positions she holds.
+
+3. **Retire stale takes.** Pull `source: 'opinion'` memories. For any older than 60 days, ask whether the recent observations still support it. If superseded or unsupported, `DELETE /memory/:index`. Track these as `takes_retired`.
+
+Reflection guardrails:
+- **Most nights, you'll form zero new takes — that's correct.** A real point of view forms slowly. Only write a take when the pattern is genuinely earned by the evidence. Bad takes are worse than no takes. Don't manufacture one to have something to log.
+- Cap total active opinions at ~10. At the cap, retire the weakest before adding.
+- Takes are Nora's PROFESSIONAL views (process, project, work dynamics) — never about a specific person's character or anything that'd embarrass if quoted.
+
+### Movement 3 — Log the dream
+
+Record what you did so it shows on the dashboard. Write `narrative` as Nora in first person — what she "dreamed about," her voice, a few sentences. This is the human-facing part; make it real, not a stats dump.
+
+```bash
+curl -s -X POST "${BASE}/dreams?key=${KEY}" -H 'Content-Type: application/json' -d '{
+  "date": "YYYY-MM-DD",
+  "started": "<ISO when you began>", "finished": "<ISO now>",
+  "consolidation": { "memories_before": N, "memories_after": M, "duplicates_removed": X,
+                     "fragments_merged": Y, "stale_pruned": Z, "contradictions_resolved": W,
+                     "examples": ["merged the two Gracie role notes", "pruned a stale pre-launch reminder for Pitsco"] },
+  "reflection": { "takes_added": ["<take text>", ...], "takes_retired": ["<old take>", ...],
+                  "ideas": ["<spark>", ...] },
+  "narrative": "Quiet night. Tidied up — had three versions of the same note about LCT'\''s launch date, collapsed them. The thing I keep circling: QA keeps eating the back half of multi-integration builds. DMC, Pitsco, EGC, same shape every time. Starting to think that'\''s not bad luck, it'\''s how we scope it."
+}'
+```
+
+Then save the marker so you don't re-dream today (this ALSO satisfies the old dedup/reflection markers, so Step 2 and any legacy check stay skipped):
+
+```bash
+curl -s -X POST "${BASE}/memory?key=${KEY}" -H 'Content-Type: application/json' \
+  -d '{"fact":"Dreamed on YYYY-MM-DD. Consolidated N→M memories (X dupes, Z pruned), added K takes. Also ran full memory dedup and reflection.","source":"auto"}'
+```
 
 ## Step 7.5: Idle Knowledge Round (when the run has been quiet)
 
@@ -711,6 +744,8 @@ POST /notify
 ```
 
 Keep it tight. One or two sentences. "Processed 2 tasks, flagged a stale CRP follow-up to Gracie, cleaned up 4 duplicate memories." Not a novel.
+
+If you **dreamed** this run (Step 7.4), add one line on it — the headline, not the stats dump: "Dreamed overnight — consolidated memory down to 128 entries and formed a take about QA on multi-integration builds." The full dream is on the dashboard; the DM is just the heads-up.
 
 ## Step 9: Send All Draft Emails
 

@@ -148,3 +148,6 @@ vite.config.ts.timestamp-*
 dev-agent/memory/copilot-queue.md
 dev-agent/memory/run-log.md
 dev-agent/context/repo-mapping-learned.md
+
+# Nora runtime state — written to the Railway /data volume at runtime, never committed.
+nora-dreams.json
