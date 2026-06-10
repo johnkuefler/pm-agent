@@ -560,7 +560,7 @@ function buildDummyPrompt(customPrompt, agentName = 'Nora (Test)') {
   return intro + realtimeVoiceGuidance(agentName);
 }
 
-function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null) {
+function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
 
   // Swap channel-specific framing
@@ -718,13 +718,25 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     base = `${base}\n\n[Your open task queue — things in flight, not yet done]\n${tasksBlock}`;
   }
 
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Everything from here down is per-call VOLATILE context: the current timestamp,
+  // who's-talking, the live transcript, and (realtime) voice guidance. It's kept in a
+  // separate `volatile` accumulator so the large STABLE block above (nora-prompt +
+  // memory + activity + tasks, ~8K tokens, near-identical call-to-call) can be prompt-
+  // cached on its own. The cache breakpoint sits exactly here. The [Right now] timestamp
+  // alone would bust a cache that included it, which is why this split exists.
+  // Default return concatenates the two (no behavior change); opts.cacheSplit returns them
+  // separately so the caller can attach cache_control to only the stable half.
+  // ─────────────────────────────────────────────────────────────────────────────
+  let volatile = '';
+
   // [Right now] — situational awareness. Without this she can't know it's Friday
   // afternoon vs Tuesday morning vs 8am vs day-before-a-long-weekend, even though her
   // prompt explicitly tells her to let situational tone bleed through.
   const ctNow = new Date();
   const ctDateStr = ctNow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/Chicago' });
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
-  base += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally — Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
+  volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally — Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
 
   // [Who you're talking to right now] — pre-conversation identity injection from the entry
   // point: /join sender, calendar attendees, or Slack requester lookup. Populated BEFORE
@@ -761,7 +773,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       lines.push(`Meeting subject: "${meetingContext.subject}".`);
     }
     if (lines.length > 0) {
-      base += `\n\n[Who you're talking to right now]\n${lines.join('\n\n')}`;
+      volatile += `\n\n[Who you're talking to right now]\n${lines.join('\n\n')}`;
     }
   }
 
@@ -779,22 +791,39 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       const speakerLine = heardSpeakers.length === 1
         ? `So far the only person who's spoken besides you is **${heardSpeakers[0]}**. They are your conversation partner — use their name, don't ask who they are, don't ask their role unless they bring it up. If you know them from your memory or team list, use that context.`
         : `People you've heard speak in this meeting (besides yourself): **${heardSpeakers.join(', ')}**. When one of them speaks, use their name. Match the voice you hear to the names you've heard. Don't treat anyone as a generic "you" or "someone."`;
-      base += `\n\n[Who's in this meeting with you right now]\n${speakerLine}`;
+      volatile += `\n\n[Who's in this meeting with you right now]\n${speakerLine}`;
     }
     const recent = transcript.slice(-(isRealtime ? 15 : maxTranscriptLines));
     const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
     const header = isRealtime
       ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. The bracketed name before each line IS who said it. Use those names. If someone asks "what\'s my name" or "do you know who I am" — the answer is literally in the brackets above their question. Never say "remind me your name" or "I don\'t want to guess" when a labeled name is sitting right here in your context.\n'
       : '[What\'s been discussed in this meeting so far]\n';
-    base += `\n\n${header}${transcriptBlock}`;
+    volatile += `\n\n${header}${transcriptBlock}`;
   }
 
   // For realtime, add voice-specific guidance
   if (isRealtime) {
-    base += realtimeVoiceGuidance('Nora');
+    volatile += realtimeVoiceGuidance('Nora');
   }
 
-  return base;
+  // Default: concatenate (identical to pre-cache behavior). cacheSplit: hand back the two
+  // halves so the caller can cache only `stable`.
+  if (opts.cacheSplit) return { stable: base, volatile };
+  return base + volatile;
+}
+
+// Build the Anthropic `system` field as a structured block array with prompt caching on the
+// large, stable prefix. `stable` (nora-prompt + memory + activity + tasks, ~8K tokens) is
+// near-identical call-to-call, so caching it cuts repeat input cost ~90% on cache hits
+// (ephemeral 5-min TTL — fits Slack thread cadence + back-to-back extraction bursts). The
+// `volatile` half (timestamp, who's-talking, transcript) and any per-recipient `suffix`
+// (financial-access notice, proactive framing) are appended as a SEPARATE uncached block, so
+// they don't fragment the cache across users/modes. Used by the Slack + Zoom-chat handlers.
+// Anthropic prompt caching is GA — no beta header needed; cache_control on the block is enough.
+function cachedSystem(stable, tail = '') {
+  const blocks = [{ type: 'text', text: stable, cache_control: { type: 'ephemeral' } }];
+  if (tail && tail.trim()) blocks.push({ type: 'text', text: tail });
+  return blocks;
 }
 
 // Pick the realtime system prompt for a voice session. Dummy test sessions run on a one-off
@@ -2262,18 +2291,21 @@ app.post('/webhook/chat', async (req, res) => {
 
     history.push({ role: 'user', content: `[${speaker} via Zoom chat]: ${query}` });
 
+    // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
+    // requester so the [Who you're talking to right now] block lights up with their name.
+    // Split for caching: the stable block (nora-prompt + memory) is cached, the volatile
+    // half (timestamp, who's-talking) rides along uncached.
+    const { stable: zoomStable, volatile: zoomVolatile } =
+      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true });
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        // Sonnet 4.6 for Zoom chat replies — same voice-fidelity reasoning as the
-        // Slack handler. Voice (Realtime) stays on its own model where latency is critical.
-        model: 'claude-sonnet-4-6',
+        // Opus 4.8 for Zoom chat replies — highest-visibility text path (a human reads it),
+        // and at $5/$25 the jump from Sonnet is only ~1.65x, largely offset by the cache below.
+        model: 'claude-opus-4-8',
         max_tokens: 300,
         temperature: 0.9,
-        // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender
-        // as the requester so the [Who you're talking to right now] block lights up with
-        // their actual name. Speaker came from Recall's participant data.
-        system: buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }),
+        system: cachedSystem(zoomStable, zoomVolatile),
         messages: history
       },
       {
@@ -3076,31 +3108,37 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // permission to abort (output nothing) if on reflection it doesn't have something
     // specific to add. This is a second chance to stay quiet after the gate fired.
     const meetingContext = requesterName ? { source: 'slack', requester: { name: requesterName } } : null;
-    let systemPrompt = buildSystemPrompt('slack', null, null, meetingContext);
+    // Split the prompt for caching: `stable` (nora-prompt + memory + projects, ~8K tokens)
+    // gets cached; the volatile half + the per-call proactive/financial notices below all go
+    // in `tail`, uncached, so the cache stays identical across every user and mode.
+    const { stable: slackStable, volatile: slackVolatile } =
+      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true });
+    let tail = slackVolatile;
     if (mode === 'proactive') {
-      systemPrompt += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
+      tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
     }
 
     // Financial-info access control. The recipient (`user`) is checked against the approved
     // list; the system prompt is told what the recipient can see. The output scrubber after
-    // Claude responds is defense in depth.
+    // Claude responds is defense in depth. This rides in the uncached tail — it MUST vary
+    // per-recipient, so it can't be part of the shared cached block.
     const financialApproved = isFinancialApproved(user);
     if (financialApproved) {
-      systemPrompt += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list — you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
+      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list — you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
     } else {
-      systemPrompt += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context — those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack — reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
+      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context — those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack — reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
     }
 
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        // Sonnet 4.6 for Slack — voice fidelity matters more than the latency cost here
-        // (Slack interactions tolerate ~1s extra). Haiku lives on for the gates and
-        // extraction pipelines where speed/cost dominate and voice doesn't matter.
-        model: 'claude-sonnet-4-6',
+        // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
+        // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
+        // the cached stable block above largely offsets it. Slack tolerates the small latency.
+        model: 'claude-opus-4-8',
         max_tokens: 400,
         temperature: 0.9,
-        system: systemPrompt,
+        system: cachedSystem(slackStable, tail),
         messages: history
       },
       {
