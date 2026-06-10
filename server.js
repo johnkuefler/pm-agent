@@ -718,11 +718,36 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     base = `${base}\n\n[Your open task queue — things in flight, not yet done]\n${tasksBlock}`;
   }
 
-  // Inject live transcript context if available (skip for realtime — the model already hears the audio)
-  if (!isRealtime && transcript && transcript.length > 0) {
-    const recent = transcript.slice(-maxTranscriptLines);
+  // [Right now] — situational awareness. Without this she can't know it's Friday
+  // afternoon vs Tuesday morning vs 8am vs day-before-a-long-weekend, even though her
+  // prompt explicitly tells her to let situational tone bleed through.
+  const ctNow = new Date();
+  const ctDateStr = ctNow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/Chicago' });
+  const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
+  base += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally — Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
+
+  // Live conversation context — who's been speaking and recent labeled buffer. The
+  // realtime model hears the audio in real time but does NOT get speaker labels for it,
+  // so without injecting the labeled transcript it can't attach names to voices. That
+  // is the root cause of her saying "I have no signal for your identity" mid-call.
+  // (We previously skipped this for realtime; the comment claimed "model hears audio,"
+  // which is true but irrelevant — audio gives her words, not names.)
+  if (transcript && transcript.length > 0) {
+    const heardSpeakers = [...new Set(transcript
+      .map(t => t.speaker)
+      .filter(s => s && !/^(Nora|Screen share)/.test(s)))];
+    if (heardSpeakers.length > 0) {
+      const speakerLine = heardSpeakers.length === 1
+        ? `So far the only person who's spoken besides you is **${heardSpeakers[0]}**. They are your conversation partner — use their name, don't ask who they are, don't ask their role unless they bring it up. If you know them from your memory or team list, use that context.`
+        : `People you've heard speak in this meeting (besides yourself): **${heardSpeakers.join(', ')}**. When one of them speaks, use their name. Match the voice you hear to the names you've heard. Don't treat anyone as a generic "you" or "someone."`;
+      base += `\n\n[Who's in this meeting with you right now]\n${speakerLine}`;
+    }
+    const recent = transcript.slice(-(isRealtime ? 15 : maxTranscriptLines));
     const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
-    base = `${base}\n\n[What's been discussed in this meeting so far]\n${transcriptBlock}`;
+    const header = isRealtime
+      ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. Use the names. Do not ask "who are you" or "what is your role" mid-conversation when the labels are right here.\n'
+      : '[What\'s been discussed in this meeting so far]\n';
+    base += `\n\n${header}${transcriptBlock}`;
   }
 
   // For realtime, add voice-specific guidance
