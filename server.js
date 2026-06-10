@@ -2302,9 +2302,10 @@ app.post('/webhook/chat', async (req, res) => {
       {
         // Opus 4.8 for Zoom chat replies — highest-visibility text path (a human reads it),
         // and at $5/$25 the jump from Sonnet is only ~1.65x, largely offset by the cache below.
+        // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; the model's
+        // default sampling is used. Sonnet/Haiku call sites elsewhere still accept it.
         model: 'claude-opus-4-8',
         max_tokens: 300,
-        temperature: 0.9,
         system: cachedSystem(zoomStable, zoomVolatile),
         messages: history
       },
@@ -3135,9 +3136,10 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
         // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
         // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
         // the cached stable block above largely offsets it. Slack tolerates the small latency.
+        // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; default
+        // sampling applies. Sonnet/Haiku call sites elsewhere still accept it.
         model: 'claude-opus-4-8',
         max_tokens: 400,
-        temperature: 0.9,
         system: cachedSystem(slackStable, tail),
         messages: history
       },
