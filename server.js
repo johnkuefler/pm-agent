@@ -4960,11 +4960,12 @@ wss.on('connection', async (ws, req) => {
         // questions). This cap just removes the artificial ceiling on the long-form turns
         // — at 400 we were truncating real thoughts.
         max_output_tokens: 1200,
-        // 'very high' = maximum GPT-5-class reasoning per gpt-realtime-2's effort dial
-        // (options: minimal/low/medium/high/very high). We previously ran 'minimal' for
-        // latency; it didn't actually feel faster, and the quality cost was real. Dial back
-        // toward 'high' or 'medium' only if her replies start arriving noticeably late.
-        reasoning: { effort: 'very high' }
+        // 'xhigh' = maximum GPT-5-class reasoning per gpt-realtime-2's effort dial. The
+        // API uses 'xhigh' as the wire value even though OpenAI's announcement called it
+        // "very high" — supported values are minimal/low/medium/high/xhigh. We previously
+        // ran 'minimal' for latency; it didn't actually feel faster, and the quality cost
+        // was real. Dial back toward 'high' or 'medium' if replies arrive noticeably late.
+        reasoning: { effort: 'xhigh' }
       }
     }));
 
