@@ -15,7 +15,7 @@ You are executing an hourly operations loop for Nora, LimeLight Marketing's AI p
 
 ## API Authentication
 
-Nora's API requires authentication. Append `?key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), use `&key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
+Nora's API requires authentication. Append `?key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/interactions`, `/run-lock`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), use `&key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
 
 ## API Calls — Use Bash + curl, NOT WebFetch
 
@@ -39,12 +39,39 @@ curl -s -X POST "${BASE}/memory?key=${KEY}" \
 
 curl -s -X PATCH "${BASE}/tasks/nora-1234-abcd/complete?key=${KEY}"
 
-curl -s -X DELETE "${BASE}/memory/42?key=${KEY}"
+# Delete memory BY ID, never by array index (ids are in each GET /memory entry as "id"):
+curl -s -X DELETE "${BASE}/memory/by-id/m-abc123?key=${KEY}"
+# Or delete many at once, atomically, in ONE call:
+curl -s -X POST "${BASE}/memory/bulk-delete?key=${KEY}" \
+  -H 'Content-Type: application/json' -d '{"ids":["m-abc123","m-def456"]}'
 ```
 
-Pipe outputs through `jq` to filter inline (e.g., `jq '.[] | select(.status == "pending")'`). Check exit codes via `$?` if you need to handle errors explicitly. Save bodies to files with redirection if responses are large.
+> ⚠️ **NEVER delete memory by array index (`DELETE /memory/:index`).** The index endpoint still exists but is unsafe: between your read and your delete the array shifts (your own earlier deletes, an overlapping run, the dream), so an index points at a *different* entry than you think — this corrupted memory and re-filed transcripts repeatedly. **Always delete by `id`** (`DELETE /memory/by-id/:id`) or, for a batch, **`POST /memory/bulk-delete`** with a list of ids (one atomic server-side operation, immune to shifting). Get the ids from the `id` field on each `GET /memory` entry.
+
+Pipe outputs through `jq` to filter inline (e.g., `jq '.[] | select(.status == "pending")'`). Check exit codes via `$?` if you need to handle errors explicitly. **For memory specifically: re-read `GET /memory` immediately before deleting and act on fresh ids — do NOT delete from a snapshot you cached earlier in the run** (a `/tmp` copy can be stale once the dream or another run has mutated memory).
 
 **Fallback only if Bash isn't available:** Chrome's `javascript_tool` from the Nora app page works the same shape (`fetch(url)` → `await res.json()`), just slower and noisier in tool output. Use it only as a backstop.
+
+## Step 0a: Acquire the run lock (prevent overlapping runs)
+
+**Do this first, before any other work.** Hourly runs can overlap (the scheduler double-fires, or a long run — like a dream — outlasts the hour), and overlapping runs racing on memory is what corrupts it. Acquire an advisory lock so only one run mutates state at a time:
+
+```bash
+HOLDER="run-$(date +%s)"
+LOCK=$(curl -s -X POST "${BASE}/run-lock?key=${KEY}" -H 'Content-Type: application/json' -d "{\"holder\":\"${HOLDER}\",\"ttl_seconds\":3000}")
+echo "$LOCK"
+```
+
+- If the response is `{"acquired": true, ...}` → you hold the lock. Proceed with the full run.
+- If `{"acquired": false, "held_by": ...}` → **another run is active. Do NOT do any memory/task mutations, dedup, dreaming, or transcript filing this run.** A quiet, read-only pass is fine (you can still answer something time-sensitive), but skip everything that writes shared state, and end early. Better to skip an hour than to race.
+
+**Release the lock at the very end of your run** (after the End-of-Run Summary), so the next run isn't blocked:
+
+```bash
+curl -s -X DELETE "${BASE}/run-lock?key=${KEY}&holder=${HOLDER}"
+```
+
+The lock auto-expires after the TTL (so a crashed run can't wedge it), but always release explicitly when you finish. If your run will be long (a dream), that's fine — you hold the lock the whole time and the next run skips.
 
 ## Step 0: Load Nora's Identity and Context
 
@@ -194,14 +221,14 @@ Rules for which to keep:
 4. **Never delete a memory that is the ONLY entry about a topic** — only remove true duplicates/redundancies
 5. **Be conservative** — when in doubt, keep both. Better to leave a near-duplicate than delete something unique.
 
-**IMPORTANT: Delete from highest index to lowest** so deletions don't shift indices of entries you still need to remove. Use `DELETE /memory/:index`.
+**Delete by id, in one atomic batch.** Collect the `id`s of every entry to remove, then `POST /memory/bulk-delete` with `{"ids":[...]}`. Never use `DELETE /memory/:index` — index deletes corrupt the store under concurrency (see the warning in the API Calls section).
 
 #### Merge Fragmented Memories
 
 If the same topic is scattered across multiple entries that each have a piece:
 
 1. Create one consolidated memory via `POST /memory` with merged content, using the most relevant `project` and `source`
-2. Delete the individual fragments (highest index first)
+2. Delete the individual fragments by id (`POST /memory/bulk-delete` with their ids)
 
 #### Fill in Auto-Created Project Stubs
 
@@ -637,16 +664,20 @@ Dreaming is a single focused job. If a dream runs, it can be most of what this c
 
 ### Movement 1 — Consolidate (tidy the memory)
 
+You hold the run lock (Step 0a), so no other run should be mutating memory while you consolidate. Two safety rules anyway:
+- **Work from ids on a FRESH `GET /memory`, delete via `POST /memory/bulk-delete`.** Never index-delete, never act on a snapshot cached earlier in the run.
+- **If the memory view looks inconsistent or "flapping"** (count swings between reads, yesterday's entries missing, the `"Dreamed on <yesterday>"` marker absent when it should be there) — something else is mutating it or a read came back stale. **Abort the consolidation for this run, log a one-line note, and skip to the Review movement.** Pruning against a bad read is exactly what wiped real memories before. A skipped consolidation costs nothing; a bad one loses data.
+
 Pull the full memory: `GET /memory`. Capture the count as `memories_before`. Then work through it the way you "dream" over it — this is the four-phase Anthropic shape (orient → gather → consolidate → prune):
 
 1. **Semantic dedup (not string-match).** Find clusters that say the same thing in different words and collapse each cluster to the best single entry. This is smarter than exact-match — catch:
    - "Gracie Krokroskia is a Project Manager" + "Gracie (gracie.k@…) — Associate PM" → keep the most complete/correct one
    - "LCT launch end of May" + "LCT launch moved to end of May as of Feb 17" → keep the one with more context
-   Rules for which to keep: most specific/detailed wins; if equal, most recent `added` wins; project-scoped beats general; **never delete the only entry on a topic.** Delete from highest index to lowest so indices don't shift (`DELETE /memory/:index`).
+   Rules for which to keep: most specific/detailed wins; if equal, most recent `added` wins; project-scoped beats general; **never delete the only entry on a topic.** Collect the `id`s to remove and delete them in ONE atomic call: `POST /memory/bulk-delete` with `{"ids":[...]}`. NEVER `DELETE /memory/:index` — index deletes are what corrupted memory (wrong rows deleted as the array shifted). Always work from ids on a FRESH `GET /memory`, not a cached snapshot.
 
 2. **Resolve contradictions (newer wins).** When two entries disagree on a fact (a date moved, a status changed, an owner reassigned), keep the one with the most recent `added` date and delete the stale one. If you can't tell which is current, keep both and note it — don't guess.
 
-3. **Merge fragments.** If a topic is scattered across entries that each hold a piece, `POST /memory` one consolidated entry (best `project` + `source`), then delete the fragments (highest index first).
+3. **Merge fragments.** If a topic is scattered across entries that each hold a piece, `POST /memory` one consolidated entry (best `project` + `source`), then delete the fragment ids via `POST /memory/bulk-delete`.
 
 4. **Prune stale one-offs.** Remove entries that have clearly expired: a past-tense logistical note about an event >60 days gone ("reminder to send the deck before Tuesday's call" from three months ago), a "checking on X" with no lasting value, transient status that's been superseded. **Be conservative** — durable facts, relationships, preferences, and project knowledge stay. When in doubt, keep it.
 
@@ -662,7 +693,7 @@ Now that the memory's clean, sit with the patterns and let Nora form a point of 
 
 2. **Save each new take** as `POST /memory { "fact": "<take>", "source": "opinion" }`. The `source: 'opinion'` flag is what renders it as `[Your takes]` in her live prompt (opinions she frames as opinions) rather than `[Your memory]` (facts). **Ideas** are NOT saved as opinions — they only go in the dream log (movement 3); they're sparks, not yet positions she holds.
 
-3. **Retire stale takes.** Pull `source: 'opinion'` memories. For any older than 60 days, ask whether the recent observations still support it. If superseded or unsupported, `DELETE /memory/:index`. Track these as `takes_retired`.
+3. **Retire stale takes.** Pull `source: 'opinion'` memories. For any older than 60 days, ask whether the recent observations still support it. If superseded or unsupported, delete it by id (`DELETE /memory/by-id/:id`). Track these as `takes_retired`.
 
 Reflection guardrails:
 - **Most nights, you'll form zero new takes — that's correct.** A real point of view forms slowly. Only write a take when the pattern is genuinely earned by the evidence. Bad takes are worse than no takes. Don't manufacture one to have something to log.
@@ -694,7 +725,7 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
    Save each as `POST /memory { "fact": "<learning>", "source": "learning" }`. The `source: 'learning'` flag renders it as `[Your learnings]` in her live prompt — behavior she carries forward, not a fact she recites.
 
-6. **Retire stale/contradicted learnings.** Pull `source: 'learning'` memories. If recent outcomes contradict one, or it's gone stale, `DELETE /memory/:index`. Track as `learnings_retired`.
+6. **Retire stale/contradicted learnings.** Pull `source: 'learning'` memories. If recent outcomes contradict one, or it's gone stale, delete it by id (`DELETE /memory/by-id/:id`). Track as `learnings_retired`.
 
 Review guardrails:
 - **Most nights, zero new learnings — that's correct.** Behavioral patterns need repetition to be real. One ignored message is noise; the same shape ignored four times is a learning. Don't manufacture learnings.
