@@ -151,3 +151,4 @@ dev-agent/context/repo-mapping-learned.md
 
 # Nora runtime state — written to the Railway /data volume at runtime, never committed.
 nora-dreams.json
+nora-interactions.json
