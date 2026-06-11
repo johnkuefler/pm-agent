@@ -155,7 +155,30 @@
     <div id="page-memory" class="page">
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">Nora's Memory <button class="btn btn-danger btn-sm" onclick="clearMemory()">Clear All</button></h2>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
+          <input id="memory-search" placeholder="🔍 Search memories…" oninput="renderMemory()"
+            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:14px;" />
+          <select id="memory-source" onchange="renderMemory()"
+            style="padding:9px 10px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:13px;">
+            <option value="">All sources</option>
+            <option value="opinion">💭 Takes</option>
+            <option value="learning">🌱 Learnings</option>
+            <option value="meeting">🎙 Meetings</option>
+            <option value="slack">💬 Slack</option>
+            <option value="auto">⚙️ Auto</option>
+            <option value="manual">✍️ Manual</option>
+            <option value="system">🔧 System</option>
+          </select>
+          <select id="memory-sort" onchange="renderMemory()"
+            style="padding:9px 10px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:13px;">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="project">By project</option>
+          </select>
+        </div>
+        <div id="memory-count" style="font-size:12px; color:#888; margin-bottom:10px;"></div>
         <div id="memory-list"></div>
+        <div id="memory-more" style="text-align:center; margin-top:12px;"></div>
       </div>
       <div class="section">
         <h2>Add Memory</h2>
@@ -667,6 +690,9 @@
     }
 
     // Memory
+    let _allMemories = [];      // full set, fetched once; each carries _idx (original position)
+    let _memoryRenderCap = 80;  // cap rendered rows so 2,000+ memories don't choke the DOM
+
     async function loadMemory() {
       const list = document.getElementById('memory-list');
       try {
@@ -674,40 +700,85 @@
         const memories = await memRes.json();
         const projects = await projRes.json();
 
-        // Populate project dropdown
+        // Populate project dropdown (Add Memory section)
         const select = document.getElementById('new-fact-project');
         select.innerHTML = '<option value="">General (no project)</option>' +
           projects.map(p => `<option value="${escHtml(p.name)}">${escHtml(p.name)}</option>`).join('');
 
-        if (memories.length === 0) {
-          list.innerHTML = '<p class="empty">No memories yet.</p>';
-          return;
-        }
-
-        // Group by project
-        const general = [];
-        const byProject = {};
-        memories.forEach((m, i) => {
-          const entry = { ...m, _idx: i };
-          if (m.project) {
-            if (!byProject[m.project]) byProject[m.project] = [];
-            byProject[m.project].push(entry);
-          } else {
-            general.push(entry);
-          }
-        });
-
-        let html = '';
-        if (general.length > 0) {
-          html += '<div style="color: #888; font-size: 12px; font-weight: 600; margin: 12px 0 4px; text-transform: uppercase;">General</div>';
-          html += general.map(m => memoryItemHtml(m)).join('');
-        }
-        for (const [proj, items] of Object.entries(byProject)) {
-          html += `<div style="color: #a78bfa; font-size: 12px; font-weight: 600; margin: 16px 0 4px; text-transform: uppercase;">${escHtml(proj)}</div>`;
-          html += items.map(m => memoryItemHtml(m)).join('');
-        }
-        list.innerHTML = html;
+        // Stamp original index (used as a tiebreaker for newest/oldest since `added` is date-only)
+        _allMemories = memories.map((m, i) => ({ ...m, _idx: i }));
+        _memoryRenderCap = 80;
+        renderMemory();
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load memory.</p>'; }
+    }
+
+    // Apply search + source filter + sort + render cap. Cheap to re-run on every keystroke.
+    function renderMemory() {
+      const list = document.getElementById('memory-list');
+      const countEl = document.getElementById('memory-count');
+      const moreEl = document.getElementById('memory-more');
+      if (!list) return;
+
+      if (_allMemories.length === 0) {
+        list.innerHTML = '<p class="empty">No memories yet.</p>';
+        countEl.textContent = ''; moreEl.innerHTML = '';
+        return;
+      }
+
+      const q = (document.getElementById('memory-search').value || '').trim().toLowerCase();
+      const sourceFilter = document.getElementById('memory-source').value;
+      const sort = document.getElementById('memory-sort').value;
+
+      let items = _allMemories;
+      if (sourceFilter) items = items.filter(m => (m.source || '') === sourceFilter);
+      if (q) items = items.filter(m =>
+        (m.fact || '').toLowerCase().includes(q) ||
+        (m.project || '').toLowerCase().includes(q) ||
+        (m.source || '').toLowerCase().includes(q));
+
+      const total = _allMemories.length, matched = items.length;
+
+      let html = '';
+      if (sort === 'project') {
+        // Grouped view: General first, then projects alpha; within a group, newest first.
+        const general = items.filter(m => !m.project).sort((a, b) => byNewest(a, b));
+        const groups = {};
+        items.filter(m => m.project).forEach(m => { (groups[m.project] = groups[m.project] || []).push(m); });
+        let shown = 0;
+        const cap = _memoryRenderCap;
+        if (general.length) {
+          html += groupHeader('General', '#888');
+          for (const m of general) { if (shown++ >= cap) break; html += memoryItemHtml(m); }
+        }
+        for (const proj of Object.keys(groups).sort()) {
+          if (shown >= cap) break;
+          html += groupHeader(proj, '#a78bfa');
+          for (const m of groups[proj].sort((a, b) => byNewest(a, b))) { if (shown++ >= cap) break; html += memoryItemHtml(m); }
+        }
+      } else {
+        items = items.slice().sort((a, b) => sort === 'oldest' ? -byNewest(a, b) : byNewest(a, b));
+        html = items.slice(0, _memoryRenderCap).map(m => memoryItemHtml(m)).join('');
+      }
+      list.innerHTML = html || '<p class="empty">No memories match your search.</p>';
+
+      const rendered = Math.min(matched, _memoryRenderCap);
+      countEl.textContent = q || sourceFilter
+        ? `Showing ${rendered} of ${matched} match${matched === 1 ? '' : 'es'} (${total.toLocaleString()} total)`
+        : `Showing ${rendered} of ${total.toLocaleString()}`;
+      moreEl.innerHTML = matched > _memoryRenderCap
+        ? `<button class="btn btn-sm" style="background:#222; color:#aaa; border:1px solid #333;" onclick="_memoryRenderCap += 200; renderMemory();">Show ${Math.min(200, matched - _memoryRenderCap)} more</button>`
+        : '';
+    }
+
+    // Newest-first comparator: by `added` date desc, tiebreak by original index desc
+    // (later in the array = added later within the same date).
+    function byNewest(a, b) {
+      const da = a.added || '', db = b.added || '';
+      if (da !== db) return da < db ? 1 : -1;
+      return (b._idx || 0) - (a._idx || 0);
+    }
+    function groupHeader(label, color) {
+      return `<div style="color:${color}; font-size:12px; font-weight:600; margin:16px 0 4px; text-transform:uppercase;">${escHtml(label)}</div>`;
     }
 
     function memoryItemHtml(m) {
