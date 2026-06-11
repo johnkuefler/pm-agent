@@ -54,8 +54,56 @@ function loadMemory() {
   } catch { return []; }
 }
 
+// Atomic write: write to a temp file then rename. rename() is atomic on the same
+// filesystem, so a reader can never observe a half-written file (which, under the old
+// direct writeFileSync, could corrupt memory if a read raced a large write).
 function saveMemory(memory) {
-  fs.writeFileSync(getMemoryPath(), JSON.stringify(memory, null, 2));
+  const p = getMemoryPath();
+  const tmp = `${p}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(memory, null, 2));
+  fs.renameSync(tmp, p);
+}
+
+// Generate a stable id for a memory entry. Used so memory can be deleted/updated BY ID
+// rather than by array index — index-based mutation is unsafe when the array shifts
+// between a caller's read and its write (overlapping cowork runs, the dream's batch
+// deletes), which was corrupting memory (wrong rows deleted, lost markers → re-filed
+// transcripts). Ids are immune to shift.
+function newMemoryId() {
+  return `m-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+}
+
+// Serialize ALL memory mutations through one in-process queue. Railway runs a single Node
+// instance, so a promise-chain lock fully serializes concurrent handlers: each mutation
+// reloads memory FRESH inside the lock, mutates, and saves — so no caller ever writes back
+// a stale snapshot (the bug behind extractMemory clobbering markers written during its
+// multi-second Claude await, and behind overlapping runs losing each other's writes).
+// `mutator(memory)` mutates the array in place and may return a value; that value resolves.
+let _memMutationChain = Promise.resolve();
+function mutateMemory(mutator) {
+  const run = _memMutationChain.then(() => {
+    const memory = loadMemory();
+    // Backfill ids defensively so every entry is addressable by id.
+    let changed = false;
+    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); changed = true; } }
+    const result = mutator(memory);
+    saveMemory(memory);
+    return { result, memory };
+  });
+  // Keep the chain alive even if a mutation throws, so one failure doesn't wedge the queue.
+  _memMutationChain = run.then(() => {}, () => {});
+  return run;
+}
+
+// One-time backfill: assign ids to any pre-existing memory entries that lack them, so the
+// by-id endpoints work for the whole store from the first boot after this deploy.
+function backfillMemoryIds() {
+  try {
+    const memory = loadMemory();
+    let changed = false;
+    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); changed = true; } }
+    if (changed) { saveMemory(memory); console.log(`🧠 Backfilled ids on ${memory.length} memory entries`); }
+  } catch (err) { console.warn('Memory id backfill failed (non-fatal):', err.message); }
 }
 
 // Task queue — same pattern as memory
@@ -505,6 +553,7 @@ function isTaskEligibleNow(task, now = new Date()) {
 }
 
 initMemory();
+backfillMemoryIds();
 
 // The voice-delivery guidance shared by Nora's realtime branch and the dummy test agent.
 // This is the "how you sound on a call" block — the thing that makes the voice agent sound
@@ -918,7 +967,7 @@ Nora's Google Calendar (nora@limelightmarketing.com) is connected to Recall.ai C
 
 ## Authentication
 
-The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /interactions.
+The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /interactions, /run-lock.
 All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
 
 Pass the key as a query parameter or header:
@@ -936,18 +985,41 @@ If NORA_API_KEY is not set in the environment, auth is disabled (open access for
 ## API Endpoints
 
 ### Memory
+Each entry has a stable "id" — use it for all deletes/updates. NEVER mutate by array index
+(the index shifts between your read and your write under concurrency, which corrupts the store).
 - GET  /memory                  — Returns full memory array
-  Response: [{ "fact": "string", "project": "string (empty if general)", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system", "source_bot_id": "Recall.ai bot ID if from a meeting (empty otherwise)" }]
+  Response: [{ "id": "m-...", "fact": "string", "project": "string (empty if general)", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system|auto|opinion|learning", "source_bot_id": "..." }]
 
 - POST /memory                  — Add a new memory
   Body: { "fact": "string", "source": "string", "project": "string (optional)" }
-  Response: { "ok": true, "memory": [...] }
+  Response: { "ok": true, "id": "m-...", "memory": [...] }
 
-- DELETE /memory/:index         — Remove memory by array index
-  Response: { "ok": true, "memory": [...] }
+- DELETE /memory/by-id/:id      — PREFERRED. Remove one memory by its stable id. 404 if not found.
+  Response: { "ok": true, "removed": {...}, "memory": [...] }
+
+- POST /memory/bulk-delete      — PREFERRED for batches (dedup/prune). Atomic, one operation.
+  Body: { "ids": ["m-...", "m-..."] }
+  Response: { "ok": true, "removed_count": N, "removed": [...] }
+
+- PUT  /memory/:idOrIndex       — Update a memory's fact/project (prefers id; index fallback).
+  Body: { "fact": "string", "project": "string (optional)" }
+
+- DELETE /memory/:index         — LEGACY index delete. UNSAFE under concurrency — do NOT use.
+  Kept only for back-compat. Use /memory/by-id/:id or /memory/bulk-delete instead.
 
 - DELETE /memory                — Clear all memory
   Response: { "ok": true, "memory": [] }
+
+All memory mutations are serialized server-side (single in-process lock) and written atomically
+(temp-file + rename), so concurrent writers can't lose updates or read a half-written file.
+
+### Run lock (prevent overlapping cowork runs)
+- POST /run-lock                — Acquire the advisory run lock. Body: { "holder": "run-...", "ttl_seconds": 3000 }
+  Response: { "acquired": true|false, "held_by"?: "...", "expires_at": "..." }. Acquire at the TOP
+  of a run; if acquired=false, another run is active — skip all shared-state mutation this run.
+- GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ... }
+- DELETE /run-lock?holder=...   — Release (only the holder can). Always release at run end.
+  The lock auto-expires after its TTL so a crashed run can't wedge it.
 
 ### Projects
 - GET  /projects                — Returns all projects
@@ -3623,55 +3695,125 @@ app.post('/notify', requireAuth, async (req, res) => {
 // Memory API — view and edit Nora's memory
 app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
 
-app.post('/memory', requireAuth, (req, res) => {
+app.post('/memory', requireAuth, async (req, res) => {
   const { fact, source, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
   // Memory CAN contain financial content. Distribution is gated at the live handler's
-  // output side — see handleSlack's scrubber and the per-recipient system-prompt gate
-  // in /slack/financial-approved. Memory is the source of truth; output is where the
-  // approval check happens.
-  // Normalize project to canonical casing (creating a stub record if needed).
-  // This stops the drift the cowork loop has to clean up daily — projects referenced
-  // by memories are guaranteed to exist in /projects.
+  // output side. Memory is the source of truth; output is where the approval check happens.
   const canonicalProject = project ? ensureProject(project) : '';
-  const memory = loadMemory();
-  memory.push({ fact, project: canonicalProject, added: new Date().toISOString().split('T')[0], source: source || 'manual' });
-  saveMemory(memory);
+  const entry = { id: newMemoryId(), fact, project: canonicalProject, added: new Date().toISOString().split('T')[0], source: source || 'manual' };
+  const { memory } = await mutateMemory(m => { m.push(entry); });
   if (canonicalProject) bumpProjectActivity(canonicalProject);
   console.log('🧠 Memory added:', fact);
+  res.json({ ok: true, id: entry.id, memory });
+});
+
+// PREFERRED delete path: by stable id, immune to array-shift. The cowork loop (esp. the
+// dream's batch pruning) MUST use this, not the index endpoint below.
+app.delete('/memory/by-id/:id', requireAuth, async (req, res) => {
+  const { result, memory } = await mutateMemory(m => {
+    const i = m.findIndex(x => x.id === req.params.id);
+    if (i === -1) return null;
+    return m.splice(i, 1)[0];
+  });
+  if (!result) return res.status(404).json({ error: 'id not found' });
+  console.log('🧠 Memory removed (by id):', result.fact);
+  res.json({ ok: true, removed: result, memory });
+});
+
+// Atomic bulk delete by id — the dream prunes a whole set in ONE serialized operation
+// against current state, so there's no multi-call window for the array to shift underneath.
+// Body: { ids: ["m-...", ...] }. Returns the entries actually removed.
+app.post('/memory/bulk-delete', requireAuth, async (req, res) => {
+  const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+  if (ids.length === 0) return res.status(400).json({ error: 'ids array is required' });
+  const idset = new Set(ids);
+  const { result } = await mutateMemory(m => {
+    const removed = m.filter(x => idset.has(x.id));
+    const kept = m.filter(x => !idset.has(x.id));
+    m.length = 0; m.push(...kept);
+    return removed;
+  });
+  console.log(`🧠 Memory bulk-deleted ${result.length}/${ids.length} by id`);
+  res.json({ ok: true, removed_count: result.length, removed: result });
+});
+
+// LEGACY index delete — kept for back-compat but UNSAFE under concurrency (the index may
+// not point at what the caller thinks once the array shifts). Now serialized through the
+// mutation lock at least, but callers should migrate to /memory/by-id/:id.
+app.delete('/memory/:index', requireAuth, async (req, res) => {
+  const idx = parseInt(req.params.index);
+  const { result, memory } = await mutateMemory(m => {
+    if (idx < 0 || idx >= m.length) return null;
+    return m.splice(idx, 1)[0];
+  });
+  if (!result) return res.status(404).json({ error: 'index out of range' });
+  console.log('🧠 Memory removed (by index — legacy):', result.fact);
   res.json({ ok: true, memory });
 });
 
-app.delete('/memory/:index', requireAuth, (req, res) => {
-  const memory = loadMemory();
-  const idx = parseInt(req.params.index);
-  if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
-  const removed = memory.splice(idx, 1);
-  saveMemory(memory);
-  console.log('🧠 Memory removed:', removed[0].fact);
-  res.json({ ok: true, memory });
-});
-
-app.put('/memory/:index', requireAuth, (req, res) => {
-  const memory = loadMemory();
-  const idx = parseInt(req.params.index);
-  if (idx < 0 || idx >= memory.length) return res.status(404).json({ error: 'index out of range' });
+// Update by id (preferred) — falls back to index if the param isn't an id.
+app.put('/memory/:idOrIndex', requireAuth, async (req, res) => {
   const { fact, project } = req.body;
   if (!fact) return res.status(400).json({ error: 'fact is required' });
-  memory[idx].fact = fact;
-  if (project !== undefined) {
-    memory[idx].project = project ? ensureProject(project) : '';
-  }
-  saveMemory(memory);
-  if (memory[idx].project) bumpProjectActivity(memory[idx].project);
+  const key = req.params.idOrIndex;
+  const { result } = await mutateMemory(m => {
+    let target = m.find(x => x.id === key);
+    if (!target) {
+      const idx = parseInt(key);
+      if (!isNaN(idx) && idx >= 0 && idx < m.length) target = m[idx];
+    }
+    if (!target) return null;
+    target.fact = fact;
+    if (project !== undefined) target.project = project ? ensureProject(project) : '';
+    return target;
+  });
+  if (!result) return res.status(404).json({ error: 'memory not found' });
+  if (result.project) bumpProjectActivity(result.project);
   console.log('🧠 Memory updated:', fact);
-  res.json({ ok: true, memory });
+  res.json({ ok: true, memory: result });
 });
 
-app.delete('/memory', requireAuth, (req, res) => {
-  saveMemory([]);
+app.delete('/memory', requireAuth, async (req, res) => {
+  await mutateMemory(m => { m.length = 0; });
   console.log('🧠 Memory cleared');
   res.json({ ok: true, memory: [] });
+});
+
+// ── Cowork run lock ─────────────────────────────────────────────────────────
+// Defense against overlapping hourly cowork runs (the scheduler double-firing or a run
+// outlasting the hour). A run acquires the lock at the top; if another run already holds
+// a non-expired lock, the new run SKIPS its memory-mutating work and exits. Advisory and
+// in-memory (a deploy clears it — fine, deploys are rare). TTL auto-expires so a crashed
+// run can't wedge the lock forever.
+let _runLock = null; // { holder, acquired_at, expires_at }
+app.post('/run-lock', requireAuth, (req, res) => {
+  const now = Date.now();
+  const holder = (req.body && req.body.holder) || `run-${now}`;
+  const ttl = Math.min(Math.max(parseInt(req.body && req.body.ttl_seconds) || 3000, 60), 5400);
+  const active = _runLock && _runLock.expires_at > now;
+  if (active && _runLock.holder !== holder) {
+    return res.json({ acquired: false, held_by: _runLock.holder, expires_at: new Date(_runLock.expires_at).toISOString() });
+  }
+  // Free, expired, or re-acquired by same holder → grant (and refresh the TTL).
+  _runLock = { holder, acquired_at: now, expires_at: now + ttl * 1000 };
+  console.log(`🔒 Run lock ${active ? 'refreshed' : 'acquired'} by ${holder} (ttl ${ttl}s)`);
+  res.json({ acquired: true, holder, expires_at: new Date(_runLock.expires_at).toISOString() });
+});
+app.get('/run-lock', requireAuth, (req, res) => {
+  const now = Date.now();
+  const active = _runLock && _runLock.expires_at > now;
+  res.json({ locked: !!active, holder: active ? _runLock.holder : null, expires_at: active ? new Date(_runLock.expires_at).toISOString() : null });
+});
+app.delete('/run-lock', requireAuth, (req, res) => {
+  const holder = req.query.holder || (req.body && req.body.holder);
+  // Only the holder releases (so a late finisher doesn't release the next run's lock).
+  if (_runLock && holder && _runLock.holder !== holder) {
+    return res.json({ released: false, reason: 'not lock holder', held_by: _runLock.holder });
+  }
+  _runLock = null;
+  console.log(`🔓 Run lock released${holder ? ` by ${holder}` : ''}`);
+  res.json({ released: true });
 });
 
 // Projects API — manage project knowledge bases
@@ -4835,25 +4977,30 @@ Respond with a JSON array of objects with "fact" (string) and "project" (string 
     const items = JSON.parse(match[0]);
     if (!Array.isArray(items) || items.length === 0) return;
 
-    const memory = loadMemory();
-    const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
-    let added = 0;
+    // CRITICAL: do the dedup + push INSIDE the mutation lock, which reloads memory fresh.
+    // Previously this loaded memory BEFORE the multi-second Claude await above, then saved
+    // the stale array — clobbering anything written during the await (e.g. a transcript-
+    // filed marker from an overlapping run → that transcript got re-filed). The lock both
+    // re-reads current state and serializes against other writers.
     const projectsTouched = new Set();
-    for (const item of items) {
-      // Support both old format (plain strings) and new format (objects with fact + project)
-      const fact = typeof item === 'string' ? item : item.fact;
-      const rawProject = typeof item === 'string' ? '' : (item.project || '');
-      // Normalize project name to canonical casing, auto-creating a stub record if needed.
-      const project = rawProject ? ensureProject(rawProject) : '';
-      if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
-        memory.push({ fact, project, added: new Date().toISOString().split('T')[0], source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '' });
-        existingFacts.add(fact.toLowerCase());
-        if (project) projectsTouched.add(project);
-        added++;
+    const { result: added } = await mutateMemory(memory => {
+      const existingFacts = new Set(memory.map(m => m.fact.toLowerCase()));
+      let n = 0;
+      for (const item of items) {
+        // Support both old format (plain strings) and new format (objects with fact + project)
+        const fact = typeof item === 'string' ? item : item.fact;
+        const rawProject = typeof item === 'string' ? '' : (item.project || '');
+        const project = rawProject ? ensureProject(rawProject) : '';
+        if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
+          memory.push({ id: newMemoryId(), fact, project, added: new Date().toISOString().split('T')[0], source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '' });
+          existingFacts.add(fact.toLowerCase());
+          if (project) projectsTouched.add(project);
+          n++;
+        }
       }
-    }
+      return n;
+    });
     if (added > 0) {
-      saveMemory(memory);
       for (const p of projectsTouched) bumpProjectActivity(p);
       console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, items);
     }

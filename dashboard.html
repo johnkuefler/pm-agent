@@ -714,14 +714,15 @@
       const transcriptLink = m.source_bot_id
         ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
         : '';
-      return `<div class="memory-item" id="memory-${m._idx}">
+      const key = m.id || m._idx; // prefer stable id; fall back to index for any legacy entry
+      return `<div class="memory-item" id="memory-${key}">
         <div style="flex: 1;">
           <div class="memory-fact">${escHtml(m.fact)}</div>
           <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${transcriptLink}</div>
         </div>
         <div style="display: flex; gap: 6px; flex-shrink: 0;">
-          <button class="btn btn-success" onclick="editMemory(${m._idx}, '${escHtml(m.fact).replace(/'/g, "\\'")}', '${escHtml(m.project || '').replace(/'/g, "\\'")}')">Edit</button>
-          <button class="btn btn-danger" onclick="deleteMemory(${m._idx})">Remove</button>
+          <button class="btn btn-success" onclick="editMemory('${key}', '${escHtml(m.fact).replace(/'/g, "\\'")}', '${escHtml(m.project || '').replace(/'/g, "\\'")}')">Edit</button>
+          <button class="btn btn-danger" onclick="deleteMemory('${key}')">Remove</button>
         </div>
       </div>`;
     }
@@ -768,9 +769,12 @@
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
 
-    async function deleteMemory(idx) {
+    async function deleteMemory(key) {
       if (!confirm('Remove this memory?')) return;
-      await api('/memory/' + idx, { method: 'DELETE' });
+      // Prefer the safe by-id endpoint; fall back to the legacy index path only for a
+      // numeric key (a pre-id legacy entry). Stable ids look like "m-...".
+      const path = /^\d+$/.test(String(key)) ? ('/memory/' + key) : ('/memory/by-id/' + key);
+      await api(path, { method: 'DELETE' });
       loadMemory();
     }
 
