@@ -591,16 +591,26 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const allMemory = loadMemory();
   const projects = loadProjects();
 
-  // Split opinions out of the memory pool. They render as a distinct [Your takes] block
-  // so Nora can frame them as her own opinions ("honestly I think...", "from what I've watched...")
-  // rather than as facts. Opinions are formed by the cowork loop's weekly Reflection Round
-  // and saved with source='opinion'.
+  // Split opinions and learnings out of the memory pool — each renders as its own block.
+  // - opinions (source='opinion') → [Your takes]: views about the DOMAIN/work, framed as
+  //   "honestly I think...". Formed during the dream's Reflect movement.
+  // - learnings (source='learning') → [Your learnings]: views about HER OWN behavior —
+  //   what works and what doesn't when SHE acts — formed during the dream's Review movement
+  //   from how her Slack contributions actually landed (replies, reactions, adjacent chatter).
+  //   This is the recursive-self-improvement signal: she gets better at her own job from
+  //   real feedback, carried forward as context.
   const opinions = allMemory.filter(m => m.source === 'opinion');
-  const memory = allMemory.filter(m => m.source !== 'opinion');
+  const learnings = allMemory.filter(m => m.source === 'learning');
+  const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning');
 
   if (opinions.length > 0) {
     const opinionItems = isRealtime ? opinions.slice(-8) : opinions;
     base = `${base}\n\n[Your takes — opinions you've formed from watching how things go around here]\n${opinionItems.map(m => `- ${m.fact}`).join('\n')}`;
+  }
+
+  if (learnings.length > 0) {
+    const learningItems = isRealtime ? learnings.slice(-8) : learnings;
+    base = `${base}\n\n[Your learnings — what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior — how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => `- ${m.fact}`).join('\n')}`;
   }
 
   if (memory.length > 0 || projects.length > 0) {
@@ -908,7 +918,7 @@ Nora's Google Calendar (nora@limelightmarketing.com) is connected to Recall.ai C
 
 ## Authentication
 
-The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams.
+The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /interactions.
 All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
 
 Pass the key as a query parameter or header:
@@ -1102,6 +1112,9 @@ Drive link in the original Slack thread, and clean up the inbox entries.
                        "examples": ["merged 'Gracie is PM' + 'Gracie Krokroskia, APM' → kept detailed", ...] },
     "reflection": { "takes_added": ["<take>", ...], "takes_retired": ["<old take>", ...],
                     "ideas": ["<idea/thought>", ...] },
+    "review": { "interactions_reviewed": N,
+                "outcomes": { "appreciated": A, "landed": B, "neutral": C, "ignored": D, "corrected": E },
+                "learnings_added": ["<learning>", ...], "learnings_retired": ["<old learning>", ...] },
     "narrative": "<first-person 'what I dreamed about' summary in Nora's voice>"
   }
   Server stamps id + finished if omitted. Caps stored dreams at the newest ~120.
@@ -1109,6 +1122,21 @@ Drive link in the original Slack thread, and clean up the inbox entries.
 
 - GET    /dreams/:id            — Full detail for one dream. 404 if not found.
 - DELETE /dreams/:id            — Delete a dream entry. 404 if not found.
+
+### Interactions (RSI feedback loop — Nora's outbound contributions + how they landed)
+The server logs every Slack reply Nora posts. The dream's Review movement reads these back,
+judges how each landed (via the Slack MCP — thread replies, reactions, adjacent messages),
+and distills [Your learnings].
+- GET  /interactions            — Worklist of logged interactions, newest first.
+  Query: ?reviewed=false (un-assessed only) · ?since=ISO · ?limit=N (default 100)
+  Response: [{ "id", "created", "reviewed", "outcome", "channel", "thread_ts", "ts",
+               "channel_type", "kind" ("reply"|"dm_reply"|"proactive"), "text",
+               "trigger" (the message she replied to), "user", "requester_name", "signal"? }]
+
+- POST /interactions/:id/outcome — Write back how an interaction landed (dream calls this).
+  Body: { "outcome": "landed"|"appreciated"|"neutral"|"ignored"|"corrected",
+          "signal": "<what the replies/reactions/adjacent messages actually showed>" }
+  Marks it reviewed. Response: { "ok": true, "interaction": {...} }
 
 ### Notifications
 - POST /notify                  — Post a message to Slack as Nora
@@ -3177,12 +3205,28 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     if (history.length > 20) history.splice(0, 2);
 
     // Post reply to Slack
-    await axios.post('https://slack.com/api/chat.postMessage', {
+    const postRes = await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       text: reply,
       thread_ts: threadTs
     }, {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    });
+
+    // Log the interaction for the dream's Review movement (RSI feedback loop). We record what
+    // she said + where + what prompted it; the dream later reads the thread + adjacent messages
+    // + reactions to judge how it landed. Capture Nora's own message ts so the dream can fetch
+    // exactly this message's thread. Non-fatal — never let logging affect the reply.
+    logInteraction({
+      channel,
+      thread_ts: threadTs || (postRes.data && postRes.data.ts) || null,
+      ts: (postRes.data && postRes.data.ts) || null,
+      channel_type: channelType,
+      kind: mode === 'proactive' ? 'proactive' : ((channelType === 'im' || channelType === 'mpim') ? 'dm_reply' : 'reply'),
+      text: reply,
+      trigger: text,            // the message she was responding to
+      user,                     // who she was replying to
+      requester_name: requesterName || null
     });
 
     // Mark this thread as one Nora has joined so follow-ups don't require re-mention.
@@ -4505,6 +4549,77 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, (req, res) => {
 });
 
 // ============================================================
+// Interactions — Nora's outbound contributions, for the dream's Review movement
+// ============================================================
+// The "what I said and where" half of the recursive-self-improvement loop. Every Slack reply
+// Nora posts is logged here with its message ts, so the nightly dream's Review movement has a
+// precise worklist: for each un-reviewed interaction it reads back what happened AROUND it
+// (thread replies, reactions, adjacent channel messages) via the Slack MCP, judges how it
+// landed, writes the outcome back, and distills behavioral [Your learnings]. The server only
+// records the output; the dream does the retrospective judging (you can't assess how something
+// landed until time has passed). Gitignored runtime state, capped.
+const INTERACTIONS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-interactions.json');
+const INTERACTIONS_PATH_LOCAL = path.join(__dirname, 'nora-interactions.json');
+function getInteractionsPath() {
+  return fs.existsSync(VOLUME_DIR) ? INTERACTIONS_PATH_VOLUME : INTERACTIONS_PATH_LOCAL;
+}
+function loadInteractions() {
+  try { return JSON.parse(fs.readFileSync(getInteractionsPath(), 'utf8')); }
+  catch { return []; }
+}
+function saveInteractions(items) {
+  try { fs.writeFileSync(getInteractionsPath(), JSON.stringify(items, null, 2)); }
+  catch (err) { console.error('Failed to persist interactions:', err.message); }
+}
+const MAX_INTERACTIONS_KEPT = 600; // a few weeks of Slack activity; trims oldest beyond this
+
+// Append one interaction. Fire-and-forget from the Slack handler; failures are non-fatal
+// (the feedback loop is a nice-to-have, never block a reply on it).
+function logInteraction(entry) {
+  try {
+    const items = loadInteractions();
+    items.push({
+      id: `ix-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+      created: new Date().toISOString(),
+      reviewed: false,
+      outcome: null, // filled in by the dream's Review movement
+      ...entry
+    });
+    if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
+    saveInteractions(items);
+  } catch (err) {
+    console.warn('logInteraction failed (non-fatal):', err.message);
+  }
+}
+
+// GET /interactions — the dream's worklist. ?reviewed=false for un-assessed ones; ?since=ISO
+// to bound the window; ?limit=N (default 100). Newest first.
+app.get('/interactions', requireAuth, (req, res) => {
+  let items = loadInteractions();
+  if (req.query.reviewed === 'false') items = items.filter(i => !i.reviewed);
+  if (req.query.reviewed === 'true') items = items.filter(i => i.reviewed);
+  if (req.query.since) items = items.filter(i => (i.created || '') >= req.query.since);
+  items.sort((a, b) => new Date(b.created || 0).getTime() - new Date(a.created || 0).getTime());
+  const limit = Math.min(parseInt(req.query.limit) || 100, MAX_INTERACTIONS_KEPT);
+  res.json(items.slice(0, limit));
+});
+
+// POST /interactions/:id/outcome — the dream writes back how an interaction landed.
+// Body: { outcome: "landed"|"appreciated"|"neutral"|"ignored"|"corrected", signal: "<what
+// the replies/reactions/adjacent messages showed>" }. Marks the interaction reviewed.
+app.post('/interactions/:id/outcome', requireAuth, (req, res) => {
+  const items = loadInteractions();
+  const ix = items.find(i => i.id === req.params.id);
+  if (!ix) return res.status(404).json({ error: 'interaction not found' });
+  ix.outcome = req.body.outcome || ix.outcome || null;
+  if (req.body.signal !== undefined) ix.signal = req.body.signal;
+  ix.reviewed = true;
+  ix.reviewed_at = new Date().toISOString();
+  saveInteractions(items);
+  res.json({ ok: true, interaction: ix });
+});
+
+// ============================================================
 // Dreams — Nora's nightly memory-consolidation + reflection log
 // ============================================================
 // "Dreaming" (à la Anthropic's agent-memory consolidation) is a nightly pass the cowork
@@ -4560,6 +4675,9 @@ app.post('/dreams', requireAuth, (req, res) => {
     consolidation: body.consolidation || {},
     // { takes_added: [..], takes_retired: [..], ideas: [..] }
     reflection: body.reflection || {},
+    // { interactions_reviewed, outcomes: {appreciated,landed,neutral,ignored,corrected},
+    //   learnings_added: [..], learnings_retired: [..] } — the RSI Review movement's results.
+    review: body.review || {},
     // First-person "what I dreamed about" summary in Nora's voice.
     narrative: body.narrative || ''
   };
@@ -4569,7 +4687,7 @@ app.post('/dreams', requireAuth, (req, res) => {
   dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
   const trimmed = dreams.slice(0, MAX_DREAMS_KEPT);
   saveDreams(trimmed);
-  console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before ?? '?'}→${dream.consolidation.memories_after ?? '?'} memories, +${(dream.reflection.takes_added || []).length} takes`);
+  console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before ?? '?'}→${dream.consolidation.memories_after ?? '?'} memories, +${(dream.reflection.takes_added || []).length} takes, +${(dream.review.learnings_added || []).length} learnings`);
   res.json({ ok: true, dream });
 });
 
