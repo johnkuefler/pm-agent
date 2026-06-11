@@ -106,6 +106,66 @@ function backfillMemoryIds() {
   } catch (err) { console.warn('Memory id backfill failed (non-fatal):', err.message); }
 }
 
+// ── Operational markers ──────────────────────────────────────────────────────
+// Idempotency bookkeeping the cowork loop uses to avoid repeating work ("did I already
+// file transcript X / dream today / send warmth to Y this week"). These are NOT knowledge —
+// they don't belong in /memory, where they (a) bloated the store to thousands of entries and
+// (b) got injected into Nora's live prompt as noise ("Filed transcript abc123..."). They now
+// live in a separate key→value store (/markers). These shared patterns map a legacy marker-
+// shaped memory fact to its canonical marker key — used by both the migration (move them out
+// of /memory) and buildSystemPrompt (filter any stragglers out of the prompt).
+const MARKER_PATTERNS = [
+  { re: /^Dreamed on (\d{4}-\d{2}-\d{2})/i,                 key: m => `dreamed:${m[1]}` },
+  { re: /^Ran full memory dedup on (\d{4}-\d{2}-\d{2})/i,   key: m => `memory-dedup:${m[1]}` },
+  { re: /^Ran reflection round on (\d{4}-\d{2}-\d{2})/i,    key: m => `reflection-done:${m[1]}` },
+  { re: /^Flagged stale tasks on (\d{4}-\d{2}-\d{2})/i,     key: m => `stale-tasks-flagged:${m[1]}` },
+  { re: /^Filed transcript (\S+)\b/i,                       key: m => `filed-transcript:${m[1]}` },
+  { re: /^Skipped filing transcript (\S+)/i,                key: m => `skipped-transcript:${m[1]}` },
+  { re: /^Filed HubSpot note for transcript (\S+)/i,        key: m => `hubspot-note:${m[1]}` },
+  { re: /^Sent warmth to (.+?) on (\d{4}-\d{2}-\d{2})/i,    key: m => `warmth:${m[1].trim().toLowerCase()}:${m[2]}` },
+  { re: /^Responded to Slack msg \[?([\d.]+)\]?/i,          key: m => `slack-responded:${m[1]}` },
+  { re: /^Completed Teamwork task #(\d+)/i,                 key: m => `task-completed:${m[1]}` },
+  { re: /^Bootstrapped ([a-z0-9-]+)/i,                      key: m => `bootstrap:${m[1].toLowerCase()}` },
+];
+// Returns the canonical marker key for a memory fact, or null if it isn't a marker.
+// Never matches opinion/learning/real-knowledge text — the patterns are operational-log shapes.
+function markerKeyForFact(fact) {
+  for (const p of MARKER_PATTERNS) {
+    const mm = (fact || '').match(p.re);
+    if (mm) return p.key(mm);
+  }
+  return null;
+}
+
+const MARKERS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-markers.json');
+const MARKERS_PATH_LOCAL = path.join(__dirname, 'nora-markers.json');
+function getMarkersPath() {
+  return fs.existsSync(VOLUME_DIR) ? MARKERS_PATH_VOLUME : MARKERS_PATH_LOCAL;
+}
+function loadMarkers() {
+  try { return JSON.parse(fs.readFileSync(getMarkersPath(), 'utf8')); }
+  catch { return {}; }
+}
+function saveMarkersFile(markers) {
+  const p = getMarkersPath();
+  const tmp = `${p}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(markers, null, 2));
+  fs.renameSync(tmp, p);
+}
+// Serialize marker mutations through their own in-process lock (same pattern as memory).
+// markers is a plain { key: {set_at, ...data} } object; mutator mutates it in place.
+let _markerMutationChain = Promise.resolve();
+function mutateMarkers(mutator) {
+  const run = _markerMutationChain.then(() => {
+    const markers = loadMarkers();
+    const result = mutator(markers);
+    saveMarkersFile(markers);
+    return { result, markers };
+  });
+  _markerMutationChain = run.then(() => {}, () => {});
+  return run;
+}
+
 // Task queue — same pattern as memory
 function getTasksPath() {
   if (fs.existsSync(VOLUME_DIR)) return TASKS_PATH_VOLUME;
@@ -650,7 +710,11 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   //   real feedback, carried forward as context.
   const opinions = allMemory.filter(m => m.source === 'opinion');
   const learnings = allMemory.filter(m => m.source === 'learning');
-  const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning');
+  // Exclude operational markers (Filed transcript X, Dreamed on Y, Sent warmth to Z…) from
+  // the knowledge block — they're idempotency bookkeeping, not things to reference in
+  // conversation. They live in /markers now; this filter catches any not-yet-migrated
+  // stragglers so they never reach her live prompt.
+  const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning' && !markerKeyForFact(m.fact));
 
   if (opinions.length > 0) {
     const opinionItems = isRealtime ? opinions.slice(-8) : opinions;
@@ -746,22 +810,46 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     base = `${base}\n\n${memoryBlock}`;
   }
 
-  // What she ACTUALLY did recently — derived from memory entries dated today/yesterday.
-  // The cowork loop saves a memory after every completed task, so dated memory IS her
-  // activity log. Without breaking this out, "what did you do today" returns "I don't
-  // know" because she can't distinguish her own activity from her knowledge facts.
-  // Skip seed/'system' entries (e.g. "Nora went live on...") — those aren't activity.
+  // What she ACTUALLY did recently — her activity log. This now reads from the MARKERS store
+  // (operational records the cowork loop writes after each action: filed a transcript,
+  // completed a task, checked in with someone), rendered from their human `note`. Markers
+  // moved out of /memory to stop bloat, so the activity log moved with them. Pure-housekeeping
+  // markers (dreamed, dedup, stale-task flags, bootstrap, skips) aren't "things she did" worth
+  // recounting and are filtered out. Non-marker dated memories are still included as a fallback.
   const today = new Date().toISOString().split('T')[0];
   const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-  const activityToday = memory.filter(m => m.added === today && m.source !== 'system').slice(-40);
-  const activityYesterday = memory.filter(m => m.added === yesterday && m.source !== 'system').slice(-40);
+  const HOUSEKEEPING_PREFIXES = ['dreamed:', 'memory-dedup:', 'stale-tasks-flagged:', 'bootstrap:', 'skipped-transcript:'];
+  const markerActivityLine = (key, mk) => {
+    if (HOUSEKEEPING_PREFIXES.some(p => key.startsWith(p))) return null;
+    if (mk && typeof mk.note === 'string' && mk.note.trim()) return mk.note.trim();
+    if (key.startsWith('filed-transcript:')) return `Filed a meeting transcript${mk && mk.client ? ' for ' + mk.client : ''}`;
+    if (key.startsWith('warmth:')) { const who = key.split(':')[1] || ''; return `Checked in with ${who ? who.charAt(0).toUpperCase() + who.slice(1) : 'a teammate'}`; }
+    if (key.startsWith('task-completed:')) return 'Completed a task';
+    if (key.startsWith('slack-file-done:')) return 'Handled a Slack file';
+    return null;
+  };
+  const actToday = [], actYest = [];
+  let _markers = {};
+  try { _markers = loadMarkers(); } catch {}
+  for (const [k, mk] of Object.entries(_markers)) {
+    const line = markerActivityLine(k, mk);
+    if (!line) continue;
+    const d = (mk && mk.set_at ? String(mk.set_at).split('T')[0] : (mk && mk.date) || '');
+    if (d === today) actToday.push(line); else if (d === yesterday) actYest.push(line);
+  }
+  // Fallback: any non-marker, non-system memory dated today/yesterday (manual activity).
+  for (const m of memory) {
+    if (m.source === 'system') continue;
+    if (m.added === today) actToday.push(m.fact); else if (m.added === yesterday) actYest.push(m.fact);
+  }
+  const activityToday = actToday.slice(-40), activityYesterday = actYest.slice(-40);
   if (activityToday.length > 0 || activityYesterday.length > 0) {
     let actBlock = '\n\n[What you actually did recently — your own activity log]\n';
     if (activityToday.length > 0) {
-      actBlock += `\nToday (${today}):\n` + activityToday.map(m => `- ${m.fact}`).join('\n');
+      actBlock += `\nToday (${today}):\n` + activityToday.map(l => `- ${l}`).join('\n');
     }
     if (activityYesterday.length > 0) {
-      actBlock += `\n\nYesterday (${yesterday}):\n` + activityYesterday.map(m => `- ${m.fact}`).join('\n');
+      actBlock += `\n\nYesterday (${yesterday}):\n` + activityYesterday.map(l => `- ${l}`).join('\n');
     }
     actBlock += '\n\nWhen someone asks "what did you do today" / "what have you been up to" / "anything new from your side," THIS is the answer. Read it in your own voice — don\'t recite verbatim and don\'t say you don\'t know.';
     base = `${base}${actBlock}`;
@@ -967,7 +1055,7 @@ Nora's Google Calendar (nora@limelightmarketing.com) is connected to Recall.ai C
 
 ## Authentication
 
-The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /interactions, /run-lock.
+The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /interactions, /run-lock, /markers.
 All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
 
 Pass the key as a query parameter or header:
@@ -1020,6 +1108,23 @@ All memory mutations are serialized server-side (single in-process lock) and wri
 - GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ... }
 - DELETE /run-lock?holder=...   — Release (only the holder can). Always release at run end.
   The lock auto-expires after its TTL so a crashed run can't wedge it.
+
+### Markers (operational idempotency — NOT knowledge)
+Use these for "have I already done X" bookkeeping (filed a transcript, dreamed today, sent
+warmth this week, responded to a Slack msg). Do NOT put these in /memory anymore — memory is
+for knowledge Nora references in conversation; markers are bookkeeping that used to bloat it.
+Key scheme (examples): "filed-transcript:<bot_id>", "skipped-transcript:<bot_id>",
+"dreamed:<YYYY-MM-DD>", "memory-dedup:<YYYY-MM-DD>", "stale-tasks-flagged:<YYYY-MM-DD>",
+"warmth:<person-lowercase>:<YYYY-MM-DD>", "slack-responded:<ts>", "bootstrap:<name>".
+- GET  /markers/:key            — The idempotency check. Response: { "exists": bool, "marker": {...}|null }
+- GET  /markers?prefix=filed-transcript:  — List a category. Response: { "count", "markers": {...} }
+- POST /markers                 — Set/upsert. Body: { "key": "filed-transcript:abc", "data": { "url": "...", "client": "CCKC" } }
+  "data" is optional free-form metadata. Idempotent.
+- POST /markers/bulk            — Set many. Body: { "markers": { "key1": {..}, "key2": {..} } }
+- DELETE /markers/:key          — Remove a marker.
+- POST /markers/migrate         — One-time: sweep marker-shaped entries OUT of /memory into
+  /markers and delete them from memory. ?dry_run=true to preview. Idempotent (re-run finds none).
+  Response: { "moved", "removed_from_memory", "by_category" }.
 
 ### Projects
 - GET  /projects                — Returns all projects
@@ -3814,6 +3919,99 @@ app.delete('/run-lock', requireAuth, (req, res) => {
   _runLock = null;
   console.log(`🔓 Run lock released${holder ? ` by ${holder}` : ''}`);
   res.json({ released: true });
+});
+
+// ── Markers API (operational idempotency bookkeeping; NOT knowledge) ─────────
+// The cowork loop writes/checks markers here instead of stuffing them into /memory.
+// Existence check is exact and O(1), far more robust than the old "grep memory for a fact
+// like X" substring match. See MARKER_PATTERNS above for the key scheme.
+
+// GET /markers — all markers, or ?prefix=filed-transcript: to list a category.
+app.get('/markers', requireAuth, (req, res) => {
+  const markers = loadMarkers();
+  const prefix = req.query.prefix;
+  if (prefix) {
+    const out = {};
+    for (const k of Object.keys(markers)) if (k.startsWith(prefix)) out[k] = markers[k];
+    return res.json({ count: Object.keys(out).length, markers: out });
+  }
+  res.json({ count: Object.keys(markers).length, markers });
+});
+
+// GET /markers/:key — the idempotency check. 200 with { exists, marker }.
+app.get('/markers/:key', requireAuth, (req, res) => {
+  const markers = loadMarkers();
+  const marker = markers[req.params.key];
+  res.json({ exists: !!marker, key: req.params.key, marker: marker || null });
+});
+
+// POST /markers — set/upsert a marker. Body: { key, data? }. Idempotent.
+app.post('/markers', requireAuth, async (req, res) => {
+  const { key, data } = req.body || {};
+  if (!key || typeof key !== 'string') return res.status(400).json({ error: 'key (string) is required' });
+  const now = new Date().toISOString();
+  await mutateMarkers(m => { m[key] = { set_at: m[key]?.set_at || now, updated_at: now, ...(data && typeof data === 'object' ? data : (data !== undefined ? { value: data } : {})) }; });
+  res.json({ ok: true, key });
+});
+
+// POST /markers/bulk — set many at once. Body: { markers: { key: data, ... } }.
+app.post('/markers/bulk', requireAuth, async (req, res) => {
+  const incoming = (req.body && req.body.markers) || {};
+  const keys = Object.keys(incoming);
+  if (keys.length === 0) return res.status(400).json({ error: 'markers object is required' });
+  const now = new Date().toISOString();
+  await mutateMarkers(m => {
+    for (const k of keys) {
+      const d = incoming[k];
+      m[k] = { set_at: m[k]?.set_at || now, updated_at: now, ...(d && typeof d === 'object' ? d : {}) };
+    }
+  });
+  res.json({ ok: true, count: keys.length });
+});
+
+// DELETE /markers/:key — remove a marker.
+app.delete('/markers/:key', requireAuth, async (req, res) => {
+  const { result } = await mutateMarkers(m => { const existed = !!m[req.params.key]; delete m[req.params.key]; return existed; });
+  res.json({ ok: true, existed: result });
+});
+
+// POST /markers/migrate — one-time cleanup: scan /memory for marker-shaped entries, move
+// them into /markers (keyed canonically), and remove them from /memory. ?dry_run=true to
+// preview without changing anything. Idempotent — re-running finds nothing new. This is what
+// drains the thousands of bookkeeping entries out of the knowledge store.
+app.post('/markers/migrate', requireAuth, async (req, res) => {
+  const dryRun = req.query.dry_run === 'true' || (req.body && req.body.dry_run === true);
+  const memory = loadMemory();
+  const toMove = [];   // { id, key, fact, added }
+  for (const m of memory) {
+    // Never migrate real knowledge classes, even if a fact happens to look marker-ish.
+    if (m.source === 'opinion' || m.source === 'learning') continue;
+    const key = markerKeyForFact(m.fact);
+    if (key) toMove.push({ id: m.id, key, fact: m.fact, added: m.added });
+  }
+  const byCategory = {};
+  for (const t of toMove) { const cat = t.key.split(':')[0]; byCategory[cat] = (byCategory[cat] || 0) + 1; }
+
+  if (dryRun) {
+    return res.json({ dry_run: true, would_move: toMove.length, by_category: byCategory, sample: toMove.slice(0, 10).map(t => ({ key: t.key, fact: t.fact.slice(0, 80) })) });
+  }
+
+  // Write markers first (so even if the delete half is interrupted, no idempotency is lost).
+  await mutateMarkers(markers => {
+    for (const t of toMove) {
+      if (!markers[t.key]) markers[t.key] = { set_at: t.added ? `${t.added}T00:00:00.000Z` : new Date().toISOString(), migrated_from_memory: true, note: t.fact.slice(0, 200) };
+    }
+  });
+  // Then remove the migrated entries from memory, by id, atomically.
+  const moveIds = new Set(toMove.map(t => t.id));
+  const { result: removed } = await mutateMemory(mem => {
+    const kept = mem.filter(x => !moveIds.has(x.id));
+    const gone = mem.length - kept.length;
+    mem.length = 0; mem.push(...kept);
+    return gone;
+  });
+  console.log(`📦 Markers migration: moved ${toMove.length} markers out of memory, removed ${removed} memory entries`);
+  res.json({ ok: true, moved: toMove.length, removed_from_memory: removed, by_category: byCategory });
 });
 
 // Projects API — manage project knowledge bases
