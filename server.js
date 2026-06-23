@@ -3508,27 +3508,47 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // Fetched web-page content rides in the uncached tail (per-conversation, would pollute the cache).
     if (urlBlock) tail += urlBlock;
 
-    const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
-        // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
-        // the cached stable block above largely offsets it. Slack tolerates the small latency.
-        // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; default
-        // sampling applies. Sonnet/Haiku call sites elsewhere still accept it.
-        model: 'claude-opus-4-8',
-        max_tokens: 400,
-        system: cachedSystem(slackStable, tail),
-        messages: claudeMessages
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        }
-      }
-    );
+    // Live web search — for direct replies (not proactive interjections), give her Anthropic's
+    // server-side web_search tool so she can look things up in real time (a product, a company,
+    // recent news) instead of guessing or deferring to the cowork loop. Anthropic runs the
+    // search server-side in the same request; we just read the final text. Gated off proactive
+    // mode (an unsolicited interjection shouldn't spawn searches).
+    const slackTools = mode !== 'proactive'
+      ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
+      : undefined;
+    if (slackTools) {
+      tail += '\n\nYou have a web_search tool. Use it when the question genuinely needs current or external info you don\'t already have (a product/company you don\'t know, recent news, something time-sensitive). Don\'t search for things already in your memory or for casual chat — search only when it actually makes your answer better, then answer in your own voice (don\'t narrate that you searched).';
+    }
+
+    const reqBody = {
+      // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
+      // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
+      // the cached stable block above largely offsets it. Slack tolerates the small latency.
+      // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; default
+      // sampling applies. Sonnet/Haiku call sites elsewhere still accept it.
+      model: 'claude-opus-4-8',
+      max_tokens: 400,
+      system: cachedSystem(slackStable, tail),
+      messages: claudeMessages,
+      ...(slackTools ? { tools: slackTools } : {})
+    };
+    const anthropicHeaders = { headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01'
+    } };
+    let response;
+    try {
+      response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
+    } catch (err) {
+      // Safety net: if the web_search tool ever causes a rejection, retry WITHOUT tools so a
+      // Slack reply never fails over a search capability. Re-throw other failures.
+      if (slackTools) {
+        console.warn('Slack reply with web_search failed; retrying without tools:', err.response?.data?.error?.message || err.message);
+        delete reqBody.tools;
+        response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
+      } else { throw err; }
+    }
 
     let reply = response.data.content
       .filter(b => b.type === 'text')
@@ -5322,7 +5342,9 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-haiku-4-5-20251001',
+        // Sonnet 4.6 (up from Haiku): extraction quality compounds — better memory feeds
+        // her dreams, learnings, and live context. Worth the cost on a background pipeline.
+        model: 'claude-sonnet-4-6',
         max_tokens: 300,
         temperature: 0,
         system: `You decide if something should be saved to Nora's long-term memory. ONLY save something if one of these is true: (1) someone explicitly asked Nora to remember something (e.g. "Nora remember that..." or "don't forget..."), or (2) Nora was asked to do a specific action item with a clear owner and deadline. That's it. Do NOT save general discussion, decisions, status updates, opinions, project details, or anything else — even if it seems useful. When in doubt, return [].
@@ -5407,7 +5429,7 @@ async function extractTasks(context, trigger, reply, source = {}) {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-haiku-4-5-20251001',
+        model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — sharper task extraction
         max_tokens: 400,
         temperature: 0,
         system: `You extract action items that Nora (an AI PM assistant) was explicitly asked to do. ONLY extract tasks where someone directly asked Nora to take an action — things like "Nora, schedule a meeting with...", "Nora, send Kyle an email about...", "Nora, remind me to...".
@@ -5464,7 +5486,7 @@ Return a JSON array of objects with: action (short verb phrase — what to do), 
         const dedupRes = await axios.post(
           'https://api.anthropic.com/v1/messages',
           {
-            model: 'claude-haiku-4-5-20251001',
+            model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — better semantic dedup
             max_tokens: 200,
             temperature: 0,
             system: `You check for duplicate tasks. Given existing tasks and new candidates, return a JSON array of indices of new tasks that are genuinely NOT duplicates.
@@ -5555,7 +5577,7 @@ async function extractResearchNeeds(context, trigger, reply, source = {}) {
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
-        model: 'claude-haiku-4-5-20251001',
+        model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — better gap detection
         max_tokens: 300,
         temperature: 0,
         system: `You evaluate whether an AI assistant named Nora showed a knowledge gap in her response. Nora is a PM agent for a marketing agency. She has memory and project notes, but sometimes gets asked about things she doesn't have enough context on.
