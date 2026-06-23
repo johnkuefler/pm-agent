@@ -685,8 +685,18 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // brought project count past 100. 20K chars is still under 5% of context and gives
   // her room for the full picture of a typical agency book.
   const isRealtime = channel === 'realtime';
-  const memoryCharBudget = isRealtime ? 20000 : Infinity;
+  // Bounded memory budget on BOTH paths now (Slack used to be Infinity → it dumped all
+  // ~2,000 memories into every reply, most irrelevant to the conversation). With relevance
+  // ranking below, the budget keeps the most-relevant projects and drops the long tail.
+  const memoryCharBudget = isRealtime ? 20000 : 18000;
   const maxTranscriptLines = isRealtime ? 10 : 30;
+
+  // Conversation signal for memory relevance ranking: what's actually being talked about, so
+  // we load memory for THOSE projects/people first instead of dumping everything. From the
+  // live transcript (voice) or the recent messages passed by the caller (Slack/chat).
+  const conversationText = (opts.conversationText
+    || (transcript ? transcript.slice(-15).map(t => `${t.speaker || ''} ${t.text || ''}`).join(' ') : '')
+    || '').toLowerCase();
 
   // Normalize the projectHint to canonical casing if it matches a known project name,
   // so callers can pass loose strings (e.g., from a /join body) without exact match.
@@ -766,21 +776,28 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     }
 
     // Include the rest of the project list, skipping the hinted one (already rendered above).
-    // For realtime: prioritize active-status projects first, then others, so the budget
-    // skews toward what's live.
+    // RELEVANCE RANKING: order projects by how much the current conversation is about them, so
+    // the budget loads what's actually being discussed (the project, its client, its PM named
+    // in the conversation) first, then active projects, then the rest. The long tail of
+    // unrelated projects falls off when the budget is hit — relevance decides ORDER, budget
+    // decides the cutoff, so nothing relevant is ever dropped in favor of something irrelevant.
     const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
     let projectNames = [...allProjectNames].filter(n => n !== hintCanonical);
-    if (isRealtime) {
-      projectNames.sort((a, b) => {
-        const pa = projects.find(p => p.name === a);
-        const pb = projects.find(p => p.name === b);
-        const sa = (pa?.status || '').toLowerCase() === 'active' ? 0 : 1;
-        const sb = (pb?.status || '').toLowerCase() === 'active' ? 0 : 1;
-        return sa - sb;
-      });
-    }
+    const relevanceScore = (name) => {
+      const proj = projects.find(p => p.name === name);
+      let s = 0;
+      if (conversationText) {
+        if (name && conversationText.includes(name.toLowerCase())) s += 100;
+        if (proj?.client && conversationText.includes(proj.client.toLowerCase())) s += 60;
+        if (proj?.pm && conversationText.includes(proj.pm.toLowerCase())) s += 25;
+      }
+      if ((proj?.status || '').toLowerCase() === 'active') s += 1; // active-first tiebreaker
+      return s;
+    };
+    projectNames.sort((a, b) => relevanceScore(b) - relevanceScore(a));
+    let projectsOmitted = 0;
     for (const name of projectNames) {
-      if (isRealtime && memoryBlock.length >= memoryCharBudget) break;
+      if (memoryBlock.length >= memoryCharBudget) { projectsOmitted++; continue; }
       memoryBlock += `\n\n## ${name}`;
       const proj = projects.find(p => p.name === name);
       if (proj) {
@@ -803,7 +820,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       }
     }
 
-    if (isRealtime && memoryBlock.length > memoryCharBudget) {
+    // If projects were dropped for budget, tell her they exist so she doesn't claim she knows
+    // nothing about a project that simply wasn't loaded for THIS conversation — she can pull it
+    // up by having the cowork loop look, or by asking which project they mean.
+    if (projectsOmitted > 0) {
+      memoryBlock += `\n\n(Notes on ${projectsOmitted} other project${projectsOmitted === 1 ? '' : 's'} aren't loaded for this conversation — they weren't relevant to what's being discussed. If someone asks about a project you don't see here, say you'll pull it up rather than claiming you have nothing on it.)`;
+    }
+
+    if (memoryBlock.length > memoryCharBudget) {
       memoryBlock = memoryBlock.slice(0, memoryCharBudget) + '\n...';
     }
 
@@ -3459,8 +3483,12 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // Split the prompt for caching: `stable` (nora-prompt + memory + projects, ~8K tokens)
     // gets cached; the volatile half + the per-call proactive/financial notices below all go
     // in `tail`, uncached, so the cache stays identical across every user and mode.
+    // Pass the recent conversation so memory retrieval loads the projects/people actually
+    // being discussed, not all ~2,000 memories. (Trades some cross-conversation prompt-cache
+    // sharing for a much smaller, sharper prompt — net cheaper + faster per call regardless.)
+    const convText = claudeMessages.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     const { stable: slackStable, volatile: slackVolatile } =
-      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true });
+      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText });
     let tail = slackVolatile;
     if (mode === 'proactive') {
       tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
