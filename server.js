@@ -2710,6 +2710,117 @@ async function getSlackUserName(userId) {
   }
 }
 
+// Decode the handful of HTML entities that survive tag-stripping. Not exhaustive — just
+// the common ones that show up in readable page text.
+function decodeHtmlEntities(s) {
+  return (s || '')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&nbsp;/g, ' ')
+    .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCodePoint(+n); } catch { return ''; } })
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; } });
+}
+
+// Convert Slack's wire formatting to readable text: <@U123> → @name, <url|label> → "label (url)",
+// <url> → url, <#C123|chan> → #chan. Used when feeding fetched thread messages to Claude.
+async function cleanSlackText(text) {
+  let t = text || '';
+  // Resolve user mentions to names (collect, resolve, replace)
+  const mentions = [...new Set((t.match(/<@([A-Z0-9]+)>/g) || []).map(m => m.slice(2, -1)))];
+  for (const uid of mentions) {
+    const name = await getSlackUserName(uid);
+    t = t.replace(new RegExp(`<@${uid}>`, 'g'), name ? `@${name}` : '@someone');
+  }
+  t = t.replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1');           // channel refs
+  t = t.replace(/<(https?:\/\/[^>|]+)\|([^>]+)>/g, '$2 ($1)'); // labeled links
+  t = t.replace(/<(https?:\/\/[^>]+)>/g, '$1');             // bare links
+  return t.trim();
+}
+
+// Pull all http(s) URLs out of a Slack message (handles <url>, <url|label>, and plain).
+function extractUrls(text) {
+  const urls = new Set();
+  let m;
+  const wrapped = /<(https?:\/\/[^>|]+)(?:\|[^>]*)?>/g;
+  while ((m = wrapped.exec(text || ''))) urls.add(m[1]);
+  const plain = /\bhttps?:\/\/[^\s<>|]+/g;
+  while ((m = plain.exec(text || ''))) urls.add(m[0].replace(/[).,]+$/, ''));
+  return [...urls];
+}
+
+// Fetch a URL and return readable text (title + meta description + body), size-capped.
+// SSRF guard: http/https only, no localhost/private ranges. Best-effort — returns null on
+// any failure or for non-HTML content. JS-heavy SPA pages may yield little body text; the
+// Slack unfurl (title/description) in the thread covers those.
+async function fetchUrlText(url) {
+  try {
+    const u = new URL(url);
+    if (!/^https?:$/.test(u.protocol)) return null;
+    if (/^(localhost$|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u.hostname)) return null;
+    const r = await axios.get(url, {
+      timeout: 8000, maxRedirects: 5, responseType: 'text',
+      maxContentLength: 6 * 1024 * 1024,
+      headers: { 'User-Agent': 'NoraBot/1.0 (+https://limelightmarketing.com)', 'Accept': 'text/html,application/xhtml+xml' },
+      validateStatus: s => s >= 200 && s < 400
+    });
+    const ct = String(r.headers['content-type'] || '');
+    if (ct && !/text\/html|text\/plain|xhtml|application\/json/.test(ct)) return null;
+    let html = String(r.data || '');
+    const title = decodeHtmlEntities(((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || '').trim());
+    const desc = decodeHtmlEntities(((html.match(/<meta[^>]+name=["']description["'][^>]*content=["']([^"']*)["']/i) ||
+                                      html.match(/<meta[^>]+property=["']og:description["'][^>]*content=["']([^"']*)["']/i) || [])[1] || '').trim());
+    html = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ')
+               .replace(/<!--[\s\S]*?-->/g, ' ').replace(/<\/(p|div|li|h[1-6]|tr|br)>/gi, '\n');
+    const body = decodeHtmlEntities(html.replace(/<[^>]+>/g, ' ')).replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*/g, '\n').trim();
+    const head = [title && `Title: ${title}`, desc && `Description: ${desc}`].filter(Boolean).join('\n');
+    const out = `${head}${head && body ? '\n\n' : ''}${body}`.trim();
+    return out ? out.slice(0, 6000) : null;
+  } catch { return null; }
+}
+
+// Fetch the full Slack thread (conversations.replies) so Nora has the WHOLE conversation —
+// including messages posted before she was mentioned, which her in-memory history misses.
+// Returns the raw Slack message array (newest-inclusive) or null on failure (e.g. missing
+// channels:history scope), in which case the caller falls back to in-memory history.
+async function fetchSlackThread(channel, threadTs) {
+  try {
+    const r = await axios.get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000
+    });
+    if (!r.data || !r.data.ok) { console.warn('conversations.replies not ok:', r.data && r.data.error); return null; }
+    return Array.isArray(r.data.messages) ? r.data.messages : null;
+  } catch (err) { console.warn('fetchSlackThread failed:', err.message); return null; }
+}
+
+// Turn a fetched Slack thread into Claude message history: each message becomes a labeled
+// user turn (or assistant, for Nora's own posts), with link-unfurl previews folded in so she
+// sees what a shared link was about even before we fetch the page. Consecutive same-role
+// turns are merged (the Messages API wants clean alternation at the boundaries).
+async function buildSlackThreadHistory(messages, noraUserId) {
+  const turns = [];
+  for (const m of messages) {
+    if (m.subtype && m.subtype !== 'thread_broadcast' && m.subtype !== 'file_share') continue;
+    const isNora = noraUserId && m.user === noraUserId;
+    let content = await cleanSlackText(m.text || '');
+    const unfurls = (m.attachments || [])
+      .filter(a => a.title || a.text || a.fallback)
+      .map(a => `[shared link preview] ${(a.title || '').trim()}${a.text ? ' — ' + a.text.trim() : (a.fallback ? ' — ' + a.fallback.trim() : '')}`.trim());
+    if (unfurls.length) content += (content ? '\n' : '') + unfurls.join('\n');
+    if (!content.trim()) continue;
+    const role = isNora ? 'assistant' : 'user';
+    let label = '';
+    if (!isNora) { const name = await getSlackUserName(m.user); label = `[${name || 'teammate'}]: `; }
+    const merged = `${label}${content}`;
+    if (turns.length && turns[turns.length - 1].role === role) {
+      turns[turns.length - 1].content += `\n${merged}`;
+    } else {
+      turns.push({ role, content: merged });
+    }
+  }
+  // The Messages API requires the first turn to be 'user'. Drop any leading assistant turns.
+  while (turns.length && turns[0].role === 'assistant') turns.shift();
+  return turns;
+}
+
 function verifySlackSignature(req) {
   const sigSecret = process.env.SLACK_SIGNING_SECRET;
   if (!sigSecret) return true; // skip in dev if not set
@@ -3310,6 +3421,37 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     const userLabel = requesterName ? `${requesterName} (Slack: <@${user}>)` : `Slack user <@${user}>`;
     history.push({ role: 'user', content: `[${userLabel}]: ${text}` });
 
+    // THREAD CONTEXT: for channel threads, pull the WHOLE thread from Slack so Nora sees
+    // everything said before she was mentioned (her in-memory history only has what she
+    // already processed — that's why she kept asking people to repeat themselves). DMs stay
+    // on in-memory history (a DM is a flat conversation, not a thread). If the fetch fails
+    // (e.g. missing channels:history scope), fall back to in-memory.
+    const isDM = channelType === 'im' || channelType === 'mpim';
+    let threadMsgs = null;
+    if (!isDM) threadMsgs = await fetchSlackThread(channel, threadTs);
+    let claudeMessages = history;
+    if (threadMsgs && threadMsgs.length) {
+      const built = await buildSlackThreadHistory(threadMsgs, noraBotUserId);
+      if (built.length) claudeMessages = built;
+    }
+
+    // URL READING: gather links from the current message + the thread, fetch their real
+    // content server-side, and feed it to her. This is what lets her actually read a page
+    // someone shares instead of guessing from the link text.
+    const urlSet = new Set(extractUrls(text));
+    if (threadMsgs) for (const m of threadMsgs) extractUrls(m.text || '').forEach(u => urlSet.add(u));
+    const urls = [...urlSet].slice(0, 3);
+    let urlBlock = '';
+    if (urls.length) {
+      const fetched = (await Promise.all(urls.map(async u => {
+        const c = await fetchUrlText(u);
+        return c ? `URL: ${u}\n${c}` : null;
+      }))).filter(Boolean);
+      if (fetched.length) {
+        urlBlock = `\n\n[Linked web pages — their actual content, fetched live so you can read them]\n${fetched.join('\n\n---\n\n')}\n\nYou CAN read pages linked in this conversation — the text above is the real page content. Use it directly; never say you can't open links or that a link "points back to itself."`;
+      }
+    }
+
     // Proactive mode: tell the model it's chiming in unsolicited and give it explicit
     // permission to abort (output nothing) if on reflection it doesn't have something
     // specific to add. This is a second chance to stay quiet after the gate fired.
@@ -3335,6 +3477,9 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context — those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack — reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
     }
 
+    // Fetched web-page content rides in the uncached tail (per-conversation, would pollute the cache).
+    if (urlBlock) tail += urlBlock;
+
     const response = await axios.post(
       'https://api.anthropic.com/v1/messages',
       {
@@ -3346,7 +3491,7 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
         model: 'claude-opus-4-8',
         max_tokens: 400,
         system: cachedSystem(slackStable, tail),
-        messages: history
+        messages: claudeMessages
       },
       {
         headers: {
