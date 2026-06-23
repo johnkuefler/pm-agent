@@ -231,6 +231,32 @@
     <div id="page-admin" class="page">
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
+          🔌 Live Data Connections (MCP)
+          <button class="btn btn-success btn-sm" onclick="loadMcpConnections()">Refresh</button>
+        </h2>
+        <p style="color:#888; font-size:12px; line-height:1.5; margin-bottom:12px;">
+          Remote MCP servers Nora can hit <strong>live from Slack replies</strong> (Teamwork status, estimates, etc.). Mark a connection <strong>financial</strong> to restrict it to financial-approved users only. Tokens are write-only — shown masked, never sent back to the browser. Read-only is enforced at the prompt level; treat any connection you add as something she can read from in chat.
+        </p>
+        <div id="mcp-list">Loading…</div>
+        <div style="margin-top:14px; border-top:1px solid #222; padding-top:12px;">
+          <div id="mcp-form-title" style="font-size:13px; font-weight:600; color:#ccc; margin-bottom:8px;">Add a connection</div>
+          <input id="mcp-name" placeholder="Name (e.g. teamwork, limelight-pm)" />
+          <input id="mcp-url" placeholder="Remote MCP URL (https://…)" style="margin-top:6px;" />
+          <input id="mcp-token" type="password" placeholder="Auth token (optional; blank keeps current when editing)" style="margin-top:6px;" />
+          <div style="display:flex; gap:16px; align-items:center; margin-top:8px; font-size:13px; color:#ccc;">
+            <label style="display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="mcp-financial" /> 💲 Financial (approved users only)</label>
+            <label style="display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="mcp-enabled" checked /> Enabled</label>
+          </div>
+          <div class="row" style="margin-top:8px;">
+            <button id="mcp-save-btn" class="btn btn-primary btn-sm" onclick="saveMcpConnection()">Add</button>
+            <button class="btn btn-sm" onclick="resetMcpForm()" style="background:#222; color:#888; border:1px solid #333;">Cancel</button>
+          </div>
+          <div id="mcp-toast" class="toast"></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Active Bots
           <button class="btn btn-success btn-sm" onclick="loadActiveBots()">Refresh</button>
         </h2>
@@ -1335,7 +1361,78 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadMcpConnections(), loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+    }
+
+    // ===== Live MCP connections =====
+    let _editingMcpId = null;
+    async function loadMcpConnections() {
+      const list = document.getElementById('mcp-list');
+      try {
+        const r = await api('/admin/mcp');
+        const conns = (await r.json()).connections || [];
+        if (!conns.length) { list.innerHTML = '<p class="empty">No live connections yet. Add one below to let Slack replies hit that data.</p>'; return; }
+        list.innerHTML = conns.map(c => `
+          <div class="memory-item">
+            <div style="flex:1; min-width:0;">
+              <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:#fbbf24; font-size:12px;">💲 financial</span>' : ''} ${c.enabled ? '' : '<span style="color:#888; font-size:12px;">(disabled)</span>'}</div>
+              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url)} · token ${c.token_set ? escHtml(c.token_hint) : '<span style="color:#666;">none</span>'}</div>
+            </div>
+            <div style="display:flex; gap:6px; flex-shrink:0;">
+              <button class="btn btn-sm" style="background:#222;color:#aaa;border:1px solid #333;" onclick="toggleMcp('${c.id}', ${!c.enabled})">${c.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-success btn-sm" onclick='editMcp(${JSON.stringify(c).replace(/'/g, "&#39;")})'>Edit</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteMcp('${c.id}', '${escHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
+            </div>
+          </div>`).join('');
+      } catch (e) { list.innerHTML = '<p class="empty">Failed to load connections.</p>'; }
+    }
+    async function saveMcpConnection() {
+      const name = document.getElementById('mcp-name').value.trim();
+      const url = document.getElementById('mcp-url').value.trim();
+      const token = document.getElementById('mcp-token').value;
+      const financial = document.getElementById('mcp-financial').checked;
+      const enabled = document.getElementById('mcp-enabled').checked;
+      const t = document.getElementById('mcp-toast');
+      if (!name || !url) { t.className = 'toast err'; t.textContent = 'Name and URL are required'; return; }
+      const body = { name, url, financial, enabled };
+      if (token) body.token = token;
+      try {
+        const path = _editingMcpId ? '/admin/mcp/' + _editingMcpId : '/admin/mcp';
+        const method = _editingMcpId ? 'PUT' : 'POST';
+        const r = await api(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        if (!r.ok) { const d = await r.json(); t.className = 'toast err'; t.textContent = 'Error: ' + (d.error || 'failed'); return; }
+        t.className = 'toast ok'; t.textContent = _editingMcpId ? 'Connection updated' : 'Connection added';
+        resetMcpForm(); loadMcpConnections();
+        setTimeout(() => t.style.display = 'none', 2000);
+      } catch (e) { t.className = 'toast err'; t.textContent = 'Failed: ' + e.message; }
+    }
+    function editMcp(c) {
+      _editingMcpId = c.id;
+      document.getElementById('mcp-name').value = c.name;
+      document.getElementById('mcp-url').value = c.url;
+      document.getElementById('mcp-token').value = '';
+      document.getElementById('mcp-financial').checked = !!c.financial;
+      document.getElementById('mcp-enabled').checked = c.enabled !== false;
+      document.getElementById('mcp-form-title').textContent = 'Edit connection (leave token blank to keep current)';
+      document.getElementById('mcp-save-btn').textContent = 'Save';
+      document.getElementById('mcp-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    function resetMcpForm() {
+      _editingMcpId = null;
+      ['mcp-name', 'mcp-url', 'mcp-token'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('mcp-financial').checked = false;
+      document.getElementById('mcp-enabled').checked = true;
+      document.getElementById('mcp-form-title').textContent = 'Add a connection';
+      document.getElementById('mcp-save-btn').textContent = 'Add';
+    }
+    async function toggleMcp(id, enabled) {
+      await api('/admin/mcp/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+      loadMcpConnections();
+    }
+    async function deleteMcp(id, name) {
+      if (!confirm('Delete MCP connection "' + name + '"? Slack replies will no longer be able to hit it.')) return;
+      await api('/admin/mcp/' + id, { method: 'DELETE' });
+      loadMcpConnections();
     }
 
     // Slack — channels the Nora bot is a member of

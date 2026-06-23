@@ -2839,12 +2839,43 @@ const LIVE_MCP_DEFS = [
   { prefix: 'LIMELIGHT_MCP',     name: 'limelight',    financial: false },
   { prefix: 'LIMELIGHT_PM_MCP',  name: 'limelight-pm', financial: true  },
 ];
+
+// UI-managed MCP connections live in a small store on the volume (gitignored — it holds auth
+// tokens). The dashboard Admin tab CRUDs these; env vars still work as a fallback for the three
+// named ones, so either path is valid. Store entries:
+//   { id, name, url, token, financial, enabled, created }
+const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
+const MCP_PATH_LOCAL = path.join(__dirname, 'nora-mcp.json');
+function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
+function loadMcpStore() {
+  try { return JSON.parse(fs.readFileSync(getMcpPath(), 'utf8')); } catch { return []; }
+}
+function saveMcpStore(list) {
+  const p = getMcpPath(); const tmp = `${p}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(list, null, 2)); fs.renameSync(tmp, p);
+}
+
+// Assemble the mcp_servers array for a Slack reply: UI-managed store entries first, then any
+// env-configured named MCPs not already covered. Disabled entries are skipped; financial MCPs
+// are withheld from non-approved recipients.
 function liveMcpServers(financialApproved) {
   const out = [];
+  const seen = new Set();
+  for (const m of loadMcpStore()) {
+    if (!m.enabled || !m.url || !m.name) continue;
+    if (m.financial && !financialApproved) continue;
+    if (seen.has(m.name)) continue;
+    seen.add(m.name);
+    const server = { type: 'url', url: m.url, name: m.name };
+    if (m.token) server.authorization_token = m.token;
+    out.push(server);
+  }
   for (const def of LIVE_MCP_DEFS) {
+    if (seen.has(def.name)) continue;
     const url = process.env[`${def.prefix}_URL`];
-    if (!url) continue;                              // not configured → skip
-    if (def.financial && !financialApproved) continue; // gate financial MCPs by recipient
+    if (!url) continue;
+    if (def.financial && !financialApproved) continue;
+    seen.add(def.name);
     const server = { type: 'url', url, name: def.name };
     const token = process.env[`${def.prefix}_TOKEN`];
     if (token) server.authorization_token = token;
@@ -4720,6 +4751,58 @@ app.get('/admin/github-token', requireAuth, (req, res) => {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (!token) return res.status(404).json({ error: 'GH_TOKEN not configured on the server' });
   res.json({ token });
+});
+
+// ── Live MCP connections (UI-managed) ───────────────────────────────────────
+// CRUD for the live-data MCP servers Nora can hit from Slack replies. Tokens are never sent
+// back to the browser in full (write-only field); GET returns a masked hint only.
+function maskMcp(m) {
+  return {
+    id: m.id, name: m.name, url: m.url,
+    financial: !!m.financial, enabled: m.enabled !== false,
+    token_set: !!m.token, token_hint: m.token ? `…${String(m.token).slice(-4)}` : '',
+    created: m.created || null
+  };
+}
+app.get('/admin/mcp', requireAuth, (req, res) => {
+  res.json({ connections: loadMcpStore().map(maskMcp) });
+});
+app.post('/admin/mcp', requireAuth, (req, res) => {
+  const { name, url, token, financial, enabled } = req.body || {};
+  if (!name || !url) return res.status(400).json({ error: 'name and url are required' });
+  const list = loadMcpStore();
+  const entry = {
+    id: `mcp-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+    name: String(name).trim(), url: String(url).trim(),
+    token: token ? String(token) : '', financial: !!financial,
+    enabled: enabled !== false, created: new Date().toISOString()
+  };
+  list.push(entry);
+  saveMcpStore(list);
+  console.log(`🔌 MCP connection added: ${entry.name} (${entry.financial ? 'financial' : 'non-financial'})`);
+  res.json({ ok: true, connection: maskMcp(entry) });
+});
+app.put('/admin/mcp/:id', requireAuth, (req, res) => {
+  const list = loadMcpStore();
+  const m = list.find(x => x.id === req.params.id);
+  if (!m) return res.status(404).json({ error: 'not found' });
+  const { name, url, token, financial, enabled } = req.body || {};
+  if (name !== undefined) m.name = String(name).trim();
+  if (url !== undefined) m.url = String(url).trim();
+  if (token) m.token = String(token);           // only overwrite if a new token was entered
+  if (financial !== undefined) m.financial = !!financial;
+  if (enabled !== undefined) m.enabled = !!enabled;
+  saveMcpStore(list);
+  res.json({ ok: true, connection: maskMcp(m) });
+});
+app.delete('/admin/mcp/:id', requireAuth, (req, res) => {
+  const list = loadMcpStore();
+  const i = list.findIndex(x => x.id === req.params.id);
+  if (i === -1) return res.status(404).json({ error: 'not found' });
+  const [removed] = list.splice(i, 1);
+  saveMcpStore(list);
+  console.log(`🔌 MCP connection removed: ${removed.name}`);
+  res.json({ ok: true });
 });
 
 // List bots that are currently active (ready, joining, or in a call). Used by the
