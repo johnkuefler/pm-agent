@@ -2821,6 +2821,38 @@ async function buildSlackThreadHistory(messages, noraUserId) {
   return turns;
 }
 
+// Live MCP connector for Slack replies — lets her hit live data (Teamwork, LimeLight,
+// LimeLight PM) mid-reply via Anthropic's `mcp_servers` parameter (Anthropic connects to the
+// remote MCP server-side, single request, like web_search). Each MCP is configured by env
+// var: <PREFIX>_URL (required) and <PREFIX>_TOKEN (bearer auth, optional). No-op if URL unset,
+// so this is safe to ship before the creds exist — it activates the moment they're on Railway.
+//
+// SECURITY: the LimeLight PM MCP carries financial data (estimates, margins, profitability), so
+// it's only attached for financial-approved recipients — non-approved users never even trigger
+// a financial lookup. Mark any other financial-sensitive MCP the same way.
+//
+// READ-ONLY POSTURE: we only want live LOOKUPS in chat, never writes. We request a read-only
+// allowlist via tool_configuration where the server supports it, and the prompt reinforces it.
+// (Hard per-tool allowlisting can be tightened once we confirm each server's exact tool names.)
+const LIVE_MCP_DEFS = [
+  { prefix: 'TEAMWORK_MCP',      name: 'teamwork',     financial: false },
+  { prefix: 'LIMELIGHT_MCP',     name: 'limelight',    financial: false },
+  { prefix: 'LIMELIGHT_PM_MCP',  name: 'limelight-pm', financial: true  },
+];
+function liveMcpServers(financialApproved) {
+  const out = [];
+  for (const def of LIVE_MCP_DEFS) {
+    const url = process.env[`${def.prefix}_URL`];
+    if (!url) continue;                              // not configured → skip
+    if (def.financial && !financialApproved) continue; // gate financial MCPs by recipient
+    const server = { type: 'url', url, name: def.name };
+    const token = process.env[`${def.prefix}_TOKEN`];
+    if (token) server.authorization_token = token;
+    out.push(server);
+  }
+  return out;
+}
+
 function verifySlackSignature(req) {
   const sigSecret = process.env.SLACK_SIGNING_SECRET;
   if (!sigSecret) return true; // skip in dev if not set
@@ -3492,6 +3524,14 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       tail += '\n\nYou have a web_search tool. Use it when the question genuinely needs current or external info you don\'t already have (a product/company you don\'t know, recent news, something time-sensitive). Don\'t search for things already in your memory or for casual chat — search only when it actually makes your answer better, then answer in your own voice (don\'t narrate that you searched).';
     }
 
+    // Live data tools — attach the configured MCP servers (Teamwork / LimeLight / LimeLight PM)
+    // for direct replies so she can look up live status, projects, estimates, etc. Gated off
+    // proactive mode; the financial PM MCP is gated to approved recipients (see liveMcpServers).
+    const mcpServers = mode !== 'proactive' ? liveMcpServers(financialApproved) : [];
+    if (mcpServers.length) {
+      tail += `\n\nYou have LIVE LOOKUP tools connected (${mcpServers.map(s => s.name).join(', ')}). Use them to pull real, current data when someone asks — task/project status in Teamwork, estimates/forecast/profitability, etc. — instead of guessing or saying you'll check later. IMPORTANT: these are READ-ONLY for you in chat. Only ever LOOK THINGS UP (list/get/read). NEVER create, update, delete, draft, advance, or modify anything through a tool in a Slack reply — if something needs to be created or changed, say you'll queue it and let your background loop do it. Keep lookups tight (one or two), then answer in your own voice; don't narrate the tool calls.`;
+    }
+
     const reqBody = {
       // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
       // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
@@ -3499,25 +3539,30 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; default
       // sampling applies. Sonnet/Haiku call sites elsewhere still accept it.
       model: 'claude-opus-4-8',
-      max_tokens: 400,
+      max_tokens: 600, // a touch higher — live-data answers can need room to synthesize
       system: cachedSystem(slackStable, tail),
       messages: claudeMessages,
-      ...(slackTools ? { tools: slackTools } : {})
+      ...(slackTools ? { tools: slackTools } : {}),
+      ...(mcpServers.length ? { mcp_servers: mcpServers } : {})
     };
+    const betaHeaders = [];
+    if (mcpServers.length) betaHeaders.push('mcp-client-2025-11-20'); // MCP connector beta
     const anthropicHeaders = { headers: {
       'Content-Type': 'application/json',
       'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01'
+      'anthropic-version': '2023-06-01',
+      ...(betaHeaders.length ? { 'anthropic-beta': betaHeaders.join(',') } : {})
     } };
     let response;
     try {
       response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
     } catch (err) {
-      // Safety net: if the web_search tool ever causes a rejection, retry WITHOUT tools so a
-      // Slack reply never fails over a search capability. Re-throw other failures.
-      if (slackTools) {
-        console.warn('Slack reply with web_search failed; retrying without tools:', err.response?.data?.error?.message || err.message);
+      // Safety net: if the web_search tool OR the MCP connector ever causes a rejection, retry
+      // WITHOUT them so a Slack reply never fails over a tool/connector issue. Re-throw others.
+      if (slackTools || mcpServers.length) {
+        console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
+        delete reqBody.mcp_servers;
         response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
       } else { throw err; }
     }
