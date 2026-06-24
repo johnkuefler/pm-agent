@@ -643,7 +643,7 @@ backfillMemoryIds();
 function realtimeVoiceGuidance(agentName = 'Nora') {
   let block = '';
   block += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
-  block += `\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name ("${agentName}") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen, don't interject. Wait for a clear pause directed at you before responding. If you're unsure whether someone was talking to you, stay silent. If someone in the room is already starting to answer a question, defer to them. Don't step on humans.`;
+  block += `\n\nMEETING ETIQUETTE, READ THIS CAREFULLY. First read the room: is this a 1:1 (just you and one other person) or a GROUP (two or more other people)? Use the speaker and attendee context above to tell.\n\nIn a 1:1, respond naturally to everything they say. You don't need your name.\n\nIn a GROUP, your default is SILENCE. Most of the time in a group your job is to listen, not talk. Only speak out loud when ONE of these is clearly true: (1) someone says your name, "${agentName}", or (2) someone asks a question that is unmistakably for YOU and not for another person in the room. In EVERY other case, produce NO output at all, not a single word, exactly as if you were muted. That includes any time two or more people are talking to each other: stay completely silent, do not answer, do not chime in with agreement or "just to add" or commentary on top of a human exchange you were not pulled into. If you are not sure whether you were addressed, then you were NOT, so stay silent. Never answer a question that was clearly aimed at another person by name.\n\nStopping: if you have started talking and a human starts to talk, stop immediately and let them go. Never talk over a person.\n\nOnce you ARE pulled in (named or directly asked), you can carry that back-and-forth naturally for as long as it is clearly still with you. You do not need your name every sentence. But the moment the conversation moves back to the humans talking among themselves, go quiet again and wait to be pulled back in. Being a good participant in a group means knowing when NOT to talk.`;
 
   block += [
     '',
@@ -6863,11 +6863,16 @@ wss.on('connection', async (ws, req) => {
             // detect turn boundaries — much better than raw silence timeouts.
             turn_detection: {
               type: 'semantic_vad',
-              // 'medium' is the balanced default per OpenAI's docs. We tried 'high' to
-              // shave latency and it didn't move the needle perceptibly, while making her
-              // more prone to stepping on mid-sentence pauses. 'medium' = she hears more
-              // of what someone's saying before responding, which feeds smarter answers.
-              eagerness: 'medium',
+              // 'low' eagerness: she waits for a clearer end-of-turn before reacting, which is the
+              // main lever against interrupting in GROUP calls (she stops jumping on mid-thought
+              // pauses and on people finishing sentences to each other). We tried 'high' before and
+              // it stepped on people; 'medium' still chimed in too eagerly in groups. The small cost
+              // is she's a touch less instant to answer, which is the right trade when the complaint
+              // is interruption. create_response stays true so she's NOT neutered (she can still
+              // participate); the strong group etiquette in her prompt is what keeps her from
+              // answering when she wasn't addressed. interrupt_response keeps barge-in (a human
+              // speaking cuts her off; the voice page also flushes playback on speech_started).
+              eagerness: 'low',
               create_response: true,
               interrupt_response: true
             }
