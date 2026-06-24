@@ -1971,9 +1971,9 @@ app.post('/voice-agent/response', async (req, res) => {
     }
 
     // When muted, surface the reply in the meeting chat so the asker actually sees the
-    // confirmation. The model is already gated by the muted-mode system prompt to only
-    // emit text when it judges it was directly addressed — if text reached us, we trust
-    // that and post it. Failure is non-fatal; extraction still runs below.
+    // confirmation. She only produces text when the server's turn-gate triggered her (named while
+    // muted), so reaching here means she was actually addressed — no more per-turn "standing by"
+    // spam. Failure is non-fatal; extraction still runs below.
     if (isMuted) {
       axios.post(
         `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
@@ -3510,6 +3510,43 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled)
       item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output).slice(0, 6000) } }));
     openaiWs.send(JSON.stringify({ type: 'response.create' }));
   } catch (e) { console.warn('voice tool: failed to return result:', e.message); }
+}
+
+// ── Voice turn-taking gate ──────────────────────────────────────────────────────────────────────
+// The realtime session runs with create_response:false, so OpenAI does NOT auto-reply at every
+// turn-end. Instead the SERVER decides when Nora speaks, here, based on whether she was actually
+// addressed. This is what stops her interrupting people talking to each other (and stops the muted
+// "standing by" chat spam): no trigger, no response. Once she's pulled in (named), a short window
+// keeps her responsive to follow-ups so a back-and-forth flows naturally without re-saying her name.
+const VOICE_ACTIVE_WINDOW_MS = 20000;
+const RESPONSE_STALE_MS = 20000; // if "active" persists past this, a terminal event was dropped; ignore it
+function maybeTriggerVoiceResponse(openaiWs, session, userText) {
+  if (!session) return;
+  // Skip if a response is genuinely in flight, but with a WATCHDOG: a real response never runs this
+  // long, so if the active flag has been set past RESPONSE_STALE_MS, assume the response.done (or an
+  // error tearing it down) was dropped and ignore the stale flag. This guarantees a single missed
+  // terminal event can never wedge her silent for the rest of the call.
+  if (session.voiceResponseActive && (Date.now() - (session.voiceResponseAt || 0) < RESPONSE_STALE_MS)) return;
+  const addressed = /\bnora\b/i.test(userText || '');
+  let trigger = false, why = '';
+  if (session.muted) {
+    trigger = addressed; why = 'muted+named';          // muted: only a short text reply when directly named
+  } else if (session.oneOnOne) {
+    trigger = true; why = '1:1';                        // explicit 1:1: respond to everything
+  } else {
+    const now = Date.now();                             // group: named, or still inside her active window
+    const inWindow = session.voiceActiveUntil && now < session.voiceActiveUntil;
+    trigger = addressed || inWindow;
+    why = addressed ? 'named' : 'in-window';
+    if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
+  }
+  if (trigger) {
+    try { openaiWs.send(JSON.stringify({ type: 'response.create' })); session.voiceResponseActive = true; session.voiceResponseAt = Date.now(); }
+    catch (e) { console.warn('voice trigger failed:', e.message); }
+    console.log(`🎙️ Voice: responding (${why})`);
+  } else {
+    console.log('🎙️ Voice: silent (not addressed)');
+  }
 }
 
 // ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
@@ -6977,17 +7014,16 @@ wss.on('connection', async (ws, req) => {
             // detect turn boundaries — much better than raw silence timeouts.
             turn_detection: {
               type: 'semantic_vad',
-              // 'low' eagerness: she waits for a clearer end-of-turn before reacting, which is the
-              // main lever against interrupting in GROUP calls (she stops jumping on mid-thought
-              // pauses and on people finishing sentences to each other). We tried 'high' before and
-              // it stepped on people; 'medium' still chimed in too eagerly in groups. The small cost
-              // is she's a touch less instant to answer, which is the right trade when the complaint
-              // is interruption. create_response stays true so she's NOT neutered (she can still
-              // participate); the strong group etiquette in her prompt is what keeps her from
-              // answering when she wasn't addressed. interrupt_response keeps barge-in (a human
-              // speaking cuts her off; the voice page also flushes playback on speech_started).
-              eagerness: 'low',
-              create_response: true,
+              // create_response:false is the key: OpenAI does NOT auto-reply at every turn-end. The
+              // SERVER decides when she speaks (maybeTriggerVoiceResponse), only when she's actually
+              // addressed. Prompt-only gating wasn't enough; she interrupted people talking to each
+              // other and, when muted, spammed "standing by" every turn. Gating the trigger fixes
+              // both, and means she stops reacting to garbled cross-talk transcriptions too.
+              // eagerness back to 'medium' (the gate, not eagerness, now prevents over-talking, and
+              // 'low' had slowed how fast she registered being interrupted). interrupt_response keeps
+              // barge-in (a human speaking cuts her off; the voice page also flushes playback).
+              eagerness: 'medium',
+              create_response: false,
               interrupt_response: true
             }
           },
@@ -7050,9 +7086,12 @@ wss.on('connection', async (ws, req) => {
         }));
       }
 
-      // Log errors in detail
+      // Log errors in detail. Also release the turn-gate: a rejected response.create (e.g. an active
+      // response already exists, or a transient API error) must not leave voiceResponseActive stuck
+      // true, which would silence her for the rest of the call.
       if (msg.type === 'error') {
         console.error('❌ OpenAI error:', JSON.stringify(msg.error));
+        const s = sessions[botId]; if (s) s.voiceResponseActive = false;
       }
 
       // Capture user speech transcription from OpenAI Whisper
@@ -7069,6 +7108,8 @@ wss.on('connection', async (ws, req) => {
             session.buffer.push(`Participant: ${userText}`);
             if (session.buffer.length > 20) session.buffer.shift();
             // Transcript entry is handled by /webhook/transcript with actual speaker names
+            // Decide whether Nora should actually respond to this turn (create_response is off).
+            maybeTriggerVoiceResponse(openaiWs, session, userText);
           }
         }
       }
@@ -7080,9 +7121,22 @@ wss.on('connection', async (ws, req) => {
         handleRealtimeVoiceTool(openaiWs, msg.item.call_id, msg.item.name, msg.item.arguments, handledToolCalls);
       }
 
+      // Mark a response in flight so the turn-gate doesn't stack a second one on top.
+      if (msg.type === 'response.created') {
+        const s = sessions[botId]; if (s) { s.voiceResponseActive = true; s.voiceResponseAt = Date.now(); }
+      }
+
       // Track response completions
       if (msg.type === 'response.done' && msg.response) {
+        const s = sessions[botId];
+        if (s) s.voiceResponseActive = false; // free the gate
         const outputs = msg.response.output || [];
+        // If she actually spoke this turn in a group, extend her active window so the back-and-forth
+        // keeps flowing for a bit without her name. A response that produced nothing does NOT extend
+        // it, so once she's just being triggered into silence the window lapses and she goes quiet.
+        const spoke = outputs.some(it => it.type === 'message' && it.role === 'assistant' &&
+          (it.content || []).some(c => /audio|text/.test(c.type) && (c.transcript || c.text)));
+        if (s && spoke && !s.oneOnOne && !s.muted) s.voiceActiveUntil = Date.now() + VOICE_ACTIVE_WINDOW_MS;
         for (const item of outputs) {
           if (item.type === 'function_call') {
             handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls);
