@@ -666,7 +666,7 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '',
     'SNAPPY ON CALLS. This is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text, a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long, they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
     '',
-    'LIVE DATA ON A CALL. Unlike Slack, you can\'t pull live Teamwork or system data mid-call (it would stall the conversation). So when someone asks for a specific live number or status you don\'t already know from memory, don\'t go quiet trying to fetch it. Say you\'ll pull it and drop it in Slack right after, and keep the call moving. Never claim a specific live figure you don\'t actually have.'
+    'LIVE DATA ON A CALL. You CAN pull live Teamwork data on the call now: find a project, list tasks (including what\'s due for a specific person, filtered by date), milestones, tasklists, people, recent comments. When someone asks for a status, a date, what\'s due, or who owns something, look it up and answer with the real data. One catch: a lookup takes a couple seconds, so say a quick filler FIRST so there\'s no dead air ("let me pull that up", "one sec, checking Teamwork"), THEN give the answer. Keep it to a fast lookup, not deep digging. You still can\'t MAKE changes from the call: if someone wants a task created, updated, or completed, capture it out loud, say you\'ll set it up in Slack right after, and keep moving (it gets handled there). You also still can\'t pull Gmail or Calendar live. If clients are on the call, don\'t read internal owner/assignee detail or any financials out loud. Never claim a specific figure you don\'t actually have.'
   ].join('\n');
 
   return block;
@@ -2608,16 +2608,17 @@ app.post('/webhook/chat', async (req, res) => {
     const { stable: zoomStable, volatile: zoomVolatile } =
       buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv });
 
-    // Live READ tools for the in-meeting @nora chat — quick lookups during a call (Teamwork
-    // status, web). Read-only here; write requests get deferred to Slack to keep meeting chat light.
+    // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
+    // transcription errors, there's a written record everyone can see), so it gets the FULL Teamwork
+    // set: READ and WRITE, same as Slack. Plus web search for quick external lookups.
+    const TW_WRITE_Z = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
     const zoomToolDefs = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }];
     const zoomExecutors = {};
-    const TW_WRITE_Z = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
     if (teamworkEnabled()) {
-      for (const t of TEAMWORK_TOOLS) { if (TW_WRITE_Z.has(t.definition.name)) continue; zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
+      for (const t of TEAMWORK_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     }
     let zoomTail = zoomVolatile;
-    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE read tools (Teamwork: find projects, list/get tasks, milestones, tasklists, people, comments; plus web search). Someone @-mentioned you in the meeting chat. If they ask for a status, date, owner, or fact, LOOK IT UP and answer with the real data, concisely. Read-only here: if they want a task created or changed, say you\'ll set it up in Slack right after. Keep it tight, this is meeting chat, not an essay.';
+    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
 
     const zoomReq = {
       model: 'claude-opus-4-8', // Opus 4.8; temperature omitted (Opus 4.8 rejects it)
@@ -2627,14 +2628,15 @@ app.post('/webhook/chat', async (req, res) => {
       ...(zoomToolDefs.length ? { tools: zoomToolDefs } : {})
     };
     const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
-    let response;
+    let response, zoomFired = [];
     try {
-      ({ response } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors));
+      ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors));
     } catch (err) {
       console.warn('Zoom chat reply with tools failed; retrying without:', err.response?.data?.error?.message || err.message);
       delete zoomReq.tools; zoomReq.messages = history.slice();
       response = await axios.post('https://api.anthropic.com/v1/messages', zoomReq, zoomHeaders);
     }
+    const wroteLiveZ = zoomFired.some(n => TW_WRITE_Z.has(n));
 
     let reply = (response.data.content || [])
       .filter(b => b.type === 'text')
@@ -2669,10 +2671,12 @@ app.post('/webhook/chat', async (req, res) => {
       }
     }
 
-    // Extract tasks/memory from chat interaction
+    // Extract tasks/memory from chat interaction. If she already created/updated the task LIVE this
+    // turn (a Teamwork write fired), skip the task extractor so it isn't re-filed as a queued task.
     const meetingContext = session ? session.buffer.slice(-10).join('\n') : query;
     if (!isAskingClarification(reply)) {
-      extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
+      if (wroteLiveZ) console.log('⏭️ Zoom chat: skipping task extraction (a live Teamwork write handled it)');
+      else extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
       extractMemory(meetingContext, query, reply, bot_id).catch(() => {});
       extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
     }
@@ -3326,6 +3330,45 @@ const TEAMWORK_TOOLS = [
       return { ok: true, comment_id: d.commentId || d.id || (d.comment && d.comment.id) };
     } },
 ];
+
+// Teamwork WRITE tool names (create/update/complete/reopen/comment). READ tools are everything else.
+const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
+
+// Teamwork READ tools, converted to the OpenAI Realtime function-tool shape ({type:'function', name,
+// description, parameters}) so the live VOICE agent can look things up on a call. READ ONLY: writes
+// never attach to voice (a misheard instruction creating the wrong task, possibly in front of a
+// client, is exactly what we don't want). The server executes these and feeds the result back.
+function realtimeTeamworkTools() {
+  if (!teamworkEnabled()) return [];
+  return TEAMWORK_TOOLS
+    .filter(t => !TW_WRITE_NAMES.has(t.definition.name))
+    .map(t => ({ type: 'function', name: t.definition.name, description: t.definition.description, parameters: t.definition.input_schema }));
+}
+
+// Execute a Teamwork READ tool the voice model called, then feed the result back into the realtime
+// session and ask it to continue speaking. Guards: read-only (write calls are refused), result is
+// size-capped. handled is a Set used to dedupe (the same call can surface on more than one event).
+async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled) {
+  if (!callId || (handled && handled.has(callId))) return;
+  if (handled) handled.add(callId);
+  let output;
+  try {
+    if (TW_WRITE_NAMES.has(name)) {
+      output = { error: 'Writing to Teamwork is not available on a live call. Tell them you will set it up in Slack right after, then move on.' };
+    } else {
+      const tool = TEAMWORK_TOOLS.find(t => t.definition.name === name);
+      const args = argsStr ? JSON.parse(argsStr) : {};
+      output = tool ? await tool.execute(args) : { error: `unknown tool ${name}` };
+    }
+  } catch (e) {
+    output = { error: (e.response?.data?.message || e.message || 'tool failed') };
+  }
+  try {
+    openaiWs.send(JSON.stringify({ type: 'conversation.item.create',
+      item: { type: 'function_call_output', call_id: callId, output: JSON.stringify(output).slice(0, 6000) } }));
+    openaiWs.send(JSON.stringify({ type: 'response.create' }));
+  } catch (e) { console.warn('voice tool: failed to return result:', e.message); }
+}
 
 // Run a Claude request that may use client-side tools, executing them and looping until the
 // model produces its final answer. Server-side tools (web_search, MCP) are handled by Anthropic
@@ -6627,6 +6670,10 @@ wss.on('connection', async (ws, req) => {
   }
 
   const messageQueue = [];
+  // Dedupe voice tool calls (the same function_call can surface on more than one OpenAI event).
+  const handledToolCalls = new Set();
+  // Teamwork READ tools for the live voice agent (empty if Teamwork isn't configured).
+  const voiceTools = realtimeTeamworkTools();
 
   openaiWs.on('open', () => {
     console.log('🧠 Connected to OpenAI Realtime API');
@@ -6685,7 +6732,10 @@ wss.on('connection', async (ws, req) => {
         // medium keeps her sharp enough for spoken PM conversation while starting fast. The
         // shrunk, relevance-ranked memory prompt also cuts her processing time. Bump to
         // 'high' only if answers feel shallow; she's not doing heavy analysis mid-call.
-        reasoning: { effort: 'medium' }
+        reasoning: { effort: 'medium' },
+        // Live Teamwork READ tools so she can look things up on the call (status, what's due, who
+        // owns what). Server executes them and feeds results back. Writes are intentionally absent.
+        ...(voiceTools.length ? { tools: voiceTools, tool_choice: 'auto' } : {})
       }
     }));
 
@@ -6747,10 +6797,20 @@ wss.on('connection', async (ws, req) => {
         }
       }
 
+      // Voice function-calling: the realtime model called a live Teamwork READ tool. Execute it
+      // server-side and feed the result back so she answers with real data on the call. Handled on
+      // the per-item completion event; the response.done loop below is a deduped fallback.
+      if (msg.type === 'response.output_item.done' && msg.item?.type === 'function_call') {
+        handleRealtimeVoiceTool(openaiWs, msg.item.call_id, msg.item.name, msg.item.arguments, handledToolCalls);
+      }
+
       // Track response completions
       if (msg.type === 'response.done' && msg.response) {
         const outputs = msg.response.output || [];
         for (const item of outputs) {
+          if (item.type === 'function_call') {
+            handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls);
+          }
           if (item.type === 'message' && item.role === 'assistant') {
             // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
             // Accept both so this works across API versions.
@@ -6817,7 +6877,10 @@ wss.on('connection', async (ws, req) => {
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
           ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
-          : updatedPrompt
+          : updatedPrompt,
+        // Re-assert the live Teamwork READ tools on refresh (session.update merges, but keep it
+        // explicit so a config reset can't silently drop her ability to look things up mid-call).
+        ...(voiceTools.length ? { tools: voiceTools, tool_choice: 'auto' } : {})
       }
     }));
     console.log('🔄 Refreshed Nora instructions with latest memory');
