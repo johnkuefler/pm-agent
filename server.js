@@ -3064,6 +3064,11 @@ function slimTwTask(t, inc = {}) {
     const u = users[a.id];
     return u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : `#${a.id}`;
   });
+  // v3 task objects carry a tasklist ref but NO direct project ref, so resolve the project THROUGH
+  // the sideloaded tasklist (tl.project.id / tl.projectId). That's what gives a cross-project "what's
+  // due" list a project name on each row. Requires include=tasklists,projects on the query.
+  const tl = (t.tasklist && tasklists[t.tasklist.id]) || null;
+  const projId = tl && ((tl.project && tl.project.id) || tl.projectId);
   return {
     id: t.id, name: t.name, status: t.status,
     assignees: assignees.length ? assignees : undefined,
@@ -3071,8 +3076,8 @@ function slimTwTask(t, inc = {}) {
     start: t.startDate || undefined,
     priority: t.priority || undefined,
     progress: t.progress != null ? t.progress : undefined,
-    tasklist: (t.tasklist && tasklists[t.tasklist.id] && tasklists[t.tasklist.id].name) || undefined,
-    project: (t.project && projects[t.project.id] && projects[t.project.id].name) || undefined
+    tasklist: (tl && tl.name) || undefined,
+    project: (projId && projects[projId] && projects[projId].name) || undefined
   };
 }
 
@@ -3129,16 +3134,18 @@ const TEAMWORK_TOOLS = [
       // by due date ascending so soon-due tasks cluster at the front (keeps the date-scoped set in the
       // first page even when the server-side date filter is a no-op).
       const pageSize = filtering ? 250 : 75;
-      // `common` is the always-safe query. The optional best-effort filter/order params ride on top;
-      // if Teamwork ever rejects them (unknown param/value), we drop back to `common` and lean on the
-      // client-side filter for correctness. orderBy keeps soon-due tasks near the front so the
-      // date-scoped set lands in the first page even when the server-side date filter no-ops.
+      // Server-side filter params verified against the live v3 tasks API (limelightmarketing4):
+      // responsiblePartyIds scopes by assignee, dueAfter/dueBefore bound the due date (inclusive),
+      // orderBy=dueDate sorts ascending. We STILL filter client-side below so a wrong/ignored param
+      // can never hand back noise (the org has ~2,700 open tasks, so an unscoped result is useless).
+      // `common` is the always-safe subset; if Teamwork ever rejects an optional param we fall back
+      // to it and rely entirely on the client-side filter.
       const common = [`pageSize=${pageSize}`, `includeCompletedTasks=${include_completed ? 'true' : 'false'}`,
         'include=users,tasklists,projects'];
       if (project_id) common.push(`projectIds=${encodeURIComponent(project_id)}`);
       let queryParts = common.slice();
       queryParts.push('orderBy=dueDate', 'orderMode=asc');
-      if (assigneeSet) queryParts.push(`assignedToUserIds=${encodeURIComponent([...assigneeSet].join(','))}`);
+      if (assigneeSet) queryParts.push(`responsiblePartyIds=${encodeURIComponent([...assigneeSet].join(','))}`);
       if (after) queryParts.push(`dueAfter=${encodeURIComponent(after)}`);
       if (before) queryParts.push(`dueBefore=${encodeURIComponent(before)}`);
       // Paginate when filtering so a single person's tasks aren't missed if the server filter no-ops.
@@ -3184,7 +3191,7 @@ const TEAMWORK_TOOLS = [
       input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
     },
     execute: async ({ task_id }) => {
-      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists`);
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists,projects`);
       const t = d?.task || {};
       return { ...slimTwTask(t, d?.included || {}), description: (t.description || '').slice(0, 1500) || undefined };
     } },
