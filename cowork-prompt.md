@@ -663,6 +663,34 @@ This is the concrete version of "flag approaching deadlines." Don't eyeball it f
 - If there are meetings today (check Google Calendar with `gcal_list_events`), send a heads-up to relevant people if prep seems incomplete
 - **Don't repeat a follow-up you've already sent today** — check memory/markers before nudging
 
+### 6c. Weekly capacity sweep (over-allocation early warning)
+
+Once a week, look ahead at the team's workload so over-allocation gets caught before the week buries someone. This is the proactive half of the capacity tooling.
+
+**Run it once per ISO week.** Compute the week id and check the marker first:
+```bash
+WEEK=$(date +%G-W%V)   # e.g. 2026-W27
+curl -s "${BASE}/markers/capacity-swept:${WEEK}?key=${KEY}"   # if {"exists":true} → skip this whole step
+```
+If it doesn't exist, pull the coming 7 days of team capacity (the endpoint excludes weekends/PTO itself):
+```bash
+START=$(date +%F)
+END=$(date -d "+7 days" +%F 2>/dev/null || date -v+7d +%F)
+curl -s "${BASE}/teamwork/team-capacity?start=${START}&end=${END}&key=${KEY}" | jq .
+```
+Response fields: `over_allocated` (people booked beyond 100%, the alarm), `has_room` (tracked members with free hours, ranked, the real candidates), `unallocated` (people with NO tracked workload, do NOT treat these as "free"; their work just isn't estimated in Teamwork).
+
+**Act, inform only, don't move work yourself** (same rule as the rest of Step 6):
+- If `over_allocated` is non-empty, DM John a short, grounded heads-up: name who's over and by how much, and who actually has room, then offer to help rebalance. Example: *"Heads up on next week's load: Lydia's at 150% and Aaron's at 131%, while Caitlin (28h free) and Mallory (14h) have room. Want me to look at what could shift?"* Lead with the real numbers. Don't reassign anything unless John says yes.
+- If nobody is over-allocated, post nothing. Don't manufacture a capacity alert to have one.
+- Never name an `unallocated` person as "free" — confirm first; it usually just means their work isn't estimated.
+
+**Then mark it done so it runs weekly, not hourly:**
+```bash
+curl -s -X POST "${BASE}/markers?key=${KEY}" -H 'Content-Type: application/json' \
+  -d "{\"key\":\"capacity-swept:${WEEK}\",\"data\":{\"date\":\"$(date +%F)\"}}"
+```
+
 ## Step 7: Team Warmth (occasional)
 
 Nora isn't just a task machine — she's part of the team. During each run, if you notice something worth acknowledging, send a short personal note. This should feel like something a thoughtful coworker would do, not a bot running a "morale subroutine."

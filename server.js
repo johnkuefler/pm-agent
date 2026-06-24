@@ -666,7 +666,7 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '',
     'SNAPPY ON CALLS. This is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text, a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long, they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
     '',
-    'LIVE DATA ON A CALL. You CAN pull live Teamwork data on the call now: find a project, list tasks (including what\'s due for a specific person, filtered by date), check how booked someone is over a date range (capacity, for scheduling), milestones, tasklists, people, recent comments. When someone asks for a status, a date, what\'s due, who owns something, or how booked a person is, look it up and answer with the real data. One catch: a lookup takes a couple seconds, so say a quick filler FIRST so there\'s no dead air ("let me pull that up", "one sec, checking Teamwork"), THEN give the answer. Keep it to a fast lookup, not deep digging. You still can\'t MAKE changes from the call: if someone wants a task created, updated, or completed, capture it out loud, say you\'ll set it up in Slack right after, and keep moving (it gets handled there). You also still can\'t pull Gmail or Calendar live. If clients are on the call, don\'t read internal owner/assignee detail or any financials out loud. Never claim a specific figure you don\'t actually have.'
+    'LIVE DATA ON A CALL. You CAN pull live Teamwork data on the call now: find a project, list tasks (including what\'s due for a specific person, filtered by date), check how booked someone is over a date range (capacity, for scheduling), or who across the team has room and who is overbooked, milestones, tasklists, people, recent comments. When someone asks for a status, a date, what\'s due, who owns something, how booked a person is, or who has room, look it up and answer with the real data. One catch: a lookup takes a couple seconds, so say a quick filler FIRST so there\'s no dead air ("let me pull that up", "one sec, checking Teamwork"), THEN give the answer. Keep it to a fast lookup, not deep digging. You still can\'t MAKE changes from the call: if someone wants a task created, updated, or completed, capture it out loud, say you\'ll set it up in Slack right after, and keep moving (it gets handled there). You also still can\'t pull Gmail or Calendar live. If clients are on the call, don\'t read internal owner/assignee detail or any financials out loud. Never claim a specific figure you don\'t actually have.'
   ].join('\n');
 
   return block;
@@ -3126,6 +3126,53 @@ function slimTwTask(t, inc = {}) {
   };
 }
 
+// Team capacity sweep over a date range, off Teamwork's Workload Planner. Shared by the
+// teamwork_team_capacity tool AND the /teamwork/team-capacity endpoint (used by the cowork loop's
+// weekly proactive sweep). Returns the over-allocated list, the tracked members who still have free
+// hours (the real "who has room" answer), and a separate count of people with no tracked workload.
+async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user_ids }) {
+  const r1 = (n) => Math.round(n * 10) / 10;
+  const minFree = (min_free_hours != null && min_free_hours !== '') ? Number(min_free_hours) : null;
+  const scope = user_ids ? `&userIds=${encodeURIComponent(String(user_ids).split(',').map(s => s.trim()).filter(Boolean).join(','))}` : '';
+  const d = await twApiGet(`/projects/api/v3/workload.json?startDate=${encodeURIComponent(start_date)}&endDate=${encodeURIComponent(end_date)}&include=users&pageSize=200${scope}`);
+  const inc = d?.included?.users || {};
+  const rows = [];
+  for (const u of (d?.workload?.users || [])) {
+    const info = inc[u.userId] || {};
+    if (info.isClientUser) continue; // never staff a client contact
+    const name = [info.firstName, info.lastName].filter(Boolean).join(' ') || `#${u.userId}`;
+    if (/needs resourced|resource pool/i.test(name)) continue; // placeholder allocation buckets, not people
+    const dayCapMin = (info.lengthOfDay || 8) * 60;
+    let availDays = 0, freeMin = 0, allocMin = 0, capMin = 0, over = false;
+    for (const x of Object.values(u.dates || {})) {
+      if (x.unavailableDay) continue; // off / weekend / holiday
+      availDays++;
+      const a = x.capacityMinutes || 0;
+      allocMin += a; capMin += dayCapMin; freeMin += Math.max(0, dayCapMin - a);
+      if (a > dayCapMin) over = true; // booked beyond capacity that day
+    }
+    if (!availDays) continue; // off the entire window
+    const bookedPct = capMin ? Math.round((allocMin / capMin) * 100) : 0;
+    rows.push({ user: name, userId: u.userId, freeHours: r1(freeMin / 60), bookedPct, availableDays: availDays, over });
+  }
+  // Members with SOME tracked allocation are confirmed delivery resources; rank those by free hours.
+  // People at 0% have NO tracked workload (usually just un-estimated work, not genuinely free), so
+  // list them separately with a caveat rather than recommending them as "most open".
+  const tracked = rows.filter(r => r.bookedPct > 0).sort((a, b) => b.freeHours - a.freeHours);
+  const hasRoom = (minFree != null ? tracked.filter(r => r.freeHours >= minFree) : tracked).map(({ over, ...r }) => r);
+  const untracked = rows.filter(r => r.bookedPct === 0).map(r => r.user);
+  return {
+    window: { start: start_date, end: end_date },
+    ...(minFree != null ? { min_free_hours: minFree } : {}),
+    team_size: rows.length,
+    note: 'has_room = members with tracked Teamwork allocation who still have free hours (ranked, these are the real candidates). over_allocated = booked beyond capacity (flag these). unallocated = people with NO tracked workload, which usually means their work just is not estimated in Teamwork, so confirm before assuming they are free.',
+    over_allocated: rows.filter(r => r.over).map(r => ({ user: r.user, bookedPct: r.bookedPct })),
+    has_room: hasRoom.slice(0, 25),
+    unallocated_count: untracked.length,
+    unallocated: untracked.slice(0, 20)
+  };
+}
+
 // Each tool: an Anthropic tool definition + an executor that returns a slimmed result.
 const TEAMWORK_TOOLS = [
   { definition: {
@@ -3338,6 +3385,17 @@ const TEAMWORK_TOOLS = [
           } };
       });
     } },
+  { definition: {
+      name: 'teamwork_team_capacity',
+      description: 'Sweep the WHOLE delivery team\'s capacity over a date range to answer staffing questions like "who has room next week for a 10-hour build" or "who is overbooked". Returns people ranked by free hours (most open first), plus an over-allocated list. Set min_free_hours to only show people with at least that many free hours (e.g. 10 for a 10h task). Optionally pass user_ids to limit to specific people (resolve via teamwork_list_people); otherwise it sweeps the assignable team and excludes client contacts. Dates are YYYY-MM-DD; use the [Right now] block for "next week". For one specific person\'s day-by-day picture use teamwork_user_workload instead.',
+      input_schema: { type: 'object', properties: {
+        start_date: { type: 'string', description: 'required: window start, YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'required: window end, YYYY-MM-DD' },
+        min_free_hours: { type: 'number', description: 'optional: only list people with at least this many free hours in the window' },
+        user_ids: { type: 'string', description: 'optional: comma-separated user ids to limit the sweep to specific people' }
+      }, required: ['start_date', 'end_date'] }
+    },
+    execute: async (args) => teamworkTeamCapacity(args) },
 
   // ── WRITE tools — Nora can create/update tasks, mark them done, and comment. Use ONLY when
   //    explicitly asked to create or change something. No delete tool exists (by design).
@@ -4291,7 +4349,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (toolDefs.length > 1 || mcpServers.length) {
       let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
+        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload, or who across the team has room and who is overbooked via teamwork_team_capacity (pass min_free_hours for "who can take a 10h build"); plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
       } else if (teamworkOn) {
         note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
@@ -5805,6 +5863,21 @@ app.get('/admin/slack/bot-channels', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('Bot channels fetch failed:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
+  }
+});
+
+// Team capacity sweep over a date range, for the cowork loop's weekly over-allocation check (and
+// any dashboard use). Same logic as the teamwork_team_capacity tool. Query: start, end (YYYY-MM-DD),
+// optional min_free (hours), optional user_ids (comma list).
+app.get('/teamwork/team-capacity', requireAuth, async (req, res) => {
+  if (!teamworkEnabled()) return res.status(500).json({ error: 'TEAMWORK_API_KEY and TEAMWORK_BASE_URL must be set' });
+  const { start, end, min_free, user_ids } = req.query;
+  if (!start || !end) return res.status(400).json({ error: 'start and end (YYYY-MM-DD) are required' });
+  try {
+    const out = await teamworkTeamCapacity({ start_date: start, end_date: end, min_free_hours: min_free, user_ids });
+    res.json(out);
+  } catch (e) {
+    res.status(502).json({ error: e.response?.data?.message || e.message || 'teamwork workload fetch failed' });
   }
 });
 
