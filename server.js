@@ -166,6 +166,25 @@ function mutateMarkers(mutator) {
   return run;
 }
 
+// Serialize Slack handling PER conversation session key. The webhook acks immediately and processes
+// each event in its own async invocation, and handleSlack awaits the Claude API for SECONDS between
+// reading the in-memory history and pushing its reply. Two near-simultaneous messages in the SAME
+// conversation would otherwise race on that shared array: the second reads history before the first's
+// reply is appended (re-creating the "lost my own reply" amnesia and a false first-contact), and the
+// interleaved push/pop/splice corrupt turn order. A per-key promise chain serializes same-conversation
+// turns while letting unrelated conversations run concurrently. (Memory/markers/tasks use the same
+// pattern globally; Slack needs it per-key so one busy channel doesn't block every other.)
+const _slackSessionChains = new Map();
+function withSlackSessionLock(key, fn) {
+  const prev = _slackSessionChains.get(key) || Promise.resolve();
+  const run = prev.then(() => fn());
+  const tail = run.then(() => {}, () => {}); // keep the chain alive even if fn throws
+  _slackSessionChains.set(key, tail);
+  // Drop the map entry once this turn is the tail, so idle conversations don't accumulate forever.
+  tail.then(() => { if (_slackSessionChains.get(key) === tail) _slackSessionChains.delete(key); });
+  return run;
+}
+
 // Task queue — same pattern as memory
 function getTasksPath() {
   if (fs.existsSync(VOLUME_DIR)) return TASKS_PATH_VOLUME;
@@ -843,12 +862,31 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     // for any relevant project the budget dropped above, re-attach its full notes here so nothing
     // relevant is lost. This varies per message WITHOUT busting the cached `base`.
     if (conversationText) {
+      // Normalize for matching: lowercase, drop apostrophes/punctuation, collapse whitespace — so
+      // "Lettermens' energy website project" matches the canonical "Lettermen's Energy Website".
+      const normMatch = s => (s || '').toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      const GENERIC = new Set(['the', 'a', 'an', 'and', 'of', 'for', 'to', 'project', 'llc', 'inc', 'co']);
+      const convNorm = normMatch(conversationText);
       const relevanceScore = (name) => {
         const proj = projByName(name);
         let s = 0;
-        if (name && conversationText.includes(name.toLowerCase())) s += 100;
-        if (proj?.client && conversationText.includes(proj.client.toLowerCase())) s += 60;
-        if (proj?.pm && conversationText.includes(proj.pm.toLowerCase())) s += 25;
+        const nn = normMatch(name);
+        if (nn) {
+          if (convNorm.includes(nn)) s += 100; // whole normalized name present
+          else {
+            // Token-overlap fallback: all distinctive (non-generic) name tokens present == strong match.
+            const toks = nn.split(' ').filter(t => t.length > 2 && !GENERIC.has(t));
+            if (toks.length) {
+              const hit = toks.filter(t => convNorm.includes(t)).length;
+              if (hit === toks.length) s += 80;
+              else if (hit >= 2 && hit / toks.length >= 0.6) s += 50;
+            }
+          }
+        }
+        const cn = normMatch(proj?.client);
+        if (cn && convNorm.includes(cn)) s += 60;
+        const pn = normMatch(proj?.pm);
+        if (pn && convNorm.includes(pn)) s += 25;
         return s;
       };
       const relevant = projectNames
@@ -2757,8 +2795,14 @@ app.post('/webhook/status', async (req, res) => {
 });
 
 // Slack webhook — @mentions, DMs, and follow-ups in threads Nora has joined
-// Session history is keyed per-thread (or per-DM-channel) so concurrent conversations stay isolated.
+// Session history is keyed per-thread / per-DM-channel / per-(channel,user) so concurrent
+// conversations stay isolated.
 const slackSessions = {};
+// Last-activity timestamp per session key. When a session has been idle past
+// SLACK_SESSION_STALE_MS, the next message starts fresh instead of prepending hours-old turns from
+// a possibly-different topic (which would both confuse the answer and re-surface stale context).
+const slackSessionTouched = {};
+const SLACK_SESSION_STALE_MS = 90 * 60 * 1000; // 90 min idle → treat the next message as a new convo
 
 // Cached Nora bot user ID, resolved lazily from the first event payload's authorizations.
 // Used to detect @mentions in raw `message.channels` events (which arrive as type=message, not app_mention).
@@ -3280,10 +3324,15 @@ function verifySlackSignature(req) {
 // Build a session key that scopes conversation history correctly.
 // - DMs: per-channel (a DM channel = one conversation)
 // - Channel threads: per-thread (so distinct threads in same channel don't bleed)
-function slackSessionKey(channel, threadTs, channelType) {
+// - Top-level channel messages: per (channel, USER). One person's sequential top-level messages
+//   share a key so the back-and-forth accumulates (continuity), but two DIFFERENT people's parallel
+//   top-level exchanges never share a transcript. That second part is a SECURITY boundary, not just
+//   tidiness: financial access is per-user, so an approved user's reply (with real dollar figures)
+//   must never sit in-context when an UNapproved user speaks next in the same channel.
+function slackSessionKey(channel, threadTs, channelType, user = '') {
   if (channelType === 'im' || channelType === 'mpim') return `dm:${channel}`;
   if (threadTs) return `thread:${channel}:${threadTs}`;
-  return `channel:${channel}`;
+  return `channel:${channel}:${user}`;
 }
 
 // Cheap heuristic to drop obvious non-Nora-directed chatter before spending a Claude call.
@@ -3847,15 +3896,41 @@ app.post('/webhook/slack', async (req, res) => {
 
   console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}${mode === 'proactive' ? '/proactive' : ''}] from ${user}: ${query.slice(0, 100)}`);
 
-  await handleSlack(channel, user, query, threadTs, event.channel_type, mode);
+  // Pass the RAW thread_ts (undefined for a top-level message) alongside the coalesced threadTs.
+  // The raw one keys the in-memory session; the coalesced one is where we post/fetch the thread.
+  await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts);
 });
 
-async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal') {
+// Thin wrapper: resolve the conversation key and SERIALIZE per key so two near-simultaneous messages
+// in the same conversation can't race on the shared in-memory history (read -> await Claude -> push).
+// The key is computed here (per channel/thread/user) and passed in so the lock and the body agree on
+// exactly one array. Unrelated conversations still run concurrently.
+async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined) {
+  // KEY BY THE RAW thread_ts (undefined for a top-level message) + user. A top-level channel message
+  // has no thread_ts, so all of ONE person's sequential top-level messages share the
+  // `channel:<id>:<user>` key and her replies ACCUMULATE there — instead of each message spinning up
+  // its own `thread:<id>:<ts>` island with empty history (which is what made her lose the thread of a
+  // back-and-forth and ask people to re-paste what they'd just said). Per-user scoping also keeps one
+  // person's financial replies out of another person's context (see slackSessionKey).
+  const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
+  return withSlackSessionLock(sessionKey, () =>
+    handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey));
+}
+
+async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey) {
   try {
-    // Per-thread (or per-DM) conversation history so distinct conversations don't bleed
-    const key = slackSessionKey(channel, threadTs, channelType);
+    const key = sessionKey;
     if (!slackSessions[key]) slackSessions[key] = [];
     const history = slackSessions[key];
+
+    // Stale-session reset: if this conversation has sat idle past the staleness window, drop the
+    // accumulated turns before this message so a brand-new (likely different-topic) question isn't
+    // answered with hours-old context prepended. Clearing here makes firstContact true below, which
+    // triggers a clean channel bootstrap. (Must run BEFORE we push the current message.)
+    if (history.length && (Date.now() - (slackSessionTouched[key] || 0)) > SLACK_SESSION_STALE_MS) {
+      history.length = 0;
+    }
+    slackSessionTouched[key] = Date.now();
 
     // Resolve the Slack user ID to a real name so the model knows who it's replying to
     // by NAME, not by opaque <@U123ABC> mention. Falls back to the user ID if lookup
@@ -3870,19 +3945,64 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // on in-memory history (a DM is a flat conversation, not a thread). If the fetch fails
     // (e.g. missing channels:history scope), fall back to in-memory.
     const isDM = channelType === 'im' || channelType === 'mpim';
+    const isRealThread = !!rootThreadTs && !isDM; // genuinely posted inside a Slack thread
+    // history was just push()ed with the current message, so length 1 == this is the FIRST turn of
+    // this conversation session (or the first since a restart) — nothing accumulated yet to lean on.
+    const firstContact = history.length <= 1;
     let threadMsgs = null;
     if (mode === 'proactive') {
       // Proactive interjection fires on a top-level channel message whose "thread" is just itself.
       // Pull the recent CHANNEL conversation instead so she grounds her chime-in in what's actually
       // being discussed around it — not a single decontextualized line.
       threadMsgs = await fetchSlackChannelHistory(channel, threadTs, 12);
-    } else if (!isDM) {
+    } else if (isRealThread) {
+      // Inside a real thread: pull the whole thread (authoritative — it includes messages posted
+      // before she was mentioned AND her own threaded replies, which conversations.replies returns).
       threadMsgs = await fetchSlackThread(channel, threadTs);
+    } else if (!isDM && firstContact) {
+      // Top-level channel message, first turn of this session: bootstrap with recent channel context
+      // so she isn't blind to what was just said before she was looped in. On CONTINUATION we do NOT
+      // re-fetch — the accumulated in-memory history below already holds the full back-and-forth
+      // INCLUDING her own replies. (conversations.history can't see her replies — they're threaded
+      // under each message — so re-fetching every turn would silently drop her side of the convo and
+      // she'd think she never answered. Trusting in-memory on continuation is what actually restores
+      // continuity.) A 25-message window so the anchoring question survives some channel cross-talk.
+      threadMsgs = await fetchSlackChannelHistory(channel, threadTs, 25);
     }
+    // Default to the accumulated in-memory history (carries her own replies across turns); only a
+    // successful Slack fetch (real thread, proactive, or first-contact bootstrap) overrides it.
     let claudeMessages = history;
     if (threadMsgs && threadMsgs.length) {
       const built = await buildSlackThreadHistory(threadMsgs, noraBotUserId);
       if (built.length) claudeMessages = built;
+    }
+
+    // SAFETY (eventual consistency): whichever source we used, guarantee the message she's actually
+    // replying to is the FINAL user turn. Slack's history/replies APIs lag a few hundred ms, so a
+    // just-posted trigger can be missing from a fresh fetch — without this, `built` could omit the
+    // very question being asked and she'd say "refresh me on what?" with the answer absent from view.
+    // The in-memory `history` always has it (we pushed it above), so we re-append when it's missing.
+    {
+      const normForMatch = s => (typeof s === 'string' ? s : '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const tnorm = normForMatch(text);
+      const probe = tnorm.length >= 6 ? tnorm.slice(-32) : tnorm; // tail dodges leading @mention markup
+      const last = claudeMessages[claudeMessages.length - 1];
+      const present = !!last && last.role === 'user' && probe.length > 0 && normForMatch(last.content).includes(probe);
+      if (!present) {
+        claudeMessages = claudeMessages.concat([{ role: 'user', content: `[${userLabel}]: ${text}` }]);
+      }
+    }
+
+    // On a FIRST-CONTACT bootstrap (we used a Slack fetch, not the in-memory array), persist the
+    // channel context she answered against INTO the in-memory history (bounded), so the pre-mention
+    // discussion that grounded her first reply survives into later turns instead of being discarded
+    // after one answer. Seed from claudeMessages (post-guard, so it ends with the trigger) and not for
+    // real threads (re-fetched each turn) or proactive (one-off). The assistant reply pushed below
+    // then lands right after the trigger.
+    if (!isDM && firstContact && mode !== 'proactive' && !isRealThread && claudeMessages !== history) {
+      const seed = claudeMessages.slice(-15);
+      history.length = 0;
+      for (const t of seed) history.push(t);
     }
 
     // URL READING: gather links from the current message + the thread, fetch their real
@@ -3912,7 +4032,10 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // Pass the recent conversation so memory retrieval loads the projects/people actually
     // being discussed, not all ~2,000 memories. (Trades some cross-conversation prompt-cache
     // sharing for a much smaller, sharper prompt — net cheaper + faster per call regardless.)
-    const convText = claudeMessages.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
+    // Scan a wider window for memory relevance: now that the back-and-forth interleaves her own
+    // replies, the turn that named the project ("Lettermens") can sit well above the last few turns.
+    // This only feeds project/memory selection (uncached tail), so a wider window is cheap.
+    const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     const { stable: slackStable, volatile: slackVolatile } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText });
     let tail = slackVolatile;
@@ -3958,23 +4081,37 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     const teamworkOn = teamworkEnabled();
     // MCP connectors are read-only; proactive (a channel post) never gets the financial ones.
     const mcpServers = liveMcpServers(isDirect ? financialApproved : false);
+    const hasWebSearch = toolDefs.some(t => t.name === 'web_search');
+    // What each connected MCP actually DOES — so she gets a concrete capability inventory instead of
+    // an opaque server codename (a bare "limelight-pm" tells her nothing, which is how she ends up
+    // "reaching for the wrong tool"). Falls back to the bare name for any UI-added server with no hint.
+    const MCP_CAP = {
+      'teamwork': 'Teamwork projects & tasks',
+      'limelight': 'LimeLight internal lookups',
+      'limelight-pm': 'project profitability, margins, forecasts & estimates',
+    };
 
-    // One combined "you have live tools" note.
+    // ONE authoritative per-reply tools note — this IS her real inventory this turn (the cached prompt
+    // points her here as the source of truth). Always emit exactly one of the three branches so every
+    // reply states plainly what she can and can't do live, and she stops confabulating/flip-flopping.
     if (toolDefs.length > 1 || mcpServers.length) {
-      const mcpNames = mcpServers.map(s => s.name);
-      let note = '\n\nYou have LIVE tools — use them to pull real, current data' + (isDirect ? ' (and, for Teamwork, to make changes)' : '') + ' instead of guessing or saying you\'ll check later.';
+      let note = '\n\nLIVE TOOLS attached to THIS reply — this is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' TEAMWORK — you can both READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND MAKE CHANGES (create a task, update one, mark it complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist or task as needed; to assign someone, get their id with teamwork_list_people. Only CREATE or CHANGE something when you\'re clearly asked to — if the ask is ambiguous, confirm what they want first. After any change, tell them exactly what you did. You CANNOT delete tasks; if someone wants something deleted, say they\'ll need to do that in Teamwork.';
+        note += ' • TEAMWORK — READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked — if ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action).';
       } else if (teamworkOn) {
-        note += ' TEAMWORK (read-only here) — find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before you say it.';
+        note += ' • TEAMWORK (read-only here) — find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
-      if (mcpNames.length) note += ` The other connected tools (${mcpNames.join(', ')}) are READ-ONLY — look things up only, never modify through them.`;
-      note += ' Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the tool calls.';
+      if (hasWebSearch) note += ' • WEB_SEARCH — for current/external info you don\'t already have.';
+      if (mcpServers.length) {
+        const caps = mcpServers.map(s => MCP_CAP[s.name] ? `${MCP_CAP[s.name]} (${s.name})` : s.name);
+        note += ` • ${caps.join('; ')} — READ-ONLY; look things up, never modify through them.`;
+      }
+      note += ' If a capability is NOT in this list, you do not have it this turn — say you\'ll check and follow up, don\'t claim you pulled it. Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the calls.';
       tail += note;
-    }
-    if (toolDefs.length === 1) {
-      // web_search only
-      tail += '\n\nYou have a web_search tool. Use it when the question genuinely needs current or external info you don\'t already have. Don\'t search for things in your memory or for casual chat — only when it makes your answer better, then answer in your own voice (don\'t narrate that you searched).';
+    } else if (hasWebSearch) {
+      tail += '\n\nLIVE TOOLS attached to THIS reply: WEB_SEARCH only. Use it when the question genuinely needs current/external info you don\'t already have — not for things in your memory or casual chat. Anything else (live Teamwork, etc.) is NOT attached this turn; say you\'ll check and follow up rather than claiming you looked it up. Answer in your own voice; don\'t narrate that you searched.';
+    } else {
+      tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up — do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
 
     const reqBody = {
