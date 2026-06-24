@@ -2921,19 +2921,23 @@ async function twApiGet(pathAndQuery) {
   });
   return r.data;
 }
-// Defensive field access — Teamwork v3 is camelCase, v1 is dashed; tolerate both.
-const tw = (o, ...keys) => { for (const k of keys) if (o && o[k] !== undefined && o[k] !== null) return o[k]; return undefined; };
-function slimTwTask(t) {
+// Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
+// top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
+// tasklist refs to names using that sideload.
+function slimTwTask(t, inc = {}) {
+  const users = inc.users || {}, tasklists = inc.tasklists || {};
+  const assignees = (t.assignees || []).map(a => {
+    const u = users[a.id];
+    return u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : `#${a.id}`;
+  });
   return {
     id: t.id, name: t.name, status: t.status,
-    assignees: tw(t, 'assignees', 'responsible-party-names') || undefined,
-    due: tw(t, 'dueDate', 'due-date', 'dueDateTime') || undefined,
-    start: tw(t, 'startDate', 'start-date') || undefined,
+    assignees: assignees.length ? assignees : undefined,
+    due: t.dueDate || undefined,
+    start: t.startDate || undefined,
     priority: t.priority || undefined,
     progress: t.progress != null ? t.progress : undefined,
-    completed: tw(t, 'completed', 'status') === true || t.status === 'completed' || undefined,
-    project: tw(t, 'projectName', 'project-name') || (t.project && t.project.name) || undefined,
-    tasklist: tw(t, 'tasklistName', 'todo-list-name') || (t.tasklist && t.tasklist.name) || undefined
+    tasklist: (t.tasklist && tasklists[t.tasklist.id] && tasklists[t.tasklist.id].name) || undefined
   };
 }
 
@@ -2963,8 +2967,8 @@ const TEAMWORK_TOOLS = [
       const p = d?.project || {};
       const companies = d?.included?.companies || {};
       return { id: p.id, name: p.name, status: p.status, description: p.description,
-        company: (p.company?.id && companies[p.company.id]?.name) || p.company?.name || '',
-        startDate: tw(p, 'startDate', 'start-date'), endDate: tw(p, 'endDate', 'end-date') };
+        company: (p.company?.id && companies[p.company.id]?.name) || '',
+        startDate: p.startAt || undefined, endDate: p.endAt || undefined };
     } },
   { definition: {
       name: 'teamwork_list_tasks',
@@ -2975,10 +2979,10 @@ const TEAMWORK_TOOLS = [
       } }
     },
     execute: async ({ project_id, include_completed }) => {
-      const parts = ['pageSize=75', `includeCompletedTasks=${include_completed ? 'true' : 'false'}`];
+      const parts = ['pageSize=75', `includeCompletedTasks=${include_completed ? 'true' : 'false'}`, 'include=users,tasklists'];
       if (project_id) parts.push(`projectIds=${encodeURIComponent(project_id)}`);
       const d = await twApiGet(`/projects/api/v3/tasks.json?${parts.join('&')}`);
-      return (d?.tasks || []).slice(0, 75).map(slimTwTask);
+      return (d?.tasks || []).slice(0, 75).map(t => slimTwTask(t, d?.included || {}));
     } },
   { definition: {
       name: 'teamwork_get_task',
@@ -2986,9 +2990,9 @@ const TEAMWORK_TOOLS = [
       input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
     },
     execute: async ({ task_id }) => {
-      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json`);
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists`);
       const t = d?.task || {};
-      return { ...slimTwTask(t), description: tw(t, 'description', 'descriptionContentType') || t.description };
+      return { ...slimTwTask(t, d?.included || {}), description: (t.description || '').slice(0, 1500) || undefined };
     } },
   { definition: {
       name: 'teamwork_list_milestones',
@@ -2997,10 +3001,11 @@ const TEAMWORK_TOOLS = [
     },
     execute: async ({ project_id }) => {
       const q = project_id ? `&projectIds=${encodeURIComponent(project_id)}` : '';
-      const d = await twApiGet(`/projects/api/v3/milestones.json?pageSize=75${q}`);
+      const d = await twApiGet(`/projects/api/v3/milestones.json?pageSize=75&include=projects${q}`);
+      const projects = d?.included?.projects || {};
       return (d?.milestones || []).slice(0, 75).map(m => ({
-        id: m.id, name: m.name, deadline: tw(m, 'deadline', 'deadlineDate'),
-        status: m.status, completed: m.completed, project: tw(m, 'projectName', 'project-name') || (m.project && m.project.name)
+        id: m.id, name: m.name, deadline: m.deadline, status: m.status, completed: m.completed,
+        project: (m.project?.id && projects[m.project.id]?.name) || undefined
       }));
     } },
   { definition: {
@@ -3019,10 +3024,11 @@ const TEAMWORK_TOOLS = [
     },
     execute: async ({ query }) => {
       const q = query ? `&searchTerm=${encodeURIComponent(query)}` : '';
-      const d = await twApiGet(`/projects/api/v3/people.json?pageSize=200${q}`);
+      const d = await twApiGet(`/projects/api/v3/people.json?pageSize=200&include=companies${q}`);
+      const companies = d?.included?.companies || {};
       return (d?.people || []).slice(0, 200).map(p => ({
-        id: p.id, name: [tw(p, 'firstName', 'first-name'), tw(p, 'lastName', 'last-name')].filter(Boolean).join(' ') || p.name,
-        company: (p.company && p.company.name) || tw(p, 'companyName'), title: p.title
+        id: p.id, name: [p.firstName, p.lastName].filter(Boolean).join(' '),
+        company: (p.company?.id && companies[p.company.id]?.name) || '', title: p.title
       }));
     } },
   { definition: {
@@ -3031,11 +3037,17 @@ const TEAMWORK_TOOLS = [
       input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
     },
     execute: async ({ task_id }) => {
-      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}/comments.json?pageSize=20`);
-      return (d?.comments || []).slice(-20).map(c => ({
-        author: tw(c, 'authorFirstName', 'author-firstname'), date: tw(c, 'postedDateTime', 'datetime'),
-        body: (tw(c, 'body', 'comment') || '').slice(0, 500)
-      }));
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}/comments.json?include=users&pageSize=20`);
+      const users = d?.included?.users || {};
+      return (d?.comments || []).slice(-20).map(c => {
+        const uid = c.userId || (c.author && c.author.id);
+        const u = uid && users[uid];
+        return {
+          author: u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : (c.userFirstName || undefined),
+          date: c.postedDateTime || c.createdAt || c.dateTime || undefined,
+          body: (c.body || '').slice(0, 500)
+        };
+      });
     } },
 ];
 
