@@ -3594,11 +3594,23 @@ const SLACK_SEND_TOOL = {
       if (user) {
         const uid = /^U[A-Z0-9]/.test(user) ? user : await resolveSlackUserByName(user);
         if (!uid) return { error: `Could not find a person named "${user}".` };
-        const dm = await axios.post('https://slack.com/api/conversations.open', { users: uid },
-          { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
-        const id = dm.data && dm.data.channel && dm.data.channel.id;
-        if (!id) return { error: 'Could not open a DM with that person.' };
-        return await post(id, `a DM to ${user}`);
+        // Normal path: open the DM channel, then post. If conversations.open is blocked (most often a
+        // missing im:write scope on the bot), fall back to posting straight to the user id (Slack also
+        // routes that to the DM). Surface Slack's real error so the cause is obvious, not "couldn't open".
+        let dmErr = '';
+        try {
+          const dm = await axios.post('https://slack.com/api/conversations.open', { users: uid },
+            { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+          if (dm.data && dm.data.ok && dm.data.channel && dm.data.channel.id) {
+            return await post(dm.data.channel.id, `a DM to ${user}`);
+          }
+          dmErr = (dm.data && dm.data.error) || 'unknown';
+        } catch (e) { dmErr = e.response?.data?.error || e.message; }
+        const direct = await post(uid, `a DM to ${user}`); // fallback: post directly to the user id
+        if (direct.ok) return direct;
+        const scopeHint = /scope|not_allowed|cannot_dm|restricted/i.test(`${dmErr} ${direct.error || ''}`)
+          ? ' This looks like a permissions gap: the Nora Slack app needs the "im:write" scope (and "mpim:write" for group DMs) added, then a reinstall. Channel posts don\'t need it.' : '';
+        return { error: `Couldn't DM ${user}. Slack returned "${dmErr}" opening the DM.${scopeHint}` };
       }
       return { error: 'Give me a channel or a person to send to.' };
     } catch (e) {
