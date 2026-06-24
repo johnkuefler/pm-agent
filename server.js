@@ -3059,7 +3059,7 @@ const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefine
 // top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
 // tasklist refs to names using that sideload.
 function slimTwTask(t, inc = {}) {
-  const users = inc.users || {}, tasklists = inc.tasklists || {};
+  const users = inc.users || {}, tasklists = inc.tasklists || {}, projects = inc.projects || {};
   const assignees = (t.assignees || []).map(a => {
     const u = users[a.id];
     return u ? [u.firstName, u.lastName].filter(Boolean).join(' ') : `#${a.id}`;
@@ -3071,7 +3071,8 @@ function slimTwTask(t, inc = {}) {
     start: t.startDate || undefined,
     priority: t.priority || undefined,
     progress: t.progress != null ? t.progress : undefined,
-    tasklist: (t.tasklist && tasklists[t.tasklist.id] && tasklists[t.tasklist.id].name) || undefined
+    tasklist: (t.tasklist && tasklists[t.tasklist.id] && tasklists[t.tasklist.id].name) || undefined,
+    project: (t.project && projects[t.project.id] && projects[t.project.id].name) || undefined
   };
 }
 
@@ -3106,17 +3107,76 @@ const TEAMWORK_TOOLS = [
     } },
   { definition: {
       name: 'teamwork_list_tasks',
-      description: 'List tasks, optionally scoped to a project and/or filtered by status. Returns task name, assignees, due date, priority, progress. Use teamwork_find_projects first to get a project_id.',
+      description: 'List tasks across ALL projects (or one project), with optional filters by ASSIGNEE and DUE DATE. Returns task name, assignees, due date, priority, progress, tasklist, project. For "what is due tomorrow for <person>" type questions, this is the tool: first resolve the person with teamwork_list_people to get their user id, pass it as assigned_to_user_ids, and set due_on (or due_after / due_before) to the date. Dates are YYYY-MM-DD. Omit project_id to sweep every active project. Without an assignee or date filter this just lists recent tasks, which across all projects is a noisy dump, so always scope it when answering "what is due for me/them".',
       input_schema: { type: 'object', properties: {
-        project_id: { type: 'string', description: 'optional — scope to one project' },
+        project_id: { type: 'string', description: 'optional: scope to one project' },
+        assigned_to_user_ids: { type: 'string', description: 'optional: comma-separated Teamwork user ids to scope to specific assignees (resolve via teamwork_list_people first)' },
+        due_on: { type: 'string', description: 'optional: only tasks due on exactly this date (YYYY-MM-DD)' },
+        due_after: { type: 'string', description: 'optional: only tasks due on or after this date (YYYY-MM-DD)' },
+        due_before: { type: 'string', description: 'optional: only tasks due on or before this date (YYYY-MM-DD)' },
         include_completed: { type: 'boolean', description: 'default false' }
       } }
     },
-    execute: async ({ project_id, include_completed }) => {
-      const parts = ['pageSize=75', `includeCompletedTasks=${include_completed ? 'true' : 'false'}`, 'include=users,tasklists'];
-      if (project_id) parts.push(`projectIds=${encodeURIComponent(project_id)}`);
-      const d = await twApiGet(`/projects/api/v3/tasks.json?${parts.join('&')}`);
-      return (d?.tasks || []).slice(0, 75).map(t => slimTwTask(t, d?.included || {}));
+    execute: async ({ project_id, assigned_to_user_ids, due_on, due_after, due_before, include_completed }) => {
+      const after = due_on || due_after, before = due_on || due_before;
+      const assigneeSet = assigned_to_user_ids
+        ? new Set(String(assigned_to_user_ids).split(',').map(s => s.trim()).filter(Boolean))
+        : null;
+      const filtering = !!(assigneeSet || after || before);
+      // Server-side filters are passed best-effort (the v3 task endpoint honors most of these), but
+      // because the exact param names can vary by Teamwork version we ALSO filter client-side below,
+      // so the result is correctly scoped to the person/date even if the API ignores a param. Order
+      // by due date ascending so soon-due tasks cluster at the front (keeps the date-scoped set in the
+      // first page even when the server-side date filter is a no-op).
+      const pageSize = filtering ? 250 : 75;
+      // `common` is the always-safe query. The optional best-effort filter/order params ride on top;
+      // if Teamwork ever rejects them (unknown param/value), we drop back to `common` and lean on the
+      // client-side filter for correctness. orderBy keeps soon-due tasks near the front so the
+      // date-scoped set lands in the first page even when the server-side date filter no-ops.
+      const common = [`pageSize=${pageSize}`, `includeCompletedTasks=${include_completed ? 'true' : 'false'}`,
+        'include=users,tasklists,projects'];
+      if (project_id) common.push(`projectIds=${encodeURIComponent(project_id)}`);
+      let queryParts = common.slice();
+      queryParts.push('orderBy=dueDate', 'orderMode=asc');
+      if (assigneeSet) queryParts.push(`assignedToUserIds=${encodeURIComponent([...assigneeSet].join(','))}`);
+      if (after) queryParts.push(`dueAfter=${encodeURIComponent(after)}`);
+      if (before) queryParts.push(`dueBefore=${encodeURIComponent(before)}`);
+      // Paginate when filtering so a single person's tasks aren't missed if the server filter no-ops.
+      const MAX_PAGES = filtering ? 8 : 1;
+      let all = [], inc = { users: {}, tasklists: {}, projects: {} }, page = 1;
+      while (page <= MAX_PAGES) {
+        let d;
+        try {
+          d = await twApiGet(`/projects/api/v3/tasks.json?${queryParts.join('&')}&page=${page}`);
+        } catch (e) {
+          if (queryParts.length > common.length) { queryParts = common.slice(); d = await twApiGet(`/projects/api/v3/tasks.json?${queryParts.join('&')}&page=${page}`); }
+          else throw e;
+        }
+        const tasks = d?.tasks || [];
+        const i = d?.included || {};
+        Object.assign(inc.users, i.users || {});
+        Object.assign(inc.tasklists, i.tasklists || {});
+        Object.assign(inc.projects, i.projects || {});
+        all.push(...tasks);
+        if (tasks.length < pageSize) break; // last page
+        page++;
+      }
+      // Client-side guarantee: scope by assignee id and due-date window regardless of server behavior.
+      const aw = twYmd(after), bw = twYmd(before);
+      const rows = all.filter(t => {
+        if (assigneeSet) {
+          const ids = (t.assignees || []).map(a => String(a.id));
+          if (!ids.some(id => assigneeSet.has(id))) return false;
+        }
+        if (aw || bw) {
+          const dd = twYmd(t.dueDate);
+          if (!dd) return false; // a task with no due date can't satisfy a date filter
+          if (aw && dd < aw) return false;
+          if (bw && dd > bw) return false;
+        }
+        return true;
+      });
+      return rows.slice(0, 100).map(t => slimTwTask(t, inc));
     } },
   { definition: {
       name: 'teamwork_get_task',
@@ -4097,7 +4157,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (toolDefs.length > 1 || mcpServers.length) {
       let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' • TEAMWORK: READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action).';
+        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
       } else if (teamworkOn) {
         note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
