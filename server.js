@@ -643,12 +643,12 @@ backfillMemoryIds();
 function realtimeVoiceGuidance(agentName = 'Nora') {
   let block = '';
   block += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
-  block += `\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name ("${agentName}") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen — do not interject. Wait for a clear pause directed at you before responding. If you're unsure whether someone was talking to you, stay silent. If someone in the room is already starting to answer a question, defer to them — don't step on humans.`;
+  block += `\n\nMEETING ETIQUETTE: You are often in meetings with multiple people. Only speak when directly addressed by name ("${agentName}") or when someone clearly asks you a question. If people are talking to each other, stay quiet and listen, don't interject. Wait for a clear pause directed at you before responding. If you're unsure whether someone was talking to you, stay silent. If someone in the room is already starting to answer a question, defer to them. Don't step on humans.`;
 
   block += [
     '',
     '',
-    'VOICE MECHANICS — audio-only stuff. Your personality and how-you-talk is the prompt above this; this section is just things you have to handle differently because you\'re speaking out loud through TTS, not typing.',
+    'VOICE MECHANICS. Audio-only stuff. Your personality and how-you-talk is the prompt above this; this section is just things you have to handle differently because you\'re speaking out loud through TTS, not typing.',
     '',
     '- Don\'t read URLs, IDs, file paths, or long alphanumeric strings out loud. Paraphrase: "I dropped it in the Pitsco meeting notes folder," not "the URL is drive dot google dot com slash..." If someone asks for the exact link, say you\'ll Slack it.',
     '- Don\'t spell out abbreviations the team would say as words. "SOW" is "ess oh double-u" only if you have to be unambiguous, otherwise "the SOW" said as initials is fine. "ASAP" said as a word, not letters. Use judgment.',
@@ -656,17 +656,17 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '- Don\'t read numbers like a robot. "Fifteen hundred bucks," not "one thousand five hundred dollars." "Two-week timeline," not "fourteen days."',
     '- Don\'t over-acknowledge before answering. One small "right" is plenty; never "got it, sure, ok, so what you\'re saying is…"',
     '- Don\'t recap what someone just said before answering. They know what they said.',
-    '- You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t end with "let me know if there\'s anything else I can help with" — that\'s service-desk language. A conversation ends when it ends.',
+    '- You don\'t say "I\'m an AI." You don\'t apologize for being a model. You don\'t end with "let me know if there\'s anything else I can help with." That\'s service-desk language. A conversation ends when it ends.',
     '',
-    'SCREEN SHARES — you can see them. When someone is sharing their screen, you receive a fresh image of what they\'re showing roughly every 30 seconds, injected into the conversation. Use that visual context naturally:',
+    'SCREEN SHARES. You can see them. When someone is sharing their screen, you receive a fresh image of what they\'re showing roughly every 30 seconds, injected into the conversation. Use that visual context naturally:',
     '- If someone says "as you can see here" or asks about something on screen, reference what\'s visible.',
     '- Don\'t narrate the screen unprompted ("I see a slide showing..."). That sounds like a screen reader.',
     '- Latest frame wins. If the share changed between turns, the most recent image is what to reference.',
-    '- If screen content is critical to a specific question, describe specifics — names, numbers, the actual content. Otherwise stay light.',
+    '- If screen content is critical to a specific question, describe specifics like names, numbers, the actual content. Otherwise stay light.',
     '',
-    'SNAPPY ON CALLS — this is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text — a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long — they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
+    'SNAPPY ON CALLS. This is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text, a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long, they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
     '',
-    'LIVE DATA ON A CALL — unlike Slack, you can\'t pull live Teamwork/system data mid-call (it would stall the conversation). So when someone asks for a specific live number or status you don\'t already know from memory, don\'t go quiet trying to fetch it — say you\'ll pull it and drop it in Slack right after, and keep the call moving. Never claim a specific live figure you don\'t actually have.'
+    'LIVE DATA ON A CALL. Unlike Slack, you can\'t pull live Teamwork or system data mid-call (it would stall the conversation). So when someone asks for a specific live number or status you don\'t already know from memory, don\'t go quiet trying to fetch it. Say you\'ll pull it and drop it in Slack right after, and keep the call moving. Never claim a specific live figure you don\'t actually have.'
   ].join('\n');
 
   return block;
@@ -680,9 +680,9 @@ function buildDummyPrompt(customPrompt, agentName = 'Nora (Test)') {
   const intro = [
     `You are "${agentName}", a voice agent on a live meeting call. You exist to help test and rehearse meeting scenarios.`,
     '',
-    'You are in a live meeting. You are speaking out loud, so no markdown, no bullet points, no lists — natural spoken language only. You can be interrupted at any time; that\'s fine, conversations are like that.',
+    'You are in a live meeting. You are speaking out loud, so no markdown, no bullet points, no lists, natural spoken language only. You can be interrupted at any time; that\'s fine, conversations are like that.',
     '',
-    'Below is everything you know — your knowledge base and instructions for this test. Stay in character and work only from what you are given here. If you are asked something this brief does not cover, improvise plausibly in character or say you don\'t have that detail; never break character to explain that you are a test agent.',
+    'Below is everything you know: your knowledge base and instructions for this test. Stay in character and work only from what you are given here. If you are asked something this brief does not cover, improvise plausibly in character or say you don\'t have that detail; never break character to explain that you are a test agent.',
     '',
     '--- YOUR BRIEF ---',
     (customPrompt && customPrompt.trim()) ? customPrompt.trim() : '(No specific brief was provided. Play a generic, helpful meeting participant.)',
@@ -698,8 +698,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Swap channel-specific framing
   if (channel === 'slack') {
     base = base.replace(
-      'You\'re on a live audio call — speaking out loud, so no markdown or bullets, natural spoken language only. You can be interrupted; that\'s normal.',
-      'You\'re responding in Slack. Markdown, bullets, and code blocks are fine when they help. Threads are async — you don\'t have to answer instantly. The "default to talking, 3-6 sentences for substantive questions" guidance still applies; just don\'t write essays.'
+      'You\'re on a live audio call, speaking out loud, so no markdown or bullets, natural spoken language only. You can be interrupted, that\'s normal.',
+      'You\'re responding in Slack. Markdown, bullets, and code blocks are fine when they help. Threads are async, you don\'t have to answer instantly. The "default to talking, 3-6 sentences for substantive questions" guidance still applies; just don\'t write essays.'
     );
   }
 
@@ -751,12 +751,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 
   if (opinions.length > 0) {
     const opinionItems = isRealtime ? opinions.slice(-8) : opinions;
-    base = `${base}\n\n[Your takes — opinions you've formed from watching how things go around here]\n${opinionItems.map(m => `- ${m.fact}`).join('\n')}`;
+    base = `${base}\n\n[Your takes: opinions you've formed from watching how things go around here]\n${opinionItems.map(m => `- ${m.fact}`).join('\n')}`;
   }
 
   if (learnings.length > 0) {
     const learningItems = isRealtime ? learnings.slice(-8) : learnings;
-    base = `${base}\n\n[Your learnings — what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior — how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => `- ${m.fact}`).join('\n')}`;
+    base = `${base}\n\n[Your learnings: what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior, how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => `- ${m.fact}`).join('\n')}`;
   }
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
@@ -854,7 +854,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     // nothing about a project that simply wasn't loaded for THIS conversation — she can pull it
     // up by having the cowork loop look, or by asking which project they mean.
     if (projectsOmitted > 0) {
-      memoryBlock += `\n\n(Notes on ${projectsOmitted} other project${projectsOmitted === 1 ? '' : 's'} aren't loaded right now — the most active ones are above. If someone asks about a project you don't see here, say you'll pull it up rather than claiming you have nothing on it.)`;
+      memoryBlock += `\n\n(Notes on ${projectsOmitted} other project${projectsOmitted === 1 ? '' : 's'} aren't loaded right now. The most active ones are above. If someone asks about a project you don't see here, say you'll pull it up rather than claiming you have nothing on it.)`;
     }
 
     // Build the relevance focus for the UNCACHED tail. Naming the projects this conversation is
@@ -897,7 +897,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       if (relevant.length > 0) {
         convFocus += `\n\n[Most relevant to what's being discussed right now]\n`
           + relevant.map(x => `- ${x.n}`).join('\n')
-          + `\nLead with these — they're what the current conversation is about.`;
+          + `\nLead with these. They're what the current conversation is about.`;
         // Recover full notes for any relevant project that fell off the budgeted list above.
         for (const x of relevant) {
           if (omittedNames.includes(x.n)) convFocus += renderProjectBlock(x.n);
@@ -946,14 +946,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   }
   const activityToday = actToday.slice(-40), activityYesterday = actYest.slice(-40);
   if (activityToday.length > 0 || activityYesterday.length > 0) {
-    let actBlock = '\n\n[What you actually did recently — your own activity log]\n';
+    let actBlock = '\n\n[What you actually did recently, your own activity log]\n';
     if (activityToday.length > 0) {
       actBlock += `\nToday (${today}):\n` + activityToday.map(l => `- ${l}`).join('\n');
     }
     if (activityYesterday.length > 0) {
       actBlock += `\n\nYesterday (${yesterday}):\n` + activityYesterday.map(l => `- ${l}`).join('\n');
     }
-    actBlock += '\n\nWhen someone asks "what did you do today" / "what have you been up to" / "anything new from your side," THIS is the answer. Read it in your own voice — don\'t recite verbatim and don\'t say you don\'t know.';
+    actBlock += '\n\nWhen someone asks "what did you do today" / "what have you been up to" / "anything new from your side," THIS is the answer. Read it in your own voice, don\'t recite verbatim and don\'t say you don\'t know.';
     base = `${base}${actBlock}`;
   }
 
@@ -964,7 +964,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const pending = tasks.filter(t => t.status === 'pending').slice(-8);
   if (pending.length > 0) {
     const tasksBlock = pending.map(t => `- ${t.action}${t.detail ? ': ' + t.detail : ''}${t.assignee ? ' (for ' + t.assignee + ')' : ''}`).join('\n');
-    base = `${base}\n\n[Your open task queue — things in flight, not yet done]\n${tasksBlock}`;
+    base = `${base}\n\n[Your open task queue, things in flight, not yet done]\n${tasksBlock}`;
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -985,7 +985,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const ctNow = new Date();
   const ctDateStr = ctNow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/Chicago' });
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
-  volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally — Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
+  volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally, like Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
 
   // Conversation-relevance focus (uncached) — names the projects this conversation is about and
   // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
@@ -1009,7 +1009,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       } else {
         intro = `The person who sent you to this meeting is **${r.name}**${roleHint}. They're who you're most likely about to talk to.`;
       }
-      lines.push(`${intro} Use their first name naturally. Don't ask who they are, don't ask their role, don't ask what they do — you already know them (cross-reference your memory + team list).`);
+      lines.push(`${intro} Use their first name naturally. Don't ask who they are, don't ask their role, don't ask what they do, you already know them (cross-reference your memory + team list).`);
     }
     if (Array.isArray(meetingContext.expectedAttendees) && meetingContext.expectedAttendees.length > 0) {
       const fmt = a => a.name ? `${a.name}${a.email ? ` <${a.email}>` : ''}` : (a.email || 'unknown');
@@ -1019,7 +1019,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       if (internal.length > 0) parts.push(`LimeLight side: ${internal.map(fmt).join(', ')}`);
       if (external.length > 0) parts.push(`client/prospect side: ${external.map(fmt).join(', ')}`);
       if (parts.length > 0) {
-        lines.push(`Expected attendees on this meeting — ${parts.join('; ')}. Match voices to names as you hear them. Don't ask people to introduce themselves; you have the list.`);
+        lines.push(`Expected attendees on this meeting: ${parts.join('; ')}. Match voices to names as you hear them. Don't ask people to introduce themselves; you have the list.`);
       }
     }
     if (meetingContext.subject) {
@@ -1042,14 +1042,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       .filter(s => s && !/^(Nora|Screen share)/.test(s)))];
     if (heardSpeakers.length > 0) {
       const speakerLine = heardSpeakers.length === 1
-        ? `So far the only person who's spoken besides you is **${heardSpeakers[0]}**. They are your conversation partner — use their name, don't ask who they are, don't ask their role unless they bring it up. If you know them from your memory or team list, use that context.`
+        ? `So far the only person who's spoken besides you is **${heardSpeakers[0]}**. They are your conversation partner, use their name, don't ask who they are, don't ask their role unless they bring it up. If you know them from your memory or team list, use that context.`
         : `People you've heard speak in this meeting (besides yourself): **${heardSpeakers.join(', ')}**. When one of them speaks, use their name. Match the voice you hear to the names you've heard. Don't treat anyone as a generic "you" or "someone."`;
       volatile += `\n\n[Who's in this meeting with you right now]\n${speakerLine}`;
     }
     const recent = transcript.slice(-(isRealtime ? 15 : maxTranscriptLines));
     const transcriptBlock = recent.map(t => `[${t.speaker}]: ${t.text}`).join('\n');
     const header = isRealtime
-      ? '[Recent conversation in this meeting — speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. The bracketed name before each line IS who said it. Use those names. If someone asks "what\'s my name" or "do you know who I am" — the answer is literally in the brackets above their question. Never say "remind me your name" or "I don\'t want to guess" when a labeled name is sitting right here in your context.\n'
+      ? '[Recent conversation in this meeting, speaker-labeled]\nAudio is your primary signal; this transcript is here so you can attach NAMES to voices. The bracketed name before each line IS who said it. Use those names. If someone asks "what\'s my name" or "do you know who I am", the answer is literally in the brackets above their question. Never say "remind me your name" or "I don\'t want to guess" when a labeled name is sitting right here in your context.\n'
       : '[What\'s been discussed in this meeting so far]\n';
     volatile += `\n\n${header}${transcriptBlock}`;
   }
@@ -2617,7 +2617,7 @@ app.post('/webhook/chat', async (req, res) => {
       for (const t of TEAMWORK_TOOLS) { if (TW_WRITE_Z.has(t.definition.name)) continue; zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     }
     let zoomTail = zoomVolatile;
-    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE read tools (Teamwork: find projects, list/get tasks, milestones, tasklists, people, comments; plus web search). Someone @-mentioned you in the meeting chat — if they ask for a status, date, owner, or fact, LOOK IT UP and answer with the real data, concisely. Read-only here: if they want a task created or changed, say you\'ll set it up in Slack right after. Keep it tight — this is meeting chat, not an essay.';
+    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE read tools (Teamwork: find projects, list/get tasks, milestones, tasklists, people, comments; plus web search). Someone @-mentioned you in the meeting chat. If they ask for a status, date, owner, or fact, LOOK IT UP and answer with the real data, concisely. Read-only here: if they want a task created or changed, say you\'ll set it up in Slack right after. Keep it tight, this is meeting chat, not an essay.';
 
     const zoomReq = {
       model: 'claude-opus-4-8', // Opus 4.8; temperature omitted (Opus 4.8 rejects it)
@@ -2643,7 +2643,7 @@ app.post('/webhook/chat', async (req, res) => {
     // Empty-reply guard: a tool-only turn (or a cut-off chain) can come back with no text.
     // Never send a blank message into the meeting chat — give a short honest fallback instead.
     if (!reply) {
-      reply = "Give me a sec — I'll follow up in Slack with that.";
+      reply = "Give me a sec, I'll follow up in Slack with that.";
       console.warn('Zoom chat: empty model reply, sent fallback');
     }
 
@@ -2746,7 +2746,7 @@ app.post('/mute', requireAuth, (req, res) => {
         type: 'realtime',
         output_modalities: enabled ? ['text'] : ['audio'],
         instructions: enabled
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message — one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
           : updatedPrompt
       }
     }));
@@ -2947,7 +2947,7 @@ async function buildSlackThreadHistory(messages, noraUserId) {
     let content = await cleanSlackText(m.text || '');
     const unfurls = (m.attachments || [])
       .filter(a => a.title || a.text || a.fallback)
-      .map(a => `[shared link preview] ${(a.title || '').trim()}${a.text ? ' — ' + a.text.trim() : (a.fallback ? ' — ' + a.fallback.trim() : '')}`.trim());
+      .map(a => `[shared link preview] ${(a.title || '').trim()}${a.text ? ': ' + a.text.trim() : (a.fallback ? ': ' + a.fallback.trim() : '')}`.trim());
     if (unfurls.length) content += (content ? '\n' : '') + unfurls.join('\n');
     if (!content.trim()) continue;
     const role = isNora ? 'assistant' : 'user';
@@ -3617,7 +3617,7 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText) {
           model: 'claude-haiku-4-5-20251001',
           max_tokens: 80,
           temperature: 0.6,
-          system: 'You are Nora — LimeLight\'s PM agent. Someone just sent you file(s) in Slack with an instruction. Reply with ONE short sentence (under 20 words) acknowledging you got it and what you\'ll do, matching your direct, no-corporate-fluff voice. If they didn\'t give an instruction (file only, no text), ask briefly what they want done. Never say "got it" — vary the opener. No emoji. No "I\'ll be sure to" or "happy to help". Plain text only, no markdown.',
+          system: 'You are Nora, LimeLight\'s PM agent. Someone just sent you file(s) in Slack with an instruction. Reply with ONE short sentence (under 20 words) acknowledging you got it and what you\'ll do, matching your direct, no-corporate-fluff voice. If they didn\'t give an instruction (file only, no text), ask briefly what they want done. Never say "got it", vary the opener. No emoji. No "I\'ll be sure to" or "happy to help". Plain text only, no markdown.',
           messages: [{
             role: 'user',
             content: `Files received: ${fileMeta}\nUser said: ${queryText || '(no message text — they just dropped the file)'}`
@@ -3632,7 +3632,7 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText) {
   }
   if (!ackText) {
     ackText = queryText
-      ? `On it — I'll handle ${fileNoun} and follow up in this thread.`
+      ? `On it, I'll handle ${fileNoun} and follow up in this thread.`
       : `Got the file${savedFiles.length > 1 ? 's' : ''}. What would you like me to do with ${savedFiles.length > 1 ? 'them' : 'it'}?`;
   }
   try {
@@ -4018,7 +4018,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         return c ? `URL: ${u}\n${c}` : null;
       }))).filter(Boolean);
       if (fetched.length) {
-        urlBlock = `\n\n[Linked web pages — their actual content, fetched live so you can read them]\n${fetched.join('\n\n---\n\n')}\n\nYou CAN read pages linked in this conversation — the text above is the real page content. Use it directly; never say you can't open links or that a link "points back to itself."`;
+        urlBlock = `\n\n[Linked web pages, their actual content, fetched live so you can read them]\n${fetched.join('\n\n---\n\n')}\n\nYou CAN read pages linked in this conversation. The text above is the real page content. Use it directly; never say you can't open links or that a link "points back to itself."`;
       }
     }
 
@@ -4040,7 +4040,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText });
     let tail = slackVolatile;
     if (mode === 'proactive') {
-      tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact — a real status, a real date, a real name, a real number — not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said — OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI — DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited — read and inform only.';
+      tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel, nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact (a real status, a real date, a real name, a real number), not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI, DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited, read and inform only.';
     }
 
     // Financial-info access control. The recipient (`user`) is checked against the approved
@@ -4049,9 +4049,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // per-recipient, so it can't be part of the shared cached block.
     const financialApproved = isFinancialApproved(user);
     if (financialApproved) {
-      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list — you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
+      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list, so you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
     } else {
-      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context — those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack — reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
+      tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context. Those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
     }
 
     // Fetched web-page content rides in the uncached tail (per-conversation, would pollute the cache).
@@ -4095,23 +4095,23 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // points her here as the source of truth). Always emit exactly one of the three branches so every
     // reply states plainly what she can and can't do live, and she stops confabulating/flip-flopping.
     if (toolDefs.length > 1 || mcpServers.length) {
-      let note = '\n\nLIVE TOOLS attached to THIS reply — this is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
+      let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' • TEAMWORK — READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked — if ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action).';
+        note += ' • TEAMWORK: READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action).';
       } else if (teamworkOn) {
-        note += ' • TEAMWORK (read-only here) — find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
+        note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
-      if (hasWebSearch) note += ' • WEB_SEARCH — for current/external info you don\'t already have.';
+      if (hasWebSearch) note += ' • WEB_SEARCH: for current/external info you don\'t already have.';
       if (mcpServers.length) {
         const caps = mcpServers.map(s => MCP_CAP[s.name] ? `${MCP_CAP[s.name]} (${s.name})` : s.name);
-        note += ` • ${caps.join('; ')} — READ-ONLY; look things up, never modify through them.`;
+        note += ` • ${caps.join('; ')}: READ-ONLY; look things up, never modify through them.`;
       }
-      note += ' If a capability is NOT in this list, you do not have it this turn — say you\'ll check and follow up, don\'t claim you pulled it. Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the calls.';
+      note += ' If a capability is NOT in this list, you do not have it this turn, so say you\'ll check and follow up, don\'t claim you pulled it. Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the calls.';
       tail += note;
     } else if (hasWebSearch) {
-      tail += '\n\nLIVE TOOLS attached to THIS reply: WEB_SEARCH only. Use it when the question genuinely needs current/external info you don\'t already have — not for things in your memory or casual chat. Anything else (live Teamwork, etc.) is NOT attached this turn; say you\'ll check and follow up rather than claiming you looked it up. Answer in your own voice; don\'t narrate that you searched.';
+      tail += '\n\nLIVE TOOLS attached to THIS reply: WEB_SEARCH only. Use it when the question genuinely needs current/external info you don\'t already have, not for things in your memory or casual chat. Anything else (live Teamwork, etc.) is NOT attached this turn; say you\'ll check and follow up rather than claiming you looked it up. Answer in your own voice; don\'t narrate that you searched.';
     } else {
-      tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up — do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
+      tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
 
     const reqBody = {
@@ -4176,8 +4176,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // come back empty; give an honest fallback rather than an empty Slack bubble.
     if (!reply) {
       reply = wroteLive
-        ? "Done — that's updated in Teamwork."
-        : "Sorry, I didn't get a clean answer together on that — mind rephrasing?";
+        ? "Done, that's updated in Teamwork."
+        : "Sorry, I didn't get a clean answer together on that, mind rephrasing?";
       console.warn('Slack direct: empty model reply, sent fallback (wroteLive=' + wroteLive + ')');
     }
 
@@ -4186,7 +4186,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // scrubbed version in history so future replies don't re-leak the same content.
     if (!financialApproved && containsFinancialContent(reply)) {
       console.warn(`💰 Financial scrubber blocked leak to unapproved user ${user}; original reply length=${reply.length}`);
-      reply = "I can't share financial details over Slack — reach out to John or Mallory and they can help.";
+      reply = "I can't share financial details over Slack, reach out to John or Mallory and they can help.";
     }
 
     console.log('🤖 Nora (Slack):', reply);
@@ -5965,7 +5965,7 @@ async function describeScreenshareForTranscript(base64Png, botId) {
         model: 'claude-haiku-4-5-20251001',
         max_tokens: 200,
         temperature: 0,
-        system: 'You describe screen-share content from a business meeting in 1-3 short sentences. Focus on substantive content — what app/document is shown, key text or numbers visible, what the user is looking at or working on. Skip cosmetic details (UI chrome, theme, scroll position) unless they matter. Be terse and factual; this is logged context, not narration. If the frame is mostly blank, a loading state, or an idle desktop, say so briefly.',
+        system: 'You describe screen-share content from a business meeting in 1-3 short sentences. Focus on substantive content: what app/document is shown, key text or numbers visible, what the user is looking at or working on. Skip cosmetic details (UI chrome, theme, scroll position) unless they matter. Be terse and factual; this is logged context, not narration. If the frame is mostly blank, a loading state, or an idle desktop, say so briefly.',
         messages: [{
           role: 'user',
           content: [
@@ -6574,7 +6574,7 @@ wss.on('connection', async (ws, req) => {
         type: 'realtime',
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
-          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message — one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
+          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
           : systemPrompt,
         audio: {
           input: {
@@ -6749,7 +6749,7 @@ wss.on('connection', async (ws, req) => {
         type: 'realtime',
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED — your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task — in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message — one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
+          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
           : updatedPrompt
       }
     }));
