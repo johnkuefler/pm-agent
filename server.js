@@ -2908,6 +2908,165 @@ function liveMcpServers(financialApproved) {
   return out;
 }
 
+// ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
+// Custom client-side tools: the model requests one, we execute it against the Teamwork API
+// using the key the app already holds (no MCP, no OAuth), then feed the result back. All
+// READ-ONLY by construction — there are no create/update/delete tools here.
+function teamworkEnabled() { return !!(process.env.TEAMWORK_API_KEY && process.env.TEAMWORK_BASE_URL); }
+async function twApiGet(pathAndQuery) {
+  const twKey = process.env.TEAMWORK_API_KEY, twBase = process.env.TEAMWORK_BASE_URL;
+  const auth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
+  const r = await axios.get(`${twBase}${pathAndQuery}`, {
+    headers: { Authorization: auth, 'Content-Type': 'application/json' }, timeout: 12000
+  });
+  return r.data;
+}
+// Defensive field access — Teamwork v3 is camelCase, v1 is dashed; tolerate both.
+const tw = (o, ...keys) => { for (const k of keys) if (o && o[k] !== undefined && o[k] !== null) return o[k]; return undefined; };
+function slimTwTask(t) {
+  return {
+    id: t.id, name: t.name, status: t.status,
+    assignees: tw(t, 'assignees', 'responsible-party-names') || undefined,
+    due: tw(t, 'dueDate', 'due-date', 'dueDateTime') || undefined,
+    start: tw(t, 'startDate', 'start-date') || undefined,
+    priority: t.priority || undefined,
+    progress: t.progress != null ? t.progress : undefined,
+    completed: tw(t, 'completed', 'status') === true || t.status === 'completed' || undefined,
+    project: tw(t, 'projectName', 'project-name') || (t.project && t.project.name) || undefined,
+    tasklist: tw(t, 'tasklistName', 'todo-list-name') || (t.tasklist && t.tasklist.name) || undefined
+  };
+}
+
+// Each tool: an Anthropic tool definition + an executor that returns a slimmed result.
+const TEAMWORK_TOOLS = [
+  { definition: {
+      name: 'teamwork_find_projects',
+      description: 'Find active Teamwork projects by name, or list active projects if no query. Use this first to resolve a project name to its id. Returns id, name, company, status.',
+      input_schema: { type: 'object', properties: { query: { type: 'string', description: 'optional name search; omit to list active projects' } } }
+    },
+    execute: async ({ query }) => {
+      const q = query ? `&searchTerm=${encodeURIComponent(query)}` : '';
+      const d = await twApiGet(`/projects/api/v3/projects.json?status=ACTIVE&pageSize=50&include=companies${q}`);
+      const companies = d?.included?.companies || {};
+      return (d?.projects || []).slice(0, 50).map(p => ({
+        id: p.id, name: p.name, status: p.status,
+        company: (p.company?.id && companies[p.company.id]?.name) || p.company?.name || ''
+      }));
+    } },
+  { definition: {
+      name: 'teamwork_get_project',
+      description: 'Get a single Teamwork project\'s details by id: name, company, status, description, dates.',
+      input_schema: { type: 'object', properties: { project_id: { type: 'string' } }, required: ['project_id'] }
+    },
+    execute: async ({ project_id }) => {
+      const d = await twApiGet(`/projects/api/v3/projects/${encodeURIComponent(project_id)}.json?include=companies`);
+      const p = d?.project || {};
+      const companies = d?.included?.companies || {};
+      return { id: p.id, name: p.name, status: p.status, description: p.description,
+        company: (p.company?.id && companies[p.company.id]?.name) || p.company?.name || '',
+        startDate: tw(p, 'startDate', 'start-date'), endDate: tw(p, 'endDate', 'end-date') };
+    } },
+  { definition: {
+      name: 'teamwork_list_tasks',
+      description: 'List tasks, optionally scoped to a project and/or filtered by status. Returns task name, assignees, due date, priority, progress. Use teamwork_find_projects first to get a project_id.',
+      input_schema: { type: 'object', properties: {
+        project_id: { type: 'string', description: 'optional — scope to one project' },
+        include_completed: { type: 'boolean', description: 'default false' }
+      } }
+    },
+    execute: async ({ project_id, include_completed }) => {
+      const parts = ['pageSize=75', `includeCompletedTasks=${include_completed ? 'true' : 'false'}`];
+      if (project_id) parts.push(`projectIds=${encodeURIComponent(project_id)}`);
+      const d = await twApiGet(`/projects/api/v3/tasks.json?${parts.join('&')}`);
+      return (d?.tasks || []).slice(0, 75).map(slimTwTask);
+    } },
+  { definition: {
+      name: 'teamwork_get_task',
+      description: 'Get one task\'s full detail by id: description, assignees, due date, progress, status, tasklist, project.',
+      input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
+    },
+    execute: async ({ task_id }) => {
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json`);
+      const t = d?.task || {};
+      return { ...slimTwTask(t), description: tw(t, 'description', 'descriptionContentType') || t.description };
+    } },
+  { definition: {
+      name: 'teamwork_list_milestones',
+      description: 'List milestones (deadlines), optionally scoped to a project. Returns name, deadline, status, project. Use for "what\'s due / what\'s the deadline" questions.',
+      input_schema: { type: 'object', properties: { project_id: { type: 'string' } } }
+    },
+    execute: async ({ project_id }) => {
+      const q = project_id ? `&projectIds=${encodeURIComponent(project_id)}` : '';
+      const d = await twApiGet(`/projects/api/v3/milestones.json?pageSize=75${q}`);
+      return (d?.milestones || []).slice(0, 75).map(m => ({
+        id: m.id, name: m.name, deadline: tw(m, 'deadline', 'deadlineDate'),
+        status: m.status, completed: m.completed, project: tw(m, 'projectName', 'project-name') || (m.project && m.project.name)
+      }));
+    } },
+  { definition: {
+      name: 'teamwork_list_tasklists',
+      description: 'List a project\'s tasklists (how its work is grouped). Returns id and name. Needs a project_id.',
+      input_schema: { type: 'object', properties: { project_id: { type: 'string' } }, required: ['project_id'] }
+    },
+    execute: async ({ project_id }) => {
+      const d = await twApiGet(`/projects/api/v3/tasklists.json?projectIds=${encodeURIComponent(project_id)}&pageSize=100`);
+      return (d?.tasklists || []).slice(0, 100).map(l => ({ id: l.id, name: l.name }));
+    } },
+  { definition: {
+      name: 'teamwork_list_people',
+      description: 'List Teamwork people (team members). Returns id, name, company, title. Use to resolve who someone is or who\'s on the team.',
+      input_schema: { type: 'object', properties: { query: { type: 'string', description: 'optional name search' } } }
+    },
+    execute: async ({ query }) => {
+      const q = query ? `&searchTerm=${encodeURIComponent(query)}` : '';
+      const d = await twApiGet(`/projects/api/v3/people.json?pageSize=200${q}`);
+      return (d?.people || []).slice(0, 200).map(p => ({
+        id: p.id, name: [tw(p, 'firstName', 'first-name'), tw(p, 'lastName', 'last-name')].filter(Boolean).join(' ') || p.name,
+        company: (p.company && p.company.name) || tw(p, 'companyName'), title: p.title
+      }));
+    } },
+  { definition: {
+      name: 'teamwork_get_task_comments',
+      description: 'Get recent comments / activity on a task by id. Use for "what\'s the latest on this task" questions.',
+      input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
+    },
+    execute: async ({ task_id }) => {
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}/comments.json?pageSize=20`);
+      return (d?.comments || []).slice(-20).map(c => ({
+        author: tw(c, 'authorFirstName', 'author-firstname'), date: tw(c, 'postedDateTime', 'datetime'),
+        body: (tw(c, 'body', 'comment') || '').slice(0, 500)
+      }));
+    } },
+];
+
+// Run a Claude request that may use client-side tools, executing them and looping until the
+// model produces its final answer. Server-side tools (web_search, MCP) are handled by Anthropic
+// inside each call and don't trigger the loop; only our custom tools do. Capped iterations.
+async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 3) {
+  let response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, headers);
+  let iters = 0;
+  while (response.data.stop_reason === 'tool_use' && iters < maxIters) {
+    iters++;
+    const toolUses = response.data.content.filter(b => b.type === 'tool_use');
+    if (!toolUses.length) break;
+    const results = [];
+    for (const tu of toolUses) {
+      let content;
+      try {
+        const exec = executors[tu.name];
+        content = exec ? JSON.stringify(await exec(tu.input || {})) : JSON.stringify({ error: `unknown tool ${tu.name}` });
+      } catch (e) {
+        content = JSON.stringify({ error: (e.response?.data?.message || e.message || 'tool failed') });
+      }
+      results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(content).slice(0, 12000) });
+    }
+    reqBody.messages.push({ role: 'assistant', content: response.data.content });
+    reqBody.messages.push({ role: 'user', content: results });
+    response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, headers);
+  }
+  return response;
+}
+
 function verifySlackSignature(req) {
   const sigSecret = process.env.SLACK_SIGNING_SECRET;
   if (!sigSecret) return true; // skip in dev if not set
@@ -3576,32 +3735,43 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // recent news) instead of guessing or deferring to the cowork loop. Anthropic runs the
     // search server-side in the same request; we just read the final text. Gated off proactive
     // mode (an unsolicited interjection shouldn't spawn searches).
-    const slackTools = mode !== 'proactive'
-      ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]
-      : undefined;
-    if (slackTools) {
-      tail += '\n\nYou have a web_search tool. Use it when the question genuinely needs current or external info you don\'t already have (a product/company you don\'t know, recent news, something time-sensitive). Don\'t search for things already in your memory or for casual chat — search only when it actually makes your answer better, then answer in your own voice (don\'t narrate that you searched).';
+    // Assemble her live tools (direct replies only). Three kinds coexist in one request:
+    //   - web_search (Anthropic-run, server-side)
+    //   - MCP connector servers (Anthropic-run, server-side) — LimeLight / LimeLight PM
+    //   - Teamwork direct-API tools (we run them, client-side loop) — the app already has the key
+    const toolDefs = [];
+    const toolExecutors = {};
+    if (mode !== 'proactive') {
+      toolDefs.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
+      if (teamworkEnabled()) {
+        for (const t of TEAMWORK_TOOLS) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
+      }
     }
-
-    // Live data tools — attach the configured MCP servers (Teamwork / LimeLight / LimeLight PM)
-    // for direct replies so she can look up live status, projects, estimates, etc. Gated off
-    // proactive mode; the financial PM MCP is gated to approved recipients (see liveMcpServers).
+    const teamworkOn = Object.keys(toolExecutors).length > 0;
     const mcpServers = mode !== 'proactive' ? liveMcpServers(financialApproved) : [];
-    if (mcpServers.length) {
-      tail += `\n\nYou have LIVE LOOKUP tools connected (${mcpServers.map(s => s.name).join(', ')}). Use them to pull real, current data when someone asks — task/project status in Teamwork, estimates/forecast/profitability, etc. — instead of guessing or saying you'll check later. IMPORTANT: these are READ-ONLY for you in chat. Only ever LOOK THINGS UP (list/get/read). NEVER create, update, delete, draft, advance, or modify anything through a tool in a Slack reply — if something needs to be created or changed, say you'll queue it and let your background loop do it. Keep lookups tight (one or two), then answer in your own voice; don't narrate the tool calls.`;
+
+    // One combined "you have live tools" note.
+    if (toolDefs.length > 1 || mcpServers.length) {
+      const sources = [];
+      if (teamworkOn) sources.push('Teamwork (live projects, tasks, milestones, people)');
+      mcpServers.forEach(s => sources.push(s.name));
+      tail += `\n\nYou have LIVE LOOKUP tools: ${sources.join(', ')}. Use them to pull real, current data when someone asks — task/project status, deadlines, estimates — instead of guessing or saying you'll check later. For Teamwork, resolve the project with teamwork_find_projects first, then list its tasks/milestones. IMPORTANT: every one of these is READ-ONLY for you in chat. Only LOOK THINGS UP. NEVER create, update, delete, draft, advance, or modify anything through a tool in a Slack reply — if something needs creating or changing, say you'll queue it for your background loop. Keep it to a couple of lookups, then answer in your own voice; don't narrate the tool calls.`;
+    }
+    if (toolDefs.length === 1) {
+      // web_search only
+      tail += '\n\nYou have a web_search tool. Use it when the question genuinely needs current or external info you don\'t already have. Don\'t search for things in your memory or for casual chat — only when it makes your answer better, then answer in your own voice (don\'t narrate that you searched).';
     }
 
     const reqBody = {
-      // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
-      // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
-      // the cached stable block above largely offsets it. Slack tolerates the small latency.
-      // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; default
-      // sampling applies. Sonnet/Haiku call sites elsewhere still accept it.
+      // Opus 4.8 for Slack — highest-leverage path (a human reads every word). temperature is
+      // omitted (Opus 4.8 rejects it).
       model: 'claude-opus-4-8',
-      max_tokens: 600, // a touch higher — live-data answers can need room to synthesize
+      max_tokens: 600, // room for live-data answers to synthesize
       system: cachedSystem(slackStable, tail),
-      messages: claudeMessages,
-      ...(slackTools ? { tools: slackTools } : {}),
+      // Copy — the tool loop appends turns to reqBody.messages; we must not mutate the shared
+      // in-memory history (it would replay raw tool_use/tool_result blocks on the next reply).
+      messages: claudeMessages.slice(),
+      ...(toolDefs.length ? { tools: toolDefs } : {}),
       ...(mcpServers.length ? { mcp_servers: mcpServers } : {})
     };
     const betaHeaders = [];
@@ -3614,14 +3784,18 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     } };
     let response;
     try {
-      response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
+      // runClaudeToolLoop executes any client-side (Teamwork) tool calls and loops; server-side
+      // tools (web_search, MCP) are handled by Anthropic and don't trigger the loop.
+      response = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors);
     } catch (err) {
-      // Safety net: if the web_search tool OR the MCP connector ever causes a rejection, retry
-      // WITHOUT them so a Slack reply never fails over a tool/connector issue. Re-throw others.
-      if (slackTools || mcpServers.length) {
+      // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
+      // never fails over a tool/connector issue. Re-throw genuine non-tool failures.
+      if (toolDefs.length || mcpServers.length) {
         console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
         delete reqBody.mcp_servers;
+        // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
+        reqBody.messages = claudeMessages.slice();
         response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
       } else { throw err; }
     }
