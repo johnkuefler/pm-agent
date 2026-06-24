@@ -2897,6 +2897,20 @@ async function twApiGet(pathAndQuery) {
   });
   return r.data;
 }
+// Write helper (POST/PUT/DELETE) — used by the create/update/complete/comment tools. Uses
+// Teamwork's stable v1 endpoints (well-documented for writes). DELETE is used internally for
+// test cleanup only; it is NOT exposed as a tool (Nora cannot delete from chat).
+async function twApiSend(method, pathAndQuery, body) {
+  const twKey = process.env.TEAMWORK_API_KEY, twBase = process.env.TEAMWORK_BASE_URL;
+  const auth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
+  const r = await axios({
+    method, url: `${twBase}${pathAndQuery}`,
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    data: body, timeout: 15000
+  });
+  return r.data;
+}
+const twYmd = (s) => s ? String(s).replace(/[^0-9]/g, '').slice(0, 8) : undefined; // YYYY-MM-DD → YYYYMMDD
 // Teamwork v3 returns related objects as bare {id, type} refs and puts the real data in a
 // top-level `included` sideload (requested via ?include=…). slimTwTask resolves assignee and
 // tasklist refs to names using that sideload.
@@ -3024,6 +3038,81 @@ const TEAMWORK_TOOLS = [
           body: (c.body || '').slice(0, 500)
         };
       });
+    } },
+
+  // ── WRITE tools — Nora can create/update tasks, mark them done, and comment. Use ONLY when
+  //    explicitly asked to create or change something. No delete tool exists (by design).
+  { definition: {
+      name: 'teamwork_create_task',
+      description: 'Create a NEW task in a Teamwork tasklist. Tasks live inside tasklists, so first resolve the project (teamwork_find_projects) and its tasklist (teamwork_list_tasklists). To assign someone, get their id via teamwork_list_people. Use ONLY when explicitly asked to add/create a task. After it succeeds, tell the user what you created.',
+      input_schema: { type: 'object', properties: {
+        tasklist_id: { type: 'string', description: 'required — the tasklist to add the task to' },
+        name: { type: 'string', description: 'the task title' },
+        assignee_ids: { type: 'array', items: { type: 'string' }, description: 'optional Teamwork person ids' },
+        due_date: { type: 'string', description: 'optional, YYYY-MM-DD' },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'], description: 'optional' },
+        description: { type: 'string', description: 'optional detail' }
+      }, required: ['tasklist_id', 'name'] }
+    },
+    execute: async ({ tasklist_id, name, assignee_ids, due_date, priority, description }) => {
+      const item = { content: name };
+      if (assignee_ids && assignee_ids.length) item['responsible-party-id'] = assignee_ids.join(',');
+      if (due_date) item['due-date'] = twYmd(due_date);
+      if (priority) item.priority = priority;
+      if (description) item.description = description;
+      const d = await twApiSend('post', `/tasklists/${encodeURIComponent(tasklist_id)}/tasks.json`, { 'todo-item': item });
+      return { ok: true, task_id: d.id || d.taskId || (d.task && d.task.id), status: d.STATUS || 'OK' };
+    } },
+  { definition: {
+      name: 'teamwork_update_task',
+      description: 'Update an existing task: rename, change due date, reassign, set priority or progress. Use ONLY when explicitly asked to change a task. Resolve the task id first (teamwork_list_tasks / teamwork_find_projects). Report what you changed.',
+      input_schema: { type: 'object', properties: {
+        task_id: { type: 'string' },
+        name: { type: 'string', description: 'optional new title' },
+        due_date: { type: 'string', description: 'optional, YYYY-MM-DD' },
+        assignee_ids: { type: 'array', items: { type: 'string' }, description: 'optional — replaces assignees' },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+        progress: { type: 'integer', description: 'optional 0-100' }
+      }, required: ['task_id'] }
+    },
+    execute: async ({ task_id, name, due_date, assignee_ids, priority, progress }) => {
+      const item = {};
+      if (name) item.content = name;
+      if (due_date) item['due-date'] = twYmd(due_date);
+      if (assignee_ids) item['responsible-party-id'] = assignee_ids.join(',');
+      if (priority) item.priority = priority;
+      if (progress != null) item.progress = progress;
+      await twApiSend('put', `/tasks/${encodeURIComponent(task_id)}.json`, { 'todo-item': item });
+      return { ok: true, updated: Object.keys(item) };
+    } },
+  { definition: {
+      name: 'teamwork_complete_task',
+      description: 'Mark a task complete (done). Use when asked to close/finish/complete a task.',
+      input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
+    },
+    execute: async ({ task_id }) => {
+      await twApiSend('put', `/tasks/${encodeURIComponent(task_id)}/complete.json`, {});
+      return { ok: true, status: 'completed' };
+    } },
+  { definition: {
+      name: 'teamwork_reopen_task',
+      description: 'Reopen a completed task (mark it not done again).',
+      input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
+    },
+    execute: async ({ task_id }) => {
+      await twApiSend('put', `/tasks/${encodeURIComponent(task_id)}/uncomplete.json`, {});
+      return { ok: true, status: 'reopened' };
+    } },
+  { definition: {
+      name: 'teamwork_add_comment',
+      description: 'Add a comment to a task. Use when asked to leave a note/update/comment on a task. Does not notify followers by default.',
+      input_schema: { type: 'object', properties: {
+        task_id: { type: 'string' }, body: { type: 'string', description: 'the comment text' }
+      }, required: ['task_id', 'body'] }
+    },
+    execute: async ({ task_id, body }) => {
+      const d = await twApiSend('post', `/tasks/${encodeURIComponent(task_id)}/comments.json`, { comment: { body, notify: 'false' } });
+      return { ok: true, comment_id: d.commentId || d.id || (d.comment && d.comment.id) };
     } },
 ];
 
@@ -3736,10 +3825,14 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
 
     // One combined "you have live tools" note.
     if (toolDefs.length > 1 || mcpServers.length) {
-      const sources = [];
-      if (teamworkOn) sources.push('Teamwork (live projects, tasks, milestones, people)');
-      mcpServers.forEach(s => sources.push(s.name));
-      tail += `\n\nYou have LIVE LOOKUP tools: ${sources.join(', ')}. Use them to pull real, current data when someone asks — task/project status, deadlines, estimates — instead of guessing or saying you'll check later. For Teamwork, resolve the project with teamwork_find_projects first, then list its tasks/milestones. IMPORTANT: every one of these is READ-ONLY for you in chat. Only LOOK THINGS UP. NEVER create, update, delete, draft, advance, or modify anything through a tool in a Slack reply — if something needs creating or changing, say you'll queue it for your background loop. Keep it to a couple of lookups, then answer in your own voice; don't narrate the tool calls.`;
+      const mcpNames = mcpServers.map(s => s.name);
+      let note = '\n\nYou have LIVE tools — use them to pull real, current data (and, for Teamwork, to make changes) when someone asks, instead of guessing or saying you\'ll check later.';
+      if (teamworkOn) {
+        note += ' TEAMWORK — you can both READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND MAKE CHANGES (create a task, update one, mark it complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist or task as needed; to assign someone, get their id with teamwork_list_people. Only CREATE or CHANGE something when you\'re clearly asked to — if the ask is ambiguous, confirm what they want first. After any change, tell them exactly what you did. You CANNOT delete tasks; if someone wants something deleted, say they\'ll need to do that in Teamwork.';
+      }
+      if (mcpNames.length) note += ` The other connected tools (${mcpNames.join(', ')}) are READ-ONLY — look things up only, never modify through them.`;
+      note += ' Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the tool calls.';
+      tail += note;
     }
     if (toolDefs.length === 1) {
       // web_search only
