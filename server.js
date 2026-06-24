@@ -740,6 +740,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     base = `${base}\n\n[Your learnings — what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior — how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => `- ${m.fact}`).join('\n')}`;
   }
 
+  // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
+  // the volatile section. Lives here (function scope) so the volatile half can read it.
+  let convFocus = '';
+
   if (memory.length > 0 || projects.length > 0) {
     // Group memories by project
     const general = memory.filter(m => !m.project);
@@ -780,55 +784,87 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     }
 
     // Include the rest of the project list, skipping the hinted one (already rendered above).
-    // RELEVANCE RANKING: order projects by how much the current conversation is about them, so
-    // the budget loads what's actually being discussed (the project, its client, its PM named
-    // in the conversation) first, then active projects, then the rest. The long tail of
-    // unrelated projects falls off when the budget is hit — relevance decides ORDER, budget
-    // decides the cutoff, so nothing relevant is ever dropped in favor of something irrelevant.
+    // ORDER IS STABLE (active-first, then alphabetical) — deliberately NOT conversation-dependent.
+    // The cached `base` block must be byte-identical call-to-call for prompt caching to hit;
+    // ordering these by per-conversation relevance (as we used to) silently rewrote the cached
+    // prefix on every message and defeated the ~90% cache discount. Relevance now lives in the
+    // UNCACHED tail as a focus hint (built below, emitted in the volatile section), which also
+    // re-surfaces full notes for any conversation-relevant project the budget happened to drop.
     const allProjectNames = new Set([...projects.map(p => p.name), ...Object.keys(byProject)]);
     let projectNames = [...allProjectNames].filter(n => n !== hintCanonical);
-    const relevanceScore = (name) => {
-      const proj = projects.find(p => p.name === name);
-      let s = 0;
-      if (conversationText) {
-        if (name && conversationText.includes(name.toLowerCase())) s += 100;
-        if (proj?.client && conversationText.includes(proj.client.toLowerCase())) s += 60;
-        if (proj?.pm && conversationText.includes(proj.pm.toLowerCase())) s += 25;
-      }
-      if ((proj?.status || '').toLowerCase() === 'active') s += 1; // active-first tiebreaker
-      return s;
-    };
-    projectNames.sort((a, b) => relevanceScore(b) - relevanceScore(a));
-    let projectsOmitted = 0;
-    for (const name of projectNames) {
-      if (memoryBlock.length >= memoryCharBudget) { projectsOmitted++; continue; }
-      memoryBlock += `\n\n## ${name}`;
-      const proj = projects.find(p => p.name === name);
+    const projByName = (name) => projects.find(p => p.name === name);
+    const isActive = (name) => (projByName(name)?.status || '').toLowerCase() === 'active';
+    projectNames.sort((a, b) => {
+      const av = isActive(a) ? 0 : 1, bv = isActive(b) ? 0 : 1;
+      if (av !== bv) return av - bv;   // active projects first
+      return a.localeCompare(b);        // then stable alphabetical — same every call
+    });
+    // Render one project's block (meta + details + memories). Shared by the budgeted base list
+    // and the relevance-recovery block below so the two stay identical.
+    const renderProjectBlock = (name) => {
+      let s = `\n\n## ${name}`;
+      const proj = projByName(name);
       if (proj) {
         const meta = [];
         if (proj.client) meta.push(`client: ${proj.client}`);
         if (proj.status) meta.push(`status: ${proj.status}`);
         if (proj.pm) meta.push(`PM: ${proj.pm}`);
         if (proj.phase) meta.push(`phase: ${proj.phase}`);
-        if (meta.length > 0) memoryBlock += `\n(${meta.join(' · ')})`;
+        if (meta.length > 0) s += `\n(${meta.join(' · ')})`;
         if (proj.details) {
+          // With a higher budget, realtime can include more per-project memories than
+          // the old slice(-5). For non-hinted projects, cap at 10 to keep room for breadth.
           const details = isRealtime ? proj.details.slice(0, 300) : proj.details;
-          memoryBlock += `\n${details}`;
+          s += `\n${details}`;
         }
       }
       if (byProject[name]) {
-        // With a higher budget, realtime can include more per-project memories than
-        // the old slice(-5). For non-hinted projects, cap at 10 to keep room for breadth.
         const items = isRealtime ? byProject[name].slice(-10) : byProject[name];
-        memoryBlock += '\n' + items.map(m => `- ${m.fact}`).join('\n');
+        s += '\n' + items.map(m => `- ${m.fact}`).join('\n');
       }
+      return s;
+    };
+    const omittedNames = [];
+    for (const name of projectNames) {
+      if (memoryBlock.length >= memoryCharBudget) { omittedNames.push(name); continue; }
+      memoryBlock += renderProjectBlock(name);
     }
+    const projectsOmitted = omittedNames.length;
 
     // If projects were dropped for budget, tell her they exist so she doesn't claim she knows
     // nothing about a project that simply wasn't loaded for THIS conversation — she can pull it
     // up by having the cowork loop look, or by asking which project they mean.
     if (projectsOmitted > 0) {
-      memoryBlock += `\n\n(Notes on ${projectsOmitted} other project${projectsOmitted === 1 ? '' : 's'} aren't loaded for this conversation — they weren't relevant to what's being discussed. If someone asks about a project you don't see here, say you'll pull it up rather than claiming you have nothing on it.)`;
+      memoryBlock += `\n\n(Notes on ${projectsOmitted} other project${projectsOmitted === 1 ? '' : 's'} aren't loaded right now — the most active ones are above. If someone asks about a project you don't see here, say you'll pull it up rather than claiming you have nothing on it.)`;
+    }
+
+    // Build the relevance focus for the UNCACHED tail. Naming the projects this conversation is
+    // actually about lets her lead with them even though the cached list is in a fixed order; and
+    // for any relevant project the budget dropped above, re-attach its full notes here so nothing
+    // relevant is lost. This varies per message WITHOUT busting the cached `base`.
+    if (conversationText) {
+      const relevanceScore = (name) => {
+        const proj = projByName(name);
+        let s = 0;
+        if (name && conversationText.includes(name.toLowerCase())) s += 100;
+        if (proj?.client && conversationText.includes(proj.client.toLowerCase())) s += 60;
+        if (proj?.pm && conversationText.includes(proj.pm.toLowerCase())) s += 25;
+        return s;
+      };
+      const relevant = projectNames
+        .map(n => ({ n, s: relevanceScore(n) }))
+        .filter(x => x.s > 0)
+        .sort((a, b) => b.s - a.s)
+        .slice(0, 5);
+      if (relevant.length > 0) {
+        convFocus += `\n\n[Most relevant to what's being discussed right now]\n`
+          + relevant.map(x => `- ${x.n}`).join('\n')
+          + `\nLead with these — they're what the current conversation is about.`;
+        // Recover full notes for any relevant project that fell off the budgeted list above.
+        for (const x of relevant) {
+          if (omittedNames.includes(x.n)) convFocus += renderProjectBlock(x.n);
+        }
+      }
     }
 
     if (memoryBlock.length > memoryCharBudget) {
@@ -912,6 +948,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const ctDateStr = ctNow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/Chicago' });
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
   volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally — Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
+
+  // Conversation-relevance focus (uncached) — names the projects this conversation is about and
+  // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
+  if (convFocus) volatile += convFocus;
 
   // [Who you're talking to right now] — pre-conversation identity injection from the entry
   // point: /join sender, calendar attendees, or Slack requester lookup. Populated BEFORE
@@ -2551,16 +2591,23 @@ app.post('/webhook/chat', async (req, res) => {
     const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
     let response;
     try {
-      response = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors);
+      ({ response } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors));
     } catch (err) {
       console.warn('Zoom chat reply with tools failed; retrying without:', err.response?.data?.error?.message || err.message);
       delete zoomReq.tools; zoomReq.messages = history.slice();
       response = await axios.post('https://api.anthropic.com/v1/messages', zoomReq, zoomHeaders);
     }
 
-    const reply = response.data.content
+    let reply = (response.data.content || [])
       .filter(b => b.type === 'text')
-      .map(b => b.text).join(' ');
+      .map(b => b.text).join(' ').trim();
+
+    // Empty-reply guard: a tool-only turn (or a cut-off chain) can come back with no text.
+    // Never send a blank message into the meeting chat — give a short honest fallback instead.
+    if (!reply) {
+      reply = "Give me a sec — I'll follow up in Slack with that.";
+      console.warn('Zoom chat: empty model reply, sent fallback');
+    }
 
     console.log('🤖 Nora (chat):', reply);
     history.push({ role: 'assistant', content: reply });
@@ -2824,6 +2871,24 @@ async function fetchSlackThread(channel, threadTs) {
     if (!r.data || !r.data.ok) { console.warn('conversations.replies not ok:', r.data && r.data.error); return null; }
     return Array.isArray(r.data.messages) ? r.data.messages : null;
   } catch (err) { console.warn('fetchSlackThread failed:', err.message); return null; }
+}
+
+// Pull the recent CHANNEL conversation (conversations.history) so a PROACTIVE interjection sees
+// the surrounding discussion — not just the single top-level message that tripped the gate. A
+// non-threaded channel message has no "thread," so fetchSlackThread would return just that one
+// line and Nora would be reacting with zero context. Returns the raw Slack messages in
+// chronological order (oldest→newest, ending with the trigger) or null on failure.
+async function fetchSlackChannelHistory(channel, latestTs, limit = 12) {
+  try {
+    const params = new URLSearchParams({ channel, limit: String(limit), inclusive: 'true' });
+    if (latestTs) params.set('latest', latestTs);
+    const r = await axios.get(`https://slack.com/api/conversations.history?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000
+    });
+    if (!r.data || !r.data.ok) { console.warn('conversations.history not ok:', r.data && r.data.error); return null; }
+    const msgs = Array.isArray(r.data.messages) ? r.data.messages : [];
+    return msgs.slice().reverse(); // history returns newest→oldest; flip to chronological
+  } catch (err) { console.warn('fetchSlackChannelHistory failed:', err.message); return null; }
 }
 
 // Turn a fetched Slack thread into Claude message history: each message becomes a labeled
@@ -3154,15 +3219,28 @@ const TEAMWORK_TOOLS = [
 // Run a Claude request that may use client-side tools, executing them and looping until the
 // model produces its final answer. Server-side tools (web_search, MCP) are handled by Anthropic
 // inside each call and don't trigger the loop; only our custom tools do. Capped iterations.
-async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 3) {
-  let response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, headers);
+async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6) {
+  const URL = 'https://api.anthropic.com/v1/messages';
+  let response = await axios.post(URL, reqBody, headers);
   let iters = 0;
-  while (response.data.stop_reason === 'tool_use' && iters < maxIters) {
+  const firedTools = []; // client-side tools that actually executed this turn (for downstream dedup)
+  while (iters < maxIters) {
+    const sr = response.data.stop_reason;
+    // Server-side tools (web_search / MCP) can pause the turn at their internal limit — continue
+    // by re-sending the accumulated assistant content; otherwise the turn can end with no text.
+    if (sr === 'pause_turn') {
+      iters++;
+      reqBody.messages.push({ role: 'assistant', content: response.data.content });
+      response = await axios.post(URL, reqBody, headers);
+      continue;
+    }
+    if (sr !== 'tool_use') break;
     iters++;
     const toolUses = response.data.content.filter(b => b.type === 'tool_use');
     if (!toolUses.length) break;
     const results = [];
     for (const tu of toolUses) {
+      firedTools.push(tu.name);
       let content;
       try {
         const exec = executors[tu.name];
@@ -3174,9 +3252,16 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 3) {
     }
     reqBody.messages.push({ role: 'assistant', content: response.data.content });
     reqBody.messages.push({ role: 'user', content: results });
-    response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, headers);
+    if (iters >= maxIters) {
+      // Hit the cap mid-chain — force a FINAL text answer with tools off, so she never returns
+      // an empty turn (which would post a blank Slack/chat message). Results are already provided.
+      const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice; delete wrap.mcp_servers;
+      try { response = await axios.post(URL, wrap, headers); } catch { /* keep last response */ }
+      break;
+    }
+    response = await axios.post(URL, reqBody, headers);
   }
-  return response;
+  return { response, firedTools };
 }
 
 function verifySlackSignature(req) {
@@ -3786,7 +3871,14 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // (e.g. missing channels:history scope), fall back to in-memory.
     const isDM = channelType === 'im' || channelType === 'mpim';
     let threadMsgs = null;
-    if (!isDM) threadMsgs = await fetchSlackThread(channel, threadTs);
+    if (mode === 'proactive') {
+      // Proactive interjection fires on a top-level channel message whose "thread" is just itself.
+      // Pull the recent CHANNEL conversation instead so she grounds her chime-in in what's actually
+      // being discussed around it — not a single decontextualized line.
+      threadMsgs = await fetchSlackChannelHistory(channel, threadTs, 12);
+    } else if (!isDM) {
+      threadMsgs = await fetchSlackThread(channel, threadTs);
+    }
     let claudeMessages = history;
     if (threadMsgs && threadMsgs.length) {
       const built = await buildSlackThreadHistory(threadMsgs, noraBotUserId);
@@ -3853,7 +3945,10 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     const TW_WRITE = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
     const toolDefs = [];
     const toolExecutors = {};
-    toolDefs.push({ type: 'web_search_20250305', name: 'web_search', max_uses: isDirect ? 3 : 2 });
+    // web_search is DIRECT-ONLY. A proactive interjection should ground itself in INTERNAL truth
+    // (live Teamwork + memory), not go do web research before chiming in — that's slow, costs more,
+    // and isn't what "grounded in data" means for an unsolicited channel comment.
+    if (isDirect) toolDefs.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
     if (teamworkEnabled()) {
       for (const t of TEAMWORK_TOOLS) {
         if (TW_WRITE.has(t.definition.name) && !isDirect) continue; // no writes when chiming in unsolicited
@@ -3903,10 +3998,11 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       ...(betaHeaders.length ? { 'anthropic-beta': betaHeaders.join(',') } : {})
     } };
     let response;
+    let firedTools = [];
     try {
       // runClaudeToolLoop executes any client-side (Teamwork) tool calls and loops; server-side
       // tools (web_search, MCP) are handled by Anthropic and don't trigger the loop.
-      response = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors);
+      ({ response, firedTools } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
       // never fails over a tool/connector issue. Re-throw genuine non-tool failures.
@@ -3920,16 +4016,32 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       } else { throw err; }
     }
 
-    let reply = response.data.content
+    let reply = (response.data.content || [])
       .filter(b => b.type === 'text')
-      .map(b => b.text).join(' ');
+      .map(b => b.text).join(' ').trim();
+
+    // Whether a live Teamwork WRITE actually executed this turn — used below to avoid the
+    // extractor re-creating a task/comment Nora already made directly.
+    const wroteLive = firedTools.some(n => TW_WRITE.has(n));
 
     // Allow proactive mode to opt out at generation time by returning nothing.
-    if (mode === 'proactive' && !reply.trim()) {
+    if (mode === 'proactive' && !reply) {
       console.log('💬 Slack proactive abort (empty reply): model declined to chime in');
+      // Arm the cooldown anyway: a declined interjection still cost a full Opus+tools call.
+      // Without this, every subsequent message re-triggers the same expensive empty abort.
+      markProactivePost(channel);
       // Don't pollute history with the user-line + nothing; pop the user message we just added
       history.pop();
       return;
+    }
+
+    // Direct path must NEVER post a blank message. A tool-only turn or a cut-off chain can
+    // come back empty; give an honest fallback rather than an empty Slack bubble.
+    if (!reply) {
+      reply = wroteLive
+        ? "Done — that's updated in Teamwork."
+        : "Sorry, I didn't get a clean answer together on that — mind rephrasing?";
+      console.warn('Slack direct: empty model reply, sent fallback (wroteLive=' + wroteLive + ')');
     }
 
     // Defense-in-depth output scrubber: if the system prompt's financial restriction failed
@@ -3986,9 +4098,19 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       // Pass thread_ts through so cowork can post the resolution back into this same thread.
       // DMs don't have meaningful threads — pass empty string so /notify uses default behavior.
       const sourceThreadTs = (channelType === 'im' || channelType === 'mpim') ? '' : threadTs;
-      extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+      const isProactive = mode === 'proactive';
+      // Task extraction: skip when (a) Nora already created/updated the task LIVE this turn — a
+      // Teamwork write fired, so re-filing it as a queued task would duplicate it; or (b) this was
+      // a PROACTIVE interjection — an unsolicited observation shouldn't manufacture queued work.
+      if (wroteLive || isProactive) {
+        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : 'proactive observation'})`);
+      } else {
+        extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+      }
+      // Memory extraction runs in all cases — learning facts from the discussion is always useful.
       extractMemory(text, text, reply).catch(() => {});
-      extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+      // Research needs: also skip on proactive — don't queue research off chatter she wasn't asked about.
+      if (!isProactive) extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -6320,7 +6442,15 @@ wss.on('connection', async (ws, req) => {
         audio: {
           input: {
             format: { type: 'audio/pcm', rate: 24000 },
-            transcription: { model: 'whisper-1' },
+            // gpt-4o-mini-transcribe replaces whisper-1: faster, cheaper, and more accurate on
+            // names/jargon — which matters here because this transcript is what she uses to attach
+            // NAMES to voices and what the extraction pipeline reads. Better names in = better
+            // name recall + cleaner extracted tasks/memory.
+            transcription: { model: 'gpt-4o-mini-transcribe' },
+            // Far-field noise reduction: meeting audio comes through laptop/conference-room mics
+            // (often across a table), so suppress room noise before VAD/transcription. Cleaner
+            // input → fewer false turn-ends and fewer garbled names.
+            noise_reduction: { type: 'far_field' },
             // Semantic VAD uses the model's own sense of utterance completion to
             // detect turn boundaries — much better than raw silence timeouts.
             turn_detection: {

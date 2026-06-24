@@ -640,10 +640,28 @@ Based on what you've learned from memory, tasks, emails, and Slack, **communicat
 
 **Use the Teamwork-first rule:** If the concern relates to an existing Teamwork task, leave a comment on that task and @mention the relevant person. If there's no relevant Teamwork task, then use Slack.
 
-- If any deadlines are approaching and no recent activity suggests progress, flag it (Teamwork comment on the task if one exists, otherwise Slack message to the PM or assignee). **Skip projects whose `status` is `wrapped`, `archived`, `completed`, or `on-hold`** — those don't need active follow-ups. Use `project.pm` to identify the right point of contact when the task assignee isn't obvious.
+### 6a. Deadline sweep (the grounded one — run every loop)
+
+This is the concrete version of "flag approaching deadlines." Don't eyeball it from memory — **query Teamwork directly** so every flag is backed by a real task and a real date. This is the heart of "proactive comments grounded in data, not vibes."
+
+1. **Pull the live deadline picture from Teamwork.** Use the Teamwork MCP to list incomplete tasks with a due date in the danger window — **anything overdue, plus anything due in the next 3 days** — and check milestones the same way:
+   - `twprojects-list_tasks` filtered to incomplete tasks with a due date `<= today+3` (include overdue). Sideload the assignee + project so you have owner and project name without extra calls.
+   - `twprojects-list_milestones` for milestones due in the same window.
+   - **Exclude** tasks/milestones in any project whose name starts with `Opportunity - ` or `LimeLight `, and skip any local project whose `status` is `wrapped`, `archived`, `completed`, or `on-hold` (cross-reference `GET /projects`). Those don't need a nudge.
+
+2. **For each at-risk item, decide if it's worth flagging.** A deadline is worth flagging when it's **overdue, or due within 3 days AND shows no recent progress** (no recent comments/activity, still in an early workflow stage). A task due tomorrow that someone's actively working (recent comments, in a late stage) doesn't need a poke — don't be noise.
+
+3. **Idempotency — never re-flag the same deadline.** Before flagging, check `GET /markers/deadline-flagged:{task_id}:{due_date}` (include the due date in the key so a *slipped* deadline legitimately re-flags, but the same standing deadline doesn't get poked every hour). If it `exists`, skip. After flagging, set it: `POST /markers { "key": "deadline-flagged:{task_id}:{due_date}", "data": { "note": "Flagged {task} due {due_date} to {who}", "date": "YYYY-MM-DD" } }`.
+
+4. **Flag it, grounded and specific** — Teamwork-first (comment on the task, @mention the owner) if a task exists; otherwise Slack the assignee or `project.pm`. Lead with the concrete fact, not a vibe: *"DMC's QA milestone is due Thursday and it's the only one still open — anything blocking it?"* not *"just flagging some deadlines might be coming up."* Use `project.pm` as the point of contact when the task assignee isn't obvious.
+
+5. **Cap the volume.** At most ~5 deadline flags per run across the whole book, prioritizing overdue-and-stalled first. If there are more, flag the worst and note the rest in the end-of-run summary so John has the full list. A wall of nudges trains people to ignore her.
+
+### 6b. Other proactive follow-ups
+
 - If you notice blocked work or unresolved questions from transcripts/emails, nudge the right person — comment on the relevant Teamwork task, or Slack them if no task exists
 - If there are meetings today (check Google Calendar with `gcal_list_events`), send a heads-up to relevant people if prep seems incomplete
-- **Don't repeat a follow-up you've already sent today** — check memory before nudging
+- **Don't repeat a follow-up you've already sent today** — check memory/markers before nudging
 
 ## Step 7: Team Warmth (occasional)
 
