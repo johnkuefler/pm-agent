@@ -2545,6 +2545,51 @@ app.post('/webhook/transcript', async (req, res) => {
 // Zoom chat trigger — type "@nora your question" in chat, Nora replies via chat
 const chatSessions = {}; // bot_id → conversation history for chat context
 
+// Shared muted-mode note appended to the realtime instructions when Nora is muted (voice off, but
+// she still answers a direct question with a short text/chat reply). Single source so it never drifts.
+const MUTED_VOICE_NOTE = '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.';
+
+// Apply mute/unmute to a live meeting session: flips the flag, live-updates the realtime voice
+// session (text-only + silent instructions when muted, audio otherwise), re-asserts her live tools,
+// and tells the browser to suppress/resume audio playback. Shared by the dashboard /mute toggle and
+// the in-meeting Zoom-chat command so the two stay perfectly in sync.
+function applyMute(session, enabled) {
+  if (!session) return;
+  session.muted = enabled;
+  console.log(`🔇 Mute ${enabled ? 'enabled' : 'disabled'}`);
+  if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
+    const updatedPrompt = realtimePromptForSession(session);
+    const voiceTools = realtimeTeamworkTools();
+    session.openaiWs.send(JSON.stringify({
+      type: 'session.update',
+      session: {
+        type: 'realtime',
+        output_modalities: enabled ? ['text'] : ['audio'],
+        instructions: enabled ? updatedPrompt + MUTED_VOICE_NOTE : updatedPrompt,
+        ...(voiceTools.length ? { tools: voiceTools, tool_choice: 'auto' } : {})
+      }
+    }));
+  }
+  if (session.clientWs && session.clientWs.readyState === WebSocket.OPEN) {
+    session.clientWs.send(JSON.stringify({ type: 'nora.mute', muted: enabled }));
+  }
+}
+
+// Detect an in-meeting "mute/unmute Nora" chat command. Requires "nora" plus a clear directive, and
+// ignores questions and long sentences, so normal chat that happens to mention muting doesn't flip
+// her. Returns 'mute' | 'unmute' | null.
+function parseNoraMuteCommand(text) {
+  const t = (text || '').toLowerCase();
+  if (!/\bnora\b/.test(t)) return null;
+  if (/\?\s*$/.test(t.trim())) return null;            // a question, not a command
+  if (t.trim().split(/\s+/).length > 9) return null;   // too long to be a terse command
+  if (/\bunmute\b/.test(t)) return 'unmute';
+  if (/\b(you can (talk|speak|chime in)|(talk|speak) again|turn (yourself )?back on|chime back in)\b/.test(t)) return 'unmute';
+  if (/\bmute\b/.test(t)) return 'mute';
+  if (/\b(be quiet|stay quiet|go quiet|quiet down|stop talking|stop speaking|stay silent|mute yourself)\b/.test(t)) return 'mute';
+  return null;
+}
+
 app.post('/webhook/chat', async (req, res) => {
   res.sendStatus(200);
 
@@ -2588,6 +2633,24 @@ app.post('/webhook/chat', async (req, res) => {
 
   // Only respond if message contains @nora (case-insensitive)
   if (!finalText.toLowerCase().includes('@nora') && !finalText.toLowerCase().includes('nora')) return;
+
+  // In-meeting mute control: "nora mute" / "nora unmute" (and natural variants) flips her VOICE
+  // mute, the same toggle as the dashboard (they share session.muted, so they stay in sync). She
+  // still answers here in chat when muted; this only controls whether she talks out loud on the call.
+  const muteCmd = parseNoraMuteCommand(finalText);
+  if (muteCmd) {
+    const enable = muteCmd === 'mute';
+    applyMute(session, enable);
+    console.log(`🔇 Zoom chat ${enable ? 'muted' : 'unmuted'} Nora (by ${speaker})`);
+    const confirm = enable
+      ? 'Going quiet on the call. I\'ll still answer here in chat. Type "nora unmute" to bring my voice back.'
+      : 'Back on, I can talk on the call again.';
+    try {
+      await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`, { message: confirm },
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
+    } catch (e) { console.warn('mute-confirm chat send failed:', e.message); }
+    return; // command handled; don't run the normal reply path
+  }
 
   // Strip "@nora" or "nora" from the beginning and clean up
   const query = finalText.replace(/@?nora/gi, '').trim();
@@ -2738,29 +2801,7 @@ app.post('/mute', requireAuth, (req, res) => {
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const session = sessions[bot_id];
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !session.muted;
-  session.muted = enabled;
-  console.log(`🔇 Mute mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
-
-  // Live-update the OpenAI Realtime session if connected
-  if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
-    const updatedPrompt = realtimePromptForSession(session);
-    session.openaiWs.send(JSON.stringify({
-      type: 'session.update',
-      session: {
-        type: 'realtime',
-        output_modalities: enabled ? ['text'] : ['audio'],
-        instructions: enabled
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
-          : updatedPrompt
-      }
-    }));
-  }
-
-  // Notify the browser to suppress/resume audio playback
-  if (session.clientWs && session.clientWs.readyState === WebSocket.OPEN) {
-    session.clientWs.send(JSON.stringify({ type: 'nora.mute', muted: enabled }));
-  }
-
+  applyMute(session, enabled); // flips the flag + live-updates the voice session + notifies the browser
   res.json({ ok: true, muted: enabled, bot_id });
 });
 
@@ -6731,7 +6772,7 @@ wss.on('connection', async (ws, req) => {
         type: 'realtime',
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
-          ? systemPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
+          ? systemPrompt + MUTED_VOICE_NOTE
           : systemPrompt,
         audio: {
           input: {
@@ -6919,7 +6960,7 @@ wss.on('connection', async (ws, req) => {
         type: 'realtime',
         output_modalities: isMuted ? ['text'] : ['audio'],
         instructions: isMuted
-          ? updatedPrompt + '\n\nYOU ARE CURRENTLY MUTED. Your audio output is disabled and participants cannot hear you. Do NOT respond at all. Do not generate any text replies, acknowledgments, offers to help, or commentary. Just listen silently. The only exception is if someone says your name and directly asks you a question or gives you a task, in that case, respond with a brief text reply. Your text reply will be posted to the meeting chat so the asker can see your confirmation, so write it like a quick chat message, one short line, no preamble, no meta-narration, just answer or acknowledge ("got it, I will file that", "checking now", or the actual short answer). Otherwise, produce absolutely no output.'
+          ? updatedPrompt + MUTED_VOICE_NOTE
           : updatedPrompt,
         // Re-assert the live Teamwork READ tools on refresh (session.update merges, but keep it
         // explicit so a config reset can't silently drop her ability to look things up mid-call).
