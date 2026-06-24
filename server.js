@@ -3512,6 +3512,101 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled)
   } catch (e) { console.warn('voice tool: failed to return result:', e.message); }
 }
 
+// ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
+//    asked in a conversation, instead of queuing it for the hourly loop. Posts as the Nora bot (same
+//    as her replies). DIRECT replies only (never on a proactive interjection). Financial figures are
+//    refused so she can't broadcast dollar amounts to a channel she may not control the audience of.
+// Resolve a channel NAME (e.g. "pm-team") to its id among channels the bot is in. Cached ~10 min.
+let _slackChanByName = null, _slackChanByNameAt = 0;
+async function resolveSlackChannelByName(name) {
+  const clean = String(name || '').replace(/^#/, '').trim().toLowerCase();
+  if (!clean) return null;
+  if (!_slackChanByName || Date.now() - _slackChanByNameAt > 600000) {
+    const map = {}; let cursor = '';
+    try {
+      do {
+        const r = await axios.get(`https://slack.com/api/conversations.list?types=public_channel,private_channel&limit=200&exclude_archived=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+          { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+        if (!r.data || !r.data.ok) break;
+        for (const c of (r.data.channels || [])) if (c.name) map[c.name.toLowerCase()] = c.id;
+        cursor = r.data.response_metadata?.next_cursor || '';
+      } while (cursor);
+      if (Object.keys(map).length) { _slackChanByName = map; _slackChanByNameAt = Date.now(); }
+    } catch (e) { console.warn('channel list failed:', e.message); }
+  }
+  return (_slackChanByName && _slackChanByName[clean]) || null;
+}
+// Resolve a person's NAME to a Slack user id (real name, display name, or handle). Cached ~10 min.
+let _slackUserByName = null, _slackUserByNameAt = 0;
+async function resolveSlackUserByName(name) {
+  const q = String(name || '').trim().toLowerCase();
+  if (!q) return null;
+  if (!_slackUserByName || Date.now() - _slackUserByNameAt > 600000) {
+    const map = {}; let cursor = '';
+    try {
+      do {
+        const r = await axios.get(`https://slack.com/api/users.list?limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
+          { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+        if (!r.data || !r.data.ok) break;
+        for (const u of (r.data.members || [])) {
+          if (u.deleted || u.is_bot) continue;
+          const real = (u.real_name || u.profile?.real_name || '').toLowerCase();
+          const disp = (u.profile?.display_name || '').toLowerCase();
+          if (real) map[real] = u.id;
+          if (disp) map[disp] = u.id;
+          if (u.name) map[u.name.toLowerCase()] = u.id;
+        }
+        cursor = r.data.response_metadata?.next_cursor || '';
+      } while (cursor);
+      if (Object.keys(map).length) { _slackUserByName = map; _slackUserByNameAt = Date.now(); }
+    } catch (e) { console.warn('users list failed:', e.message); }
+  }
+  if (!_slackUserByName) return null;
+  if (_slackUserByName[q]) return _slackUserByName[q];
+  const hit = Object.keys(_slackUserByName).find(k => k.split(' ')[0] === q || k.startsWith(q + ' '));
+  return hit ? _slackUserByName[hit] : null;
+}
+const SLACK_SEND_TOOL = {
+  definition: {
+    name: 'slack_send_message',
+    description: 'Send a Slack message RIGHT NOW to ANOTHER channel or person, on behalf of whoever you are talking to, instead of queuing it for the hourly loop. Use when they ask you to send/post/share/tell something to a channel ("send a note to the PM team") or DM a teammate ("let Mallory know ..."). Pass channel (a name like "pm-team" with or without #, or a channel id starting C) OR user (a person name or user id starting U), plus text. Use ONLY when clearly asked to send something; if the target or the wording is ambiguous, ask one quick question first. After it sends, say exactly what you sent and where. You are sending AS yourself (Nora), so attribute to the requester when it helps ("Heads up from John: ...") and never send something inappropriate coming from you. Never put dollar amounts or other financial figures in a sent message.',
+    input_schema: { type: 'object', properties: {
+      channel: { type: 'string', description: 'target channel: a name (e.g. "pm-team") or channel id (C...)' },
+      user: { type: 'string', description: 'OR a person to DM: their name or Slack user id (U...)' },
+      text: { type: 'string', description: 'the message to send, in your own voice' }
+    }, required: ['text'] }
+  },
+  execute: async ({ channel, user, text }) => {
+    if (!text || !text.trim()) return { error: 'text is required' };
+    if (containsFinancialContent(text)) return { error: 'Refused: that message contains financial figures. You will not broadcast dollar amounts or rates to a channel or person; tell the requester to share those directly.' };
+    const post = async (channelId, where) => {
+      const r = await axios.post('https://slack.com/api/chat.postMessage', { channel: channelId, text },
+        { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+      if (!r.data || !r.data.ok) return { error: `Slack send failed: ${r.data && r.data.error}` };
+      return { ok: true, sent_to: where, ts: r.data.ts };
+    };
+    try {
+      if (channel) {
+        const id = /^C[A-Z0-9]/.test(channel) ? channel : await resolveSlackChannelByName(channel);
+        if (!id) return { error: `Could not find a channel named "${channel}" that the Nora bot is a member of. The bot has to be added to a channel before it can post there.` };
+        return await post(id, `#${String(channel).replace(/^#/, '')}`);
+      }
+      if (user) {
+        const uid = /^U[A-Z0-9]/.test(user) ? user : await resolveSlackUserByName(user);
+        if (!uid) return { error: `Could not find a person named "${user}".` };
+        const dm = await axios.post('https://slack.com/api/conversations.open', { users: uid },
+          { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+        const id = dm.data && dm.data.channel && dm.data.channel.id;
+        if (!id) return { error: 'Could not open a DM with that person.' };
+        return await post(id, `a DM to ${user}`);
+      }
+      return { error: 'Give me a channel or a person to send to.' };
+    } catch (e) {
+      return { error: e.response?.data?.error || e.message || 'send failed' };
+    }
+  }
+};
+
 // Run a Claude request that may use client-side tools, executing them and looping until the
 // model produces its final answer. Server-side tools (web_search, MCP) are handled by Anthropic
 // inside each call and don't trigger the loop; only our custom tools do. Capped iterations.
@@ -4330,6 +4425,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute;
       }
     }
+    // Live Slack send — direct replies only. She can send a note to another channel/person right
+    // now when asked, instead of queuing it for the hourly loop. Never on a proactive interjection.
+    if (isDirect) { toolDefs.push(SLACK_SEND_TOOL.definition); toolExecutors[SLACK_SEND_TOOL.definition.name] = SLACK_SEND_TOOL.execute; }
     const teamworkOn = teamworkEnabled();
     // MCP connectors are read-only; proactive (a channel post) never gets the financial ones.
     const mcpServers = liveMcpServers(isDirect ? financialApproved : false);
@@ -4354,6 +4452,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
       if (hasWebSearch) note += ' • WEB_SEARCH: for current/external info you don\'t already have.';
+      if (isDirect) note += ' • SLACK_SEND_MESSAGE: when someone asks you to send/post a note to another channel or DM a teammate (e.g. "send a heads-up to the PM team"), send it RIGHT NOW with slack_send_message and report what you sent, instead of saying you\'ll queue it for later. Only when clearly asked; confirm the target/wording first if it\'s ambiguous.';
       if (mcpServers.length) {
         const caps = mcpServers.map(s => MCP_CAP[s.name] ? `${MCP_CAP[s.name]} (${s.name})` : s.name);
         note += ` • ${caps.join('; ')}: READ-ONLY; look things up, never modify through them.`;
@@ -4409,9 +4508,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       .filter(b => b.type === 'text')
       .map(b => b.text).join(' ').trim();
 
-    // Whether a live Teamwork WRITE actually executed this turn — used below to avoid the
-    // extractor re-creating a task/comment Nora already made directly.
+    // Whether a live Teamwork WRITE or a live Slack SEND actually executed this turn — used below to
+    // avoid the extractor re-creating a task/comment/send Nora already did directly (which would
+    // double-send the Slack message or re-file the task on the next hourly loop).
     const wroteLive = firedTools.some(n => TW_WRITE.has(n));
+    const sentSlack = firedTools.includes('slack_send_message');
 
     // Allow proactive mode to opt out at generation time by returning nothing.
     if (mode === 'proactive' && !reply) {
@@ -4427,10 +4528,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Direct path must NEVER post a blank message. A tool-only turn or a cut-off chain can
     // come back empty; give an honest fallback rather than an empty Slack bubble.
     if (!reply) {
-      reply = wroteLive
-        ? "Done, that's updated in Teamwork."
+      reply = sentSlack ? "Sent."
+        : wroteLive ? "Done, that's updated in Teamwork."
         : "Sorry, I didn't get a clean answer together on that, mind rephrasing?";
-      console.warn('Slack direct: empty model reply, sent fallback (wroteLive=' + wroteLive + ')');
+      console.warn('Slack direct: empty model reply, sent fallback (wroteLive=' + wroteLive + ', sentSlack=' + sentSlack + ')');
     }
 
     // Defense-in-depth output scrubber: if the system prompt's financial restriction failed
@@ -4488,11 +4589,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // DMs don't have meaningful threads — pass empty string so /notify uses default behavior.
       const sourceThreadTs = (channelType === 'im' || channelType === 'mpim') ? '' : threadTs;
       const isProactive = mode === 'proactive';
-      // Task extraction: skip when (a) Nora already created/updated the task LIVE this turn — a
-      // Teamwork write fired, so re-filing it as a queued task would duplicate it; or (b) this was
-      // a PROACTIVE interjection — an unsolicited observation shouldn't manufacture queued work.
-      if (wroteLive || isProactive) {
-        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : 'proactive observation'})`);
+      // Task extraction: skip when (a) Nora already handled it LIVE this turn — a Teamwork write or a
+      // Slack send fired, so re-filing it as a queued task would duplicate it (and re-send the Slack
+      // message on the next loop); or (b) this was a PROACTIVE interjection — an unsolicited
+      // observation shouldn't manufacture queued work.
+      if (wroteLive || sentSlack || isProactive) {
+        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : 'proactive observation'})`);
       } else {
         extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
       }
