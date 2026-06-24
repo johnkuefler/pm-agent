@@ -153,3 +153,6 @@ dev-agent/context/repo-mapping-learned.md
 nora-dreams.json
 nora-interactions.json
 nora-markers.json
+
+# UI-managed MCP connections (holds auth tokens) — runtime only.
+nora-mcp.json

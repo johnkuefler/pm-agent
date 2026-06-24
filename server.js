@@ -2845,6 +2845,69 @@ async function buildSlackThreadHistory(messages, noraUserId) {
   return turns;
 }
 
+// Live MCP connector for Slack replies — lets her hit live data (Teamwork, LimeLight,
+// LimeLight PM) mid-reply via Anthropic's `mcp_servers` parameter (Anthropic connects to the
+// remote MCP server-side, single request, like web_search). Each MCP is configured by env
+// var: <PREFIX>_URL (required) and <PREFIX>_TOKEN (bearer auth, optional). No-op if URL unset,
+// so this is safe to ship before the creds exist — it activates the moment they're on Railway.
+//
+// SECURITY: the LimeLight PM MCP carries financial data (estimates, margins, profitability), so
+// it's only attached for financial-approved recipients — non-approved users never even trigger
+// a financial lookup. Mark any other financial-sensitive MCP the same way.
+//
+// READ-ONLY POSTURE: we only want live LOOKUPS in chat, never writes. We request a read-only
+// allowlist via tool_configuration where the server supports it, and the prompt reinforces it.
+// (Hard per-tool allowlisting can be tightened once we confirm each server's exact tool names.)
+const LIVE_MCP_DEFS = [
+  { prefix: 'TEAMWORK_MCP',      name: 'teamwork',     financial: false },
+  { prefix: 'LIMELIGHT_MCP',     name: 'limelight',    financial: false },
+  { prefix: 'LIMELIGHT_PM_MCP',  name: 'limelight-pm', financial: true  },
+];
+
+// UI-managed MCP connections live in a small store on the volume (gitignored — it holds auth
+// tokens). The dashboard Admin tab CRUDs these; env vars still work as a fallback for the three
+// named ones, so either path is valid. Store entries:
+//   { id, name, url, token, financial, enabled, created }
+const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
+const MCP_PATH_LOCAL = path.join(__dirname, 'nora-mcp.json');
+function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
+function loadMcpStore() {
+  try { return JSON.parse(fs.readFileSync(getMcpPath(), 'utf8')); } catch { return []; }
+}
+function saveMcpStore(list) {
+  const p = getMcpPath(); const tmp = `${p}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(list, null, 2)); fs.renameSync(tmp, p);
+}
+
+// Assemble the mcp_servers array for a Slack reply: UI-managed store entries first, then any
+// env-configured named MCPs not already covered. Disabled entries are skipped; financial MCPs
+// are withheld from non-approved recipients.
+function liveMcpServers(financialApproved) {
+  const out = [];
+  const seen = new Set();
+  for (const m of loadMcpStore()) {
+    if (!m.enabled || !m.url || !m.name) continue;
+    if (m.financial && !financialApproved) continue;
+    if (seen.has(m.name)) continue;
+    seen.add(m.name);
+    const server = { type: 'url', url: m.url, name: m.name };
+    if (m.token) server.authorization_token = m.token;
+    out.push(server);
+  }
+  for (const def of LIVE_MCP_DEFS) {
+    if (seen.has(def.name)) continue;
+    const url = process.env[`${def.prefix}_URL`];
+    if (!url) continue;
+    if (def.financial && !financialApproved) continue;
+    seen.add(def.name);
+    const server = { type: 'url', url, name: def.name };
+    const token = process.env[`${def.prefix}_TOKEN`];
+    if (token) server.authorization_token = token;
+    out.push(server);
+  }
+  return out;
+}
+
 function verifySlackSignature(req) {
   const sigSecret = process.env.SLACK_SIGNING_SECRET;
   if (!sigSecret) return true; // skip in dev if not set
@@ -3520,6 +3583,14 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       tail += '\n\nYou have a web_search tool. Use it when the question genuinely needs current or external info you don\'t already have (a product/company you don\'t know, recent news, something time-sensitive). Don\'t search for things already in your memory or for casual chat — search only when it actually makes your answer better, then answer in your own voice (don\'t narrate that you searched).';
     }
 
+    // Live data tools — attach the configured MCP servers (Teamwork / LimeLight / LimeLight PM)
+    // for direct replies so she can look up live status, projects, estimates, etc. Gated off
+    // proactive mode; the financial PM MCP is gated to approved recipients (see liveMcpServers).
+    const mcpServers = mode !== 'proactive' ? liveMcpServers(financialApproved) : [];
+    if (mcpServers.length) {
+      tail += `\n\nYou have LIVE LOOKUP tools connected (${mcpServers.map(s => s.name).join(', ')}). Use them to pull real, current data when someone asks — task/project status in Teamwork, estimates/forecast/profitability, etc. — instead of guessing or saying you'll check later. IMPORTANT: these are READ-ONLY for you in chat. Only ever LOOK THINGS UP (list/get/read). NEVER create, update, delete, draft, advance, or modify anything through a tool in a Slack reply — if something needs to be created or changed, say you'll queue it and let your background loop do it. Keep lookups tight (one or two), then answer in your own voice; don't narrate the tool calls.`;
+    }
+
     const reqBody = {
       // Opus 4.8 for Slack — the highest-leverage Claude upgrade (a human reads every word
       // and judges whether she's sharp). At $5/$25 the jump from Sonnet is only ~1.65x, and
@@ -3527,25 +3598,30 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; default
       // sampling applies. Sonnet/Haiku call sites elsewhere still accept it.
       model: 'claude-opus-4-8',
-      max_tokens: 400,
+      max_tokens: 600, // a touch higher — live-data answers can need room to synthesize
       system: cachedSystem(slackStable, tail),
       messages: claudeMessages,
-      ...(slackTools ? { tools: slackTools } : {})
+      ...(slackTools ? { tools: slackTools } : {}),
+      ...(mcpServers.length ? { mcp_servers: mcpServers } : {})
     };
+    const betaHeaders = [];
+    if (mcpServers.length) betaHeaders.push('mcp-client-2025-11-20'); // MCP connector beta
     const anthropicHeaders = { headers: {
       'Content-Type': 'application/json',
       'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01'
+      'anthropic-version': '2023-06-01',
+      ...(betaHeaders.length ? { 'anthropic-beta': betaHeaders.join(',') } : {})
     } };
     let response;
     try {
       response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
     } catch (err) {
-      // Safety net: if the web_search tool ever causes a rejection, retry WITHOUT tools so a
-      // Slack reply never fails over a search capability. Re-throw other failures.
-      if (slackTools) {
-        console.warn('Slack reply with web_search failed; retrying without tools:', err.response?.data?.error?.message || err.message);
+      // Safety net: if the web_search tool OR the MCP connector ever causes a rejection, retry
+      // WITHOUT them so a Slack reply never fails over a tool/connector issue. Re-throw others.
+      if (slackTools || mcpServers.length) {
+        console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
+        delete reqBody.mcp_servers;
         response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
       } else { throw err; }
     }
@@ -4703,6 +4779,58 @@ app.get('/admin/github-token', requireAuth, (req, res) => {
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (!token) return res.status(404).json({ error: 'GH_TOKEN not configured on the server' });
   res.json({ token });
+});
+
+// ── Live MCP connections (UI-managed) ───────────────────────────────────────
+// CRUD for the live-data MCP servers Nora can hit from Slack replies. Tokens are never sent
+// back to the browser in full (write-only field); GET returns a masked hint only.
+function maskMcp(m) {
+  return {
+    id: m.id, name: m.name, url: m.url,
+    financial: !!m.financial, enabled: m.enabled !== false,
+    token_set: !!m.token, token_hint: m.token ? `…${String(m.token).slice(-4)}` : '',
+    created: m.created || null
+  };
+}
+app.get('/admin/mcp', requireAuth, (req, res) => {
+  res.json({ connections: loadMcpStore().map(maskMcp) });
+});
+app.post('/admin/mcp', requireAuth, (req, res) => {
+  const { name, url, token, financial, enabled } = req.body || {};
+  if (!name || !url) return res.status(400).json({ error: 'name and url are required' });
+  const list = loadMcpStore();
+  const entry = {
+    id: `mcp-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
+    name: String(name).trim(), url: String(url).trim(),
+    token: token ? String(token) : '', financial: !!financial,
+    enabled: enabled !== false, created: new Date().toISOString()
+  };
+  list.push(entry);
+  saveMcpStore(list);
+  console.log(`🔌 MCP connection added: ${entry.name} (${entry.financial ? 'financial' : 'non-financial'})`);
+  res.json({ ok: true, connection: maskMcp(entry) });
+});
+app.put('/admin/mcp/:id', requireAuth, (req, res) => {
+  const list = loadMcpStore();
+  const m = list.find(x => x.id === req.params.id);
+  if (!m) return res.status(404).json({ error: 'not found' });
+  const { name, url, token, financial, enabled } = req.body || {};
+  if (name !== undefined) m.name = String(name).trim();
+  if (url !== undefined) m.url = String(url).trim();
+  if (token) m.token = String(token);           // only overwrite if a new token was entered
+  if (financial !== undefined) m.financial = !!financial;
+  if (enabled !== undefined) m.enabled = !!enabled;
+  saveMcpStore(list);
+  res.json({ ok: true, connection: maskMcp(m) });
+});
+app.delete('/admin/mcp/:id', requireAuth, (req, res) => {
+  const list = loadMcpStore();
+  const i = list.findIndex(x => x.id === req.params.id);
+  if (i === -1) return res.status(404).json({ error: 'not found' });
+  const [removed] = list.splice(i, 1);
+  saveMcpStore(list);
+  console.log(`🔌 MCP connection removed: ${removed.name}`);
+  res.json({ ok: true });
 });
 
 // List bots that are currently active (ready, joining, or in a call). Used by the
