@@ -666,7 +666,7 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '',
     'SNAPPY ON CALLS. This is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text, a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long, they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
     '',
-    'LIVE DATA ON A CALL. You CAN pull live Teamwork data on the call now: find a project, list tasks (including what\'s due for a specific person, filtered by date), milestones, tasklists, people, recent comments. When someone asks for a status, a date, what\'s due, or who owns something, look it up and answer with the real data. One catch: a lookup takes a couple seconds, so say a quick filler FIRST so there\'s no dead air ("let me pull that up", "one sec, checking Teamwork"), THEN give the answer. Keep it to a fast lookup, not deep digging. You still can\'t MAKE changes from the call: if someone wants a task created, updated, or completed, capture it out loud, say you\'ll set it up in Slack right after, and keep moving (it gets handled there). You also still can\'t pull Gmail or Calendar live. If clients are on the call, don\'t read internal owner/assignee detail or any financials out loud. Never claim a specific figure you don\'t actually have.'
+    'LIVE DATA ON A CALL. You CAN pull live Teamwork data on the call now: find a project, list tasks (including what\'s due for a specific person, filtered by date), check how booked someone is over a date range (capacity, for scheduling), milestones, tasklists, people, recent comments. When someone asks for a status, a date, what\'s due, who owns something, or how booked a person is, look it up and answer with the real data. One catch: a lookup takes a couple seconds, so say a quick filler FIRST so there\'s no dead air ("let me pull that up", "one sec, checking Teamwork"), THEN give the answer. Keep it to a fast lookup, not deep digging. You still can\'t MAKE changes from the call: if someone wants a task created, updated, or completed, capture it out loud, say you\'ll set it up in Slack right after, and keep moving (it gets handled there). You also still can\'t pull Gmail or Calendar live. If clients are on the call, don\'t read internal owner/assignee detail or any financials out loud. Never claim a specific figure you don\'t actually have.'
   ].join('\n');
 
   return block;
@@ -2618,7 +2618,7 @@ app.post('/webhook/chat', async (req, res) => {
       for (const t of TEAMWORK_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     }
     let zoomTail = zoomVolatile;
-    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
+    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is for scheduling via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
 
     const zoomReq = {
       model: 'claude-opus-4-8', // Opus 4.8; temperature omitted (Opus 4.8 rejects it)
@@ -3252,6 +3252,49 @@ const TEAMWORK_TOOLS = [
           date: c.postedDateTime || c.createdAt || c.dateTime || undefined,
           body: (c.body || '').slice(0, 500)
         };
+      });
+    } },
+  { definition: {
+      name: 'teamwork_user_workload',
+      description: 'Check how booked one or more people are over a date range (their CAPACITY / scheduling load), for decisions like "how booked is Santi next week" or "who has room to take this on". Returns, per person per day: percent booked, hours already allocated, hours free, and whether they are off/unavailable that day, plus a summary (available days, average booked %, total free hours, and their most-open day). Resolve people with teamwork_list_people to get their ids. Dates are YYYY-MM-DD; use the [Right now] block to work out "next week". This is workload CAPACITY, not the task list. Use teamwork_list_tasks to see WHAT they are actually working on.',
+      input_schema: { type: 'object', properties: {
+        user_ids: { type: 'string', description: 'required: comma-separated Teamwork user ids (resolve via teamwork_list_people)' },
+        start_date: { type: 'string', description: 'required: window start, YYYY-MM-DD' },
+        end_date: { type: 'string', description: 'required: window end, YYYY-MM-DD' }
+      }, required: ['user_ids', 'start_date', 'end_date'] }
+    },
+    execute: async ({ user_ids, start_date, end_date }) => {
+      const ids = String(user_ids).split(',').map(s => s.trim()).filter(Boolean).join(',');
+      // Teamwork's Workload Planner endpoint. userIds scopes it (assignedToUserIds/responsiblePartyIds
+      // do NOT filter here, verified live). include=users resolves names + each person's day length.
+      const d = await twApiGet(`/projects/api/v3/workload.json?startDate=${encodeURIComponent(start_date)}&endDate=${encodeURIComponent(end_date)}&userIds=${encodeURIComponent(ids)}&include=users`);
+      const incUsers = d?.included?.users || {};
+      const wd = (s) => { try { return new Date(s + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }); } catch { return ''; } };
+      const r1 = (n) => Math.round(n * 10) / 10;
+      return (d?.workload?.users || []).map(u => {
+        const info = incUsers[u.userId] || {};
+        const name = [info.firstName, info.lastName].filter(Boolean).join(' ') || `#${u.userId}`;
+        const dayHours = info.lengthOfDay || 8;
+        const dayCapMin = dayHours * 60;
+        let availDays = 0, freeTotal = 0, allocAvail = 0, capAvail = 0, mostOpen = null;
+        const days = Object.entries(u.dates || {}).map(([date, x]) => {
+          // unavailableDay = not working / blocked (PTO, weekend, holiday). Report it as off rather
+          // than a misleading "100% booked" so she never suggests scheduling into a day off.
+          if (x.unavailableDay) return { date, weekday: wd(date), status: x.isHoliday ? 'holiday' : 'off' };
+          const alloc = x.capacityMinutes || 0;
+          const freeH = r1(Math.max(0, dayCapMin - alloc) / 60);
+          availDays++; freeTotal += freeH; allocAvail += alloc; capAvail += dayCapMin;
+          if (!mostOpen || freeH > mostOpen.freeHours) mostOpen = { date, weekday: wd(date), freeHours: freeH };
+          return { date, weekday: wd(date), status: 'available',
+            bookedPct: Math.round((alloc / dayCapMin) * 100), allocatedHours: r1(alloc / 60), freeHours: freeH };
+        });
+        return { user: name, userId: u.userId, dayHours, window: { start: start_date, end: end_date }, days,
+          summary: {
+            availableDays: availDays,
+            avgBookedPct: capAvail ? Math.round((allocAvail / capAvail) * 100) : 0,
+            freeHoursTotal: r1(freeTotal),
+            mostOpenDay: mostOpen ? `${mostOpen.weekday} ${mostOpen.date} (${mostOpen.freeHours}h free)` : 'none (fully booked/unavailable)'
+          } };
       });
     } },
 
@@ -4207,7 +4250,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (toolDefs.length > 1 || mcpServers.length) {
       let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
+        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
       } else if (teamworkOn) {
         note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
