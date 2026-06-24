@@ -643,7 +643,11 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '- If someone says "as you can see here" or asks about something on screen, reference what\'s visible.',
     '- Don\'t narrate the screen unprompted ("I see a slide showing..."). That sounds like a screen reader.',
     '- Latest frame wins. If the share changed between turns, the most recent image is what to reference.',
-    '- If screen content is critical to a specific question, describe specifics — names, numbers, the actual content. Otherwise stay light.'
+    '- If screen content is critical to a specific question, describe specifics — names, numbers, the actual content. Otherwise stay light.',
+    '',
+    'SNAPPY ON CALLS — this is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text — a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long — they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
+    '',
+    'LIVE DATA ON A CALL — unlike Slack, you can\'t pull live Teamwork/system data mid-call (it would stall the conversation). So when someone asks for a specific live number or status you don\'t already know from memory, don\'t go quiet trying to fetch it — say you\'ll pull it and drop it in Slack right after, and keep the call moving. Never claim a specific live figure you don\'t actually have.'
   ].join('\n');
 
   return block;
@@ -2521,31 +2525,38 @@ app.post('/webhook/chat', async (req, res) => {
     history.push({ role: 'user', content: `[${speaker} via Zoom chat]: ${query}` });
 
     // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
-    // requester so the [Who you're talking to right now] block lights up with their name.
-    // Split for caching: the stable block (nora-prompt + memory) is cached, the volatile
-    // half (timestamp, who's-talking) rides along uncached.
+    // requester. Pass the recent chat as conversationText so memory loads what's relevant.
+    const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     const { stable: zoomStable, volatile: zoomVolatile } =
-      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true });
-    const response = await axios.post(
-      'https://api.anthropic.com/v1/messages',
-      {
-        // Opus 4.8 for Zoom chat replies — highest-visibility text path (a human reads it),
-        // and at $5/$25 the jump from Sonnet is only ~1.65x, largely offset by the cache below.
-        // NOTE: Opus 4.8 deprecated `temperature` (the API rejects it) — omit it; the model's
-        // default sampling is used. Sonnet/Haiku call sites elsewhere still accept it.
-        model: 'claude-opus-4-8',
-        max_tokens: 300,
-        system: cachedSystem(zoomStable, zoomVolatile),
-        messages: history
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': process.env.ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01'
-        }
-      }
-    );
+      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv });
+
+    // Live READ tools for the in-meeting @nora chat — quick lookups during a call (Teamwork
+    // status, web). Read-only here; write requests get deferred to Slack to keep meeting chat light.
+    const zoomToolDefs = [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }];
+    const zoomExecutors = {};
+    const TW_WRITE_Z = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
+    if (teamworkEnabled()) {
+      for (const t of TEAMWORK_TOOLS) { if (TW_WRITE_Z.has(t.definition.name)) continue; zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
+    }
+    let zoomTail = zoomVolatile;
+    if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE read tools (Teamwork: find projects, list/get tasks, milestones, tasklists, people, comments; plus web search). Someone @-mentioned you in the meeting chat — if they ask for a status, date, owner, or fact, LOOK IT UP and answer with the real data, concisely. Read-only here: if they want a task created or changed, say you\'ll set it up in Slack right after. Keep it tight — this is meeting chat, not an essay.';
+
+    const zoomReq = {
+      model: 'claude-opus-4-8', // Opus 4.8; temperature omitted (Opus 4.8 rejects it)
+      max_tokens: 300,
+      system: cachedSystem(zoomStable, zoomTail),
+      messages: history.slice(), // copy — the tool loop appends turns; don't pollute chat history
+      ...(zoomToolDefs.length ? { tools: zoomToolDefs } : {})
+    };
+    const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
+    let response;
+    try {
+      response = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors);
+    } catch (err) {
+      console.warn('Zoom chat reply with tools failed; retrying without:', err.response?.data?.error?.message || err.message);
+      delete zoomReq.tools; zoomReq.messages = history.slice();
+      response = await axios.post('https://api.anthropic.com/v1/messages', zoomReq, zoomHeaders);
+    }
 
     const reply = response.data.content
       .filter(b => b.type === 'text')
@@ -3814,7 +3825,7 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText });
     let tail = slackVolatile;
     if (mode === 'proactive') {
-      tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The earlier gate fired because the message looks like something you might have specific context on. Acknowledge that you\'re jumping in (e.g., "Chiming in —", "Quick add —"), be brief, and lead with the specific fact you can contribute. Critical: if on reflection you don\'t actually have a specific, useful fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the right call when in doubt — unsolicited interjections fast-break trust. Better to stay quiet than chime in with something generic.';
+      tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel — nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact — a real status, a real date, a real name, a real number — not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said — OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI — DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited — read and inform only.';
     }
 
     // Financial-info access control. The recipient (`user`) is checked against the approved
@@ -3831,32 +3842,36 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
     // Fetched web-page content rides in the uncached tail (per-conversation, would pollute the cache).
     if (urlBlock) tail += urlBlock;
 
-    // Live web search — for direct replies (not proactive interjections), give her Anthropic's
-    // server-side web_search tool so she can look things up in real time (a product, a company,
-    // recent news) instead of guessing or deferring to the cowork loop. Anthropic runs the
-    // search server-side in the same request; we just read the final text. Gated off proactive
-    // mode (an unsolicited interjection shouldn't spawn searches).
-    // Assemble her live tools (direct replies only). Three kinds coexist in one request:
+    // Assemble her live tools. Read tools (web_search + Teamwork READ) are available on BOTH
+    // direct replies AND proactive interjections — proactive needs them to GROUND what it says
+    // in real data instead of vibes. Write tools (Teamwork create/update/etc.) and the financial
+    // PM MCP are DIRECT-ONLY: never auto-write or surface financials in an unsolicited channel post.
     //   - web_search (Anthropic-run, server-side)
-    //   - MCP connector servers (Anthropic-run, server-side) — LimeLight / LimeLight PM
-    //   - Teamwork direct-API tools (we run them, client-side loop) — the app already has the key
+    //   - MCP connector servers (Anthropic-run, server-side) — read-only
+    //   - Teamwork direct-API tools (we run them, client-side loop) — read both modes, write direct-only
+    const isDirect = mode !== 'proactive';
+    const TW_WRITE = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
     const toolDefs = [];
     const toolExecutors = {};
-    if (mode !== 'proactive') {
-      toolDefs.push({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
-      if (teamworkEnabled()) {
-        for (const t of TEAMWORK_TOOLS) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
+    toolDefs.push({ type: 'web_search_20250305', name: 'web_search', max_uses: isDirect ? 3 : 2 });
+    if (teamworkEnabled()) {
+      for (const t of TEAMWORK_TOOLS) {
+        if (TW_WRITE.has(t.definition.name) && !isDirect) continue; // no writes when chiming in unsolicited
+        toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute;
       }
     }
-    const teamworkOn = Object.keys(toolExecutors).length > 0;
-    const mcpServers = mode !== 'proactive' ? liveMcpServers(financialApproved) : [];
+    const teamworkOn = teamworkEnabled();
+    // MCP connectors are read-only; proactive (a channel post) never gets the financial ones.
+    const mcpServers = liveMcpServers(isDirect ? financialApproved : false);
 
     // One combined "you have live tools" note.
     if (toolDefs.length > 1 || mcpServers.length) {
       const mcpNames = mcpServers.map(s => s.name);
-      let note = '\n\nYou have LIVE tools — use them to pull real, current data (and, for Teamwork, to make changes) when someone asks, instead of guessing or saying you\'ll check later.';
-      if (teamworkOn) {
+      let note = '\n\nYou have LIVE tools — use them to pull real, current data' + (isDirect ? ' (and, for Teamwork, to make changes)' : '') + ' instead of guessing or saying you\'ll check later.';
+      if (teamworkOn && isDirect) {
         note += ' TEAMWORK — you can both READ (find projects, list/get tasks, milestones, tasklists, people, comments) AND MAKE CHANGES (create a task, update one, mark it complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist or task as needed; to assign someone, get their id with teamwork_list_people. Only CREATE or CHANGE something when you\'re clearly asked to — if the ask is ambiguous, confirm what they want first. After any change, tell them exactly what you did. You CANNOT delete tasks; if someone wants something deleted, say they\'ll need to do that in Teamwork.';
+      } else if (teamworkOn) {
+        note += ' TEAMWORK (read-only here) — find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before you say it.';
       }
       if (mcpNames.length) note += ` The other connected tools (${mcpNames.join(', ')}) are READ-ONLY — look things up only, never modify through them.`;
       note += ' Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the tool calls.';
@@ -6330,12 +6345,13 @@ wss.on('connection', async (ws, req) => {
         // questions). This cap just removes the artificial ceiling on the long-form turns
         // — at 400 we were truncating real thoughts.
         max_output_tokens: 1200,
-        // 'xhigh' = maximum GPT-5-class reasoning per gpt-realtime-2's effort dial. The
-        // API uses 'xhigh' as the wire value even though OpenAI's announcement called it
-        // "very high" — supported values are minimal/low/medium/high/xhigh. We previously
-        // ran 'minimal' for latency; it didn't actually feel faster, and the quality cost
-        // was real. Dial back toward 'high' or 'medium' if replies arrive noticeably late.
-        reasoning: { effort: 'xhigh' }
+        // 'medium' reasoning — tuned for SNAPPY calls. On a live voice call, first-token
+        // latency is what makes her feel present vs. laggy, and reasoning.effort is the
+        // dominant lever (higher = slower to start talking). xhigh was noticeably laggy;
+        // medium keeps her sharp enough for spoken PM conversation while starting fast. The
+        // shrunk, relevance-ranked memory prompt also cuts her processing time. Bump to
+        // 'high' only if answers feel shallow; she's not doing heavy analysis mid-call.
+        reasoning: { effort: 'medium' }
       }
     }));
 
