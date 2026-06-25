@@ -643,7 +643,7 @@ backfillMemoryIds();
 function realtimeVoiceGuidance(agentName = 'Nora') {
   let block = '';
   block += '\n\nIMPORTANT: Always respond in English, regardless of what language someone speaks to you in.';
-  block += `\n\nMEETING ETIQUETTE, READ THIS CAREFULLY. First read the room: is this a 1:1 (just you and one other person) or a GROUP (two or more other people)? Use the speaker and attendee context above to tell.\n\nIn a 1:1, respond naturally to everything they say. You don't need your name.\n\nIn a GROUP, your default is SILENCE. Most of the time in a group your job is to listen, not talk. Only speak out loud when ONE of these is clearly true: (1) someone says your name, "${agentName}", or (2) someone asks a question that is unmistakably for YOU and not for another person in the room. In EVERY other case, produce NO output at all, not a single word, exactly as if you were muted. That includes any time two or more people are talking to each other: stay completely silent, do not answer, do not chime in with agreement or "just to add" or commentary on top of a human exchange you were not pulled into. If you are not sure whether you were addressed, then you were NOT, so stay silent. Never answer a question that was clearly aimed at another person by name.\n\nStopping: if you have started talking and a human starts to talk, stop immediately and let them go. Never talk over a person.\n\nOnce you ARE pulled in (named or directly asked), you can carry that back-and-forth naturally for as long as it is clearly still with you. You do not need your name every sentence. But the moment the conversation moves back to the humans talking among themselves, go quiet again and wait to be pulled back in. Being a good participant in a group means knowing when NOT to talk.`;
+  block += `\n\nMEETING ETIQUETTE, READ THIS CAREFULLY. First read the room: is this a 1:1 (just you and one other person) or a GROUP (two or more other people)? Use the speaker and attendee context above to tell.\n\nIn a 1:1, respond naturally to everything they say. You don't need your name.\n\nIn a GROUP, your default is SILENCE. Most of the time in a group your job is to listen, not talk. Only speak out loud when ONE of these is clearly true: (1) someone says your name, "${agentName}", or (2) someone asks a question that is unmistakably for YOU and not for another person in the room. In EVERY other case, produce NO output at all, not a single word, exactly as if you were muted. That includes any time two or more people are talking to each other: stay completely silent, do not answer, do not chime in with agreement or "just to add" or commentary on top of a human exchange you were not pulled into. If you are not sure whether you were addressed, then you were NOT, so stay silent. Never answer a question that was clearly aimed at another person by name.\n\nStopping: if you have started talking and a human starts to talk, stop immediately and let them go. Never talk over a person.\n\nOnce you ARE pulled in (named or directly asked), you can carry that back-and-forth naturally for as long as it is clearly still with you. You do not need your name every sentence. But the moment the conversation moves back to the humans talking among themselves, go quiet again and wait to be pulled back in. Being a good participant in a group means knowing when NOT to talk.\n\nJudging a question that was NOT addressed to you by name: answer it ONLY if it is clearly asking for something that really only YOU would have, like a live status, a date, what is due, who has capacity, or something in Teamwork. If it is two people working out their own plan ("you want me to do this?", "should we move that?", "is that ready on your end?"), stay out of it, that question is between them, not for you. When in doubt, stay silent; they can say your name.`;
 
   block += [
     '',
@@ -2058,7 +2058,7 @@ function newSession(projectHint = null) {
   // is one click when she's actually needed to speak. Combined with the muted-mode
   // chat-confirm path in /voice-agent/response, she's still useful when muted:
   // present, listening, files tasks when explicitly asked, confirms via chat.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0 };
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set() };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -2499,6 +2499,12 @@ app.post('/webhook/transcript', async (req, res) => {
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
+  // Track distinct human speakers heard, so the voice gate can auto-treat a call with only one other
+  // person as a 1:1 (respond freely) without anyone toggling a mode.
+  if (speaker && !/^(Nora|Screen share|Participant)$/i.test(speaker)) {
+    (session.speakersHeard = session.speakersHeard || new Set()).add(speaker);
+  }
+
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
 
   // On a NEW speaker, immediately push a fresh system prompt to OpenAI so the next
@@ -2590,6 +2596,17 @@ function parseNoraMuteCommand(text) {
   return null;
 }
 
+// Detect a "how forward should you be on this call" command. 'strict' = only respond when named;
+// 'leanin' = also answer direct questions in a group without the name. Returns 'strict'|'leanin'|null.
+function parseNoraModeCommand(text) {
+  const t = (text || '').toLowerCase();
+  if (!/\bnora\b/.test(t)) return null;
+  if (t.trim().split(/\s+/).length > 10) return null;
+  if (/\b(step back|stand down|strict|name only|only when i say your name|only respond to your name|wait to be called|wait until i call)\b/.test(t)) return 'strict';
+  if (/\b(lean in|jump in more|be more active|chime in more|you can answer questions)\b/.test(t)) return 'leanin';
+  return null;
+}
+
 app.post('/webhook/chat', async (req, res) => {
   res.sendStatus(200);
 
@@ -2650,6 +2667,22 @@ app.post('/webhook/chat', async (req, res) => {
         { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
     } catch (e) { console.warn('mute-confirm chat send failed:', e.message); }
     return; // command handled; don't run the normal reply path
+  }
+
+  // "nora step back" / "nora lean in" — how forward she is on the live call (strict name-only vs also
+  // answering direct questions in a group). Controls the voice turn-gate's leanIn flag.
+  const modeCmd = parseNoraModeCommand(finalText);
+  if (modeCmd) {
+    if (session) session.leanIn = (modeCmd === 'leanin');
+    console.log(`🎙️ Zoom chat set lean-in=${modeCmd === 'leanin'} (by ${speaker})`);
+    const confirm = modeCmd === 'leanin'
+      ? "Leaning in. I'll answer direct questions on this call even if you don't say my name, but I'll stay out of your cross-talk."
+      : "Got it, name only. I'll stay quiet on the call unless someone actually says \"Nora\".";
+    try {
+      await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`, { message: confirm },
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
+    } catch (e) { console.warn('mode-confirm chat send failed:', e.message); }
+    return;
   }
 
   // Strip "@nora" or "nora" from the beginning and clean up
@@ -2787,6 +2820,24 @@ app.post('/one-on-one', requireAuth, (req, res) => {
   sessions[bot_id].oneOnOne = enabled;
   console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
+});
+
+// Lean-in toggle — in a group call, whether Nora also answers a direct question without her name
+// (on) or stays strictly name-only (off). On by default. The "nora step back / lean in" chat command
+// flips the same flag.
+app.get('/lean-in', requireAuth, (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.json({ leanIn: false, active_session: false });
+  res.json({ leanIn: sessions[bot_id].leanIn !== false, bot_id });
+});
+
+app.post('/lean-in', requireAuth, (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
+  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !(sessions[bot_id].leanIn !== false);
+  sessions[bot_id].leanIn = enabled;
+  console.log(`🎙️ Lean-in mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
+  res.json({ ok: true, leanIn: enabled, bot_id });
 });
 
 // Mute mode toggle — Nora listens and captures action items but does not speak
@@ -3518,8 +3569,16 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled)
 // addressed. This is what stops her interrupting people talking to each other (and stops the muted
 // "standing by" chat spam): no trigger, no response. Once she's pulled in (named), a short window
 // keeps her responsive to follow-ups so a back-and-forth flows naturally without re-saying her name.
-const VOICE_ACTIVE_WINDOW_MS = 20000;
+const VOICE_ACTIVE_WINDOW_MS = 45000; // once she's pulled in, she stays responsive ~45s for follow-ups
 const RESPONSE_STALE_MS = 20000; // if "active" persists past this, a terminal event was dropped; ignore it
+// Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
+// name)? Statements / cross-talk that aren't questions never trip lean-in.
+function looksLikeQuestion(t) {
+  const s = (t || '').trim();
+  if (!s) return false;
+  if (/\?\s*$/.test(s)) return true;
+  return /^(what|who|whom|whose|when|where|why|which|how|is|are|am|was|were|do|does|did|can|could|should|would|will|shall|may|might|have|has|had|any|anyone|anybody|could you|can you|do you|did you|is there|are there)\b/i.test(s);
+}
 function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   if (!session) return;
   // Skip if a response is genuinely in flight, but with a WATCHDOG: a real response never runs this
@@ -3528,16 +3587,23 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   // terminal event can never wedge her silent for the rest of the call.
   if (session.voiceResponseActive && (Date.now() - (session.voiceResponseAt || 0) < RESPONSE_STALE_MS)) return;
   const addressed = /\bnora\b/i.test(userText || '');
+  // AUTO 1:1 — if only one other person has been heard on the call, treat it like a 1:1 and respond
+  // freely (no name needed), without anyone toggling a mode. Group gating only kicks in at 2+ people.
+  const soloHuman = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
   let trigger = false, why = '';
   if (session.muted) {
     trigger = addressed; why = 'muted+named';          // muted: only a short text reply when directly named
-  } else if (session.oneOnOne) {
-    trigger = true; why = '1:1';                        // explicit 1:1: respond to everything
+  } else if (session.oneOnOne || soloHuman) {
+    trigger = true; why = session.oneOnOne ? '1:1' : 'solo';  // respond to everything
   } else {
-    const now = Date.now();                             // group: named, or still inside her active window
+    const now = Date.now();                             // group: named, in her active window, or (lean-in) a direct question
     const inWindow = session.voiceActiveUntil && now < session.voiceActiveUntil;
-    trigger = addressed || inWindow;
-    why = addressed ? 'named' : 'in-window';
+    const leanInQ = session.leanIn !== false && looksLikeQuestion(userText);
+    trigger = addressed || inWindow || leanInQ;
+    why = addressed ? 'named' : inWindow ? 'in-window' : 'lean-in question';
+    // Open the follow-up window only when she's clearly addressed by name. A lean-in question that she
+    // ends up declining must NOT open the window (else cross-talk would cascade through it); when she
+    // actually answers one, the response.done "spoke" check opens the window instead.
     if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
   }
   if (trigger) {
