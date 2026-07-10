@@ -2504,6 +2504,8 @@ app.post('/webhook/transcript', async (req, res) => {
   // person as a 1:1 (respond freely) without anyone toggling a mode.
   if (speaker && !/^(Nora|Screen share|Participant)$/i.test(speaker)) {
     (session.speakersHeard = session.speakersHeard || new Set()).add(speaker);
+    // A newly-heard speaker can flip the call from solo to group: retune turn-end eagerness live.
+    syncVoiceEagerness(session);
   }
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
@@ -2819,6 +2821,7 @@ app.post('/one-on-one', requireAuth, (req, res) => {
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].oneOnOne;
   sessions[bot_id].oneOnOne = enabled;
+  syncVoiceEagerness(sessions[bot_id]); // 1:1 runs 'high' eagerness (snappier turn-ends), group 'medium'
   console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
 });
@@ -3580,6 +3583,33 @@ function looksLikeQuestion(t) {
   if (!s) return false;
   if (/\?\s*$/.test(s)) return true;
   return /^(what|who|whom|whose|when|where|why|which|how|is|are|am|was|were|do|does|did|can|could|should|would|will|shall|may|might|have|has|had|any|anyone|anybody|could you|can you|do you|did you|is there|are there)\b/i.test(s);
+}
+
+// ── Eagerness follows the mode ──────────────────────────────────────────────────────────────────
+// In a 1:1 she answers every turn, so how fast semantic VAD calls the turn-end IS her perceived
+// latency: 'high' makes her feel present. In a group the gate discards most turns anyway, and
+// 'high' would just make VAD read people's mid-thought pauses as turn boundaries, so 'medium'
+// stays the group setting. Muted is irrelevant here (she isn't speaking either way).
+function voiceEagernessFor(session) {
+  const solo = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
+  return (session.oneOnOne || solo) ? 'high' : 'medium';
+}
+// Push the current desired eagerness to the live OpenAI session, only when it actually changed
+// (mode toggled, or a second speaker was heard and the call stopped being a solo). Sends the FULL
+// turn_detection object: a partial session.update replaces the whole nested object, so all fields
+// must ride along or they'd be dropped.
+function syncVoiceEagerness(session) {
+  const ws = session && session.openaiWs;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const want = voiceEagernessFor(session);
+  if (session.currentEagerness === want) return;
+  session.currentEagerness = want;
+  try {
+    ws.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: {
+      turn_detection: { type: 'semantic_vad', eagerness: want, create_response: false, interrupt_response: true }
+    } } } }));
+    console.log(`🎙️ Eagerness → ${want} (${session.oneOnOne ? '1:1 toggle' : want === 'high' ? 'solo call' : 'group call'})`);
+  } catch (e) { console.warn('eagerness sync failed:', e.message); }
 }
 
 // ── Handoff detection ───────────────────────────────────────────────────────────────────────────
@@ -7145,6 +7175,10 @@ wss.on('connection', async (ws, req) => {
     console.log('🧠 Connected to OpenAI Realtime API');
 
     const isMuted = session?.muted;
+    // No session (or nobody heard yet) starts as a solo call, i.e. 'high'; the transcript webhook
+    // drops it to 'medium' the moment a second human speaker is heard.
+    const initialEagerness = session ? voiceEagernessFor(session) : 'high';
+    if (session) session.currentEagerness = initialEagerness;
 
     // GA Realtime session shape: audio config nested under audio.input/audio.output,
     // modalities renamed to output_modalities, max_response_output_tokens → max_output_tokens.
@@ -7177,10 +7211,12 @@ wss.on('connection', async (ws, req) => {
               // addressed. Prompt-only gating wasn't enough; she interrupted people talking to each
               // other and, when muted, spammed "standing by" every turn. Gating the trigger fixes
               // both, and means she stops reacting to garbled cross-talk transcriptions too.
-              // eagerness back to 'medium' (the gate, not eagerness, now prevents over-talking, and
-              // 'low' had slowed how fast she registered being interrupted). interrupt_response keeps
+              // Eagerness follows the mode (see voiceEagernessFor): 'high' in a 1:1/solo call where
+              // turn-end speed IS her latency, 'medium' in a group where 'high' would read people's
+              // mid-thought pauses as turn boundaries. The gate, not eagerness, prevents over-talking;
+              // 'low' had slowed how fast she registered being interrupted. interrupt_response keeps
               // barge-in (a human speaking cuts her off; the voice page also flushes playback).
-              eagerness: 'medium',
+              eagerness: initialEagerness,
               create_response: false,
               interrupt_response: true
             }
