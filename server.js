@@ -7019,12 +7019,12 @@ wss.on('connection', async (ws, req) => {
 
   let openaiWs;
   try {
-    // gpt-realtime-2 is GA-only — the OpenAI-Beta header below is intentionally
+    // gpt-realtime-2.1 is GA-only. The OpenAI-Beta header below is intentionally
     // omitted (sending realtime=v1 pins the connection to the beta API where
-    // gpt-realtime-2 isn't available). Fallbacks: 'gpt-realtime' (GA, Aug 2025)
-    // or 'gpt-realtime-mini' (cheaper).
+    // gpt-realtime-2.1 isn't available). Fallbacks: 'gpt-realtime-2.1-mini' (cheaper),
+    // 'gpt-realtime-2', or 'gpt-realtime' (GA, Aug 2025).
     openaiWs = new WebSocket(
-      'wss://api.openai.com/v1/realtime?model=gpt-realtime-2',
+      'wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1',
       {
         headers: {
           'Authorization': `Bearer ${OPENAI_API_KEY}`
@@ -7095,7 +7095,7 @@ wss.on('connection', async (ws, req) => {
           },
           output: {
             format: { type: 'audio/pcm', rate: 24000 },
-            voice: 'sage'
+            voice: 'marin'
           }
         },
         // Headroom for substantive answers when the moment calls for "tell me everything
