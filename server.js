@@ -6,8 +6,26 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
+const db = require('./db');
 const app = express();
 const server = http.createServer(app);
+
+// ── Postgres persistence bridge ──────────────────────────────────────────────
+// When DATABASE_URL is set and db.init() succeeds, Postgres is the source of truth:
+// the existing SYNCHRONOUS accessors read from process-local caches (this is a single
+// Railway instance, so a process-local cache stays coherent) and write through to
+// Postgres. When the DB is unavailable, `_dbReady` stays false and every accessor
+// falls back to its original JSON-on-volume behavior — the safety net that keeps the
+// live system running if Postgres ever hiccups.
+let _dbReady = false;
+const _cache = {};   // entity → in-memory copy backing sync reads
+const _writeQ = {};  // entity → promise chain serializing write-throughs (avoids interleaved replaceAll)
+function _writeThrough(entity, fn) {
+  const prev = _writeQ[entity] || Promise.resolve();
+  const next = prev.then(fn).catch((e) => console.error(`❌ db write-through [${entity}]:`, e.message));
+  _writeQ[entity] = next;
+  return next;
+}
 
 // Capture raw body for Slack signature verification
 app.use(express.json({
@@ -49,6 +67,7 @@ function loadPrompt() {
 }
 
 function loadMemory() {
+  if (_dbReady) return _cache.memory || [];
   try {
     return JSON.parse(fs.readFileSync(getMemoryPath(), 'utf8'));
   } catch { return []; }
@@ -56,8 +75,10 @@ function loadMemory() {
 
 // Atomic write: write to a temp file then rename. rename() is atomic on the same
 // filesystem, so a reader can never observe a half-written file (which, under the old
-// direct writeFileSync, could corrupt memory if a read raced a large write).
+// direct writeFileSync, could corrupt memory if a read raced a large write). In DB mode
+// the whole set is upserted transactionally (equally atomic) and the JSON path is skipped.
 function saveMemory(memory) {
+  if (_dbReady) { _cache.memory = memory; return _writeThrough('memory', () => db.replaceAllMemory(memory)); }
   const p = getMemoryPath();
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(memory, null, 2));
@@ -81,13 +102,12 @@ function newMemoryId() {
 // `mutator(memory)` mutates the array in place and may return a value; that value resolves.
 let _memMutationChain = Promise.resolve();
 function mutateMemory(mutator) {
-  const run = _memMutationChain.then(() => {
+  const run = _memMutationChain.then(async () => {
     const memory = loadMemory();
     // Backfill ids defensively so every entry is addressable by id.
-    let changed = false;
-    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); changed = true; } }
+    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); } }
     const result = mutator(memory);
-    saveMemory(memory);
+    await saveMemory(memory); // awaits the Postgres write (or resolves immediately in JSON mode)
     return { result, memory };
   });
   // Keep the chain alive even if a mutation throws, so one failure doesn't wedge the queue.
@@ -143,10 +163,12 @@ function getMarkersPath() {
   return fs.existsSync(VOLUME_DIR) ? MARKERS_PATH_VOLUME : MARKERS_PATH_LOCAL;
 }
 function loadMarkers() {
+  if (_dbReady) return _cache.markers || {};
   try { return JSON.parse(fs.readFileSync(getMarkersPath(), 'utf8')); }
   catch { return {}; }
 }
 function saveMarkersFile(markers) {
+  if (_dbReady) { _cache.markers = markers; return _writeThrough('markers', () => db.replaceAllMarkers(markers)); }
   const p = getMarkersPath();
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(markers, null, 2));
@@ -156,10 +178,10 @@ function saveMarkersFile(markers) {
 // markers is a plain { key: {set_at, ...data} } object; mutator mutates it in place.
 let _markerMutationChain = Promise.resolve();
 function mutateMarkers(mutator) {
-  const run = _markerMutationChain.then(() => {
+  const run = _markerMutationChain.then(async () => {
     const markers = loadMarkers();
     const result = mutator(markers);
-    saveMarkersFile(markers);
+    await saveMarkersFile(markers);
     return { result, markers };
   });
   _markerMutationChain = run.then(() => {}, () => {});
@@ -192,12 +214,14 @@ function getTasksPath() {
 }
 
 function loadTasks() {
+  if (_dbReady) return _cache.tasks || [];
   try {
     return JSON.parse(fs.readFileSync(getTasksPath(), 'utf8'));
   } catch { return []; }
 }
 
 function saveTasks(tasks) {
+  if (_dbReady) { _cache.tasks = tasks; return _writeThrough('tasks', () => db.replaceAllTasks(tasks)); }
   fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
 }
 
@@ -208,12 +232,14 @@ function getProjectsPath() {
 }
 
 function loadProjects() {
+  if (_dbReady) return _cache.projects || [];
   try {
     return JSON.parse(fs.readFileSync(getProjectsPath(), 'utf8'));
   } catch { return []; }
 }
 
 function saveProjects(projects) {
+  if (_dbReady) { _cache.projects = projects; return _writeThrough('projects', () => db.replaceAllProjects(projects)); }
   fs.writeFileSync(getProjectsPath(), JSON.stringify(projects, null, 2));
 }
 
@@ -226,13 +252,16 @@ function getCalendarPath() {
   return CALENDAR_PATH_LOCAL;
 }
 function loadCalendarState() {
+  if (_dbReady) return _cache.calendar || null;
   try { return JSON.parse(fs.readFileSync(getCalendarPath(), 'utf8')); }
   catch { return null; }
 }
 function saveCalendarState(state) {
+  if (_dbReady) { _cache.calendar = state; return _writeThrough('calendar', () => db.setState('calendar', state)); }
   fs.writeFileSync(getCalendarPath(), JSON.stringify(state, null, 2));
 }
 function clearCalendarState() {
+  if (_dbReady) { _cache.calendar = null; return _writeThrough('calendar', () => db.deleteState('calendar')); }
   try { fs.unlinkSync(getCalendarPath()); } catch {}
 }
 
@@ -301,6 +330,7 @@ function loadSlackThreads() {
 }
 
 function saveSlackThreads(threads) {
+  if (_dbReady) { return _writeThrough('slack_threads', () => db.replaceAllSlackThreads(threads)); }
   fs.writeFileSync(getSlackThreadsPath(), JSON.stringify(threads, null, 2));
 }
 
@@ -384,6 +414,7 @@ function loadSlackProactiveChannels() {
 }
 
 function saveSlackProactiveChannels(set) {
+  if (_dbReady) { return _writeThrough('proactive', () => db.setState('slack_proactive_channels', [...set])); }
   fs.writeFileSync(getSlackProactivePath(), JSON.stringify([...set], null, 2));
 }
 
@@ -434,6 +465,7 @@ function loadFinancialApproved() {
 }
 
 function saveFinancialApproved(map) {
+  if (_dbReady) { return _writeThrough('financial', () => db.setState('slack_financial_approved', map)); }
   fs.writeFileSync(getSlackFinancialApprovedPath(), JSON.stringify(map, null, 2));
 }
 
@@ -633,6 +665,89 @@ function isTaskEligibleNow(task, now = new Date()) {
 
 initMemory();
 backfillMemoryIds();
+
+// ── Postgres bootstrap: migrate JSON → PG (once), hydrate caches, flip _dbReady ──
+// Runs before the server accepts requests (see the server.listen wrapper at the bottom),
+// so no request is ever served against a half-hydrated cache. Every step is idempotent:
+// a table is seeded only while still empty, so re-running on every boot never clobbers
+// live DB data. Any failure leaves _dbReady=false and the app keeps using the JSON volume.
+async function seedTableIfEmpty(table, loadJson, writeAll, isMap = false) {
+  if ((await db.count(table)) > 0) return;
+  const data = loadJson(); // _dbReady is still false here, so this reads the JSON volume
+  const empty = isMap ? (!data || Object.keys(data).length === 0) : (!Array.isArray(data) || data.length === 0);
+  if (empty) return;
+  await writeAll(data);
+  console.log(`🗄️  Seeded ${table} from JSON → Postgres (${isMap ? Object.keys(data).length : data.length} rows)`);
+}
+async function seedStateIfMissing(key, loadJson) {
+  if ((await db.getState(key)) !== null) return; // already present
+  const data = loadJson();
+  if (data === null || data === undefined) return;
+  if (Array.isArray(data) && data.length === 0) return;
+  if (!Array.isArray(data) && typeof data === 'object' && Object.keys(data).length === 0) return;
+  await db.setState(key, data);
+  console.log(`🗄️  Seeded ${key} from JSON → Postgres`);
+}
+let _embedTimer = null;
+function startEmbeddingBackfiller() {
+  if (_embedTimer) return;
+  const tick = async () => {
+    if (!_dbReady) return;
+    try {
+      const need = await db.memoryNeedingEmbedding(16);
+      let filled = 0;
+      for (const row of need) {
+        const vec = await db.embed(row.fact);
+        if (vec) { await db.setMemoryEmbedding(row.id, vec); filled++; }
+      }
+      if (filled) console.log(`🧠 Embedded ${filled} memory rows for semantic recall`);
+    } catch (e) { console.warn('embed backfill:', e.message); }
+  };
+  _embedTimer = setInterval(tick, 20000);
+  setTimeout(tick, 4000); // first pass shortly after boot
+}
+async function initPersistence() {
+  if (!db.dbEnabled()) { console.log('🗄️  DATABASE_URL not set — using JSON files on the volume'); return; }
+  try {
+    await db.init();
+    // Seed once from the volume JSON (id-backfilled above for memory).
+    await seedTableIfEmpty('memory', () => { const m = loadMemory(); for (const x of m) if (!x.id) x.id = newMemoryId(); return m; }, (v) => db.replaceAllMemory(v));
+    await seedTableIfEmpty('tasks', loadTasks, (v) => db.replaceAllTasks(v));
+    await seedTableIfEmpty('projects', loadProjects, (v) => db.replaceAllProjects(v));
+    await seedTableIfEmpty('markers', loadMarkers, (v) => db.replaceAllMarkers(v), true);
+    await seedTableIfEmpty('interactions', loadInteractions, (v) => db.replaceAllInteractions(v));
+    await seedTableIfEmpty('dreams', loadDreams, (v) => db.replaceAllDreams(v));
+    await seedTableIfEmpty('mcp_servers', loadMcpStore, (v) => db.replaceAllMcp(v));
+    await seedTableIfEmpty('slack_threads', loadSlackThreads, (v) => db.replaceAllSlackThreads(v), true);
+    await seedStateIfMissing('calendar', loadCalendarState);
+    await seedStateIfMissing('slack_proactive_channels', () => [...loadSlackProactiveChannels()]);
+    await seedStateIfMissing('slack_financial_approved', loadFinancialApproved);
+    await seedStateIfMissing('session_tokens', loadSessionTokens);
+
+    // Hydrate every in-memory cache from Postgres (now the source of truth).
+    _cache.memory = await db.loadAllMemory();
+    _cache.tasks = await db.loadAllTasks();
+    _cache.projects = await db.loadAllProjects();
+    _cache.markers = await db.loadAllMarkers();
+    _cache.interactions = await db.loadAllInteractions();
+    _cache.dreams = await db.loadAllDreams();
+    _cache.mcp = await db.loadAllMcp();
+    _cache.calendar = await db.getState('calendar');
+    slackJoinedThreads = await db.loadAllSlackThreads();
+    slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
+    slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
+    const tok = (await db.getState('session_tokens')) || {};
+    for (const k of Object.keys(sessionTokens)) delete sessionTokens[k];
+    Object.assign(sessionTokens, tok);
+
+    _dbReady = true;
+    console.log(`🗄️  Postgres ready — memory:${_cache.memory.length} tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} interactions:${_cache.interactions.length} dreams:${_cache.dreams.length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
+    startEmbeddingBackfiller();
+  } catch (e) {
+    console.error('❌ Postgres init failed — falling back to JSON volume. Error:', e.message);
+    _dbReady = false;
+  }
+}
 
 // The voice-delivery guidance shared by Nora's realtime branch and the dummy test agent.
 // This is the "how you sound on a call" block — the thing that makes the voice agent sound
@@ -2013,6 +2128,7 @@ function loadSessionTokens() {
   catch { return {}; }
 }
 function persistSessionTokens() {
+  if (_dbReady) { return _writeThrough('tokens', () => db.setState('session_tokens', sessionTokens)); }
   try { fs.writeFileSync(getTokensPath(), JSON.stringify(sessionTokens, null, 2)); }
   catch (err) { console.error('Failed to persist session tokens:', err.message); }
 }
@@ -3092,9 +3208,11 @@ const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
 const MCP_PATH_LOCAL = path.join(__dirname, 'nora-mcp.json');
 function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
 function loadMcpStore() {
+  if (_dbReady) return _cache.mcp || [];
   try { return JSON.parse(fs.readFileSync(getMcpPath(), 'utf8')); } catch { return []; }
 }
 function saveMcpStore(list) {
+  if (_dbReady) { _cache.mcp = list; return _writeThrough('mcp', () => db.replaceAllMcp(list)); }
   const p = getMcpPath(); const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(list, null, 2)); fs.renameSync(tmp, p);
 }
@@ -6384,10 +6502,12 @@ function getInteractionsPath() {
   return fs.existsSync(VOLUME_DIR) ? INTERACTIONS_PATH_VOLUME : INTERACTIONS_PATH_LOCAL;
 }
 function loadInteractions() {
+  if (_dbReady) return _cache.interactions || [];
   try { return JSON.parse(fs.readFileSync(getInteractionsPath(), 'utf8')); }
   catch { return []; }
 }
 function saveInteractions(items) {
+  if (_dbReady) { _cache.interactions = items; _writeThrough('interactions', () => db.replaceAllInteractions(items)); return; }
   try { fs.writeFileSync(getInteractionsPath(), JSON.stringify(items, null, 2)); }
   catch (err) { console.error('Failed to persist interactions:', err.message); }
 }
@@ -6455,10 +6575,12 @@ function getDreamsPath() {
   return fs.existsSync(VOLUME_DIR) ? DREAMS_PATH_VOLUME : DREAMS_PATH_LOCAL;
 }
 function loadDreams() {
+  if (_dbReady) return _cache.dreams || [];
   try { return JSON.parse(fs.readFileSync(getDreamsPath(), 'utf8')); }
   catch { return []; }
 }
 function saveDreams(dreams) {
+  if (_dbReady) { _cache.dreams = dreams; _writeThrough('dreams', () => db.replaceAllDreams(dreams)); return; }
   try { fs.writeFileSync(getDreamsPath(), JSON.stringify(dreams, null, 2)); }
   catch (err) { console.error('Failed to persist dreams:', err.message); }
 }
@@ -7480,7 +7602,12 @@ wss.on('connection', async (ws, req) => {
   });
 });
 
-server.listen(process.env.PORT, () => {
-  console.log(`Nora server running on port ${process.env.PORT}`);
-  backfillTranscriptDates();
+// Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
+// reads a half-hydrated cache. If the DB is unavailable, initPersistence resolves with
+// _dbReady=false and the app serves from the JSON volume exactly as before.
+initPersistence().finally(() => {
+  server.listen(process.env.PORT, () => {
+    console.log(`Nora server running on port ${process.env.PORT}`);
+    backfillTranscriptDates();
+  });
 });
