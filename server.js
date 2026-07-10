@@ -2058,7 +2058,7 @@ function newSession(projectHint = null) {
   // is one click when she's actually needed to speak. Combined with the muted-mode
   // chat-confirm path in /voice-agent/response, she's still useful when muted:
   // present, listening, files tasks when explicitly asked, confirms via chat.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set() };
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -2496,6 +2496,7 @@ app.post('/webhook/transcript', async (req, res) => {
   if (!sessions[bot_id]) sessions[bot_id] = newSession();
   const session = sessions[bot_id];
 
+  session.lastRecallLineAt = Date.now(); // Recall transcript stream is alive; Whisper buffer fallback stands down
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
@@ -3569,7 +3570,8 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled)
 // addressed. This is what stops her interrupting people talking to each other (and stops the muted
 // "standing by" chat spam): no trigger, no response. Once she's pulled in (named), a short window
 // keeps her responsive to follow-ups so a back-and-forth flows naturally without re-saying her name.
-const VOICE_ACTIVE_WINDOW_MS = 45000; // once she's pulled in, she stays responsive ~45s for follow-ups
+const VOICE_ACTIVE_WINDOW_MS = 45000; // once she's pulled in (by NAME), she stays responsive ~45s for follow-ups
+const VOICE_SPOKE_GRACE_MS = 15000; // after she speaks, a short grace for an immediate follow-up (not a full re-latch)
 const RESPONSE_STALE_MS = 20000; // if "active" persists past this, a terminal event was dropped; ignore it
 // Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
 // name)? Statements / cross-talk that aren't questions never trip lean-in.
@@ -3578,6 +3580,78 @@ function looksLikeQuestion(t) {
   if (!s) return false;
   if (/\?\s*$/.test(s)) return true;
   return /^(what|who|whom|whose|when|where|why|which|how|is|are|am|was|were|do|does|did|can|could|should|would|will|shall|may|might|have|has|had|any|anyone|anybody|could you|can you|do you|did you|is there|are there)\b/i.test(s);
+}
+
+// ── Handoff detection ───────────────────────────────────────────────────────────────────────────
+// "Kinsey, what do you think?" is the single most important signal that an utterance is NOT for
+// Nora, even when it's a question (lean-in) or lands inside her follow-up window. When the room
+// hands the floor to a named person, she lets go: no reply, window closes. Known-name list is the
+// static team roster plus whoever Recall has actually heard on this call (catches clients/guests).
+// Deliberately biased toward false positives: mistakes here make her QUIETER, never chattier.
+const TEAM_FIRST_NAMES = ['brandee', 'john', 'andy', 'kyle', 'caitlin', 'kayla', 'kinsey', 'gracie',
+  'mallory', 'elle', 'dianne', 'chelsea', 'lydia', 'aaron', 'santiago', 'santi', 'lacy'];
+const VOCATIVE_FILLERS = new Set(['hey', 'hi', 'ok', 'okay', 'so', 'alright', 'well', 'um', 'uh', 'yeah', 'and', 'but']);
+function addressesSomeoneElse(t, session) {
+  const raw = (t || '').trim();
+  if (!raw || /\bnora\b/i.test(raw)) return false; // if she's named too, it's (also) for her
+  const s = raw.toLowerCase().replace(/[.!?]+\s*$/, '');
+  const names = new Set(TEAM_FIRST_NAMES);
+  if (session && session.speakersHeard) {
+    for (const sp of session.speakersHeard) {
+      const first = String(sp).trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z'-]/g, '');
+      if (first.length > 2 && first !== 'nora') names.add(first);
+    }
+  }
+  const words = s.split(/\s+/);
+  let wi = 0; // skip leading fillers so "hey kinsey can you..." still reads as a leading vocative
+  while (wi < words.length - 1 && VOCATIVE_FILLERS.has(words[wi].replace(/[,:]+$/, ''))) wi++;
+  const first = (words[wi] || '').replace(/[,:]+$/, '');
+  const last = (words[words.length - 1] || '').replace(/[,:]+$/, '');
+  for (const name of names) {
+    // Leading vocative: "kinsey what do you think" / "kinsey, can you pull that up". Requires a
+    // question-ish or second-person continuation so "John said the deadline is Friday" (talking
+    // ABOUT John) doesn't read as a handoff TO John.
+    if (first === name) {
+      const rest = words.slice(wi + 1).join(' ');
+      if (/^(what|who|whom|when|where|why|which|how|you\b|your\b|thoughts|any\b|(?:do|did|are|were|is|can|could|would|will|should|have|has)\s+you\b)/i.test(rest)) return true;
+    }
+    // Trailing vocative on a question: "what do you think kinsey".
+    if (last === name && looksLikeQuestion(raw)) return true;
+    // Comma-set-off vocative: "so, kinsey, where are we on the build".
+    if (new RegExp(`,\\s*${name}[,?!.]?(?:\\s|$)`).test(s)) return true;
+  }
+  return false;
+}
+
+// ── Volunteer lane ──────────────────────────────────────────────────────────────────────────────
+// A real teammate occasionally interjects UNINVITED, but only when holding concrete data: someone
+// states a wrong deadline, or asks the room something she can answer from Teamwork/memory. This is
+// deliberately narrow: a PM-domain cue word must be heard, cooldowns apply, and the model is asked
+// SILENTLY (text-only probe, deleted from history on PASS) whether it has one checkable fact worth
+// saying. Only a non-PASS verdict produces speech. "nora step back" (leanIn off) disables it.
+const VOLUNTEER_COOLDOWN_MS = 5 * 60 * 1000;   // at most one uninvited interjection per 5 minutes
+const VOLUNTEER_PROBE_COOLDOWN_MS = 90 * 1000; // and don't even ask the model more often than this
+const VOLUNTEER_CUE = /\b(deadline|due|overdue|timeline|launch|ship(?:ping|s|ped)?|estimate|scope|budget|hours|capacity|booked|bandwidth|overloaded|milestone|sprint|blocked|blocker|task|teamwork)\b/i;
+function maybeVolunteerProbe(openaiWs, session, userText) {
+  if (session.leanIn === false) return false;
+  if (!VOLUNTEER_CUE.test(userText || '')) return false;
+  const now = Date.now();
+  if (session.lastVolunteerSpokeAt && now - session.lastVolunteerSpokeAt < VOLUNTEER_COOLDOWN_MS) return false;
+  if (session.lastVolunteerProbeAt && now - session.lastVolunteerProbeAt < VOLUNTEER_PROBE_COOLDOWN_MS) return false;
+  session.lastVolunteerProbeAt = now;
+  try {
+    const basePrompt = buildSystemPrompt('realtime', session.transcript);
+    openaiWs.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        output_modalities: ['text'],
+        metadata: { nora_probe: 'volunteer' },
+        instructions: basePrompt + '\n\n[SILENT VOLUNTEER CHECK. Nobody asked you anything. The last thing said was not directed at you, but it touched your territory. Decide whether you are holding ONE concrete, checkable fact that directly bears on what was just said: a real date, deadline, task status, capacity number, or commitment you know from your memory or from earlier in this meeting. If yes, write that flag as one short spoken-style sentence, the way a teammate briefly cuts in. It must be a fact, not an opinion, agreement, or summary. If you are not sure or have nothing concrete, reply with exactly: PASS]'
+      }
+    }));
+    session.voiceResponseActive = true; session.voiceResponseAt = now;
+    return true;
+  } catch (e) { console.warn('volunteer probe failed:', e.message); return false; }
 }
 function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   if (!session) return;
@@ -3590,28 +3664,46 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   // AUTO 1:1 — if only one other person has been heard on the call, treat it like a 1:1 and respond
   // freely (no name needed), without anyone toggling a mode. Group gating only kicks in at 2+ people.
   const soloHuman = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
-  let trigger = false, why = '';
+  let trigger = false, why = '', handoff = false;
   if (session.muted) {
     trigger = addressed; why = 'muted+named';          // muted: only a short text reply when directly named
   } else if (session.oneOnOne || soloHuman) {
     trigger = true; why = session.oneOnOne ? '1:1' : 'solo';  // respond to everything
   } else {
-    const now = Date.now();                             // group: named, in her active window, or (lean-in) a direct question
-    const inWindow = session.voiceActiveUntil && now < session.voiceActiveUntil;
-    const leanInQ = session.leanIn !== false && looksLikeQuestion(userText);
-    trigger = addressed || inWindow || leanInQ;
-    why = addressed ? 'named' : inWindow ? 'in-window' : 'lean-in question';
-    // Open the follow-up window only when she's clearly addressed by name. A lean-in question that she
-    // ends up declining must NOT open the window (else cross-talk would cascade through it); when she
-    // actually answers one, the response.done "spoke" check opens the window instead.
-    if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
+    const now = Date.now();                             // group: named, in-window AND directed, or (lean-in) a direct question
+    const isQ = looksLikeQuestion(userText);
+    handoff = addressesSomeoneElse(userText, session);
+    if (handoff) {
+      // The utterance is aimed at another named person ("Kinsey, what do you think"). She lets go
+      // of the floor: no reply, and her follow-up window closes because the conversation has
+      // visibly moved to someone else. This also stops lean-in answering questions meant for others.
+      session.voiceActiveUntil = 0;
+      why = 'handoff to a named person';
+    } else {
+      const inWindow = session.voiceActiveUntil && now < session.voiceActiveUntil;
+      // In-window is no longer speaker-blind: only utterances actually directed at her (a question,
+      // or second-person "you") pull a reply. Ambient statements between two humans don't trigger
+      // her just because she spoke twenty seconds ago.
+      const directed = isQ || /\b(you|your|yours)\b/i.test(userText || '');
+      const leanInQ = session.leanIn !== false && isQ;
+      trigger = addressed || (inWindow && directed) || leanInQ;
+      why = addressed ? 'named' : (inWindow && directed) ? 'in-window directed' : 'lean-in question';
+      // Open the full follow-up window only when she's clearly addressed by name. A lean-in question
+      // she ends up declining must NOT open it (else cross-talk cascades through it); when she
+      // actually speaks, the response.done "spoke" check grants a short grace instead.
+      if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
+    }
   }
   if (trigger) {
     try { openaiWs.send(JSON.stringify({ type: 'response.create' })); session.voiceResponseActive = true; session.voiceResponseAt = Date.now(); }
     catch (e) { console.warn('voice trigger failed:', e.message); }
     console.log(`🎙️ Voice: responding (${why})`);
+  } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff && maybeVolunteerProbe(openaiWs, session, userText)) {
+    // Not summoned, but a PM-domain cue was heard: silently ask her whether she's holding one
+    // concrete fact worth interjecting. She speaks only if the probe comes back non-PASS.
+    console.log('🎙️ Voice: volunteer probe (cue heard, checking for a concrete fact)');
   } else {
-    console.log('🎙️ Voice: silent (not addressed)');
+    console.log(`🎙️ Voice: silent (${why || 'not addressed'})`);
   }
 }
 
@@ -7170,10 +7262,15 @@ wss.on('connection', async (ws, req) => {
           console.log('🗣️ User (transcribed by Whisper):', userText.slice(0, 200));
           const session = sessions[botId];
           if (session) {
-            // Add to rolling buffer for Nora's conversational context
-            session.buffer.push(`Participant: ${userText}`);
-            if (session.buffer.length > 20) session.buffer.shift();
-            // Transcript entry is handled by /webhook/transcript with actual speaker names
+            // Recall's /webhook/transcript pushes this same utterance into the buffer WITH the real
+            // speaker name. Only add the unnamed Whisper copy as a fallback when Recall's transcript
+            // stream looks dead, so the buffer isn't full of duplicate "Participant:" lines diluting
+            // the named ones (they were halving its effective depth).
+            const recallLive = session.lastRecallLineAt && (Date.now() - session.lastRecallLineAt < 20000);
+            if (!recallLive) {
+              session.buffer.push(`Participant: ${userText}`);
+              if (session.buffer.length > 20) session.buffer.shift();
+            }
             // Decide whether Nora should actually respond to this turn (create_response is off).
             maybeTriggerVoiceResponse(openaiWs, session, userText);
           }
@@ -7196,13 +7293,49 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'response.done' && msg.response) {
         const s = sessions[botId];
         if (s) s.voiceResponseActive = false; // free the gate
+
+        // Volunteer-probe verdict. The probe silently asked her (text-only) whether she holds a
+        // concrete fact worth interjecting. PASS: delete the deliberation from conversation history
+        // and stay quiet. A real flag: speak it via a follow-up audio response. Probe responses skip
+        // all the normal handling below (no window grace, no transcript logging).
+        if (msg.response.metadata && msg.response.metadata.nora_probe === 'volunteer') {
+          const items = msg.response.output || [];
+          const probeText = items.filter(it => it.type === 'message')
+            .map(it => (it.content || []).map(c => c.text || '').join(' ')).join(' ').trim();
+          // Over-long output means she's summarizing, not flagging one fact; treat that as a PASS too.
+          const isPass = !probeText || /^pass\b/i.test(probeText) || probeText.length > 400;
+          if (isPass) {
+            for (const it of items) {
+              if (it.id) { try { openaiWs.send(JSON.stringify({ type: 'conversation.item.delete', item_id: it.id })); } catch {} }
+            }
+            console.log('🎙️ Volunteer: PASS (no concrete fact to add)');
+          } else if (s && !s.muted) {
+            s.lastVolunteerSpokeAt = Date.now();
+            console.log('🎙️ Volunteer: interjecting:', probeText.slice(0, 160));
+            try {
+              openaiWs.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                  instructions: buildSystemPrompt('realtime', s.transcript) + '\n\n[You just decided this flag is worth briefly interjecting into the meeting: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now in one or two short sentences, casually, like a teammate cutting in with a quick fact. Do not apologize for interrupting and do not add anything beyond the flag itself.]'
+                }
+              }));
+              s.voiceResponseActive = true; s.voiceResponseAt = Date.now();
+            } catch (e) { console.warn('volunteer speak failed:', e.message); }
+          }
+          return; // nothing below applies to a silent probe
+        }
+
         const outputs = msg.response.output || [];
-        // If she actually spoke this turn in a group, extend her active window so the back-and-forth
-        // keeps flowing for a bit without her name. A response that produced nothing does NOT extend
-        // it, so once she's just being triggered into silence the window lapses and she goes quiet.
+        // If she actually spoke this turn in a group, grant a SHORT grace for an immediate follow-up
+        // ("wait, which Friday?"). This deliberately does NOT re-open the full window: before, every
+        // reply refreshed the full 45s and an active exchange near her kept her latched in
+        // indefinitely. Only being re-addressed by NAME re-opens the full window now.
         const spoke = outputs.some(it => it.type === 'message' && it.role === 'assistant' &&
           (it.content || []).some(c => /audio|text/.test(c.type) && (c.transcript || c.text)));
-        if (s && spoke && !s.oneOnOne && !s.muted) s.voiceActiveUntil = Date.now() + VOICE_ACTIVE_WINDOW_MS;
+        if (s && spoke && !s.oneOnOne && !s.muted) {
+          const grace = Date.now() + VOICE_SPOKE_GRACE_MS;
+          if (!s.voiceActiveUntil || s.voiceActiveUntil < grace) s.voiceActiveUntil = grace;
+        }
         for (const item of outputs) {
           if (item.type === 'function_call') {
             handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls);

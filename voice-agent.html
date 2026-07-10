@@ -366,8 +366,9 @@
             console.log('🧠 OpenAI session updated');
           }
 
-          // Response completed — extract tasks/memory
-          if (msg.type === 'response.done' && msg.response) {
+          // Response completed — extract tasks/memory. Server-initiated silent probes
+          // (metadata.nora_probe) are internal deliberation, not speech: never post them.
+          if (msg.type === 'response.done' && msg.response && !msg.response.metadata?.nora_probe) {
             const outputItems = msg.response.output || [];
             for (const item of outputItems) {
               if (item.type === 'message' && item.role === 'assistant') {
