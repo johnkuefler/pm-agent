@@ -625,7 +625,7 @@ function addTask(task) {
   return id;
 }
 
-const { computeNextRun, isValidRecurrence, isTaskEligibleNow } = require('./src/lib/scheduling');
+const { SCHEDULE_TZ, computeNextRun, isValidRecurrence, isTaskEligibleNow } = require('./src/lib/scheduling');
 
 // ── Postgres bootstrap: migrate JSON → PG (once), hydrate caches, flip _dbReady ──
 // Runs before the server accepts requests (see the server.listen wrapper at the bottom),

@@ -13,8 +13,14 @@ delete process.env.DATABASE_URL;
 delete process.env.DATABASE_PUBLIC_URL;
 
 const { __test: helpers } = require('../../server');
+const { SCHEDULE_TZ } = require('../../src/lib/scheduling');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+
+test('task extraction timezone is exported and valid for date formatting', () => {
+  assert.equal(SCHEDULE_TZ, 'America/Chicago');
+  assert.doesNotThrow(() => new Intl.DateTimeFormat('en-US', { timeZone: SCHEDULE_TZ }).format(new Date()));
+});
 
 test('daily recurrence selects the next Central-time occurrence', () => {
   assert.equal(
