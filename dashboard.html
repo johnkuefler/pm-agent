@@ -11,94 +11,184 @@
   -->
 
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, sans-serif; background: #111; color: #eee; padding: 40px 20px; }
-    .container { max-width: 600px; margin: 0 auto; }
-    h1 { font-size: 28px; margin-bottom: 4px; }
-    .subtitle { color: #888; margin-bottom: 32px; font-size: 14px; }
-    .section { background: #1a1a1a; border-radius: 12px; padding: 24px; margin-bottom: 20px; }
-    .section h2 { font-size: 16px; margin-bottom: 16px; color: #ccc; }
-    input, textarea { width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 14px; font-family: inherit; }
-    textarea { resize: vertical; min-height: 60px; }
-    .btn { padding: 10px 16px; border-radius: 8px; border: none; font-size: 13px; cursor: pointer; font-weight: 600; }
-    .btn-primary { background: #7c3aed; color: #fff; }
-    .btn-primary:hover { background: #6d28d9; }
-    .btn-danger { background: transparent; color: #f87171; border: 1px solid #333; padding: 6px 10px; font-size: 12px; }
-    .btn-danger:hover { background: #450a0a; }
-    .btn-success { background: transparent; color: #6ee7b7; border: 1px solid #333; padding: 6px 10px; font-size: 12px; }
-    .btn-success:hover { background: #064e3b; }
-    .btn-sm { padding: 6px 12px; font-size: 12px; }
-    .row { display: flex; gap: 8px; margin-top: 12px; }
-    .toast { margin-top: 12px; padding: 10px 12px; border-radius: 8px; display: none; font-size: 13px; }
-    .toast.ok { background: #064e3b; color: #6ee7b7; display: block; }
-    .toast.err { background: #450a0a; color: #fca5a5; display: block; }
-    .memory-item { display: flex; justify-content: space-between; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid #222; gap: 12px; }
-    .memory-item:last-child { border-bottom: none; }
-    .memory-fact { flex: 1; font-size: 14px; line-height: 1.4; }
-    .memory-meta { color: #666; font-size: 11px; }
-    #memory-list { margin-bottom: 16px; }
-    .empty { color: #555; font-style: italic; font-size: 13px; padding: 8px 0; }
-    .tab-bar { display: flex; gap: 0; margin-bottom: 24px; }
-    .tab { padding: 10px 20px; background: #1a1a1a; color: #888; cursor: pointer; font-size: 14px; font-weight: 500; border: 1px solid #222; }
-    .tab:first-child { border-radius: 8px 0 0 8px; }
-    .tab:last-child { border-radius: 0 8px 8px 0; }
-    .tab.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
-    .page { display: none; }
-    .page.active { display: block; }
-    .task-item { padding: 12px 0; border-bottom: 1px solid #222; }
-    .task-item:last-child { border-bottom: none; }
-    .task-item.done { opacity: 0.5; }
-    .task-action { font-size: 14px; line-height: 1.4; font-weight: 500; }
-    .task-detail { font-size: 13px; color: #aaa; margin-top: 2px; }
-    .task-meta { color: #666; font-size: 11px; margin-top: 4px; }
-    .task-buttons { display: flex; gap: 6px; margin-top: 8px; }
-    .task-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-    .badge-pending { background: #422006; color: #fbbf24; }
-    .badge-done { background: #064e3b; color: #6ee7b7; }
-    .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; }
-    .filter-btn { padding: 6px 14px; border-radius: 6px; border: 1px solid #333; background: transparent; color: #888; cursor: pointer; font-size: 12px; }
-    .filter-btn.active { background: #7c3aed; color: #fff; border-color: #7c3aed; }
-    .task-item[style*="cursor"]:hover { background: #222; border-radius: 8px; }
+    /* Nora control panel — light theme. Cool violet-biased neutrals (chosen, not a default
+       grey), a single purple accent that is Nora's identity, and semantic colors kept
+       separate from the accent. System sans for prose, a mono face for machine data
+       (bot IDs, counts, timestamps) — this is an ops console, so numerals get tabular figures. */
+    :root{
+      --bg:#f4f4f8; --surface:#ffffff; --surface-2:#f5f5fa; --surface-3:#edecf4;
+      --border:#e6e5ef; --border-strong:#d6d4e2;
+      --text:#1b1a22; --text-2:#3a3844; --muted:#6a6876; --dim:#9a98a6;
+      --accent:#7c3aed; --accent-2:#6d28d9; --accent-ink:#6d28d9; --accent-soft:#f0ebfe; --accent-line:#d8c9fb;
+      --success:#15803d; --success-soft:#dcfce7; --success-line:#bbf7d0;
+      --danger:#dc2626; --danger-soft:#fdecec; --danger-line:#f6cfcf;
+      --warn:#b45309; --warn-soft:#fef3c7; --warn-line:#fce4a6;
+      --info:#1d4ed8;
+      --radius:14px; --radius-sm:9px;
+      --shadow:0 1px 2px rgba(24,20,50,.05), 0 6px 20px -12px rgba(24,20,50,.18);
+      --shadow-rail:1px 0 0 var(--border);
+      --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+      --mono:ui-monospace,SFMono-Regular,'SF Mono',Menlo,Consolas,monospace;
+    }
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{height:100%}
+    body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:14px;line-height:1.55;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+    code{font-family:var(--mono);font-size:.86em;background:var(--surface-3);padding:1px 5px;border-radius:5px;color:var(--accent-ink)}
+    strong{color:var(--text);font-weight:650}
+    :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+    /* App shell: fixed sidebar rail + scrolling content */
+    .app{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+    .sidebar{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;background:var(--surface);box-shadow:var(--shadow-rail);padding:22px 14px;display:flex;flex-direction:column;gap:3px}
+    .brand{display:flex;align-items:center;gap:11px;padding:2px 8px 20px}
+    .brand-badge{width:38px;height:38px;border-radius:11px;background:linear-gradient(135deg,#8b5cf6,#6d28d9);display:grid;place-items:center;font-weight:800;font-size:18px;color:#fff;box-shadow:0 6px 16px -6px rgba(124,58,237,.55)}
+    .brand-name{font-size:15.5px;font-weight:700;letter-spacing:-.01em}
+    .brand-sub{font-size:11px;color:var(--dim);margin-top:1px;letter-spacing:.02em}
+    .nav{display:flex;flex-direction:column;gap:2px}
+    .nav .tab{padding:9px 12px;border-radius:var(--radius-sm);color:var(--muted);cursor:pointer;font-size:13.5px;font-weight:550;border:none;background:transparent;transition:background .12s,color .12s}
+    .nav .tab:hover{background:var(--surface-2);color:var(--text)}
+    .nav .tab.active{background:var(--accent);color:#fff;box-shadow:0 4px 12px -6px rgba(124,58,237,.6)}
+    .content{padding:36px 44px;max-width:1000px;width:100%}
+    .content-head{margin-bottom:24px}
+    .content-head h1{font-size:23px;font-weight:750;letter-spacing:-.02em;text-wrap:balance}
+    .content-head .subtitle{color:var(--muted);font-size:13px;margin-top:3px}
+
+    /* Cards */
+    .section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:22px;margin-bottom:18px;box-shadow:var(--shadow)}
+    .section h2{font-size:15px;font-weight:680;margin-bottom:15px;color:var(--text);letter-spacing:-.01em}
+    .section p{color:var(--muted)}
+
+    /* Inputs */
+    input,textarea,select{width:100%;padding:10px 12px;border-radius:var(--radius-sm);border:1px solid var(--border-strong);background:var(--surface);color:var(--text);font-size:14px;font-family:inherit;transition:border-color .12s,box-shadow .12s}
+    input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+    textarea{resize:vertical;min-height:64px}
+    ::placeholder{color:var(--dim)}
+
+    /* Buttons */
+    .btn{padding:9px 15px;border-radius:var(--radius-sm);border:1px solid transparent;font-size:13px;cursor:pointer;font-weight:600;transition:background .12s,border-color .12s,box-shadow .12s,transform .05s;display:inline-flex;align-items:center;gap:6px;line-height:1}
+    .btn:active{transform:translateY(1px)}
+    .btn:not(.btn-primary):not(.btn-danger):not(.btn-success){background:var(--surface);color:var(--text);border-color:var(--border-strong)}
+    .btn:not(.btn-primary):not(.btn-danger):not(.btn-success):hover{background:var(--surface-2);border-color:var(--dim)}
+    .btn-primary{background:var(--accent);color:#fff;box-shadow:0 4px 12px -6px rgba(124,58,237,.55)}
+    .btn-primary:hover{background:var(--accent-2)}
+    .btn-danger{background:var(--surface);color:var(--danger);border:1px solid var(--danger-line);padding:6px 11px;font-size:12px}
+    .btn-danger:hover{background:var(--danger-soft)}
+    .btn-success{background:var(--surface);color:var(--success);border:1px solid var(--success-line);padding:6px 11px;font-size:12px}
+    .btn-success:hover{background:var(--success-soft)}
+    .btn-sm{padding:6px 12px;font-size:12px}
+    .row{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+
+    /* Toast — semantic, not accent */
+    .toast{margin-top:12px;padding:10px 13px;border-radius:var(--radius-sm);display:none;font-size:13px;border:1px solid transparent}
+    .toast.ok{background:var(--success-soft);color:#166534;border-color:var(--success-line);display:block}
+    .toast.err{background:var(--danger-soft);color:#b91c1c;border-color:var(--danger-line);display:block}
+
+    /* Meeting control toggle pills — state reads at a glance from form + color */
+    .toggle-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+    .toggle-pill{display:inline-flex;align-items:center;gap:8px;padding:8px 13px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);cursor:pointer;font-size:12.5px;font-weight:600;transition:all .12s;user-select:none}
+    .toggle-pill:hover{border-color:var(--accent);color:var(--text)}
+    .toggle-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--dim);transition:all .12s}
+    .toggle-pill.on{background:var(--accent-soft);color:var(--accent-ink);border-color:var(--accent-line)}
+    .toggle-pill.on .dot{background:var(--success);box-shadow:0 0 0 3px var(--success-soft)}
+
+    /* Memory list */
+    .memory-item{display:flex;justify-content:space-between;align-items:flex-start;padding:12px 0;border-bottom:1px solid var(--border);gap:12px}
+    .memory-item:last-child{border-bottom:none}
+    .memory-fact{flex:1;font-size:14px;line-height:1.45}
+    .memory-meta{color:var(--dim);font-size:11px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+    #memory-list{margin-bottom:16px}
+    .empty{color:var(--dim);font-style:italic;font-size:13px;padding:14px 0;text-align:center}
+
+    /* Legacy tab strip replaced by the sidebar nav */
+    .tab-bar{display:none}
+    .page{display:none;animation:fade .18s ease}
+    .page.active{display:block}
+    @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+
+    /* Tasks */
+    .task-item{padding:14px 0;border-bottom:1px solid var(--border)}
+    .task-item:last-child{border-bottom:none}
+    .task-item.done{opacity:.55}
+    .task-action{font-size:14px;line-height:1.4;font-weight:600}
+    .task-detail{font-size:13px;color:var(--muted);margin-top:2px}
+    .task-meta{color:var(--dim);font-size:11px;margin-top:4px;font-family:var(--mono);font-variant-numeric:tabular-nums}
+    .task-buttons{display:flex;gap:6px;margin-top:9px;flex-wrap:wrap}
+    .task-badge{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700}
+    .badge-pending{background:var(--warn-soft);color:var(--warn)}
+    .badge-done{background:var(--success-soft);color:var(--success)}
+    .filter-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+    .filter-btn{padding:6px 14px;border-radius:999px;border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);cursor:pointer;font-size:12px;transition:all .12s}
+    .filter-btn:hover{border-color:var(--dim);color:var(--text)}
+    .filter-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+    .task-item[style*="cursor"]:hover{background:var(--surface-2);border-radius:8px}
+
+    @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+    /* Responsive: collapse the rail into a top bar */
+    @media (max-width:820px){
+      .app{grid-template-columns:1fr}
+      .sidebar{position:static;height:auto;flex-direction:row;flex-wrap:wrap;align-items:center;gap:6px;box-shadow:none;border-bottom:1px solid var(--border);padding:12px 16px}
+      .brand{padding:2px 8px 2px 2px}
+      .nav{flex-direction:row;flex-wrap:wrap;flex:1;justify-content:flex-end}
+      .nav .tab{padding:7px 11px}
+      .content{padding:22px 16px}
+    }
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>Nora</h1>
-    <p class="subtitle">PM Agent for LimeLight Marketing</p>
-
-    <div class="tab-bar">
-      <div class="tab active" onclick="showTab('meeting')">Meeting</div>
-      <div class="tab" onclick="showTab('tasks')">Tasks</div>
-      <div class="tab" onclick="showTab('memory')">Memory</div>
-      <div class="tab" onclick="showTab('projects')">Projects</div>
-      <div class="tab" onclick="showTab('transcripts')">Transcripts</div>
-      <div class="tab" onclick="showTab('dreams')">Dreams</div>
-      <div class="tab" onclick="showTab('markers')">Markers</div>
-      <div class="tab" onclick="showTab('admin')">Admin</div>
-    </div>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-badge">N</div>
+        <div>
+          <div class="brand-name">Nora</div>
+          <div class="brand-sub">PM Agent · LimeLight</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <div class="tab active" onclick="showTab('meeting')">Meeting</div>
+        <div class="tab" onclick="showTab('tasks')">Tasks</div>
+        <div class="tab" onclick="showTab('memory')">Memory</div>
+        <div class="tab" onclick="showTab('projects')">Projects</div>
+        <div class="tab" onclick="showTab('transcripts')">Transcripts</div>
+        <div class="tab" onclick="showTab('dreams')">Dreams</div>
+        <div class="tab" onclick="showTab('markers')">Markers</div>
+        <div class="tab" onclick="showTab('admin')">Admin</div>
+      </nav>
+    </aside>
+    <main class="content">
+      <div class="content-head">
+        <h1>Nora</h1>
+        <p class="subtitle">PM Agent for LimeLight Marketing</p>
+      </div>
 
     <!-- Meeting Tab -->
     <div id="page-meeting" class="page active">
       <div class="section">
         <h2>Send Nora to a Meeting</h2>
         <input id="url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
-        <select id="project-hint" style="width:100%;margin-top:8px;padding:10px;background:#1a1a1a;color:#eee;border:1px solid #333;border-radius:8px;font-size:14px;">
+        <select id="project-hint" style="width:100%;margin-top:8px;padding:10px;background:#ffffff;color:#1b1a22;border:1px solid #e6e5ef;border-radius:8px;font-size:14px;">
           <option value="">No project hint (general meeting)</option>
         </select>
-        <div style="font-size:12px;color:#888;margin-top:4px;">Optional. Picks one project to prime Nora's context for this meeting — she'll have full memory + details for it loaded.</div>
+        <div style="font-size:12px;color:#6a6876;margin-top:4px;">Optional. Picks one project to prime Nora's context for this meeting — she'll have full memory + details for it loaded.</div>
         <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
         <div id="join-status" class="toast"></div>
-        <div id="mute-controls" style="margin-top: 12px; display: none;">
-          <button id="mute-btn" class="btn" onclick="toggleMute()" style="background: #333; border: 1px solid #555;">🔇 Mute Nora</button>
-          <span id="mute-status" style="margin-left: 8px; font-size: 13px; color: #888;"></span>
+        <div id="mute-controls" style="margin-top: 14px; display: none;">
+          <button id="mute-btn" class="btn" onclick="toggleMute()">🔇 Mute Nora</button>
+          <span id="mute-status" style="margin-left: 8px; font-size: 13px; color: var(--muted);"></span>
+          <div class="toggle-row">
+            <div class="toggle-pill" id="pill-oneonone" onclick="toggleFlag('one-on-one')" title="Respond to every turn without her name — best for a 1:1"><span class="dot"></span> 1:1 mode</div>
+            <div class="toggle-pill" id="pill-leanin" onclick="toggleFlag('lean-in')" title="In a group, answer a direct question even without her name"><span class="dot"></span> Lean-in</div>
+            <div class="toggle-pill" id="pill-proactive" onclick="toggleFlag('proactive')" title="Let her volunteer a fact unprompted when she has one"><span class="dot"></span> Proactive</div>
+          </div>
         </div>
       </div>
 
       <div class="section">
         <h2>🧪 Send a Test Bot</h2>
-        <p style="color:#888;font-size:12px;line-height:1.5;margin-bottom:10px;">
+        <p style="color:#6a6876;font-size:12px;line-height:1.5;margin-bottom:10px;">
           Spin up a throwaway voice agent that joins a meeting and talks just like Nora — but with
           no memory, projects, or integrations. Give it a quick brief and a meeting link to rehearse
           scenarios (mock client call, role-play a stakeholder, etc.). Nothing it says is saved or
@@ -107,7 +197,7 @@
         <input id="dummy-url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
         <input id="dummy-name" placeholder="Bot display name (default: Nora (Test))" style="margin-top:8px;" />
         <textarea id="dummy-prompt" placeholder="Brief / knowledge base for this test bot. e.g. 'You are a skeptical client named Dave from Acme Co. You're unhappy about a missed deadline and want answers about the website launch slipping two weeks. Push back on excuses.'" style="margin-top:8px;min-height:120px;"></textarea>
-        <div style="font-size:12px;color:#888;margin-top:4px;">The bot joins unmuted and speaks. Everything it knows comes from this brief.</div>
+        <div style="font-size:12px;color:#6a6876;margin-top:4px;">The bot joins unmuted and speaks. Everything it knows comes from this brief.</div>
         <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinDummy()">Send Test Bot</button>
         </div>
@@ -116,10 +206,10 @@
 
       <div class="section">
         <h2>Voice Agent</h2>
-        <p style="color: #888; font-size: 13px; line-height: 1.5;">Nora uses OpenAI Realtime API via Recall.ai's Output Media for real-time voice conversations. She listens continuously and responds naturally — no wake word needed. Voice Activity Detection handles turn-taking automatically.</p>
-        <div style="margin-top: 12px; padding: 12px; background: #1a1a2e; border-radius: 8px; border: 1px solid #333;">
-          <div style="font-size: 12px; color: #888; margin-bottom: 4px;">Architecture</div>
-          <div style="font-size: 13px; color: #ccc; line-height: 1.5;">Meeting audio → Bot browser → WebSocket relay → OpenAI Realtime → Audio plays on page → Streams to meeting</div>
+        <p style="color: #6a6876; font-size: 13px; line-height: 1.5;">Nora uses OpenAI Realtime API via Recall.ai's Output Media for real-time voice conversations. She listens continuously and responds naturally — no wake word needed. Voice Activity Detection handles turn-taking automatically.</p>
+        <div style="margin-top: 12px; padding: 12px; background: #f0edfb; border-radius: 8px; border: 1px solid #e6e5ef;">
+          <div style="font-size: 12px; color: #6a6876; margin-bottom: 4px;">Architecture</div>
+          <div style="font-size: 13px; color: #3a3844; line-height: 1.5;">Meeting audio → Bot browser → WebSocket relay → OpenAI Realtime → Audio plays on page → Streams to meeting</div>
         </div>
       </div>
     </div>
@@ -144,7 +234,7 @@
           <input id="new-task-scheduled" type="datetime-local" placeholder="Schedule for..." style="flex: 1;" title="Optional. Leave empty for 'do now'." />
           <input id="new-task-recurrence" placeholder="Recurrence (optional)" style="flex: 1;" title="daily:HH:MM | weekdays:HH:MM | weekly:dayname:HH:MM | monthly:N:HH:MM — all Central Time" />
         </div>
-        <div style="font-size: 12px; color: #888; margin-top: 4px;">Recurrence syntax (Central Time): <code>daily:09:00</code>, <code>weekdays:08:30</code>, <code>weekly:friday:16:00</code>, <code>monthly:1:09:00</code>. Set just recurrence to auto-seed the first fire time.</div>
+        <div style="font-size: 12px; color: #6a6876; margin-top: 4px;">Recurrence syntax (Central Time): <code>daily:09:00</code>, <code>weekdays:08:30</code>, <code>weekly:friday:16:00</code>, <code>monthly:1:09:00</code>. Set just recurrence to auto-seed the first fire time.</div>
         <div class="row" style="margin-top: 8px;">
           <button class="btn btn-primary btn-sm" onclick="addTask()">Add Task</button>
         </div>
@@ -158,9 +248,9 @@
         <h2 style="display: flex; justify-content: space-between; align-items: center;">Nora's Memory <button class="btn btn-danger btn-sm" onclick="clearMemory()">Clear All</button></h2>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
           <input id="memory-search" placeholder="🔍 Search memories…" oninput="renderMemory()"
-            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:14px;" />
+            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid #e6e5ef; background:#f5f5fa; color:#1b1a22; font-size:14px;" />
           <select id="memory-source" onchange="renderMemory()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:13px;">
+            style="padding:9px 10px; border-radius:8px; border:1px solid #e6e5ef; background:#f5f5fa; color:#1b1a22; font-size:13px;">
             <option value="">All sources</option>
             <option value="opinion">💭 Takes</option>
             <option value="learning">🌱 Learnings</option>
@@ -171,20 +261,20 @@
             <option value="system">🔧 System</option>
           </select>
           <select id="memory-sort" onchange="renderMemory()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:13px;">
+            style="padding:9px 10px; border-radius:8px; border:1px solid #e6e5ef; background:#f5f5fa; color:#1b1a22; font-size:13px;">
             <option value="newest">Newest first</option>
             <option value="oldest">Oldest first</option>
             <option value="project">By project</option>
           </select>
         </div>
-        <div id="memory-count" style="font-size:12px; color:#888; margin-bottom:10px;"></div>
+        <div id="memory-count" style="font-size:12px; color:#6a6876; margin-bottom:10px;"></div>
         <div id="memory-list"></div>
         <div id="memory-more" style="text-align:center; margin-top:12px;"></div>
       </div>
       <div class="section">
         <h2>Add Memory</h2>
         <textarea id="new-fact" placeholder="Type a fact for Nora to remember..."></textarea>
-        <select id="new-fact-project" style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 14px; margin-top: 8px;">
+        <select id="new-fact-project" style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #e6e5ef; background: #f5f5fa; color: #1b1a22; font-size: 14px; margin-top: 8px;">
           <option value="">General (no project)</option>
         </select>
         <div class="row">
@@ -208,9 +298,9 @@
             <button class="btn btn-danger btn-sm" onclick="deleteProject()">Delete</button>
           </div>
         </h2>
-        <div id="project-detail-info" style="font-size: 13px; color: #ccc; line-height: 1.5; white-space: pre-wrap;"></div>
+        <div id="project-detail-info" style="font-size: 13px; color: #3a3844; line-height: 1.5; white-space: pre-wrap;"></div>
         <div id="project-memories" style="margin-top: 16px;"></div>
-        <button class="btn btn-sm" onclick="closeProject()" style="margin-top: 12px; background: #222; color: #888; border: 1px solid #333;">Back to list</button>
+        <button class="btn btn-sm" onclick="closeProject()" style="margin-top: 12px; background: #f5f5fa; color: #6a6876; border: 1px solid #e6e5ef;">Back to list</button>
       </div>
       <div id="project-edit" class="section" style="display: none;">
         <h2 id="project-edit-title">Add Project</h2>
@@ -218,7 +308,7 @@
         <textarea id="project-edit-details" placeholder="Project details (stakeholders, timelines, goals, etc.)..." style="margin-top: 8px; min-height: 80px;"></textarea>
         <div class="row">
           <button class="btn btn-primary btn-sm" onclick="saveProject()">Save</button>
-          <button class="btn btn-sm" onclick="cancelEditProject()" style="background: #222; color: #888; border: 1px solid #333;">Cancel</button>
+          <button class="btn btn-sm" onclick="cancelEditProject()" style="background: #f5f5fa; color: #6a6876; border: 1px solid #e6e5ef;">Cancel</button>
         </div>
         <div id="project-status" class="toast"></div>
       </div>
@@ -234,22 +324,22 @@
           🔌 Live Data Connections (MCP)
           <button class="btn btn-success btn-sm" onclick="loadMcpConnections()">Refresh</button>
         </h2>
-        <p style="color:#888; font-size:12px; line-height:1.5; margin-bottom:12px;">
+        <p style="color:#6a6876; font-size:12px; line-height:1.5; margin-bottom:12px;">
           Remote MCP servers Nora can hit <strong>live from Slack replies</strong> (Teamwork status, estimates, etc.). Mark a connection <strong>financial</strong> to restrict it to financial-approved users only. Tokens are write-only — shown masked, never sent back to the browser. Read-only is enforced at the prompt level; treat any connection you add as something she can read from in chat.
         </p>
         <div id="mcp-list">Loading…</div>
-        <div style="margin-top:14px; border-top:1px solid #222; padding-top:12px;">
-          <div id="mcp-form-title" style="font-size:13px; font-weight:600; color:#ccc; margin-bottom:8px;">Add a connection</div>
+        <div style="margin-top:14px; border-top:1px solid #f5f5fa; padding-top:12px;">
+          <div id="mcp-form-title" style="font-size:13px; font-weight:600; color:#3a3844; margin-bottom:8px;">Add a connection</div>
           <input id="mcp-name" placeholder="Name (e.g. teamwork, limelight-pm)" />
           <input id="mcp-url" placeholder="Remote MCP URL (https://…)" style="margin-top:6px;" />
           <input id="mcp-token" type="password" placeholder="Auth token (optional; blank keeps current when editing)" style="margin-top:6px;" />
-          <div style="display:flex; gap:16px; align-items:center; margin-top:8px; font-size:13px; color:#ccc;">
+          <div style="display:flex; gap:16px; align-items:center; margin-top:8px; font-size:13px; color:#3a3844;">
             <label style="display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="mcp-financial" /> 💲 Financial (approved users only)</label>
             <label style="display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="mcp-enabled" checked /> Enabled</label>
           </div>
           <div class="row" style="margin-top:8px;">
             <button id="mcp-save-btn" class="btn btn-primary btn-sm" onclick="saveMcpConnection()">Add</button>
-            <button class="btn btn-sm" onclick="resetMcpForm()" style="background:#222; color:#888; border:1px solid #333;">Cancel</button>
+            <button class="btn btn-sm" onclick="resetMcpForm()" style="background:#f5f5fa; color:#6a6876; border:1px solid #e6e5ef;">Cancel</button>
           </div>
           <div id="mcp-toast" class="toast"></div>
         </div>
@@ -260,7 +350,7 @@
           Active Bots
           <button class="btn btn-success btn-sm" onclick="loadActiveBots()">Refresh</button>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           Bots Nora has out in meetings right now (or on their way). Use Remove to make a duplicate or wrong-meeting bot leave the call.
         </p>
         <div id="active-bots-list">Loading…</div>
@@ -275,8 +365,8 @@
             <button class="btn btn-success btn-sm" onclick="loadScheduledBots()">Refresh</button>
           </span>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Bots queued to join a future meeting (from calendar auto-join or manual scheduling). Rows flagged <span style="color:#f87171;font-weight:600;">DUPLICATE</span> have another bot queued for the same meeting within an hour — use Remove on a single one, or Remove all duplicates above to bulk-cancel.
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Bots queued to join a future meeting (from calendar auto-join or manual scheduling). Rows flagged <span style="color:#dc2626;font-weight:600;">DUPLICATE</span> have another bot queued for the same meeting within an hour — use Remove on a single one, or Remove all duplicates above to bulk-cancel.
         </p>
         <div id="scheduled-bots-list">Loading…</div>
         <div id="scheduled-bots-toast" class="toast"></div>
@@ -287,7 +377,7 @@
           Slack — Bot Channels
           <button class="btn btn-success btn-sm" onclick="loadBotChannels()">Refresh</button>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           Channels Nora's Slack bot is currently a member of. To add her to a new channel: <code>/invite @Nora</code> from that channel.
         </p>
         <div id="bot-channels-list">Loading…</div>
@@ -296,9 +386,9 @@
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Calendar Auto-Join
-          <span style="font-size: 11px; color: #666; font-weight: 400;">connect Nora's Google Calendar so she joins invited meetings automatically</span>
+          <span style="font-size: 11px; color: #87858f; font-weight: 400;">connect Nora's Google Calendar so she joins invited meetings automatically</span>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           When connected, Nora auto-joins any meeting on her calendar where her email is in the attendee list and the event has a Zoom / Meet / Teams link. Add <code>[no-nora]</code> or <code>[skip-nora]</code> to the event title to opt a specific meeting out.
         </p>
         <div id="calendar-status">Loading…</div>
@@ -308,9 +398,9 @@
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Financial-Approved Slack Users
-          <span style="font-size: 11px; color: #666; font-weight: 400;">who can receive dollar amounts / margins / rates</span>
+          <span style="font-size: 11px; color: #87858f; font-weight: 400;">who can receive dollar amounts / margins / rates</span>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           Slack users on this list can ask Nora about financial details and get real answers. Everyone else gets a redirect ("I can't share financial details, reach out to John or Mallory"). The output scrubber catches any leaks the model misses.
         </p>
         <div id="financial-approved-list"></div>
@@ -325,9 +415,9 @@
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Proactive Slack Channels
-          <span style="font-size: 11px; color: #666; font-weight: 400;">where Nora can chime in unsolicited</span>
+          <span style="font-size: 11px; color: #87858f; font-weight: 400;">where Nora can chime in unsolicited</span>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           Strict opt-in per channel. In channels on this list, every non-mention message runs through a stricter Claude gate (defaults to no) before Nora considers chiming in. After any successful proactive post, the channel cools down for 30 minutes.
         </p>
         <div id="proactive-channels-list"></div>
@@ -341,26 +431,26 @@
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Joined Slack Threads
-          <span style="font-size: 11px; color: #666; font-weight: 400;">conversations Nora is currently following</span>
+          <span style="font-size: 11px; color: #87858f; font-weight: 400;">conversations Nora is currently following</span>
         </h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           Once Nora replies in a thread, follow-up messages reach her without re-mention until the thread goes stale (5 unaddressed messages or 30 min idle). Untrack any thread she shouldn't be following.
         </p>
-        <div id="joined-threads-summary" style="font-size: 12px; color: #888; margin-bottom: 8px;"></div>
+        <div id="joined-threads-summary" style="font-size: 12px; color: #6a6876; margin-bottom: 8px;"></div>
         <div id="joined-threads-list"></div>
       </div>
 
       <div class="section">
         <h2>Project Sync from Teamwork</h2>
-        <p style="color: #888; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Pull Nora's <code style="color: #a78bfa;">/projects</code> store into sync with Teamwork's active project list. Idempotent — runs every cowork hour but you can also trigger it manually here. Dry-run shows what would change without applying.
+        <p style="color: #6a6876; font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
+          Pull Nora's <code style="color: #6d28d9;">/projects</code> store into sync with Teamwork's active project list. Idempotent — runs every cowork hour but you can also trigger it manually here. Dry-run shows what would change without applying.
         </p>
         <div style="display: flex; gap: 8px;">
-          <button class="btn btn-sm" onclick="runTeamworkSync(true)" style="background: #1e1b4b; color: #a78bfa; border: 1px solid #4338ca;">Dry Run</button>
+          <button class="btn btn-sm" onclick="runTeamworkSync(true)" style="background: #ede9fe; color: #6d28d9; border: 1px solid #cbbdf5;">Dry Run</button>
           <button class="btn btn-primary btn-sm" onclick="runTeamworkSync(false)">Sync Now</button>
         </div>
         <div id="sync-status" class="toast"></div>
-        <pre id="sync-result" style="display: none; margin-top: 12px; background: #0a0a0a; padding: 12px; border-radius: 8px; font-size: 11px; line-height: 1.5; color: #aaa; max-height: 300px; overflow: auto; white-space: pre-wrap;"></pre>
+        <pre id="sync-result" style="display: none; margin-top: 12px; background: #f5f5fa; padding: 12px; border-radius: 8px; font-size: 11px; line-height: 1.5; color: #55535f; max-height: 300px; overflow: auto; white-space: pre-wrap;"></pre>
       </div>
     </div>
 
@@ -374,7 +464,7 @@
         <h2 id="transcript-detail-title">Transcript</h2>
         <div style="margin-bottom: 12px;">
           <button class="btn btn-danger btn-sm" onclick="closeTranscript()">Back to list</button>
-          <button id="transcript-delete-btn" class="btn btn-danger btn-sm" style="margin-left: 8px; background: #7f1d1d; border-color: #991b1b;">Delete transcript</button>
+          <button id="transcript-delete-btn" class="btn btn-danger btn-sm" style="margin-left: 8px; background: #fdecec; border-color: #f6cfcf;">Delete transcript</button>
         </div>
         <div id="transcript-content" style="font-size: 13px; line-height: 1.6;"></div>
       </div>
@@ -387,7 +477,7 @@
           💤 Dreams
           <button class="btn btn-success btn-sm" onclick="loadDreams()">Refresh</button>
         </h2>
-        <p style="color:#888; font-size:12px; line-height:1.5; margin-bottom:16px;">
+        <p style="color:#6a6876; font-size:12px; line-height:1.5; margin-bottom:16px;">
           Each night Nora consolidates her memory (merges duplicates, resolves contradictions, prunes stale facts), reflects (forms opinions, notices patterns), and reviews how her own messages landed that week — learning what makes her more useful. This is the log of what she did while "asleep."
         </p>
         <div id="dreams-list">Loading…</div>
@@ -401,22 +491,23 @@
           🔖 Markers
           <button class="btn btn-success btn-sm" onclick="loadMarkers()">Refresh</button>
         </h2>
-        <p style="color:#888; font-size:12px; line-height:1.5; margin-bottom:12px;">
+        <p style="color:#6a6876; font-size:12px; line-height:1.5; margin-bottom:12px;">
           Operational bookkeeping — "have I already done this?" records the cowork loop uses to avoid repeating work (filed a transcript, dreamed today, sent warmth this week). These are kept out of Memory on purpose, so Memory stays pure knowledge. Safe to delete a stale one if you need the loop to redo something.
         </p>
         <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
           <input id="markers-search" placeholder="🔍 Search markers…" oninput="renderMarkers()"
-            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:14px;" />
+            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid #e6e5ef; background:#f5f5fa; color:#1b1a22; font-size:14px;" />
           <select id="markers-category" onchange="renderMarkers()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid #333; background:#222; color:#eee; font-size:13px;">
+            style="padding:9px 10px; border-radius:8px; border:1px solid #e6e5ef; background:#f5f5fa; color:#1b1a22; font-size:13px;">
             <option value="">All categories</option>
           </select>
         </div>
-        <div id="markers-count" style="font-size:12px; color:#888; margin-bottom:10px;"></div>
+        <div id="markers-count" style="font-size:12px; color:#6a6876; margin-bottom:10px;"></div>
         <div id="markers-list">Loading…</div>
         <div id="markers-more" style="text-align:center; margin-top:12px;"></div>
       </div>
     </div>
+    </main>
   </div>
 
   <script>
@@ -541,7 +632,32 @@
         }
         controls.style.display = 'block';
         updateMuteUI(d.muted);
+        refreshMeetingControls();
       } catch {}
+    }
+
+    // The three in-meeting behavior toggles (1:1 / lean-in / proactive). Each has a
+    // GET (returns { <flag>, active_session }) and a POST that flips it, mirroring /mute.
+    const MEETING_FLAGS = [
+      { ep: 'one-on-one', key: 'oneOnOne', pill: 'pill-oneonone' },
+      { ep: 'lean-in',    key: 'leanIn',   pill: 'pill-leanin' },
+      { ep: 'proactive',  key: 'proactive', pill: 'pill-proactive' },
+    ];
+    async function toggleFlag(ep) {
+      try {
+        await api('/' + ep, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        refreshMeetingControls();
+      } catch (e) { console.error(ep + ' toggle failed:', e); }
+    }
+    async function refreshMeetingControls() {
+      for (const f of MEETING_FLAGS) {
+        try {
+          const r = await api('/' + f.ep);
+          const d = await r.json();
+          const el = document.getElementById(f.pill);
+          if (el) el.classList.toggle('on', !!d[f.key]);
+        } catch {}
+      }
     }
 
     function updateMuteUI(muted) {
@@ -552,11 +668,11 @@
         btn.style.background = '#7c3aed';
         btn.style.borderColor = '#7c3aed';
         status.textContent = 'Muted — listening only, no voice responses';
-        status.style.color = '#f59e0b';
+        status.style.color = '#b45309';
       } else {
         btn.textContent = '🔇 Mute Nora';
-        btn.style.background = '#333';
-        btn.style.borderColor = '#555';
+        btn.style.background = '#e6e5ef';
+        btn.style.borderColor = '#cfcdd9';
         status.textContent = '';
       }
     }
@@ -615,17 +731,17 @@
         }; });
         list.innerHTML = tasks.map(t => {
           const transcriptLink = t.source_bot_id
-            ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(t.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
+            ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(t.source_bot_id)}'), 100);" style="color: #1d4ed8; text-decoration: none;">View transcript</a>`
             : '';
           const future = isFuture(t);
           const schedBadge = t.scheduled_for
-            ? ` · <span style="color: ${future ? '#fbbf24' : '#6ee7b7'};">🕐 ${escHtml(fmtScheduledFor(t.scheduled_for))}</span>`
+            ? ` · <span style="color: ${future ? '#b45309' : '#15803d'};">🕐 ${escHtml(fmtScheduledFor(t.scheduled_for))}</span>`
             : '';
           const recurBadge = t.recurrence
-            ? ` · <span style="color: #a78bfa;">🔁 ${escHtml(t.recurrence)}</span>`
+            ? ` · <span style="color: #6d28d9;">🔁 ${escHtml(t.recurrence)}</span>`
             : '';
           const lastRunNote = t.last_run
-            ? `<div class="task-detail" style="color: #888; font-size: 12px;">Last ran ${escHtml(new Date(t.last_run).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }))}</div>`
+            ? `<div class="task-detail" style="color: #6a6876; font-size: 12px;">Last ran ${escHtml(new Date(t.last_run).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }))}</div>`
             : '';
           return `
           <div class="task-item ${t.status === 'done' ? 'done' : ''}" id="task-${escHtml(t.id)}">
@@ -799,12 +915,12 @@
         let shown = 0;
         const cap = _memoryRenderCap;
         if (general.length) {
-          html += groupHeader('General', '#888');
+          html += groupHeader('General', '#6a6876');
           for (const m of general) { if (shown++ >= cap) break; html += memoryItemHtml(m); }
         }
         for (const proj of Object.keys(groups).sort()) {
           if (shown >= cap) break;
-          html += groupHeader(proj, '#a78bfa');
+          html += groupHeader(proj, '#6d28d9');
           for (const m of groups[proj].sort((a, b) => byNewest(a, b))) { if (shown++ >= cap) break; html += memoryItemHtml(m); }
         }
       } else {
@@ -818,7 +934,7 @@
         ? `Showing ${rendered} of ${matched} match${matched === 1 ? '' : 'es'} (${total.toLocaleString()} total)`
         : `Showing ${rendered} of ${total.toLocaleString()}`;
       moreEl.innerHTML = matched > _memoryRenderCap
-        ? `<button class="btn btn-sm" style="background:#222; color:#aaa; border:1px solid #333;" onclick="_memoryRenderCap += 200; renderMemory();">Show ${Math.min(200, matched - _memoryRenderCap)} more</button>`
+        ? `<button class="btn btn-sm" style="background:#f5f5fa; color:#55535f; border:1px solid #e6e5ef;" onclick="_memoryRenderCap += 200; renderMemory();">Show ${Math.min(200, matched - _memoryRenderCap)} more</button>`
         : '';
     }
 
@@ -835,7 +951,7 @@
 
     function memoryItemHtml(m) {
       const transcriptLink = m.source_bot_id
-        ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #38bdf8; text-decoration: none;">View transcript</a>`
+        ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #1d4ed8; text-decoration: none;">View transcript</a>`
         : '';
       const key = m.id || m._idx; // prefer stable id; fall back to index for any legacy entry
       return `<div class="memory-item" id="memory-${key}">
@@ -857,7 +973,7 @@
       el.innerHTML = `
         <div style="flex: 1;">
           <input id="edit-memory-fact-${idx}" value="${escHtml(currentFact)}" style="margin-bottom: 6px;" />
-          <select id="edit-memory-project-${idx}" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #333; background: #222; color: #eee; font-size: 13px;">
+          <select id="edit-memory-project-${idx}" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #e6e5ef; background: #f5f5fa; color: #1b1a22; font-size: 13px;">
             ${projects}
           </select>
         </div>
@@ -924,7 +1040,7 @@
             <div style="flex: 1;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
               <div class="task-action">${escHtml(t.bot_id)}</div>
               <div class="task-meta">
-                ${t.utterance_count} utterances · ${t.ended ? 'ended ' + new Date(t.ended).toLocaleString() : '<span style="color: #fbbf24;">In progress</span>'}
+                ${t.utterance_count} utterances · ${t.ended ? 'ended ' + new Date(t.ended).toLocaleString() : '<span style="color: #b45309;">In progress</span>'}
               </div>
             </div>
             <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteTranscript('${escHtml(t.bot_id)}')" style="margin-left: 12px; flex-shrink: 0;">Delete</button>
@@ -939,10 +1055,10 @@
 
     // Per-category accent so the list scans fast.
     const MARKER_CAT_COLOR = {
-      'filed-transcript': '#38bdf8', 'skipped-transcript': '#94a3b8', 'dreamed': '#c4b5fd',
-      'memory-dedup': '#c4b5fd', 'reflection-done': '#c4b5fd', 'stale-tasks-flagged': '#fbbf24',
-      'warmth': '#fb7185', 'task-completed': '#4ade80', 'slack-file-done': '#4ade80',
-      'slack-responded': '#86efac', 'bootstrap': '#a78bfa'
+      'filed-transcript': '#1d4ed8', 'skipped-transcript': '#9a98a6', 'dreamed': '#6d28d9',
+      'memory-dedup': '#6d28d9', 'reflection-done': '#6d28d9', 'stale-tasks-flagged': '#b45309',
+      'warmth': '#e11d48', 'task-completed': '#15803d', 'slack-file-done': '#15803d',
+      'slack-responded': '#15803d', 'bootstrap': '#6d28d9'
     };
 
     // Render a marker's data object as a short readable summary (prefer a `note`).
@@ -1006,16 +1122,16 @@
 
       const total = _allMarkers.length, matched = items.length;
       list.innerHTML = items.slice(0, _markersRenderCap).map(m => {
-        const color = MARKER_CAT_COLOR[m.category] || '#888';
+        const color = MARKER_CAT_COLOR[m.category] || '#6a6876';
         const summary = markerSummary(m.data);
         const when = m.set_at ? new Date(m.set_at).toLocaleDateString() : '';
         return `<div class="memory-item">
           <div style="flex:1; min-width:0;">
-            <div class="memory-fact" style="font-family:ui-monospace,monospace; font-size:13px; color:#ddd; word-break:break-all;">
-              <span style="color:${color};">${escHtml(m.category)}</span><span style="color:#666;">${escHtml(m.key.slice(m.category.length))}</span>
+            <div class="memory-fact" style="font-family:ui-monospace,monospace; font-size:13px; color:#e6e5ef; word-break:break-all;">
+              <span style="color:${color};">${escHtml(m.category)}</span><span style="color:#87858f;">${escHtml(m.key.slice(m.category.length))}</span>
             </div>
             ${summary ? `<div class="memory-meta" style="word-break:break-word;">${escHtml(summary)}</div>` : ''}
-            <div class="memory-meta" style="color:#666;">${when}</div>
+            <div class="memory-meta" style="color:#87858f;">${when}</div>
           </div>
           <button class="btn btn-danger" onclick="deleteMarker('${escHtml(m.key).replace(/'/g, "\\'")}')">Delete</button>
         </div>`;
@@ -1026,7 +1142,7 @@
         ? `Showing ${rendered} of ${matched} match${matched === 1 ? '' : 'es'} (${total} total)`
         : `Showing ${rendered} of ${total}`;
       moreEl.innerHTML = matched > _markersRenderCap
-        ? `<button class="btn btn-sm" style="background:#222; color:#aaa; border:1px solid #333;" onclick="_markersRenderCap += 200; renderMarkers();">Show ${Math.min(200, matched - _markersRenderCap)} more</button>`
+        ? `<button class="btn btn-sm" style="background:#f5f5fa; color:#55535f; border:1px solid #e6e5ef;" onclick="_markersRenderCap += 200; renderMarkers();">Show ${Math.min(200, matched - _markersRenderCap)} more</button>`
         : '';
     }
 
@@ -1039,7 +1155,7 @@
     // ===== Dreams tab =====
     function dreamStat(label, value, color) {
       if (value === undefined || value === null) return '';
-      return `<span style="display:inline-block; margin-right:14px; font-size:12px; color:#888;">${label} <strong style="color:${color || '#ccc'};">${value}</strong></span>`;
+      return `<span style="display:inline-block; margin-right:14px; font-size:12px; color:#6a6876;">${label} <strong style="color:${color || '#3a3844'};">${value}</strong></span>`;
     }
 
     async function loadDreams() {
@@ -1058,7 +1174,7 @@
           const when = d.finished || d.started || d.date;
           const whenStr = when ? new Date(when).toLocaleString() : (d.date || '');
           const beforeAfter = (c.memories_before != null && c.memories_after != null)
-            ? `<span style="color:#a78bfa; font-weight:600;">${c.memories_before} → ${c.memories_after}</span> memories`
+            ? `<span style="color:#6d28d9; font-weight:600;">${c.memories_before} → ${c.memories_after}</span> memories`
             : '';
           const rev = d.review || {};
           const takesAdded = (ref.takes_added || []);
@@ -1072,61 +1188,61 @@
 
           const takesHtml = takesAdded.length ? `
             <div style="margin-top:12px;">
-              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">New takes formed</div>
-              ${takesAdded.map(t => `<div style="font-size:13px; color:#e9d5ff; border-left:2px solid #7c3aed; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#6a6876; margin-bottom:6px;">New takes formed</div>
+              ${takesAdded.map(t => `<div style="font-size:13px; color:#6d28d9; border-left:2px solid #7c3aed; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
             </div>` : '';
           const ideasHtml = ideas.length ? `
             <div style="margin-top:12px;">
-              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Ideas / sparks</div>
-              ${ideas.map(t => `<div style="font-size:13px; color:#bfdbfe; border-left:2px solid #2563eb; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#6a6876; margin-bottom:6px;">Ideas / sparks</div>
+              ${ideas.map(t => `<div style="font-size:13px; color:#1d4ed8; border-left:2px solid #2563eb; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
             </div>` : '';
           const retiredHtml = takesRetired.length ? `
             <div style="margin-top:12px;">
-              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Takes retired</div>
-              ${takesRetired.map(t => `<div style="font-size:13px; color:#9ca3af; border-left:2px solid #4b5563; padding-left:10px; margin-bottom:6px; text-decoration:line-through;">${escHtml(t)}</div>`).join('')}
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#6a6876; margin-bottom:6px;">Takes retired</div>
+              ${takesRetired.map(t => `<div style="font-size:13px; color:#6a6876; border-left:2px solid #cfcdd9; padding-left:10px; margin-bottom:6px; text-decoration:line-through;">${escHtml(t)}</div>`).join('')}
             </div>` : '';
           const examplesHtml = examples.length ? `
             <div style="margin-top:12px;">
-              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Consolidation examples</div>
-              ${examples.map(t => `<div style="font-size:12px; color:#9ca3af; margin-bottom:4px;">• ${escHtml(t)}</div>`).join('')}
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#6a6876; margin-bottom:6px;">Consolidation examples</div>
+              ${examples.map(t => `<div style="font-size:12px; color:#6a6876; margin-bottom:4px;">• ${escHtml(t)}</div>`).join('')}
             </div>` : '';
 
           // Review movement — learnings (green = her own behavioral self-improvement) + outcome mix
           const learningsHtml = learningsAdded.length ? `
             <div style="margin-top:12px;">
-              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">New learnings (how she works better)</div>
-              ${learningsAdded.map(t => `<div style="font-size:13px; color:#bbf7d0; border-left:2px solid #16a34a; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#6a6876; margin-bottom:6px;">New learnings (how she works better)</div>
+              ${learningsAdded.map(t => `<div style="font-size:13px; color:#15803d; border-left:2px solid #16a34a; padding-left:10px; margin-bottom:6px;">${escHtml(t)}</div>`).join('')}
             </div>` : '';
           const learningsRetiredHtml = learningsRetired.length ? `
             <div style="margin-top:12px;">
-              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#888; margin-bottom:6px;">Learnings retired</div>
-              ${learningsRetired.map(t => `<div style="font-size:13px; color:#9ca3af; border-left:2px solid #4b5563; padding-left:10px; margin-bottom:6px; text-decoration:line-through;">${escHtml(t)}</div>`).join('')}
+              <div style="font-size:11px; text-transform:uppercase; letter-spacing:0.5px; color:#6a6876; margin-bottom:6px;">Learnings retired</div>
+              ${learningsRetired.map(t => `<div style="font-size:13px; color:#6a6876; border-left:2px solid #cfcdd9; padding-left:10px; margin-bottom:6px; text-decoration:line-through;">${escHtml(t)}</div>`).join('')}
             </div>` : '';
           const outcomeChips = Object.keys(outcomes).length ? `
             <div style="margin-top:10px; font-size:12px;">
-              <span style="color:#888; margin-right:10px;">Reviewed ${reviewedCount} message${reviewedCount === 1 ? '' : 's'} — how they landed:</span>
-              ${dreamStat('appreciated', outcomes.appreciated, '#4ade80')}
-              ${dreamStat('landed', outcomes.landed, '#86efac')}
-              ${dreamStat('neutral', outcomes.neutral, '#9ca3af')}
-              ${dreamStat('ignored', outcomes.ignored, '#fca5a5')}
-              ${dreamStat('corrected', outcomes.corrected, '#fbbf24')}
+              <span style="color:#6a6876; margin-right:10px;">Reviewed ${reviewedCount} message${reviewedCount === 1 ? '' : 's'} — how they landed:</span>
+              ${dreamStat('appreciated', outcomes.appreciated, '#15803d')}
+              ${dreamStat('landed', outcomes.landed, '#15803d')}
+              ${dreamStat('neutral', outcomes.neutral, '#6a6876')}
+              ${dreamStat('ignored', outcomes.ignored, '#b91c1c')}
+              ${dreamStat('corrected', outcomes.corrected, '#b45309')}
             </div>` : '';
 
           return `
-            <div class="section" style="background:#15131f; border:1px solid #2a2440; margin-bottom:14px;">
+            <div class="section" style="background:#f0edfb; border:1px solid #e6e5ef; margin-bottom:14px;">
               <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:8px;">
-                <div style="font-size:15px; font-weight:600; color:#c4b5fd;">💤 ${escHtml(d.date || '')}</div>
-                <div style="font-size:11px; color:#666;">${escHtml(whenStr)}</div>
+                <div style="font-size:15px; font-weight:600; color:#6d28d9;">💤 ${escHtml(d.date || '')}</div>
+                <div style="font-size:11px; color:#87858f;">${escHtml(whenStr)}</div>
               </div>
-              ${d.narrative ? `<div style="font-size:14px; line-height:1.6; color:#ddd; font-style:italic; border-left:3px solid #7c3aed; padding:4px 0 4px 14px; margin-bottom:12px;">"${escHtml(d.narrative)}"</div>` : ''}
+              ${d.narrative ? `<div style="font-size:14px; line-height:1.6; color:#e6e5ef; font-style:italic; border-left:3px solid #7c3aed; padding:4px 0 4px 14px; margin-bottom:12px;">"${escHtml(d.narrative)}"</div>` : ''}
               <div style="margin-bottom:4px;">
                 ${beforeAfter ? `<span style="font-size:12px; margin-right:14px;">${beforeAfter}</span>` : ''}
-                ${dreamStat('merged', c.duplicates_removed, '#f0abfc')}
-                ${dreamStat('fragments', c.fragments_merged, '#f0abfc')}
-                ${dreamStat('pruned', c.stale_pruned, '#fca5a5')}
-                ${dreamStat('contradictions', c.contradictions_resolved, '#fcd34d')}
-                ${dreamStat('+takes', takesAdded.length || undefined, '#a78bfa')}
-                ${dreamStat('+learnings', learningsAdded.length || undefined, '#4ade80')}
+                ${dreamStat('merged', c.duplicates_removed, '#a21caf')}
+                ${dreamStat('fragments', c.fragments_merged, '#a21caf')}
+                ${dreamStat('pruned', c.stale_pruned, '#b91c1c')}
+                ${dreamStat('contradictions', c.contradictions_resolved, '#b45309')}
+                ${dreamStat('+takes', takesAdded.length || undefined, '#6d28d9')}
+                ${dreamStat('+learnings', learningsAdded.length || undefined, '#15803d')}
               </div>
               ${outcomeChips}
               ${takesHtml}${ideasHtml}${learningsHtml}${learningsRetiredHtml}${retiredHtml}${examplesHtml}
@@ -1159,11 +1275,11 @@
     function renderUtterances(transcript) {
       const content = document.getElementById('transcript-content');
       content.innerHTML = transcript.map((u, i) => `
-        <div id="utt-${i}" style="padding: 4px 0; border-bottom: 1px solid #1a1a1a; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+        <div id="utt-${i}" style="padding: 4px 0; border-bottom: 1px solid #ffffff; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
           <div style="flex: 1;">
-            <strong style="color: #a78bfa;">${escHtml(u.speaker)}</strong>
-            <span style="color: #555; font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
-            <div style="color: #ccc;">${escHtml(u.text)}</div>
+            <strong style="color: #6d28d9;">${escHtml(u.speaker)}</strong>
+            <span style="color: #cfcdd9; font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
+            <div style="color: #3a3844;">${escHtml(u.text)}</div>
           </div>
           <div style="display: flex; gap: 4px; flex-shrink: 0; padding-top: 2px;">
             <button class="btn btn-success btn-sm" onclick="editUtterance(${i}, '${escHtml(u.speaker).replace(/'/g, "\\'")}', '${escHtml(u.text).replace(/'/g, "\\'")}')">Edit</button>
@@ -1267,8 +1383,8 @@
         const mems = data.memories || [];
         if (mems.length > 0) {
           document.getElementById('project-memories').innerHTML =
-            '<div style="color: #a78bfa; font-size: 12px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase;">Memories (' + mems.length + ')</div>' +
-            mems.map(m => `<div style="padding: 6px 0; border-bottom: 1px solid #222; font-size: 13px; color: #ccc;">- ${escHtml(m.fact)}<span style="color: #555; font-size: 11px; margin-left: 8px;">${m.added || ''}</span></div>`).join('');
+            '<div style="color: #6d28d9; font-size: 12px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase;">Memories (' + mems.length + ')</div>' +
+            mems.map(m => `<div style="padding: 6px 0; border-bottom: 1px solid #f5f5fa; font-size: 13px; color: #3a3844;">- ${escHtml(m.fact)}<span style="color: #cfcdd9; font-size: 11px; margin-left: 8px;">${m.added || ''}</span></div>`).join('');
         } else {
           document.getElementById('project-memories').innerHTML = '<p class="empty">No memories tagged to this project yet.</p>';
         }
@@ -1375,11 +1491,11 @@
         list.innerHTML = conns.map(c => `
           <div class="memory-item">
             <div style="flex:1; min-width:0;">
-              <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:#fbbf24; font-size:12px;">💲 financial</span>' : ''} ${c.enabled ? '' : '<span style="color:#888; font-size:12px;">(disabled)</span>'}</div>
-              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url)} · token ${c.token_set ? escHtml(c.token_hint) : '<span style="color:#666;">none</span>'}</div>
+              <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:#b45309; font-size:12px;">💲 financial</span>' : ''} ${c.enabled ? '' : '<span style="color:#6a6876; font-size:12px;">(disabled)</span>'}</div>
+              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url)} · token ${c.token_set ? escHtml(c.token_hint) : '<span style="color:#87858f;">none</span>'}</div>
             </div>
             <div style="display:flex; gap:6px; flex-shrink:0;">
-              <button class="btn btn-sm" style="background:#222;color:#aaa;border:1px solid #333;" onclick="toggleMcp('${c.id}', ${!c.enabled})">${c.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-sm" style="background:#f5f5fa;color:#55535f;border:1px solid #e6e5ef;" onclick="toggleMcp('${c.id}', ${!c.enabled})">${c.enabled ? 'Disable' : 'Enable'}</button>
               <button class="btn btn-success btn-sm" onclick='editMcp(${JSON.stringify(c).replace(/'/g, "&#39;")})'>Edit</button>
               <button class="btn btn-danger btn-sm" onclick="deleteMcp('${c.id}', '${escHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
             </div>
@@ -1455,7 +1571,7 @@
           ${d.channels.map(c => `
             <div class="memory-item">
               <div style="flex: 1; min-width: 0;">
-                <div class="memory-fact">#${escHtml(c.name)}${c.is_private ? ' <span style="color:#666;font-size:11px;">(private)</span>' : ''}</div>
+                <div class="memory-fact">#${escHtml(c.name)}${c.is_private ? ' <span style="color:#87858f;font-size:11px;">(private)</span>' : ''}</div>
                 <div class="memory-meta">${escHtml(c.id)}${c.num_members != null ? ' · ' + c.num_members + ' member' + (c.num_members === 1 ? '' : 's') : ''}${c.topic ? ' · ' + escHtml(c.topic) : ''}</div>
               </div>
             </div>
@@ -1544,11 +1660,11 @@
         // Show the bulk-dedupe button only when there are duplicates to clear.
         if (dedupeBtn) dedupeBtn.style.display = d.duplicate_count > 0 ? '' : 'none';
         const dupNote = d.duplicate_count > 0
-          ? `<div style="background:#450a0a;color:#fca5a5;padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px;">⚠️ ${d.duplicate_count} duplicate bot${d.duplicate_count === 1 ? '' : 's'} detected — two or more bots queued for the same meeting within an hour. Remove individually below, or use Remove all duplicates above.</div>`
+          ? `<div style="background:#fdecec;color:#b91c1c;padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px;">⚠️ ${d.duplicate_count} duplicate bot${d.duplicate_count === 1 ? '' : 's'} detected — two or more bots queued for the same meeting within an hour. Remove individually below, or use Remove all duplicates above.</div>`
           : '';
         list.innerHTML = dupNote + d.bots.map(b => {
           const dupBadge = b.is_duplicate
-            ? ' <span style="background:#7f1d1d;color:#fca5a5;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;letter-spacing:0.5px;">DUPLICATE</span>'
+            ? ' <span style="background:#fdecec;color:#b91c1c;padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;letter-spacing:0.5px;">DUPLICATE</span>'
             : '';
           const joinAt = b.join_at ? new Date(b.join_at).toLocaleString() : 'unknown';
           return `
@@ -1741,9 +1857,9 @@
         }
         list.innerHTML = d.channels.map(c => {
           const lastPost = c.last_proactive_post ? new Date(c.last_proactive_post).toLocaleString() : 'never';
-          const cooldownLabel = c.cooldown_active ? '<span style="color: #fbbf24;">cooldown active</span>' : '<span style="color: #6ee7b7;">ready</span>';
+          const cooldownLabel = c.cooldown_active ? '<span style="color: #b45309;">cooldown active</span>' : '<span style="color: #15803d;">ready</span>';
           const heading = c.channel_name
-            ? `<span>#${escHtml(c.channel_name)}</span> <span style="color: #555; font-weight: 400; font-family: monospace; font-size: 11px; margin-left: 6px;">${escHtml(c.channel)}</span>`
+            ? `<span>#${escHtml(c.channel_name)}</span> <span style="color: #cfcdd9; font-weight: 400; font-family: monospace; font-size: 11px; margin-left: 6px;">${escHtml(c.channel)}</span>`
             : `<span style="font-family: monospace;">${escHtml(c.channel)}</span>`;
           return `
             <div class="memory-item">
@@ -1805,12 +1921,12 @@
         list.innerHTML = d.threads.map(th => {
           const last = th.last_addressed ? new Date(th.last_addressed).toLocaleString() : 'unknown';
           const stalePill = th.stale
-            ? '<span style="color: #fbbf24; font-weight: 600;">STALE</span>'
-            : '<span style="color: #6ee7b7; font-weight: 600;">active</span>';
+            ? '<span style="color: #b45309; font-weight: 600;">STALE</span>'
+            : '<span style="color: #15803d; font-weight: 600;">active</span>';
           const channelLabel = th.channel_name
             ? `#${escHtml(th.channel_name)}`
             : escHtml(th.channel);
-          const heading = `<span style="font-size: 14px;">${channelLabel}</span> <span style="font-family: monospace; font-size: 11px; color: #555; margin-left: 6px;">${escHtml(th.thread_ts)}</span>`;
+          const heading = `<span style="font-size: 14px;">${channelLabel}</span> <span style="font-family: monospace; font-size: 11px; color: #cfcdd9; margin-left: 6px;">${escHtml(th.thread_ts)}</span>`;
           return `
             <div class="memory-item">
               <div style="flex: 1;">
