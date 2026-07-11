@@ -1,6 +1,6 @@
 'use strict';
 
-function registerIntelligenceRoutes(app, { requireAuth, store }) {
+function registerIntelligenceRoutes(app, { requireAuth, store, getPredictions = () => [], getCognitiveInputs = () => ({}) }) {
   app.get('/intelligence', requireAuth, (req, res) => {
     const state = store.snapshot();
     res.json({
@@ -65,6 +65,15 @@ function registerIntelligenceRoutes(app, { requireAuth, store }) {
       return true;
     }).sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit));
   });
+  app.post('/relationships/:name/perspectives', requireAuth, (req, res) => {
+    try { res.json({ ok: true, perspective: store.observePerspective({ ...(req.body || {}), name: req.params.name }) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.patch('/relationships/perspectives/:id', requireAuth, (req, res) => {
+    const perspective = store.updatePerspective(req.params.id, req.body || {});
+    if (!perspective) return res.status(404).json({ error: 'perspective not found' });
+    res.json({ ok: true, perspective });
+  });
   app.post('/decision-traces/:id/outcome', requireAuth, (req, res) => {
     const trace = store.updateTraceOutcome(req.params.id, req.body || {});
     if (!trace) return res.status(404).json({ error: 'decision trace not found' });
@@ -109,12 +118,28 @@ function registerIntelligenceRoutes(app, { requireAuth, store }) {
     res.json(store.list('cycles').sort((a, b) => b.started.localeCompare(a.started)).slice(0, limit));
   });
   app.post('/intelligence/cycles', requireAuth, (req, res) => {
-    res.json({ ok: true, ...store.startCycle(req.body || {}) });
+    const cognition = store.refreshCognition({ ...getCognitiveInputs(), ...(req.body || {}), predictions: getPredictions() });
+    res.json({ ok: true, ...store.startCycle(req.body || {}), cognition });
   });
   app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
     const cycle = store.completeCycle(req.params.id, req.body || {});
     if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
     res.json({ ok: true, cycle });
+  });
+
+  app.get('/cognition', requireAuth, (req, res) => res.json(store.cognitionSnapshot(getPredictions())));
+  app.post('/cognition/refresh', requireAuth, (req, res) => res.json({ ok: true, cognition: store.refreshCognition({ ...getCognitiveInputs(), ...(req.body || {}), predictions: getPredictions() }) }));
+  app.post('/cognition/mind-changes', requireAuth, (req, res) => {
+    try { res.json({ ok: true, mind_change: store.recordMindChange(req.body || {}) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/cognition/development', requireAuth, (req, res) => {
+    try { res.json({ ok: true, development: store.recordDevelopment(req.body || {}) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/cognition/counterfactuals', requireAuth, (req, res) => {
+    try { res.json({ ok: true, counterfactual: store.recordCounterfactual(req.body || {}) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
   });
 }
 

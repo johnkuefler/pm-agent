@@ -9,6 +9,8 @@ POST /episodes/events
 GET /relationships
 POST /relationships/observe
 GET /decision-traces
+POST /relationships/:name/perspectives
+PATCH /relationships/perspectives/:id
 POST /decision-traces/:id/outcome
 GET /learning-experiments
 POST /learning-experiments
@@ -22,6 +24,11 @@ GET /intelligence/orient
 GET /intelligence/cycles
 POST /intelligence/cycles
 PATCH /intelligence/cycles/:id/complete
+GET /cognition
+POST /cognition/refresh
+POST /cognition/mind-changes
+POST /cognition/development
+POST /cognition/counterfactuals
 GET /nora-bench
 GET /
 GET /instructions

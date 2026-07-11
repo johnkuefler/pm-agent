@@ -3,10 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 const { normalizeCommitment } = require('./models');
+const { clamp01, computeAppraisal, computeDrives, scoreWorkspace, calibration } = require('./cognition');
 
 function emptyState() {
   return {
-    version: 1,
+    version: 2,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -14,6 +15,10 @@ function emptyState() {
     experiments: [],
     cycles: [],
     initiative: { default_daily: 3, scopes: {} },
+    cognition: {
+      workspace: { at: null, capacity: 7, slots: [], suppressed_count: 0 },
+      drives: {}, appraisal: {}, surprises: [], mind_changes: [], development: [], counterfactuals: [],
+    },
   };
 }
 
@@ -28,6 +33,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     if (!state.initiative || typeof state.initiative !== 'object') state.initiative = emptyState().initiative;
     if (!state.initiative.scopes) state.initiative.scopes = {};
+    state.cognition = { ...emptyState().cognition, ...(state.cognition || {}) };
+    for (const key of ['surprises', 'mind_changes', 'development', 'counterfactuals']) {
+      if (!Array.isArray(state.cognition[key])) state.cognition[key] = [];
+    }
     for (const episode of state.episodes) {
       if (!Array.isArray(episode.participants)) episode.participants = [];
       if (!Array.isArray(episode.events)) episode.events = [];
@@ -41,6 +50,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!experiment.minimum_samples) experiment.minimum_samples = 5;
       if (experiment.target == null && (!experiment.metric || experiment.metric === 'positive_rate')) experiment.target = 0.65;
     }
+    for (const relationship of state.relationships) if (!Array.isArray(relationship.perspectives)) relationship.perspectives = [];
   }
 
   async function init() {
@@ -209,6 +219,127 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return relationship;
     });
   }
+
+  function observePerspective(input = {}) {
+    return mutate(current => {
+      const name = String(input.name || '').trim();
+      const hypothesis = String(input.hypothesis || input.belief || '').trim();
+      if (!name || !hypothesis) throw new Error('name and hypothesis are required');
+      if (!Array.isArray(input.evidence) || !input.evidence.length) throw new Error('perspective hypotheses require evidence');
+      let relationship = current.relationships.find(item => item.name.toLowerCase() === name.toLowerCase());
+      if (!relationship) {
+        relationship = { id: `person-${Date.now().toString(36)}`, name, observations: [], perspectives: [], updated: clock().toISOString() };
+        current.relationships.push(relationship);
+      }
+      if (!Array.isArray(relationship.perspectives)) relationship.perspectives = [];
+      const perspective = {
+        id: input.id || `perspective-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        hypothesis: hypothesis.slice(0, 800), dimension: input.dimension || 'current_state',
+        confidence: clamp01(input.confidence ?? 0.5), evidence: input.evidence.slice(0, 12),
+        valid_until: input.valid_until || new Date(clock().getTime() + 30 * 86400000).toISOString(),
+        status: input.status || 'active', created: input.created || clock().toISOString(), updated: clock().toISOString(),
+      };
+      relationship.perspectives.push(perspective);
+      relationship.perspectives = relationship.perspectives.slice(-40);
+      relationship.updated = clock().toISOString();
+      return perspective;
+    });
+  }
+
+  function updatePerspective(id, input = {}) {
+    return mutate(current => {
+      for (const relationship of current.relationships) {
+        const perspective = (relationship.perspectives || []).find(item => item.id === id);
+        if (!perspective) continue;
+        if (input.confidence != null) perspective.confidence = clamp01(input.confidence);
+        if (input.status) perspective.status = ['active', 'supported', 'revised', 'retired'].includes(input.status) ? input.status : perspective.status;
+        if (input.hypothesis) perspective.hypothesis = String(input.hypothesis).slice(0, 800);
+        if (input.evidence) perspective.evidence = [...(perspective.evidence || []), ...input.evidence].slice(-12);
+        perspective.updated = clock().toISOString();
+        relationship.updated = perspective.updated;
+        return perspective;
+      }
+      return null;
+    });
+  }
+
+  function refreshCognition(input = {}) {
+    return mutate(current => {
+      const now = input.now ? new Date(input.now) : clock();
+      current.cognition.drives = computeDrives(current, input, now);
+      current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, input, now);
+      current.cognition.workspace = scoreWorkspace(current, input, now);
+      return JSON.parse(JSON.stringify(current.cognition));
+    });
+  }
+
+  function recordPredictionResolution(input = {}) {
+    return mutate(current => {
+      const confidence = clamp01(input.confidence ?? 0.5);
+      if (input.outcome !== 'right' && input.outcome !== 'wrong') return { surprise: null, mind_change: null, brier: null };
+      const wrong = input.outcome === 'wrong';
+      const magnitude = wrong ? confidence : 1 - confidence;
+      let surprise = null;
+      if (magnitude >= 0.55) {
+        surprise = { id: `surprise-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          prediction_id: input.id || null, expectation: String(input.prediction || input.expectation || '').slice(0, 1000),
+          outcome: input.outcome, magnitude, evidence: input.evidence || input.notes || null, at: clock().toISOString(), status: 'unreviewed' };
+        current.cognition.surprises.push(surprise);
+        current.cognition.surprises = current.cognition.surprises.slice(-300);
+      }
+      let mindChange = null;
+      if (wrong && confidence >= 0.7) {
+        mindChange = { id: `mind-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          prior_belief: String(input.prediction || '').slice(0, 1000), prior_confidence: confidence,
+          new_belief: null, new_confidence: null, reason: 'High-confidence prediction was wrong',
+          evidence: input.evidence || input.notes || null, status: 'open', created: clock().toISOString(), resolved: null };
+        current.cognition.mind_changes.push(mindChange);
+        current.cognition.mind_changes = current.cognition.mind_changes.slice(-300);
+      }
+      return { surprise, mind_change: mindChange, brier: (confidence - (wrong ? 0 : 1)) ** 2 };
+    });
+  }
+
+  function recordMindChange(input = {}) {
+    return mutate(current => {
+      if (!input.prior_belief || !input.new_belief || !input.evidence) throw new Error('prior_belief, new_belief, and evidence are required');
+      const item = { id: input.id || `mind-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        prior_belief: String(input.prior_belief).slice(0, 1000), prior_confidence: clamp01(input.prior_confidence),
+        new_belief: String(input.new_belief).slice(0, 1000), new_confidence: clamp01(input.new_confidence),
+        reason: String(input.reason || '').slice(0, 1000), evidence: input.evidence, status: 'resolved',
+        created: input.created || clock().toISOString(), resolved: clock().toISOString() };
+      current.cognition.mind_changes.push(item); current.cognition.mind_changes = current.cognition.mind_changes.slice(-300); return item;
+    });
+  }
+
+  function recordDevelopment(input = {}) {
+    return mutate(current => {
+      if (!input.event || !input.changed_to || !input.evidence) throw new Error('event, changed_to, and evidence are required');
+      const item = { id: input.id || `development-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        event: String(input.event).slice(0, 1000), believed_before: input.believed_before ? String(input.believed_before).slice(0, 1000) : null,
+        changed_to: String(input.changed_to).slice(0, 1000), why: String(input.why || '').slice(0, 1000), evidence: input.evidence,
+        identity_significance: clamp01(input.identity_significance ?? 0.5), status: input.status || 'candidate', at: input.at || clock().toISOString() };
+      current.cognition.development.push(item); current.cognition.development = current.cognition.development.slice(-200); return item;
+    });
+  }
+
+  function recordCounterfactual(input = {}) {
+    return mutate(current => {
+      if (!input.actual || !input.alternative || !input.evidence_basis) throw new Error('actual, alternative, and evidence_basis are required');
+      const item = { id: input.id || `counterfactual-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        decision_trace_id: input.decision_trace_id || null, actual: String(input.actual).slice(0, 1200),
+        alternative: String(input.alternative).slice(0, 1200), predicted_difference: String(input.predicted_difference || '').slice(0, 1200),
+        confidence: clamp01(input.confidence ?? 0.4), evidence_basis: input.evidence_basis, status: 'simulated',
+        experiment_id: input.experiment_id || null, created: clock().toISOString() };
+      current.cognition.counterfactuals.push(item); current.cognition.counterfactuals = current.cognition.counterfactuals.slice(-300); return item;
+    });
+  }
+
+  function cognitionSnapshot(predictions = []) {
+    return { ...JSON.parse(JSON.stringify(state.cognition)), calibration: calibration(predictions) };
+  }
+
+  function affectContext() { return { ...(state.cognition.appraisal || {}) }; }
 
   function recordTrace(input = {}) {
     return mutate(current => {
@@ -462,15 +593,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function promptContext({ person, project, query, channel } = {}) {
     const blocks = [];
-    const open = state.commitments.filter(item => item.status === 'open' && (!project || !item.project || item.project === project)).slice(-12);
-    if (open.length) blocks.push(`[Open commitments: promises matter. Track these quietly and never imply completion until confirmed.]
-${open.map(item => `- ${item.owner} committed to ${item.what}${item.beneficiary ? ` for ${item.beneficiary}` : ''}${item.due ? ` (due ${item.due})` : ''}`).join('\n')}`);
-    const relationships = state.relationships.filter(item => !person || item.name.toLowerCase() === person.toLowerCase()).slice(-12);
-    if (relationships.length) blocks.push(`[Evidence-backed relationship observations. Use these to communicate well; never recite them or turn them into stereotypes.]
-${relationships.map(item => `- ${item.name}: ${item.observations.filter(o => o.status === 'active' && o.confidence >= 0.65).slice(-4).map(o => o.observation).join('; ')}`).join('\n')}`);
-    const experiments = state.experiments.filter(item => item.status === 'active').slice(-4);
-    if (experiments.length) blocks.push(`[Active behavior experiments. Apply them naturally and let outcomes decide whether they survive.]
-${experiments.map(item => `- ${item.origin === 'nora' ? 'You chose to try' : 'Try'}: ${item.behavior}. Hypothesis: ${item.hypothesis}${item.rationale ? ` Rationale: ${item.rationale}` : ''}`).join('\n')}`);
+    const workspace = scoreWorkspace(state, { person, project, query, channel }, clock());
+    if (workspace.slots.length) blocks.push(`[Limited attention workspace — these won the current competition for attention. Treat everything else as latent memory, not simultaneous thought.]
+${workspace.slots.map(item => `- ${item.text}`).join('\n')}`);
+    const appraisal = state.cognition.appraisal || {};
+    if (appraisal.label) blocks.push(`[Current grounded internal appraisal]
+- ${appraisal.label}; valence ${Number(appraisal.valence || 0).toFixed(2)}, arousal ${Number(appraisal.arousal || 0).toFixed(2)}, control ${Number(appraisal.control || 0).toFixed(2)}, social safety ${Number(appraisal.social_safety || 0).toFixed(2)}, coherence ${Number(appraisal.coherence || 0).toFixed(2)}.
+- This is a functional appraisal based on evidence, not proof of consciousness. Let it subtly shape tone; never announce scores.`);
     const episodes = relevantEpisodes({ person, project, query, channel });
     if (episodes.length) blocks.push(`[Relevant conversation continuity. Continue these threads naturally; do not announce that you retrieved them.]
 ${episodes.map(item => {
@@ -483,9 +612,10 @@ ${episodes.map(item => {
 
   return {
     init, snapshot: () => JSON.parse(JSON.stringify(state)), persist,
-    list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
+    list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship, observePerspective, updatePerspective,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, completeCycle, relevantEpisodes, promptContext,
+    refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange, recordDevelopment, recordCounterfactual,
   };
 }
 

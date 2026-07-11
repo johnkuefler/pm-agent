@@ -49,9 +49,38 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   store.setInitiativeBudget('slack:C1', 1);
   assert.equal(store.spendInitiative('slack:C1').allowed, true);
   assert.equal(store.spendInitiative('slack:C1').allowed, false);
-  assert.match(store.promptContext({ person: 'John' }), /Open commitments|relationship observations|behavior experiments/);
+  assert.match(store.promptContext({ person: 'John' }), /Limited attention workspace/);
 
   await store.persist();
   assert.ok(fs.existsSync(filePath));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('cognition stays bounded, evidence-based, calibrated, and explicit about simulation', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cognition-'));
+  const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
+  await store.init();
+  for (let i = 0; i < 10; i++) store.addCommitment({ what: `Promise ${i}`, due: '2026-07-10T10:00:00Z' });
+  const cognition = store.refreshCognition({ predictions: [{ id: 'p1', confidence: 0.9, outcome: null }] });
+  assert.equal(cognition.workspace.capacity, 7);
+  assert.equal(cognition.workspace.slots.length, 7);
+  assert.ok(cognition.drives.unfinished.level > 0);
+  assert.ok(cognition.appraisal.label);
+
+  const resolution = store.recordPredictionResolution({ id: 'p1', prediction: 'The launch will hold', confidence: 0.9, outcome: 'wrong', notes: 'Deadline moved' });
+  assert.ok(resolution.surprise);
+  assert.ok(resolution.mind_change);
+  assert.equal(resolution.brier, 0.81);
+
+  const perspective = store.observePerspective({ name: 'John', hypothesis: 'May want the recommendation first today', confidence: 0.55, evidence: [{ channel: 'slack', id: 'm1' }] });
+  assert.equal(perspective.status, 'active');
+  assert.ok(perspective.valid_until);
+  assert.throws(() => store.observePerspective({ name: 'John', hypothesis: 'Wants speed' }), /require evidence/);
+
+  const replay = store.recordCounterfactual({ actual: 'Answered immediately', alternative: 'Asked one clarifying question', predicted_difference: 'Might reduce correction', evidence_basis: [{ type: 'trace', id: 't1' }] });
+  assert.equal(replay.status, 'simulated');
+  const development = store.recordDevelopment({ event: 'Repeated corrections', changed_to: 'I work better when I expose uncertainty', evidence: [{ type: 'trace', id: 't1' }], identity_significance: 0.8 });
+  assert.equal(development.status, 'candidate');
+  assert.equal(store.cognitionSnapshot([{ confidence: 0.9, outcome: 'wrong' }]).calibration.overconfident_errors, 1);
   fs.rmSync(dir, { recursive: true, force: true });
 });

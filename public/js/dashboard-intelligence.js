@@ -1,14 +1,14 @@
 async function loadIntelligence() {
-  const [summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes] = await Promise.all([
+  const [summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes, cognitionRes] = await Promise.all([
     api('/intelligence'), api('/commitments?status=open'), api('/episodes?limit=12'), api('/relationships'),
-    api('/learning-experiments'), api('/decision-traces?limit=20'), api('/nora-bench'), api('/intelligence/orient'), api('/intelligence/cycles?limit=8'),
+    api('/learning-experiments'), api('/decision-traces?limit=20'), api('/nora-bench'), api('/intelligence/orient'), api('/intelligence/cycles?limit=8'), api('/cognition'),
   ]);
-  if (![summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes].every(response => response.ok)) {
+  if (![summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes, cognitionRes].every(response => response.ok)) {
     document.getElementById('intelligence-stats').innerHTML = '<div class="error">Could not load intelligence state.</div>';
     return;
   }
-  const [summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles] = await Promise.all([
-    summaryRes.json(), commitmentsRes.json(), episodesRes.json(), relationshipsRes.json(), experimentsRes.json(), tracesRes.json(), benchRes.json(), orientationRes.json(), cyclesRes.json(),
+  const [summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles, cognition] = await Promise.all([
+    summaryRes.json(), commitmentsRes.json(), episodesRes.json(), relationshipsRes.json(), experimentsRes.json(), tracesRes.json(), benchRes.json(), orientationRes.json(), cyclesRes.json(), cognitionRes.json(),
   ]);
   document.getElementById('intelligence-stats').innerHTML = [
     ['Open promises', summary.commitments.open], ['Episodes', summary.episodes], ['People learned', summary.relationships],
@@ -21,6 +21,22 @@ async function loadIntelligence() {
   renderExperiments(experiments);
   renderDecisionTraces(traces);
   renderOrientation(orientation, cycles);
+  renderCognition(cognition);
+}
+
+function renderCognition(cognition) {
+  const workspace = cognition.workspace?.slots || [];
+  const drives = Object.entries(cognition.drives || {});
+  const appraisal = cognition.appraisal || {};
+  const calibration = cognition.calibration || {};
+  document.getElementById('cognition-state').innerHTML = `
+    <div class="intelligence-card"><strong>In attention (${workspace.length}/${cognition.workspace?.capacity || 7})</strong>
+      ${workspace.length ? workspace.map(item => `<div>${escHtml(item.text)}</div>`).join('') : '<div class="intelligence-meta">No cognition cycle has run yet.</div>'}
+      ${cognition.workspace?.suppressed_count ? `<div class="intelligence-meta">${cognition.workspace.suppressed_count} lower-priority signals stayed latent.</div>` : ''}</div>
+    <div class="intelligence-card"><strong>Homeostatic drives</strong><div>${drives.length ? drives.map(([name, value]) => `${escHtml(name.replace('_', ' '))} ${Math.round(value.level * 100)}%`).join(' &middot; ') : 'Awaiting first cycle'}</div></div>
+    <div class="intelligence-card"><strong>Appraisal: ${escHtml(appraisal.label || 'awaiting first cycle')}</strong>
+      <div class="intelligence-meta">${appraisal.updated ? `updated ${new Date(appraisal.updated).toLocaleString()} &middot; ` : ''}${calibration.resolved || 0} resolved predictions${calibration.brier != null ? ` &middot; Brier ${calibration.brier.toFixed(3)}` : ''}</div></div>
+    <div class="intelligence-card"><strong>Reflective ledger</strong><div>${(cognition.surprises || []).length} surprises &middot; ${(cognition.mind_changes || []).length} belief revisions &middot; ${(cognition.development || []).length} developmental memories &middot; ${(cognition.counterfactuals || []).length} simulated alternatives</div></div>`;
 }
 
 function renderOrientation(orientation, cycles) {
@@ -71,7 +87,8 @@ function renderEpisodes(items) {
 function renderRelationships(items) {
   document.getElementById('relationship-list').innerHTML = items.length ? items.map(item => {
     const observations = item.observations.filter(observation => observation.status === 'active').slice(-3);
-    return `<div class="intelligence-card"><strong>${escHtml(item.name)}</strong>${observations.map(observation => `<div>${escHtml(observation.observation)} <span class="intelligence-meta">${Math.round(observation.confidence * 100)}%</span></div>`).join('')}</div>`;
+    const perspectives = (item.perspectives || []).filter(p => p.status === 'active').slice(-2);
+    return `<div class="intelligence-card"><strong>${escHtml(item.name)}</strong>${observations.map(observation => `<div>${escHtml(observation.observation)} <span class="intelligence-meta">${Math.round(observation.confidence * 100)}%</span></div>`).join('')}${perspectives.map(p => `<div class="intelligence-meta">Current hypothesis: ${escHtml(p.hypothesis)} (${Math.round(p.confidence * 100)}%, expires ${new Date(p.valid_until).toLocaleDateString()})</div>`).join('')}</div>`;
   }).join('') : '<div class="empty">No evidence-backed relationship observations yet.</div>';
 }
 

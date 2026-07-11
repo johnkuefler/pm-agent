@@ -78,7 +78,15 @@ app.use('/assets', express.static(path.join(__dirname, 'public'), {
   maxAge: 0,
   setHeaders: res => res.setHeader('Cache-Control', 'no-cache'),
 }));
-registerIntelligenceRoutes(app, { requireAuth, store: intelligence });
+registerIntelligenceRoutes(app, {
+  requireAuth, store: intelligence,
+  getPredictions: () => (_cache.predictions?.items || []),
+  getCognitiveInputs: () => ({
+    soma: { stress: Math.min(1, (_soma.score || 0) / 5) },
+    wants: (_cache.wants?.items || []).filter(item => item.status === 'active'),
+    unanswered_people: loadInteractions().filter(item => !item.reviewed).length,
+  }),
+});
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
@@ -933,7 +941,6 @@ function computeNoraMood() {
   try {
     const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
     const day = ct.getDay(), hour = ct.getHours();
-    const dateStr = `${ct.getFullYear()}-${String(ct.getMonth() + 1).padStart(2, '0')}-${String(ct.getDate()).padStart(2, '0')}`;
     const parts = [];
 
     // Baseline energy from the clock (real, everyone has this). TONE WORDS ONLY: no work nouns
@@ -959,12 +966,9 @@ function computeNoraMood() {
     if (down >= 3 && down > up) parts.push('a notch more careful and a little less chatty than usual');
     else if (up >= 3 && up > down) parts.push('feeling sharp, it has been a good week');
 
-    // Date-seeded tint: inexplicable off days and good days, stable all day, ~40% of days
-    const tint = _dailySeed(dateStr) % 10;
-    if (tint === 0) parts.push('running slightly low-energy today for no particular reason');
-    else if (tint === 1) parts.push('in a genuinely good mood today for no particular reason');
-    else if (tint === 2) parts.push('a little more impatient than usual today');
-    else if (tint === 3) parts.push('a bit more talkative than usual today');
+    // Affect comes from evidence-backed appraisal with inertia, never a random personality tint.
+    const appraisal = intelligence.affectContext();
+    if (appraisal?.label) parts.push(appraisal.label);
 
     return parts.join('; ');
   } catch { return ''; }
@@ -1857,7 +1861,7 @@ app.get('/predictions', (req, res) => {
 });
 app.post('/predictions', requireAuth, async (req, res) => {
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
-  const { prediction, domain, confidence, due } = req.body || {};
+  const { prediction, domain, confidence, due, evidence, basis } = req.body || {};
   if (!prediction || typeof prediction !== 'string') return res.status(400).json({ error: 'prediction (string) required' });
   try {
     const items = ((_cache.predictions && _cache.predictions.items) || []).slice();
@@ -1865,7 +1869,9 @@ app.post('/predictions', requireAuth, async (req, res) => {
       id: `pred-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`,
       prediction: prediction.slice(0, 400), domain: domain || null,
       confidence: Math.max(0, Math.min(1, Number(confidence) || 0.5)),
-      due: due || null, made: new Date().toISOString(), outcome: null, resolved: null, notes: null
+      due: due || null, evidence: Array.isArray(evidence) ? evidence.slice(0, 12) : [],
+      basis: basis ? String(basis).slice(0, 800) : null,
+      made: new Date().toISOString(), outcome: null, resolved: null, notes: null
     });
     while (items.length > 200) { const idx = items.findIndex(p => p.outcome); if (idx === -1) break; items.splice(idx, 1); }
     const rec = { items, updated_at: new Date().toISOString() };
@@ -1885,7 +1891,8 @@ app.post('/predictions/:id/resolve', requireAuth, async (req, res) => {
     if (notes) p.notes = String(notes).slice(0, 300);
     const rec = { items, updated_at: new Date().toISOString() };
     _cache.predictions = rec; await _writeThrough('predictions', () => db.setState('predictions', rec));
-    res.json({ ok: true, surprise: outcome === 'wrong' && (p.confidence || 0) >= 0.7 });
+    const cognition = intelligence.recordPredictionResolution(p);
+    res.json({ ok: true, surprise: cognition.surprise, mind_change: cognition.mind_change, brier: cognition.brier });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

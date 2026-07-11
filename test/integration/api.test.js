@@ -189,6 +189,8 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
 
   const relationship = await request('/relationships/observe', { method: 'POST', body: { name: 'John', dimension: 'communication', observation: 'Prefers the answer first', confidence: 0.9 } });
   assert.equal(relationship.body.relationship.name, 'John');
+  const perspective = await request('/relationships/John/perspectives', { method: 'POST', body: { hypothesis: 'May want the recommendation first today', confidence: 0.55, evidence: [{ channel: 'test', id: 'message-1' }] } });
+  assert.equal(perspective.body.perspective.status, 'active');
 
   const experiment = await request('/learning-experiments', { method: 'POST', body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops' } });
   const sampled = await request(`/learning-experiments/${experiment.body.experiment.id}/sample`, { method: 'POST', body: { outcome: 'landed', value: 1 } });
@@ -207,6 +209,14 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(finishedCycle.body.cycle.status, 'completed');
   assert.equal((await request('/intelligence/cycles')).body[0].id, cycle.body.cycle.id);
   assert.ok((await request('/intelligence/orient')).body.commitments);
+  const cognition = await request('/cognition/refresh', { method: 'POST', body: {} });
+  assert.ok(cognition.body.cognition.appraisal.label);
+  assert.ok(cognition.body.cognition.workspace.slots.length <= 7);
+  const replay = await request('/cognition/counterfactuals', { method: 'POST', body: { actual: 'Answered', alternative: 'Asked first', evidence_basis: [{ type: 'trace', id: 'trace-1' }] } });
+  assert.equal(replay.body.counterfactual.status, 'simulated');
+  const development = await request('/cognition/development', { method: 'POST', body: { event: 'Repeated correction', changed_to: 'Expose uncertainty sooner', evidence: [{ type: 'trace', id: 'trace-1' }] } });
+  assert.equal(development.body.development.status, 'candidate');
+  assert.ok((await request('/cognition')).body.calibration);
   const summary = await request('/intelligence');
   assert.ok(summary.body.relationships >= 1);
   const bench = await request('/nora-bench');
