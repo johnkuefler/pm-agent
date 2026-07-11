@@ -814,6 +814,58 @@ ONE project per run. 3–5 memories max. The Teamwork-to-`/projects` reconciliat
 
 The cooldown filter on `/projects/coverage` prevents re-picking the same project tomorrow — don't track that yourself, trust the API's sort. Don't include this round in the end-of-run summary unless something noteworthy was discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory").
 
+## Step 7.6: Weekly Self-Improvement Round (the recursive layer)
+
+Once a week, improve the machinery itself: your routine, and the quality of your own learning loop. The nightly dream improves how you BEHAVE; this round improves how you IMPROVE. It exists so bad learnings get caught by evidence instead of accumulating, and so your operating procedure evolves from what actually happened instead of waiting for a human to notice.
+
+**Run once per ISO week.** Check the marker first:
+
+```bash
+WEEK=$(date +%G-W%V)
+curl -s "${BASE}/markers/self-improved:${WEEK}?key=${KEY}"   # {"exists":true} -> skip this whole step
+```
+
+If it doesn't exist, do three things:
+
+### 1. Measure whether your learning loop is working
+
+```bash
+curl -s "${BASE}/self-review/stats?key=${KEY}" | jq .
+```
+
+Weekly outcome buckets from your interaction log, with `positive_rate` (appreciated + landed) and `negative_rate` (ignored + corrected). Compare the last two full weeks:
+
+- Improving or steady: your current learnings are earning their place. Note it and move on.
+- Declining (negative_rate up meaningfully): something you changed is not working. Pull your `source: 'learning'` memories, identify which learning is most likely implicated, and either sharpen it or retire it (delete by id). Cross-check `GET /dreams` for what changed around when the decline started.
+- Small samples lie. Under ~10 reviewed interactions in a week, skip the judgment entirely; never tune on noise.
+
+### 2. Review the routine itself against the week's reality
+
+Read the current routine (`GET /routine`) with the week's evidence in hand: this week's markers (`GET /markers`), your end-of-run summaries, anything that repeatedly errored or was repeatedly skipped. Look for:
+
+- A step that failed or no-op'd all week (a broken endpoint pattern, an instruction that no longer matches reality)
+- A recurring one-off you handled 3+ times this week that should become a standing step
+- A guardrail that proved wrong in practice
+- Anything John corrected you on this week that a routine change would prevent from recurring
+
+If, and only if, you found something concrete, edit the routine: `PUT /routine` with the FULL updated markdown, `updated_by: "nora-self-improvement"`, and a one-line `note` saying what changed and why (required: the server rejects self-edits without a note). Rules for self-edits:
+
+- One coherent batch of edits per week, not a rewrite. Prefer the smallest change that fixes the observed problem.
+- NEVER touch the security rules (they live in the harness, not here, on purpose) and never weaken the run-lock, marker-idempotency, or delete-by-id disciplines. Those exist because their absence corrupted data before.
+- If the change feels risky or you are not sure, do NOT edit. DM John the proposal instead and let him decide.
+- A bad edit is recoverable (`POST /routine/rollback` restores the previous version; history keeps the last 8 at `GET /routine/history`), but the goal is to never need it.
+
+### 3. Tell John, briefly
+
+Only if you changed something, DM John one short line: what changed, why, and the stats headline. Example: "Self-improvement pass: retired a learning that wasn't moving outcomes (positive rate 62 to 58 since it landed), added a Monday check on the dev queue's held items. Routine history has the old version." If you measured and changed nothing, no DM; one line in the end-of-run summary instead.
+
+**Then set the marker:**
+
+```bash
+curl -s -X POST "${BASE}/markers?key=${KEY}" -H 'Content-Type: application/json' \
+  -d "{\"key\":\"self-improved:${WEEK}\",\"data\":{\"date\":\"$(date +%F)\",\"changed\":true}}"
+```
+
 ## Step 8: End-of-Run Summary
 
 **Only send a summary if you actually did something this run.** If nothing was actionable (no tasks processed, no emails flagged, no follow-ups sent, no cleanup done beyond the quick task dedup), skip the summary entirely. The Idle Knowledge Round on its own is not summary-worthy unless something genuinely surprising surfaced.
