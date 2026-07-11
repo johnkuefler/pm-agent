@@ -187,7 +187,7 @@ function mutateMemory(mutator) {
 
 // One-time backfill: assign ids to any pre-existing memory entries that lack them, so the
 // by-id endpoints work for the whole store from the first boot after this deploy.
-function backfillMemoryIds() {
+async function backfillMemoryIds() {
   try {
     const memory = loadMemory();
     let changed = false;
@@ -198,7 +198,10 @@ function backfillMemoryIds() {
         changed = true;
       }
     }
-    if (changed) { saveMemory(memory); console.log(`🧠 Upgraded ${memory.length} memories to the current schema`); }
+    if (changed) {
+      await saveMemory(memory);
+      console.log(`🧠 Upgraded ${memory.length} memories to the current schema`);
+    }
   } catch (err) { console.warn('Memory id backfill failed (non-fatal):', err.message); }
 }
 
@@ -7208,10 +7211,12 @@ async function start(options = {}) {
   _startPromise = (async () => {
     fs.mkdirSync(LOCAL_DATA_DIR, { recursive: true });
     initMemory();
-    backfillMemoryIds();
     // Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
     // reads a half-hydrated cache. DB failure preserves the existing JSON fallback.
     await initPersistence();
+    // Upgrade the active source of truth only after Postgres hydration. Running this before
+    // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
+    await backfillMemoryIds();
     await intelligence.init();
     await new Promise((resolve, reject) => {
       const onError = (err) => { server.off('listening', onListening); reject(err); };
