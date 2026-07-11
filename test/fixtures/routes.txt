@@ -79,6 +79,7 @@ GET /lean-in
 POST /lean-in
 GET /mute
 POST /mute
+POST /webhook/participant
 POST /webhook/status
 GET /admin/inbox
 GET /admin/inbox/file/:inboxId
