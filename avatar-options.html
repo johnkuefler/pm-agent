@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Nora — Avatar Options</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0e1126; color: #e8eaf6; font-family: -apple-system, sans-serif; padding: 36px 24px; }
+    h1 { text-align: center; font-size: 24px; font-weight: 700; }
+    .sub { text-align: center; color: #8b93c8; font-size: 14px; margin: 6px 0 10px; }
+    .controls { text-align: center; margin-bottom: 26px; }
+    button { background: #5e68b8; color: #fff; border: none; border-radius: 9px; padding: 10px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
+    button:hover { background: #6f79cc; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 26px; max-width: 1500px; margin: 0 auto; }
+    .card { background: #14172e; border: 1px solid #2a2f56; border-radius: 16px; padding: 22px; text-align: center; cursor: pointer; transition: border-color .15s; }
+    .card:hover { border-color: #8b93e8; }
+    .card svg { width: 300px; height: 300px; display: block; margin: 0 auto 14px; }
+    .card h2 { font-size: 16px; font-weight: 650; margin-bottom: 4px; }
+    .card p { font-size: 12.5px; color: #8b93c8; line-height: 1.5; }
+    .hint { text-align: center; color: #6a7099; font-size: 12px; margin-top: 22px; }
+  </style>
+</head>
+<body>
+  <h1>Nora — avatar options</h1>
+  <p class="sub">Same animation rig on four different directions. Click a card to make that one talk.</p>
+  <div class="controls"><button onclick="demoAll()">Make them all talk</button></div>
+
+  <div class="grid">
+
+    <!-- A. Geometric portrait (current) -->
+    <div class="card" onclick="demo('A')">
+      <svg viewBox="0 0 480 480" id="svgA">
+        <defs>
+          <clipPath id="frameA"><circle cx="240" cy="240" r="228"/></clipPath>
+          <clipPath id="faceClipA"><ellipse cx="240" cy="220" rx="63" ry="73"/></clipPath>
+        </defs>
+        <g clip-path="url(#frameA)">
+          <rect width="480" height="480" fill="#262a52"/>
+          <polygon points="240,0 480,0 480,480 296,480" fill="#5e68b8" opacity="0.5"/>
+          <polygon points="0,310 190,480 0,480" fill="#1d2140"/>
+          <circle cx="168" cy="148" r="150" fill="#e9dcc0"/>
+          <circle cx="228" cy="172" r="152" fill="#262a52"/>
+          <circle cx="362" cy="252" r="92" fill="#7a63c9" opacity="0.25"/>
+          <circle cx="352" cy="330" r="70" fill="none" stroke="#8b93e8" stroke-width="1.6" opacity="0.5"/>
+          <g fill="#aab3ea" opacity="0.5">
+            <circle cx="72" cy="216" r="2.3"/><circle cx="92" cy="216" r="2.3"/><circle cx="112" cy="216" r="2.3"/>
+            <circle cx="72" cy="238" r="2.3"/><circle cx="92" cy="238" r="2.3"/><circle cx="112" cy="238" r="2.3"/>
+            <circle cx="72" cy="260" r="2.3"/><circle cx="92" cy="260" r="2.3"/><circle cx="112" cy="260" r="2.3"/>
+          </g>
+          <g id="torsoA"><path d="M112,486 C122,384 186,350 240,350 C294,350 358,384 368,486 Z" fill="#14172e"/><rect x="206" y="322" width="68" height="44" rx="16" fill="#14172e"/></g>
+          <g id="headA">
+            <rect x="219" y="292" width="42" height="46" rx="12" fill="#e0c49f"/>
+            <path d="M150,206 C148,110 196,84 240,84 C284,84 332,110 330,206 C334,268 326,318 306,338 C296,347 286,344 284,332 L282,262 L198,262 L196,332 C194,344 184,347 174,338 C154,318 146,268 150,206 Z" fill="#10132b"/>
+            <ellipse cx="240" cy="220" rx="63" ry="73" fill="#eed9b7"/>
+            <path d="M242,134 L312,172 L304,300 L242,298 Z" fill="#ddbb92" opacity="0.6" clip-path="url(#faceClipA)"/>
+            <path d="M200,196 q15,-9 32,-4" stroke="#23264a" stroke-width="5" fill="none" stroke-linecap="round"/>
+            <path d="M250,192 q17,-5 31,4" stroke="#23264a" stroke-width="5" fill="none" stroke-linecap="round"/>
+            <g id="eyeLA"><path d="M201,215 q15,-11 32,0 q-15,12 -32,0 Z" fill="#f7f3ea"/><circle cx="217" cy="215" r="6" fill="#232850"/><circle cx="219.5" cy="212.5" r="1.8" fill="#f7f3ea"/></g>
+            <g id="eyeRA"><path d="M248,215 q15,-11 32,0 q-15,12 -32,0 Z" fill="#f7f3ea"/><circle cx="264" cy="215" r="6" fill="#232850"/><circle cx="266.5" cy="212.5" r="1.8" fill="#f7f3ea"/></g>
+            <path d="M241,230 q7,12 -2,18" stroke="#c9a87e" stroke-width="4" fill="none" stroke-linecap="round"/>
+            <g><path id="mouthClosedA" d="M221,269 Q240,278 259,269" stroke="#b76a6d" stroke-width="5" fill="none" stroke-linecap="round"/>
+            <g id="mouthOpenGA" opacity="0"><ellipse id="mouthOpenA" cx="240" cy="271" rx="15" ry="2" fill="#5b2338"/><rect id="teethA" x="230" y="264" width="20" height="4.5" rx="2" fill="#f4ece0" opacity="0.9"/></g></g>
+            <path d="M150,206 C150,108 198,86 240,86 C282,86 330,108 330,206 C330,158 310,128 288,132 C268,136 268,148 240,148 C212,148 212,136 192,132 C170,128 150,158 150,206 Z" fill="#171a38"/>
+          </g>
+          <circle cx="240" cy="240" r="224" fill="none" stroke="#8b93e8" stroke-width="2" opacity="0.35"/>
+        </g>
+      </svg>
+      <h2>A. Geometric portrait (current)</h2>
+      <p>The one that's live now. Flat cubist portrait in the Slack-avatar palette, front-facing for maximum lip-sync readability.</p>
+    </div>
+
+    <!-- B. Living emblem (no face) -->
+    <div class="card" onclick="demo('B')">
+      <svg viewBox="0 0 480 480" id="svgB">
+        <defs><clipPath id="frameB"><circle cx="240" cy="240" r="228"/></clipPath></defs>
+        <g clip-path="url(#frameB)">
+          <rect width="480" height="480" fill="#262a52"/>
+          <polygon points="240,0 480,0 480,480 296,480" fill="#5e68b8" opacity="0.42"/>
+          <circle cx="150" cy="130" r="140" fill="#e9dcc0"/>
+          <circle cx="208" cy="155" r="142" fill="#262a52"/>
+          <g fill="#aab3ea" opacity="0.5">
+            <circle cx="82" cy="330" r="2.3"/><circle cx="102" cy="330" r="2.3"/><circle cx="122" cy="330" r="2.3"/>
+            <circle cx="82" cy="352" r="2.3"/><circle cx="102" cy="352" r="2.3"/><circle cx="122" cy="352" r="2.3"/>
+          </g>
+          <!-- orbiting ring of voice dots -->
+          <g id="orbitB"></g>
+          <!-- aperture iris -->
+          <circle id="haloB" cx="240" cy="240" r="86" fill="#7a63c9" opacity="0.22"/>
+          <circle id="ringB" cx="240" cy="240" r="64" fill="none" stroke="#8b93e8" stroke-width="2.5" opacity="0.8"/>
+          <circle id="irisB" cx="240" cy="240" r="34" fill="#e9dcc0"/>
+          <circle id="coreB" cx="240" cy="240" r="12" fill="#262a52"/>
+          <circle cx="240" cy="240" r="224" fill="none" stroke="#8b93e8" stroke-width="2" opacity="0.35"/>
+        </g>
+      </svg>
+      <h2>B. Living emblem</h2>
+      <p>Not a person: a sentient mark. The aperture blooms and the dot ring ripples with her actual voice; it "blinks" by contracting. Honest about being an AI, zero uncanny risk, very brandable.</p>
+    </div>
+
+    <!-- C. Line portrait (editorial profile) -->
+    <div class="card" onclick="demo('C')">
+      <svg viewBox="0 0 480 480" id="svgC">
+        <defs><clipPath id="frameC"><circle cx="240" cy="240" r="228"/></clipPath></defs>
+        <g clip-path="url(#frameC)">
+          <rect width="480" height="480" fill="#262a52"/>
+          <circle cx="168" cy="140" r="146" fill="#e9dcc0"/>
+          <circle cx="230" cy="166" r="148" fill="#262a52"/>
+          <polygon points="250,0 480,0 480,480 320,480" fill="#5e68b8" opacity="0.4"/>
+          <circle cx="356" cy="322" r="66" fill="none" stroke="#8b93e8" stroke-width="1.6" opacity="0.5"/>
+          <g id="headC">
+            <!-- hair mass: side-swept bob, filled flat -->
+            <path d="M172,320 C142,282 138,196 168,140 C196,88 268,76 310,112 C346,142 352,208 336,238 C330,250 320,252 314,244 C300,224 296,190 278,178 C270,214 268,252 272,290 C274,312 266,330 248,336 C222,344 190,340 172,320 Z" fill="#10132b"/>
+            <!-- profile line: forehead, nose, lips area handled by jaw group -->
+            <path d="M278,150 C292,168 296,186 294,204 C293,214 288,220 284,226 L292,232 C294,234 293,238 290,238 L282,239" fill="none" stroke="#e9dcc0" stroke-width="4" stroke-linecap="round"/>
+            <!-- upper lip -->
+            <path id="upperLipC" d="M282,247 q8,-2 12,2" fill="none" stroke="#e9dcc0" stroke-width="4" stroke-linecap="round"/>
+            <!-- jaw group: rotates open at the ear pivot when she talks -->
+            <g id="jawC">
+              <path d="M292,258 q-4,10 -14,16 C266,282 252,286 240,284" fill="none" stroke="#e9dcc0" stroke-width="4" stroke-linecap="round"/>
+            </g>
+            <!-- eye: single line + lash, blinks -->
+            <g id="eyeC"><path d="M258,196 q10,-6 20,-2" fill="none" stroke="#e9dcc0" stroke-width="4" stroke-linecap="round"/></g>
+            <!-- brow -->
+            <path d="M254,180 q14,-8 28,-2" fill="none" stroke="#e9dcc0" stroke-width="3.4" stroke-linecap="round" opacity="0.85"/>
+            <!-- neck + shoulder line -->
+            <path d="M250,336 C252,356 258,368 270,376 M180,340 C170,390 210,406 240,410 C290,416 330,398 344,376" fill="none" stroke="#e9dcc0" stroke-width="4" stroke-linecap="round"/>
+          </g>
+          <circle cx="240" cy="240" r="224" fill="none" stroke="#8b93e8" stroke-width="2" opacity="0.35"/>
+        </g>
+      </svg>
+      <h2>C. Line portrait</h2>
+      <p>Minimal editorial profile in a single cream line, closest in mood to her actual Slack avatar. Talks via a hinged jaw; blinks the eye line. Sophisticated, a little aloof, very on-brand.</p>
+    </div>
+
+    <!-- D. Friendly character -->
+    <div class="card" onclick="demo('D')">
+      <svg viewBox="0 0 480 480" id="svgD">
+        <defs><clipPath id="frameD"><circle cx="240" cy="240" r="228"/></clipPath></defs>
+        <g clip-path="url(#frameD)">
+          <rect width="480" height="480" fill="#5e68b8"/>
+          <circle cx="240" cy="500" r="260" fill="#262a52"/>
+          <circle cx="120" cy="110" r="70" fill="#e9dcc0" opacity="0.9"/>
+          <circle cx="392" cy="140" r="8" fill="#e9dcc0" opacity="0.7"/>
+          <circle cx="410" cy="180" r="4" fill="#e9dcc0" opacity="0.6"/>
+          <g id="torsoD"><path d="M130,486 C136,398 188,362 240,362 C292,362 344,398 350,486 Z" fill="#14172e"/><rect x="210" y="336" width="60" height="42" rx="15" fill="#14172e"/></g>
+          <g id="headD">
+            <rect x="221" y="304" width="38" height="42" rx="12" fill="#e0c49f"/>
+            <!-- round bob -->
+            <circle cx="240" cy="204" r="104" fill="#10132b"/>
+            <path d="M136,214 L146,332 C148,344 160,346 166,336 L172,238 Z" fill="#10132b"/>
+            <path d="M344,214 L334,332 C332,344 320,346 314,336 L308,238 Z" fill="#10132b"/>
+            <!-- face: big and round -->
+            <circle cx="240" cy="226" r="74" fill="#eed9b7"/>
+            <!-- cheeks -->
+            <circle cx="196" cy="248" r="10" fill="#e8a58c" opacity="0.55"/>
+            <circle cx="284" cy="248" r="10" fill="#e8a58c" opacity="0.55"/>
+            <!-- big eyes -->
+            <g id="eyeLD"><circle cx="212" cy="222" r="11" fill="#232850"/><circle cx="216" cy="217" r="3.6" fill="#f7f3ea"/></g>
+            <g id="eyeRD"><circle cx="268" cy="222" r="11" fill="#232850"/><circle cx="272" cy="217" r="3.6" fill="#f7f3ea"/></g>
+            <!-- brows -->
+            <path d="M200,202 q12,-7 25,-3" stroke="#23264a" stroke-width="5" fill="none" stroke-linecap="round"/>
+            <path d="M255,199 q13,-4 25,3" stroke="#23264a" stroke-width="5" fill="none" stroke-linecap="round"/>
+            <!-- mouth -->
+            <g><path id="mouthClosedD" d="M222,262 Q240,274 258,262" stroke="#b76a6d" stroke-width="5.5" fill="none" stroke-linecap="round"/>
+            <g id="mouthOpenGD" opacity="0"><ellipse id="mouthOpenD" cx="240" cy="266" rx="17" ry="2" fill="#5b2338"/><rect id="teethD" x="228" y="258" width="24" height="5" rx="2.5" fill="#f4ece0" opacity="0.9"/></g></g>
+            <!-- fringe -->
+            <path d="M136,214 C136,120 182,96 240,96 C298,96 344,120 344,214 C344,166 318,140 294,146 C272,151 270,162 240,162 C210,162 208,151 186,146 C162,140 136,166 136,214 Z" fill="#171a38"/>
+          </g>
+          <circle cx="240" cy="240" r="224" fill="none" stroke="#e9dcc0" stroke-width="2" opacity="0.3"/>
+        </g>
+      </svg>
+      <h2>D. Friendly character</h2>
+      <p>Rounder, bigger-eyed, warmer. More obviously a character, more approachable on client calls, most expressive mouth of the four.</p>
+    </div>
+  </div>
+
+  <p class="hint">All four run the identical audio rig from the live page; here they're driven by a synthetic speech envelope. Tell Claude which letter wins (or what to mix) and it gets wired into the meeting feed.</p>
+
+  <script>
+    // Shared rig: same math as voice-agent.html, one instance per option.
+    const $ = (id) => document.getElementById(id);
+
+    // Build orbit dots for B
+    (function () {
+      const g = $('orbitB');
+      for (let i = 0; i < 14; i++) {
+        const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+        c.setAttribute('r', '5'); c.setAttribute('fill', '#aab3ea');
+        g.appendChild(c);
+      }
+    })();
+
+    function makePortraitRig(sfx, mouthMax) {
+      const head = $('head' + sfx), torso = $('torso' + sfx);
+      const eyes = [$('eyeL' + sfx), $('eyeR' + sfx)].filter(Boolean);
+      const mc = $('mouthClosed' + sfx), mog = $('mouthOpenG' + sfx), mo = $('mouthOpen' + sfx), teeth = $('teeth' + sfx);
+      const eyeY = sfx === 'D' ? 222 : 215;
+      let blinkAmt = 0, nextBlinkAt = performance.now() + 1500 + Math.random() * 3000;
+      return function (now, level) {
+        const open = level > 0.045;
+        mc.setAttribute('opacity', open ? '0' : '1');
+        mog.setAttribute('opacity', open ? '1' : '0');
+        if (open) {
+          mo.setAttribute('ry', (2 + level * mouthMax).toFixed(2));
+          mo.setAttribute('rx', ((sfx === 'D' ? 17 : 15) - level * 3.5).toFixed(2));
+          if (teeth) teeth.setAttribute('opacity', level > 0.18 ? '0.9' : '0');
+        }
+        if (now >= nextBlinkAt) { blinkAmt = Math.min(1, blinkAmt + 0.34); if (blinkAmt >= 1) nextBlinkAt = now + 2300 + Math.random() * 3800; }
+        else if (blinkAmt > 0) blinkAmt = Math.max(0, blinkAmt - 0.22);
+        const es = 1 - blinkAmt * 0.92;
+        for (const e of eyes) e.setAttribute('transform', `translate(0,${(eyeY * (1 - es)).toFixed(2)}) scale(1,${es.toFixed(3)})`);
+        const sway = Math.sin(now * 0.00062) * 1.3;
+        const nod = level * (1.1 * Math.sin(now * 0.02)) + level * 1.6;
+        head.setAttribute('transform', `rotate(${(sway + nod * 0.4).toFixed(2)} 240 300) translate(0,${(level * 2.2).toFixed(2)})`);
+        if (torso) torso.setAttribute('transform', `translate(0,${(Math.sin(now * 0.0011) * 2).toFixed(2)})`);
+      };
+    }
+
+    function makeEmblemRig() {
+      const iris = $('irisB'), core = $('coreB'), ring = $('ringB'), halo = $('haloB'), orbit = $('orbitB').children;
+      let blinkAmt = 0, nextBlinkAt = performance.now() + 2600 + Math.random() * 3200;
+      return function (now, level) {
+        if (now >= nextBlinkAt) { blinkAmt = Math.min(1, blinkAmt + 0.4); if (blinkAmt >= 1) nextBlinkAt = now + 2600 + Math.random() * 3600; }
+        else if (blinkAmt > 0) blinkAmt = Math.max(0, blinkAmt - 0.25);
+        const irisR = 34 + level * 18 - blinkAmt * 22;
+        iris.setAttribute('r', Math.max(8, irisR).toFixed(2));
+        core.setAttribute('r', (12 + level * 10).toFixed(2));
+        ring.setAttribute('r', (64 + level * 14 + Math.sin(now * 0.0016) * 3).toFixed(2));
+        halo.setAttribute('r', (86 + level * 26).toFixed(2));
+        halo.setAttribute('opacity', (0.22 + level * 0.2).toFixed(3));
+        const baseR = 118 + Math.sin(now * 0.001) * 4;
+        for (let i = 0; i < orbit.length; i++) {
+          const a = (i / orbit.length) * Math.PI * 2 + now * 0.00028;
+          const wob = level * 16 * Math.abs(Math.sin(now * 0.012 + i * 1.7));
+          const r = baseR + wob;
+          orbit[i].setAttribute('cx', (240 + Math.cos(a) * r).toFixed(1));
+          orbit[i].setAttribute('cy', (240 + Math.sin(a) * r).toFixed(1));
+          orbit[i].setAttribute('r', (4 + level * 3.5 * Math.abs(Math.sin(now * 0.01 + i))).toFixed(2));
+        }
+      };
+    }
+
+    function makeLineRig() {
+      const head = $('headC'), jaw = $('jawC'), eye = $('eyeC'), lip = $('upperLipC');
+      let blinkAmt = 0, nextBlinkAt = performance.now() + 2000 + Math.random() * 3400;
+      return function (now, level) {
+        // jaw hinges open around a pivot near the ear
+        jaw.setAttribute('transform', `rotate(${(level * 14).toFixed(2)} 232 246)`);
+        lip.setAttribute('transform', `translate(0,${(-level * 2.5).toFixed(2)})`);
+        if (now >= nextBlinkAt) { blinkAmt = Math.min(1, blinkAmt + 0.34); if (blinkAmt >= 1) nextBlinkAt = now + 2300 + Math.random() * 3800; }
+        else if (blinkAmt > 0) blinkAmt = Math.max(0, blinkAmt - 0.22);
+        const es = 1 - blinkAmt * 0.9;
+        eye.setAttribute('transform', `translate(0,${(196 * (1 - es)).toFixed(2)}) scale(1,${es.toFixed(3)})`);
+        const sway = Math.sin(now * 0.0006) * 1.1;
+        head.setAttribute('transform', `rotate(${(sway + level * 0.8).toFixed(2)} 240 320)`);
+      };
+    }
+
+    const rigs = {
+      A: makePortraitRig('A', 15),
+      B: makeEmblemRig(),
+      C: makeLineRig(),
+      D: makePortraitRig('D', 19)
+    };
+    const demoUntil = { A: 0, B: 0, C: 0, D: 0 };
+
+    function envelope(now) {
+      const syll = Math.abs(Math.sin(now * 0.013)) * (0.55 + 0.45 * Math.sin(now * 0.0021));
+      return Math.max(0, Math.min(1, 0.15 + 0.85 * syll));
+    }
+    function demo(key) { demoUntil[key] = performance.now() + 5000; }
+    function demoAll() { const t = performance.now() + 6000; for (const k in demoUntil) demoUntil[k] = t; }
+
+    setInterval(() => {
+      const now = performance.now();
+      const env = envelope(now);
+      for (const k in rigs) rigs[k](now, now < demoUntil[k] ? env : 0);
+    }, 33);
+  </script>
+</body>
+</html>
