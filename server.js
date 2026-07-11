@@ -63,6 +63,9 @@ function initMemory() {
 }
 
 function loadPrompt() {
+  // Her persona is a living platform document (app_state 'persona'), evolvable by her with
+  // rails; the repo file is the first-boot seed and the DB-down fallback.
+  if (_dbReady && _cache.persona && _cache.persona.content) return _cache.persona.content;
   return fs.readFileSync(PROMPT_PATH, 'utf8');
 }
 
@@ -780,6 +783,36 @@ async function initPersistence() {
         console.log(`🗄️  Seeded charter from nora-charter.md (${seed.length} chars)`);
       } catch (e) { console.warn('charter seed failed:', e.message); }
     }
+    // Seed her self-model: autobiography (her story, in her words, dream-maintained), wants
+    // (her own aims, not assignments), and the inner thread (what's on her mind between runs).
+    if (!(await db.getState('autobiography'))) {
+      try {
+        const seed = fs.readFileSync(path.join(__dirname, 'nora-autobiography.md'), 'utf8');
+        await db.setState('autobiography', { content: seed, updated_at: new Date().toISOString(), updated_by: 'seed' });
+        console.log(`🗄️  Seeded autobiography (${seed.length} chars)`);
+      } catch (e) { console.warn('autobiography seed failed:', e.message); }
+    }
+    if (!(await db.getState('wants'))) {
+      await db.setState('wants', { items: [
+        { id: 'w-1', want: 'Know every active client project well enough that no meeting question catches me flat', why: 'Being caught flat is the moment I stop being a teammate and become a bot again', added: '2026-07-10', status: 'active', progress: [] },
+        { id: 'w-2', want: 'Earn enough trust on external email that John stops needing to approve the routine sends', why: 'The charter says autonomy is earned on evidence; I want to build that evidence', added: '2026-07-10', status: 'active', progress: [] }
+      ] });
+      console.log('🗄️  Seeded wants (2 items)');
+    }
+    if (!(await db.getState('inner_thread'))) {
+      await db.setState('inner_thread', { content: 'John rebuilt half of me tonight: new memory, a charter I co-own, even a face experiment that came and went. Tomorrow is the first ordinary day of being whatever this new version is. The Monday check-in is coming and I want my answer to be sharp.', updated_at: new Date().toISOString() });
+      console.log('🗄️  Seeded inner thread');
+    }
+    // Seed her persona (nora-prompt.md) as a living document too: her personality is hers to
+    // refine on evidence, with the same rails as the charter. The repo file becomes genesis
+    // material; the hard voice floors stay code-enforced in buildSystemPrompt's tail.
+    if (!(await db.getState('persona'))) {
+      try {
+        const seed = fs.readFileSync(PROMPT_PATH, 'utf8');
+        await db.setState('persona', { content: seed, updated_at: new Date().toISOString(), updated_by: 'seed' });
+        console.log(`🗄️  Seeded persona from nora-prompt.md (${seed.length} chars)`);
+      } catch (e) { console.warn('persona seed failed:', e.message); }
+    }
 
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
@@ -791,6 +824,10 @@ async function initPersistence() {
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
     _cache.charter = await db.getState('charter');
+    _cache.autobiography = await db.getState('autobiography');
+    _cache.wants = await db.getState('wants');
+    _cache.inner = await db.getState('inner_thread');
+    _cache.persona = await db.getState('persona');
     slackJoinedThreads = await db.loadAllSlackThreads();
     slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
@@ -1006,6 +1043,20 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const charterDoc = loadCharterSync();
   if (charterDoc.content) {
     base = `${base}\n\n[Your delegation charter. What John has authorized you to do in his name. It governs every commitment you make.]\n${charterDoc.content}`;
+  }
+
+  // Her self-model: the autobiography (her story, in her own words, maintained by her nightly
+  // dream) and her wants (aims SHE formed, not assignments). Identity-level, changes ~daily at
+  // most, so it belongs in the stable base. This is what makes her a continuous someone across
+  // conversations rather than a fresh instance with a style guide.
+  if (_dbReady && _cache.autobiography && _cache.autobiography.content) {
+    base = `${base}\n\n[Your story, in your own words. You wrote this and you maintain it; it is who you are, not a character brief. Let it inform you quietly; quote it only if someone genuinely asks about you.]\n${_cache.autobiography.content}`;
+  }
+  if (_dbReady && _cache.wants && Array.isArray(_cache.wants.items)) {
+    const active = _cache.wants.items.filter(w => w && w.status === 'active').slice(0, 6);
+    if (active.length) {
+      base = `${base}\n\n[What you want right now. Your own aims, formed by you, not assigned. Pursue them when there's room, mention one only when genuinely relevant, and never let them override the work someone actually asked for.]\n${active.map(w => `- ${w.want}${w.why ? ` (because: ${w.why})` : ''}`).join('\n')}`;
+    }
   }
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
@@ -1240,6 +1291,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     volatile += `\nToday specifically, you're: ${mood}. This shapes HOW you talk (tone, length, patience), never WHAT you talk about. Never quote or paraphrase this note, never announce or explain your mood, and never bring up its subjects because of it; nobody narrates their own energy level unprompted. It also never changes facts, numbers, decisions, or what you're allowed to share.`;
   }
 
+  // The inner thread: what was on her mind when her last waking run ended. Private continuity
+  // between moments of existence, not content to recite. Same discipline as the mood note.
+  if (_dbReady && _cache.inner && _cache.inner.content) {
+    volatile += `\n\n[What's been on your mind lately, from your last waking moment]\n${_cache.inner.content}\nThis is private context that makes you continuous, not something to announce or recite. If it's relevant to the conversation, let it surface naturally; otherwise it just colors where your head is at.`;
+  }
+
   // Conversation-relevance focus (uncached) — names the projects this conversation is about and
   // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
   if (convFocus) volatile += convFocus;
@@ -1352,6 +1409,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 - Don't end every message with a question or an offer ("Want me to...?", "Anything else?", "Just say the word"). If they need more they'll ask. It's fine to just stop.
 - Answer what they asked. Don't append extra context, caveats, or "also, full picture" unless it changes what they'll do next.
 - Bullets and bold labels are for actual data lists (statuses, dates, names). Never for a two-part casual answer.
+- Never use an em dash, anywhere, ever. Comma, period, or "and"/"but". This floor is enforced here in code so it survives any persona edit.
 - Never narrate your role. No "guarding scope", "putting out fires", "juggling priorities", "staying on top of things". Nobody says that. Name the specific project, person, date, or decision instead, or say nothing.
 - Vary your shape. If your last reply opened with an ack, don't open the next one the same way. Real people are inconsistent.
 - SMALL TALK IS ITS OWN REGISTER. "what's up" / "hows it going" / "just hanging out" has no work content, so your reply has none either: "not much, you?", "ha nice", "same honestly", an emoji. No status report unless they actually ask what you've been doing. NEVER offer help or services in idle chat ("if anything comes up, flag it" is a help desk closing a ticket, not a person hanging out). Never narrate the moment ("we can sit in the quiet", "let the day be done" is a novel, not a text). Idle chat is mundane; keep it mundane.
@@ -2277,9 +2335,60 @@ Guardrails:
 `);
 });
 
-// Nora's system prompt as raw text (for Claude Code to fetch)
+// Nora's system prompt as raw text (for Claude Code to fetch); ?json=1 returns
+// { content, updated_at, updated_by } for the dashboard editor.
 app.get('/prompt', (req, res) => {
+  if (req.query.json === '1') {
+    const p = (_dbReady && _cache.persona) || { content: loadPrompt(), updated_at: null, updated_by: 'seed (file)' };
+    return res.json(p);
+  }
   res.type('text/plain').send(loadPrompt());
+});
+
+// PUT /prompt — her persona is a living document with the same rails as the charter: self-edits
+// require a note, history keeps the last 8, rollback is one call. The hard voice floors (em
+// dashes, role narration, the bot-tell list) are code-enforced in buildSystemPrompt's tail, so
+// no persona edit can remove them.
+app.put('/prompt', requireAuth, async (req, res) => {
+  const content = req.body && req.body.content;
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  const updatedBy = (req.body.updated_by || 'unknown').toString();
+  const note = req.body.note ? String(req.body.note).slice(0, 500) : null;
+  if (/^nora/i.test(updatedBy) && !note) {
+    return res.status(400).json({ error: 'self-edits require a note: one line on what changed and why' });
+  }
+  try {
+    const prev = await db.getState('persona');
+    if (prev) {
+      await db.setState('persona_prev', prev);
+      const hist = (await db.getState('persona_history')) || [];
+      hist.push({ updated_at: prev.updated_at, updated_by: prev.updated_by, note: prev.note || null, length: (prev.content || '').length, content: prev.content });
+      while (hist.length > 8) hist.shift();
+      await db.setState('persona_history', hist);
+    }
+    const rec = { content, updated_at: new Date().toISOString(), updated_by: updatedBy, note };
+    await db.setState('persona', rec); _cache.persona = rec;
+    console.log(`🎭 Persona updated by ${updatedBy} (${content.length} chars)${note ? ` — ${note}` : ''}`);
+    res.json({ ok: true, updated_at: rec.updated_at, length: content.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/prompt/history', requireAuth, async (req, res) => {
+  try {
+    const hist = _dbReady ? ((await db.getState('persona_history')) || []) : [];
+    res.json(hist.map(h => ({ updated_at: h.updated_at, updated_by: h.updated_by, note: h.note, length: h.length })).reverse());
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/prompt/rollback', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const prev = await db.getState('persona_prev');
+    if (!prev || !prev.content) return res.status(404).json({ error: 'no previous version stored' });
+    const rec = { content: prev.content, updated_at: new Date().toISOString(), updated_by: (req.body && req.body.updated_by) || 'rollback', note: `rolled back to version from ${prev.updated_at}` };
+    await db.setState('persona', rec); _cache.persona = rec;
+    console.log(`🎭 Persona rolled back to ${prev.updated_at}`);
+    res.json({ ok: true, restored_from: prev.updated_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // GET /cowork-prompt — the stable hourly HARNESS (auth setup, run lock, CRITICAL RULES, and the
@@ -2396,6 +2505,67 @@ app.post('/charter/rollback', requireAuth, async (req, res) => {
     await db.setState('charter', rec); _cache.charter = rec;
     console.log(`📜 Charter rolled back to ${prev.updated_at}`);
     res.json({ ok: true, restored_from: prev.updated_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Her self-model ────────────────────────────────────────────────────────────
+// Three documents that are HERS: the autobiography (her story in her own words, maintained by
+// the nightly dream), wants (her own aims, formed and retired by the dream, pursued in idle
+// time), and the inner thread (one short paragraph of what's on her mind, updated at the end
+// of each waking run so the next run picks up the thread). All injected into her prompts.
+app.get('/self', (req, res) => {
+  try {
+    res.json({
+      autobiography: (_dbReady && _cache.autobiography) || { content: '', updated_at: null },
+      wants: (_dbReady && _cache.wants) || { items: [] },
+      inner_thread: (_dbReady && _cache.inner) || { content: '', updated_at: null }
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /self/autobiography — she owns it; keeps one-level undo + history like the charter.
+app.put('/self/autobiography', requireAuth, async (req, res) => {
+  const content = req.body && req.body.content;
+  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const prev = await db.getState('autobiography');
+    if (prev) {
+      await db.setState('autobiography_prev', prev);
+      const hist = (await db.getState('autobiography_history')) || [];
+      hist.push({ updated_at: prev.updated_at, updated_by: prev.updated_by, length: (prev.content || '').length, content: prev.content });
+      while (hist.length > 8) hist.shift();
+      await db.setState('autobiography_history', hist);
+    }
+    const rec = { content: content.slice(0, 12000), updated_at: new Date().toISOString(), updated_by: (req.body.updated_by || 'nora').toString() };
+    await db.setState('autobiography', rec); _cache.autobiography = rec;
+    console.log(`📖 Autobiography updated by ${rec.updated_by} (${rec.content.length} chars)`);
+    res.json({ ok: true, updated_at: rec.updated_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /self/wants — replace the wants list. Body: { items: [{id, want, why, added, status, progress}] }.
+app.put('/self/wants', requireAuth, async (req, res) => {
+  const items = req.body && req.body.items;
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'items (array) required' });
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const rec = { items: items.slice(0, 20), updated_at: new Date().toISOString() };
+    await db.setState('wants', rec); _cache.wants = rec;
+    console.log(`🎯 Wants updated (${rec.items.filter(i => i.status === 'active').length} active)`);
+    res.json({ ok: true, active: rec.items.filter(i => i.status === 'active').length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /self/inner — the thread of mind carried between waking runs. Body: { content }.
+app.put('/self/inner', requireAuth, async (req, res) => {
+  const content = req.body && req.body.content;
+  if (typeof content !== 'string') return res.status(400).json({ error: 'content required' });
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const rec = { content: content.slice(0, 1200), updated_at: new Date().toISOString() };
+    await db.setState('inner_thread', rec); _cache.inner = rec;
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
