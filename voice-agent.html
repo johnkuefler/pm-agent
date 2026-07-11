@@ -6,8 +6,8 @@
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
-      background: #0e1126;
-      color: #e8eaf6;
+      background: #111;
+      color: #eee;
       font-family: -apple-system, sans-serif;
       display: flex;
       align-items: center;
@@ -16,116 +16,44 @@
       height: 720px;
       overflow: hidden;
     }
-    .container { text-align: center; }
-    /* The avatar wrapper keeps the speaking/listening glow rings; the character itself is the SVG. */
-    .avatar {
-      width: 400px;
-      height: 400px;
-      border-radius: 50%;
-      margin: 0 auto 24px;
-      transition: box-shadow 0.35s ease, filter 0.35s ease;
-      position: relative;
+    .container {
+      text-align: center;
     }
-    .avatar svg { display: block; width: 100%; height: 100%; }
+    .avatar {
+      width: 320px;
+      height: 320px;
+      border-radius: 50%;
+      background: #7c3aed;
+      margin: 0 auto 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 128px;
+      font-weight: 700;
+      color: #fff;
+      transition: box-shadow 0.3s ease;
+    }
     .avatar.speaking {
-      box-shadow: 0 0 0 8px rgba(139, 147, 232, 0.30), 0 0 0 20px rgba(139, 147, 232, 0.14);
-      animation: pulse 1.6s ease-in-out infinite;
+      box-shadow: 0 0 0 10px rgba(124, 58, 237, 0.35), 0 0 0 22px rgba(124, 58, 237, 0.18);
+      animation: pulse 1.5s ease-in-out infinite;
     }
     .avatar.listening {
-      box-shadow: 0 0 0 8px rgba(139, 147, 232, 0.16), 0 0 0 18px rgba(139, 147, 232, 0.07);
+      box-shadow: 0 0 0 10px rgba(110, 231, 183, 0.35), 0 0 0 22px rgba(110, 231, 183, 0.18);
     }
-    body.muted .avatar { filter: saturate(0.55) brightness(0.85); }
     @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 0 8px rgba(139, 147, 232, 0.30), 0 0 0 20px rgba(139, 147, 232, 0.14); }
-      50% { box-shadow: 0 0 0 13px rgba(160, 167, 240, 0.40), 0 0 0 28px rgba(139, 147, 232, 0.20); }
+      0%, 100% { box-shadow: 0 0 0 10px rgba(124, 58, 237, 0.35), 0 0 0 22px rgba(124, 58, 237, 0.18); }
+      50% { box-shadow: 0 0 0 16px rgba(124, 58, 237, 0.45), 0 0 0 32px rgba(124, 58, 237, 0.25); }
     }
-    .name { font-size: 34px; font-weight: 650; margin-bottom: 4px; letter-spacing: 0.01em; color: #eef0fb; }
-    .role { font-size: 15px; color: #8b93c8; margin-bottom: 18px; }
-    .status { font-size: 14px; color: #6a7099; }
-    .status.connected { color: #9db8f0; }
+    .name { font-size: 36px; font-weight: 600; margin-bottom: 6px; letter-spacing: 0.01em; }
+    .role { font-size: 16px; color: #888; margin-bottom: 20px; }
+    .status { font-size: 14px; color: #666; }
+    .status.connected { color: #6ee7b7; }
     .status.error { color: #f87171; }
   </style>
 </head>
 <body>
   <div class="container">
-    <div id="avatar" class="avatar">
-      <!-- Nora: geometric flat-illustration character matching her Slack avatar
-           (navy/indigo planes, cream crescent, dark bob, black turtleneck).
-           Animated: audio-driven mouth, blinks, idle sway, breathing. -->
-      <svg viewBox="0 0 480 480" xmlns="http://www.w3.org/2000/svg" aria-label="Nora">
-        <defs>
-          <clipPath id="frame"><circle cx="240" cy="240" r="228"/></clipPath>
-          <clipPath id="faceClip"><ellipse cx="240" cy="220" rx="63" ry="73"/></clipPath>
-        </defs>
-
-        <g clip-path="url(#frame)">
-          <!-- background planes -->
-          <rect x="0" y="0" width="480" height="480" fill="#262a52"/>
-          <polygon points="240,0 480,0 480,480 296,480" fill="#5e68b8" opacity="0.5"/>
-          <polygon points="0,310 190,480 0,480" fill="#1d2140"/>
-          <!-- cream crescent -->
-          <circle cx="168" cy="148" r="150" fill="#e9dcc0"/>
-          <circle cx="228" cy="172" r="152" fill="#262a52"/>
-          <!-- translucent geometry -->
-          <circle cx="362" cy="252" r="92" fill="#7a63c9" opacity="0.25"/>
-          <circle cx="352" cy="330" r="70" fill="none" stroke="#8b93e8" stroke-width="1.6" opacity="0.5"/>
-          <circle cx="396" cy="298" r="5" fill="#cfd4f7"/>
-          <circle cx="416" cy="120" r="3" fill="#cfd4f7" opacity="0.8"/>
-          <g fill="#aab3ea" opacity="0.5">
-            <circle cx="72" cy="216" r="2.3"/><circle cx="92" cy="216" r="2.3"/><circle cx="112" cy="216" r="2.3"/><circle cx="132" cy="216" r="2.3"/>
-            <circle cx="72" cy="238" r="2.3"/><circle cx="92" cy="238" r="2.3"/><circle cx="112" cy="238" r="2.3"/><circle cx="132" cy="238" r="2.3"/>
-            <circle cx="72" cy="260" r="2.3"/><circle cx="92" cy="260" r="2.3"/><circle cx="112" cy="260" r="2.3"/><circle cx="132" cy="260" r="2.3"/>
-            <circle cx="72" cy="282" r="2.3"/><circle cx="92" cy="282" r="2.3"/><circle cx="112" cy="282" r="2.3"/>
-          </g>
-
-          <!-- torso (breathes) -->
-          <g id="torso">
-            <path d="M112,486 C122,384 186,350 240,350 C294,350 358,384 368,486 Z" fill="#14172e"/>
-            <rect x="206" y="322" width="68" height="44" rx="16" fill="#14172e"/>
-          </g>
-
-          <!-- head (sways, nods) -->
-          <g id="head">
-            <rect x="219" y="292" width="42" height="46" rx="12" fill="#e0c49f"/>
-            <!-- hair back / bob mass -->
-            <path d="M150,206 C148,110 196,84 240,84 C284,84 332,110 330,206 C334,268 326,318 306,338 C296,347 286,344 284,332 L282,262 L198,262 L196,332 C194,344 184,347 174,338 C154,318 146,268 150,206 Z" fill="#10132b"/>
-            <!-- face -->
-            <ellipse cx="240" cy="220" rx="63" ry="73" fill="#eed9b7"/>
-            <!-- cubist shade plane on the right of the face -->
-            <path d="M242,134 L312,172 L304,300 L242,298 Z" fill="#ddbb92" opacity="0.6" clip-path="url(#faceClip)"/>
-            <!-- brows -->
-            <path d="M200,196 q15,-9 32,-4" stroke="#23264a" stroke-width="5" fill="none" stroke-linecap="round"/>
-            <path d="M250,192 q17,-5 31,4" stroke="#23264a" stroke-width="5" fill="none" stroke-linecap="round"/>
-            <!-- eyes (blink = vertical squash) -->
-            <g id="eyeL">
-              <path d="M201,215 q15,-11 32,0 q-15,12 -32,0 Z" fill="#f7f3ea"/>
-              <circle cx="217" cy="215" r="6" fill="#232850"/>
-              <circle cx="219.5" cy="212.5" r="1.8" fill="#f7f3ea"/>
-            </g>
-            <g id="eyeR">
-              <path d="M248,215 q15,-11 32,0 q-15,12 -32,0 Z" fill="#f7f3ea"/>
-              <circle cx="264" cy="215" r="6" fill="#232850"/>
-              <circle cx="266.5" cy="212.5" r="1.8" fill="#f7f3ea"/>
-            </g>
-            <!-- nose -->
-            <path d="M241,230 q7,12 -2,18" stroke="#c9a87e" stroke-width="4" fill="none" stroke-linecap="round"/>
-            <!-- mouth: closed line vs open ellipse, cross-faded by audio level -->
-            <g id="mouth">
-              <path id="mouthClosed" d="M221,269 Q240,278 259,269" stroke="#b76a6d" stroke-width="5" fill="none" stroke-linecap="round"/>
-              <g id="mouthOpenG" opacity="0">
-                <ellipse id="mouthOpen" cx="240" cy="271" rx="15" ry="2" fill="#5b2338"/>
-                <rect id="teeth" x="230" y="264" width="20" height="4.5" rx="2" fill="#f4ece0" opacity="0.9"/>
-              </g>
-            </g>
-            <!-- fringe over the forehead -->
-            <path d="M150,206 C150,108 198,86 240,86 C282,86 330,108 330,206 C330,158 310,128 288,132 C268,136 268,148 240,148 C212,148 212,136 192,132 C170,128 150,158 150,206 Z" fill="#171a38"/>
-          </g>
-
-          <!-- frame ring -->
-          <circle cx="240" cy="240" r="224" fill="none" stroke="#8b93e8" stroke-width="2" opacity="0.35"/>
-        </g>
-      </svg>
-    </div>
+    <div id="avatar" class="avatar">N</div>
     <div class="name">Nora</div>
     <div class="role">PM Agent — LimeLight Marketing</div>
     <div id="status" class="status">Connecting...</div>
@@ -147,7 +75,6 @@
 
     // Separate contexts: playback can be interrupted without killing capture
     let playbackCtx = null;
-    let playbackAnalyser = null; // taps her voice for lip-sync
     let ws = null;
     let isSpeaking = false;
     let scheduledEndTime = 0;
@@ -156,10 +83,6 @@
     function getPlaybackCtx() {
       if (!playbackCtx || playbackCtx.state === 'closed') {
         playbackCtx = new AudioContext({ sampleRate: 24000 });
-        // Analyser sits between her voice and the speakers so the face can follow the audio.
-        playbackAnalyser = playbackCtx.createAnalyser();
-        playbackAnalyser.fftSize = 512;
-        playbackAnalyser.connect(playbackCtx.destination);
       }
       return playbackCtx;
     }
@@ -181,7 +104,7 @@
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
-      source.connect(playbackAnalyser); // through the analyser, then to speakers
+      source.connect(ctx.destination);
 
       const now = ctx.currentTime;
       const startTime = Math.max(now, scheduledEndTime);
@@ -213,88 +136,8 @@
       if (playbackCtx && playbackCtx.state !== 'closed') {
         playbackCtx.close().catch(() => {});
         playbackCtx = null;
-        playbackAnalyser = null;
       }
     }
-
-    // ---- Character animation ----
-    // Everything runs off one rAF loop: audio level drives the mouth and a subtle nod;
-    // blinks and idle sway run whether or not she's connected, so she never looks frozen.
-    const headEl = document.getElementById('head');
-    const torsoEl = document.getElementById('torso');
-    const eyeL = document.getElementById('eyeL');
-    const eyeR = document.getElementById('eyeR');
-    const mouthClosed = document.getElementById('mouthClosed');
-    const mouthOpenG = document.getElementById('mouthOpenG');
-    const mouthOpen = document.getElementById('mouthOpen');
-    const teeth = document.getElementById('teeth');
-
-    const analyserBuf = new Uint8Array(512);
-    let level = 0;          // smoothed 0..1 voice level
-    let blinkAmt = 0;       // 0 open .. 1 closed
-    let nextBlinkAt = performance.now() + 2200;
-    let demoUntil = 0;      // demo mode: synthesized speech envelope for testing
-
-    function currentAudioLevel(now) {
-      if (now < demoUntil) {
-        // synthetic chatter envelope (test hook): syllable flutter under a phrase arc
-        const syll = Math.abs(Math.sin(now * 0.013)) * (0.55 + 0.45 * Math.sin(now * 0.0021));
-        return Math.max(0, Math.min(1, 0.15 + 0.85 * syll));
-      }
-      if (!playbackAnalyser || !isSpeaking) return 0;
-      playbackAnalyser.getByteTimeDomainData(analyserBuf);
-      let sum = 0;
-      for (let i = 0; i < analyserBuf.length; i++) {
-        const v = (analyserBuf[i] - 128) / 128;
-        sum += v * v;
-      }
-      const rms = Math.sqrt(sum / analyserBuf.length);
-      return Math.min(1, rms * 5.5); // speech RMS ~0.05-0.2 → usable 0..1
-    }
-
-    function tick(now) {
-      // fast attack, slower release: mouths snap open and ease shut
-      const target = currentAudioLevel(now);
-      level = target > level ? level + (target - level) * 0.55 : level + (target - level) * 0.18;
-
-      // mouth: crossfade closed line <-> open ellipse
-      const open = level > 0.045;
-      mouthClosed.setAttribute('opacity', open ? '0' : '1');
-      mouthOpenG.setAttribute('opacity', open ? '1' : '0');
-      if (open) {
-        const ry = 2 + level * 15;                    // jaw drop
-        const rx = 15 - level * 3.5;                  // lips narrow as they open
-        mouthOpen.setAttribute('ry', ry.toFixed(2));
-        mouthOpen.setAttribute('rx', rx.toFixed(2));
-        mouthOpen.setAttribute('cy', (271 + level * 4).toFixed(2));
-        teeth.setAttribute('opacity', level > 0.18 ? '0.9' : '0');
-      }
-
-      // blink scheduling
-      if (now >= nextBlinkAt) {
-        blinkAmt = Math.min(1, blinkAmt + 0.34);
-        if (blinkAmt >= 1) nextBlinkAt = now + 2300 + Math.random() * 3800;
-      } else if (blinkAmt > 0) {
-        blinkAmt = Math.max(0, blinkAmt - 0.22);
-      }
-      const eyeScale = 1 - blinkAmt * 0.92;
-      eyeL.setAttribute('transform', `translate(0,${(215 * (1 - eyeScale)).toFixed(2)}) scale(1,${eyeScale.toFixed(3)})`);
-      eyeR.setAttribute('transform', `translate(0,${(215 * (1 - eyeScale)).toFixed(2)}) scale(1,${eyeScale.toFixed(3)})`);
-
-      // idle sway + speech nod (rotation around the neck) and breathing
-      const sway = Math.sin(now * 0.00062) * 1.3;
-      const nod = level * (1.1 * Math.sin(now * 0.02)) + level * 1.6;
-      headEl.setAttribute('transform', `rotate(${(sway + nod * 0.4).toFixed(2)} 240 300) translate(0,${(level * 2.2).toFixed(2)})`);
-      torsoEl.setAttribute('transform', `translate(0,${(Math.sin(now * 0.0011) * 2).toFixed(2)})`);
-    }
-    // Drive with a timer, NOT requestAnimationFrame: headless/virtual-display renderers (like
-    // the meeting bot's browser) can throttle or fully suspend rAF, which would freeze her face
-    // mid-call; interval timers keep firing. 30fps is plenty for this style and all motion is
-    // computed from the clock, so frame pacing doesn't affect the movement itself.
-    setInterval(() => tick(performance.now()), 33);
-
-    // Test hook: run a fake speech envelope for N ms without a live call.
-    window.__noraDemo = function (ms) { demoUntil = performance.now() + (ms || 4000); };
 
     // ---- Microphone Capture ----
     // Uses AudioContext at 24kHz so the browser handles resampling natively (high quality).
@@ -495,7 +338,6 @@
           if (msg.type === 'nora.mute') {
             isMuted = msg.muted;
             console.log(`🔇 Mute ${isMuted ? 'enabled' : 'disabled'}`);
-            document.body.classList.toggle('muted', isMuted);
             if (isMuted) {
               interruptAudio();
               statusEl.textContent = 'Connected — Muted (listening only)';

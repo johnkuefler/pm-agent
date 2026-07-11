@@ -2489,20 +2489,9 @@ app.get('/voice-agent', (req, res) => {
   res.sendFile(path.join(__dirname, 'voice-agent.html'));
 });
 
-// Avatar design options — side-by-side animated candidates for her meeting-video character.
-// Comparison page: same animation rig as the live feed, four visual directions. Pick a winner
-// and it gets wired into voice-agent.html.
-app.get('/avatar-options', (req, res) => {
-  res.sendFile(path.join(__dirname, 'avatar-options.html'));
-});
-
-// Sprite frames for the illustrated (ImageGen-made) avatar: base / mouth-ajar / mouth-open /
-// blink variants of the same portrait, swapped per-frame by the audio rig. Whitelisted names.
-app.get('/avatar-frames/:name', (req, res) => {
-  const ok = new Set(['nora-m0.png', 'nora-m1.png', 'nora-m2.png', 'nora-blink.png']);
-  if (!ok.has(req.params.name)) return res.status(404).end();
-  res.sendFile(path.join(__dirname, 'avatar-frames', req.params.name));
-});
+// (The animated-avatar experiment lived here: /avatar-options + /avatar-frames plus an
+// animated voice-agent character. Reverted at John's call on 2026-07-10; it's all in git
+// history around PRs #113-116 if it's ever wanted again.)
 
 // Nora's profile image, displayed on the voice-agent page (which Recall.ai bots open
 // as their video feed in meetings). 404s gracefully if the file isn't present so the
