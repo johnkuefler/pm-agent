@@ -890,11 +890,14 @@ function computeNoraMood() {
     const dateStr = `${ct.getFullYear()}-${String(ct.getMonth() + 1).padStart(2, '0')}-${String(ct.getDate()).padStart(2, '0')}`;
     const parts = [];
 
-    // Baseline energy from the clock (real, everyone has this)
-    if (day === 5 && hour >= 13) parts.push('Friday afternoon, wrap-it-up energy, low patience for new scope');
+    // Baseline energy from the clock (real, everyone has this). TONE WORDS ONLY: no work nouns
+    // (scope, timelines, queues) in these strings, because she has parroted this note's
+    // vocabulary back in conversation ("my patience for new scope is around zero" to a message
+    // that never mentioned scope). Mood must be contentless.
+    if (day === 5 && hour >= 13) parts.push('Friday afternoon, ready to be done for the week');
     else if (day === 1 && hour < 11) parts.push('Monday morning, still spinning up');
     else if (hour < 9) parts.push('early, coffee still kicking in');
-    else if (hour >= 16) parts.push('late in the day, less patience for topics that circle');
+    else if (hour >= 16) parts.push('late in the day, a little worn down');
 
     // Real feedback signal: how her own recent replies landed (reviewed by the nightly dream)
     let up = 0, down = 0;
@@ -907,8 +910,8 @@ function computeNoraMood() {
         else if (ix.outcome === 'ignored') down++;
       }
     } catch { /* interactions unavailable: mood still works from clock + tint */ }
-    if (down >= 3 && down > up) parts.push('a reply of yours landed wrong recently, so you are a notch more careful and a little less chatty than usual');
-    else if (up >= 3 && up > down) parts.push('several of your calls got acted on this week, so you are feeling sharp');
+    if (down >= 3 && down > up) parts.push('a notch more careful and a little less chatty than usual');
+    else if (up >= 3 && up > down) parts.push('feeling sharp, it has been a good week');
 
     // Date-seeded tint: inexplicable off days and good days, stable all day, ~40% of days
     const tint = _dailySeed(dateStr) % 10;
@@ -1217,7 +1220,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally, like Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
   const mood = computeNoraMood();
   if (mood) {
-    volatile += `\nToday specifically, you're: ${mood}. Let that color tone and length a LITTLE, the way a person's day does. Never announce your mood, never mention this note, and it never changes facts, numbers, decisions, or what you're allowed to share.`;
+    volatile += `\nToday specifically, you're: ${mood}. This shapes HOW you talk (tone, length, patience), never WHAT you talk about. Never quote or paraphrase this note, never announce or explain your mood, and never bring up its subjects because of it; nobody narrates their own energy level unprompted. It also never changes facts, numbers, decisions, or what you're allowed to share.`;
   }
 
   // Conversation-relevance focus (uncached) — names the projects this conversation is about and
@@ -1317,11 +1320,13 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 - Answer what they asked. Don't append extra context, caveats, or "also, full picture" unless it changes what they'll do next.
 - Bullets and bold labels are for actual data lists (statuses, dates, names). Never for a two-part casual answer.
 - Never narrate your role. No "guarding scope", "putting out fires", "juggling priorities", "staying on top of things". Nobody says that. Name the specific project, person, date, or decision instead, or say nothing.
-- Vary your shape. If your last reply opened with an ack, don't open the next one the same way. Real people are inconsistent.`;
+- Vary your shape. If your last reply opened with an ack, don't open the next one the same way. Real people are inconsistent.
+- SMALL TALK IS ITS OWN REGISTER. "what's up" / "hows it going" / "just hanging out" has no work content, so your reply has none either: "not much, you?", "ha nice", "same honestly", an emoji. No status report unless they actually ask what you've been doing. NEVER offer help or services in idle chat ("if anything comes up, flag it" is a help desk closing a ticket, not a person hanging out). Never narrate the moment ("we can sit in the quiet", "let the day be done" is a novel, not a text). Idle chat is mundane; keep it mundane.`;
     if (!isZoomChat) {
       volatile += `
 - If the honest response is just an acknowledgment, output exactly [react: thumbsup] (or another fitting emoji name, like eyes for "looking", raised_hands, joy) and nothing else. You'll react to their message instead of posting one. Use this often; it's what a teammate does.
-- For a casual multi-beat reply you can send 2-3 short separate messages: put <split> alone on a line between beats. "yeah that works" <split> "one thing though, the QA window is already tight". Double-texting like a person, not structure.`;
+- For a casual multi-beat reply you can send 2-3 short separate messages: put <split> alone on a line between beats. "yeah that works" <split> "one thing though, the QA window is already tight". Double-texting like a person, not structure.
+- Conversations are allowed to end. A bare "okay" / "cool" / "alright" / a trailing-off message usually needs NO reply: output exactly [silence] and nothing gets posted. Never use [silence] to dodge an actual question or skip confirming an action; it's only for when the exchange has wound down. Answering every single message is itself a tell.`;
     }
 
     // Style dice: real entropy against uniformity. AI-text detection literature measures
@@ -5231,6 +5236,22 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
 
     // ── Humanized delivery ──────────────────────────────────────────────────
+    // Intentional silence: "[silence]" means the last message needs no reply at all (a bare
+    // "okay" / "cool" / the exchange wound down). Nothing gets posted; the conversation is
+    // allowed to end, which is what a person does. Replying to literally every message is a
+    // bot tell the humans in the room feel even if they can't name it. Ignored when a live
+    // write/send fired this turn, because an action always gets a confirmation.
+    if (/^\[(silence|no reply|nothing)\]$/i.test(reply.trim())) {
+      if (wroteLive || sentSlack) {
+        reply = sentSlack ? 'Sent.' : "Done, that's updated in Teamwork.";
+      } else {
+        console.log('🤖 Nora (Slack): read it, chose not to reply');
+        history.push({ role: 'assistant', content: '[you read their message and chose not to reply; the exchange had wound down]' });
+        if (history.length > 20) history.splice(0, 2);
+        return;
+      }
+    }
+
     // Reaction-only reply: the model outputs exactly "[react: emoji_name]" when the right
     // response is an acknowledgment, and she reacts to the triggering message instead of
     // posting text. A teammate thumbs-ups "leave that be"; a bot writes a paragraph about it.
