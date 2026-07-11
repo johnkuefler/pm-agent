@@ -175,6 +175,8 @@
     .intelligence-stat strong{display:block;font-size:22px}.intelligence-stat span{font-size:11px;color:var(--muted)}
     .intelligence-bench{margin-top:12px;padding:10px 12px;border-radius:8px;background:var(--accent-soft);font-size:12px}
     .intelligence-form{display:grid;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+    .mcp-auth-fields{display:grid;gap:6px;margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2)}
+    .mcp-auth-fields[hidden]{display:none}
     .intelligence-card{padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;line-height:1.5}
     .intelligence-card:last-child{border-bottom:0}.intelligence-meta{font-size:11px;color:var(--dim);margin-top:3px}
     #page-self.active{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}

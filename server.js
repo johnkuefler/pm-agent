@@ -21,6 +21,7 @@ const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./s
 const { createIntelligenceStore } = require('./src/intelligence/store');
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
+const { createMcpManager } = require('./src/mcp/manager');
 const { runBench } = require('./src/intelligence/bench');
 const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
 const app = express();
@@ -2662,7 +2663,7 @@ function applyMute(session, enabled) {
   console.log(`🔇 Mute ${enabled ? 'enabled' : 'disabled'}`);
   if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
     const updatedPrompt = realtimePromptForSession(session);
-    const voiceTools = realtimeTeamworkTools();
+    const voiceTools = realtimeVoiceTools().tools;
     session.openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
@@ -2813,8 +2814,12 @@ app.post('/webhook/chat', async (req, res) => {
     }
     // Her own meeting record, read-only ("didn't we cover this on Tuesday's call?").
     for (const t of MEETING_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
+    const zoomMcp = mcpManager.bindings({ financialApproved: false, allowWrites: true });
+    zoomToolDefs.push(...zoomMcp.claudeTools);
+    Object.assign(zoomExecutors, zoomMcp.executors);
     let zoomTail = zoomVolatile;
     if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is for scheduling via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
+    if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
 
     const zoomReq = {
       model: 'claude-opus-4-8', // Opus 4.8; temperature omitted (Opus 4.8 rejects it)
@@ -3214,29 +3219,9 @@ async function buildSlackThreadHistory(messages, noraUserId) {
   return turns;
 }
 
-// Live MCP connector for Slack replies — lets her hit live data (Teamwork, LimeLight,
-// LimeLight PM) mid-reply via Anthropic's `mcp_servers` parameter (Anthropic connects to the
-// remote MCP server-side, single request, like web_search). Each MCP is configured by env
-// var: <PREFIX>_URL (required) and <PREFIX>_TOKEN (bearer auth, optional). No-op if URL unset,
-// so this is safe to ship before the creds exist — it activates the moment they're on Railway.
-//
-// SECURITY: the LimeLight PM MCP carries financial data (estimates, margins, profitability), so
-// it's only attached for financial-approved recipients — non-approved users never even trigger
-// a financial lookup. Mark any other financial-sensitive MCP the same way.
-//
-// READ-ONLY POSTURE: we only want live LOOKUPS in chat, never writes. We request a read-only
-// allowlist via tool_configuration where the server supports it, and the prompt reinforces it.
-// (Hard per-tool allowlisting can be tightened once we confirm each server's exact tool names.)
-const LIVE_MCP_DEFS = [
-  { prefix: 'TEAMWORK_MCP',      name: 'teamwork',     financial: false },
-  { prefix: 'LIMELIGHT_MCP',     name: 'limelight',    financial: false },
-  { prefix: 'LIMELIGHT_PM_MCP',  name: 'limelight-pm', financial: true  },
-];
-
-// UI-managed MCP connections live in a small store on the volume (gitignored — it holds auth
-// tokens). The dashboard Admin tab CRUDs these; env vars still work as a fallback for the three
-// named ones, so either path is valid. Store entries:
-//   { id, name, url, token, financial, enabled, created }
+// Credential-aware remote MCP connections. Secrets and even credential-bearing URLs are encrypted
+// before persistence. The manager discovers tools once during Test/Connect, then exposes only the
+// cached schemas to Slack and Zoom so live voice startup never waits on a remote server.
 const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
 const MCP_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-mcp.json');
 function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
@@ -3250,34 +3235,12 @@ function saveMcpStore(list) {
   fs.writeFileSync(tmp, JSON.stringify(list, null, 2)); fs.renameSync(tmp, p);
 }
 
-// Assemble the mcp_servers array for a Slack reply: UI-managed store entries first, then any
-// env-configured named MCPs not already covered. Disabled entries are skipped; financial MCPs
-// are withheld from non-approved recipients.
-function liveMcpServers(financialApproved) {
-  const out = [];
-  const seen = new Set();
-  for (const m of loadMcpStore()) {
-    if (!m.enabled || !m.url || !m.name) continue;
-    if (m.financial && !financialApproved) continue;
-    if (seen.has(m.name)) continue;
-    seen.add(m.name);
-    const server = { type: 'url', url: m.url, name: m.name };
-    if (m.token) server.authorization_token = m.token;
-    out.push(server);
-  }
-  for (const def of LIVE_MCP_DEFS) {
-    if (seen.has(def.name)) continue;
-    const url = process.env[`${def.prefix}_URL`];
-    if (!url) continue;
-    if (def.financial && !financialApproved) continue;
-    seen.add(def.name);
-    const server = { type: 'url', url, name: def.name };
-    const token = process.env[`${def.prefix}_TOKEN`];
-    if (token) server.authorization_token = token;
-    out.push(server);
-  }
-  return out;
-}
+const mcpManager = createMcpManager({
+  loadConnections: loadMcpStore,
+  saveConnections: saveMcpStore,
+  encryptionSecret: process.env.MCP_CREDENTIALS_ENCRYPTION_KEY || process.env.NORA_API_KEY || 'nora-local-development-only',
+  resolveDns: process.env.NORA_TEST_MODE !== '1',
+});
 
 // ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
 // Custom client-side tools: the model requests one, we execute it against the Teamwork API
@@ -3693,10 +3656,20 @@ function realtimeTeamworkTools() {
     .map(t => ({ type: 'function', name: t.definition.name, description: t.definition.description, parameters: t.definition.input_schema }));
 }
 
+function realtimeVoiceTools() {
+  const tools = realtimeTeamworkTools();
+  const executors = {};
+  for (const item of TEAMWORK_TOOLS.filter(tool => !TW_WRITE_NAMES.has(tool.definition.name))) executors[item.definition.name] = item.execute;
+  const mcp = mcpManager.bindings({ financialApproved: false, voice: true });
+  tools.push(...mcp.openaiTools);
+  Object.assign(executors, mcp.executors);
+  return { tools, executors, inventory: mcp.inventory };
+}
+
 // Execute a Teamwork READ tool the voice model called, then feed the result back into the realtime
 // session and ask it to continue speaking. Guards: read-only (write calls are refused), result is
 // size-capped. handled is a Set used to dedupe (the same call can surface on more than one event).
-async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled) {
+async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled, executors = {}) {
   if (!callId || (handled && handled.has(callId))) return;
   if (handled) handled.add(callId);
   let output;
@@ -3704,9 +3677,9 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled)
     if (TW_WRITE_NAMES.has(name)) {
       output = { error: 'Writing to Teamwork is not available on a live call. Tell them you will set it up in Slack right after, then move on.' };
     } else {
-      const tool = TEAMWORK_TOOLS.find(t => t.definition.name === name);
       const args = argsStr ? JSON.parse(argsStr) : {};
-      output = tool ? await tool.execute(args) : { error: `unknown tool ${name}` };
+      const execute = executors[name] || TEAMWORK_TOOLS.find(t => t.definition.name === name)?.execute;
+      output = execute ? await execute(args) : { error: `unknown tool ${name}` };
     }
   } catch (e) {
     output = { error: (e.response?.data?.message || e.message || 'tool failed') };
@@ -3834,6 +3807,7 @@ function maybeVolunteerProbe(openaiWs, session, userText) {
     return true;
   } catch (e) { console.warn('volunteer probe failed:', e.message); return false; }
 }
+
 function resumePendingVoiceTurn(openaiWs, session) {
   const pending = session?.pendingVoiceTurn;
   if (!pending) return false;
@@ -4044,8 +4018,7 @@ const SLACK_SEND_TOOL = {
 };
 
 // Run a Claude request that may use client-side tools, executing them and looping until the
-// model produces its final answer. Server-side tools (web_search, MCP) are handled by Anthropic
-// inside each call and don't trigger the loop; only our custom tools do. Capped iterations.
+// model produces its final answer. Web search is server-side; Teamwork and MCP tools execute here.
 async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6) {
   const URL = 'https://api.anthropic.com/v1/messages';
   let response = await axios.post(URL, reqBody, headers);
@@ -4053,7 +4026,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6) {
   const firedTools = []; // client-side tools that actually executed this turn (for downstream dedup)
   while (iters < maxIters) {
     const sr = response.data.stop_reason;
-    // Server-side tools (web_search / MCP) can pause the turn at their internal limit — continue
+    // Server-side web search can pause the turn at its internal limit — continue
     // by re-sending the accumulated assistant content; otherwise the turn can end with no text.
     if (sr === 'pause_turn') {
       iters++;
@@ -4082,7 +4055,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6) {
     if (iters >= maxIters) {
       // Hit the cap mid-chain — force a FINAL text answer with tools off, so she never returns
       // an empty turn (which would post a blank Slack/chat message). Results are already provided.
-      const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice; delete wrap.mcp_servers;
+      const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice;
       try { response = await axios.post(URL, wrap, headers); } catch { /* keep last response */ }
       break;
     }
@@ -4882,8 +4855,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Her own meeting record — read-only, both modes (a grounded proactive comment may cite a call).
     for (const t of MEETING_TOOLS) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
     const teamworkOn = teamworkEnabled();
-    // MCP connectors are read-only; proactive (a channel post) never gets the financial ones.
-    const mcpServers = liveMcpServers(isDirect ? financialApproved : false);
+    // MCP tools use Nora's credential-aware client bridge. This supports OAuth refresh, client
+    // credentials, static bearer tokens, credential URLs, and custom headers uniformly.
+    const mcpBindings = mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect });
+    for (const tool of mcpBindings.claudeTools) toolDefs.push(tool);
+    Object.assign(toolExecutors, mcpBindings.executors);
     const hasWebSearch = toolDefs.some(t => t.name === 'web_search');
     // What each connected MCP actually DOES — so she gets a concrete capability inventory instead of
     // an opaque server codename (a bare "limelight-pm" tells her nothing, which is how she ends up
@@ -4897,7 +4873,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // ONE authoritative per-reply tools note — this IS her real inventory this turn (the cached prompt
     // points her here as the source of truth). Always emit exactly one of the three branches so every
     // reply states plainly what she can and can't do live, and she stops confabulating/flip-flopping.
-    if (toolDefs.length > 1 || mcpServers.length) {
+    if (toolDefs.length > 1) {
       let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
         note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload, or who across the team has room and who is overbooked via teamwork_team_capacity (pass min_free_hours for "who can take a 10h build"); plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment). To act: resolve the project (teamwork_find_projects), then its tasklist/task; assign via teamwork_list_people. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete tasks (that\'s a Teamwork-side action). For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
@@ -4906,9 +4882,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       }
       if (hasWebSearch) note += ' • WEB_SEARCH: for current/external info you don\'t already have.';
       if (isDirect) note += ' • SLACK_SEND_MESSAGE: when someone asks you to send/post a note to another channel or DM a teammate (e.g. "send a heads-up to the PM team"), send it RIGHT NOW with slack_send_message and report what you sent, instead of saying you\'ll queue it for later. Only when clearly asked; confirm the target/wording first if it\'s ambiguous.';
-      if (mcpServers.length) {
-        const caps = mcpServers.map(s => MCP_CAP[s.name] ? `${MCP_CAP[s.name]} (${s.name})` : s.name);
-        note += ` • ${caps.join('; ')}: READ-ONLY; look things up, never modify through them.`;
+      if (mcpBindings.inventory.length) {
+        const names = [...new Set(mcpBindings.inventory.map(item => item.connection))];
+        const caps = names.map(name => MCP_CAP[name] ? `${MCP_CAP[name]} (${name})` : name);
+        note += ` • ${caps.join('; ')}: use the attached MCP tools; writes appear only on explicitly write-enabled connections in direct replies.`;
       }
       note += ' If a capability is NOT in this list, you do not have it this turn, so say you\'ll check and follow up, don\'t claim you pulled it. Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the calls.';
       tail += note;
@@ -4927,30 +4904,24 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // Copy — the tool loop appends turns to reqBody.messages; we must not mutate the shared
       // in-memory history (it would replay raw tool_use/tool_result blocks on the next reply).
       messages: claudeMessages.slice(),
-      ...(toolDefs.length ? { tools: toolDefs } : {}),
-      ...(mcpServers.length ? { mcp_servers: mcpServers } : {})
+      ...(toolDefs.length ? { tools: toolDefs } : {})
     };
-    const betaHeaders = [];
-    if (mcpServers.length) betaHeaders.push('mcp-client-2025-11-20'); // MCP connector beta
     const anthropicHeaders = { headers: {
       'Content-Type': 'application/json',
       'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      ...(betaHeaders.length ? { 'anthropic-beta': betaHeaders.join(',') } : {})
+      'anthropic-version': '2023-06-01'
     } };
     let response;
     let firedTools = [];
     try {
-      // runClaudeToolLoop executes any client-side (Teamwork) tool calls and loops; server-side
-      // tools (web_search, MCP) are handled by Anthropic and don't trigger the loop.
+      // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
       ({ response, firedTools } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
       // never fails over a tool/connector issue. Re-throw genuine non-tool failures.
-      if (toolDefs.length || mcpServers.length) {
+      if (toolDefs.length) {
         console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
-        delete reqBody.mcp_servers;
         // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
         reqBody.messages = claudeMessages.slice();
         response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
@@ -5590,55 +5561,51 @@ app.get('/admin/github-token', requireAuth, (req, res) => {
 });
 
 // ── Live MCP connections (UI-managed) ───────────────────────────────────────
-// CRUD for the live-data MCP servers Nora can hit from Slack replies. Tokens are never sent
-// back to the browser in full (write-only field); GET returns a masked hint only.
-function maskMcp(m) {
-  return {
-    id: m.id, name: m.name, url: m.url,
-    financial: !!m.financial, enabled: m.enabled !== false,
-    token_set: !!m.token, token_hint: m.token ? `…${String(m.token).slice(-4)}` : '',
-    created: m.created || null
-  };
-}
+// CRUD, OAuth, and connection testing for live MCP servers. Secrets and raw endpoints never
+// return to the browser; GET exposes only a redacted URL hint, status, and cached tool catalog.
 app.get('/admin/mcp', requireAuth, (req, res) => {
-  res.json({ connections: loadMcpStore().map(maskMcp) });
+  try { res.json({ connections: mcpManager.list() }); }
+  catch (error) { res.status(500).json({ error: `MCP credential store is unavailable: ${error.message}` }); }
 });
-app.post('/admin/mcp', requireAuth, (req, res) => {
-  const { name, url, token, financial, enabled } = req.body || {};
-  if (!name || !url) return res.status(400).json({ error: 'name and url are required' });
-  const list = loadMcpStore();
-  const entry = {
-    id: `mcp-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
-    name: String(name).trim(), url: String(url).trim(),
-    token: token ? String(token) : '', financial: !!financial,
-    enabled: enabled !== false, created: new Date().toISOString()
-  };
-  list.push(entry);
-  saveMcpStore(list);
-  console.log(`🔌 MCP connection added: ${entry.name} (${entry.financial ? 'financial' : 'non-financial'})`);
-  res.json({ ok: true, connection: maskMcp(entry) });
+app.post('/admin/mcp', requireAuth, async (req, res) => {
+  try {
+    const connection = await mcpManager.create(req.body || {});
+    console.log(`🔌 MCP connection added: ${connection.name} (${connection.auth_type})`);
+    res.json({ ok: true, connection });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
-app.put('/admin/mcp/:id', requireAuth, (req, res) => {
-  const list = loadMcpStore();
-  const m = list.find(x => x.id === req.params.id);
-  if (!m) return res.status(404).json({ error: 'not found' });
-  const { name, url, token, financial, enabled } = req.body || {};
-  if (name !== undefined) m.name = String(name).trim();
-  if (url !== undefined) m.url = String(url).trim();
-  if (token) m.token = String(token);           // only overwrite if a new token was entered
-  if (financial !== undefined) m.financial = !!financial;
-  if (enabled !== undefined) m.enabled = !!enabled;
-  saveMcpStore(list);
-  res.json({ ok: true, connection: maskMcp(m) });
+app.put('/admin/mcp/:id', requireAuth, async (req, res) => {
+  try {
+    const connection = await mcpManager.update(req.params.id, req.body || {});
+    if (!connection) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true, connection });
+  } catch (error) { res.status(400).json({ error: error.message }); }
 });
-app.delete('/admin/mcp/:id', requireAuth, (req, res) => {
-  const list = loadMcpStore();
-  const i = list.findIndex(x => x.id === req.params.id);
-  if (i === -1) return res.status(404).json({ error: 'not found' });
-  const [removed] = list.splice(i, 1);
-  saveMcpStore(list);
+app.delete('/admin/mcp/:id', requireAuth, async (req, res) => {
+  const removed = await mcpManager.remove(req.params.id);
+  if (!removed) return res.status(404).json({ error: 'not found' });
   console.log(`🔌 MCP connection removed: ${removed.name}`);
   res.json({ ok: true });
+});
+app.post('/admin/mcp/:id/test', requireAuth, async (req, res) => {
+  try { res.json({ ok: true, connection: await mcpManager.testConnection(req.params.id) }); }
+  catch (error) { res.status(400).json({ error: error.message, connection: mcpManager.list().find(item => item.id === req.params.id) || null }); }
+});
+app.post('/admin/mcp/:id/oauth/start', requireAuth, async (req, res) => {
+  try {
+    const callbackBase = (process.env.PUBLIC_URL || process.env.RAILWAY_PUBLIC_DOMAIN && `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` || `https://${req.get('host')}`).replace(/\/$/, '');
+    const callbackUrl = `${callbackBase}/admin/mcp/oauth/callback`;
+    res.json({ ok: true, authorize_url: await mcpManager.startOAuth(req.params.id, callbackUrl) });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.get('/admin/mcp/oauth/callback', async (req, res) => {
+  if (req.query.error) return res.redirect(`/?mcp_error=${encodeURIComponent(String(req.query.error_description || req.query.error))}`);
+  if (!req.query.state || !req.query.code) return res.status(400).send('Missing OAuth state or code');
+  try {
+    const id = await mcpManager.finishOAuth({ state: String(req.query.state), code: String(req.query.code) });
+    try { await mcpManager.testConnection(id); } catch {}
+    res.redirect('/?mcp_connected=1');
+  } catch (error) { res.redirect(`/?mcp_error=${encodeURIComponent(error.message)}`); }
 });
 
 // List bots that are currently active (ready, joining, or in a call). Used by the
@@ -6959,8 +6926,10 @@ wss.on('connection', async (ws, req) => {
   const messageQueue = [];
   // Dedupe voice tool calls (the same function_call can surface on more than one OpenAI event).
   const handledToolCalls = new Set();
-  // Teamwork READ tools for the live voice agent (empty if Teamwork isn't configured).
-  const voiceTools = realtimeTeamworkTools();
+  // Read-only live tools for the voice agent. MCP catalogs are cached by connection tests,
+  // so adding their definitions does not add a network round trip to meeting startup.
+  const voiceBundle = realtimeVoiceTools();
+  const voiceTools = voiceBundle.tools;
 
   openaiWs.on('open', () => {
     console.log('🧠 Connected to OpenAI Realtime API');
@@ -7124,7 +7093,7 @@ wss.on('connection', async (ws, req) => {
       // server-side and feed the result back so she answers with real data on the call. Handled on
       // the per-item completion event; the response.done loop below is a deduped fallback.
       if (msg.type === 'response.output_item.done' && msg.item?.type === 'function_call') {
-        handleRealtimeVoiceTool(openaiWs, msg.item.call_id, msg.item.name, msg.item.arguments, handledToolCalls);
+        handleRealtimeVoiceTool(openaiWs, msg.item.call_id, msg.item.name, msg.item.arguments, handledToolCalls, voiceBundle.executors);
       }
 
       // Mark a response in flight so the turn-gate doesn't stack a second one on top.
@@ -7185,7 +7154,7 @@ wss.on('connection', async (ws, req) => {
         }
         for (const item of outputs) {
           if (item.type === 'function_call') {
-            handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls);
+            handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls, voiceBundle.executors);
           }
           if (item.type === 'message' && item.role === 'assistant') {
             // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
@@ -7312,6 +7281,8 @@ async function start(options = {}) {
     // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
     await backfillMemoryIds();
     await intelligence.init();
+    try { await mcpManager.migrate(); }
+    catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
     await new Promise((resolve, reject) => {
       const onError = (err) => { server.off('listening', onListening); reject(err); };
       const onListening = () => { server.off('error', onError); resolve(); };

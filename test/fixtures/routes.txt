@@ -136,6 +136,9 @@ GET /admin/mcp
 POST /admin/mcp
 PUT /admin/mcp/:id
 DELETE /admin/mcp/:id
+POST /admin/mcp/:id/test
+POST /admin/mcp/:id/oauth/start
+GET /admin/mcp/oauth/callback
 GET /admin/active-bots
 GET /admin/scheduled-bots
 POST /admin/scheduled-bots/dedupe

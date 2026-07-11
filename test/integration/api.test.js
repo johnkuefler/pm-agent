@@ -234,6 +234,24 @@ test('public identity and prompt endpoints retain their response contracts', asy
   assert.ok('soma' in self.body);
 });
 
+test('MCP admin supports secure auth modes without returning credentials or full URLs', async () => {
+  const created = await request('/admin/mcp', { method: 'POST', body: {
+    name: 'Secure MCP', url: 'https://mcp.example.com/mcp/embedded-secret-token', auth_type: 'url_token', enabled: true,
+  } });
+  assert.equal(created.response.status, 200);
+  assert.equal(created.body.connection.auth_type, 'url_token');
+  assert.equal(created.body.connection.url, undefined);
+  assert.match(created.body.connection.url_hint, /••••/);
+  const listed = await request('/admin/mcp');
+  assert.equal(listed.body.connections[0].credential_set, true);
+  assert.doesNotMatch(JSON.stringify(listed.body), /embedded-secret-token/);
+  const updated = await request(`/admin/mcp/${created.body.connection.id}`, { method: 'PUT', body: { auth_type: 'custom_headers', headers: { 'X-API-Token': 'top-secret' } } });
+  assert.equal(updated.body.connection.credential_set, true);
+  assert.doesNotMatch(JSON.stringify(updated.body), /top-secret/);
+  assert.equal((await request('/admin/mcp', { method: 'POST', body: { name: 'bad', url: 'http://localhost/mcp' } })).response.status, 400);
+  assert.equal((await request(`/admin/mcp/${created.body.connection.id}`, { method: 'DELETE' })).body.ok, true);
+});
+
 test('dream and transcript CRUD preserves response shapes and local files', async () => {
   const dream = await request('/dreams', { method: 'POST', body: { narrative: 'A useful dream', reflection: { ideas: ['Ship it'] }, review: { learnings_added: ['Ask one crisper follow-up'] } } });
   assert.equal(dream.body.dream.narrative, 'A useful dream');

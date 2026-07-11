@@ -4,8 +4,7 @@ function enhanceFormFields() {
         'dummy-name':'Bot display name','dummy-prompt':'Scenario brief','new-task-action':'Task','new-task-assignee':'Assignee',
         'new-task-due':'Due note','new-task-scheduled':'Schedule','new-task-recurrence':'Recurrence','memory-search':'Search memory',
         'memory-source':'Source','memory-sort':'Sort order','new-fact':'Fact to remember','new-fact-project':'Project',
-        'project-edit-name':'Project name','project-edit-details':'Project details','mcp-name':'Connection name','mcp-url':'Remote MCP URL',
-        'mcp-token':'Authentication token','new-approved-userid':'Slack user ID','new-approved-name':'Display name',
+        'project-edit-name':'Project name','project-edit-details':'Project details','new-approved-userid':'Slack user ID','new-approved-name':'Display name',
         'new-proactive-channel':'Slack channel ID','markers-search':'Search markers','markers-category':'Category',
         'routine-content':'Routine document','charter-content':'Charter document','self-bio':'Autobiography','persona-content':'Persona document'
       };
@@ -48,6 +47,16 @@ function enhanceFormFields() {
       const preferredTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       applyTheme(savedTheme || preferredTheme);
       enhanceFormFields();
+      const oauth = new URLSearchParams(location.search);
+      if (oauth.has('mcp_connected') || oauth.has('mcp_error')) {
+        location.hash = 'admin';
+        setTimeout(() => {
+          const toast = document.getElementById('mcp-toast');
+          toast.className = oauth.has('mcp_error') ? 'toast err' : 'toast ok';
+          toast.textContent = oauth.get('mcp_error') || 'MCP authorization complete. The connection was tested and its tools are ready.';
+          history.replaceState({}, '', '/#admin');
+        }, 0);
+      }
       const initialView = location.hash.slice(1);
       showTab(pageMeta[initialView] ? initialView : 'meeting');
     });

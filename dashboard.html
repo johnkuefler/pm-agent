@@ -299,18 +299,47 @@
           <button class="btn btn-success btn-sm" onclick="loadMcpConnections()">Refresh</button>
         </h2>
         <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
-          Remote MCP servers Nora can hit <strong>live from Slack replies</strong> (Teamwork status, estimates, etc.). Mark a connection <strong>financial</strong> to restrict it to financial-approved users only. Tokens are write-only - shown masked, never sent back to the browser. Read-only is enforced at the prompt level; treat any connection you add as something she can read from in chat.
+          Remote MCP servers Nora can use from <strong>Slack, Zoom chat, and Zoom voice</strong>. Credentials and full URLs are encrypted and never returned to the browser. Connections default to hard read-only filtering; explicitly enable write-capable tools only when you intend to delegate that authority.
         </p>
         <div id="mcp-list">Loading…</div>
         <div style="margin-top:14px; border-top:1px solid var(--surface-2); padding-top:12px;">
           <div id="mcp-form-title" style="font-size:13px; font-weight:600; color:var(--text-2); margin-bottom:8px;">Add a connection</div>
-          <input id="mcp-name" placeholder="Name (e.g. teamwork, limelight-pm)" />
-          <input id="mcp-url" placeholder="Remote MCP URL (https://…)" style="margin-top:6px;" />
-          <input id="mcp-token" type="password" placeholder="Auth token (optional; blank keeps current when editing)" style="margin-top:6px;" />
+          <label for="mcp-name" class="intelligence-meta">Connection name</label>
+          <input id="mcp-name" placeholder="e.g. teamwork or limelight-pm" />
+          <label for="mcp-url" class="intelligence-meta" style="display:block;margin-top:8px;">Remote MCP URL</label>
+          <input id="mcp-url" placeholder="https://example.com/mcp (blank keeps current when editing)" />
+          <label for="mcp-auth-type" class="intelligence-meta" style="display:block;margin-top:8px;">Authentication</label>
+          <select id="mcp-auth-type" onchange="updateMcpAuthFields()">
+            <option value="none">No authentication</option>
+            <option value="bearer">Bearer token</option>
+            <option value="url_token">Credential embedded in URL</option>
+            <option value="oauth">OAuth authorization code</option>
+            <option value="client_credentials">OAuth client credentials</option>
+            <option value="custom_headers">Custom headers</option>
+          </select>
+          <div id="mcp-bearer-fields" class="mcp-auth-fields" hidden>
+            <label for="mcp-token" class="intelligence-meta">Bearer token</label>
+            <input id="mcp-token" type="password" autocomplete="off" placeholder="Blank keeps the current token when editing" />
+          </div>
+          <div id="mcp-oauth-fields" class="mcp-auth-fields" hidden>
+            <label for="mcp-client-id" class="intelligence-meta">Client ID (optional for interactive OAuth)</label>
+            <input id="mcp-client-id" autocomplete="off" placeholder="Pre-registered client ID, if required" />
+            <label for="mcp-client-secret" class="intelligence-meta">Client secret</label>
+            <input id="mcp-client-secret" type="password" autocomplete="off" placeholder="Blank keeps the current secret when editing" />
+            <label for="mcp-scopes" class="intelligence-meta">Scopes</label>
+            <input id="mcp-scopes" placeholder="Optional space-separated scopes" />
+          </div>
+          <div id="mcp-header-fields" class="mcp-auth-fields" hidden>
+            <label for="mcp-headers" class="intelligence-meta">Custom headers (JSON)</label>
+            <textarea id="mcp-headers" rows="3" autocomplete="off" placeholder='{"X-API-Token":"…","X-API-Secret":"…"}'></textarea>
+            <div class="intelligence-meta">Headers are encrypted and never returned to the browser.</div>
+          </div>
+          <div id="mcp-url-token-note" class="intelligence-meta mcp-auth-fields" hidden>The full URL is encrypted and only a redacted hint is shown after saving.</div>
           <div style="display:flex; gap:16px; align-items:center; margin-top:8px; font-size:13px; color:var(--text-2);">
             <label style="display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="mcp-financial" /> Financial (approved users only)</label>
             <label style="display:flex; gap:6px; align-items:center; cursor:pointer;"><input type="checkbox" id="mcp-enabled" checked /> Enabled</label>
           </div>
+          <label style="display:flex; gap:6px; align-items:center; cursor:pointer; margin-top:8px; font-size:13px; color:var(--text-2);"><input type="checkbox" id="mcp-full-access" /> Allow write-capable tools</label>
           <div class="row" style="margin-top:8px;">
             <button id="mcp-save-btn" class="btn btn-primary btn-sm" onclick="saveMcpConnection()">Add</button>
             <button class="btn btn-sm" onclick="resetMcpForm()" style="background:var(--surface-2); color:var(--muted); border:1px solid var(--border);">Cancel</button>

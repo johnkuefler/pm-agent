@@ -12,69 +12,89 @@
       try {
         const r = await api('/admin/mcp');
         const conns = (await r.json()).connections || [];
-        if (!conns.length) { list.innerHTML = '<p class="empty">No live connections yet. Add one below to let Slack replies hit that data.</p>'; return; }
+        if (!conns.length) { list.innerHTML = '<p class="empty">No live connections yet. Add one below, authorize it if needed, then test it to discover tools.</p>'; return; }
         list.innerHTML = conns.map(c => `
           <div class="memory-item">
-            <div style="flex:1; min-width:0;">
-              <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:var(--warn); font-size:12px;">financial</span>' : ''} ${c.enabled ? '' : '<span style="color:var(--muted); font-size:12px;">(disabled)</span>'}</div>
-              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url)} · token ${c.token_set ? escHtml(c.token_hint) : '<span style="color:var(--dim);">none</span>'}</div>
+            <div style="flex:1;min-width:0;">
+              <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:var(--warn);font-size:12px;">financial</span>' : ''} ${c.enabled ? '' : '<span style="color:var(--muted);font-size:12px;">(disabled)</span>'}</div>
+              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url_hint)} &middot; ${escHtml(c.auth_type.replaceAll('_', ' '))} &middot; ${c.access_mode === 'full' ? 'write enabled' : 'read only'}</div>
+              <div class="memory-meta">${escHtml(c.status)}${c.status_message ? `: ${escHtml(c.status_message)}` : ''}${c.last_tested ? ` &middot; tested ${new Date(c.last_tested).toLocaleString()}` : ''}</div>
+              ${c.tools?.length ? `<div class="memory-meta">${c.tools.filter(t => t.allowed).length}/${c.tools.length} tools enabled</div>` : ''}
             </div>
-            <div style="display:flex; gap:6px; flex-shrink:0;">
-              <button class="btn btn-sm" style="background:var(--surface-2);color:#55535f;border:1px solid var(--border);" onclick="toggleMcp('${c.id}', ${!c.enabled})">${c.enabled ? 'Disable' : 'Enable'}</button>
+            <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+              ${c.auth_type === 'oauth' && !c.oauth_connected ? `<button class="btn btn-primary btn-sm" onclick="connectMcpOAuth('${c.id}')">Connect</button>` : ''}
+              <button class="btn btn-sm" onclick="testMcpConnection('${c.id}')">Test</button>
+              <button class="btn btn-sm" style="background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);" onclick="toggleMcp('${c.id}',${!c.enabled})">${c.enabled ? 'Disable' : 'Enable'}</button>
               <button class="btn btn-success btn-sm" onclick='editMcp(${JSON.stringify(c).replace(/'/g, "&#39;")})'>Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteMcp('${c.id}', '${escHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteMcp('${c.id}','${escHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
             </div>
           </div>`).join('');
-      } catch (e) { list.innerHTML = '<p class="empty">Failed to load connections.</p>'; }
+      } catch { list.innerHTML = '<p class="empty">Failed to load connections.</p>'; }
+    }
+    function updateMcpAuthFields() {
+      const type = document.getElementById('mcp-auth-type').value;
+      document.getElementById('mcp-bearer-fields').hidden = type !== 'bearer';
+      document.getElementById('mcp-oauth-fields').hidden = !['oauth', 'client_credentials'].includes(type);
+      document.getElementById('mcp-header-fields').hidden = type !== 'custom_headers';
+      document.getElementById('mcp-url-token-note').hidden = type !== 'url_token';
     }
     async function saveMcpConnection() {
-      const name = document.getElementById('mcp-name').value.trim();
-      const url = document.getElementById('mcp-url').value.trim();
-      const token = document.getElementById('mcp-token').value;
-      const financial = document.getElementById('mcp-financial').checked;
-      const enabled = document.getElementById('mcp-enabled').checked;
+      const value = id => document.getElementById(id).value;
+      const name = value('mcp-name').trim(), url = value('mcp-url').trim(), auth_type = value('mcp-auth-type');
       const t = document.getElementById('mcp-toast');
-      if (!name || !url) { t.className = 'toast err'; t.textContent = 'Name and URL are required'; return; }
-      const body = { name, url, financial, enabled };
-      if (token) body.token = token;
+      if (!name || (!_editingMcpId && !url)) { t.className = 'toast err'; t.textContent = 'Name and URL are required'; return; }
+      const body = { name, auth_type, financial: document.getElementById('mcp-financial').checked,
+        enabled: document.getElementById('mcp-enabled').checked, access_mode: document.getElementById('mcp-full-access').checked ? 'full' : 'read_only' };
+      if (url) body.url = url;
+      if (value('mcp-token')) body.token = value('mcp-token');
+      if (value('mcp-client-id').trim()) body.client_id = value('mcp-client-id').trim();
+      if (value('mcp-client-secret')) body.client_secret = value('mcp-client-secret');
+      if (value('mcp-scopes').trim()) body.scopes = value('mcp-scopes').trim();
+      if (auth_type === 'custom_headers') {
+        try { if (value('mcp-headers').trim()) body.headers = JSON.parse(value('mcp-headers')); }
+        catch { t.className = 'toast err'; t.textContent = 'Custom headers must be valid JSON'; return; }
+      }
       try {
-        const path = _editingMcpId ? '/admin/mcp/' + _editingMcpId : '/admin/mcp';
-        const method = _editingMcpId ? 'PUT' : 'POST';
-        const r = await api(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        if (!r.ok) { const d = await r.json(); t.className = 'toast err'; t.textContent = 'Error: ' + (d.error || 'failed'); return; }
-        t.className = 'toast ok'; t.textContent = _editingMcpId ? 'Connection updated' : 'Connection added';
-        resetMcpForm(); loadMcpConnections();
-        setTimeout(() => t.style.display = 'none', 2000);
-      } catch (e) { t.className = 'toast err'; t.textContent = 'Failed: ' + e.message; }
+        const r = await api(_editingMcpId ? `/admin/mcp/${_editingMcpId}` : '/admin/mcp', { method: _editingMcpId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json(); if (!r.ok) { t.className = 'toast err'; t.textContent = d.error || 'Save failed'; return; }
+        const savedId = d.connection.id; resetMcpForm(); await loadMcpConnections();
+        t.className = 'toast ok'; t.textContent = d.connection.auth_type === 'oauth' ? 'Saved. Click Connect to authorize.' : 'Saved. Testing connection...';
+        if (d.connection.auth_type !== 'oauth') await testMcpConnection(savedId);
+      } catch (e) { t.className = 'toast err'; t.textContent = `Failed: ${e.message}`; }
     }
     function editMcp(c) {
       _editingMcpId = c.id;
       document.getElementById('mcp-name').value = c.name;
-      document.getElementById('mcp-url').value = c.url;
-      document.getElementById('mcp-token').value = '';
+      ['mcp-url','mcp-token','mcp-client-id','mcp-client-secret','mcp-scopes','mcp-headers'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('mcp-auth-type').value = c.auth_type || 'none';
       document.getElementById('mcp-financial').checked = !!c.financial;
       document.getElementById('mcp-enabled').checked = c.enabled !== false;
-      document.getElementById('mcp-form-title').textContent = 'Edit connection (leave token blank to keep current)';
-      document.getElementById('mcp-save-btn').textContent = 'Save';
+      document.getElementById('mcp-full-access').checked = c.access_mode === 'full';
+      document.getElementById('mcp-form-title').textContent = 'Edit connection (blank secrets and URL keep their current values)';
+      document.getElementById('mcp-save-btn').textContent = 'Save'; updateMcpAuthFields();
       document.getElementById('mcp-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
     function resetMcpForm() {
       _editingMcpId = null;
-      ['mcp-name', 'mcp-url', 'mcp-token'].forEach(id => document.getElementById(id).value = '');
-      document.getElementById('mcp-financial').checked = false;
-      document.getElementById('mcp-enabled').checked = true;
-      document.getElementById('mcp-form-title').textContent = 'Add a connection';
-      document.getElementById('mcp-save-btn').textContent = 'Add';
+      ['mcp-name','mcp-url','mcp-token','mcp-client-id','mcp-client-secret','mcp-scopes','mcp-headers'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('mcp-auth-type').value = 'none'; document.getElementById('mcp-financial').checked = false;
+      document.getElementById('mcp-enabled').checked = true; document.getElementById('mcp-full-access').checked = false;
+      document.getElementById('mcp-form-title').textContent = 'Add a connection'; document.getElementById('mcp-save-btn').textContent = 'Add'; updateMcpAuthFields();
     }
-    async function toggleMcp(id, enabled) {
-      await api('/admin/mcp/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
-      loadMcpConnections();
+    async function connectMcpOAuth(id) {
+      const t = document.getElementById('mcp-toast'); t.className = 'toast'; t.textContent = 'Starting secure authorization...';
+      const r = await api(`/admin/mcp/${encodeURIComponent(id)}/oauth/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const d = await r.json(); if (!r.ok) { t.className = 'toast err'; t.textContent = d.error || 'Could not start OAuth'; return; }
+      window.location.assign(d.authorize_url);
     }
-    async function deleteMcp(id, name) {
-      if (!confirm('Delete MCP connection "' + name + '"? Slack replies will no longer be able to hit it.')) return;
-      await api('/admin/mcp/' + id, { method: 'DELETE' });
-      loadMcpConnections();
+    async function testMcpConnection(id) {
+      const t = document.getElementById('mcp-toast'); t.className = 'toast'; t.textContent = 'Testing connection and discovering tools...';
+      const r = await api(`/admin/mcp/${encodeURIComponent(id)}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const d = await r.json(); t.className = r.ok ? 'toast ok' : 'toast err'; t.textContent = r.ok ? d.connection.status_message : (d.error || 'Connection test failed');
+      await loadMcpConnections();
     }
+    async function toggleMcp(id, enabled) { await api(`/admin/mcp/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) }); loadMcpConnections(); }
+    async function deleteMcp(id, name) { if (!confirm(`Delete MCP connection "${name}"?`)) return; await api(`/admin/mcp/${id}`, { method: 'DELETE' }); loadMcpConnections(); }
 
     // Slack - channels the Nora bot is a member of
     async function loadBotChannels() {
