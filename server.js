@@ -2489,6 +2489,13 @@ app.get('/voice-agent', (req, res) => {
   res.sendFile(path.join(__dirname, 'voice-agent.html'));
 });
 
+// Avatar design options — side-by-side animated candidates for her meeting-video character.
+// Comparison page: same animation rig as the live feed, four visual directions. Pick a winner
+// and it gets wired into voice-agent.html.
+app.get('/avatar-options', (req, res) => {
+  res.sendFile(path.join(__dirname, 'avatar-options.html'));
+});
+
 // Nora's profile image, displayed on the voice-agent page (which Recall.ai bots open
 // as their video feed in meetings). 404s gracefully if the file isn't present so the
 // page falls back to the letter-N placeholder via its onerror handler.
