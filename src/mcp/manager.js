@@ -11,6 +11,15 @@ const { auth, UnauthorizedError } = require('@modelcontextprotocol/sdk/client/au
 const AUTH_TYPES = new Set(['none', 'bearer', 'url_token', 'oauth', 'client_credentials', 'custom_headers']);
 const BLOCKED_HEADERS = new Set(['host', 'content-length', 'connection', 'cookie', 'set-cookie', 'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'proxy-authorization']);
 const WRITE_NAME = /(^|[_-])(create|update|delete|remove|write|send|post|put|patch|edit|modify|upload|publish|invite|approve|reject|cancel|complete|reopen|assign)([_-]|$)/i;
+// Tools whose runtime is measured in minutes, not seconds — they get deferred to the background
+// job queue when called in a live turn so the turn doesn't time out. Image/video generation is
+// the canonical case. A per-connection `deferred` flag overrides this heuristic either way.
+const SLOW_NAME = /(generate_image|generate_ad_set|generate_video|edit_image|txt2img|img2img|render_|_render|upscale|animate|diffusion|synthesi[sz]e)/i;
+function toolIsDeferred(connection, tool) {
+  if (connection && connection.deferred === true) return true;   // explicit opt-in: ALL of this connection's tools
+  if (connection && connection.deferred === false) return false; // explicit opt-out
+  return SLOW_NAME.test((tool && tool.name) || '');              // else: per-tool name heuristic (precise)
+}
 
 function clampText(value, max = 500) { return value == null ? '' : String(value).slice(0, max); }
 
@@ -140,6 +149,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     return {
       id: connection.id, name: connection.name, url_hint: urlHint(secrets.url || '', authType), auth_type: authType,
       financial: !!connection.financial, enabled: connection.enabled !== false, access_mode: connection.access_mode || 'read_only',
+      deferred: connection.deferred === undefined ? null : connection.deferred, // null = name-heuristic default
       credential_set: !!(authType === 'url_token' || secrets.token || secrets.client_secret || Object.keys(secrets.headers || {}).length || tokens.access_token),
       oauth_connected: !!tokens.access_token, oauth_expires_at: connection.oauth_expires_at || null,
       status: connection.status || 'untested', status_message: connection.status_message || '',
@@ -182,6 +192,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
       id: `mcp-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`, name, auth_type: authType,
       secrets_encrypted: encryptObject(secrets, key), scopes: clampText(input.scopes, 1000),
       financial: !!input.financial, enabled: input.enabled !== false, access_mode: input.access_mode === 'full' ? 'full' : 'read_only',
+      deferred: input.deferred === undefined ? undefined : !!input.deferred,
       status: authType === 'oauth' ? 'needs_authorization' : 'untested', status_message: '', tools: [],
       created: clock().toISOString(), updated: clock().toISOString(),
     };
@@ -208,6 +219,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     if (input.financial !== undefined) changes.financial = !!input.financial;
     if (input.enabled !== undefined) changes.enabled = !!input.enabled;
     if (input.access_mode !== undefined) changes.access_mode = input.access_mode === 'full' ? 'full' : 'read_only';
+    if (input.deferred !== undefined) changes.deferred = input.deferred === null ? null : !!input.deferred; // null = fall back to name heuristic
     if (authType !== 'oauth' && input.clear_oauth) { delete secrets.oauth_tokens; delete secrets.code_verifier; delete secrets.discovery_state; }
     if (authType === 'bearer' && !secrets.token) throw new Error('bearer token is required');
     if (authType === 'custom_headers' && !Object.keys(secrets.headers || {}).length) throw new Error('at least one custom header is required');
@@ -375,17 +387,20 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     }
   }
 
-  async function callTool(connectionId, toolName, args) {
+  // timeout is the OUTER cap. Live turns use the default (~16s, so a live reply never stalls);
+  // the background job worker passes a generous timeout for deferred tools like ImageGen.
+  async function callTool(connectionId, toolName, args, { timeout = 16000 } = {}) {
     const connection = findRaw(connectionId); if (!connection || connection.enabled === false) throw new Error('MCP connection is unavailable');
     const catalogTool = (connection.tools || []).find(tool => tool.name === toolName);
     if (!catalogTool || !toolIsAllowed(connection, catalogTool)) throw new Error('MCP tool is not allowed for this connection');
     let entry;
-    try { entry = await getClient(connection); return await withTimeout(entry.client.callTool({ name: toolName, arguments: args || {} }, undefined, { timeout: 15000 }), 16000, 'MCP tool call'); }
+    const inner = Math.max(1000, timeout - 1000);
+    try { entry = await getClient(connection); return await withTimeout(entry.client.callTool({ name: toolName, arguments: args || {} }, undefined, { timeout: inner }), timeout, 'MCP tool call'); }
     catch (error) { await invalidateClient(connectionId); throw error; }
   }
 
   function bindings({ financialApproved = false, voice = false, allowWrites = false } = {}) {
-    const claudeTools = [], openaiTools = [], executors = {}, inventory = [];
+    const claudeTools = [], openaiTools = [], executors = {}, inventory = [], meta = {};
     for (const connection of listRaw()) {
       if (connection.enabled === false || connection.status !== 'connected' || (connection.financial && !financialApproved)) continue;
       for (const tool of connection.tools || []) {
@@ -398,10 +413,13 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
         claudeTools.push({ name, description, input_schema: schema });
         openaiTools.push({ type: 'function', name, description, parameters: schema });
         executors[name] = args => callTool(connection.id, tool.name, args);
-        inventory.push({ connection: connection.name, tool: tool.name, name, access_mode: connection.access_mode || 'read_only' });
+        // meta lets a live turn recognize a deferred tool and enqueue it (by connection + real
+        // tool name) instead of running it inline; the background worker runs it via callTool.
+        meta[name] = { connectionId: connection.id, toolName: tool.name, connectionName: connection.name, deferred: toolIsDeferred(connection, tool) };
+        inventory.push({ connection: connection.name, tool: tool.name, name, access_mode: connection.access_mode || 'read_only', deferred: meta[name].deferred });
       }
     }
-    return { claudeTools, openaiTools: voice ? openaiTools : openaiTools, executors, inventory };
+    return { claudeTools, openaiTools, executors, inventory, meta };
   }
 
   return {
@@ -412,4 +430,4 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
   };
 }
 
-module.exports = { AUTH_TYPES, createMcpManager, validateMcpUrl, urlHint, sanitizeHeaders, toolIsAllowed };
+module.exports = { AUTH_TYPES, SLOW_NAME, createMcpManager, validateMcpUrl, urlHint, sanitizeHeaders, toolIsAllowed, toolIsDeferred };

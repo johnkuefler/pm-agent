@@ -157,8 +157,67 @@ async function init() {
       value      jsonb NOT NULL,
       updated_at timestamptz NOT NULL DEFAULT now()
     );
+
+    -- Background job queue: long-running MCP tool calls (e.g. ImageGen, minutes) that were
+    -- deferred out of a live Slack/Zoom/voice turn so it doesn't time out. A worker claims
+    -- queued rows, runs the tool, and delivers the result back to the origin thread.
+    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.jobs (
+      id            text PRIMARY KEY,
+      status        text NOT NULL DEFAULT 'queued',
+      kind          text,
+      connection_id text,
+      tool_name     text,
+      label         text,
+      args          jsonb,
+      origin        jsonb,
+      result        jsonb,
+      error         text,
+      attempts      integer NOT NULL DEFAULT 0,
+      created_at    timestamptz NOT NULL DEFAULT now(),
+      started_at    timestamptz,
+      finished_at   timestamptz
+    );
+    CREATE INDEX IF NOT EXISTS jobs_status_idx ON ${DB_SCHEMA}.jobs (status, created_at);
   `);
   ready = true;
+}
+
+// ── Background job queue ────────────────────────────────────────────────────────
+async function enqueueJob(job) {
+  await q(
+    `INSERT INTO ${DB_SCHEMA}.jobs (id, status, kind, connection_id, tool_name, label, args, origin)
+     VALUES ($1,'queued',$2,$3,$4,$5,$6,$7)`,
+    [job.id, job.kind || null, job.connection_id || null, job.tool_name || null, job.label || null,
+     JSON.stringify(job.args || {}), JSON.stringify(job.origin || {})]
+  );
+  return job.id;
+}
+// Atomic claim: FOR UPDATE SKIP LOCKED so a claim never double-runs even if two workers race.
+async function claimNextQueuedJob() {
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs SET status='running', started_at=now(), attempts=attempts+1
+     WHERE id = (SELECT id FROM ${DB_SCHEMA}.jobs WHERE status='queued' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
+     RETURNING *`
+  );
+  return rows[0] || null;
+}
+async function finishJob(id, { status, result, error }) {
+  await q(
+    `UPDATE ${DB_SCHEMA}.jobs SET status=$2, result=$3, error=$4, finished_at=now() WHERE id=$1`,
+    [id, status, result !== undefined && result !== null ? JSON.stringify(result) : null, error || null]
+  );
+}
+// On boot, any 'running' job was orphaned by a restart mid-run — put it back in the queue.
+async function requeueRunningJobs() {
+  const { rows } = await q(`UPDATE ${DB_SCHEMA}.jobs SET status='queued' WHERE status='running' RETURNING id`);
+  return rows.length;
+}
+async function recentJobs(limit = 25) {
+  const { rows } = await q(
+    `SELECT id, status, kind, connection_id, tool_name, label, origin, error, created_at, started_at, finished_at
+     FROM ${DB_SCHEMA}.jobs ORDER BY created_at DESC LIMIT $1`, [limit]
+  );
+  return rows;
 }
 
 // ── Vector helpers ─────────────────────────────────────────────────────────────
@@ -611,4 +670,5 @@ module.exports = {
   loadAllSlackThreads, replaceAllSlackThreads,
   upsertTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, deleteState,
+  enqueueJob, claimNextQueuedJob, finishJob, requeueRunningJobs, recentJobs,
 };
