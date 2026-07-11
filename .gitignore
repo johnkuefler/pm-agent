@@ -156,3 +156,6 @@ nora-markers.json
 
 # UI-managed MCP connections (holds auth tokens) — runtime only.
 nora-mcp.json
+
+# Local scratch/test scripts (db probes, one-offs) — not part of the app.
+scratchpad/

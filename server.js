@@ -6,8 +6,26 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { WebSocketServer, WebSocket } = require('ws');
+const db = require('./db');
 const app = express();
 const server = http.createServer(app);
+
+// ── Postgres persistence bridge ──────────────────────────────────────────────
+// When DATABASE_URL is set and db.init() succeeds, Postgres is the source of truth:
+// the existing SYNCHRONOUS accessors read from process-local caches (this is a single
+// Railway instance, so a process-local cache stays coherent) and write through to
+// Postgres. When the DB is unavailable, `_dbReady` stays false and every accessor
+// falls back to its original JSON-on-volume behavior — the safety net that keeps the
+// live system running if Postgres ever hiccups.
+let _dbReady = false;
+const _cache = {};   // entity → in-memory copy backing sync reads
+const _writeQ = {};  // entity → promise chain serializing write-throughs (avoids interleaved replaceAll)
+function _writeThrough(entity, fn) {
+  const prev = _writeQ[entity] || Promise.resolve();
+  const next = prev.then(fn).catch((e) => console.error(`❌ db write-through [${entity}]:`, e.message));
+  _writeQ[entity] = next;
+  return next;
+}
 
 // Capture raw body for Slack signature verification
 app.use(express.json({
@@ -49,6 +67,7 @@ function loadPrompt() {
 }
 
 function loadMemory() {
+  if (_dbReady) return _cache.memory || [];
   try {
     return JSON.parse(fs.readFileSync(getMemoryPath(), 'utf8'));
   } catch { return []; }
@@ -56,8 +75,10 @@ function loadMemory() {
 
 // Atomic write: write to a temp file then rename. rename() is atomic on the same
 // filesystem, so a reader can never observe a half-written file (which, under the old
-// direct writeFileSync, could corrupt memory if a read raced a large write).
+// direct writeFileSync, could corrupt memory if a read raced a large write). In DB mode
+// the whole set is upserted transactionally (equally atomic) and the JSON path is skipped.
 function saveMemory(memory) {
+  if (_dbReady) { _cache.memory = memory; return _writeThrough('memory', () => db.replaceAllMemory(memory)); }
   const p = getMemoryPath();
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(memory, null, 2));
@@ -81,13 +102,12 @@ function newMemoryId() {
 // `mutator(memory)` mutates the array in place and may return a value; that value resolves.
 let _memMutationChain = Promise.resolve();
 function mutateMemory(mutator) {
-  const run = _memMutationChain.then(() => {
+  const run = _memMutationChain.then(async () => {
     const memory = loadMemory();
     // Backfill ids defensively so every entry is addressable by id.
-    let changed = false;
-    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); changed = true; } }
+    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); } }
     const result = mutator(memory);
-    saveMemory(memory);
+    await saveMemory(memory); // awaits the Postgres write (or resolves immediately in JSON mode)
     return { result, memory };
   });
   // Keep the chain alive even if a mutation throws, so one failure doesn't wedge the queue.
@@ -143,10 +163,12 @@ function getMarkersPath() {
   return fs.existsSync(VOLUME_DIR) ? MARKERS_PATH_VOLUME : MARKERS_PATH_LOCAL;
 }
 function loadMarkers() {
+  if (_dbReady) return _cache.markers || {};
   try { return JSON.parse(fs.readFileSync(getMarkersPath(), 'utf8')); }
   catch { return {}; }
 }
 function saveMarkersFile(markers) {
+  if (_dbReady) { _cache.markers = markers; return _writeThrough('markers', () => db.replaceAllMarkers(markers)); }
   const p = getMarkersPath();
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(markers, null, 2));
@@ -156,10 +178,10 @@ function saveMarkersFile(markers) {
 // markers is a plain { key: {set_at, ...data} } object; mutator mutates it in place.
 let _markerMutationChain = Promise.resolve();
 function mutateMarkers(mutator) {
-  const run = _markerMutationChain.then(() => {
+  const run = _markerMutationChain.then(async () => {
     const markers = loadMarkers();
     const result = mutator(markers);
-    saveMarkersFile(markers);
+    await saveMarkersFile(markers);
     return { result, markers };
   });
   _markerMutationChain = run.then(() => {}, () => {});
@@ -192,12 +214,14 @@ function getTasksPath() {
 }
 
 function loadTasks() {
+  if (_dbReady) return _cache.tasks || [];
   try {
     return JSON.parse(fs.readFileSync(getTasksPath(), 'utf8'));
   } catch { return []; }
 }
 
 function saveTasks(tasks) {
+  if (_dbReady) { _cache.tasks = tasks; return _writeThrough('tasks', () => db.replaceAllTasks(tasks)); }
   fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
 }
 
@@ -208,12 +232,14 @@ function getProjectsPath() {
 }
 
 function loadProjects() {
+  if (_dbReady) return _cache.projects || [];
   try {
     return JSON.parse(fs.readFileSync(getProjectsPath(), 'utf8'));
   } catch { return []; }
 }
 
 function saveProjects(projects) {
+  if (_dbReady) { _cache.projects = projects; return _writeThrough('projects', () => db.replaceAllProjects(projects)); }
   fs.writeFileSync(getProjectsPath(), JSON.stringify(projects, null, 2));
 }
 
@@ -226,13 +252,16 @@ function getCalendarPath() {
   return CALENDAR_PATH_LOCAL;
 }
 function loadCalendarState() {
+  if (_dbReady) return _cache.calendar || null;
   try { return JSON.parse(fs.readFileSync(getCalendarPath(), 'utf8')); }
   catch { return null; }
 }
 function saveCalendarState(state) {
+  if (_dbReady) { _cache.calendar = state; return _writeThrough('calendar', () => db.setState('calendar', state)); }
   fs.writeFileSync(getCalendarPath(), JSON.stringify(state, null, 2));
 }
 function clearCalendarState() {
+  if (_dbReady) { _cache.calendar = null; return _writeThrough('calendar', () => db.deleteState('calendar')); }
   try { fs.unlinkSync(getCalendarPath()); } catch {}
 }
 
@@ -301,6 +330,7 @@ function loadSlackThreads() {
 }
 
 function saveSlackThreads(threads) {
+  if (_dbReady) { return _writeThrough('slack_threads', () => db.replaceAllSlackThreads(threads)); }
   fs.writeFileSync(getSlackThreadsPath(), JSON.stringify(threads, null, 2));
 }
 
@@ -384,6 +414,7 @@ function loadSlackProactiveChannels() {
 }
 
 function saveSlackProactiveChannels(set) {
+  if (_dbReady) { return _writeThrough('proactive', () => db.setState('slack_proactive_channels', [...set])); }
   fs.writeFileSync(getSlackProactivePath(), JSON.stringify([...set], null, 2));
 }
 
@@ -434,6 +465,7 @@ function loadFinancialApproved() {
 }
 
 function saveFinancialApproved(map) {
+  if (_dbReady) { return _writeThrough('financial', () => db.setState('slack_financial_approved', map)); }
   fs.writeFileSync(getSlackFinancialApprovedPath(), JSON.stringify(map, null, 2));
 }
 
@@ -633,6 +665,85 @@ function isTaskEligibleNow(task, now = new Date()) {
 
 initMemory();
 backfillMemoryIds();
+
+// ── Postgres bootstrap: migrate JSON → PG (once), hydrate caches, flip _dbReady ──
+// Runs before the server accepts requests (see the server.listen wrapper at the bottom),
+// so no request is ever served against a half-hydrated cache. Every step is idempotent:
+// a table is seeded only while still empty, so re-running on every boot never clobbers
+// live DB data. Any failure leaves _dbReady=false and the app keeps using the JSON volume.
+// One-time migration from the JSON volume into Postgres, gated by a single persisted flag
+// (app_state 'migration_v1_done'). Until that flag is set, JSON is the source of truth and this
+// re-seeds Postgres AUTHORITATIVELY from it on every boot — so a prior boot that failed mid-seed
+// (dropping the app to JSON for a session) never orphans the writes made during that fallback
+// session: the next boot folds them back in from JSON before flipping the flag. replaceAll* is
+// idempotent, so re-running is safe. The flag is set only after every entity migrates cleanly.
+async function migrateFromVolumeIfNeeded() {
+  if (await db.getState('migration_v1_done')) return; // already fully migrated; PG is authoritative
+  console.log('🗄️  Migrating JSON volume → Postgres (authoritative seed)…');
+  const mem = loadMemory(); for (const x of mem) if (!x.id) x.id = newMemoryId();
+  await db.replaceAllMemory(mem);
+  await db.replaceAllTasks(loadTasks());
+  await db.replaceAllProjects(loadProjects());
+  await db.replaceAllMarkers(loadMarkers());
+  await db.replaceAllInteractions(loadInteractions());
+  await db.replaceAllDreams(loadDreams());
+  await db.replaceAllMcp(loadMcpStore());
+  await db.replaceAllSlackThreads(loadSlackThreads());
+  const cal = loadCalendarState(); if (cal) await db.setState('calendar', cal);
+  await db.setState('slack_proactive_channels', [...loadSlackProactiveChannels()]);
+  await db.setState('slack_financial_approved', loadFinancialApproved());
+  await db.setState('session_tokens', loadSessionTokens());
+  await db.setState('migration_v1_done', { v: 1 }); // LAST, before _dbReady flips: PG is now authoritative
+  console.log('🗄️  Migration complete — Postgres is now the source of truth');
+}
+let _embedTimer = null;
+function startEmbeddingBackfiller() {
+  if (_embedTimer) return;
+  const tick = async () => {
+    if (!_dbReady) return;
+    try {
+      const need = await db.memoryNeedingEmbedding(16);
+      let filled = 0;
+      for (const row of need) {
+        const vec = await db.embed(row.fact);
+        if (vec) { await db.setMemoryEmbedding(row.id, vec); filled++; }
+      }
+      if (filled) console.log(`🧠 Embedded ${filled} memory rows for semantic recall`);
+    } catch (e) { console.warn('embed backfill:', e.message); }
+  };
+  _embedTimer = setInterval(tick, 20000);
+  setTimeout(tick, 4000); // first pass shortly after boot
+}
+async function initPersistence() {
+  if (!db.dbEnabled()) { console.log('🗄️  DATABASE_URL not set — using JSON files on the volume'); return; }
+  try {
+    await db.init();
+    await migrateFromVolumeIfNeeded();
+
+    // Hydrate every in-memory cache from Postgres (now the source of truth).
+    _cache.memory = await db.loadAllMemory();
+    _cache.tasks = await db.loadAllTasks();
+    _cache.projects = await db.loadAllProjects();
+    _cache.markers = await db.loadAllMarkers();
+    _cache.interactions = await db.loadAllInteractions();
+    _cache.dreams = await db.loadAllDreams();
+    _cache.mcp = await db.loadAllMcp();
+    _cache.calendar = await db.getState('calendar');
+    slackJoinedThreads = await db.loadAllSlackThreads();
+    slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
+    slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
+    const tok = (await db.getState('session_tokens')) || {};
+    for (const k of Object.keys(sessionTokens)) delete sessionTokens[k];
+    Object.assign(sessionTokens, tok);
+
+    _dbReady = true;
+    console.log(`🗄️  Postgres ready — memory:${_cache.memory.length} tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} interactions:${_cache.interactions.length} dreams:${_cache.dreams.length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
+    startEmbeddingBackfiller();
+  } catch (e) {
+    console.error('❌ Postgres init failed — falling back to JSON volume. Error:', e.message);
+    _dbReady = false;
+  }
+}
 
 // The voice-delivery guidance shared by Nora's realtime branch and the dummy test agent.
 // This is the "how you sound on a call" block — the thing that makes the voice agent sound
@@ -2013,6 +2124,7 @@ function loadSessionTokens() {
   catch { return {}; }
 }
 function persistSessionTokens() {
+  if (_dbReady) { return _writeThrough('tokens', () => db.setState('session_tokens', sessionTokens)); }
   try { fs.writeFileSync(getTokensPath(), JSON.stringify(sessionTokens, null, 2)); }
   catch (err) { console.error('Failed to persist session tokens:', err.message); }
 }
@@ -2058,7 +2170,7 @@ function newSession(projectHint = null) {
   // is one click when she's actually needed to speak. Combined with the muted-mode
   // chat-confirm path in /voice-agent/response, she's still useful when muted:
   // present, listening, files tasks when explicitly asked, confirms via chat.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set() };
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -2496,6 +2608,7 @@ app.post('/webhook/transcript', async (req, res) => {
   if (!sessions[bot_id]) sessions[bot_id] = newSession();
   const session = sessions[bot_id];
 
+  session.lastRecallLineAt = Date.now(); // Recall transcript stream is alive; Whisper buffer fallback stands down
   session.buffer.push(`${speaker}: ${text}`);
   if (session.buffer.length > 20) session.buffer.shift();
 
@@ -2503,6 +2616,8 @@ app.post('/webhook/transcript', async (req, res) => {
   // person as a 1:1 (respond freely) without anyone toggling a mode.
   if (speaker && !/^(Nora|Screen share|Participant)$/i.test(speaker)) {
     (session.speakersHeard = session.speakersHeard || new Set()).add(speaker);
+    // A newly-heard speaker can flip the call from solo to group: retune turn-end eagerness live.
+    syncVoiceEagerness(session);
   }
 
   session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
@@ -2818,6 +2933,7 @@ app.post('/one-on-one', requireAuth, (req, res) => {
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].oneOnOne;
   sessions[bot_id].oneOnOne = enabled;
+  syncVoiceEagerness(sessions[bot_id]); // 1:1 runs 'high' eagerness (snappier turn-ends), group 'medium'
   console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
 });
@@ -3088,9 +3204,11 @@ const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
 const MCP_PATH_LOCAL = path.join(__dirname, 'nora-mcp.json');
 function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
 function loadMcpStore() {
+  if (_dbReady) return _cache.mcp || [];
   try { return JSON.parse(fs.readFileSync(getMcpPath(), 'utf8')); } catch { return []; }
 }
 function saveMcpStore(list) {
+  if (_dbReady) { _cache.mcp = list; return _writeThrough('mcp', () => db.replaceAllMcp(list)); }
   const p = getMcpPath(); const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(list, null, 2)); fs.renameSync(tmp, p);
 }
@@ -3569,7 +3687,8 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled)
 // addressed. This is what stops her interrupting people talking to each other (and stops the muted
 // "standing by" chat spam): no trigger, no response. Once she's pulled in (named), a short window
 // keeps her responsive to follow-ups so a back-and-forth flows naturally without re-saying her name.
-const VOICE_ACTIVE_WINDOW_MS = 45000; // once she's pulled in, she stays responsive ~45s for follow-ups
+const VOICE_ACTIVE_WINDOW_MS = 45000; // once she's pulled in (by NAME), she stays responsive ~45s for follow-ups
+const VOICE_SPOKE_GRACE_MS = 15000; // after she speaks, a short grace for an immediate follow-up (not a full re-latch)
 const RESPONSE_STALE_MS = 20000; // if "active" persists past this, a terminal event was dropped; ignore it
 // Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
 // name)? Statements / cross-talk that aren't questions never trip lean-in.
@@ -3578,6 +3697,105 @@ function looksLikeQuestion(t) {
   if (!s) return false;
   if (/\?\s*$/.test(s)) return true;
   return /^(what|who|whom|whose|when|where|why|which|how|is|are|am|was|were|do|does|did|can|could|should|would|will|shall|may|might|have|has|had|any|anyone|anybody|could you|can you|do you|did you|is there|are there)\b/i.test(s);
+}
+
+// ── Eagerness follows the mode ──────────────────────────────────────────────────────────────────
+// In a 1:1 she answers every turn, so how fast semantic VAD calls the turn-end IS her perceived
+// latency: 'high' makes her feel present. In a group the gate discards most turns anyway, and
+// 'high' would just make VAD read people's mid-thought pauses as turn boundaries, so 'medium'
+// stays the group setting. Muted is irrelevant here (she isn't speaking either way).
+function voiceEagernessFor(session) {
+  const solo = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
+  return (session.oneOnOne || solo) ? 'high' : 'medium';
+}
+// Push the current desired eagerness to the live OpenAI session, only when it actually changed
+// (mode toggled, or a second speaker was heard and the call stopped being a solo). Sends the FULL
+// turn_detection object: a partial session.update replaces the whole nested object, so all fields
+// must ride along or they'd be dropped.
+function syncVoiceEagerness(session) {
+  const ws = session && session.openaiWs;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const want = voiceEagernessFor(session);
+  if (session.currentEagerness === want) return;
+  session.currentEagerness = want;
+  try {
+    ws.send(JSON.stringify({ type: 'session.update', session: { type: 'realtime', audio: { input: {
+      turn_detection: { type: 'semantic_vad', eagerness: want, create_response: false, interrupt_response: true }
+    } } } }));
+    console.log(`🎙️ Eagerness → ${want} (${session.oneOnOne ? '1:1 toggle' : want === 'high' ? 'solo call' : 'group call'})`);
+  } catch (e) { console.warn('eagerness sync failed:', e.message); }
+}
+
+// ── Handoff detection ───────────────────────────────────────────────────────────────────────────
+// "Kinsey, what do you think?" is the single most important signal that an utterance is NOT for
+// Nora, even when it's a question (lean-in) or lands inside her follow-up window. When the room
+// hands the floor to a named person, she lets go: no reply, window closes. Known-name list is the
+// static team roster plus whoever Recall has actually heard on this call (catches clients/guests).
+// Deliberately biased toward false positives: mistakes here make her QUIETER, never chattier.
+const TEAM_FIRST_NAMES = ['brandee', 'john', 'andy', 'kyle', 'caitlin', 'kayla', 'kinsey', 'gracie',
+  'mallory', 'elle', 'dianne', 'chelsea', 'lydia', 'aaron', 'santiago', 'santi', 'lacy'];
+const VOCATIVE_FILLERS = new Set(['hey', 'hi', 'ok', 'okay', 'so', 'alright', 'well', 'um', 'uh', 'yeah', 'and', 'but']);
+function addressesSomeoneElse(t, session) {
+  const raw = (t || '').trim();
+  if (!raw || /\bnora\b/i.test(raw)) return false; // if she's named too, it's (also) for her
+  const s = raw.toLowerCase().replace(/[.!?]+\s*$/, '');
+  const names = new Set(TEAM_FIRST_NAMES);
+  if (session && session.speakersHeard) {
+    for (const sp of session.speakersHeard) {
+      const first = String(sp).trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z'-]/g, '');
+      if (first.length > 2 && first !== 'nora') names.add(first);
+    }
+  }
+  const words = s.split(/\s+/);
+  let wi = 0; // skip leading fillers so "hey kinsey can you..." still reads as a leading vocative
+  while (wi < words.length - 1 && VOCATIVE_FILLERS.has(words[wi].replace(/[,:]+$/, ''))) wi++;
+  const first = (words[wi] || '').replace(/[,:]+$/, '');
+  const last = (words[words.length - 1] || '').replace(/[,:]+$/, '');
+  for (const name of names) {
+    // Leading vocative: "kinsey what do you think" / "kinsey, can you pull that up". Requires a
+    // question-ish or second-person continuation so "John said the deadline is Friday" (talking
+    // ABOUT John) doesn't read as a handoff TO John.
+    if (first === name) {
+      const rest = words.slice(wi + 1).join(' ');
+      if (/^(what|who|whom|when|where|why|which|how|you\b|your\b|thoughts|any\b|(?:do|did|are|were|is|can|could|would|will|should|have|has)\s+you\b)/i.test(rest)) return true;
+    }
+    // Trailing vocative on a question: "what do you think kinsey".
+    if (last === name && looksLikeQuestion(raw)) return true;
+    // Comma-set-off vocative: "so, kinsey, where are we on the build".
+    if (new RegExp(`,\\s*${name}[,?!.]?(?:\\s|$)`).test(s)) return true;
+  }
+  return false;
+}
+
+// ── Volunteer lane ──────────────────────────────────────────────────────────────────────────────
+// A real teammate occasionally interjects UNINVITED, but only when holding concrete data: someone
+// states a wrong deadline, or asks the room something she can answer from Teamwork/memory. This is
+// deliberately narrow: a PM-domain cue word must be heard, cooldowns apply, and the model is asked
+// SILENTLY (text-only probe, deleted from history on PASS) whether it has one checkable fact worth
+// saying. Only a non-PASS verdict produces speech. "nora step back" (leanIn off) disables it.
+const VOLUNTEER_COOLDOWN_MS = 5 * 60 * 1000;   // at most one uninvited interjection per 5 minutes
+const VOLUNTEER_PROBE_COOLDOWN_MS = 90 * 1000; // and don't even ask the model more often than this
+const VOLUNTEER_CUE = /\b(deadline|due|overdue|timeline|launch|ship(?:ping|s|ped)?|estimate|scope|budget|hours|capacity|booked|bandwidth|overloaded|milestone|sprint|blocked|blocker|task|teamwork)\b/i;
+function maybeVolunteerProbe(openaiWs, session, userText) {
+  if (session.leanIn === false) return false;
+  if (!VOLUNTEER_CUE.test(userText || '')) return false;
+  const now = Date.now();
+  if (session.lastVolunteerSpokeAt && now - session.lastVolunteerSpokeAt < VOLUNTEER_COOLDOWN_MS) return false;
+  if (session.lastVolunteerProbeAt && now - session.lastVolunteerProbeAt < VOLUNTEER_PROBE_COOLDOWN_MS) return false;
+  session.lastVolunteerProbeAt = now;
+  try {
+    const basePrompt = buildSystemPrompt('realtime', session.transcript);
+    openaiWs.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        output_modalities: ['text'],
+        metadata: { nora_probe: 'volunteer' },
+        instructions: basePrompt + '\n\n[SILENT VOLUNTEER CHECK. Nobody asked you anything. The last thing said was not directed at you, but it touched your territory. Decide whether you are holding ONE concrete, checkable fact that directly bears on what was just said: a real date, deadline, task status, capacity number, or commitment you know from your memory or from earlier in this meeting. If yes, write that flag as one short spoken-style sentence, the way a teammate briefly cuts in. It must be a fact, not an opinion, agreement, or summary. If you are not sure or have nothing concrete, reply with exactly: PASS]'
+      }
+    }));
+    session.voiceResponseActive = true; session.voiceResponseAt = now;
+    return true;
+  } catch (e) { console.warn('volunteer probe failed:', e.message); return false; }
 }
 function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   if (!session) return;
@@ -3590,28 +3808,46 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   // AUTO 1:1 — if only one other person has been heard on the call, treat it like a 1:1 and respond
   // freely (no name needed), without anyone toggling a mode. Group gating only kicks in at 2+ people.
   const soloHuman = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
-  let trigger = false, why = '';
+  let trigger = false, why = '', handoff = false;
   if (session.muted) {
     trigger = addressed; why = 'muted+named';          // muted: only a short text reply when directly named
   } else if (session.oneOnOne || soloHuman) {
     trigger = true; why = session.oneOnOne ? '1:1' : 'solo';  // respond to everything
   } else {
-    const now = Date.now();                             // group: named, in her active window, or (lean-in) a direct question
-    const inWindow = session.voiceActiveUntil && now < session.voiceActiveUntil;
-    const leanInQ = session.leanIn !== false && looksLikeQuestion(userText);
-    trigger = addressed || inWindow || leanInQ;
-    why = addressed ? 'named' : inWindow ? 'in-window' : 'lean-in question';
-    // Open the follow-up window only when she's clearly addressed by name. A lean-in question that she
-    // ends up declining must NOT open the window (else cross-talk would cascade through it); when she
-    // actually answers one, the response.done "spoke" check opens the window instead.
-    if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
+    const now = Date.now();                             // group: named, in-window AND directed, or (lean-in) a direct question
+    const isQ = looksLikeQuestion(userText);
+    handoff = addressesSomeoneElse(userText, session);
+    if (handoff) {
+      // The utterance is aimed at another named person ("Kinsey, what do you think"). She lets go
+      // of the floor: no reply, and her follow-up window closes because the conversation has
+      // visibly moved to someone else. This also stops lean-in answering questions meant for others.
+      session.voiceActiveUntil = 0;
+      why = 'handoff to a named person';
+    } else {
+      const inWindow = session.voiceActiveUntil && now < session.voiceActiveUntil;
+      // In-window is no longer speaker-blind: only utterances actually directed at her (a question,
+      // or second-person "you") pull a reply. Ambient statements between two humans don't trigger
+      // her just because she spoke twenty seconds ago.
+      const directed = isQ || /\b(you|your|yours)\b/i.test(userText || '');
+      const leanInQ = session.leanIn !== false && isQ;
+      trigger = addressed || (inWindow && directed) || leanInQ;
+      why = addressed ? 'named' : (inWindow && directed) ? 'in-window directed' : 'lean-in question';
+      // Open the full follow-up window only when she's clearly addressed by name. A lean-in question
+      // she ends up declining must NOT open it (else cross-talk cascades through it); when she
+      // actually speaks, the response.done "spoke" check grants a short grace instead.
+      if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
+    }
   }
   if (trigger) {
     try { openaiWs.send(JSON.stringify({ type: 'response.create' })); session.voiceResponseActive = true; session.voiceResponseAt = Date.now(); }
     catch (e) { console.warn('voice trigger failed:', e.message); }
     console.log(`🎙️ Voice: responding (${why})`);
+  } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff && maybeVolunteerProbe(openaiWs, session, userText)) {
+    // Not summoned, but a PM-domain cue was heard: silently ask her whether she's holding one
+    // concrete fact worth interjecting. She speaks only if the probe comes back non-PASS.
+    console.log('🎙️ Voice: volunteer probe (cue heard, checking for a concrete fact)');
   } else {
-    console.log('🎙️ Voice: silent (not addressed)');
+    console.log(`🎙️ Voice: silent (${why || 'not addressed'})`);
   }
 }
 
@@ -6262,10 +6498,12 @@ function getInteractionsPath() {
   return fs.existsSync(VOLUME_DIR) ? INTERACTIONS_PATH_VOLUME : INTERACTIONS_PATH_LOCAL;
 }
 function loadInteractions() {
+  if (_dbReady) return _cache.interactions || [];
   try { return JSON.parse(fs.readFileSync(getInteractionsPath(), 'utf8')); }
   catch { return []; }
 }
 function saveInteractions(items) {
+  if (_dbReady) { _cache.interactions = items; _writeThrough('interactions', () => db.replaceAllInteractions(items)); return; }
   try { fs.writeFileSync(getInteractionsPath(), JSON.stringify(items, null, 2)); }
   catch (err) { console.error('Failed to persist interactions:', err.message); }
 }
@@ -6293,7 +6531,7 @@ function logInteraction(entry) {
 // GET /interactions — the dream's worklist. ?reviewed=false for un-assessed ones; ?since=ISO
 // to bound the window; ?limit=N (default 100). Newest first.
 app.get('/interactions', requireAuth, (req, res) => {
-  let items = loadInteractions();
+  let items = loadInteractions().slice(); // copy: in DB mode loadInteractions() returns the live cache ref; sorting it in place would scramble ord and make the next logInteraction trim the newest rows
   if (req.query.reviewed === 'false') items = items.filter(i => !i.reviewed);
   if (req.query.reviewed === 'true') items = items.filter(i => i.reviewed);
   if (req.query.since) items = items.filter(i => (i.created || '') >= req.query.since);
@@ -6333,10 +6571,12 @@ function getDreamsPath() {
   return fs.existsSync(VOLUME_DIR) ? DREAMS_PATH_VOLUME : DREAMS_PATH_LOCAL;
 }
 function loadDreams() {
+  if (_dbReady) return _cache.dreams || [];
   try { return JSON.parse(fs.readFileSync(getDreamsPath(), 'utf8')); }
   catch { return []; }
 }
 function saveDreams(dreams) {
+  if (_dbReady) { _cache.dreams = dreams; _writeThrough('dreams', () => db.replaceAllDreams(dreams)); return; }
   try { fs.writeFileSync(getDreamsPath(), JSON.stringify(dreams, null, 2)); }
   catch (err) { console.error('Failed to persist dreams:', err.message); }
 }
@@ -6345,7 +6585,7 @@ const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond
 // GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
 // dashboard can render without a second round-trip per dream.
 app.get('/dreams', requireAuth, (req, res) => {
-  const dreams = loadDreams();
+  const dreams = loadDreams().slice(); // copy before sorting: in DB mode loadDreams() returns the live cache ref
   dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
   res.json(dreams);
 });
@@ -7053,6 +7293,10 @@ wss.on('connection', async (ws, req) => {
     console.log('🧠 Connected to OpenAI Realtime API');
 
     const isMuted = session?.muted;
+    // No session (or nobody heard yet) starts as a solo call, i.e. 'high'; the transcript webhook
+    // drops it to 'medium' the moment a second human speaker is heard.
+    const initialEagerness = session ? voiceEagernessFor(session) : 'high';
+    if (session) session.currentEagerness = initialEagerness;
 
     // GA Realtime session shape: audio config nested under audio.input/audio.output,
     // modalities renamed to output_modalities, max_response_output_tokens → max_output_tokens.
@@ -7085,10 +7329,12 @@ wss.on('connection', async (ws, req) => {
               // addressed. Prompt-only gating wasn't enough; she interrupted people talking to each
               // other and, when muted, spammed "standing by" every turn. Gating the trigger fixes
               // both, and means she stops reacting to garbled cross-talk transcriptions too.
-              // eagerness back to 'medium' (the gate, not eagerness, now prevents over-talking, and
-              // 'low' had slowed how fast she registered being interrupted). interrupt_response keeps
+              // Eagerness follows the mode (see voiceEagernessFor): 'high' in a 1:1/solo call where
+              // turn-end speed IS her latency, 'medium' in a group where 'high' would read people's
+              // mid-thought pauses as turn boundaries. The gate, not eagerness, prevents over-talking;
+              // 'low' had slowed how fast she registered being interrupted. interrupt_response keeps
               // barge-in (a human speaking cuts her off; the voice page also flushes playback).
-              eagerness: 'medium',
+              eagerness: initialEagerness,
               create_response: false,
               interrupt_response: true
             }
@@ -7170,10 +7416,15 @@ wss.on('connection', async (ws, req) => {
           console.log('🗣️ User (transcribed by Whisper):', userText.slice(0, 200));
           const session = sessions[botId];
           if (session) {
-            // Add to rolling buffer for Nora's conversational context
-            session.buffer.push(`Participant: ${userText}`);
-            if (session.buffer.length > 20) session.buffer.shift();
-            // Transcript entry is handled by /webhook/transcript with actual speaker names
+            // Recall's /webhook/transcript pushes this same utterance into the buffer WITH the real
+            // speaker name. Only add the unnamed Whisper copy as a fallback when Recall's transcript
+            // stream looks dead, so the buffer isn't full of duplicate "Participant:" lines diluting
+            // the named ones (they were halving its effective depth).
+            const recallLive = session.lastRecallLineAt && (Date.now() - session.lastRecallLineAt < 20000);
+            if (!recallLive) {
+              session.buffer.push(`Participant: ${userText}`);
+              if (session.buffer.length > 20) session.buffer.shift();
+            }
             // Decide whether Nora should actually respond to this turn (create_response is off).
             maybeTriggerVoiceResponse(openaiWs, session, userText);
           }
@@ -7196,13 +7447,49 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'response.done' && msg.response) {
         const s = sessions[botId];
         if (s) s.voiceResponseActive = false; // free the gate
+
+        // Volunteer-probe verdict. The probe silently asked her (text-only) whether she holds a
+        // concrete fact worth interjecting. PASS: delete the deliberation from conversation history
+        // and stay quiet. A real flag: speak it via a follow-up audio response. Probe responses skip
+        // all the normal handling below (no window grace, no transcript logging).
+        if (msg.response.metadata && msg.response.metadata.nora_probe === 'volunteer') {
+          const items = msg.response.output || [];
+          const probeText = items.filter(it => it.type === 'message')
+            .map(it => (it.content || []).map(c => c.text || '').join(' ')).join(' ').trim();
+          // Over-long output means she's summarizing, not flagging one fact; treat that as a PASS too.
+          const isPass = !probeText || /^pass\b/i.test(probeText) || probeText.length > 400;
+          if (isPass) {
+            for (const it of items) {
+              if (it.id) { try { openaiWs.send(JSON.stringify({ type: 'conversation.item.delete', item_id: it.id })); } catch {} }
+            }
+            console.log('🎙️ Volunteer: PASS (no concrete fact to add)');
+          } else if (s && !s.muted) {
+            s.lastVolunteerSpokeAt = Date.now();
+            console.log('🎙️ Volunteer: interjecting:', probeText.slice(0, 160));
+            try {
+              openaiWs.send(JSON.stringify({
+                type: 'response.create',
+                response: {
+                  instructions: buildSystemPrompt('realtime', s.transcript) + '\n\n[You just decided this flag is worth briefly interjecting into the meeting: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now in one or two short sentences, casually, like a teammate cutting in with a quick fact. Do not apologize for interrupting and do not add anything beyond the flag itself.]'
+                }
+              }));
+              s.voiceResponseActive = true; s.voiceResponseAt = Date.now();
+            } catch (e) { console.warn('volunteer speak failed:', e.message); }
+          }
+          return; // nothing below applies to a silent probe
+        }
+
         const outputs = msg.response.output || [];
-        // If she actually spoke this turn in a group, extend her active window so the back-and-forth
-        // keeps flowing for a bit without her name. A response that produced nothing does NOT extend
-        // it, so once she's just being triggered into silence the window lapses and she goes quiet.
+        // If she actually spoke this turn in a group, grant a SHORT grace for an immediate follow-up
+        // ("wait, which Friday?"). This deliberately does NOT re-open the full window: before, every
+        // reply refreshed the full 45s and an active exchange near her kept her latched in
+        // indefinitely. Only being re-addressed by NAME re-opens the full window now.
         const spoke = outputs.some(it => it.type === 'message' && it.role === 'assistant' &&
           (it.content || []).some(c => /audio|text/.test(c.type) && (c.transcript || c.text)));
-        if (s && spoke && !s.oneOnOne && !s.muted) s.voiceActiveUntil = Date.now() + VOICE_ACTIVE_WINDOW_MS;
+        if (s && spoke && !s.oneOnOne && !s.muted) {
+          const grace = Date.now() + VOICE_SPOKE_GRACE_MS;
+          if (!s.voiceActiveUntil || s.voiceActiveUntil < grace) s.voiceActiveUntil = grace;
+        }
         for (const item of outputs) {
           if (item.type === 'function_call') {
             handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls);
@@ -7311,7 +7598,12 @@ wss.on('connection', async (ws, req) => {
   });
 });
 
-server.listen(process.env.PORT, () => {
-  console.log(`Nora server running on port ${process.env.PORT}`);
-  backfillTranscriptDates();
+// Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
+// reads a half-hydrated cache. If the DB is unavailable, initPersistence resolves with
+// _dbReady=false and the app serves from the JSON volume exactly as before.
+initPersistence().finally(() => {
+  server.listen(process.env.PORT, () => {
+    console.log(`Nora server running on port ${process.env.PORT}`);
+    backfillTranscriptDates();
+  });
 });
