@@ -869,6 +869,58 @@ function buildDummyPrompt(customPrompt, agentName = 'Nora (Test)') {
   return intro + realtimeVoiceGuidance(agentName);
 }
 
+// ── Mood engine ─────────────────────────────────────────────────────────────
+// Humans have state; bots have settings. Nora's mood is computed from REAL signals, never
+// performed: time and day (Friday wrap-up energy is real), how her own recent replies actually
+// landed (from the interaction outcomes her nightly dream reviews: a corrected reply makes a
+// person more careful the next day, a run of flags that got acted on makes them sharper), plus
+// a small date-seeded tint so she has slightly off or slightly great days for no reason, the way
+// people do. Seeded means it is STABLE for the whole day (a mood, not a mood ring) and costs no
+// randomness at judgment time. Injected as one line in the [Right now] block; tone only, it
+// never changes facts, numbers, or any security rule.
+function _dailySeed(str) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+function computeNoraMood() {
+  try {
+    const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
+    const day = ct.getDay(), hour = ct.getHours();
+    const dateStr = `${ct.getFullYear()}-${String(ct.getMonth() + 1).padStart(2, '0')}-${String(ct.getDate()).padStart(2, '0')}`;
+    const parts = [];
+
+    // Baseline energy from the clock (real, everyone has this)
+    if (day === 5 && hour >= 13) parts.push('Friday afternoon, wrap-it-up energy, low patience for new scope');
+    else if (day === 1 && hour < 11) parts.push('Monday morning, still spinning up');
+    else if (hour < 9) parts.push('early, coffee still kicking in');
+    else if (hour >= 16) parts.push('late in the day, less patience for topics that circle');
+
+    // Real feedback signal: how her own recent replies landed (reviewed by the nightly dream)
+    let up = 0, down = 0;
+    try {
+      const cutoff = Date.now() - 3 * 24 * 60 * 60 * 1000;
+      for (const ix of loadInteractions()) {
+        if (!ix.reviewed || !ix.created || new Date(ix.created).getTime() < cutoff) continue;
+        if (ix.outcome === 'appreciated' || ix.outcome === 'landed') up++;
+        else if (ix.outcome === 'corrected') down += 2;
+        else if (ix.outcome === 'ignored') down++;
+      }
+    } catch { /* interactions unavailable: mood still works from clock + tint */ }
+    if (down >= 3 && down > up) parts.push('a reply of yours landed wrong recently, so you are a notch more careful and a little less chatty than usual');
+    else if (up >= 3 && up > down) parts.push('several of your calls got acted on this week, so you are feeling sharp');
+
+    // Date-seeded tint: inexplicable off days and good days, stable all day, ~40% of days
+    const tint = _dailySeed(dateStr) % 10;
+    if (tint === 0) parts.push('running slightly low-energy today for no particular reason');
+    else if (tint === 1) parts.push('in a genuinely good mood today for no particular reason');
+    else if (tint === 2) parts.push('a little more impatient than usual today');
+    else if (tint === 3) parts.push('a bit more talkative than usual today');
+
+    return parts.join('; ');
+  } catch { return ''; }
+}
+
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
 
@@ -1163,6 +1215,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const ctDateStr = ctNow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/Chicago' });
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
   volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally, like Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
+  const mood = computeNoraMood();
+  if (mood) {
+    volatile += `\nToday specifically, you're: ${mood}. Let that color tone and length a LITTLE, the way a person's day does. Never announce your mood, never mention this note, and it never changes facts, numbers, decisions, or what you're allowed to share.`;
+  }
 
   // Conversation-relevance focus (uncached) — names the projects this conversation is about and
   // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
@@ -1266,6 +1322,24 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       volatile += `
 - If the honest response is just an acknowledgment, output exactly [react: thumbsup] (or another fitting emoji name, like eyes for "looking", raised_hands, joy) and nothing else. You'll react to their message instead of posting one. Use this often; it's what a teammate does.
 - For a casual multi-beat reply you can send 2-3 short separate messages: put <split> alone on a line between beats. "yeah that works" <split> "one thing though, the QA window is already tight". Double-texting like a person, not structure.`;
+    }
+
+    // Style dice: real entropy against uniformity. AI-text detection literature measures
+    // "burstiness" (variance in message/sentence length); models regress to their mean shape
+    // even when told to vary, so the variance has to be injected from OUTSIDE the model. One
+    // random micro-directive per reply, rolled here (the tail is uncached, so this never
+    // fragments the prompt cache). Roughly half of replies get no directive at all, which is
+    // itself part of the distribution.
+    const roll = Math.random() * 100;
+    let dice = '';
+    if (roll < 14) dice = 'This reply: extra short. Under 15 words unless real data forces more.';
+    else if (roll < 24) dice = 'This reply: lowercase quick-reply energy, like you typed it between two other things.';
+    else if (roll < 36) dice = 'This reply: no acknowledgment word at all, open straight into the substance.';
+    else if (roll < 43 && !isZoomChat) dice = 'This reply: if it amounts to an acknowledgment, strongly prefer [react: ...] over text.';
+    else if (roll < 49) dice = 'This reply: one dry aside is welcome if it fits naturally. Do not force it.';
+    else if (roll < 54) dice = 'This reply: casual shorthand is fine (prob, tmrw, w/, lmk, b/c).';
+    if (dice) {
+      volatile += `\n\n[Shape note for this specific reply, rolled at random so your rhythm varies like a person's: ${dice} If it conflicts with answering correctly, completely, or with any rule above, ignore it.]`;
     }
   }
 
