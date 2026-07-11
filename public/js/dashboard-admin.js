@@ -17,7 +17,7 @@
           <div class="memory-item">
             <div style="flex:1;min-width:0;">
               <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:var(--warn);font-size:12px;">financial</span>' : ''} ${c.enabled ? '' : '<span style="color:var(--muted);font-size:12px;">(disabled)</span>'}</div>
-              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url_hint)} &middot; ${escHtml(c.auth_type.replaceAll('_', ' '))} &middot; ${c.access_mode === 'full' ? 'write enabled' : 'read only'}</div>
+              <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url_hint)} &middot; ${escHtml(c.auth_type.replaceAll('_', ' '))} &middot; ${c.access_mode === 'full' ? 'write enabled' : 'read only'}${c.deferred === true ? ' &middot; <span style="color:var(--accent-ink);">background: all tools</span>' : c.deferred === false ? ' &middot; <span style="color:var(--muted);">background: off</span>' : ''}</div>
               <div class="memory-meta">${escHtml(c.status)}${c.status_message ? `: ${escHtml(c.status_message)}` : ''}${c.last_tested ? ` &middot; tested ${new Date(c.last_tested).toLocaleString()}` : ''}</div>
               ${c.tools?.length ? `<div class="memory-meta">${c.tools.filter(t => t.allowed).length}/${c.tools.length} tools enabled</div>` : ''}
             </div>
@@ -43,8 +43,10 @@
       const name = value('mcp-name').trim(), url = value('mcp-url').trim(), auth_type = value('mcp-auth-type');
       const t = document.getElementById('mcp-toast');
       if (!name || (!_editingMcpId && !url)) { t.className = 'toast err'; t.textContent = 'Name and URL are required'; return; }
+      const deferSel = (document.getElementById('mcp-deferred') || {}).value || 'auto';
       const body = { name, auth_type, financial: document.getElementById('mcp-financial').checked,
-        enabled: document.getElementById('mcp-enabled').checked, access_mode: document.getElementById('mcp-full-access').checked ? 'full' : 'read_only' };
+        enabled: document.getElementById('mcp-enabled').checked, access_mode: document.getElementById('mcp-full-access').checked ? 'full' : 'read_only',
+        deferred: deferSel === 'always' ? true : deferSel === 'never' ? false : null };
       if (url) body.url = url;
       if (value('mcp-token')) body.token = value('mcp-token');
       if (value('mcp-client-id').trim()) body.client_id = value('mcp-client-id').trim();
@@ -70,6 +72,7 @@
       document.getElementById('mcp-financial').checked = !!c.financial;
       document.getElementById('mcp-enabled').checked = c.enabled !== false;
       document.getElementById('mcp-full-access').checked = c.access_mode === 'full';
+      document.getElementById('mcp-deferred').value = c.deferred === true ? 'always' : c.deferred === false ? 'never' : 'auto';
       document.getElementById('mcp-form-title').textContent = 'Edit connection (blank secrets and URL keep their current values)';
       document.getElementById('mcp-save-btn').textContent = 'Save'; updateMcpAuthFields();
       document.getElementById('mcp-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -79,6 +82,7 @@
       ['mcp-name','mcp-url','mcp-token','mcp-client-id','mcp-client-secret','mcp-scopes','mcp-headers'].forEach(id => document.getElementById(id).value = '');
       document.getElementById('mcp-auth-type').value = 'none'; document.getElementById('mcp-financial').checked = false;
       document.getElementById('mcp-enabled').checked = true; document.getElementById('mcp-full-access').checked = false;
+      document.getElementById('mcp-deferred').value = 'auto';
       document.getElementById('mcp-form-title').textContent = 'Add a connection'; document.getElementById('mcp-save-btn').textContent = 'Add'; updateMcpAuthFields();
     }
     async function connectMcpOAuth(id) {
