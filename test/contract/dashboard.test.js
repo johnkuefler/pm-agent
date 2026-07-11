@@ -44,6 +44,16 @@ test('dashboard presentation and behavior live in focused external assets', () =
   }
 });
 
+test('dashboard declares a real mobile viewport and responsive control patterns', () => {
+  const css = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
+  assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">/);
+  assert.match(css, /@media\(max-width:600px\)/);
+  assert.match(css, /font-size:16px!important/);
+  assert.match(css, /env\(safe-area-inset-bottom\)/);
+  assert.match(css, /\.memory-item\{flex-direction:column/);
+  assert.match(css, /\.nav\{grid-template-columns:minmax\(0,1fr\)/);
+});
+
 test('memory editor passes stable ids as strings and dashboard assets are deploy-versioned', () => {
   const memoryJs = fs.readFileSync(path.join(root, 'public/js/dashboard-memory.js'), 'utf8');
   assert.doesNotMatch(memoryJs, /saveMemoryEdit\(\$\{idx\}\)/);
