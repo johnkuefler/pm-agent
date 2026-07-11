@@ -696,6 +696,28 @@ async function migrateFromVolumeIfNeeded() {
   await db.setState('migration_v1_done', { v: 1 }); // LAST, before _dbReady flips: PG is now authoritative
   console.log('🗄️  Migration complete — Postgres is now the source of truth');
 }
+
+// Transcripts move to Postgres on their own flag (migration_v1_done was already set in prod
+// before transcripts were migrated, so they need a separate gate to run on the next deploy).
+// Reads the transcript-<bot>.json files off the volume and upserts each into the transcripts
+// table. The JSON files are left in place as a backup; new transcripts write straight to PG.
+async function migrateTranscriptsIfNeeded() {
+  if (await db.getState('migration_transcripts_done')) return;
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  let files = [];
+  try { files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json')); } catch { files = []; }
+  let n = 0;
+  for (const f of files) {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      if (!d.bot_id) continue;
+      await db.upsertTranscript(d.bot_id, d.ended || null, d.transcript || []);
+      n++;
+    } catch (e) { console.warn('transcript migrate skip', f, e.message); }
+  }
+  await db.setState('migration_transcripts_done', { v: 1, count: n });
+  console.log(`🗄️  Migrated ${n} transcripts from JSON → Postgres`);
+}
 let _embedTimer = null;
 function startEmbeddingBackfiller() {
   if (_embedTimer) return;
@@ -719,6 +741,7 @@ async function initPersistence() {
   try {
     await db.init();
     await migrateFromVolumeIfNeeded();
+    await migrateTranscriptsIfNeeded();
 
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
@@ -1102,6 +1125,16 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
   if (convFocus) volatile += convFocus;
 
+  // Semantic recall (uncached): the most relevant memory FACTS by meaning, retrieved via
+  // pgvector in the async caller and passed in. Complements the keyword project-focus above —
+  // it surfaces individually-relevant facts the cached, budget-capped memory block may have
+  // dropped, matched on meaning rather than shared words. Empty when the DB is off / nothing
+  // embedded yet, so this silently no-ops back to the keyword behavior.
+  if (Array.isArray(opts.semanticMemories) && opts.semanticMemories.length > 0) {
+    volatile += `\n\n[Most relevant to what's being discussed right now, pulled from your memory by meaning]\n`
+      + opts.semanticMemories.map(m => `- ${m.fact}${m.project ? ` (${m.project})` : ''}`).join('\n');
+  }
+
   // [Who you're talking to right now] — pre-conversation identity injection from the entry
   // point: /join sender, calendar attendees, or Slack requester lookup. Populated BEFORE
   // anyone speaks, unlike the heard-speakers block below (which only fills in after the
@@ -1174,6 +1207,23 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // halves so the caller can cache only `stable`.
   if (opts.cacheSplit) return { stable: base, volatile };
   return base + volatile;
+}
+
+// Semantic memory recall. Given the current conversation text, retrieve the most
+// semantically-relevant memory facts via pgvector (cosine distance on OpenAI embeddings).
+// Async because it embeds the query, so callers compute it BEFORE buildSystemPrompt and pass
+// the result as opts.semanticMemories — it renders in the uncached tail, never disturbing the
+// cached prompt prefix. Excludes opinions/learnings (those have their own blocks) and any
+// straggler operational markers. Returns [] when the DB is off or no rows are embedded yet, so
+// every caller degrades cleanly to the existing keyword project-focus.
+async function retrieveSemanticMemories(queryText, limit = 8) {
+  if (!_dbReady || !queryText || !queryText.trim()) return [];
+  try {
+    const vec = await db.embed(queryText.slice(0, 2000));
+    if (!vec) return [];
+    const rows = await db.searchMemoryByVector(vec, limit + 5, { excludeSources: ['opinion', 'learning'] });
+    return rows.filter(r => !markerKeyForFact(r.fact)).slice(0, limit);
+  } catch (e) { console.warn('semantic recall failed:', e.message); return []; }
 }
 
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
@@ -2075,8 +2125,7 @@ app.post('/voice-agent/response', async (req, res) => {
     const isMuted = !!session.muted;
     session.transcript.push({ speaker: isMuted ? 'Nora (muted)' : 'Nora', text, timestamp: new Date().toISOString() });
     try {
-      const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
+      saveTranscriptDoc(bot_id, session.transcript, null);
     } catch (err) {
       console.error('Transcript save error:', err.message);
     }
@@ -2657,7 +2706,7 @@ app.post('/webhook/transcript', async (req, res) => {
   // Persist transcript incrementally
   try {
     const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-    fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
+    saveTranscriptDoc(bot_id, session.transcript, null);
   } catch (err) {
     console.error('Transcript save error:', err.message);
   }
@@ -2816,8 +2865,9 @@ app.post('/webhook/chat', async (req, res) => {
     // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
     // requester. Pass the recent chat as conversationText so memory loads what's relevant.
     const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
+    const zoomSemanticMemories = await retrieveSemanticMemories(zoomConv);
     const { stable: zoomStable, volatile: zoomVolatile } =
-      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv });
+      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories });
 
     // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
     // transcription errors, there's a written record everyone can see), so it gets the FULL Teamwork
@@ -2876,7 +2926,7 @@ app.post('/webhook/chat', async (req, res) => {
       session.transcript.push({ speaker: 'Nora (chat)', text: reply, timestamp: new Date().toISOString() });
       try {
         const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-        fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify({ bot_id, ended: null, transcript: session.transcript }, null, 2));
+        saveTranscriptDoc(bot_id, session.transcript, null);
       } catch (err) {
         console.error('Transcript save error:', err.message);
       }
@@ -2993,9 +3043,10 @@ app.post('/webhook/status', async (req, res) => {
           ended: new Date().toISOString(),
           transcript: session.transcript
         };
-        const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-        fs.writeFileSync(path.join(dir, `transcript-${bot_id}.json`), JSON.stringify(transcriptData, null, 2));
-        console.log(`📝 Transcript saved: transcript-${bot_id}.json (${session.transcript.length} utterances)`);
+        // Await the final write so the ended-finalized transcript is durable before the
+        // session is torn down (the response was already sent above; this doesn't delay it).
+        await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended);
+        console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
       } catch (err) {
         console.error('Transcript save error:', err.message);
       }
@@ -4734,8 +4785,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // replies, the turn that named the project ("Lettermens") can sit well above the last few turns.
     // This only feeds project/memory selection (uncached tail), so a wider window is cheap.
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
+    const semanticMemories = await retrieveSemanticMemories(convText);
     const { stable: slackStable, volatile: slackVolatile } =
-      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText });
+      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories });
     let tail = slackVolatile;
     if (mode === 'proactive') {
       tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel, nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact (a real status, a real date, a real name, a real number), not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI, DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited, read and inform only.';
@@ -6391,96 +6443,104 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
   }
 });
 
-// Transcript API — list and retrieve saved meeting transcripts
-app.get('/transcripts', requireAuth, (req, res) => {
+// ── Transcript persistence: Postgres when _dbReady, else JSON file on the volume ──
+// The old per-utterance full-file rewrite (worst fit for flat files) becomes a serialized
+// upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
+async function saveTranscriptDoc(botId, transcript, ended) {
+  if (_dbReady) return _writeThrough('transcript:' + botId, () => db.upsertTranscript(botId, ended || null, transcript || []));
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
+  catch (e) { console.warn('transcript write failed:', e.message); }
+}
+async function getTranscriptDoc(botId) {
+  if (_dbReady) {
+    const r = await db.getTranscript(botId);
+    return r ? { bot_id: r.bot_id, ended: r.ended, transcript: r.transcript || [] } : null;
+  }
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const fp = path.join(dir, `transcript-${botId}.json`);
+  if (!fs.existsSync(fp)) return null;
+  try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
+}
+async function listTranscriptDocs() {
+  if (_dbReady) {
+    const rows = await db.listTranscripts();
+    return rows.map(r => ({ bot_id: r.bot_id, ended: r.ended, url: `/transcripts/${r.bot_id}`, utterance_count: r.utterance_count }));
+  }
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  let files = [];
+  try { files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json')); } catch { return []; }
+  return files.map(f => {
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      let ended = d.ended;
+      if (!ended && d.transcript && d.transcript.length > 0) ended = d.transcript[d.transcript.length - 1].timestamp || null;
+      return { bot_id: d.bot_id, ended, file: f, url: `/transcripts/${d.bot_id}`, utterance_count: d.transcript ? d.transcript.length : 0 };
+    } catch { return null; }
+  }).filter(Boolean);
+}
+async function deleteTranscriptDoc(botId) {
+  if (_dbReady) return db.deleteTranscript(botId);
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const fp = path.join(dir, `transcript-${botId}.json`);
+  try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
+}
+
+// Transcript API — list and retrieve saved meeting transcripts
+app.get('/transcripts', requireAuth, async (req, res) => {
   try {
-    const files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json'));
-    const list = files.map(f => {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-        // Derive ended from last utterance if null (orphaned sessions)
-        let ended = data.ended;
-        if (!ended && data.transcript && data.transcript.length > 0) {
-          ended = data.transcript[data.transcript.length - 1].timestamp || null;
-        }
-        return {
-          bot_id: data.bot_id,
-          ended,
-          file: f,
-          url: `/transcripts/${data.bot_id}`,
-          utterance_count: data.transcript ? data.transcript.length : 0
-        };
-      } catch { return null; }
-    }).filter(Boolean);
-    // Sort newest first — null (in-progress) sorts to top
+    const list = await listTranscriptDocs();
     list.sort((a, b) => (b.ended ? new Date(b.ended).getTime() : Infinity) - (a.ended ? new Date(a.ended).getTime() : Infinity));
     res.json(list);
-  } catch {
-    res.json([]);
-  }
+  } catch { res.json([]); }
 });
 
-app.get('/transcripts/:botId', requireAuth, (req, res) => {
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+app.get('/transcripts/:botId', requireAuth, async (req, res) => {
   try {
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const data = await getTranscriptDoc(req.params.botId);
+    if (!data) return res.status(404).json({ error: 'transcript not found' });
     res.json(data);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/transcripts/:botId', requireAuth, (req, res) => {
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+app.delete('/transcripts/:botId', requireAuth, async (req, res) => {
   try {
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
-    fs.unlinkSync(filePath);
+    const data = await getTranscriptDoc(req.params.botId);
+    if (!data) return res.status(404).json({ error: 'transcript not found' });
+    await deleteTranscriptDoc(req.params.botId);
     console.log('🗑️ Transcript deleted:', req.params.botId);
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.put('/transcripts/:botId/utterances/:index', requireAuth, (req, res) => {
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+app.put('/transcripts/:botId/utterances/:index', requireAuth, async (req, res) => {
   try {
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const data = await getTranscriptDoc(req.params.botId);
+    if (!data) return res.status(404).json({ error: 'transcript not found' });
     const idx = parseInt(req.params.index);
     if (idx < 0 || idx >= data.transcript.length) return res.status(404).json({ error: 'utterance index out of range' });
     const { speaker, text } = req.body;
     if (speaker !== undefined) data.transcript[idx].speaker = speaker;
     if (text !== undefined) data.transcript[idx].text = text;
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    await saveTranscriptDoc(req.params.botId, data.transcript, data.ended);
     console.log('✏️ Transcript utterance updated:', req.params.botId, 'index', idx);
     res.json({ ok: true, utterance: data.transcript[idx] });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.delete('/transcripts/:botId/utterances/:index', requireAuth, (req, res) => {
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-  const filePath = path.join(dir, `transcript-${req.params.botId}.json`);
+app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res) => {
   try {
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'transcript not found' });
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const data = await getTranscriptDoc(req.params.botId);
+    if (!data) return res.status(404).json({ error: 'transcript not found' });
     const idx = parseInt(req.params.index);
     if (idx < 0 || idx >= data.transcript.length) return res.status(404).json({ error: 'utterance index out of range' });
     const removed = data.transcript.splice(idx, 1);
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    await saveTranscriptDoc(req.params.botId, data.transcript, data.ended);
     console.log('🗑️ Transcript utterance deleted:', req.params.botId, 'index', idx, removed[0].text.slice(0, 50));
     res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
 
 // ============================================================
 // Interactions — Nora's outbound contributions, for the dream's Review movement
@@ -6725,7 +6785,7 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     session.transcript.push({ speaker: 'Screen share', text: description, timestamp: new Date().toISOString() });
     try {
       const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: null, transcript: session.transcript }, null, 2));
+      saveTranscriptDoc(botId, session.transcript, null);
     } catch (err) {
       console.error('Transcript save error (screen-share desc):', err.message);
     }
@@ -7041,8 +7101,10 @@ If there is NO gap, return: { "needed": false }`,
 // Note: silenceBot() and speakInMeeting() removed — output_media handles audio directly
 // via the voice agent webpage and OpenAI Realtime API
 
-// Backfill transcript files that have ended: null using last utterance timestamp
+// Backfill transcript files that have ended: null using last utterance timestamp.
+// Legacy JSON-volume fixup only — in DB mode transcripts live in Postgres, so this no-ops.
 function backfillTranscriptDates() {
+  if (_dbReady) return;
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
   try {
     const files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json'));

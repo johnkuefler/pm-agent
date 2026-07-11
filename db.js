@@ -165,17 +165,23 @@ function toVectorLiteral(arr) {
 async function embed(text) {
   const key = process.env.OPENAI_API_KEY;
   if (!key || !text) return null;
+  // Hard timeout: embed() sits in the Slack/Zoom reply path, so a slow/hung embeddings
+  // endpoint must lose fast (recall degrades to []) rather than stall the reply.
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 2500);
   try {
     const res = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
       headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: EMBED_MODEL, input: String(text).slice(0, 8000) }),
+      signal: ctl.signal,
     });
     if (!res.ok) { console.warn('embed http', res.status); return null; }
     const j = await res.json();
     const v = j && j.data && j.data[0] && j.data[0].embedding;
     return Array.isArray(v) && v.length === EMBED_DIM ? v : null;
   } catch (e) { console.warn('embed error:', e.message); return null; }
+  finally { clearTimeout(timer); }
 }
 
 // ── memory ─────────────────────────────────────────────────────────────────────
