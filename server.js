@@ -2137,6 +2137,15 @@ app.get('/prompt', (req, res) => {
   res.type('text/plain').send(loadPrompt());
 });
 
+// GET /cowork-prompt — the stable hourly HARNESS (auth setup, run lock, CRITICAL RULES, and the
+// instruction to fetch + run GET /routine). The Cowork task is a tiny bootstrap that fetches this
+// and executes it, so the harness can be updated via a code deploy without touching Cowork.
+// Authenticated because it contains Nora's API key (unlike /prompt and /routine, which don't).
+app.get('/cowork-prompt', requireAuth, (req, res) => {
+  try { res.type('text/markdown').send(fs.readFileSync(path.join(__dirname, 'cowork-prompt.md'), 'utf8')); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // ── Nora's editable hourly routine ────────────────────────────────────────────
 // The actual hourly steps (Steps 0-9) live here, in her platform, so she/John can edit them
 // without a code deploy or a Cowork-config change. The stable harness (cowork-prompt.md) fetches
