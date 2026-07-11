@@ -12,14 +12,14 @@ function registerDreamRoutes(app, deps) {
     dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
     res.json(dreams);
   });
-  
+
   // GET /dreams/:id — a single dream's full detail.
   app.get('/dreams/:id', requireAuth, (req, res) => {
     const dream = loadDreams().find(d => d.id === req.params.id);
     if (!dream) return res.status(404).json({ error: 'dream not found' });
     res.json(dream);
   });
-  
+
   // POST /dreams — record a completed dream. The cowork loop calls this at the end of its
   // Dreaming Round with the consolidation stats, reflection results, and a first-person
   // narrative ("what I dreamed about"). Server stamps id + finished if absent.
@@ -51,7 +51,7 @@ function registerDreamRoutes(app, deps) {
     console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before ?? '?'}→${dream.consolidation.memories_after ?? '?'} memories, +${(dream.reflection.takes_added || []).length} takes, +${(dream.review.learnings_added || []).length} learnings`);
     res.json({ ok: true, dream });
   });
-  
+
   // DELETE /dreams/:id — admin cleanup of a single dream entry.
   app.delete('/dreams/:id', requireAuth, (req, res) => {
     const dreams = loadDreams();

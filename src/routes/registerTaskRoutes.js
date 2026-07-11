@@ -19,7 +19,7 @@ function registerTaskRoutes(app, deps) {
     }
     res.json(result);
   });
-  
+
   app.post('/tasks', requireAuth, (req, res) => {
     const { action, detail, assignee, due, scheduled_for, recurrence } = req.body;
     if (!action) return res.status(400).json({ error: 'action is required' });
@@ -41,7 +41,7 @@ function registerTaskRoutes(app, deps) {
     });
     res.json({ ok: true, id, scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
   });
-  
+
   app.patch('/tasks/:id/complete', requireAuth, (req, res) => {
     const tasks = loadTasks();
     const task = tasks.find(t => t.id === req.params.id);
@@ -70,7 +70,7 @@ function registerTaskRoutes(app, deps) {
     console.log('✅ Task completed:', task.id, task.action);
     res.json({ ok: true, task });
   });
-  
+
   app.delete('/tasks/:id', requireAuth, (req, res) => {
     const tasks = loadTasks();
     const idx = tasks.findIndex(t => t.id === req.params.id);
@@ -80,7 +80,7 @@ function registerTaskRoutes(app, deps) {
     console.log('🗑️ Task deleted:', removed[0].id);
     res.json({ ok: true });
   });
-  
+
   app.put('/tasks/:id', requireAuth, (req, res) => {
     const tasks = loadTasks();
     const task = tasks.find(t => t.id === req.params.id);

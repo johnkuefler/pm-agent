@@ -5,7 +5,7 @@ function registerMemoryRoutes(app, deps) {
 
   // Memory API — view and edit Nora's memory
   app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
-  
+
   // Vectorization status: how many memories are embedded, and with which model.
   app.get('/memory/embedding-stats', requireAuth, async (req, res) => {
     if (!isDbReady()) return res.json({ db: false, total: loadMemory().length, embedded: 0, model: null });
@@ -14,7 +14,7 @@ function registerMemoryRoutes(app, deps) {
       res.json({ db: true, total: s.total, embedded: s.embedded, model: db.EMBED_MODEL });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
-  
+
   // Force a re-vectorize: clear embeddings so the backfiller recomputes them (~16 rows / 20s).
   // Optional body { source, project } to scope it. No-op-safe when the DB is off.
   app.post('/memory/reembed', requireAuth, async (req, res) => {
@@ -26,7 +26,7 @@ function registerMemoryRoutes(app, deps) {
       res.json({ ok: true, queued, note: 'cleared; the backfiller re-embeds ~16 rows every 20s' });
     } catch (e) { res.status(500).json({ error: e.message }); }
   });
-  
+
   app.post('/memory', requireAuth, async (req, res) => {
     const { fact, source, project } = req.body;
     if (!fact) return res.status(400).json({ error: 'fact is required' });
@@ -39,7 +39,7 @@ function registerMemoryRoutes(app, deps) {
     console.log('🧠 Memory added:', fact);
     res.json({ ok: true, id: entry.id, memory });
   });
-  
+
   // PREFERRED delete path: by stable id, immune to array-shift. The cowork loop (esp. the
   // dream's batch pruning) MUST use this, not the index endpoint below.
   app.delete('/memory/by-id/:id', requireAuth, async (req, res) => {
@@ -52,7 +52,7 @@ function registerMemoryRoutes(app, deps) {
     console.log('🧠 Memory removed (by id):', result.fact);
     res.json({ ok: true, removed: result, memory });
   });
-  
+
   // Atomic bulk delete by id — the dream prunes a whole set in ONE serialized operation
   // against current state, so there's no multi-call window for the array to shift underneath.
   // Body: { ids: ["m-...", ...] }. Returns the entries actually removed.
@@ -69,7 +69,7 @@ function registerMemoryRoutes(app, deps) {
     console.log(`🧠 Memory bulk-deleted ${result.length}/${ids.length} by id`);
     res.json({ ok: true, removed_count: result.length, removed: result });
   });
-  
+
   // LEGACY index delete — kept for back-compat but UNSAFE under concurrency (the index may
   // not point at what the caller thinks once the array shifts). Now serialized through the
   // mutation lock at least, but callers should migrate to /memory/by-id/:id.
@@ -83,7 +83,7 @@ function registerMemoryRoutes(app, deps) {
     console.log('🧠 Memory removed (by index — legacy):', result.fact);
     res.json({ ok: true, memory });
   });
-  
+
   // Update by id (preferred) — falls back to index if the param isn't an id.
   app.put('/memory/:idOrIndex', requireAuth, async (req, res) => {
     const { fact, project } = req.body;
@@ -105,7 +105,7 @@ function registerMemoryRoutes(app, deps) {
     console.log('🧠 Memory updated:', fact);
     res.json({ ok: true, memory: result });
   });
-  
+
   app.delete('/memory', requireAuth, async (req, res) => {
     await mutateMemory(m => { m.length = 0; });
     console.log('🧠 Memory cleared');

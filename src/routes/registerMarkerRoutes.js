@@ -14,14 +14,14 @@ function registerMarkerRoutes(app, deps) {
     }
     res.json({ count: Object.keys(markers).length, markers });
   });
-  
+
   // GET /markers/:key — the idempotency check. 200 with { exists, marker }.
   app.get('/markers/:key', requireAuth, (req, res) => {
     const markers = loadMarkers();
     const marker = markers[req.params.key];
     res.json({ exists: !!marker, key: req.params.key, marker: marker || null });
   });
-  
+
   // POST /markers — set/upsert a marker. Body: { key, data? }. Idempotent.
   app.post('/markers', requireAuth, async (req, res) => {
     const { key, data } = req.body || {};
@@ -30,7 +30,7 @@ function registerMarkerRoutes(app, deps) {
     await mutateMarkers(m => { m[key] = { set_at: m[key]?.set_at || now, updated_at: now, ...(data && typeof data === 'object' ? data : (data !== undefined ? { value: data } : {})) }; });
     res.json({ ok: true, key });
   });
-  
+
   // POST /markers/bulk — set many at once. Body: { markers: { key: data, ... } }.
   app.post('/markers/bulk', requireAuth, async (req, res) => {
     const incoming = (req.body && req.body.markers) || {};
@@ -45,13 +45,13 @@ function registerMarkerRoutes(app, deps) {
     });
     res.json({ ok: true, count: keys.length });
   });
-  
+
   // DELETE /markers/:key — remove a marker.
   app.delete('/markers/:key', requireAuth, async (req, res) => {
     const { result } = await mutateMarkers(m => { const existed = !!m[req.params.key]; delete m[req.params.key]; return existed; });
     res.json({ ok: true, existed: result });
   });
-  
+
   // POST /markers/migrate — one-time cleanup: scan /memory for marker-shaped entries, move
   // them into /markers (keyed canonically), and remove them from /memory. ?dry_run=true to
   // preview without changing anything. Idempotent — re-running finds nothing new. This is what
@@ -68,11 +68,11 @@ function registerMarkerRoutes(app, deps) {
     }
     const byCategory = {};
     for (const t of toMove) { const cat = t.key.split(':')[0]; byCategory[cat] = (byCategory[cat] || 0) + 1; }
-  
+
     if (dryRun) {
       return res.json({ dry_run: true, would_move: toMove.length, by_category: byCategory, sample: toMove.slice(0, 10).map(t => ({ key: t.key, fact: t.fact.slice(0, 80) })) });
     }
-  
+
     // Write markers first (so even if the delete half is interrupted, no idempotency is lost).
     await mutateMarkers(markers => {
       for (const t of toMove) {

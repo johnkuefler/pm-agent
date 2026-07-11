@@ -14,17 +14,17 @@ function registerUiRoutes(app, { requireDashboardAuth, rootDir }) {
       res.status(500).send('dashboard unavailable');
     }
   }
-  
+
   // Dashboard UI pages — all gated by Basic auth (DASHBOARD_PASSWORD)
   app.get('/', requireDashboardAuth, (req, res) => {
     serveDashboardWithKey(path.join(rootDir, 'dashboard.html'), req, res);
   });
-  
+
   // Claude instructions page — serves prompt + API docs for scheduled Claude Code sessions
   app.get('/instructions', requireDashboardAuth, (req, res) => {
     res.sendFile(path.join(rootDir, 'instructions.html'));
   });
-  
+
   app.get('/architecture', requireDashboardAuth, (req, res) => {
     res.sendFile(path.join(rootDir, 'architecture.html'));
   });

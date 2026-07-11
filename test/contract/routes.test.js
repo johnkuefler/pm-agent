@@ -21,4 +21,3 @@ test('the complete HTTP route surface remains registered in the same order', () 
   assert.equal(expected.length, 122, 'route fixture should cover the complete known API surface');
   assert.deepEqual(actual, expected);
 });
-

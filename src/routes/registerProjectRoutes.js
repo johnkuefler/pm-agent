@@ -7,7 +7,7 @@ function registerProjectRoutes(app, deps) {
 
   // Projects API — manage project knowledge bases
   app.get('/projects', requireAuth, (req, res) => res.json(loadProjects()));
-  
+
   // Compute the coverage row for a single project — shared by /projects/:name/coverage
   // and the bulk /projects/coverage endpoint that drives idle-time research.
   function computeProjectCoverage(project, allMemories) {
@@ -49,7 +49,7 @@ function registerProjectRoutes(app, deps) {
       thinness_score: Math.round(thinness)
     };
   }
-  
+
   // Bulk coverage view — drives the cowork idle-time research loop.
   // Sorted "most in need first": never-researched bubbles up, then thinness, then oldest research.
   // By default skips archived/wrapped/completed projects, "Opportunity - " sales pipeline projects,
@@ -61,13 +61,13 @@ function registerProjectRoutes(app, deps) {
     const includeOpportunities = req.query.include_opportunities === 'true';
     const includeInternal = req.query.include_internal === 'true';
     const cooldownDays = parseInt(req.query.cooldown_days || '1', 10);
-  
+
     const projects = loadProjects();
     const memory = loadMemory();
     const cooldownMs = cooldownDays * 86400000;
-  
+
     let rows = projects.map(p => computeProjectCoverage(p, memory));
-  
+
     if (!includeArchived) {
       rows = rows.filter(r => {
         const s = (r.status || '').toLowerCase();
@@ -90,14 +90,14 @@ function registerProjectRoutes(app, deps) {
         return true;
       });
     }
-  
+
     // Filter out projects researched within the cooldown window — prevents same-project
     // re-pick on the next hourly run after the cowork loop touches it.
     rows = rows.filter(r => {
       if (!r.last_research_at) return true; // never researched, fair game
       return (Date.now() - new Date(r.last_research_at).getTime()) > cooldownMs;
     });
-  
+
     // Sort: never-researched first, then thinnest, then oldest research date as tiebreaker
     rows.sort((a, b) => {
       if (!a.last_research_at && b.last_research_at) return -1;
@@ -105,14 +105,14 @@ function registerProjectRoutes(app, deps) {
       if (a.thinness_score !== b.thinness_score) return a.thinness_score - b.thinness_score;
       return (a.last_research_at || '').localeCompare(b.last_research_at || '');
     });
-  
+
     res.json({
       count: rows.length,
       cooldown_days: cooldownDays,
       projects: rows.slice(0, limit)
     });
   });
-  
+
   app.get('/projects/:name', requireAuth, (req, res) => {
     const projects = loadProjects();
     const project = projects.find(p => p.name.toLowerCase() === req.params.name.toLowerCase());
@@ -125,7 +125,7 @@ function registerProjectRoutes(app, deps) {
     const last_memory_at = projectMemories.reduce((max, m) => (m.added && m.added > max) ? m.added : max, '');
     res.json({ ...project, memory_count, last_memory_at, memories: projectMemories });
   });
-  
+
   // Coverage view — used by the cowork loop to identify projects needing more research.
   // Returns metrics that help rank "thin" or "stale" projects without pulling all memories.
   app.get('/projects/:name/coverage', requireAuth, (req, res) => {
@@ -134,7 +134,7 @@ function registerProjectRoutes(app, deps) {
     if (!project) return res.status(404).json({ error: 'Project not found' });
     res.json(computeProjectCoverage(project, loadMemory()));
   });
-  
+
   // Mark a project as researched. Cowork calls this after completing an idle-research round
   // so the same project doesn't get re-picked on the next hourly run.
   // Optionally accepts a free-text "summary" describing what was found / where, stored on
@@ -151,7 +151,7 @@ function registerProjectRoutes(app, deps) {
     console.log('🔬 Project research-touched:', projects[idx].name);
     res.json({ ok: true, project: projects[idx] });
   });
-  
+
   // Sync Nora's /projects store from Teamwork. Pulls active Teamwork projects, filters out
   // archived/opportunity/LimeLight-internal, and reconciles against the local store:
   //   - Missing Teamwork projects → created in /projects with metadata from TW
@@ -170,10 +170,10 @@ function registerProjectRoutes(app, deps) {
       return res.status(500).json({ error: 'TEAMWORK_API_KEY and TEAMWORK_BASE_URL must be set' });
     }
     const dryRun = !!(req.body && req.body.dry_run === true);
-  
+
     const twAuth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
     const twHeaders = { Authorization: twAuth, 'Content-Type': 'application/json' };
-  
+
     try {
       // Pull active Teamwork projects with pagination. v3 endpoint returns up to 50 by default;
       // we ask for the larger pageSize. status=ACTIVE filters out archived/completed.
@@ -203,7 +203,7 @@ function registerProjectRoutes(app, deps) {
         page++;
         pagesFetched++;
       }
-  
+
       // Filter out the categories Nora doesn't research:
       //   - "Opportunity - " sales pipeline
       //   - LimeLight-internal (name prefix or company = LimeLight)
@@ -216,7 +216,7 @@ function registerProjectRoutes(app, deps) {
         if (company === 'limelight' || company === 'limelight marketing') return false;
         return true;
       });
-  
+
       // Reconcile against the local store
       const existing = loadProjects();
       const now = new Date().toISOString();
@@ -226,11 +226,11 @@ function registerProjectRoutes(app, deps) {
       let idBackfilled = 0;
       const createdNames = [];
       const promotedNames = [];
-  
+
       for (const tw of filtered) {
         const lcName = tw.name.toLowerCase();
         const existingIdx = existing.findIndex(p => p.name.toLowerCase() === lcName);
-  
+
         if (existingIdx === -1) {
           // Missing — create a new record
           if (!dryRun) {
@@ -273,12 +273,12 @@ function registerProjectRoutes(app, deps) {
           }
         }
       }
-  
+
       if (!dryRun && (created > 0 || promoted > 0 || idBackfilled > 0)) {
         saveProjects(existing);
         console.log(`📁 Sync from Teamwork: created ${created}, promoted ${promoted}, id_backfilled ${idBackfilled}, unchanged ${unchanged}`);
       }
-  
+
       res.json({
         ok: true,
         dry_run: dryRun,
@@ -300,7 +300,7 @@ function registerProjectRoutes(app, deps) {
       });
     }
   });
-  
+
   app.post('/projects', requireAuth, (req, res) => {
     const { name, details, client, status, pm, phase, tags } = req.body;
     if (!name) return res.status(400).json({ error: 'name is required' });
@@ -322,7 +322,7 @@ function registerProjectRoutes(app, deps) {
     console.log('📁 Project added:', name);
     res.json({ ok: true, project });
   });
-  
+
   app.put('/projects/:name', requireAuth, (req, res) => {
     const projects = loadProjects();
     const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());
@@ -344,7 +344,7 @@ function registerProjectRoutes(app, deps) {
     console.log('📁 Project updated:', projects[idx].name);
     res.json({ ok: true, project: projects[idx] });
   });
-  
+
   app.delete('/projects/:name', requireAuth, (req, res) => {
     const projects = loadProjects();
     const idx = projects.findIndex(p => p.name.toLowerCase() === req.params.name.toLowerCase());

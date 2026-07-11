@@ -16,7 +16,7 @@ function registerInteractionRoutes(app, deps) {
     const limit = Math.min(parseInt(req.query.limit) || 100, MAX_INTERACTIONS_KEPT);
     res.json(items.slice(0, limit));
   });
-  
+
   // POST /interactions/:id/outcome — the dream writes back how an interaction landed.
   // Body: { outcome: "landed"|"appreciated"|"neutral"|"ignored"|"corrected", signal: "<what
   // the replies/reactions/adjacent messages showed>" }. Marks the interaction reviewed.
@@ -31,7 +31,7 @@ function registerInteractionRoutes(app, deps) {
     saveInteractions(items);
     res.json({ ok: true, interaction: ix });
   });
-  
+
   // ============================================================
 }
 
