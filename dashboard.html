@@ -153,6 +153,7 @@
         <div class="tab" onclick="showTab('transcripts')">Transcripts</div>
         <div class="tab" onclick="showTab('dreams')">Dreams</div>
         <div class="tab" onclick="showTab('markers')">Markers</div>
+        <div class="tab" onclick="showTab('routine')">Routine</div>
         <div class="tab" onclick="showTab('admin')">Admin</div>
       </nav>
     </aside>
@@ -511,6 +512,29 @@
         <div id="markers-more" style="text-align:center; margin-top:12px;"></div>
       </div>
     </div>
+
+    <!-- Routine Tab -->
+    <div id="page-routine" class="page">
+      <div class="section">
+        <h2 style="display:flex; justify-content:space-between; align-items:center;">
+          Hourly Routine
+          <span style="font-size:11px; color:var(--dim); font-weight:400;">the steps Nora runs each hour</span>
+        </h2>
+        <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
+          Nora's editable hourly routine — the ordered steps her Cowork session runs each hour. The stable
+          harness (auth, run lock, security rules) lives in <code>cowork-prompt.md</code> and fetches this at
+          <code>GET /routine</code> every run, so editing here changes what she does without touching the harness
+          or the Cowork config. Nora can also revise it herself via <code>PUT /routine</code>. Saves take effect on the next hourly run.
+        </p>
+        <div id="routine-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
+        <textarea id="routine-content" spellcheck="false" style="width:100%; min-height:540px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
+        <div class="row">
+          <button class="btn btn-primary btn-sm" onclick="saveRoutine()">Save routine</button>
+          <button class="btn btn-sm" onclick="loadRoutineEditor()">Reload</button>
+        </div>
+        <div id="routine-status" class="toast"></div>
+      </div>
+    </div>
     </main>
   </div>
 
@@ -540,7 +564,34 @@
       if (name === 'transcripts') loadTranscripts();
       if (name === 'dreams') loadDreams();
       if (name === 'markers') loadMarkers();
+      if (name === 'routine') loadRoutineEditor();
       if (name === 'admin') loadAdmin();
+    }
+
+    async function loadRoutineEditor() {
+      const ta = document.getElementById('routine-content');
+      const meta = document.getElementById('routine-meta');
+      try {
+        const r = await (await api('/routine')).json();
+        ta.value = r.content || '';
+        const chars = (r.content || '').length.toLocaleString();
+        meta.textContent = r.updated_at
+          ? `Last updated ${new Date(r.updated_at).toLocaleString()} by ${r.updated_by || '?'} · ${chars} chars`
+          : `${chars} chars`;
+      } catch (e) { meta.textContent = 'Failed to load routine.'; }
+    }
+
+    async function saveRoutine() {
+      const content = document.getElementById('routine-content').value;
+      const s = document.getElementById('routine-status');
+      if (!content.trim()) { s.className = 'toast err'; s.textContent = 'Routine cannot be empty.'; return; }
+      if (!confirm('Save this routine? It replaces the current one and takes effect on the next hourly run.')) return;
+      try {
+        const r = await api('/routine', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard' }) });
+        const d = await r.json();
+        if (d.ok) { s.className = 'toast ok'; s.textContent = `Saved (${(d.length || 0).toLocaleString()} chars). Takes effect on the next hourly run.`; loadRoutineEditor(); }
+        else { s.className = 'toast err'; s.textContent = 'Save failed: ' + (d.error || 'unknown'); }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Save failed: ' + e.message; }
     }
 
     async function joinMeeting() {
