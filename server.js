@@ -4081,7 +4081,7 @@ async function deliverJobResult(job, { ok, result, error }) {
   const label = job.label || job.tool_name;
   const text = ok
     ? renderJobResult(result, label)
-    : `couldn't finish ${label || 'that'} — ${String(error || 'it failed').slice(0, 200)}. want me to retry?`;
+    : `couldn't finish ${label || 'that'}. ${String(error || 'it failed').slice(0, 200)}. want me to retry?`;
   if (origin.kind === 'slack' && origin.channel) {
     const posted = await postSlackMessage(origin.channel, text, origin.thread_ts);
     if (!posted) { const j = resolveJohnSlackId(); if (j) await postSlackMessage(j, `(couldn't reach the original thread) ${text}`); }
