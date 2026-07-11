@@ -736,6 +736,26 @@ function startEmbeddingBackfiller() {
   _embedTimer = setInterval(tick, 20000);
   setTimeout(tick, 4000); // first pass shortly after boot
 }
+
+// Scheduled re-vectorization. Embeddings never drift on their own (the backfiller re-embeds
+// new/edited/failed rows continuously), so the only thing that warrants re-embedding UNCHANGED
+// text is a change of embedding model. This records which model produced the current embeddings
+// in app_state and, when EMBED_MODEL differs, clears every embedding so the backfiller re-computes
+// them with the new model. Runs on boot and daily. First-ever run just adopts the current model
+// WITHOUT wiping (the existing embeddings are already this model), so enabling this never triggers
+// a needless full re-embed.
+async function reembedIfModelChanged() {
+  if (!_dbReady) return;
+  try {
+    const stored = await db.getState('embed_model');
+    if (!stored) { await db.setState('embed_model', db.EMBED_MODEL); return; }
+    if (stored === db.EMBED_MODEL) return;
+    const n = await db.clearEmbeddings();
+    await db.setState('embed_model', db.EMBED_MODEL);
+    console.log(`🧠 Embedding model changed (${stored} → ${db.EMBED_MODEL}); cleared ${n} embeddings — backfiller will re-vectorize`);
+  } catch (e) { console.warn('reembedIfModelChanged failed:', e.message); }
+}
+
 async function initPersistence() {
   if (!db.dbEnabled()) { console.log('🗄️  DATABASE_URL not set — using JSON files on the volume'); return; }
   try {
@@ -762,6 +782,10 @@ async function initPersistence() {
     _dbReady = true;
     console.log(`🗄️  Postgres ready — memory:${_cache.memory.length} tasks:${_cache.tasks.length} projects:${_cache.projects.length} markers:${Object.keys(_cache.markers).length} interactions:${_cache.interactions.length} dreams:${_cache.dreams.length} mcp:${_cache.mcp.length} threads:${Object.keys(slackJoinedThreads).length} tokens:${Object.keys(sessionTokens).length}`);
     startEmbeddingBackfiller();
+    // Re-vectorize on model change: once now, then daily (EMBED_MODEL only changes on deploy, so
+    // the boot check is the load-bearing one; the daily timer is a cheap safety net).
+    await reembedIfModelChanged();
+    setInterval(() => reembedIfModelChanged(), 24 * 60 * 60 * 1000);
   } catch (e) {
     console.error('❌ Postgres init failed — falling back to JSON volume. Error:', e.message);
     _dbReady = false;
@@ -5392,6 +5416,27 @@ app.post('/notify', requireAuth, async (req, res) => {
 
 // Memory API — view and edit Nora's memory
 app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
+
+// Vectorization status: how many memories are embedded, and with which model.
+app.get('/memory/embedding-stats', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.json({ db: false, total: loadMemory().length, embedded: 0, model: null });
+  try {
+    const s = await db.embeddingStats();
+    res.json({ db: true, total: s.total, embedded: s.embedded, model: db.EMBED_MODEL });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Force a re-vectorize: clear embeddings so the backfiller recomputes them (~16 rows / 20s).
+// Optional body { source, project } to scope it. No-op-safe when the DB is off.
+app.post('/memory/reembed', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active — embeddings are only stored in DB mode' });
+  try {
+    const { source, project } = req.body || {};
+    const queued = await db.clearEmbeddings({ source, project });
+    console.log(`🧠 Re-vectorize requested (${source || project ? `source=${source || '*'} project=${project || '*'}` : 'all'}): cleared ${queued} embeddings`);
+    res.json({ ok: true, queued, note: 'cleared; the backfiller re-embeds ~16 rows every 20s' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
 app.post('/memory', requireAuth, async (req, res) => {
   const { fact, source, project } = req.body;

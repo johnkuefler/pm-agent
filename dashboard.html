@@ -268,6 +268,10 @@
           </select>
         </div>
         <div id="memory-count" style="font-size:12px; color:#6a6876; margin-bottom:10px;"></div>
+        <div id="vectorize-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:9px;">
+          <span id="vectorize-stats" style="font-size:12px; color:var(--muted); font-family:var(--mono);">Vectorization: …</span>
+          <button class="btn btn-sm" onclick="reembedAll()" style="margin-left:auto;" title="Clear embeddings so they're recomputed with the current model. Re-embeds ~16 rows every 20s in the background.">Re-vectorize</button>
+        </div>
         <div id="memory-list"></div>
         <div id="memory-more" style="text-align:center; margin-top:12px;"></div>
       </div>
@@ -877,7 +881,29 @@
         _allMemories = memories.map((m, i) => ({ ...m, _idx: i }));
         _memoryRenderCap = 80;
         renderMemory();
+        loadEmbeddingStats();
       } catch (e) { list.innerHTML = '<p class="empty">Failed to load memory.</p>'; }
+    }
+
+    async function loadEmbeddingStats() {
+      const el = document.getElementById('vectorize-stats');
+      if (!el) return;
+      try {
+        const s = await (await api('/memory/embedding-stats')).json();
+        if (!s.db) { el.textContent = 'Vectorization: off (JSON mode)'; return; }
+        const pct = s.total ? Math.round((s.embedded / s.total) * 100) : 100;
+        el.textContent = `Vectorized: ${s.embedded.toLocaleString()} / ${s.total.toLocaleString()} (${pct}%) · ${s.model}`;
+      } catch { el.textContent = 'Vectorization: unavailable'; }
+    }
+
+    async function reembedAll() {
+      if (!confirm('Re-vectorize all memories? This clears the embeddings and recomputes them with the current model in the background (~16 rows every 20 seconds). Only needed after a model change.')) return;
+      try {
+        const r = await api('/memory/reembed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const d = await r.json();
+        if (d.ok) { alert(`Queued ${d.queued.toLocaleString()} memories for re-vectorization. They will re-embed in the background.`); loadEmbeddingStats(); }
+        else alert('Re-vectorize failed: ' + (d.error || 'unknown'));
+      } catch (e) { alert('Re-vectorize failed: ' + e.message); }
     }
 
     // Apply search + source filter + sort + render cap. Cheap to re-run on every keystroke.

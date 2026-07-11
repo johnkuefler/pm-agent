@@ -277,6 +277,24 @@ async function searchMemoryByVector(vec, limit = 12, opts = {}) {
   return rows;
 }
 
+// Clear embeddings so the background backfiller re-computes them (a "re-vectorize").
+// Optional filters restrict the scope. Only touches rows that currently HAVE an embedding,
+// so the returned count is exactly how many were queued for re-embedding.
+async function clearEmbeddings(opts = {}) {
+  const params = [];
+  let where = 'embedding IS NOT NULL';
+  if (opts.source)  { params.push(opts.source);  where += ` AND source = $${params.length}`; }
+  if (opts.project) { params.push(opts.project); where += ` AND project = $${params.length}`; }
+  const r = await q(`UPDATE ${DB_SCHEMA}.memory SET embedding = NULL WHERE ${where}`, params);
+  return r.rowCount || 0;
+}
+
+// Vectorization coverage, for the dashboard + scheduled logging.
+async function embeddingStats() {
+  const { rows } = await q(`SELECT count(*)::int AS total, count(embedding)::int AS embedded FROM ${DB_SCHEMA}.memory`);
+  return rows[0];
+}
+
 // ── generic array-of-records tables (tasks/projects/interactions/dreams/mcp) ────
 function makeReplaceAll(table, mapRow) {
   return async function replaceAll(items) {
@@ -539,8 +557,9 @@ async function close() { if (pool) await pool.end().catch(() => {}); pool = null
 
 module.exports = {
   dbEnabled, isReady, init, close, q, embed, count,
-  EMBED_DIM, DB_SCHEMA,
+  EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
   loadAllMemory, replaceAllMemory, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
+  clearEmbeddings, embeddingStats,
   loadAllTasks, replaceAllTasks,
   loadAllProjects, replaceAllProjects,
   loadAllInteractions, replaceAllInteractions,
