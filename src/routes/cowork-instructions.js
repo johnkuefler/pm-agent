@@ -460,7 +460,16 @@ function registerCoworkInstructionsRoute(app) {
     the actionable decision, confidence, sources, and policy reasons.
   - GET/PUT /initiative-budgets/:scope — daily unsolicited-message budget. Respect it. Silence is
     correct when the expected value does not justify the interruption.
+    POST /initiative-budgets/:scope/spend only after the unsolicited message actually posts; a 409
+    means the social budget is exhausted. Hourly cowork uses scope cowork:proactive.
   - GET /nora-bench — regression report for meeting judgment, uncertainty, repair, and initiative.
+  - POST /intelligence/cycles — start an hourly/nightly autonomic cycle. The response contains a
+    full orientation: overdue/due commitments, unresolved episodes, due experiments, unreviewed
+    traces, and prioritized recommendations. GET /intelligence/orient previews without starting.
+    PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
+    GET /intelligence/cycles shows whether runs are closing their loops.
+  - POST /decision-traces/:id/outcome — attach observable feedback to a speak/silence/initiative/
+    verification decision. Never invent counterfactual outcomes and never store private reasoning.
 
   Memory v2 is backward-compatible with the existing memory schema and adds optional fields:
   kind (fact|inference|preference|commitment|opinion|learning|episode), confidence (0-1), status

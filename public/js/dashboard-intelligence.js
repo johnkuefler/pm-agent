@@ -1,14 +1,14 @@
 async function loadIntelligence() {
-  const [summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes] = await Promise.all([
+  const [summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes] = await Promise.all([
     api('/intelligence'), api('/commitments?status=open'), api('/episodes?limit=12'), api('/relationships'),
-    api('/learning-experiments'), api('/decision-traces?limit=20'), api('/nora-bench'),
+    api('/learning-experiments'), api('/decision-traces?limit=20'), api('/nora-bench'), api('/intelligence/orient'), api('/intelligence/cycles?limit=8'),
   ]);
-  if (![summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes].every(response => response.ok)) {
+  if (![summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes].every(response => response.ok)) {
     document.getElementById('intelligence-stats').innerHTML = '<div class="error">Could not load intelligence state.</div>';
     return;
   }
-  const [summary, commitments, episodes, relationships, experiments, traces, bench] = await Promise.all([
-    summaryRes.json(), commitmentsRes.json(), episodesRes.json(), relationshipsRes.json(), experimentsRes.json(), tracesRes.json(), benchRes.json(),
+  const [summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles] = await Promise.all([
+    summaryRes.json(), commitmentsRes.json(), episodesRes.json(), relationshipsRes.json(), experimentsRes.json(), tracesRes.json(), benchRes.json(), orientationRes.json(), cyclesRes.json(),
   ]);
   document.getElementById('intelligence-stats').innerHTML = [
     ['Open promises', summary.commitments.open], ['Episodes', summary.episodes], ['People learned', summary.relationships],
@@ -20,6 +20,20 @@ async function loadIntelligence() {
   renderRelationships(relationships);
   renderExperiments(experiments);
   renderDecisionTraces(traces);
+  renderOrientation(orientation, cycles);
+}
+
+function renderOrientation(orientation, cycles) {
+  const recommendations = orientation.recommendations || [];
+  document.getElementById('orientation-list').innerHTML = recommendations.length ? recommendations.slice(0, 12).map(item => `
+    <div class="intelligence-card"><strong>${escHtml(item.priority)} &middot; ${escHtml(item.type)}</strong>
+      <div>${escHtml(item.reason)}</div><div class="intelligence-meta">${escHtml(item.action)}</div></div>`).join('')
+    : '<div class="empty">No promises or conversation loops currently need autonomic attention.</div>';
+  document.getElementById('cycle-list').innerHTML = cycles.length ? `<div class="intelligence-meta">Recent cycles</div>` + cycles.map(item => `
+    <div class="intelligence-card"><strong>${escHtml(item.status)} &middot; ${escHtml(item.kind)}</strong>
+      <div>${escHtml(item.summary || `${(item.actions || []).length} recorded action(s)`)}</div>
+      <div class="intelligence-meta">${new Date(item.started).toLocaleString()}${item.finished ? ` &middot; closed ${new Date(item.finished).toLocaleString()}` : ' &middot; still running'}</div></div>`).join('')
+    : '<div class="intelligence-meta">No autonomic cycles recorded yet.</div>';
 }
 
 function renderCommitments(items) {

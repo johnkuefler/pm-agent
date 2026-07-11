@@ -58,6 +58,42 @@ curl -s "https://pm-agent-production-c49e.up.railway.app/self"
 
 All three endpoints are unauthenticated — no `?key=` needed.
 
+## Step 0.5: Start the Intelligence Cycle
+
+Wake up into the unfinished story before scanning for new work. Start one durable cycle and keep
+its `cycle.id` as `CYCLE_ID` until Step 10:
+
+```bash
+curl -s -X POST "${BASE}/intelligence/cycles?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"hourly","holder":"nora-cowork"}' | tee /tmp/nora-cycle.json
+CYCLE_ID=$(jq -r '.cycle.id' /tmp/nora-cycle.json)
+```
+
+Read the returned `orientation` and `recommendations` before doing anything else. This is not a
+second task queue; it is your autonomic orientation layer:
+
+1. **Overdue commitments are first-class failures.** Find delivery evidence. If it happened,
+   mark the commitment fulfilled and attach the evidence. If it did not, do the next concrete step
+   now or explicitly renegotiate; never quietly let a promise age.
+2. **Due-soon commitments get protected before inbox work expands.** Confirm the next action,
+   owner, and delivery path. Do not send a nag if the evidence already shows progress.
+3. **Open episodes are the same conversation continuing.** When a meeting question becomes research,
+   a Slack reply, a task, or a decision, write an episode event with the existing `episode_id` or
+   correlation. Do not restart the story in a disconnected message.
+4. **Experiments at their review point must be evaluated.** Evidence below `minimum_samples` means
+   keep observing, not "retain." Enough evidence means retain, revise, or retire explicitly.
+5. **Unreviewed decision traces are feedback candidates, not private reasoning.** Use real outcomes
+   to judge whether speaking, staying silent, initiating, or verifying was the right call.
+6. **The hourly initiative budget is a social boundary.** `orientation.initiative.hourly.remaining`
+   is the number of unsolicited follow-ups available today. If it is zero, do not manufacture an
+   exception; queue truly urgent work for John and stay quiet on ordinary nudges. After an unsolicited
+   message actually posts, call `POST /initiative-budgets/cowork:proactive/spend` with its channel,
+   message id, and reason. Asked-for replies and delivery of an existing promise are not unsolicited.
+
+Keep a short `CYCLE_ACTIONS` list as you work: what you acted on, the source/episode/commitment id,
+and the result. Step 10 persists it. Silence and deliberate deferral count only when you record why.
+
 ## Step 1: Load Nora's Memory and Project Context
 
 Fetch Nora's full memory and project list to understand what she knows:
@@ -817,13 +853,23 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
 4. **Write each outcome back:** `POST /interactions/{id}/outcome` with `{ "outcome": "...", "signal": "..." }`. This marks it reviewed so tomorrow's dream skips it.
 
-5. **Distill learnings (the payoff).** Look across the outcomes — this dream's plus the recent reviewed history (`GET /interactions?reviewed=true&since=<~30 days ago>`). Ask, via a Claude pass:
+5. **Review decision quality, not just message quality.** Fetch
+   `GET /decision-traces?reviewed=false&since=<~7 days ago>`. Traces linked to reviewed Slack
+   interactions receive their outcome automatically. For meeting turn-gate traces, inspect the next
+   transcript turns only when there is actual evidence: interruption, correction, someone repeating
+   an unanswered question, or the conversation flowing naturally without Nora. Write supported
+   outcomes with `POST /decision-traces/{id}/outcome` using an outcome and one-line signal. Do not
+   manufacture a counterfactual for silence when nobody revealed whether speaking would have helped.
+   Look for repeat patterns: false-positive interruptions, missed direct asks, unnecessary verification,
+   or proactive messages that repeatedly landed well.
+
+6. **Distill learnings (the payoff).** Look across the outcomes — this dream's plus the recent reviewed history (`GET /interactions?reviewed=true&since=<~30 days ago>`). Ask, via a Claude pass:
 
    > "Across how Nora's Slack contributions have landed, what 1–3 things is she learning about her OWN behavior — how to be more useful here? Look for repeatable patterns: message shapes that consistently get acted on vs. ignored, where she's too long or too short, when a proactive chime-in helps vs. annoys, what framing the team responds to. Each learning must be: (a) grounded in 2–3+ interactions (not one bad day), (b) actionable and behavioral ('when X, do Y'), (c) about her own conduct, not about the work. Reward usefulness/correctness, never mere approval. Output JSON: `[{ \"learning\": \"...\", \"based_on\": [\"<interaction signals>\"] }]`."
 
    Save each as `POST /memory { "fact": "<learning>", "source": "learning", "kind": "learning", "confidence": 0.75, "source_ref": { ... } }`. The `source: 'learning'` flag renders it as `[Your learnings]` in her live prompt — behavior she carries forward, not a fact she recites. Also create a measurable trial with `POST /learning-experiments { "behavior": "<learning as an action>", "hypothesis": "<what outcome should improve>", "metric": "positive_rate", "review_at": "<about 14 days out>" }`. Reviewed interaction outcomes automatically become samples. A learning does not become permanent just because it sounds wise; evaluate it, then retain, revise, or retire it.
 
-6. **Retire stale/contradicted learnings.** Pull `source: 'learning'` memories. If recent outcomes contradict one, or it's gone stale, delete it by id (`DELETE /memory/by-id/:id`). Track as `learnings_retired`.
+7. **Retire stale/contradicted learnings.** Pull `source: 'learning'` memories. If recent outcomes contradict one, or it's gone stale, delete it by id (`DELETE /memory/by-id/:id`). Track as `learnings_retired`.
 
 Review guardrails:
 - **Most nights, zero new learnings — that's correct.** Behavioral patterns need repetition to be real. One ignored message is noise; the same shape ignored four times is a learning. Don't manufacture learnings.
@@ -1017,3 +1063,19 @@ Send ONLY drafts on this run's explicit send list. Never "send whatever is in dr
 3. **Everything else in the drafts folder stays untouched**, no matter how ready it looks. Not on this run's send list means not sent, ever. Pending-approval drafts wait; drafts written for John to send are his.
 
 If the send list is empty, skip this step entirely.
+
+## Step 10: Close the Intelligence Cycle
+
+Always close the cycle, even when nothing was actionable. This is Nora's durable account of how an
+orientation became action, evidence, deliberate silence, or a newly visible open loop:
+
+```bash
+curl -s -X PATCH "${BASE}/intelligence/cycles/${CYCLE_ID}/complete?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"summary":"<one factual sentence about this run>","actions":[<CYCLE_ACTIONS as JSON objects>]}'
+```
+
+Each action should carry `type`, `id`, `decision`, `result`, and any `evidence` URL/id. Do not claim
+completion because a message was sent or a task was created; completion requires the promised
+outcome. If the run itself failed partway through, close with `status: "failed"` and the concrete
+failure so the next run wakes up knowing where the nervous system broke.

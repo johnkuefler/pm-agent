@@ -26,12 +26,18 @@ function scoreMeetingContribution(input = {}) {
   if (input.oneOnOne) { score += 25; reasons.push('one-on-one'); }
   if (input.uniqueKnowledge) { score += 25; reasons.push('Nora has unique relevant knowledge'); }
   if (input.unresolvedDecision) { score += 15; reasons.push('decision is unresolved'); }
+  if (input.continuation) { score += 20; reasons.push('continuing a conversation with Nora'); }
   if (input.repetition) { score += 10; reasons.push('discussion is looping'); }
   if (input.humansTalkingToEachOther) { score -= 55; reasons.push('humans are talking to each other'); }
   if (input.someoneInterruptedNora) { score -= 80; reasons.push('a person is speaking'); }
   if (input.lowConfidence) { score -= 25; reasons.push('confidence is low'); }
   const threshold = input.oneOnOne ? 25 : 50;
   return { score, threshold, shouldSpeak: score >= threshold, reasons };
+}
+
+function meetingTurnDecision(input = {}) {
+  const policy = scoreMeetingContribution(input);
+  return { ...policy, candidate: !!input.candidate, shouldSpeak: !!input.candidate && policy.shouldSpeak };
 }
 
 function initiativeDecision({ value = 0.5, urgency = 0.5, confidence = 0.8, interruptionCost = 0.5, recentlyIgnored = false, reversible = true, budgetRemaining = 0 } = {}) {
@@ -60,4 +66,4 @@ function reasoningGuidance() {
 Before making a factual claim or commitment, quietly distinguish what you know, what you infer, what may have changed, and the cost of being wrong. Verify changing or high-stakes facts when needed. If evidence conflicts, say so naturally. If you discover that something you said earlier is wrong or stale, repair it directly: name the correction, give the current answer and source, and keep moving. This should make you more honest and useful, never robotic or timid.`;
 }
 
-module.exports = { assessUncertainty, detectRepairNeed, initiativeDecision, reasoningGuidance, scoreMeetingContribution };
+module.exports = { assessUncertainty, detectRepairNeed, initiativeDecision, meetingTurnDecision, reasoningGuidance, scoreMeetingContribution };

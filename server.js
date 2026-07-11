@@ -19,9 +19,10 @@ const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { requireAuth, requireDashboardAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
 const { createIntelligenceStore } = require('./src/intelligence/store');
-const { reasoningGuidance, scoreMeetingContribution, initiativeDecision } = require('./src/intelligence/policy');
+const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { runBench } = require('./src/intelligence/bench');
+const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -593,21 +594,22 @@ function addTask(task) {
     last_run: task.last_run || null
   });
   saveTasks(tasks);
-  if (!task.assignee || /nora/i.test(task.assignee)) {
-    intelligence.addCommitment({
-      what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for,
-      notes: task.detail || '', task_id: id,
-      evidence: task.source_channel ? { channel: task.source_channel, id: task.source_thread_ts || task.source_bot_id || null, captured_at: new Date().toISOString() } : null,
-    });
-  }
   const episodeCorrelation = task.source_bot_id ? `meeting:${task.source_bot_id}`
     : task.source_channel ? `slack:${task.source_channel.replace(/^slack:/, '')}:${task.source_thread_ts || 'channel'}`
       : `task:${id}`;
-  intelligence.recordEpisodeEvent({
+  const taskEpisode = intelligence.recordEpisodeEvent({
     correlation: episodeCorrelation, title: task.source_bot_id ? 'Meeting follow-up' : 'Task follow-up',
     channel: 'task', kind: 'commitment_created', actor: task.assignee || 'Nora', text: task.action,
     source_ref: { channel: task.source_channel || (task.source_bot_id ? 'meeting' : 'task'), id: task.source_thread_ts || task.source_bot_id || id, captured_at: new Date().toISOString() },
   });
+  if (!task.assignee || /nora/i.test(task.assignee)) {
+    const commitment = intelligence.addCommitment({
+      what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for,
+      notes: task.detail || '', task_id: id, episode_id: taskEpisode.id,
+      evidence: task.source_channel ? { channel: task.source_channel, id: task.source_thread_ts || task.source_bot_id || null, captured_at: new Date().toISOString() } : null,
+    });
+    intelligence.recordEpisodeEvent({ correlation: episodeCorrelation, record_event: false, commitment_ids: [commitment.id], status: 'open' });
+  }
   const sched = task.scheduled_for ? ` (scheduled ${task.scheduled_for})` : '';
   const recur = task.recurrence ? ` [${task.recurrence}]` : '';
   console.log('📋 Task added:', id, task.action + sched + recur);
@@ -1087,7 +1089,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Intelligence substrate: commitments, evidence-backed relationship observations, active
   // learning experiments, and explicit grounding/repair discipline. These augment Nora's
   // existing personality and self-model; they do not replace or flatten them.
-  const intelligenceContext = intelligence.promptContext({ project: hintCanonical });
+  const intelligencePerson = meetingContext?.requester?.name || meetingContext?.requester_name || null;
+  const intelligenceChannel = meetingContext?.channel || meetingContext?.source || channel;
+  const intelligenceContext = intelligence.promptContext({
+    person: intelligencePerson,
+    project: hintCanonical,
+    query: conversationText,
+    channel: intelligenceChannel,
+  });
   if (intelligenceContext) base = `${base}\n\n${intelligenceContext}`;
   base = `${base}\n\n${reasoningGuidance()}`;
 
@@ -2965,6 +2974,9 @@ app.post('/webhook/status', async (req, res) => {
         // session is torn down (the response was already sent above; this doesn't delay it).
         await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended);
         console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
+        // Close the meeting's continuity loop while the transcript is fresh: summarize the
+        // episode, preserve unresolved questions, and ledger only explicit promises.
+        extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta).catch(err => console.warn('meeting intelligence extraction failed:', err.message));
         // Post-meeting debrief to John (fire-and-forget; captures its inputs before cleanup).
         runMeetingDebrief(bot_id, transcriptData, session.meetingMeta).catch(() => {});
         // The meeting that just ended shows up in her self-awareness immediately.
@@ -3855,6 +3867,20 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
     }
   }
+  const candidateTrigger = trigger;
+  const meetingPolicy = meetingTurnDecision({
+    candidate: candidateTrigger,
+    named: addressed,
+    directQuestion: looksLikeQuestion(userText),
+    oneOnOne: !!(session.oneOnOne || soloHuman),
+    humansTalkingToEachOther: !!handoff,
+    continuation: !!(session.voiceActiveUntil && Date.now() < session.voiceActiveUntil && /\b(you|your|yours)\b|\?/i.test(userText || '')),
+    uniqueKnowledge: false,
+  });
+  // The policy is now the final authority for ordinary speech. The legacy gate supplies
+  // conversational signals; it no longer gets to bypass social judgment. Concrete unsolicited
+  // knowledge still uses the separate silent volunteer probe below.
+  trigger = meetingPolicy.shouldSpeak;
   if (trigger) {
     try { openaiWs.send(JSON.stringify({ type: 'response.create' })); session.voiceResponseActive = true; session.voiceResponseAt = Date.now(); }
     catch (e) { console.warn('voice trigger failed:', e.message); }
@@ -3866,16 +3892,10 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   } else {
     console.log(`🎙️ Voice: silent (${why || 'not addressed'})`);
   }
-  const meetingPolicy = scoreMeetingContribution({
-    named: addressed,
-    directQuestion: looksLikeQuestion(userText),
-    oneOnOne: !!(session.oneOnOne || soloHuman),
-    humansTalkingToEachOther: !!handoff,
-    uniqueKnowledge: VOLUNTEER_CUE.test(userText || ''),
-  });
   intelligence.recordTrace({
     channel: 'meeting', action: 'turn_gate', decision: trigger ? 'speak' : 'stay_silent',
-    confidence: trigger ? 0.9 : 0.75, reasons: [why || 'not addressed', ...meetingPolicy.reasons], preview: userText,
+    confidence: trigger ? 0.9 : 0.75,
+    reasons: [why || 'not addressed', `meeting score ${meetingPolicy.score}/${meetingPolicy.threshold}`, ...meetingPolicy.reasons], preview: userText,
   });
 }
 
@@ -5899,6 +5919,19 @@ async function saveTranscriptDoc(botId, transcript, ended) {
   try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
   catch (e) { console.warn('transcript write failed:', e.message); }
 }
+
+async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {}) {
+  if (!process.env.ANTHROPIC_API_KEY || !Array.isArray(transcriptData?.transcript) || !transcriptData.transcript.length) return null;
+  const transcript = compactTranscript(transcriptData.transcript);
+  const response = await axios.post('https://api.anthropic.com/v1/messages', {
+    model: 'claude-sonnet-4-6', max_tokens: 1800,
+    system: meetingIntelligenceSystemPrompt(),
+    messages: [{ role: 'user', content: `Meeting metadata: ${JSON.stringify({ title: meetingMeta?.title || meetingMeta?.meeting_title || null, project: meetingMeta?.project || null })}\n\nTranscript:\n${transcript}` }],
+  }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 30000 });
+  const text = (response.data.content || []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
+  const extracted = parseMeetingIntelligence(text);
+  return applyMeetingIntelligence(intelligence, { botId, ended: transcriptData.ended, meetingMeta, extracted });
+}
 async function getTranscriptDoc(botId) {
   if (_dbReady) {
     const r = await db.getTranscript(botId);
@@ -6124,8 +6157,10 @@ function logInteraction(entry) {
     items.push(interaction);
     if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
     saveInteractions(items);
+    const continuation = intelligence.relevantEpisodes({ person: entry.requester_name || null, query: `${entry.trigger || ''} ${entry.text || ''}`, limit: 1 })[0];
     const episode = intelligence.recordEpisodeEvent({
-      correlation: `slack:${entry.channel}:${entry.thread_ts || entry.ts || 'channel'}`,
+      correlation: continuation ? null : `slack:${entry.channel}:${entry.thread_ts || entry.ts || 'channel'}`,
+      episode_id: continuation?.id,
       title: entry.channel_type === 'im' ? `Conversation with ${entry.requester_name || 'teammate'}` : 'Slack conversation',
       participants: [entry.requester_name || entry.user, 'Nora'], channel: 'slack', kind: entry.kind,
       actor: 'Nora', text: entry.text,
@@ -6146,6 +6181,7 @@ registerInteractionRoutes(app, {
   requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT,
   onOutcome: interaction => {
     intelligence.recordExperimentSample({ outcome: interaction.outcome, interaction_id: interaction.id, value: ['appreciated', 'landed'].includes(interaction.outcome) ? 1 : ['ignored', 'corrected'].includes(interaction.outcome) ? 0 : 0.5 });
+    intelligence.updateTraceOutcome(null, { interaction_id: interaction.id, outcome: interaction.outcome, signal: interaction.signal, reviewed_at: interaction.reviewed_at });
     if (interaction.requester_name && interaction.signal) {
       intelligence.observeRelationship({
         name: interaction.requester_name,
@@ -7267,6 +7303,7 @@ module.exports = {
     relativeDayLabel,
     buildBotConfig,
     buildSystemPrompt,
+    intelligenceStore: intelligence,
   },
 };
 

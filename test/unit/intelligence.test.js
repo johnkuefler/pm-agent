@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine, normalizeCommitment } = require('../../src/intelligence/models');
-const { assessUncertainty, detectRepairNeed, initiativeDecision, scoreMeetingContribution } = require('../../src/intelligence/policy');
+const { assessUncertainty, detectRepairNeed, initiativeDecision, meetingTurnDecision, scoreMeetingContribution } = require('../../src/intelligence/policy');
 const { runBench } = require('../../src/intelligence/bench');
 
 test('Memory v2 enriches legacy facts without changing their text', () => {
@@ -42,6 +42,10 @@ test('meeting judgment speaks when addressed and yields to human exchanges', () 
   assert.equal(scoreMeetingContribution({ named: true }).shouldSpeak, true);
   assert.equal(scoreMeetingContribution({ named: true, someoneInterruptedNora: true }).shouldSpeak, false);
   assert.equal(scoreMeetingContribution({ humansTalkingToEachOther: true }).shouldSpeak, false);
+  assert.equal(scoreMeetingContribution({ directQuestion: true }).shouldSpeak, false);
+  assert.equal(scoreMeetingContribution({ directQuestion: true, continuation: true }).shouldSpeak, true);
+  assert.equal(meetingTurnDecision({ candidate: false, named: true }).shouldSpeak, false);
+  assert.equal(meetingTurnDecision({ candidate: true, named: true }).shouldSpeak, true);
 });
 
 test('initiative requires both value and remaining social budget', () => {

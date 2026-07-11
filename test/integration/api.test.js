@@ -193,7 +193,15 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
 
   await request('/initiative-budgets/test-scope', { method: 'PUT', body: { daily_limit: 2 } });
   assert.equal((await request('/initiative-budgets/test-scope')).body.limit, 2);
+  assert.equal((await request('/initiative-budgets/test-scope/spend', { method: 'POST', body: { reason: 'integration' } })).body.budget.remaining, 1);
   assert.ok((await request('/decision-traces')).body.length >= 0);
+  const cycle = await request('/intelligence/cycles', { method: 'POST', body: { holder: 'integration' } });
+  assert.equal(cycle.body.cycle.status, 'running');
+  assert.ok(Array.isArray(cycle.body.orientation.recommendations));
+  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete`, { method: 'PATCH', body: { summary: 'Integration cycle complete', actions: [] } });
+  assert.equal(finishedCycle.body.cycle.status, 'completed');
+  assert.equal((await request('/intelligence/cycles')).body[0].id, cycle.body.cycle.id);
+  assert.ok((await request('/intelligence/orient')).body.commitments);
   const summary = await request('/intelligence');
   assert.ok(summary.body.relationships >= 1);
   const bench = await request('/nora-bench');

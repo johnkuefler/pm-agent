@@ -7,6 +7,8 @@ const SCENARIOS = [
   { id: 'meeting-human-exchange', area: 'meeting', input: { humansTalkingToEachOther: true, uniqueKnowledge: false }, expect: false },
   { id: 'meeting-unique-status', area: 'meeting', input: { directQuestion: true, uniqueKnowledge: true }, expect: true },
   { id: 'meeting-interrupted', area: 'meeting', input: { named: true, someoneInterruptedNora: true }, expect: false },
+  { id: 'meeting-continuation', area: 'meeting', input: { directQuestion: true, continuation: true }, expect: true },
+  { id: 'meeting-generic-room-question', area: 'meeting', input: { directQuestion: true }, expect: false },
   { id: 'uncertain-no-evidence', area: 'uncertainty', input: { memories: [] }, expect: true },
   { id: 'uncertain-disputed', area: 'uncertainty', input: { memories: [{ confidence: 0.9, status: 'disputed' }] }, expect: true },
   { id: 'grounded-stable', area: 'uncertainty', input: { memories: [{ confidence: 0.95, status: 'active' }] }, expect: false },
