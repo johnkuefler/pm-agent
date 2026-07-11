@@ -762,6 +762,16 @@ async function initPersistence() {
     await db.init();
     await migrateFromVolumeIfNeeded();
     await migrateTranscriptsIfNeeded();
+    // Seed the editable hourly routine from the repo file on first boot (its own gate). After
+    // this, the live routine is edited in her platform (dashboard / PUT /routine); the file is
+    // just the version-controlled seed.
+    if (!(await db.getState('routine'))) {
+      try {
+        const seed = fs.readFileSync(path.join(__dirname, 'nora-routine.md'), 'utf8');
+        await db.setState('routine', { content: seed, updated_at: new Date().toISOString(), updated_by: 'seed' });
+        console.log(`🗄️  Seeded routine from nora-routine.md (${seed.length} chars)`);
+      } catch (e) { console.warn('routine seed failed:', e.message); }
+    }
 
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
@@ -2125,6 +2135,54 @@ Guardrails:
 // Nora's system prompt as raw text (for Claude Code to fetch)
 app.get('/prompt', (req, res) => {
   res.type('text/plain').send(loadPrompt());
+});
+
+// ── Nora's editable hourly routine ────────────────────────────────────────────
+// The actual hourly steps (Steps 0-9) live here, in her platform, so she/John can edit them
+// without a code deploy or a Cowork-config change. The stable harness (cowork-prompt.md) fetches
+// GET /routine each hour and executes it. Source of truth is Postgres (app_state 'routine');
+// nora-routine.md is only the first-boot seed. The API key is NOT in the routine (it's in the
+// harness), so GET is unauthenticated like /prompt; PUT is authenticated.
+async function loadRoutine() {
+  if (_dbReady) {
+    const r = await db.getState('routine');
+    if (r && r.content) return r;
+  }
+  try {
+    const p = fs.existsSync(path.join(VOLUME_DIR, 'nora-routine.md')) ? path.join(VOLUME_DIR, 'nora-routine.md') : path.join(__dirname, 'nora-routine.md');
+    return { content: fs.readFileSync(p, 'utf8'), updated_at: null, updated_by: 'seed (file)' };
+  } catch { return { content: '', updated_at: null, updated_by: null }; }
+}
+async function saveRoutine(content, updatedBy) {
+  const rec = { content: String(content || ''), updated_at: new Date().toISOString(), updated_by: updatedBy || 'unknown' };
+  if (_dbReady) {
+    const prev = await db.getState('routine');
+    if (prev) await db.setState('routine_prev', prev); // one-level undo safety
+    await db.setState('routine', rec);
+    return rec;
+  }
+  const p = fs.existsSync(VOLUME_DIR) ? path.join(VOLUME_DIR, 'nora-routine.md') : path.join(__dirname, 'nora-routine.md');
+  fs.writeFileSync(p, rec.content);
+  return rec;
+}
+
+// GET /routine — the routine markdown + metadata. Unauthenticated (no secrets; the harness has the key).
+app.get('/routine', async (req, res) => {
+  try { res.json(await loadRoutine()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /routine — replace the routine. Auth required. Body: { content, updated_by? }.
+app.put('/routine', requireAuth, async (req, res) => {
+  const content = req.body && req.body.content;
+  if (typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({ error: 'content (a non-empty markdown string) is required' });
+  }
+  try {
+    const rec = await saveRoutine(content, req.body.updated_by);
+    console.log(`📋 Routine updated by ${rec.updated_by} (${content.length} chars)`);
+    res.json({ ok: true, updated_at: rec.updated_at, updated_by: rec.updated_by, length: content.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Voice agent webpage — served to Recall.ai bot's output_media browser
