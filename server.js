@@ -73,7 +73,8 @@ app.use(express.json({
 }));
 app.use('/assets', express.static(path.join(__dirname, 'public'), {
   fallthrough: false,
-  maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
+  maxAge: 0,
+  setHeaders: res => res.setHeader('Cache-Control', 'no-cache'),
 }));
 registerIntelligenceRoutes(app, { requireAuth, store: intelligence });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));

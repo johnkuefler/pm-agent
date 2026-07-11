@@ -8,7 +8,13 @@ function registerUiRoutes(app, { requireDashboardAuth, rootDir }) {
     try {
       const html = fs.readFileSync(filePath, 'utf8');
       const apiKey = process.env.NORA_API_KEY || '';
-      res.type('html').send(html.replace('{{NORA_API_KEY}}', apiKey));
+      const assetVersion = process.env.RAILWAY_GIT_COMMIT_SHA
+        || process.env.GIT_COMMIT
+        || Math.floor(fs.statSync(filePath).mtimeMs).toString(36);
+      res.setHeader('Cache-Control', 'no-cache');
+      res.type('html').send(html
+        .replace('{{NORA_API_KEY}}', apiKey)
+        .replaceAll('{{ASSET_VERSION}}', assetVersion));
     } catch (err) {
       console.error('Failed to serve dashboard:', err.message);
       res.status(500).send('dashboard unavailable');

@@ -117,44 +117,59 @@
         ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #1d4ed8; text-decoration: none;">View transcript</a>`
         : '';
       const key = m.id || m._idx; // prefer stable id; fall back to index for any legacy entry
-      return `<div class="memory-item" id="memory-${key}">
+      return `<div class="memory-item" id="memory-${escHtml(String(key))}" data-memory-key="${escHtml(String(key))}">
         <div style="flex: 1;">
           <div class="memory-fact">${escHtml(m.fact)}</div>
           <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${m.kind ? ' · ' + escHtml(m.kind) : ''}${m.confidence != null ? ' · ' + Math.round(m.confidence * 100) + '% confidence' : ''}${m.status && m.status !== 'active' ? ' · ' + escHtml(m.status) : ''}${m.last_verified ? ' · verified ' + new Date(m.last_verified).toLocaleDateString() : ''}${transcriptLink}</div>
         </div>
         <div style="display: flex; gap: 6px; flex-shrink: 0;">
-          <button class="btn btn-success" onclick="editMemory('${key}', '${escHtml(m.fact).replace(/'/g, "\\'")}', '${escHtml(m.project || '').replace(/'/g, "\\'")}')">Edit</button>
-          <button class="btn btn-danger" onclick="deleteMemory('${key}')">Remove</button>
+          <button class="btn btn-success" onclick="editMemoryFromButton(this)">Edit</button>
+          <button class="btn btn-danger" onclick="deleteMemory(this.closest('.memory-item').dataset.memoryKey)">Remove</button>
         </div>
       </div>`;
     }
 
-    function editMemory(idx, currentFact, currentProject) {
-      const el = document.getElementById('memory-' + idx);
+    function editMemoryFromButton(button) {
+      editMemory(button.closest('.memory-item').dataset.memoryKey);
+    }
+
+    function editMemory(key) {
+      const memory = _allMemories.find(item => String(item.id || item._idx) === String(key));
+      const el = document.getElementById('memory-' + key);
+      if (!memory) return;
       if (!el) return;
       const projects = document.getElementById('new-fact-project').innerHTML;
       el.innerHTML = `
         <div style="flex: 1;">
-          <input id="edit-memory-fact-${idx}" value="${escHtml(currentFact)}" style="margin-bottom: 6px;" />
-          <select id="edit-memory-project-${idx}" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 13px;">
+          <textarea id="edit-memory-fact-${key}" rows="3" style="width:100%; margin-bottom:6px; resize:vertical;">${escHtml(memory.fact)}</textarea>
+          <select id="edit-memory-project-${key}" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 13px;">
             ${projects}
           </select>
+          <div id="edit-memory-error-${key}" class="toast" style="margin-top:6px;"></div>
         </div>
         <div style="display: flex; gap: 6px; flex-shrink: 0; align-self: center;">
-          <button class="btn btn-primary btn-sm" onclick="saveMemoryEdit(${idx})">Save</button>
-          <button class="btn btn-danger btn-sm" onclick="loadMemory()">Cancel</button>
+          <button class="btn btn-primary btn-sm" data-memory-key="${escHtml(String(key))}" onclick="saveMemoryEdit(this.dataset.memoryKey)">Save</button>
+          <button class="btn btn-danger btn-sm" onclick="renderMemory()">Cancel</button>
         </div>`;
-      const sel = document.getElementById('edit-memory-project-' + idx);
-      if (sel) sel.value = currentProject;
-      document.getElementById('edit-memory-fact-' + idx).focus();
+      const sel = document.getElementById('edit-memory-project-' + key);
+      if (sel) sel.value = memory.project || '';
+      document.getElementById('edit-memory-fact-' + key).focus();
     }
 
-    async function saveMemoryEdit(idx) {
-      const fact = document.getElementById('edit-memory-fact-' + idx).value.trim();
-      const project = document.getElementById('edit-memory-project-' + idx).value;
+    async function saveMemoryEdit(key) {
+      const fact = document.getElementById('edit-memory-fact-' + key).value.trim();
+      const project = document.getElementById('edit-memory-project-' + key).value;
+      const error = document.getElementById('edit-memory-error-' + key);
       if (!fact) return;
-      await api('/memory/' + idx, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact, project }) });
-      loadMemory();
+      try {
+        const response = await api('/memory/' + encodeURIComponent(key), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact, project }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `Save failed (${response.status})`);
+        await loadMemory();
+      } catch (e) {
+        error.className = 'toast err';
+        error.textContent = e.message;
+      }
     }
 
     async function addMemory() {
