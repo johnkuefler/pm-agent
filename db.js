@@ -95,7 +95,11 @@ async function init() {
       auto_created  boolean,
       data          jsonb
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS projects_name_lower ON ${DB_SCHEMA}.projects (lower(name));
+    -- Non-unique on purpose: the app already dedupes project names case-insensitively at
+    -- write time (ensureProject), and a UNIQUE(lower(name)) here is stricter than the
+    -- ON CONFLICT (name) upsert target, so a case-only duplicate in legacy data would abort
+    -- the whole migration and silently pin the app to JSON. A plain index avoids that.
+    CREATE INDEX IF NOT EXISTS projects_name_lower ON ${DB_SCHEMA}.projects (lower(name));
 
     CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.markers (
       key        text PRIMARY KEY,
@@ -196,9 +200,10 @@ async function replaceAllMemory(items) {
     await client.query('BEGIN');
     await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
     const ids = [];
+    let skipped = 0;
     for (let i = 0; i < items.length; i++) {
       const m = items[i];
-      if (!m || !m.id || !m.fact) continue;
+      if (!m || !m.id || !m.fact) { skipped++; continue; }
       ids.push(m.id);
       await client.query(
         `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, updated_at)
@@ -222,6 +227,7 @@ async function replaceAllMemory(items) {
       await client.query(`DELETE FROM ${DB_SCHEMA}.memory`);
     }
     await client.query('COMMIT');
+    if (skipped) console.warn(`⚠️  replaceAllMemory skipped ${skipped} row(s) missing id/fact`);
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     throw e;

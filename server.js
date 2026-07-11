@@ -671,22 +671,30 @@ backfillMemoryIds();
 // so no request is ever served against a half-hydrated cache. Every step is idempotent:
 // a table is seeded only while still empty, so re-running on every boot never clobbers
 // live DB data. Any failure leaves _dbReady=false and the app keeps using the JSON volume.
-async function seedTableIfEmpty(table, loadJson, writeAll, isMap = false) {
-  if ((await db.count(table)) > 0) return;
-  const data = loadJson(); // _dbReady is still false here, so this reads the JSON volume
-  const empty = isMap ? (!data || Object.keys(data).length === 0) : (!Array.isArray(data) || data.length === 0);
-  if (empty) return;
-  await writeAll(data);
-  console.log(`🗄️  Seeded ${table} from JSON → Postgres (${isMap ? Object.keys(data).length : data.length} rows)`);
-}
-async function seedStateIfMissing(key, loadJson) {
-  if ((await db.getState(key)) !== null) return; // already present
-  const data = loadJson();
-  if (data === null || data === undefined) return;
-  if (Array.isArray(data) && data.length === 0) return;
-  if (!Array.isArray(data) && typeof data === 'object' && Object.keys(data).length === 0) return;
-  await db.setState(key, data);
-  console.log(`🗄️  Seeded ${key} from JSON → Postgres`);
+// One-time migration from the JSON volume into Postgres, gated by a single persisted flag
+// (app_state 'migration_v1_done'). Until that flag is set, JSON is the source of truth and this
+// re-seeds Postgres AUTHORITATIVELY from it on every boot — so a prior boot that failed mid-seed
+// (dropping the app to JSON for a session) never orphans the writes made during that fallback
+// session: the next boot folds them back in from JSON before flipping the flag. replaceAll* is
+// idempotent, so re-running is safe. The flag is set only after every entity migrates cleanly.
+async function migrateFromVolumeIfNeeded() {
+  if (await db.getState('migration_v1_done')) return; // already fully migrated; PG is authoritative
+  console.log('🗄️  Migrating JSON volume → Postgres (authoritative seed)…');
+  const mem = loadMemory(); for (const x of mem) if (!x.id) x.id = newMemoryId();
+  await db.replaceAllMemory(mem);
+  await db.replaceAllTasks(loadTasks());
+  await db.replaceAllProjects(loadProjects());
+  await db.replaceAllMarkers(loadMarkers());
+  await db.replaceAllInteractions(loadInteractions());
+  await db.replaceAllDreams(loadDreams());
+  await db.replaceAllMcp(loadMcpStore());
+  await db.replaceAllSlackThreads(loadSlackThreads());
+  const cal = loadCalendarState(); if (cal) await db.setState('calendar', cal);
+  await db.setState('slack_proactive_channels', [...loadSlackProactiveChannels()]);
+  await db.setState('slack_financial_approved', loadFinancialApproved());
+  await db.setState('session_tokens', loadSessionTokens());
+  await db.setState('migration_v1_done', { v: 1 }); // LAST, before _dbReady flips: PG is now authoritative
+  console.log('🗄️  Migration complete — Postgres is now the source of truth');
 }
 let _embedTimer = null;
 function startEmbeddingBackfiller() {
@@ -710,19 +718,7 @@ async function initPersistence() {
   if (!db.dbEnabled()) { console.log('🗄️  DATABASE_URL not set — using JSON files on the volume'); return; }
   try {
     await db.init();
-    // Seed once from the volume JSON (id-backfilled above for memory).
-    await seedTableIfEmpty('memory', () => { const m = loadMemory(); for (const x of m) if (!x.id) x.id = newMemoryId(); return m; }, (v) => db.replaceAllMemory(v));
-    await seedTableIfEmpty('tasks', loadTasks, (v) => db.replaceAllTasks(v));
-    await seedTableIfEmpty('projects', loadProjects, (v) => db.replaceAllProjects(v));
-    await seedTableIfEmpty('markers', loadMarkers, (v) => db.replaceAllMarkers(v), true);
-    await seedTableIfEmpty('interactions', loadInteractions, (v) => db.replaceAllInteractions(v));
-    await seedTableIfEmpty('dreams', loadDreams, (v) => db.replaceAllDreams(v));
-    await seedTableIfEmpty('mcp_servers', loadMcpStore, (v) => db.replaceAllMcp(v));
-    await seedTableIfEmpty('slack_threads', loadSlackThreads, (v) => db.replaceAllSlackThreads(v), true);
-    await seedStateIfMissing('calendar', loadCalendarState);
-    await seedStateIfMissing('slack_proactive_channels', () => [...loadSlackProactiveChannels()]);
-    await seedStateIfMissing('slack_financial_approved', loadFinancialApproved);
-    await seedStateIfMissing('session_tokens', loadSessionTokens);
+    await migrateFromVolumeIfNeeded();
 
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
@@ -6535,7 +6531,7 @@ function logInteraction(entry) {
 // GET /interactions — the dream's worklist. ?reviewed=false for un-assessed ones; ?since=ISO
 // to bound the window; ?limit=N (default 100). Newest first.
 app.get('/interactions', requireAuth, (req, res) => {
-  let items = loadInteractions();
+  let items = loadInteractions().slice(); // copy: in DB mode loadInteractions() returns the live cache ref; sorting it in place would scramble ord and make the next logInteraction trim the newest rows
   if (req.query.reviewed === 'false') items = items.filter(i => !i.reviewed);
   if (req.query.reviewed === 'true') items = items.filter(i => i.reviewed);
   if (req.query.since) items = items.filter(i => (i.created || '') >= req.query.since);
@@ -6589,7 +6585,7 @@ const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond
 // GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
 // dashboard can render without a second round-trip per dream.
 app.get('/dreams', requireAuth, (req, res) => {
-  const dreams = loadDreams();
+  const dreams = loadDreams().slice(); // copy before sorting: in DB mode loadDreams() returns the live cache ref
   dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
   res.json(dreams);
 });
