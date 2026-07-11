@@ -1057,6 +1057,24 @@ function computeNoraMood() {
   } catch { return ''; }
 }
 
+// Calendar-day index for a date AS OBSERVED in Central time (days since epoch). Comparing these
+// gives a true calendar-day delta that doesn't wobble near midnight the way a raw-ms diff would.
+function ctDayNumber(date) {
+  const [y, m, d] = date.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }).split('-').map(Number);
+  return Math.floor(Date.UTC(y, m - 1, d) / 86400000);
+}
+// Human relative-day label ("today" / "yesterday" / "3 days ago" / "tomorrow"), computed in
+// Central time. LLMs are bad at date arithmetic, so we hand her the answer instead of the dates:
+// she was calling two-day-old meetings "yesterday" because she was doing the subtraction herself.
+function relativeDayLabel(date, now = new Date()) {
+  const diff = ctDayNumber(now) - ctDayNumber(date); // >0 past, <0 future
+  if (diff === 0) return 'today';
+  if (diff === 1) return 'yesterday';
+  if (diff === -1) return 'tomorrow';
+  if (diff > 1) return `${diff} days ago`;
+  return `in ${-diff} days`;
+}
+
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
 
@@ -1382,7 +1400,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const ctNow = new Date();
   const ctDateStr = ctNow.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'America/Chicago' });
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
-  volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Let situational tone bleed through naturally, like Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
+  const yestStr = new Date(ctNow.getTime() - 86400000).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Chicago' });
+  volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Yesterday was ${yestStr}. Any time you use a relative day word ("yesterday", "the other day", "last week", "a few days ago"), COMPUTE it against today's date above rather than guessing; a two-day-old thing is not "yesterday." Dates you're shown already carry their own relative age in parentheses; trust that, not your own arithmetic. Let situational tone bleed through naturally, like Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
   const mood = computeNoraMood();
   if (mood) {
     volatile += `\nToday specifically, you're: ${mood}. This shapes HOW you talk (tone, length, patience), never WHAT you talk about. Never quote or paraphrase this note, never announce or explain your mood, and never bring up its subjects because of it; nobody narrates their own energy level unprompted. It also never changes facts, numbers, decisions, or what you're allowed to share.`;
@@ -1410,9 +1429,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   if (_recentMeetingsCache.length) {
     const rows = _recentMeetingsCache.map(m => {
       const d = m.ended ? new Date(m.ended).toLocaleString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' }) : 'in progress';
+      const rel = m.ended ? ` (${relativeDayLabel(new Date(m.ended), ctNow)})` : '';
       const who = m.speakers && m.speakers.length ? ` with ${m.speakers.join(', ')}` : '';
       const status = m.client ? `, filed for ${m.client}` : (m.skipped ? `, not filed (${m.skipped})` : '');
-      return `- ${d}${who} (${m.utterances} lines${status})`;
+      return `- ${d}${rel}${who} (${m.utterances} lines${status})`;
     });
     volatile += `\n\n[Meetings you attended in the last 7 days, from your own saved transcripts]\n${rows.join('\n')}\nThis is the authoritative record of your calls. If someone asks about your meetings, answer from THIS list; never say you weren't on a call without checking it. When they want specifics of what was discussed, use nora_list_meetings / nora_read_transcript if you have them this turn.`;
   }
