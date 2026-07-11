@@ -72,3 +72,11 @@ test('Recall bot config preserves webhook and voice-agent contracts', () => {
   assert.equal(config.webhook_url, 'https://nora.example.com/webhook/status');
 });
 
+test('intelligence grounding augments rather than replaces Nora expressive voice', () => {
+  const prompt = helpers.buildSystemPrompt('slack');
+  assert.match(prompt, /Default: talk/i);
+  assert.match(prompt, /casual, warm, quick/i);
+  assert.match(prompt, /Grounding and repair/i);
+  assert.match(prompt, /repair it directly/i);
+});
+

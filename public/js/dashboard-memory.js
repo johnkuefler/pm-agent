@@ -120,7 +120,7 @@
       return `<div class="memory-item" id="memory-${key}">
         <div style="flex: 1;">
           <div class="memory-fact">${escHtml(m.fact)}</div>
-          <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${transcriptLink}</div>
+          <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${m.kind ? ' · ' + escHtml(m.kind) : ''}${m.confidence != null ? ' · ' + Math.round(m.confidence * 100) + '% confidence' : ''}${m.status && m.status !== 'active' ? ' · ' + escHtml(m.status) : ''}${m.last_verified ? ' · verified ' + new Date(m.last_verified).toLocaleDateString() : ''}${transcriptLink}</div>
         </div>
         <div style="display: flex; gap: 6px; flex-shrink: 0;">
           <button class="btn btn-success" onclick="editMemory('${key}', '${escHtml(m.fact).replace(/'/g, "\\'")}', '${escHtml(m.project || '').replace(/'/g, "\\'")}')">Edit</button>
@@ -161,9 +161,11 @@
       const s = document.getElementById('memory-status');
       const fact = document.getElementById('new-fact').value.trim();
       const project = document.getElementById('new-fact-project').value;
+      const kind = document.getElementById('new-fact-kind').value;
+      const confidence = Number(document.getElementById('new-fact-confidence').value);
       if (!fact) { s.className = 'toast err'; s.textContent = 'Type something first'; return; }
       try {
-        await api('/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact, project }) });
+        await api('/memory', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ fact, project, kind, confidence, last_verified: new Date().toISOString() }) });
         document.getElementById('new-fact').value = '';
         s.className = 'toast ok'; s.textContent = 'Memory added';
         loadMemory();

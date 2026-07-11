@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(root, 'dashboard.html'), 'utf8');
 
 test('dashboard has one page for every navigation tab and no duplicate ids', () => {
   const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(tabs.length, 11);
+  assert.equal(tabs.length, 12);
   assert.equal(new Set(tabs).size, tabs.length);
   for (const tab of tabs) assert.match(html, new RegExp(`id="page-${tab}"`));
 
@@ -31,6 +31,7 @@ test('dashboard presentation and behavior live in focused external assets', () =
     '/assets/js/dashboard-memory.js',
     '/assets/js/dashboard-knowledge.js',
     '/assets/js/dashboard-admin.js',
+    '/assets/js/dashboard-intelligence.js',
     '/assets/js/dashboard-init.js',
   ]);
 

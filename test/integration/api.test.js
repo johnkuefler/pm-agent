@@ -78,7 +78,7 @@ test('authentication protects APIs and dashboard independently', async () => {
 });
 
 test('memory supports create, update, list, bulk delete, and JSON persistence', async () => {
-  const created = await request('/memory', { method: 'POST', body: { fact: 'Integration fact', source: 'test' } });
+  const created = await request('/memory', { method: 'POST', body: { fact: 'Integration fact', source: 'test', kind: 'inference', confidence: 0.62, source_ref: { channel: 'test', id: 'source-1' } } });
   assert.equal(created.response.status, 200);
   assert.match(created.body.id, /^m-/);
 
@@ -87,10 +87,19 @@ test('memory supports create, update, list, bulk delete, and JSON persistence', 
 
   const listed = await request('/memory');
   assert.equal(listed.body.length, 1);
+  assert.equal(listed.body[0].kind, 'inference');
+  assert.equal(listed.body[0].confidence, 0.62);
+  assert.equal(listed.body[0].source_ref.id, 'source-1');
   assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'nora-memory.json')))[0].fact, 'Updated fact');
 
   const stats = await request('/memory/embedding-stats');
   assert.deepEqual(stats.body, { db: false, total: 1, embedded: 0, model: null });
+
+  const disputed = await request(`/memory/${created.body.id}/contradict`, { method: 'POST', body: { fact: 'Conflicting source says otherwise' } });
+  assert.equal(disputed.body.memory.status, 'disputed');
+  const verified = await request(`/memory/${created.body.id}/verify`, { method: 'POST', body: { resolve: true, confidence: 0.9 } });
+  assert.equal(verified.body.memory.status, 'active');
+  assert.equal(verified.body.memory.verification_count, 1);
 
   const removed = await request('/memory/bulk-delete', { method: 'POST', body: { ids: [created.body.id] } });
   assert.equal(removed.body.removed_count, 1);
@@ -110,6 +119,8 @@ test('tasks preserve validation, scheduling, filtering, completion, and deletion
   assert.equal(edit.body.task.action, 'Edited future task');
   const complete = await request(`/tasks/${future.body.id}/complete`, { method: 'PATCH' });
   assert.equal(complete.body.task.status, 'done');
+  const taskCommitment = (await request('/commitments')).body.find(item => item.task_id === future.body.id);
+  assert.equal(taskCommitment.status, 'fulfilled');
   assert.equal((await request(`/tasks/${future.body.id}`, { method: 'DELETE' })).body.ok, true);
 
   const recurring = await request('/tasks', { method: 'POST', body: { action: 'Daily check', recurrence: 'daily:09:00' } });
@@ -164,6 +175,31 @@ test('routine and charter reads and writes remain file-backed without Postgres',
   assert.equal(fs.readFileSync(path.join(dataDir, 'nora-charter.md'), 'utf8'), '# New charter');
 });
 
+test('intelligence APIs connect commitments, episodes, relationships, experiments, traces, budgets, and bench', async () => {
+  const commitment = await request('/commitments', { method: 'POST', body: { what: 'Send integration recap', owner: 'Nora', beneficiary: 'John' } });
+  assert.equal(commitment.body.commitment.status, 'open');
+  assert.equal((await request(`/commitments/${commitment.body.commitment.id}/fulfilled`, { method: 'PATCH', body: {} })).body.commitment.status, 'fulfilled');
+
+  const episode = await request('/episodes/events', { method: 'POST', body: { correlation: 'test:episode', title: 'Integration episode', channel: 'test', actor: 'John', text: 'Can you check?' } });
+  assert.equal(episode.body.episode.events.length, 1);
+  assert.equal((await request(`/episodes/${episode.body.episode.id}`)).body.title, 'Integration episode');
+
+  const relationship = await request('/relationships/observe', { method: 'POST', body: { name: 'John', dimension: 'communication', observation: 'Prefers the answer first', confidence: 0.9 } });
+  assert.equal(relationship.body.relationship.name, 'John');
+
+  const experiment = await request('/learning-experiments', { method: 'POST', body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops' } });
+  const sampled = await request(`/learning-experiments/${experiment.body.experiment.id}/sample`, { method: 'POST', body: { outcome: 'landed', value: 1 } });
+  assert.equal(sampled.body.experiment.samples.length, 1);
+
+  await request('/initiative-budgets/test-scope', { method: 'PUT', body: { daily_limit: 2 } });
+  assert.equal((await request('/initiative-budgets/test-scope')).body.limit, 2);
+  assert.ok((await request('/decision-traces')).body.length >= 0);
+  const summary = await request('/intelligence');
+  assert.ok(summary.body.relationships >= 1);
+  const bench = await request('/nora-bench');
+  assert.equal(bench.body.passed, bench.body.total);
+});
+
 test('public identity and prompt endpoints retain their response contracts', async () => {
   const prompt = await request('/prompt');
   assert.equal(typeof prompt.body, 'string');
@@ -176,9 +212,10 @@ test('public identity and prompt endpoints retain their response contracts', asy
 });
 
 test('dream and transcript CRUD preserves response shapes and local files', async () => {
-  const dream = await request('/dreams', { method: 'POST', body: { narrative: 'A useful dream', reflection: { ideas: ['Ship it'] } } });
+  const dream = await request('/dreams', { method: 'POST', body: { narrative: 'A useful dream', reflection: { ideas: ['Ship it'] }, review: { learnings_added: ['Ask one crisper follow-up'] } } });
   assert.equal(dream.body.dream.narrative, 'A useful dream');
   assert.equal((await request(`/dreams/${dream.body.dream.id}`)).body.reflection.ideas[0], 'Ship it');
+  assert.equal((await request('/learning-experiments')).body.some(item => item.behavior === 'Ask one crisper follow-up'), true);
   assert.equal((await request(`/dreams/${dream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
 
   const list = await request('/transcripts');

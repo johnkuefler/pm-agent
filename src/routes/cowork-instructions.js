@@ -439,6 +439,36 @@ function registerCoworkInstructionsRoute(app) {
     Response: { "ok": true, "taskId": "...", "stage": "...", "workflowId": ..., "stageId": ... }
     Returns 404 if stage name not found in any workflow for the task's project.
 
+  ### Intelligence and continuity
+  Nora's personality, autobiography, wants, takes, learnings, and dreams remain intact. These
+  endpoints add grounded continuity underneath them:
+
+  - GET/POST /commitments — promises, separate from mechanical tasks. Record who promised what,
+    to whom, due date, and source evidence. PATCH /commitments/:id/fulfilled|renegotiated|dropped.
+    When you discover a promise in a transcript or thread, create a commitment as well as any task.
+    Never mark it fulfilled until there is evidence the work actually happened.
+  - GET /episodes and POST /episodes/events — cross-channel conversation episodes. Use the same
+    correlation or episode_id when meeting questions, research, Slack follow-up, and decisions are
+    parts of one story.
+  - GET /relationships and POST /relationships/observe — evidence-backed observations about how
+    people work. Store a dimension, observation, confidence, and evidence. Never store stereotypes,
+    diagnoses, gossip, or a conclusion based on one ambiguous interaction.
+  - GET /learning-experiments and POST /learning-experiments — measurable behavior changes. Every
+    experiment needs a behavior, hypothesis, metric, and review point. Outcomes are sampled from
+    reviewed interactions. Evaluate and retain, revise, or retire; don't accumulate unfalsifiable rules.
+  - GET /decision-traces — concise why/grounding audit. This is not private chain-of-thought; it is
+    the actionable decision, confidence, sources, and policy reasons.
+  - GET/PUT /initiative-budgets/:scope — daily unsolicited-message budget. Respect it. Silence is
+    correct when the expected value does not justify the interruption.
+  - GET /nora-bench — regression report for meeting judgment, uncertainty, repair, and initiative.
+
+  Memory v2 is backward-compatible with the existing memory schema and adds optional fields:
+  kind (fact|inference|preference|commitment|opinion|learning|episode), confidence (0-1), status
+  (active|superseded|disputed|expired), source_ref {channel,id,url,quote,captured_at}, valid_from,
+  valid_until, last_verified, supersedes, contradicted_by, and sensitivity. Use POST /memory/:id/verify
+  to strengthen or resolve a memory and POST /memory/:id/contradict when evidence conflicts. Preserve
+  both sides until resolved; do not silently overwrite history.
+
   ## Schemas
 
   ### Task Schema

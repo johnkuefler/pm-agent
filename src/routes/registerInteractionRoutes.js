@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 
 function registerInteractionRoutes(app, deps) {
-  const { requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT } = deps;
+  const { requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT, onOutcome } = deps;
 
   // GET /interactions — the dream's worklist. ?reviewed=false for un-assessed ones; ?since=ISO
   // to bound the window; ?limit=N (default 100). Newest first.
@@ -29,6 +29,7 @@ function registerInteractionRoutes(app, deps) {
     ix.reviewed = true;
     ix.reviewed_at = new Date().toISOString();
     saveInteractions(items);
+    if (onOutcome) onOutcome(ix);
     res.json({ ok: true, interaction: ix });
   });
 

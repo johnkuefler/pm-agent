@@ -1,7 +1,7 @@
 'use strict';
 
 function registerTaskRoutes(app, deps) {
-  const { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun } = deps;
+  const { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun, onTaskCreated, onTaskCompleted } = deps;
 
   // Task queue API
   app.get('/tasks', requireAuth, (req, res) => {
@@ -39,6 +39,7 @@ function registerTaskRoutes(app, deps) {
       scheduled_for: effectiveScheduledFor,
       recurrence: recurrence || null
     });
+    if (onTaskCreated) onTaskCreated({ id, action, detail: detail || '', assignee: assignee || '', due: due || '', scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
     res.json({ ok: true, id, scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
   });
 
@@ -57,7 +58,8 @@ function registerTaskRoutes(app, deps) {
         task.scheduled_for = next;
         task.completed = null;
         task.status = 'pending';
-        saveTasks(tasks);
+      saveTasks(tasks);
+      if (onTaskCompleted) onTaskCompleted(task, { recurring: true, completed_at: completedAt });
         console.log(`🔁 Recurring task fired and rolled: ${task.id} ${task.action} → next ${next}`);
         return res.json({ ok: true, task, rolled_to: next });
       }
@@ -66,7 +68,8 @@ function registerTaskRoutes(app, deps) {
     }
     task.status = 'done';
     task.completed = completedAt;
-    saveTasks(tasks);
+  saveTasks(tasks);
+  if (onTaskCompleted) onTaskCompleted(task, { recurring: false, completed_at: completedAt });
     console.log('✅ Task completed:', task.id, task.action);
     res.json({ ok: true, task });
   });
