@@ -1249,6 +1249,20 @@ function realtimePromptForSession(session) {
   return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta);
 }
 
+// Async variant that adds SEMANTIC RECALL for the voice prompt: retrieves the memory facts
+// most relevant (by meaning) to the recent spoken conversation and folds them into the
+// uncached tail. Used only at conversation-driven refresh points (a new speaker, the 5-min
+// refresh) — not at connection (no transcript yet) or on the latency-critical probe/interject
+// paths. Degrades to the plain prompt when the DB is off / embed times out (retrieve returns []).
+async function realtimePromptWithRecall(session) {
+  if (session && session.dummy) {
+    return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
+  }
+  const q = (session?.transcript || []).slice(-14).map(t => t.text || '').join(' ');
+  const semanticMemories = await retrieveSemanticMemories(q);
+  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories });
+}
+
 // Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header.
 // Skips auth if NORA_API_KEY is not set (open access for local dev). The previous
 // "same-origin" bypass was removed because the Sec-Fetch-Site header is trivially spoofable
@@ -2686,7 +2700,7 @@ app.post('/webhook/transcript', async (req, res) => {
       session.knownSpeakers.add(speaker);
       if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
         try {
-          const updatedPrompt = realtimePromptForSession(session);
+          const updatedPrompt = await realtimePromptWithRecall(session);
           session.openaiWs.send(JSON.stringify({
             type: 'session.update',
             session: { type: 'realtime', instructions: updatedPrompt }
@@ -7610,11 +7624,11 @@ wss.on('connection', async (ws, req) => {
   });
 
   // Periodically refresh Nora's instructions with latest memory
-  const refreshInterval = setInterval(() => {
+  const refreshInterval = setInterval(async () => {
     if (openaiWs.readyState !== WebSocket.OPEN) return;
     const s = sessions[botId];
     const isMuted = s?.muted;
-    const updatedPrompt = realtimePromptForSession(s);
+    const updatedPrompt = await realtimePromptWithRecall(s);
     openaiWs.send(JSON.stringify({
       type: 'session.update',
       session: {
