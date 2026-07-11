@@ -1355,7 +1355,7 @@
         const when = m.set_at ? new Date(m.set_at).toLocaleDateString() : '';
         return `<div class="memory-item">
           <div style="flex:1; min-width:0;">
-            <div class="memory-fact" style="font-family:ui-monospace,monospace; font-size:13px; color:#e6e5ef; word-break:break-all;">
+            <div class="memory-fact" style="font-family:ui-monospace,monospace; font-size:13px; color:#3a3844; word-break:break-all;">
               <span style="color:${color};">${escHtml(m.category)}</span><span style="color:#87858f;">${escHtml(m.key.slice(m.category.length))}</span>
             </div>
             ${summary ? `<div class="memory-meta" style="word-break:break-word;">${escHtml(summary)}</div>` : ''}
@@ -1462,7 +1462,7 @@
                 <div style="font-size:15px; font-weight:600; color:#6d28d9;">💤 ${escHtml(d.date || '')}</div>
                 <div style="font-size:11px; color:#87858f;">${escHtml(whenStr)}</div>
               </div>
-              ${d.narrative ? `<div style="font-size:14px; line-height:1.6; color:#e6e5ef; font-style:italic; border-left:3px solid #7c3aed; padding:4px 0 4px 14px; margin-bottom:12px;">"${escHtml(d.narrative)}"</div>` : ''}
+              ${d.narrative ? `<div style="font-size:14px; line-height:1.6; color:#3a3844; font-style:italic; border-left:3px solid #7c3aed; padding:4px 0 4px 14px; margin-bottom:12px;">"${escHtml(d.narrative)}"</div>` : ''}
               <div style="margin-bottom:4px;">
                 ${beforeAfter ? `<span style="font-size:12px; margin-right:14px;">${beforeAfter}</span>` : ''}
                 ${dreamStat('merged', c.duplicates_removed, '#a21caf')}
@@ -1506,7 +1506,7 @@
         <div id="utt-${i}" style="padding: 4px 0; border-bottom: 1px solid #ffffff; display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
           <div style="flex: 1;">
             <strong style="color: #6d28d9;">${escHtml(u.speaker)}</strong>
-            <span style="color: #cfcdd9; font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
+            <span style="color: #9a98a6; font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
             <div style="color: #3a3844;">${escHtml(u.text)}</div>
           </div>
           <div style="display: flex; gap: 4px; flex-shrink: 0; padding-top: 2px;">
@@ -1612,7 +1612,7 @@
         if (mems.length > 0) {
           document.getElementById('project-memories').innerHTML =
             '<div style="color: #6d28d9; font-size: 12px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase;">Memories (' + mems.length + ')</div>' +
-            mems.map(m => `<div style="padding: 6px 0; border-bottom: 1px solid #f5f5fa; font-size: 13px; color: #3a3844;">- ${escHtml(m.fact)}<span style="color: #cfcdd9; font-size: 11px; margin-left: 8px;">${m.added || ''}</span></div>`).join('');
+            mems.map(m => `<div style="padding: 6px 0; border-bottom: 1px solid #f5f5fa; font-size: 13px; color: #3a3844;">- ${escHtml(m.fact)}<span style="color: #9a98a6; font-size: 11px; margin-left: 8px;">${m.added || ''}</span></div>`).join('');
         } else {
           document.getElementById('project-memories').innerHTML = '<p class="empty">No memories tagged to this project yet.</p>';
         }
@@ -2087,7 +2087,7 @@
           const lastPost = c.last_proactive_post ? new Date(c.last_proactive_post).toLocaleString() : 'never';
           const cooldownLabel = c.cooldown_active ? '<span style="color: #b45309;">cooldown active</span>' : '<span style="color: #15803d;">ready</span>';
           const heading = c.channel_name
-            ? `<span>#${escHtml(c.channel_name)}</span> <span style="color: #cfcdd9; font-weight: 400; font-family: monospace; font-size: 11px; margin-left: 6px;">${escHtml(c.channel)}</span>`
+            ? `<span>#${escHtml(c.channel_name)}</span> <span style="color: #9a98a6; font-weight: 400; font-family: monospace; font-size: 11px; margin-left: 6px;">${escHtml(c.channel)}</span>`
             : `<span style="font-family: monospace;">${escHtml(c.channel)}</span>`;
           return `
             <div class="memory-item">
@@ -2154,7 +2154,7 @@
           const channelLabel = th.channel_name
             ? `#${escHtml(th.channel_name)}`
             : escHtml(th.channel);
-          const heading = `<span style="font-size: 14px;">${channelLabel}</span> <span style="font-family: monospace; font-size: 11px; color: #cfcdd9; margin-left: 6px;">${escHtml(th.thread_ts)}</span>`;
+          const heading = `<span style="font-size: 14px;">${channelLabel}</span> <span style="font-family: monospace; font-size: 11px; color: #9a98a6; margin-left: 6px;">${escHtml(th.thread_ts)}</span>`;
           return `
             <div class="memory-item">
               <div style="flex: 1;">
