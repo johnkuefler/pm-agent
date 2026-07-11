@@ -576,7 +576,7 @@
         ta.value = r.content || '';
         const chars = (r.content || '').length.toLocaleString();
         meta.textContent = r.updated_at
-          ? `Last updated ${new Date(r.updated_at).toLocaleString()} by ${r.updated_by || '?'} · ${chars} chars`
+          ? `Last updated ${new Date(r.updated_at).toLocaleString()} by ${r.updated_by || '?'}${r.note ? ` · "${r.note}"` : ''} · ${chars} chars`
           : `${chars} chars`;
       } catch (e) { meta.textContent = 'Failed to load routine.'; }
     }

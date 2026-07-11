@@ -2268,11 +2268,19 @@ async function loadRoutine() {
     return { content: fs.readFileSync(p, 'utf8'), updated_at: null, updated_by: 'seed (file)' };
   } catch { return { content: '', updated_at: null, updated_by: null }; }
 }
-async function saveRoutine(content, updatedBy) {
-  const rec = { content: String(content || ''), updated_at: new Date().toISOString(), updated_by: updatedBy || 'unknown' };
+async function saveRoutine(content, updatedBy, note) {
+  const rec = { content: String(content || ''), updated_at: new Date().toISOString(), updated_by: updatedBy || 'unknown', note: note || null };
   if (_dbReady) {
     const prev = await db.getState('routine');
-    if (prev) await db.setState('routine_prev', prev); // one-level undo safety
+    if (prev) {
+      await db.setState('routine_prev', prev); // one-level fast undo
+      // Version history (self-improvement safety rail): keep the last 8 full versions so a bad
+      // self-edit is always recoverable and the routine's evolution is inspectable.
+      const hist = (await db.getState('routine_history')) || [];
+      hist.push({ updated_at: prev.updated_at, updated_by: prev.updated_by, note: prev.note || null, length: (prev.content || '').length, content: prev.content });
+      while (hist.length > 8) hist.shift();
+      await db.setState('routine_history', hist);
+    }
     await db.setState('routine', rec);
     return rec;
   }
@@ -2287,16 +2295,82 @@ app.get('/routine', async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// PUT /routine — replace the routine. Auth required. Body: { content, updated_by? }.
+// PUT /routine — replace the routine. Auth required. Body: { content, updated_by?, note? }.
+// `note` is a one-line summary of WHAT changed and WHY; required when the updater is Nora
+// herself (self-improvement edits must be explainable) and it lands in the version history.
 app.put('/routine', requireAuth, async (req, res) => {
   const content = req.body && req.body.content;
   if (typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ error: 'content (a non-empty markdown string) is required' });
   }
+  const updatedBy = (req.body.updated_by || 'unknown').toString();
+  const note = req.body.note ? String(req.body.note).slice(0, 500) : null;
+  if (/^nora/i.test(updatedBy) && !note) {
+    return res.status(400).json({ error: 'self-edits require a note: one line on what changed and why' });
+  }
   try {
-    const rec = await saveRoutine(content, req.body.updated_by);
-    console.log(`📋 Routine updated by ${rec.updated_by} (${content.length} chars)`);
+    const rec = await saveRoutine(content, updatedBy, note);
+    console.log(`📋 Routine updated by ${rec.updated_by} (${content.length} chars)${note ? ` — ${note}` : ''}`);
     res.json({ ok: true, updated_at: rec.updated_at, updated_by: rec.updated_by, length: content.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /routine/history — the last saved versions (metadata; ?full=true includes content).
+app.get('/routine/history', requireAuth, async (req, res) => {
+  try {
+    const hist = _dbReady ? ((await db.getState('routine_history')) || []) : [];
+    const out = req.query.full === 'true' ? hist : hist.map(h => ({ updated_at: h.updated_at, updated_by: h.updated_by, note: h.note, length: h.length }));
+    res.json(out.slice().reverse()); // newest first
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /routine/rollback — restore the previous version (routine_prev). The escape hatch for
+// a bad self-edit: one call puts the prior routine back and logs who rolled back.
+app.post('/routine/rollback', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const prev = await db.getState('routine_prev');
+    if (!prev || !prev.content) return res.status(404).json({ error: 'no previous version stored' });
+    const rec = await saveRoutine(prev.content, (req.body && req.body.updated_by) || 'rollback', `rolled back to version from ${prev.updated_at} (${prev.updated_by})`);
+    console.log(`📋 Routine rolled back to ${prev.updated_at}`);
+    res.json({ ok: true, restored_from: prev.updated_at, updated_at: rec.updated_at });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /self-review/stats — weekly outcome buckets from the interaction log, so the dream's
+// self-improvement pass can MEASURE whether its own learnings are working (are this week's
+// outcomes better than last week's?) instead of accumulating unfalsifiable lessons. This is
+// the recursive part: the improvement loop gets a signal about the improvement loop.
+app.get('/self-review/stats', requireAuth, (req, res) => {
+  try {
+    const isoWeek = (d) => {
+      const dt = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+      const dayNum = dt.getUTCDay() || 7;
+      dt.setUTCDate(dt.getUTCDate() + 4 - dayNum);
+      const yearStart = new Date(Date.UTC(dt.getUTCFullYear(), 0, 1));
+      const week = Math.ceil((((dt - yearStart) / 86400000) + 1) / 7);
+      return `${dt.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+    };
+    const buckets = {};
+    for (const ix of loadInteractions()) {
+      if (!ix.created) continue;
+      const wk = isoWeek(new Date(ix.created));
+      if (!buckets[wk]) buckets[wk] = { week: wk, total: 0, reviewed: 0, appreciated: 0, landed: 0, neutral: 0, ignored: 0, corrected: 0, reactions: 0 };
+      const b = buckets[wk];
+      b.total++;
+      if (ix.kind === 'reaction') b.reactions++;
+      if (ix.reviewed) {
+        b.reviewed++;
+        if (b[ix.outcome] !== undefined) b[ix.outcome]++;
+      }
+    }
+    const weeks = Object.values(buckets).sort((a, b) => a.week.localeCompare(b.week));
+    for (const w of weeks) {
+      const scored = w.appreciated + w.landed + w.neutral + w.ignored + w.corrected;
+      w.positive_rate = scored ? Math.round(((w.appreciated + w.landed) / scored) * 100) : null;
+      w.negative_rate = scored ? Math.round(((w.ignored + w.corrected) / scored) * 100) : null;
+    }
+    res.json({ weeks: weeks.slice(-8) });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
