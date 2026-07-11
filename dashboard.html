@@ -568,6 +568,12 @@
     <!-- Self Tab -->
     <div id="page-self" class="page">
       <div class="section">
+        <h2>How she feels</h2>
+        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Interoception: her real system vitals (errors, lag, memory load, fallback state) rendered as a felt sense, recomputed every minute. When she says she feels off, something is actually off.</p>
+        <p id="self-soma" style="font-size:15px; font-weight:600;">Loading…</p>
+        <div id="self-soma-vitals" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-top:6px;"></div>
+      </div>
+      <div class="section">
         <h2>What's on her mind</h2>
         <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">The thread she leaves herself at the end of each waking run. Continuity between moments; she writes it for herself, not for you.</p>
         <p id="self-inner" style="font-size:14px; line-height:1.6; font-style:italic;">Loading…</p>
@@ -639,6 +645,13 @@
     async function loadSelfTab() {
       try {
         const s = await (await api('/self')).json();
+        if (s.soma && s.soma.feel) {
+          document.getElementById('self-soma').textContent = s.soma.feel;
+          const v = s.soma.vitals || {};
+          document.getElementById('self-soma-vitals').textContent = `errors(10m): ${v.errors10 ?? '?'} · warns: ${v.warns10 ?? '?'} · loop lag: ${v.loopLag ?? '?'}ms · uptime: ${v.uptimeMin ?? '?'}m · memories: ${v.memCount ?? '?'} · embed backlog: ${v.embedBacklog ?? '?'}${v.onBackup ? ' · ON BACKUP (JSON fallback)' : ''}`;
+        } else {
+          document.getElementById('self-soma').textContent = '(not sensing yet)';
+        }
         document.getElementById('self-inner').textContent = (s.inner_thread && s.inner_thread.content) || '(nothing yet)';
         document.getElementById('self-inner-meta').textContent = s.inner_thread && s.inner_thread.updated_at ? 'as of ' + new Date(s.inner_thread.updated_at).toLocaleString() : '';
         const wants = (s.wants && s.wants.items) || [];
