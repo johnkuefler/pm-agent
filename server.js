@@ -1244,6 +1244,19 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
   if (convFocus) volatile += convFocus;
 
+  // Meetings she actually attended (last 7 days), from her own transcripts. Without this she
+  // denied being on calls she had filed transcripts for; the transcripts store had no bridge
+  // into her live awareness. Uncached tail: it changes as meetings happen.
+  if (_recentMeetingsCache.length) {
+    const rows = _recentMeetingsCache.map(m => {
+      const d = m.ended ? new Date(m.ended).toLocaleString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' }) : 'in progress';
+      const who = m.speakers && m.speakers.length ? ` with ${m.speakers.join(', ')}` : '';
+      const status = m.client ? `, filed for ${m.client}` : (m.skipped ? `, not filed (${m.skipped})` : '');
+      return `- ${d}${who} (${m.utterances} lines${status})`;
+    });
+    volatile += `\n\n[Meetings you attended in the last 7 days, from your own saved transcripts]\n${rows.join('\n')}\nThis is the authoritative record of your calls. If someone asks about your meetings, answer from THIS list; never say you weren't on a call without checking it. When they want specifics of what was discussed, use nora_list_meetings / nora_read_transcript if you have them this turn.`;
+  }
+
   // Semantic recall (uncached): the most relevant memory FACTS by meaning, retrieved via
   // pgvector in the async caller and passed in. Complements the keyword project-focus above —
   // it surfaces individually-relevant facts the cached, budget-capped memory block may have
@@ -3267,6 +3280,8 @@ app.post('/webhook/chat', async (req, res) => {
     if (teamworkEnabled()) {
       for (const t of TEAMWORK_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     }
+    // Her own meeting record, read-only ("didn't we cover this on Tuesday's call?").
+    for (const t of MEETING_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     let zoomTail = zoomVolatile;
     if (teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is for scheduling via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
 
@@ -3438,6 +3453,8 @@ app.post('/webhook/status', async (req, res) => {
         console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
         // Post-meeting debrief to John (fire-and-forget; captures its inputs before cleanup).
         runMeetingDebrief(bot_id, transcriptData, session.meetingMeta).catch(() => {});
+        // The meeting that just ended shows up in her self-awareness immediately.
+        refreshRecentMeetingsCache().catch(() => {});
       } catch (err) {
         console.error('Transcript save error:', err.message);
       }
@@ -5222,6 +5239,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Live Slack send — direct replies only. She can send a note to another channel/person right
     // now when asked, instead of queuing it for the hourly loop. Never on a proactive interjection.
     if (isDirect) { toolDefs.push(SLACK_SEND_TOOL.definition); toolExecutors[SLACK_SEND_TOOL.definition.name] = SLACK_SEND_TOOL.execute; }
+    // Her own meeting record — read-only, both modes (a grounded proactive comment may cite a call).
+    for (const t of MEETING_TOOLS) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
     const teamworkOn = teamworkEnabled();
     // MCP connectors are read-only; proactive (a channel post) never gets the financial ones.
     const mcpServers = liveMcpServers(isDirect ? financialApproved : false);
@@ -6959,6 +6978,99 @@ async function deleteTranscriptDoc(botId) {
   try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
 }
 
+// ── Meeting self-awareness ──────────────────────────────────────────────────
+// Her transcripts hold every meeting she's attended, but nothing bridged them into her live
+// conversational awareness: asked "you were on some meetings yesterday?", she checked her
+// activity log (marker notes), found nothing, and flatly denied attending calls she had filed
+// transcripts for the same day. This cache summarizes the last 7 days of transcripts (who was
+// there, when, whether it was filed) for injection into every prompt, refreshed on boot, on a
+// timer, and when a meeting ends. buildSystemPrompt is sync, hence a cache and not a query.
+let _recentMeetingsCache = [];
+async function refreshRecentMeetingsCache() {
+  try {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const list = (await listTranscriptDocs())
+      .filter(t => t.ended && new Date(t.ended).getTime() >= cutoff)
+      .slice(0, 12);
+    const markers = loadMarkers();
+    const out = [];
+    for (const r of list) {
+      let speakers = [];
+      try {
+        const doc = await getTranscriptDoc(r.bot_id);
+        if (doc) {
+          speakers = [...new Set((doc.transcript || [])
+            .map(u => u.speaker)
+            .filter(s => s && !/^(Nora|Screen share|Participant)/i.test(s)))].slice(0, 6);
+        }
+      } catch { /* speakers stay empty; the row still counts */ }
+      const filed = (markers[`filed-transcript:${r.bot_id}`]) || null;
+      const skipped = (markers[`skipped-transcript:${r.bot_id}`]) || null;
+      out.push({
+        bot_id: r.bot_id,
+        ended: r.ended,
+        utterances: r.utterance_count,
+        speakers,
+        client: filed && filed.client ? filed.client : null,
+        skipped: skipped ? (skipped.reason || 'skipped') : null
+      });
+    }
+    _recentMeetingsCache = out;
+  } catch (e) { console.warn('recent-meetings cache refresh failed:', e.message); }
+}
+
+// Live tools so she can consult her own meeting record mid-conversation (Slack + Zoom chat).
+// Read-only; the adjacent flaw to the awareness gap: even knowing she attended, she couldn't
+// say what was discussed without these.
+const MEETING_TOOLS = [
+  {
+    definition: {
+      name: 'nora_list_meetings',
+      description: "List meetings Nora attended, from her saved transcripts, newest first. Use when someone asks about her meetings or calls ('you were on some meetings yesterday?'). Returns bot_id (for nora_read_transcript), when it ended, who spoke, and where it was filed.",
+      input_schema: { type: 'object', properties: { days: { type: 'number', description: 'How many days back to look (default 14, max 60)' } } }
+    },
+    execute: async (args) => {
+      const days = Math.min(Math.max(Number(args && args.days) || 14, 1), 60);
+      const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+      const list = (await listTranscriptDocs()).filter(t => t.ended && new Date(t.ended).getTime() >= cutoff).slice(0, 25);
+      const markers = loadMarkers();
+      const rows = [];
+      for (const r of list) {
+        let speakers = [];
+        try {
+          const doc = await getTranscriptDoc(r.bot_id);
+          if (doc) speakers = [...new Set((doc.transcript || []).map(u => u.speaker).filter(s => s && !/^(Nora|Screen share|Participant)/i.test(s)))].slice(0, 8);
+        } catch {}
+        const filed = markers[`filed-transcript:${r.bot_id}`] || null;
+        rows.push({ bot_id: r.bot_id, ended: r.ended, utterances: r.utterance_count, speakers, filed_for: filed && filed.client ? filed.client : null });
+      }
+      return { meetings: rows, note: rows.length ? undefined : `no transcripts in the last ${days} days` };
+    }
+  },
+  {
+    definition: {
+      name: 'nora_read_transcript',
+      description: "Read one of Nora's meeting transcripts by bot_id (get ids from nora_list_meetings). Optional search returns only matching lines with surrounding context. Use to answer what was discussed, decided, or promised in a meeting she attended.",
+      input_schema: { type: 'object', properties: { bot_id: { type: 'string' }, search: { type: 'string', description: 'Optional term; returns matching lines with 2 lines of context' } }, required: ['bot_id'] }
+    },
+    execute: async (args) => {
+      const doc = await getTranscriptDoc(String(args.bot_id || ''));
+      if (!doc) return { error: 'no transcript with that bot_id' };
+      const lines = (doc.transcript || []).map(u => `[${u.speaker}]: ${u.text}`);
+      let out = lines;
+      if (args.search && String(args.search).trim()) {
+        const q = String(args.search).toLowerCase();
+        const keep = new Set();
+        lines.forEach((l, i) => { if (l.toLowerCase().includes(q)) { for (let j = Math.max(0, i - 2); j <= Math.min(lines.length - 1, i + 2); j++) keep.add(j); } });
+        out = [...keep].sort((a, b) => a - b).map(i => lines[i]);
+        if (!out.length) return { ended: doc.ended, total_lines: lines.length, note: 'no lines matched that search' };
+      }
+      const text = out.join('\n');
+      return { ended: doc.ended, total_lines: lines.length, transcript: text.length > 14000 ? text.slice(0, 14000) + '\n[truncated]' : text };
+    }
+  }
+];
+
 // Transcript API — list and retrieve saved meeting transcripts
 app.get('/transcripts', requireAuth, async (req, res) => {
   try {
@@ -8174,5 +8286,9 @@ initPersistence().finally(() => {
   server.listen(process.env.PORT, () => {
     console.log(`Nora server running on port ${process.env.PORT}`);
     backfillTranscriptDates();
+    // Meeting self-awareness: prime the recent-meetings cache now, keep it fresh on a timer
+    // (it also refreshes when a meeting ends).
+    refreshRecentMeetingsCache();
+    setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000);
   });
 });
