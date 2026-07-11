@@ -9,6 +9,7 @@ const { WebSocketServer, WebSocket } = require('ws');
 const db = require('./db');
 const app = express();
 const server = http.createServer(app);
+const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 
 // ── Postgres persistence bridge ──────────────────────────────────────────────
 // When DATABASE_URL is set and db.init() succeeds, Postgres is the source of truth:
@@ -57,11 +58,11 @@ const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 const PROMPT_PATH = path.join(__dirname, 'nora-prompt.md');
 const VOLUME_DIR = '/data';
 const MEMORY_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-memory.json');
-const MEMORY_PATH_LOCAL = path.join(__dirname, 'nora-memory.json');
+const MEMORY_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-memory.json');
 const TASKS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-tasks.json');
-const TASKS_PATH_LOCAL = path.join(__dirname, 'nora-tasks.json');
+const TASKS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-tasks.json');
 const PROJECTS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-projects.json');
-const PROJECTS_PATH_LOCAL = path.join(__dirname, 'nora-projects.json');
+const PROJECTS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-projects.json');
 
 // Use Railway volume if available, fall back to local file for dev
 function getMemoryPath() {
@@ -198,7 +199,7 @@ function markerKeyForFact(fact) {
 }
 
 const MARKERS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-markers.json');
-const MARKERS_PATH_LOCAL = path.join(__dirname, 'nora-markers.json');
+const MARKERS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-markers.json');
 function getMarkersPath() {
   return fs.existsSync(VOLUME_DIR) ? MARKERS_PATH_VOLUME : MARKERS_PATH_LOCAL;
 }
@@ -286,7 +287,7 @@ function saveProjects(projects) {
 // Calendar connection state — recall_calendar_id + connected metadata for Nora's
 // Google Calendar auto-join integration. Single-record file (Nora has one mailbox).
 const CALENDAR_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-calendar.json');
-const CALENDAR_PATH_LOCAL = path.join(__dirname, 'nora-calendar.json');
+const CALENDAR_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-calendar.json');
 function getCalendarPath() {
   if (fs.existsSync(VOLUME_DIR)) return CALENDAR_PATH_VOLUME;
   return CALENDAR_PATH_LOCAL;
@@ -343,7 +344,7 @@ function bumpProjectActivity(name) {
 // counter of inbound messages since. Threads "go stale" once the counter or time gap exceeds
 // thresholds — at which point Nora drops out and a re-mention is required to wake her back up.
 const SLACK_THREADS_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-threads.json');
-const SLACK_THREADS_PATH_LOCAL = path.join(__dirname, 'slack-threads.json');
+const SLACK_THREADS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'slack-threads.json');
 const SLACK_THREADS_CAP = 1000; // hard cap on tracked threads, oldest evicted
 const THREAD_STALE_MSG_COUNT = 5; // messages since last addressed before going stale
 const THREAD_STALE_AGE_MS = 30 * 60 * 1000; // 30 minutes since last addressed before going stale
@@ -439,7 +440,7 @@ function isThreadActive(channel, threadTs) {
 //   2. A stricter Claude gate than thread-continuation runs every time
 //   3. Per-channel cooldown after each successful proactive post
 const SLACK_PROACTIVE_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-proactive-channels.json');
-const SLACK_PROACTIVE_PATH_LOCAL = path.join(__dirname, 'slack-proactive-channels.json');
+const SLACK_PROACTIVE_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'slack-proactive-channels.json');
 const PROACTIVE_COOLDOWN_MS = 30 * 60 * 1000; // 30 min between proactive posts in the same channel
 
 function getSlackProactivePath() {
@@ -484,7 +485,7 @@ function markProactivePost(channel) {
 // reads this every message; cowork populates it via the admin endpoints (the bootstrap is
 // in cowork-prompt.md so user IDs get looked up once and persisted).
 const SLACK_FINANCIAL_APPROVED_PATH_VOLUME = path.join(VOLUME_DIR, 'slack-financial-approved.json');
-const SLACK_FINANCIAL_APPROVED_PATH_LOCAL = path.join(__dirname, 'slack-financial-approved.json');
+const SLACK_FINANCIAL_APPROVED_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'slack-financial-approved.json');
 
 function getSlackFinancialApprovedPath() {
   if (fs.existsSync(VOLUME_DIR)) return SLACK_FINANCIAL_APPROVED_PATH_VOLUME;
@@ -702,9 +703,6 @@ function isTaskEligibleNow(task, now = new Date()) {
   if (!task.scheduled_for) return true;
   return new Date(task.scheduled_for).getTime() <= now.getTime();
 }
-
-initMemory();
-backfillMemoryIds();
 
 // ── Postgres bootstrap: migrate JSON → PG (once), hydrate caches, flip _dbReady ──
 // Runs before the server accepts requests (see the server.listen wrapper at the bottom),
@@ -2574,7 +2572,7 @@ async function saveRoutine(content, updatedBy, note) {
     await db.setState('routine', rec);
     return rec;
   }
-  const p = fs.existsSync(VOLUME_DIR) ? path.join(VOLUME_DIR, 'nora-routine.md') : path.join(__dirname, 'nora-routine.md');
+  const p = fs.existsSync(VOLUME_DIR) ? path.join(VOLUME_DIR, 'nora-routine.md') : path.join(LOCAL_DATA_DIR, 'nora-routine.md');
   fs.writeFileSync(p, rec.content);
   return rec;
 }
@@ -2586,7 +2584,9 @@ async function saveRoutine(content, updatedBy, note) {
 function loadCharterSync() {
   if (_dbReady && _cache.charter && _cache.charter.content) return _cache.charter;
   try {
-    return { content: fs.readFileSync(path.join(__dirname, 'nora-charter.md'), 'utf8'), updated_at: null, updated_by: 'seed (file)' };
+    const local = path.join(LOCAL_DATA_DIR, 'nora-charter.md');
+    const seed = fs.existsSync(local) ? local : path.join(__dirname, 'nora-charter.md');
+    return { content: fs.readFileSync(seed, 'utf8'), updated_at: null, updated_by: 'seed (file)' };
   } catch { return { content: '', updated_at: null, updated_by: null }; }
 }
 
@@ -2624,7 +2624,7 @@ app.put('/charter', requireAuth, async (req, res) => {
         await db.setState('charter_history', hist);
       }
       await db.setState('charter', rec); _cache.charter = rec;
-    } else { fs.writeFileSync(path.join(__dirname, 'nora-charter.md'), content); }
+    } else { fs.writeFileSync(path.join(LOCAL_DATA_DIR, 'nora-charter.md'), content); }
     console.log(`📜 Charter updated by ${updatedBy} (${content.length} chars)${note ? ` — ${note}` : ''}`);
     res.json({ ok: true, updated_at: rec.updated_at, updated_by: rec.updated_by, length: content.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2974,7 +2974,7 @@ app.post('/voice-agent/response', async (req, res) => {
 // before the meeting), and any server redeploy in between would wipe an in-memory
 // map and break the bot's WS auth when it eventually tries to connect.
 const TOKENS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-tokens.json');
-const TOKENS_PATH_LOCAL = path.join(__dirname, 'nora-tokens.json');
+const TOKENS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-tokens.json');
 function getTokensPath() {
   if (fs.existsSync(VOLUME_DIR)) return TOKENS_PATH_VOLUME;
   return TOKENS_PATH_LOCAL;
@@ -4120,7 +4120,7 @@ const LIVE_MCP_DEFS = [
 // named ones, so either path is valid. Store entries:
 //   { id, name, url, token, financial, enabled, created }
 const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
-const MCP_PATH_LOCAL = path.join(__dirname, 'nora-mcp.json');
+const MCP_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-mcp.json');
 function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
 function loadMcpStore() {
   if (_dbReady) return _cache.mcp || [];
@@ -5070,7 +5070,7 @@ function shouldRespond(event) {
 // (slow, mcp-driven) Drive upload.
 
 const INBOX_DIR_VOLUME = path.join(VOLUME_DIR, 'nora-inbox');
-const INBOX_DIR_LOCAL = path.join(__dirname, 'nora-inbox');
+const INBOX_DIR_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-inbox');
 function getInboxDir() {
   return fs.existsSync(VOLUME_DIR) ? INBOX_DIR_VOLUME : INBOX_DIR_LOCAL;
 }
@@ -7418,7 +7418,7 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 // upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
 async function saveTranscriptDoc(botId, transcript, ended) {
   if (_dbReady) return _writeThrough('transcript:' + botId, () => db.upsertTranscript(botId, ended || null, transcript || []));
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
   catch (e) { console.warn('transcript write failed:', e.message); }
 }
@@ -7427,7 +7427,7 @@ async function getTranscriptDoc(botId) {
     const r = await db.getTranscript(botId);
     return r ? { bot_id: r.bot_id, ended: r.ended, transcript: r.transcript || [] } : null;
   }
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   const fp = path.join(dir, `transcript-${botId}.json`);
   if (!fs.existsSync(fp)) return null;
   try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
@@ -7437,7 +7437,7 @@ async function listTranscriptDocs() {
     const rows = await db.listTranscripts();
     return rows.map(r => ({ bot_id: r.bot_id, ended: r.ended, url: `/transcripts/${r.bot_id}`, utterance_count: r.utterance_count }));
   }
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   let files = [];
   try { files = fs.readdirSync(dir).filter(f => f.startsWith('transcript-') && f.endsWith('.json')); } catch { return []; }
   return files.map(f => {
@@ -7451,7 +7451,7 @@ async function listTranscriptDocs() {
 }
 async function deleteTranscriptDoc(botId) {
   if (_dbReady) return db.deleteTranscript(botId);
-  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
+  const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   const fp = path.join(dir, `transcript-${botId}.json`);
   try { if (fs.existsSync(fp)) fs.unlinkSync(fp); } catch {}
 }
@@ -7616,7 +7616,7 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res
 // records the output; the dream does the retrospective judging (you can't assess how something
 // landed until time has passed). Gitignored runtime state, capped.
 const INTERACTIONS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-interactions.json');
-const INTERACTIONS_PATH_LOCAL = path.join(__dirname, 'nora-interactions.json');
+const INTERACTIONS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-interactions.json');
 function getInteractionsPath() {
   return fs.existsSync(VOLUME_DIR) ? INTERACTIONS_PATH_VOLUME : INTERACTIONS_PATH_LOCAL;
 }
@@ -7689,7 +7689,7 @@ app.post('/interactions/:id/outcome', requireAuth, (req, res) => {
 // while "asleep." Stored on the Railway volume like the other runtime state, append-style
 // (newest dreams kept, capped to avoid unbounded growth).
 const DREAMS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-dreams.json');
-const DREAMS_PATH_LOCAL = path.join(__dirname, 'nora-dreams.json');
+const DREAMS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-dreams.json');
 function getDreamsPath() {
   return fs.existsSync(VOLUME_DIR) ? DREAMS_PATH_VOLUME : DREAMS_PATH_LOCAL;
 }
@@ -8757,19 +8757,77 @@ wss.on('connection', async (ws, req) => {
   });
 });
 
-// Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
-// reads a half-hydrated cache. If the DB is unavailable, initPersistence resolves with
-// _dbReady=false and the app serves from the JSON volume exactly as before.
-initPersistence().finally(() => {
-  server.listen(process.env.PORT, () => {
-    console.log(`Nora server running on port ${process.env.PORT}`);
-    backfillTranscriptDates();
-    // Meeting self-awareness: prime the recent-meetings cache now, keep it fresh on a timer
-    // (it also refreshes when a meeting ends).
-    refreshRecentMeetingsCache();
-    setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000);
-    // Interoception: her felt sense of her own substrate, every minute.
-    computeSoma();
-    setInterval(computeSoma, 60 * 1000);
+// Runtime lifecycle is explicit so tests can import the exact Express app without opening a
+// socket or starting background work. Running `node server.js` still starts everything exactly
+// as before. NORA_DATA_DIR and background:false give tests isolated persistence and deterministic
+// shutdown without changing production defaults.
+let _startPromise = null;
+const _runtimeIntervals = [];
+
+async function start(options = {}) {
+  if (_startPromise) return _startPromise;
+  const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
+  const port = options.port !== undefined ? options.port : (process.env.PORT || 3000);
+  _startPromise = (async () => {
+    fs.mkdirSync(LOCAL_DATA_DIR, { recursive: true });
+    initMemory();
+    backfillMemoryIds();
+    // Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
+    // reads a half-hydrated cache. DB failure preserves the existing JSON fallback.
+    await initPersistence();
+    await new Promise((resolve, reject) => {
+      const onError = (err) => { server.off('listening', onListening); reject(err); };
+      const onListening = () => { server.off('error', onError); resolve(); };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port);
+    });
+    const address = server.address();
+    console.log(`Nora server running on port ${typeof address === 'object' ? address.port : port}`);
+    if (background) {
+      backfillTranscriptDates();
+      refreshRecentMeetingsCache();
+      _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
+      computeSoma();
+      _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
+    }
+    return server;
+  })();
+  return _startPromise;
+}
+
+async function stop() {
+  for (const timer of _runtimeIntervals.splice(0)) clearInterval(timer);
+  if (_embedTimer) { clearInterval(_embedTimer); _embedTimer = null; }
+  if (server.listening) await new Promise((resolve) => server.close(resolve));
+  await db.close().catch(() => {});
+  _startPromise = null;
+}
+
+module.exports = {
+  app,
+  server,
+  start,
+  stop,
+  __test: {
+    computeNextRun,
+    isValidRecurrence,
+    isTaskEligibleNow,
+    markerKeyForFact,
+    computeSalienceForFact,
+    containsFinancialContent,
+    parseNoraMuteCommand,
+    parseNoraModeCommand,
+    normalizeMeetingUrl,
+    sanitizeFilename,
+    relativeDayLabel,
+    buildBotConfig,
+  },
+};
+
+if (require.main === module) {
+  start().catch((err) => {
+    console.error('Failed to start Nora server:', err);
+    process.exitCode = 1;
   });
-});
+}
