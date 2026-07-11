@@ -5426,9 +5426,14 @@ app.post('/webhook/slack', async (req, res) => {
   const text = event.text || '';
   const channel = event.channel;
   const user = event.user;
-  // For top-level messages, replying with thread_ts=event.ts starts a new thread on that message.
-  // For thread replies, we get event.thread_ts.
-  const threadTs = event.thread_ts || event.ts;
+  // Where she posts her reply. In a 1:1 DM, reply INLINE in the conversation rather than spawning
+  // a thread on every message — threads in a DM are just clutter (John asked for plain replies
+  // there). In channels she still threads: the join/staleness/continuation machinery is built on
+  // threads and threading is good channel etiquette. Either way honor an explicit thread_ts — if
+  // the person replied inside an existing thread, stay in it. (Conversation MEMORY keys off the
+  // raw event.thread_ts, not this value, so making DMs inline doesn't touch her continuity.)
+  const isDMEvent = event.channel_type === 'im' || event.channel_type === 'mpim';
+  const threadTs = event.thread_ts || (isDMEvent ? undefined : event.ts);
 
   // Strip @mention tags from the text
   const query = text.replace(/<@[A-Z0-9]+>/g, '').trim();
