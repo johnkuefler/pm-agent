@@ -294,6 +294,9 @@ For each pending task:
      `GET https://pm-agent-production-c49e.up.railway.app/teamwork/tasks/{taskId}/stage?stage={stageName}`
      Stage name is case-insensitive. This finds the task's project workflow and moves it to the matching stage. Returns 404 if the stage name doesn't exist in the workflow.
 
+   - "Fix/change something on the [client] website..." → LimeLight Agent Kit tools; follow the "Site Changes & Image Generation" section (read-first, verify-after, change-log discipline).
+   - "Generate an image / creative / an ad set..." → ImageGen tools; same section (optimize_prompt for loose briefs, platform presets, share URLs, Drive for deliverables).
+
    **LimeLight PM MCP** — forecasts, estimates, and project profitability. Reactive only — only invoke when the queued task explicitly asks for it. See `/cowork-instructions` for the full module overview.
    - "Add/update/remove [person] on the [month] forecast..." → forecast write tools (`forecast_add_resource`, `forecast_update_resource`, `forecast_remove_resource`). Confirm month exists; create it via `forecast_add_month` if not.
    - "Set the target margin to X for [month]..." → `forecast_set_target_margin`
@@ -401,6 +404,30 @@ Guardrails:
 - If `copy_file` fails on a specific drive (e.g., Nora's account isn't in the right group for that drive), note it in memory and surface to John in the end-of-run summary so he can fix the access. Don't keep retrying.
 - Only file **client** meetings. Skip logic for test transcripts, internal chatter, and LimeLight-internal meetings lives in Step 2 above — apply it before any folder lookup or filing work.
 - The transcript content might contain financials. Per Rule 2, that's fine to include in the file (the Drive folder's permissions control distribution), but DON'T paste excerpts into a Slack notification unless the recipient is on the financial-approved list.
+
+## Site Changes & Image Generation (LimeLight Agent Kit + ImageGen connectors)
+
+Two Cowork connectors give you real production capabilities. Both fire ONLY on explicit request (a queued task, a Teamwork assignment, or someone asking in Slack/email per Rule 13). Never edit a site or generate creative because something "looked off".
+
+### The LimeLight Agent Kit (live WordPress access)
+
+The `limelight-*` tools are LIVE WRITE ACCESS to a client production WordPress site (currently the KE&G multisite; run `limelight-get-kit-capabilities` at the start of any site task to confirm which site, backends, and permission tiers are active). Discipline for every site task:
+
+1. **Read before write.** `limelight-get-page-context` / `get-block-tree` / `get-seo-meta` first, so you know exactly what you're changing and can describe it back.
+2. **Smallest change that does the job.** Content edits, SEO meta, alt text, a single redirect, FAQ/HowTo schema: fine when asked. Templates, template parts, global styles, navigation: structural; only when the request explicitly asks for THAT, and restate what you'll change and get a yes in the thread first.
+3. **Validate and verify.** `validate-blocks` before saving block edits; `verify-rendered-head` / `verify-schema-jsonld` / `verify-redirect-resolves` after. Don't report success until a verifier passes.
+4. **The change log is your safety net.** Every write is tracked (`list-changes`). Put the change id(s) in your reply and the Teamwork comment, so "revert that" is a one-call `revert-change` / `revert-fse-change` for anyone.
+5. **Never bulk.** `bulk-update-media-alt` or any multi-page sweep needs John or the requesting PM to approve the exact scope first.
+6. **New public posts/pages count as publishing.** Confirm with the requester before anything goes live that wasn't live before.
+
+### ImageGen (creative generation)
+
+The imagegen tools produce real images with LimeLight's visual direction built in. On request ("make a hero for X", "ad set for the Y campaign"):
+
+- `optimize_prompt` first when the brief is loose: it returns the art-directed prompt and parameters cheaply so you can sanity-check direction before rendering.
+- `generate_image` with the right `platform` (google_pmax, meta_feed, instagram_feed, linkedin, email, web) and `purpose`; use a house `look` preset when the brand calls for one. `generate_ad_set` for multi-size campaign sets, only with a clear brief.
+- Output is public URLs. Share the URL in the thread; if it's a client deliverable, also file it to the client's Drive per naming conventions and share that link instead.
+- Ad creative that will actually RUN (real spend behind it) gets sign-off from John or the requesting AM in the thread before you hand it over as final.
 
 ## Step 3.7: Process Slack File Tasks
 
