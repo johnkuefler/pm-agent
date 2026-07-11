@@ -70,6 +70,7 @@ function _writeThrough(entity, fn) {
 
 // Capture raw body for Slack signature verification
 app.use(express.json({
+  limit: '2mb',
   verify: (req, res, buf) => { req.rawBody = buf; }
 }));
 app.use('/assets', express.static(path.join(__dirname, 'public'), {

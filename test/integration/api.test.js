@@ -169,6 +169,9 @@ test('routine and charter reads and writes remain file-backed without Postgres',
   assert.match((await request('/routine')).body.content, /Initial routine/);
   assert.equal((await request('/routine', { method: 'PUT', body: { content: '# New routine', updated_by: 'test' } })).body.ok, true);
   assert.equal(fs.readFileSync(path.join(dataDir, 'nora-routine.md'), 'utf8'), '# New routine');
+  const largeRoutine = '# Large routine\n' + 'bounded platform instructions\n'.repeat(5000);
+  assert.equal((await request('/routine', { method: 'PUT', body: { content: largeRoutine, updated_by: 'test' } })).body.ok, true);
+  assert.equal((await request('/routine')).body.content.length, largeRoutine.length);
 
   assert.match((await request('/charter')).body.content, /Initial charter/);
   assert.equal((await request('/charter', { method: 'PUT', body: { content: '# New charter', updated_by: 'test' } })).body.ok, true);
