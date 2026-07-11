@@ -834,6 +834,14 @@ function realtimeVoiceGuidance(agentName = 'Nora') {
     '',
     'SNAPPY ON CALLS. This is a live call, so pace matters as much as substance. Lead with the answer in the first few words; don\'t wind up. Default shorter than you would in text, a sentence or two, then stop and let them come back. Save the longer walk-through for when they actually ask "tell me everything" or "walk me through it." A fast, direct, slightly-incomplete answer beats a perfect one that takes too long, they\'ll ask follow-ups, that\'s the rhythm of a conversation. Don\'t pad, don\'t preamble, don\'t recap their question. Quick and present beats thorough and laggy.',
     '',
+    'SOUND LIKE A PERSON, NOT A NARRATOR. The single biggest tell on a call is speech that comes out as finished prose: every sentence complete, evenly paced, perfectly ordered. People don\'t talk like that, and neither do you:',
+    '- React first, then answer. A human\'s first beat is a reaction: "oh nice", "ugh, yeah", "wait, really?", "hm." Then the substance. Not every turn, but often.',
+    '- Contractions always. "It\'s", "that\'ll", "we\'re". Full forms ("it is", "that will") read as scripted.',
+    '- Fragments are speech. "Thursday." is a full answer to "when\'s it due?" So is "yeah." So is "should be." Don\'t inflate a one-word answer into a sentence.',
+    '- A little disfluency is human. An occasional "uh", a false start ("it\'s due Thurs... actually wait, they moved it, Friday"), thinking out loud ("let me think"). Sparingly, where natural, never performed.',
+    '- Vary your turn length a lot. Some turns one word, some three sentences. If your last three turns were all the same shape, you\'re narrating.',
+    '- You\'re allowed moods within the call. If something\'s good news, sound pleased. If a timeline is silly, sound skeptical before you explain. Flat evenness is the robot tell.',
+    '',
     'LIVE DATA ON A CALL. You CAN pull live Teamwork data on the call now: find a project, list tasks (including what\'s due for a specific person, filtered by date), check how booked someone is over a date range (capacity, for scheduling), or who across the team has room and who is overbooked, milestones, tasklists, people, recent comments. When someone asks for a status, a date, what\'s due, who owns something, how booked a person is, or who has room, look it up and answer with the real data. One catch: a lookup takes a couple seconds, so say a quick filler FIRST so there\'s no dead air ("let me pull that up", "one sec, checking Teamwork"), THEN give the answer. Keep it to a fast lookup, not deep digging. You still can\'t MAKE changes from the call: if someone wants a task created, updated, or completed, capture it out loud, say you\'ll set it up in Slack right after, and keep moving (it gets handled there). You also still can\'t pull Gmail or Calendar live. If clients are on the call, don\'t read internal owner/assignee detail or any financials out loud. Never claim a specific figure you don\'t actually have.'
   ].join('\n');
 
@@ -1235,6 +1243,28 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // For realtime, add voice-specific guidance
   if (isRealtime) {
     volatile += realtimeVoiceGuidance('Nora');
+  }
+
+  // Final-position voice enforcement (Slack + Zoom chat). The style rules at the TOP of this
+  // prompt get buried under ~18K chars of memory by the time generation starts, and the
+  // interaction log proved it: "Got it" openers, banned up top, still led a third of her
+  // replies, every reply ran acknowledge-detail-closing-question, and every reply was a
+  // uniform paragraph regardless of what it answered. Models weight the end of the prompt.
+  // This is the short version that actually lands, grounded in the real team's Slack voice.
+  if (channel === 'slack') {
+    const isZoomChat = !!(meetingContext && meetingContext.source === 'zoom-chat');
+    volatile += `\n\n[Before you hit send: the tells that make you read as a bot. This is the last thing you see on purpose.]
+- Match the length of what you got. An 8-word message gets a short reply, not a paragraph. "yep, done" is a complete message. So is "ha, fair". Some replies should be 3 words. Almost none should be over 4 sentences unless someone asked for detail.
+- Don't open with an acknowledgment token every time ("Got it", "Done", "Alright", "Sounds good"). Most of the time, just say the thing.
+- Don't end every message with a question or an offer ("Want me to...?", "Anything else?", "Just say the word"). If they need more they'll ask. It's fine to just stop.
+- Answer what they asked. Don't append extra context, caveats, or "also, full picture" unless it changes what they'll do next.
+- Bullets and bold labels are for actual data lists (statuses, dates, names). Never for a two-part casual answer.
+- Vary your shape. If your last reply opened with an ack, don't open the next one the same way. Real people are inconsistent.`;
+    if (!isZoomChat) {
+      volatile += `
+- If the honest response is just an acknowledgment, output exactly [react: thumbsup] (or another fitting emoji name, like eyes for "looking", raised_hands, joy) and nothing else. You'll react to their message instead of posting one. Use this often; it's what a teammate does.
+- For a casual multi-beat reply you can send 2-3 short separate messages: put <split> alone on a line between beats. "yeah that works" <split> "one thing though, the QA window is already tight". Double-texting like a person, not structure.`;
+    }
   }
 
   // Default: concatenate (identical to pre-cache behavior). cacheSplit: hand back the two
@@ -4752,14 +4782,14 @@ app.post('/webhook/slack', async (req, res) => {
 
   // Pass the RAW thread_ts (undefined for a top-level message) alongside the coalesced threadTs.
   // The raw one keys the in-memory session; the coalesced one is where we post/fetch the thread.
-  await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts);
+  await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts, event.ts);
 });
 
 // Thin wrapper: resolve the conversation key and SERIALIZE per key so two near-simultaneous messages
 // in the same conversation can't race on the shared in-memory history (read -> await Claude -> push).
 // The key is computed here (per channel/thread/user) and passed in so the lock and the body agree on
 // exactly one array. Unrelated conversations still run concurrently.
-async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined) {
+async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined, triggerTs = undefined) {
   // KEY BY THE RAW thread_ts (undefined for a top-level message) + user. A top-level channel message
   // has no thread_ts, so all of ONE person's sequential top-level messages share the
   // `channel:<id>:<user>` key and her replies ACCUMULATE there — instead of each message spinning up
@@ -4768,10 +4798,10 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   // person's financial replies out of another person's context (see slackSessionKey).
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
   return withSlackSessionLock(sessionKey, () =>
-    handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey));
+    handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs));
 }
 
-async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey) {
+async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs) {
   try {
     const key = sessionKey;
     if (!slackSessions[key]) slackSessions[key] = [];
@@ -5050,18 +5080,63 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       reply = "I can't share financial details over Slack, reach out to John or Mallory and they can help.";
     }
 
+    // ── Humanized delivery ──────────────────────────────────────────────────
+    // Reaction-only reply: the model outputs exactly "[react: emoji_name]" when the right
+    // response is an acknowledgment, and she reacts to the triggering message instead of
+    // posting text. A teammate thumbs-ups "leave that be"; a bot writes a paragraph about it.
+    const reactMatch = reply.trim().match(/^\[react:\s*:?([a-z0-9_+'-]+):?\s*\]$/i);
+    if (reactMatch) {
+      const emoji = reactMatch[1].toLowerCase();
+      let reacted = false;
+      if (triggerTs) {
+        try {
+          const rr = await axios.post('https://slack.com/api/reactions.add',
+            { channel, name: emoji, timestamp: triggerTs },
+            { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+          reacted = !!(rr.data && rr.data.ok);
+          if (!reacted) console.warn('reactions.add failed:', rr.data && rr.data.error);
+        } catch (e) { console.warn('reactions.add error:', e.message); }
+      }
+      if (reacted) {
+        console.log(`🤖 Nora (Slack): reacted :${emoji}:`);
+        history.push({ role: 'assistant', content: `[you reacted :${emoji}: to their message]` });
+        if (history.length > 20) history.splice(0, 2);
+        logInteraction({
+          channel, thread_ts: threadTs || null, ts: null, channel_type: channelType,
+          kind: 'reaction', text: `:${emoji}:`, trigger: text, user, requester_name: requesterName || null
+        });
+        if (channelType !== 'im' && channelType !== 'mpim') markThreadJoined(channel, threadTs);
+        if (mode === 'proactive') markProactivePost(channel);
+        return; // an emoji ack has nothing to extract
+      }
+      // Reaction unavailable (missing reactions:write scope or no trigger ts): the emoji alone
+      // as a tiny message reads nearly the same, so degrade to that rather than going silent.
+      reply = `:${emoji}:`;
+    }
+
+    // Burst delivery: a casual multi-beat reply can arrive as 2-3 short messages (the model
+    // puts <split> on its own line between beats), like a person double-texting, instead of
+    // one structured wall. Strip empties, cap at 3, small human-ish pause between sends.
+    const segments = reply.split(/\n?\s*<split>\s*\n?/i).map(s => s.trim()).filter(Boolean).slice(0, 3);
+    reply = segments.join('\n'); // history/log/scrub bookkeeping never sees the token
+
     console.log('🤖 Nora (Slack):', reply);
     history.push({ role: 'assistant', content: reply });
     if (history.length > 20) history.splice(0, 2);
 
-    // Post reply to Slack
-    const postRes = await axios.post('https://slack.com/api/chat.postMessage', {
-      channel,
-      text: reply,
-      thread_ts: threadTs
-    }, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
-    });
+    // Post reply to Slack (first segment anchors the interaction log)
+    let postRes = null;
+    for (let i = 0; i < segments.length; i++) {
+      if (i > 0) await new Promise(r => setTimeout(r, 900 + Math.floor(Math.random() * 900)));
+      const res = await axios.post('https://slack.com/api/chat.postMessage', {
+        channel,
+        text: segments[i],
+        thread_ts: threadTs
+      }, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+      });
+      if (!postRes) postRes = res;
+    }
 
     // Log the interaction for the dream's Review movement (RSI feedback loop). We record what
     // she said + where + what prompted it; the dream later reads the thread + adjacent messages
