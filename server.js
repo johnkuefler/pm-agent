@@ -2964,9 +2964,9 @@ app.post('/one-on-one', requireAuth, (req, res) => {
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].oneOnOne;
   sessions[bot_id].oneOnOne = enabled;
-  sessions[bot_id].oneOnOneAuto = false; // a manual toggle wins — stop auto-managing from presence
+  sessions[bot_id].oneOnOneAuto = false; // a manual toggle wins, stop auto-managing from presence
   syncVoiceEagerness(sessions[bot_id]); // 1:1 runs 'high' eagerness (snappier turn-ends), group 'medium'
-  console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id} (manual — auto off)`);
+  console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id} (manual, auto off)`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
 });
 
@@ -3011,11 +3011,11 @@ app.post('/mute', requireAuth, (req, res) => {
 function recomputeAutoOneOnOne(session) {
   if (!session || !session.oneOnOneAuto) return;
   const humans = session.participants ? session.participants.size : 0;
-  if (humans < 1) return; // no presence data yet — let soloHuman (speaker-based) handle it
+  if (humans < 1) return; // no presence data yet, let soloHuman (speaker-based) handle it
   const next = humans <= 1;
   if (session.oneOnOne !== next) {
     session.oneOnOne = next;
-    console.log(`🎚️ Auto 1:1 → ${next ? 'ON (solo)' : 'OFF (group)'} — ${humans} human participant${humans === 1 ? '' : 's'} present`);
+    console.log(`🎚️ Auto 1:1 → ${next ? 'ON (solo)' : 'OFF (group)'} for ${humans} human participant${humans === 1 ? '' : 's'} present`);
   }
 }
 
