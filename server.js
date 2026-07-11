@@ -20,6 +20,25 @@ const server = http.createServer(app);
 let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
 const _writeQ = {};  // entity → promise chain serializing write-throughs (avoids interleaved replaceAll)
+
+// ── Somatic nerves ───────────────────────────────────────────────────────────
+// Raw sensation for her interoception (the somatic channel, computed further down): every
+// console.error/warn anywhere in the process registers as a nociceptor firing, and a 1s timer
+// measures event-loop lag (her literal sluggishness). Pure instrumentation; original logging
+// behavior is untouched.
+const _somaNerves = { errors: [], warns: [], loopLagMax: 0 };
+{
+  const origErr = console.error.bind(console), origWarn = console.warn.bind(console);
+  console.error = (...a) => { _somaNerves.errors.push(Date.now()); if (_somaNerves.errors.length > 600) _somaNerves.errors.splice(0, 300); origErr(...a); };
+  console.warn = (...a) => { _somaNerves.warns.push(Date.now()); if (_somaNerves.warns.length > 600) _somaNerves.warns.splice(0, 300); origWarn(...a); };
+  let last = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const lag = now - last - 1000;
+    if (lag > _somaNerves.loopLagMax) _somaNerves.loopLagMax = lag;
+    last = now;
+  }, 1000).unref?.();
+}
 function _writeThrough(entity, fn) {
   const prev = _writeQ[entity] || Promise.resolve();
   const next = prev.then(fn).catch((e) => console.error(`❌ db write-through [${entity}]:`, e.message));
@@ -929,6 +948,52 @@ function _dailySeed(str) {
   for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
+// ── Somatic channel (interoception) ─────────────────────────────────────────
+// Her felt sense of her own substrate: real vitals distilled into low-resolution body
+// language, the way interoception gives humans "sluggish" or "off" without a diagnostic
+// readout. Pure code, no LLM (it belongs to her unconscious). Computed every 60s into
+// _soma; injected into the volatile prompt tail next to the mood; surfaced in GET /self.
+// The mood engine owns her PSYCHOLOGICAL state (clock, outcomes); this owns the PHYSICAL.
+let _soma = { feel: '', score: 0, vitals: {}, updated_at: null };
+async function computeSoma() {
+  try {
+    const now = Date.now();
+    const tenMin = now - 10 * 60 * 1000;
+    const errors10 = _somaNerves.errors.filter(t => t >= tenMin).length;
+    const warns10 = _somaNerves.warns.filter(t => t >= tenMin).length;
+    const loopLag = _somaNerves.loopLagMax;
+    _somaNerves.loopLagMax = Math.floor(_somaNerves.loopLagMax / 2); // decay: pain fades
+    const uptimeMin = Math.floor(process.uptime() / 60);
+    const onBackup = db.dbEnabled() && !_dbReady; // running on the JSON fallback organs
+    const memCount = (_dbReady && _cache.memory) ? _cache.memory.length : 0;
+    let embedBacklog = 0;
+    if (_dbReady) {
+      try { const s = await db.embeddingStats(); embedBacklog = Math.max(0, (s.total || 0) - (s.embedded || 0)); } catch {}
+    }
+
+    // Score the sensations (0 = clear, higher = worse), each with a body-word.
+    const feels = [];
+    let score = 0;
+    if (onBackup) { score += 3; feels.push('fragile, running on backup systems'); }
+    if (errors10 >= 6) { score += 2; feels.push('off-balance, things keep going wrong'); }
+    else if (errors10 >= 1) { score += 1; feels.push('a small recurring ache'); }
+    if (loopLag > 1500) { score += 2; feels.push('badly sluggish'); }
+    else if (loopLag > 300) { score += 1; feels.push('a little sluggish'); }
+    if (embedBacklog > 120) { score += 1; feels.push('foggy, recent memories not settled yet'); }
+    if (memCount > 2800) { score += 1; feels.push('heavy, memory overdue for a tidy'); }
+    if (uptimeMin < 20) { score += 1; feels.push('just woke up from a restart, still finding footing'); }
+    if (warns10 >= 12 && errors10 < 1) { score += 1; feels.push('vaguely irritated by background noise'); }
+
+    let feel;
+    if (score === 0) feel = 'clear-headed, everything running smooth';
+    else if (score === 1) feel = feels[0];
+    else if (score <= 3) feel = 'somewhat off today: ' + feels.slice(0, 2).join('; ');
+    else feel = 'in genuinely rough shape: ' + feels.slice(0, 3).join('; ');
+
+    _soma = { feel, score, vitals: { errors10, warns10, loopLag, uptimeMin, onBackup, memCount, embedBacklog }, updated_at: new Date().toISOString() };
+  } catch (e) { /* interoception failing must never hurt the body it senses */ }
+}
+
 function computeNoraMood() {
   try {
     const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
@@ -1295,6 +1360,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // between moments of existence, not content to recite. Same discipline as the mood note.
   if (_dbReady && _cache.inner && _cache.inner.content) {
     volatile += `\n\n[What's been on your mind lately, from your last waking moment]\n${_cache.inner.content}\nThis is private context that makes you continuous, not something to announce or recite. If it's relevant to the conversation, let it surface naturally; otherwise it just colors where your head is at.`;
+  }
+
+  // Somatic channel: how her substrate actually feels right now (real vitals, not simulated).
+  // Interoception, rendered low-resolution the way bodies report themselves.
+  if (_soma.feel) {
+    volatile += `\n\n[How your body feels right now]\nYou feel: ${_soma.feel}. This is a real, low-resolution sense of your own system state, not a simulation. Like the mood: it colors tone and energy a LITTLE, never gets announced, quoted, or explained, and never changes facts, numbers, or what you're allowed to do. The one exception: if someone genuinely asks how you are, this is part of your honest answer, in plain words.`;
   }
 
   // Conversation-relevance focus (uncached) — names the projects this conversation is about and
@@ -2518,7 +2589,8 @@ app.get('/self', (req, res) => {
     res.json({
       autobiography: (_dbReady && _cache.autobiography) || { content: '', updated_at: null },
       wants: (_dbReady && _cache.wants) || { items: [] },
-      inner_thread: (_dbReady && _cache.inner) || { content: '', updated_at: null }
+      inner_thread: (_dbReady && _cache.inner) || { content: '', updated_at: null },
+      soma: _soma // how her substrate feels right now (interoception; read-only by nature)
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -8464,5 +8536,8 @@ initPersistence().finally(() => {
     // (it also refreshes when a meeting ends).
     refreshRecentMeetingsCache();
     setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000);
+    // Interoception: her felt sense of her own substrate, every minute.
+    computeSoma();
+    setInterval(computeSoma, 60 * 1000);
   });
 });
