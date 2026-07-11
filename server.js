@@ -116,6 +116,22 @@ function newMemoryId() {
   return `m-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
 }
 
+// Salience at encoding (the amygdala's job): how strongly a memory writes depends on what it
+// carries. Emotionally/operationally charged events (upset client, slipped deadline, a
+// correction) encode hot; explicit "remember this" from a human encodes warm; routine
+// extraction encodes cool. Salience boosts retrieval and protects against forgetting; the
+// dream prunes cold, never-recalled memories first.
+const SALIENCE_HOT = /\b(upset|angry|furious|frustrat|threat|escalat|churn|cancel|walk(ing)? away|fired|urgent|emergency|crisis|breach|outage|down|broke|broken|slipped|missed (the )?deadline|overdue|over budget|blew|refund|complain|apolog|lawsuit|legal)\b/i;
+function computeSalienceForFact(fact, source) {
+  const f = String(fact || '');
+  if (SALIENCE_HOT.test(f)) return 0.8;
+  if (source === 'manual') return 0.7;        // a human explicitly said "remember this"
+  if (source === 'learning' || source === 'opinion') return 0.6; // hard-won self-knowledge
+  if (source === 'meeting') return 0.4;       // witnessed live
+  if (source === 'system') return 0.2;
+  return 0.3;                                  // routine extraction
+}
+
 // Serialize ALL memory mutations through one in-process queue. Railway runs a single Node
 // instance, so a promise-chain lock fully serializes concurrent handlers: each mutation
 // reloads memory FRESH inside the lock, mutates, and saves — so no caller ever writes back
@@ -129,6 +145,8 @@ function mutateMemory(mutator) {
     // Backfill ids defensively so every entry is addressable by id.
     for (const m of memory) { if (!m.id) { m.id = newMemoryId(); } }
     const result = mutator(memory);
+    // Salience-tag anything new (loaded entries already carry theirs from the DB).
+    for (const m of memory) { if (m && m.salience === undefined) m.salience = computeSalienceForFact(m.fact, m.source); }
     await saveMemory(memory); // awaits the Postgres write (or resolves immediately in JSON mode)
     return { result, memory };
   });
@@ -832,6 +850,8 @@ async function initPersistence() {
         console.log(`🗄️  Seeded persona from nora-prompt.md (${seed.length} chars)`);
       } catch (e) { console.warn('persona seed failed:', e.message); }
     }
+    if (!(await db.getState('predictions'))) await db.setState('predictions', { items: [] });
+    if (!(await db.getState('people'))) await db.setState('people', { items: [] });
 
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
@@ -847,6 +867,8 @@ async function initPersistence() {
     _cache.wants = await db.getState('wants');
     _cache.inner = await db.getState('inner_thread');
     _cache.persona = await db.getState('persona');
+    _cache.predictions = await db.getState('predictions');
+    _cache.people = await db.getState('people');
     slackJoinedThreads = await db.loadAllSlackThreads();
     slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
@@ -1121,6 +1143,16 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     const active = _cache.wants.items.filter(w => w && w.status === 'active').slice(0, 6);
     if (active.length) {
       base = `${base}\n\n[What you want right now. Your own aims, formed by you, not assigned. Pursue them when there's room, mention one only when genuinely relevant, and never let them override the work someone actually asked for.]\n${active.map(w => `- ${w.want}${w.why ? ` (because: ${w.why})` : ''}`).join('\n')}`;
+    }
+  }
+
+  // Theory of mind: her maintained models of how each teammate works. Same discipline as the
+  // rest of the self-model: use them to shape HOW you communicate with each person, never
+  // recite them, never mention that you keep them. (John's full model lives in the charter.)
+  if (_dbReady && _cache.people && Array.isArray(_cache.people.items) && _cache.people.items.length) {
+    const ppl = _cache.people.items.filter(p => p && p.name && p.model).slice(0, 20);
+    if (ppl.length) {
+      base = `${base}\n\n[How each teammate works, from your own observation. Shape your communication to the person; never recite or mention these notes.]\n${ppl.map(p => `- ${p.name}: ${p.model}`).join('\n')}`;
     }
   }
 
@@ -1529,8 +1561,27 @@ async function retrieveSemanticMemories(queryText, limit = 8) {
   try {
     const vec = await db.embed(queryText.slice(0, 2000));
     if (!vec) return [];
-    const rows = await db.searchMemoryByVector(vec, limit + 5, { excludeSources: ['opinion', 'learning'] });
-    return rows.filter(r => !markerKeyForFact(r.fact)).slice(0, limit);
+    // Fetch a wider band, then re-rank with memory dynamics: similarity is the base signal,
+    // salience (how hot the memory encoded) and recall history (retrieval strengthening) tip
+    // the order the way a brain's does. A charged, oft-used memory outcompetes a slightly
+    // closer piece of trivia.
+    const rows = await db.searchMemoryByVector(vec, (limit * 2) + 6, { excludeSources: ['opinion', 'learning'] });
+    const ranked = rows
+      .filter(r => !markerKeyForFact(r.fact))
+      .map(r => ({ ...r, _score: (1 - (r.distance ?? 1)) + (r.salience || 0) * 0.15 + Math.min(r.recall_count || 0, 10) * 0.012 }))
+      .sort((a, b) => b._score - a._score)
+      .slice(0, limit);
+    // Reconsolidation: surfacing them strengthens them. Fire-and-forget in DB and cache.
+    const ids = ranked.map(r => r.id);
+    if (ids.length) {
+      db.bumpMemoryRecall(ids).catch(() => {});
+      if (_cache.memory) {
+        const idSet = new Set(ids);
+        const nowIso = new Date().toISOString();
+        for (const m of _cache.memory) if (idSet.has(m.id)) { m.recall_count = (m.recall_count || 0) + 1; m.last_recalled = nowIso; }
+      }
+    }
+    return ranked;
   } catch (e) { console.warn('semantic recall failed:', e.message); return []; }
 }
 
@@ -2626,6 +2677,105 @@ app.put('/self/wants', requireAuth, async (req, res) => {
     await db.setState('wants', rec); _cache.wants = rec;
     console.log(`🎯 Wants updated (${rec.items.filter(i => i.status === 'active').length} active)`);
     res.json({ ok: true, active: rec.items.filter(i => i.status === 'active').length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── DMN: memory wander ───────────────────────────────────────────────────────
+// A mind-wandering walk through her memory: a random embedded thought, hops through the
+// interesting middle-distance of semantic space (skipping the trivially-near), plus a distant
+// random sample. The routine's idle round looks at the trail and asks whether anything real
+// connects; almost always no, which is correct. This is incubation, not search.
+app.get('/memory/wander', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const seed = await db.randomEmbeddedMemory();
+    if (!seed) return res.json({ trail: [], note: 'no embedded memories yet' });
+    const trail = [{ ...seed, hop: 0 }];
+    let cur = seed;
+    for (let hop = 1; hop <= 2; hop++) {
+      const band = await db.neighborsOfMemory(cur.id, 4 + hop * 3, 6);
+      if (!band.length) break;
+      const next = band[Math.floor(Math.random() * band.length)];
+      trail.push({ ...next, hop });
+      cur = next;
+    }
+    const distant = [];
+    for (let i = 0; i < 3; i++) { const d = await db.randomEmbeddedMemory(); if (d && !trail.some(t => t.id === d.id)) distant.push(d); }
+    res.json({ trail, distant });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Predictive processing ────────────────────────────────────────────────────
+// She logs explicit predictions (a deadline holds, a task lands), later resolves them against
+// reality, and the calibration report tells her (and John) how good her foresight actually is.
+// Confident-but-wrong = a surprise = the routine turns it into high-salience learning.
+function calibrationFromItems(items) {
+  const resolved = items.filter(p => p.outcome === 'right' || p.outcome === 'wrong');
+  const buckets = [
+    { label: 'low (<60%)', min: 0, max: 0.6 },
+    { label: 'medium (60-80%)', min: 0.6, max: 0.8 },
+    { label: 'high (80%+)', min: 0.8, max: 1.01 }
+  ].map(b => {
+    const inB = resolved.filter(p => (p.confidence || 0.5) >= b.min && (p.confidence || 0.5) < b.max);
+    const right = inB.filter(p => p.outcome === 'right').length;
+    return { bucket: b.label, n: inB.length, right, hit_rate: inB.length ? Math.round((right / inB.length) * 100) : null };
+  });
+  return { total: items.length, resolved: resolved.length, open: items.filter(p => !p.outcome).length, buckets };
+}
+app.get('/predictions', (req, res) => {
+  const items = (_dbReady && _cache.predictions && _cache.predictions.items) || [];
+  const open = req.query.open === 'true' ? items.filter(p => !p.outcome) : items;
+  res.json({ items: open, calibration: calibrationFromItems(items) });
+});
+app.post('/predictions', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  const { prediction, domain, confidence, due } = req.body || {};
+  if (!prediction || typeof prediction !== 'string') return res.status(400).json({ error: 'prediction (string) required' });
+  try {
+    const items = ((_cache.predictions && _cache.predictions.items) || []).slice();
+    items.push({
+      id: `pred-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`,
+      prediction: prediction.slice(0, 400), domain: domain || null,
+      confidence: Math.max(0, Math.min(1, Number(confidence) || 0.5)),
+      due: due || null, made: new Date().toISOString(), outcome: null, resolved: null, notes: null
+    });
+    while (items.length > 200) { const idx = items.findIndex(p => p.outcome); if (idx === -1) break; items.splice(idx, 1); }
+    const rec = { items, updated_at: new Date().toISOString() };
+    _cache.predictions = rec; await _writeThrough('predictions', () => db.setState('predictions', rec));
+    res.json({ ok: true, id: items[items.length - 1].id, open: items.filter(p => !p.outcome).length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/predictions/:id/resolve', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  const { outcome, notes } = req.body || {};
+  if (!['right', 'wrong', 'unclear'].includes(outcome)) return res.status(400).json({ error: "outcome must be right|wrong|unclear" });
+  try {
+    const items = ((_cache.predictions && _cache.predictions.items) || []).slice();
+    const p = items.find(x => x.id === req.params.id);
+    if (!p) return res.status(404).json({ error: 'prediction not found' });
+    p.outcome = outcome; p.resolved = new Date().toISOString();
+    if (notes) p.notes = String(notes).slice(0, 300);
+    const rec = { items, updated_at: new Date().toISOString() };
+    _cache.predictions = rec; await _writeThrough('predictions', () => db.setState('predictions', rec));
+    res.json({ ok: true, surprise: outcome === 'wrong' && (p.confidence || 0) >= 0.7 });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// ── Theory of mind: per-teammate models ──────────────────────────────────────
+// A light model of how each person works (communication style, current load, what lands with
+// them), maintained by her from real interactions the same way the John section of the charter
+// is. Injected into her prompts; the dream tends it.
+app.get('/people', (req, res) => {
+  res.json((_dbReady && _cache.people) || { items: [] });
+});
+app.put('/people', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  const items = req.body && req.body.items;
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'items (array of {name, model}) required' });
+  try {
+    const rec = { items: items.slice(0, 24).map(p => ({ name: String(p.name || '').slice(0, 60), model: String(p.model || '').slice(0, 600), updated: p.updated || new Date().toISOString() })), updated_at: new Date().toISOString() };
+    _cache.people = rec; await _writeThrough('people', () => db.setState('people', rec));
+    res.json({ ok: true, count: rec.items.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
