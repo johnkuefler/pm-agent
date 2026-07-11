@@ -76,6 +76,12 @@ async function init() {
     CREATE INDEX IF NOT EXISTS memory_project_idx ON ${DB_SCHEMA}.memory (project);
     CREATE INDEX IF NOT EXISTS memory_source_idx  ON ${DB_SCHEMA}.memory (source);
     CREATE INDEX IF NOT EXISTS memory_fact_trgm   ON ${DB_SCHEMA}.memory USING gin (fact gin_trgm_ops);
+    -- Memory dynamics (amygdala + Ebbinghaus): salience = how strongly an event encoded;
+    -- recall_count / last_recalled = retrieval strengthening. Idempotent on existing tables.
+    ALTER TABLE ${DB_SCHEMA}.memory
+      ADD COLUMN IF NOT EXISTS salience real NOT NULL DEFAULT 0.3,
+      ADD COLUMN IF NOT EXISTS recall_count integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS last_recalled timestamptz;
 
     CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.tasks (
       id            text PRIMARY KEY,
@@ -187,12 +193,13 @@ async function embed(text) {
 // ── memory ─────────────────────────────────────────────────────────────────────
 async function loadAllMemory() {
   const { rows } = await q(
-    `SELECT id, fact, project, added, source, source_bot_id FROM ${DB_SCHEMA}.memory ORDER BY ord ASC NULLS LAST, created_at ASC`
+    `SELECT id, fact, project, added, source, source_bot_id, salience, recall_count, last_recalled FROM ${DB_SCHEMA}.memory ORDER BY ord ASC NULLS LAST, created_at ASC`
   );
   return rows.map((r) => {
-    const o = { id: r.id, fact: r.fact, added: r.added, source: r.source };
+    const o = { id: r.id, fact: r.fact, added: r.added, source: r.source, salience: r.salience, recall_count: r.recall_count };
     if (r.project) o.project = r.project;
     if (r.source_bot_id) o.source_bot_id = r.source_bot_id;
+    if (r.last_recalled) o.last_recalled = r.last_recalled.toISOString();
     return o;
   });
 }
@@ -212,8 +219,8 @@ async function replaceAllMemory(items) {
       if (!m || !m.id || !m.fact) { skipped++; continue; }
       ids.push(m.id);
       await client.query(
-        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, salience, recall_count, last_recalled, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
          ON CONFLICT (id) DO UPDATE SET
            fact = EXCLUDED.fact,
            project = EXCLUDED.project,
@@ -221,10 +228,14 @@ async function replaceAllMemory(items) {
            source = EXCLUDED.source,
            source_bot_id = EXCLUDED.source_bot_id,
            ord = EXCLUDED.ord,
+           salience = EXCLUDED.salience,
+           recall_count = GREATEST(${DB_SCHEMA}.memory.recall_count, EXCLUDED.recall_count),
+           last_recalled = GREATEST(${DB_SCHEMA}.memory.last_recalled, EXCLUDED.last_recalled),
            updated_at = now(),
            embedding = CASE WHEN ${DB_SCHEMA}.memory.fact IS DISTINCT FROM EXCLUDED.fact
                             THEN NULL ELSE ${DB_SCHEMA}.memory.embedding END`,
-        [m.id, m.fact, m.project || '', m.added || null, m.source || null, m.source_bot_id || null, i]
+        [m.id, m.fact, m.project || '', m.added || null, m.source || null, m.source_bot_id || null, i,
+         (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0, m.last_recalled || null]
       );
     }
     if (ids.length) {
@@ -269,10 +280,37 @@ async function searchMemoryByVector(vec, limit = 12, opts = {}) {
     where += ` AND (source IS NULL OR source <> ALL($${params.length}::text[]))`;
   }
   const { rows } = await q(
-    `SELECT id, fact, project, source, added, embedding <=> $1::vector AS distance
+    `SELECT id, fact, project, source, added, salience, recall_count, embedding <=> $1::vector AS distance
      FROM ${DB_SCHEMA}.memory WHERE ${where}
      ORDER BY embedding <=> $1::vector ASC LIMIT $2`,
     params
+  );
+  return rows;
+}
+
+// Retrieval strengthening (reconsolidation): every time memories surface via semantic recall
+// they get stronger. Fire-and-forget from the caller; races with replaceAll are absorbed by
+// the GREATEST() merge in the upsert.
+async function bumpMemoryRecall(ids) {
+  if (!Array.isArray(ids) || !ids.length) return;
+  await q(`UPDATE ${DB_SCHEMA}.memory SET recall_count = recall_count + 1, last_recalled = now() WHERE id = ANY($1::text[])`, [ids]);
+}
+
+// DMN support: a random embedded memory (a wander's starting thought)...
+async function randomEmbeddedMemory() {
+  const { rows } = await q(`SELECT id, fact, project, source FROM ${DB_SCHEMA}.memory WHERE embedding IS NOT NULL ORDER BY random() LIMIT 1`);
+  return rows[0] || null;
+}
+// ...and its semantic neighborhood at a chosen band. offset skips the trivially-near ones so a
+// wander drifts to the interesting middle distance instead of circling the same thought.
+async function neighborsOfMemory(id, offset = 4, limit = 6) {
+  const { rows } = await q(
+    `SELECT id, fact, project, source,
+            embedding <=> (SELECT embedding FROM ${DB_SCHEMA}.memory WHERE id = $1) AS distance
+     FROM ${DB_SCHEMA}.memory
+     WHERE id <> $1 AND embedding IS NOT NULL
+     ORDER BY distance ASC OFFSET $2 LIMIT $3`,
+    [id, offset, limit]
   );
   return rows;
 }
@@ -559,7 +597,7 @@ module.exports = {
   dbEnabled, isReady, init, close, q, embed, count,
   EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
   loadAllMemory, replaceAllMemory, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
-  clearEmbeddings, embeddingStats,
+  clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
   loadAllTasks, replaceAllTasks,
   loadAllProjects, replaceAllProjects,
   loadAllInteractions, replaceAllInteractions,
