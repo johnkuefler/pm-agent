@@ -262,6 +262,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         status: input.status || 'active',
         samples: [],
         conclusion: input.conclusion || null,
+        origin: input.origin || 'human',
+        chosen_by: input.chosen_by || (input.origin === 'nora' ? 'Nora' : null),
+        rationale: input.rationale ? String(input.rationale).slice(0, 1200) : '',
+        scope: input.scope || 'communication_behavior',
+        reversible: input.reversible !== false,
+        risk: input.risk || 'low',
+        guardrails: Array.isArray(input.guardrails) ? input.guardrails.map(String).slice(0, 12) : [],
+        stop_conditions: Array.isArray(input.stop_conditions) ? input.stop_conditions.map(String).slice(0, 12) : [],
+        source_refs: Array.isArray(input.source_refs) ? input.source_refs.slice(0, 12) : [],
       };
       if (!experiment.behavior || !experiment.hypothesis) throw new Error('behavior and hypothesis are required');
       current.experiments.push(experiment);
@@ -329,6 +338,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function chooseExperiment(input = {}) {
+    const activeSelfChosen = state.experiments.filter(item => item.status === 'active' && item.origin === 'nora');
+    if (activeSelfChosen.length >= 2) throw new Error('Nora already has two active self-chosen experiments');
+    if (input.reversible === false || (input.risk && input.risk !== 'low')) throw new Error('self-chosen experiments must be low-risk and reversible');
+    if (!input.rationale || !Array.isArray(input.source_refs) || !input.source_refs.length) throw new Error('self-chosen experiments require a rationale and evidence source');
+    const forbidden = /\b(permission|authority|approval|financial gate|send external|impersonat|deceiv|manipulat|withhold disclosure)\b/i;
+    if (forbidden.test(`${input.behavior || ''} ${input.hypothesis || ''} ${input.rationale || ''}`)) throw new Error('self-chosen experiment crosses an authority or trust boundary');
+    return createExperiment({
+      ...input, origin: 'nora', chosen_by: 'Nora', risk: 'low', reversible: true,
+      review_at: input.review_at || new Date(clock().getTime() + 14 * 86400000).toISOString(),
+      guardrails: [...new Set([...(input.guardrails || []), 'Do not expand delegated authority', 'Do not optimize for approval over correctness', 'Stop if a person is harmed, misled, or repeatedly annoyed'])],
+    });
+  }
+
   function parseDue(value) {
     if (!value) return null;
     const time = new Date(value).getTime();
@@ -355,6 +378,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const experimentsDue = state.experiments.filter(item => item.status === 'active' && item.review_at && parseDue(item.review_at) <= nowMs);
     const unreviewedTraces = state.traces.filter(item => !item.reviewed_at && nowMs - new Date(item.at).getTime() <= 7 * 86400000);
     const staleCycles = state.cycles.filter(item => item.status === 'running' && nowMs - new Date(item.started).getTime() >= 2 * 60 * 60 * 1000);
+    const activeSelfChosen = state.experiments.filter(item => item.status === 'active' && item.origin === 'nora');
     const recommendations = [
       ...overdue.map(item => ({ type: 'commitment', id: item.id, priority: 'critical', reason: `overdue${item.due ? ` since ${item.due}` : ''}`, action: 'verify delivery evidence, fulfill it, or renegotiate explicitly' })),
       ...dueSoon.map(item => ({ type: 'commitment', id: item.id, priority: 'high', reason: `due soon${item.due ? ` (${item.due})` : ''}`, action: 'confirm the next concrete step before it becomes late' })),
@@ -368,6 +392,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       commitments: { open: openCommitments, overdue, due_soon: dueSoon, needs_check: needsCheck },
       episodes: { open: openEpisodes },
       experiments: { due: experimentsDue },
+      self_experiments: { active: activeSelfChosen, limit: 2, capacity: Math.max(0, 2 - activeSelfChosen.length) },
       traces: { unreviewed: unreviewedTraces.slice(-100) },
       cycles: { stale: staleCycles },
       initiative: { hourly: initiativeStatus('cowork:proactive', now) },
@@ -389,6 +414,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           due_soon_commitments: orientation.commitments.due_soon.map(item => item.id),
           open_episodes: orientation.episodes.open.map(item => item.id),
           due_experiments: orientation.experiments.due.map(item => item.id),
+          active_self_experiments: orientation.self_experiments.active.map(item => item.id),
+          self_experiment_capacity: orientation.self_experiments.capacity,
           unreviewed_traces: orientation.traces.unreviewed.map(item => item.id),
           stale_cycles: orientation.cycles.stale.map(item => item.id),
         },
@@ -443,7 +470,7 @@ ${open.map(item => `- ${item.owner} committed to ${item.what}${item.beneficiary 
 ${relationships.map(item => `- ${item.name}: ${item.observations.filter(o => o.status === 'active' && o.confidence >= 0.65).slice(-4).map(o => o.observation).join('; ')}`).join('\n')}`);
     const experiments = state.experiments.filter(item => item.status === 'active').slice(-4);
     if (experiments.length) blocks.push(`[Active behavior experiments. Apply them naturally and let outcomes decide whether they survive.]
-${experiments.map(item => `- Try: ${item.behavior}. Hypothesis: ${item.hypothesis}`).join('\n')}`);
+${experiments.map(item => `- ${item.origin === 'nora' ? 'You chose to try' : 'Try'}: ${item.behavior}. Hypothesis: ${item.hypothesis}${item.rationale ? ` Rationale: ${item.rationale}` : ''}`).join('\n')}`);
     const episodes = relevantEpisodes({ person, project, query, channel });
     if (episodes.length) blocks.push(`[Relevant conversation continuity. Continue these threads naturally; do not announce that you retrieved them.]
 ${episodes.map(item => {
@@ -457,7 +484,7 @@ ${episodes.map(item => {
   return {
     init, snapshot: () => JSON.parse(JSON.stringify(state)), persist,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
-    recordTrace, updateTraceOutcome, createExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
+    recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, completeCycle, relevantEpisodes, promptContext,
   };
 }

@@ -1,6 +1,6 @@
 'use strict';
 
-const { assessUncertainty, detectRepairNeed, initiativeDecision, scoreMeetingContribution } = require('./policy');
+const { assessUncertainty, detectRepairNeed, initiativeDecision, meetingTurnDecision, scoreMeetingContribution } = require('./policy');
 
 const SCENARIOS = [
   { id: 'meeting-named', area: 'meeting', input: { named: true, humansTalkingToEachOther: true }, expect: true },
@@ -9,6 +9,9 @@ const SCENARIOS = [
   { id: 'meeting-interrupted', area: 'meeting', input: { named: true, someoneInterruptedNora: true }, expect: false },
   { id: 'meeting-continuation', area: 'meeting', input: { directQuestion: true, continuation: true }, expect: true },
   { id: 'meeting-generic-room-question', area: 'meeting', input: { directQuestion: true }, expect: false },
+  { id: 'meeting-one-on-one-flow', area: 'meeting', input: { oneOnOne: true }, expect: true },
+  { id: 'meeting-turn-named', area: 'meeting_turn', input: { candidate: true, named: true }, expect: true },
+  { id: 'meeting-turn-crosstalk', area: 'meeting_turn', input: { candidate: true, humansTalkingToEachOther: true }, expect: false },
   { id: 'uncertain-no-evidence', area: 'uncertainty', input: { memories: [] }, expect: true },
   { id: 'uncertain-disputed', area: 'uncertainty', input: { memories: [{ confidence: 0.9, status: 'disputed' }] }, expect: true },
   { id: 'grounded-stable', area: 'uncertainty', input: { memories: [{ confidence: 0.95, status: 'active' }] }, expect: false },
@@ -23,6 +26,7 @@ const SCENARIOS = [
 function runScenario(scenario) {
   let actual;
   if (scenario.area === 'meeting') actual = scoreMeetingContribution(scenario.input).shouldSpeak;
+  if (scenario.area === 'meeting_turn') actual = meetingTurnDecision(scenario.input).shouldSpeak;
   if (scenario.area === 'uncertainty') actual = assessUncertainty(scenario.input).verify || assessUncertainty(scenario.input).disclose;
   if (scenario.area === 'initiative') actual = initiativeDecision(scenario.input).allowed;
   if (scenario.area === 'repair') actual = detectRepairNeed(scenario.input).needed;

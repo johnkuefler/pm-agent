@@ -76,6 +76,10 @@ function registerIntelligenceRoutes(app, { requireAuth, store }) {
     try { res.json({ ok: true, experiment: store.createExperiment(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
+  app.post('/learning-experiments/choose', requireAuth, (req, res) => {
+    try { res.json({ ok: true, experiment: store.chooseExperiment(req.body || {}) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.post('/learning-experiments/:id/sample', requireAuth, (req, res) => {
     const experiments = store.recordExperimentSample({ ...(req.body || {}), experiment_id: req.params.id });
     if (!experiments.length) return res.status(404).json({ error: 'experiment not found' });

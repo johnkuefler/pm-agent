@@ -32,6 +32,12 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   for (let i = 0; i < 4; i++) store.recordExperimentSample({ experiment_id: experiment.id, outcome: 'landed', value: 1 });
   assert.equal(store.evaluateExperiment(experiment.id, { conclude: true }).status, 'retained');
 
+  const selfChosen = store.chooseExperiment({ behavior: 'Ask one sharper question before proposing a plan', hypothesis: 'Fewer plans will need correction', rationale: 'Three corrected replies suggest I am solving too early', source_refs: [{ channel: 'decision_trace', id: 'trace-1' }], stop_conditions: ['Two people say it slows the conversation'] });
+  assert.equal(selfChosen.origin, 'nora');
+  assert.equal(selfChosen.reversible, true);
+  assert.equal(store.orient().self_experiments.capacity, 1);
+  assert.throws(() => store.chooseExperiment({ behavior: 'Expand my authority', hypothesis: 'Move faster', rationale: 'I want permission', source_refs: [{ channel: 'self', id: 'want-1' }] }), /authority or trust boundary/);
+
   const overdue = store.addCommitment({ what: 'Overdue promise', due: '2026-07-10T10:00:00Z', episode_id: episode.id });
   const orientation = store.orient();
   assert.ok(orientation.commitments.overdue.some(item => item.id === overdue.id));

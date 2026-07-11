@@ -3827,17 +3827,37 @@ function maybeVolunteerProbe(openaiWs, session, userText) {
     return true;
   } catch (e) { console.warn('volunteer probe failed:', e.message); return false; }
 }
+function resumePendingVoiceTurn(openaiWs, session) {
+  const pending = session?.pendingVoiceTurn;
+  if (!pending) return false;
+  session.pendingVoiceTurn = null;
+  session.voiceCancelRequested = false;
+  setImmediate(() => maybeTriggerVoiceResponse(openaiWs, session, pending.text));
+  return true;
+}
 function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   if (!session) return;
+  const addressed = /\bnora\b/i.test(userText || '');
+  const soloHuman = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
   // Skip if a response is genuinely in flight, but with a WATCHDOG: a real response never runs this
   // long, so if the active flag has been set past RESPONSE_STALE_MS, assume the response.done (or an
   // error tearing it down) was dropped and ignore the stale flag. This guarantees a single missed
   // terminal event can never wedge her silent for the rest of the call.
-  if (session.voiceResponseActive && (Date.now() - (session.voiceResponseAt || 0) < RESPONSE_STALE_MS)) return;
-  const addressed = /\bnora\b/i.test(userText || '');
+  if (session.voiceResponseActive && (Date.now() - (session.voiceResponseAt || 0) < RESPONSE_STALE_MS)) {
+    // A named call always wins over an old/silent response (especially a volunteer probe). In a
+    // 1:1, a barge-in is also the next real turn. Queue the latest turn, cancel once, and resume as
+    // soon as response.done/error releases the gate. Group cross-talk never queues a reply.
+    if (addressed || session.oneOnOne || soloHuman) {
+      session.pendingVoiceTurn = { text: userText, queued_at: Date.now(), addressed };
+      if (!session.voiceCancelRequested) {
+        session.voiceCancelRequested = true;
+        try { openaiWs.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
+      }
+    }
+    return;
+  }
   // AUTO 1:1 — if only one other person has been heard on the call, treat it like a 1:1 and respond
   // freely (no name needed), without anyone toggling a mode. Group gating only kicks in at 2+ people.
-  const soloHuman = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
   let trigger = false, why = '', handoff = false;
   if (session.muted) {
     trigger = addressed; why = 'muted+named';          // muted: only a short text reply when directly named
@@ -3883,7 +3903,16 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   // knowledge still uses the separate silent volunteer probe below.
   trigger = meetingPolicy.shouldSpeak;
   if (trigger) {
-    try { openaiWs.send(JSON.stringify({ type: 'response.create' })); session.voiceResponseActive = true; session.voiceResponseAt = Date.now(); }
+    try {
+      const request = { type: 'response.create' };
+      if (addressed) request.response = { instructions: 'You were just called by name. Start speaking promptly. If this is only a check-in, answer with a quick natural acknowledgement. If it is a question, lead with the answer or one brief spoken acknowledgement before any live lookup. Do not narrate your thinking.' };
+      openaiWs.send(JSON.stringify(request));
+      session.voiceResponseActive = true;
+      session.voiceResponseAt = Date.now();
+      session.voiceTriggerAt = session.voiceResponseAt;
+      session.voiceTriggerReason = why;
+      session.voiceFirstAudioPending = !session.muted;
+    }
     catch (e) { console.warn('voice trigger failed:', e.message); }
     console.log(`🎙️ Voice: responding (${why})`);
   } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff && maybeVolunteerProbe(openaiWs, session, userText)) {
@@ -7040,7 +7069,23 @@ wss.on('connection', async (ws, req) => {
       // true, which would silence her for the rest of the call.
       if (msg.type === 'error') {
         console.error('❌ OpenAI error:', JSON.stringify(msg.error));
-        const s = sessions[botId]; if (s) s.voiceResponseActive = false;
+        const s = sessions[botId];
+        if (s) { s.voiceResponseActive = false; resumePendingVoiceTurn(openaiWs, s); }
+      }
+
+      if (msg.type === 'input_audio_buffer.speech_started') {
+        const s = sessions[botId];
+        if (s?.voiceResponseActive) intelligence.recordTrace({ channel: 'meeting', action: 'barge_in', decision: 'yield', confidence: 1, reasons: ['human speech started while Nora was responding', 'Realtime interrupt_response enabled'] });
+      }
+
+      if (msg.type === 'response.output_audio.delta') {
+        const s = sessions[botId];
+        if (s?.voiceFirstAudioPending && s.voiceTriggerAt) {
+          const latencyMs = Date.now() - s.voiceTriggerAt;
+          s.voiceFirstAudioPending = false;
+          intelligence.recordTrace({ channel: 'meeting', action: 'response_latency', decision: latencyMs <= 2000 ? 'snappy' : 'slow', confidence: 1, reasons: [`first audio in ${latencyMs}ms`, s.voiceTriggerReason || 'voice turn'], preview: String(latencyMs) });
+          console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
+        }
       }
 
       // Capture user speech transcription from OpenAI Whisper
@@ -7083,7 +7128,11 @@ wss.on('connection', async (ws, req) => {
       // Track response completions
       if (msg.type === 'response.done' && msg.response) {
         const s = sessions[botId];
-        if (s) s.voiceResponseActive = false; // free the gate
+        if (s) {
+          s.voiceResponseActive = false; // free the gate
+          s.voiceCancelRequested = false;
+          resumePendingVoiceTurn(openaiWs, s);
+        }
 
         // Volunteer-probe verdict. The probe silently asked her (text-only) whether she holds a
         // concrete fact worth interjecting. PASS: delete the deliberation from conversation history
@@ -7305,6 +7354,8 @@ module.exports = {
     buildBotConfig,
     buildSystemPrompt,
     intelligenceStore: intelligence,
+    maybeTriggerVoiceResponse,
+    resumePendingVoiceTurn,
   },
 };
 

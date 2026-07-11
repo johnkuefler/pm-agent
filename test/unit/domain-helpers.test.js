@@ -84,3 +84,25 @@ test('intelligence grounding augments rather than replaces Nora expressive voice
   assert.match(prompt, /Still open: Confirm launch QA/i);
 });
 
+test('named and one-on-one barge-ins preempt stale voice work while group cross-talk does not', async () => {
+  const sent = [];
+  const ws = { send: message => sent.push(JSON.parse(message)) };
+  const group = { voiceResponseActive: true, voiceResponseAt: Date.now(), speakersHeard: new Set(['John', 'Andy']), oneOnOne: false, muted: false };
+  helpers.maybeTriggerVoiceResponse(ws, group, 'Nora, are you there?');
+  assert.equal(sent[0].type, 'response.cancel');
+  assert.equal(group.pendingVoiceTurn.addressed, true);
+  group.voiceResponseActive = false;
+  helpers.resumePendingVoiceTurn(ws, group);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(sent[1].type, 'response.create');
+  assert.match(sent[1].response.instructions, /called by name/);
+
+  const crossTalk = { voiceResponseActive: true, voiceResponseAt: Date.now(), speakersHeard: new Set(['John', 'Andy']), oneOnOne: false };
+  helpers.maybeTriggerVoiceResponse(ws, crossTalk, 'yeah, I agree with that');
+  assert.equal(crossTalk.pendingVoiceTurn, undefined);
+
+  const oneOnOne = { voiceResponseActive: true, voiceResponseAt: Date.now(), speakersHeard: new Set(['John']), oneOnOne: true };
+  helpers.maybeTriggerVoiceResponse(ws, oneOnOne, 'wait, one more thing');
+  assert.equal(oneOnOne.pendingVoiceTurn.text, 'wait, one more thing');
+});
+

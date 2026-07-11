@@ -78,7 +78,8 @@ function renderRelationships(items) {
 function renderExperiments(items) {
   document.getElementById('experiment-list').innerHTML = items.length ? items.map(item => `
     <div class="intelligence-card"><strong>${escHtml(item.behavior)}</strong><div>${escHtml(item.hypothesis)}</div>
-      <div class="intelligence-meta">${item.status} &middot; ${item.samples.length} outcome sample${item.samples.length === 1 ? '' : 's'}${item.review_at ? ` &middot; review ${escHtml(item.review_at)}` : ''}</div>
+      <div class="intelligence-meta">${item.status} &middot; ${item.origin === 'nora' ? 'chosen by Nora' : escHtml(item.origin || 'human')} &middot; ${item.samples.length} outcome sample${item.samples.length === 1 ? '' : 's'}${item.review_at ? ` &middot; review ${escHtml(item.review_at)}` : ''}</div>
+      ${item.rationale ? `<div class="intelligence-meta">Why: ${escHtml(item.rationale)}</div>` : ''}
       ${item.status === 'active' ? `<button class="btn btn-sm" style="margin-top:7px" onclick="evaluateExperiment('${item.id}')">Evaluate</button>` : ''}
     </div>`).join('') : '<div class="empty">No behavior experiments yet.</div>';
 }

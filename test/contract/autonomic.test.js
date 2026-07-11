@@ -14,8 +14,12 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /decision-traces\?reviewed=false/);
   assert.match(routine, /initiative-budgets\/cowork:proactive\/spend/);
   assert.match(routine, /Step 10: Close the Intelligence Cycle/);
+  assert.match(routine, /Choose your own experiments when genuine curiosity earns one/);
+  assert.match(routine, /learning-experiments\/choose/);
   assert.match(server, /extractMeetingIntelligence\(bot_id, transcriptData/);
   assert.match(server, /meetingTurnDecision\(/);
+  assert.match(server, /response\.cancel/);
+  assert.match(server, /First audio in/);
   assert.match(server, /intelligence\.relevantEpisodes/);
   assert.match(store, /Relevant conversation continuity/);
   assert.match(store, /a prior intelligence cycle never closed/);

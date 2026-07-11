@@ -12,6 +12,7 @@ GET /decision-traces
 POST /decision-traces/:id/outcome
 GET /learning-experiments
 POST /learning-experiments
+POST /learning-experiments/choose
 POST /learning-experiments/:id/sample
 POST /learning-experiments/:id/evaluate
 GET /initiative-budgets/:scope

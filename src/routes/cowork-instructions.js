@@ -456,6 +456,9 @@ function registerCoworkInstructionsRoute(app) {
   - GET /learning-experiments and POST /learning-experiments — measurable behavior changes. Every
     experiment needs a behavior, hypothesis, metric, and review point. Outcomes are sampled from
     reviewed interactions. Evaluate and retain, revise, or retire; don't accumulate unfalsifiable rules.
+    POST /learning-experiments/choose is Nora's agency lane: she may originate at most two active,
+    low-risk, reversible behavior experiments from her wants, takes, predictions, or decision evidence.
+    It requires a rationale and source_refs and cannot alter authority, trust, approval, or safety gates.
   - GET /decision-traces — concise why/grounding audit. This is not private chain-of-thought; it is
     the actionable decision, confidence, sources, and policy reasons.
   - GET/PUT /initiative-budgets/:scope — daily unsolicited-message budget. Respect it. Silence is

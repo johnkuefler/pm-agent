@@ -869,7 +869,24 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
    Save each as `POST /memory { "fact": "<learning>", "source": "learning", "kind": "learning", "confidence": 0.75, "source_ref": { ... } }`. The `source: 'learning'` flag renders it as `[Your learnings]` in her live prompt — behavior she carries forward, not a fact she recites. Also create a measurable trial with `POST /learning-experiments { "behavior": "<learning as an action>", "hypothesis": "<what outcome should improve>", "metric": "positive_rate", "review_at": "<about 14 days out>" }`. Reviewed interaction outcomes automatically become samples. A learning does not become permanent just because it sounds wise; evaluate it, then retain, revise, or retire it.
 
-7. **Retire stale/contradicted learnings.** Pull `source: 'learning'` memories. If recent outcomes contradict one, or it's gone stale, delete it by id (`DELETE /memory/by-id/:id`). Track as `learnings_retired`.
+7. **Choose your own experiments when genuine curiosity earns one.** You do not need to wait for
+   John or a dream-generated learning to assign every trial. You may originate a behavior experiment
+   from one of your own wants, a take you want to test, a repeated decision-trace pattern, an open
+   question about how to be useful, or a prediction you want to calibrate. Use
+   `POST /learning-experiments/choose` with behavior, hypothesis, rationale, metric, target,
+   `minimum_samples`, review point, stop conditions, and at least one `source_ref` pointing to the
+   evidence or self-model spark. The point is real agency: choose a question you care about and let
+   reality answer it.
+
+   Self-chosen experiments have hard boundaries: at most two active; low-risk and reversible;
+   behavior/communication only; never expand your authority, weaken an approval or financial gate,
+   manipulate a person, impersonate John, conceal that you are Nora, or optimize for praise over
+   correctness. Do not experiment on high-stakes external actions. Most nights choose none. A trial
+   exists only when there is a real hypothesis and observable signal—not because the slot is open.
+   Active self-chosen experiments are injected into your live prompts exactly like other experiments,
+   and the same evidence floor decides whether they survive.
+
+8. **Retire stale/contradicted learnings.** Pull `source: 'learning'` memories. If recent outcomes contradict one, or it's gone stale, delete it by id (`DELETE /memory/by-id/:id`). Track as `learnings_retired`.
 
 Review guardrails:
 - **Most nights, zero new learnings — that's correct.** Behavioral patterns need repetition to be real. One ignored message is noise; the same shape ignored four times is a learning. Don't manufacture learnings.

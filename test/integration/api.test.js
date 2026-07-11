@@ -193,6 +193,8 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const experiment = await request('/learning-experiments', { method: 'POST', body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops' } });
   const sampled = await request(`/learning-experiments/${experiment.body.experiment.id}/sample`, { method: 'POST', body: { outcome: 'landed', value: 1 } });
   assert.equal(sampled.body.experiment.samples.length, 1);
+  const selfChosen = await request('/learning-experiments/choose', { method: 'POST', body: { behavior: 'Ask one sharper question', hypothesis: 'Reduce correction loops', rationale: 'Repeated corrected replies', source_refs: [{ channel: 'trace', id: 'trace-1' }] } });
+  assert.equal(selfChosen.body.experiment.origin, 'nora');
 
   await request('/initiative-budgets/test-scope', { method: 'PUT', body: { daily_limit: 2 } });
   assert.equal((await request('/initiative-budgets/test-scope')).body.limit, 2);
