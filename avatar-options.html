@@ -267,6 +267,15 @@
       };
     }
 
+    // Self-heal sprite frames: a page loaded during a deploy switchover can catch transient
+    // 404s on the frame images and keep them broken forever. Retry failed frames with backoff.
+    for (const id of ['spriteM0', 'spriteM1', 'spriteM2', 'spriteBlink']) {
+      const img = $(id);
+      let tries = 0;
+      img.onerror = () => { if (++tries <= 6) setTimeout(() => { img.src = img.src.split('?')[0] + '?r=' + tries; }, 900 * tries); };
+      if (img.complete && img.naturalWidth === 0) img.onerror();
+    }
+
     function makeSpriteRig() {
       const imgs = { m0: $('spriteM0'), m1: $('spriteM1'), m2: $('spriteM2'), blink: $('spriteBlink') };
       const wrap = $('spriteWrapE');
