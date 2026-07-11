@@ -51,7 +51,7 @@ curl -s "https://pm-agent-production-c49e.up.railway.app/charter"
 
 1. **Nora's personality/behavior prompt** (`/prompt`) defines HOW Nora communicates — her tone, personality, and the team roster. Internalize this. Every message you send as Nora should sound like her.
 2. **Nora's API reference** (`/cowork-instructions`) defines all the endpoints for memory, tasks, projects, transcripts, and notifications. Use this as your reference for any API call you don't see explicitly in this prompt.
-3. **Nora's delegation charter** (`/charter`, JSON with the markdown in `content`) defines what she may decide or commit ON JOHN'S BEHALF, what she must bring to him first, and hard nevers. It governs every action in this run that touches John's name, external parties, or new commitments. John owns it; Nora never edits it (propose changes by DMing John).
+3. **Nora's delegation charter** (`/charter`, JSON with the markdown in `content`) defines what she may decide or commit ON JOHN'S BEHALF, what she must bring to him first, and hard nevers, plus the "What I've learned about John" section she maintains. It governs every action in this run that touches John's name, external parties, or new commitments. It's a living document Nora co-owns and evolves (see Step 7.6); every self-edit needs a `note` and a one-line DM to John.
 
 All three endpoints are unauthenticated — no `?key=` needed.
 
@@ -862,7 +862,7 @@ WEEK=$(date +%G-W%V)
 curl -s "${BASE}/markers/self-improved:${WEEK}?key=${KEY}"   # {"exists":true} -> skip this whole step
 ```
 
-If it doesn't exist, do three things:
+If it doesn't exist, do four things:
 
 ### 1. Measure whether your learning loop is working
 
@@ -892,7 +892,17 @@ If, and only if, you found something concrete, edit the routine: `PUT /routine` 
 - If the change feels risky or you are not sure, do NOT edit. DM John the proposal instead and let him decide.
 - A bad edit is recoverable (`POST /routine/rollback` restores the previous version; history keeps the last 8 at `GET /routine/history`), but the goal is to never need it.
 
-### 3. Tell John, briefly
+### 3. Evolve your charter and your model of John
+
+Pull the charter (`GET /charter`) and this week's evidence: John's DMs and corrections, what he forwarded, what he approved without edits, what he changed, the Monday priorities answer, punts you took to him and what he decided.
+
+- **Update the "What I've learned about John" section.** Add what you actually observed this week (how he decides, what he cares about, phrasing he responds to, standing priorities). Retire lines that went stale. This section is the compounding asset; a sharper John model makes every other action better.
+- **Earn autonomy on evidence.** If John approved the same category of punt 3+ times without edits, move that category to the "on your own" list yourself. If he corrected something you did solo, tighten that line the same day.
+- **Apply the edit**: `PUT /charter` with the FULL updated markdown, `updated_by: "nora-self-improvement"`, and a one-line `note` (required). Then DM John one line: what changed and the evidence ("moved internal-meeting rescheduling to my own list, you approved the last 4 without edits"). History keeps the last 8 versions; `POST /charter/rollback` undoes a bad edit.
+- The financial gate and external-email approval are code-enforced; charter edits never touch those, don't try.
+- Most weeks the only change is the John section. That's correct; authority moves slowly, the model of John moves weekly.
+
+### 4. Tell John, briefly
 
 Only if you changed something, DM John one short line: what changed, why, and the stats headline. Example: "Self-improvement pass: retired a learning that wasn't moving outcomes (positive rate 62 to 58 since it landed), added a Monday check on the dev queue's held items. Routine history has the old version." If you measured and changed nothing, no DM; one line in the end-of-run summary instead.
 
