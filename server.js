@@ -3043,9 +3043,10 @@ app.post('/webhook/status', async (req, res) => {
           ended: new Date().toISOString(),
           transcript: session.transcript
         };
-        const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-        saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended);
-        console.log(`📝 Transcript saved: transcript-${bot_id}.json (${session.transcript.length} utterances)`);
+        // Await the final write so the ended-finalized transcript is durable before the
+        // session is torn down (the response was already sent above; this doesn't delay it).
+        await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended);
+        console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
       } catch (err) {
         console.error('Transcript save error:', err.message);
       }
