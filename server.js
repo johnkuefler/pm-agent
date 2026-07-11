@@ -2211,6 +2211,39 @@ app.post('/join', requireAuth, async (req, res) => {
   }
 });
 
+// Flatten a Slack message into one searchable string — text plus attachment text/links and any
+// block text or button URLs. The Zoom app puts its join link in a button or attachment as often
+// as in the message text, so a bare event.text scan would miss it.
+function slackMessageAllText(event) {
+  const parts = [event.text || ''];
+  for (const a of (event.attachments || [])) parts.push(a.text || '', a.fallback || '', a.title_link || '', a.title || '');
+  for (const b of (event.blocks || [])) {
+    if (b.text && b.text.text) parts.push(b.text.text);
+    if (b.url) parts.push(b.url);
+    if (b.accessory && b.accessory.url) parts.push(b.accessory.url);
+    for (const el of (b.elements || [])) { if (el.url) parts.push(el.url); if (el.text && el.text.text) parts.push(el.text.text); if (typeof el.text === 'string') parts.push(el.text); }
+    for (const f of (b.fields || [])) parts.push(f.text || '');
+  }
+  return parts.join(' ');
+}
+
+// Dedup window so a redelivered Slack event (or the app posting twice) can't double-join a meeting.
+const _recentAutoJoin = new Map();
+async function handleSlackAutoJoin(event, link) {
+  const now = Date.now();
+  for (const [k, t] of _recentAutoJoin) if (now - t > 10 * 60 * 1000) _recentAutoJoin.delete(k);
+  if (_recentAutoJoin.has(link)) return;
+  _recentAutoJoin.set(link, now);
+  try {
+    const r = await startMeetingJoin({ meeting_url: link, source: 'slack_autojoin', host: publicHost() });
+    await postSlackMessage(event.channel, "on my way into that meeting now.");
+    console.log(`✅ Auto-joined meeting from Slack DM link (bot ${r.bot_id})`);
+  } catch (e) {
+    _recentAutoJoin.delete(link); // let a retry through
+    await postSlackMessage(event.channel, `tried to hop into that meeting but couldn't. ${String(e.message).slice(0, 150)}. want me to try again?`).catch(() => {});
+  }
+}
+
 // Send a "dummy" test agent to a meeting. Same Recall.ai + OpenAI Realtime voice pipeline as
 // /join, but the session is flagged `dummy:true` so it runs on a custom one-off prompt with
 // NO memory, projects, tasks, integrations, or extraction. The operator gives it a quick brief
@@ -4698,6 +4731,26 @@ app.post('/webhook/slack', async (req, res) => {
 
   const event = req.body.event;
   if (!event) return;
+
+  // Auto-join catch: when someone runs the Zoom (or Meet/Teams) slash command in their DM with
+  // Nora, the app posts the meeting link into that DM as a BOT message — which the loop-guard just
+  // below would drop. So intercept FIRST: a bot-posted meeting link in a 1:1 DM is an unambiguous
+  // "start meeting" signal, so she joins and says so. Scoped tight on purpose: only her own DMs
+  // (im), only BOT-posted links (a human typing a link still needs an explicit ask via the
+  // nora_join_meeting tool — a pasted link isn't always a join request), never her own posts,
+  // deduped so a redelivered event can't double-join.
+  if ((event.bot_id || event.subtype === 'bot_message') && event.channel_type === 'im'
+      && event.user !== noraBotUserId) {
+    const link = extractMeetingUrl(slackMessageAllText(event));
+    if (link) {
+      console.log(`🎯 Meeting link posted by a bot in a DM (app_id=${event.app_id || '?'}, bot_id=${event.bot_id || '?'}): ${link}`);
+      handleSlackAutoJoin(event, link).catch(e => console.warn('auto-join failed:', e.message));
+    } else if (/zoom|meet|teams|meeting|join/i.test(slackMessageAllText(event))) {
+      // Looks meeting-ish but no link parsed — log the shape once so we can tune the extractor.
+      console.log('🎯 Bot DM looked meeting-related but no link parsed. Shape:', JSON.stringify({ text: (event.text || '').slice(0, 200), attachments: (event.attachments || []).length, blocks: (event.blocks || []).length }));
+    }
+    return; // bot messages never fall through to the normal reply path
+  }
 
   // Ignore bot messages (prevent loops, including Nora's own posts)
   if (event.bot_id || event.subtype === 'bot_message') return;
