@@ -96,6 +96,7 @@ GET /slack/financial-approved
 POST /slack/financial-approved/:userId
 DELETE /slack/financial-approved/:userId
 GET /slack/unhandled-mentions
+GET /jobs
 POST /notify
 GET /memory
 GET /memory/embedding-stats

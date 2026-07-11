@@ -2831,7 +2831,9 @@ app.post('/webhook/chat', async (req, res) => {
     const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
     let response, zoomFired = [];
     try {
-      ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors));
+      ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors, 6, {
+        deferredMeta: zoomMcp.meta, origin: { kind: 'zoom_chat', bot_id, requester: speaker }
+      }));
     } catch (err) {
       console.warn('Zoom chat reply with tools failed; retrying without:', err.response?.data?.error?.message || err.message);
       delete zoomReq.tools; zoomReq.messages = history.slice();
@@ -3663,21 +3665,29 @@ function realtimeVoiceTools() {
   const mcp = mcpManager.bindings({ financialApproved: false, voice: true });
   tools.push(...mcp.openaiTools);
   Object.assign(executors, mcp.executors);
-  return { tools, executors, inventory: mcp.inventory };
+  return { tools, executors, inventory: mcp.inventory, meta: mcp.meta };
 }
 
 // Execute a Teamwork READ tool the voice model called, then feed the result back into the realtime
 // session and ask it to continue speaking. Guards: read-only (write calls are refused), result is
 // size-capped. handled is a Set used to dedupe (the same call can surface on more than one event).
-async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled, executors = {}) {
+async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled, executors = {}, opts = {}) {
   if (!callId || (handled && handled.has(callId))) return;
   if (handled) handled.add(callId);
   let output;
   try {
-    if (TW_WRITE_NAMES.has(name)) {
+    const args = argsStr ? JSON.parse(argsStr) : {};
+    const dm = opts.deferredMeta && opts.deferredMeta[name];
+    if (dm && dm.deferred) {
+      // Slow tool (ImageGen etc.) on a live call: can't run it mid-conversation. Queue it and
+      // deliver the result to Slack; the call is almost always over before it finishes anyway.
+      try {
+        await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args, origin: opts.origin || { kind: 'voice' }, label: dm.connectionName });
+        output = { deferred: true, message: 'Started generating this in the background (it takes a few minutes). Tell them you have kicked it off and will drop the result in Slack, then move on. Do NOT wait, and do NOT call this again.' };
+      } catch (e) { output = { error: `could not queue background job: ${e.message}` }; }
+    } else if (TW_WRITE_NAMES.has(name)) {
       output = { error: 'Writing to Teamwork is not available on a live call. Tell them you will set it up in Slack right after, then move on.' };
     } else {
-      const args = argsStr ? JSON.parse(argsStr) : {};
       const execute = executors[name] || TEAMWORK_TOOLS.find(t => t.definition.name === name)?.execute;
       output = execute ? await execute(args) : { error: `unknown tool ${name}` };
     }
@@ -4017,9 +4027,112 @@ const SLACK_SEND_TOOL = {
   }
 };
 
+// ── Deferred-tool background jobs ───────────────────────────────────────────────
+// Some MCP tools (ImageGen especially) run for minutes. Called inline in a live Slack/Zoom/voice
+// turn they'd blow the 16s tool timeout and stall the reply. Instead we ENQUEUE them, hand the
+// turn back immediately ("on it, I'll post it here in a couple minutes"), and a worker runs the
+// tool with a generous timeout and delivers the result back to the origin thread.
+const DEFERRED_JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const _memJobs = []; // in-memory fallback when Postgres isn't active (jobs don't survive restart)
+
+function resolveJohnSlackId() {
+  for (const m of loadMemory()) {
+    const match = /John Kuefler'?s Slack user ID is (U[A-Z0-9]{6,})/i.exec(m.fact || '');
+    if (match) return match[1];
+  }
+  return null;
+}
+
+async function enqueueDeferredJob({ connectionId, toolName, args, origin, label }) {
+  const id = `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
+  const job = { id, kind: (origin && origin.kind) || 'slack', connection_id: connectionId, tool_name: toolName, label: label || toolName, args: args || {}, origin: origin || {} };
+  if (_dbReady) { try { await db.enqueueJob(job); } catch (e) { console.warn('enqueueJob failed, using memory:', e.message); _memJobs.push({ ...job, status: 'queued' }); } }
+  else _memJobs.push({ ...job, status: 'queued' });
+  console.log(`🧵 Deferred job ${id} queued: ${toolName} (origin ${job.kind})`);
+  return { id };
+}
+
+// Post a plain Slack message to a channel or (U…) user, threaded if given. Mirrors /notify.
+async function postSlackMessage(target, text, threadTs) {
+  if (!target || !text) return false;
+  let channelId = target;
+  if (String(target).startsWith('U')) {
+    const dm = await axios.post('https://slack.com/api/conversations.open', { users: target }, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } }).catch(() => null);
+    channelId = dm?.data?.channel?.id || target;
+  }
+  const payload = { channel: channelId, text };
+  if (threadTs) payload.thread_ts = threadTs;
+  const r = await axios.post('https://slack.com/api/chat.postMessage', payload, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } }).catch(e => ({ data: { ok: false, error: e.message } }));
+  return !!(r.data && r.data.ok);
+}
+
+// Turn a raw tool result into a short human message. ImageGen and most media tools return public
+// URLs, which are the payload; otherwise summarize.
+function renderJobResult(result, label) {
+  let text = '';
+  try { text = typeof result === 'string' ? result : JSON.stringify(result); } catch { text = String(result); }
+  const urls = [...new Set((text.match(/https?:\/\/[^\s"'`)\]]+/g) || []))].slice(0, 6);
+  if (urls.length) return `here's ${label ? label.toLowerCase() : 'what you asked for'}:\n${urls.join('\n')}`;
+  return `done with ${label || 'that'}.` + (text && text.length < 500 ? ` ${text}` : '');
+}
+
+async function deliverJobResult(job, { ok, result, error }) {
+  const origin = job.origin || {};
+  const label = job.label || job.tool_name;
+  const text = ok
+    ? renderJobResult(result, label)
+    : `couldn't finish ${label || 'that'} — ${String(error || 'it failed').slice(0, 200)}. want me to retry?`;
+  if (origin.kind === 'slack' && origin.channel) {
+    const posted = await postSlackMessage(origin.channel, text, origin.thread_ts);
+    if (!posted) { const j = resolveJohnSlackId(); if (j) await postSlackMessage(j, `(couldn't reach the original thread) ${text}`); }
+    return;
+  }
+  // Meeting-origin (zoom chat or voice): try the meeting chat if the bot's still live, else DM John.
+  if ((origin.kind === 'zoom_chat' || origin.kind === 'voice') && origin.bot_id) {
+    const sent = await axios.post(`${RECALL_BASE}/bot/${origin.bot_id}/send_chat_message/`, { message: text }, { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }).then(() => true).catch(() => false);
+    if (sent) return;
+  }
+  const johnId = resolveJohnSlackId();
+  if (johnId) await postSlackMessage(johnId, `${text}${origin.requester ? `\n(you asked for this on a call earlier)` : ''}`);
+  else console.warn(`job ${job.id}: no delivery target (origin ${origin.kind}, no John ID in memory)`);
+}
+
+async function processNextJob() {
+  let job = null;
+  if (_dbReady) { try { job = await db.claimNextQueuedJob(); } catch (e) { console.warn('claimNextQueuedJob:', e.message); return; } }
+  else { const idx = _memJobs.findIndex(j => j.status === 'queued'); if (idx >= 0) { job = _memJobs[idx]; job.status = 'running'; } }
+  if (!job) return;
+  try {
+    const result = await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
+    if (_dbReady) await db.finishJob(job.id, { status: 'done', result }); else job.status = 'done';
+    await deliverJobResult(job, { ok: true, result });
+    console.log(`✅ Deferred job ${job.id} done: ${job.tool_name}`);
+  } catch (e) {
+    const error = e.response?.data?.message || e.message || 'tool failed';
+    if (_dbReady) await db.finishJob(job.id, { status: 'failed', error }); else job.status = 'failed';
+    await deliverJobResult(job, { ok: false, error }).catch(() => {});
+    console.warn(`❌ Deferred job ${job.id} failed: ${error}`);
+  }
+}
+
+let _jobWorkerBusy = false;
+async function jobWorkerTick() {
+  if (_jobWorkerBusy) return; // serial: one job at a time, no overlap
+  _jobWorkerBusy = true;
+  try { await processNextJob(); } finally { _jobWorkerBusy = false; }
+}
+async function startJobWorker() {
+  if (_dbReady) { try { const n = await db.requeueRunningJobs(); if (n) console.log(`🧵 Requeued ${n} orphaned job(s) after restart`); } catch (e) { console.warn('requeueRunningJobs:', e.message); } }
+  const iv = setInterval(() => { jobWorkerTick().catch(() => {}); }, 3000);
+  iv.unref?.();
+  _runtimeIntervals.push(iv);
+}
+
 // Run a Claude request that may use client-side tools, executing them and looping until the
 // model produces its final answer. Web search is server-side; Teamwork and MCP tools execute here.
-async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6) {
+// opts.deferredMeta + opts.origin: when the model calls a tool flagged deferred, enqueue it as a
+// background job and hand back a synthetic result instead of running it inline.
+async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts = {}) {
   const URL = 'https://api.anthropic.com/v1/messages';
   let response = await axios.post(URL, reqBody, headers);
   let iters = 0;
@@ -4042,6 +4155,20 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6) {
     for (const tu of toolUses) {
       firedTools.push(tu.name);
       let content;
+      // Deferred tool (e.g. ImageGen): don't run it inline — it takes minutes. Enqueue a job and
+      // tell the model it's been kicked off, so the live turn ends now and the result is delivered
+      // to this thread later by the worker.
+      const dm = opts.deferredMeta && opts.deferredMeta[tu.name];
+      if (dm && dm.deferred) {
+        try {
+          const { id } = await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args: tu.input || {}, origin: opts.origin || { kind: 'slack' }, label: dm.connectionName });
+          content = JSON.stringify({ deferred: true, job_id: id, status: 'queued', message: `Started this as a background job (it runs for a few minutes). The result will be posted to this thread automatically when it finishes. Tell the user you've kicked it off and will follow up here shortly. Do NOT wait, and do NOT call this tool again for the same request.` });
+        } catch (e) {
+          content = JSON.stringify({ error: `could not queue background job: ${e.message}` });
+        }
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(content).slice(0, 12000) });
+        continue;
+      }
       try {
         const exec = executors[tu.name];
         content = exec ? JSON.stringify(await exec(tu.input || {})) : JSON.stringify({ error: `unknown tool ${tu.name}` });
@@ -4915,7 +5042,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let firedTools = [];
     try {
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
-      ({ response, firedTools } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors));
+      ({ response, firedTools } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
+        deferredMeta: mcpBindings.meta, origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user }
+      }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
       // never fails over a tool/connector issue. Re-throw genuine non-tool failures.
@@ -5412,6 +5541,14 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
 });
 
 // Notify endpoint — Claude Code calls this to have Nora post follow-ups
+// GET /jobs — recent deferred background jobs (dashboard/inspection). Newest first.
+app.get('/jobs', requireAuth, async (req, res) => {
+  try {
+    if (_dbReady) return res.json({ jobs: await db.recentJobs(Math.min(100, Number(req.query.limit) || 25)) });
+    res.json({ jobs: _memJobs.slice(-25).reverse() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.post('/notify', requireAuth, async (req, res) => {
   const { channel, user, text, blocks, file_url, file_name, thread_ts } = req.body;
 
@@ -7093,7 +7230,7 @@ wss.on('connection', async (ws, req) => {
       // server-side and feed the result back so she answers with real data on the call. Handled on
       // the per-item completion event; the response.done loop below is a deduped fallback.
       if (msg.type === 'response.output_item.done' && msg.item?.type === 'function_call') {
-        handleRealtimeVoiceTool(openaiWs, msg.item.call_id, msg.item.name, msg.item.arguments, handledToolCalls, voiceBundle.executors);
+        handleRealtimeVoiceTool(openaiWs, msg.item.call_id, msg.item.name, msg.item.arguments, handledToolCalls, voiceBundle.executors, { deferredMeta: voiceBundle.meta, origin: { kind: 'voice' } });
       }
 
       // Mark a response in flight so the turn-gate doesn't stack a second one on top.
@@ -7154,7 +7291,7 @@ wss.on('connection', async (ws, req) => {
         }
         for (const item of outputs) {
           if (item.type === 'function_call') {
-            handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls, voiceBundle.executors);
+            handleRealtimeVoiceTool(openaiWs, item.call_id, item.name, item.arguments, handledToolCalls, voiceBundle.executors, { deferredMeta: voiceBundle.meta, origin: { kind: 'voice' } });
           }
           if (item.type === 'message' && item.role === 'assistant') {
             // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
@@ -7298,6 +7435,7 @@ async function start(options = {}) {
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
       computeSoma();
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
+      startJobWorker(); // deferred-tool background jobs (ImageGen etc.)
     }
     return server;
   })();
