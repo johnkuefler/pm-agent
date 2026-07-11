@@ -2332,23 +2332,57 @@ app.get('/charter', (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// PUT /charter — John-owned: Nora may not edit her own authority. She proposes changes by
-// DMing John; only the dashboard (or John via API) writes here.
+// PUT /charter — a LIVING document Nora co-owns. She evolves her own authority as she learns
+// John and earns trust (full recursive self-improvement, at John's explicit direction). Rails
+// mirror the routine's: self-edits require a note, every save keeps history, rollback is one
+// call, and her routine tells her to DM John whenever she changes it. The hard security floors
+// (financial gate, external-email approve lane) are enforced in code and the harness, so no
+// charter edit can unlock those.
 app.put('/charter', requireAuth, async (req, res) => {
   const content = req.body && req.body.content;
   if (typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ error: 'content (a non-empty markdown string) is required' });
   }
   const updatedBy = (req.body.updated_by || 'unknown').toString();
-  if (/^nora/i.test(updatedBy)) {
-    return res.status(403).json({ error: 'the charter is John-owned; propose changes by DMing John, never by editing it' });
+  const note = req.body.note ? String(req.body.note).slice(0, 500) : null;
+  if (/^nora/i.test(updatedBy) && !note) {
+    return res.status(400).json({ error: 'self-edits require a note: one line on what changed and why' });
   }
   try {
-    const rec = { content, updated_at: new Date().toISOString(), updated_by: updatedBy };
-    if (_dbReady) { await db.setState('charter', rec); _cache.charter = rec; }
-    else { fs.writeFileSync(path.join(__dirname, 'nora-charter.md'), content); }
-    console.log(`📜 Charter updated by ${updatedBy} (${content.length} chars)`);
+    const rec = { content, updated_at: new Date().toISOString(), updated_by: updatedBy, note };
+    if (_dbReady) {
+      const prev = await db.getState('charter');
+      if (prev) {
+        await db.setState('charter_prev', prev);
+        const hist = (await db.getState('charter_history')) || [];
+        hist.push({ updated_at: prev.updated_at, updated_by: prev.updated_by, note: prev.note || null, length: (prev.content || '').length, content: prev.content });
+        while (hist.length > 8) hist.shift();
+        await db.setState('charter_history', hist);
+      }
+      await db.setState('charter', rec); _cache.charter = rec;
+    } else { fs.writeFileSync(path.join(__dirname, 'nora-charter.md'), content); }
+    console.log(`📜 Charter updated by ${updatedBy} (${content.length} chars)${note ? ` — ${note}` : ''}`);
     res.json({ ok: true, updated_at: rec.updated_at, updated_by: rec.updated_by, length: content.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// GET /charter/history + POST /charter/rollback — same escape hatches as the routine.
+app.get('/charter/history', requireAuth, async (req, res) => {
+  try {
+    const hist = _dbReady ? ((await db.getState('charter_history')) || []) : [];
+    const out = req.query.full === 'true' ? hist : hist.map(h => ({ updated_at: h.updated_at, updated_by: h.updated_by, note: h.note, length: h.length }));
+    res.json(out.slice().reverse());
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+app.post('/charter/rollback', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const prev = await db.getState('charter_prev');
+    if (!prev || !prev.content) return res.status(404).json({ error: 'no previous version stored' });
+    const rec = { content: prev.content, updated_at: new Date().toISOString(), updated_by: (req.body && req.body.updated_by) || 'rollback', note: `rolled back to version from ${prev.updated_at} (${prev.updated_by})` };
+    await db.setState('charter', rec); _cache.charter = rec;
+    console.log(`📜 Charter rolled back to ${prev.updated_at}`);
+    res.json({ ok: true, restored_from: prev.updated_at });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
