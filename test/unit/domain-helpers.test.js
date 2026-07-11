@@ -68,7 +68,10 @@ test('Recall bot config preserves webhook and voice-agent contracts', () => {
   const config = helpers.buildBotConfig('nora.example.com', 'token-123', 'Nora Test');
   assert.equal(config.bot_name, 'Nora Test');
   assert.match(config.output_media.camera.config.url, /^https:\/\/nora\.example\.com\/voice-agent/);
-  assert.equal(config.recording_config.realtime_endpoints.length, 3);
+  assert.equal(config.recording_config.realtime_endpoints.length, 4);
+  const participantHook = config.recording_config.realtime_endpoints.find(e => e.url && e.url.endsWith('/webhook/participant'));
+  assert.ok(participantHook, 'participant join/leave webhook is subscribed');
+  assert.deepEqual(participantHook.events, ['participant_events.join', 'participant_events.leave']);
   assert.equal(config.webhook_url, 'https://nora.example.com/webhook/status');
 });
 

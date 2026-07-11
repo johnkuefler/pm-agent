@@ -2131,6 +2131,7 @@ function buildBotConfig(serverHost, sessionToken, botName = 'Nora') {
       realtime_endpoints: [
         { type: 'webhook', url: `${SERVER_URL}/webhook/transcript`, events: ['transcript.data'] },
         { type: 'webhook', url: `${SERVER_URL}/webhook/chat`, events: ['participant_events.chat_message'] },
+        { type: 'webhook', url: `${SERVER_URL}/webhook/participant`, events: ['participant_events.join', 'participant_events.leave'] },
         { type: 'websocket', url: `${WS_URL}/ws/recall-video?token=${sessionToken}`, events: ['video_separate_png.data'] }
       ],
       include_bot_in_recording: { audio: true }
@@ -2146,7 +2147,10 @@ function newSession(projectHint = null) {
   // is one click when she's actually needed to speak. Combined with the muted-mode
   // chat-confirm path in /voice-agent/response, she's still useful when muted:
   // present, listening, files tasks when explicitly asked, confirms via chat.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
+  // oneOnOneAuto: while true, oneOnOne is auto-managed from live participant presence (on at join /
+  // ≤1 human, off once a 2nd human is present). A manual toggle on the dashboard turns auto off so
+  // the human's choice sticks. participants: the set of present HUMANS (bot excluded), keyed by id.
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -2278,6 +2282,7 @@ app.post('/dummy/join', requireAuth, async (req, res) => {
     s.dummy = true;
     s.dummyPrompt = dummyPrompt;
     s.dummyName = dummyName;
+    s.botName = dummyName; // so participant-presence excludes the test bot from the human count
     s.muted = false;
     sessions[botId] = s;
 
@@ -2959,8 +2964,9 @@ app.post('/one-on-one', requireAuth, (req, res) => {
   if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].oneOnOne;
   sessions[bot_id].oneOnOne = enabled;
+  sessions[bot_id].oneOnOneAuto = false; // a manual toggle wins — stop auto-managing from presence
   syncVoiceEagerness(sessions[bot_id]); // 1:1 runs 'high' eagerness (snappier turn-ends), group 'medium'
-  console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
+  console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id} (manual — auto off)`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
 });
 
@@ -2996,6 +3002,43 @@ app.post('/mute', requireAuth, (req, res) => {
   const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !session.muted;
   applyMute(session, enabled); // flips the flag + live-updates the voice session + notifies the browser
   res.json({ ok: true, muted: enabled, bot_id });
+});
+
+// Auto 1:1: derive oneOnOne from how many HUMANS are present. On at join / while it's just Nora
+// and one person; off the moment a 2nd human is in the room, even before they speak. Only runs
+// while auto is on (a manual dashboard toggle turns auto off). No-ops until we have presence data,
+// so if participant events never arrive the speaker-based soloHuman fallback still governs.
+function recomputeAutoOneOnOne(session) {
+  if (!session || !session.oneOnOneAuto) return;
+  const humans = session.participants ? session.participants.size : 0;
+  if (humans < 1) return; // no presence data yet — let soloHuman (speaker-based) handle it
+  const next = humans <= 1;
+  if (session.oneOnOne !== next) {
+    session.oneOnOne = next;
+    console.log(`🎚️ Auto 1:1 → ${next ? 'ON (solo)' : 'OFF (group)'} — ${humans} human participant${humans === 1 ? '' : 's'} present`);
+  }
+}
+
+// Recall participant join/leave. Tracks present HUMANS (Nora herself excluded by name) so the
+// auto-1:1 flips off as soon as a 2nd person is in the room and back on if it drops to one.
+app.post('/webhook/participant', (req, res) => {
+  res.sendStatus(200);
+  try {
+    const eventType = req.body?.event;
+    if (eventType !== 'participant_events.join' && eventType !== 'participant_events.leave') return;
+    const bot_id = req.body?.data?.bot?.id;
+    const participant = req.body?.data?.data?.participant;
+    const session = bot_id && sessions[bot_id];
+    if (!session || !participant) return;
+    const id = String(participant.id != null ? participant.id : (participant.name || ''));
+    if (!id) return;
+    const isBot = participant.is_current_user === true || (session.botName && participant.name === session.botName);
+    console.log(`👥 participant ${eventType.split('.').pop()}: ${participant.name || id}${isBot ? ' (Nora, ignored)' : ''}${participant.is_host ? ' [host]' : ''}`);
+    if (isBot) return; // don't count Nora toward the human total
+    if (eventType.endsWith('.join')) session.participants.set(id, { name: participant.name || null, is_host: !!participant.is_host });
+    else session.participants.delete(id);
+    recomputeAutoOneOnOne(session);
+  } catch (e) { console.warn('participant webhook:', e.message); }
 });
 
 // Meeting status updates — track bot_id and clean up
