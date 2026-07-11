@@ -154,6 +154,7 @@
         <div class="tab" onclick="showTab('dreams')">Dreams</div>
         <div class="tab" onclick="showTab('markers')">Markers</div>
         <div class="tab" onclick="showTab('routine')">Routine</div>
+        <div class="tab" onclick="showTab('charter')">Charter</div>
         <div class="tab" onclick="showTab('admin')">Admin</div>
       </nav>
     </aside>
@@ -172,6 +173,8 @@
           <option value="">No project hint (general meeting)</option>
         </select>
         <div style="font-size:12px;color:#6a6876;margin-top:4px;">Optional. Picks one project to prime Nora's context for this meeting — she'll have full memory + details for it loaded.</div>
+        <textarea id="join-mandate" placeholder="Mandate (optional): what she's there to accomplish in your place. e.g. 'Get them to commit to a launch date. Don't give ground on the QA window. If pricing comes up, take it back to me.'" style="margin-top:8px;min-height:60px;"></textarea>
+        <div style="font-size:12px;color:#6a6876;margin-top:4px;">Her agenda for this meeting. She'll open with it if it's her meeting to run, hold its positions, punt what it doesn't cover (per the Charter), and measure her debrief to you against it.</div>
         <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
@@ -535,6 +538,29 @@
         <div id="routine-status" class="toast"></div>
       </div>
     </div>
+
+    <!-- Charter Tab -->
+    <div id="page-charter" class="page">
+      <div class="section">
+        <h2 style="display:flex; justify-content:space-between; align-items:center;">
+          Delegation Charter
+          <span style="font-size:11px; color:var(--dim); font-weight:400;">what Nora may do in John's name</span>
+        </h2>
+        <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
+          John owns this document. It defines what Nora can decide or commit to on his behalf, what she brings
+          back to him, and what she never does. It's injected into her live prompts (Slack, Zoom chat, voice)
+          and fetched by the hourly routine, so edits here change her authority everywhere on the next reply /
+          next run. Nora cannot edit it: she proposes changes by DM, and the server rejects self-edits.
+        </p>
+        <div id="charter-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
+        <textarea id="charter-content" spellcheck="false" style="width:100%; min-height:480px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
+        <div class="row">
+          <button class="btn btn-primary btn-sm" onclick="saveCharter()">Save charter</button>
+          <button class="btn btn-sm" onclick="loadCharterEditor()">Reload</button>
+        </div>
+        <div id="charter-status" class="toast"></div>
+      </div>
+    </div>
     </main>
   </div>
 
@@ -565,7 +591,33 @@
       if (name === 'dreams') loadDreams();
       if (name === 'markers') loadMarkers();
       if (name === 'routine') loadRoutineEditor();
+      if (name === 'charter') loadCharterEditor();
       if (name === 'admin') loadAdmin();
+    }
+
+    async function loadCharterEditor() {
+      const ta = document.getElementById('charter-content');
+      const meta = document.getElementById('charter-meta');
+      try {
+        const r = await (await api('/charter')).json();
+        ta.value = r.content || '';
+        meta.textContent = r.updated_at
+          ? `Last updated ${new Date(r.updated_at).toLocaleString()} by ${r.updated_by || '?'} · ${(r.content || '').length.toLocaleString()} chars`
+          : `${(r.content || '').length.toLocaleString()} chars`;
+      } catch (e) { meta.textContent = 'Failed to load charter.'; }
+    }
+
+    async function saveCharter() {
+      const content = document.getElementById('charter-content').value;
+      const s = document.getElementById('charter-status');
+      if (!content.trim()) { s.className = 'toast err'; s.textContent = 'Charter cannot be empty.'; return; }
+      if (!confirm("Save the charter? This changes Nora's authority everywhere (Slack, calls, hourly loop) immediately.")) return;
+      try {
+        const r = await api('/charter', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard' }) });
+        const d = await r.json();
+        if (d.ok) { s.className = 'toast ok'; s.textContent = `Saved (${(d.length || 0).toLocaleString()} chars).`; loadCharterEditor(); }
+        else { s.className = 'toast err'; s.textContent = 'Save failed: ' + (d.error || 'unknown'); }
+      } catch (e) { s.className = 'toast err'; s.textContent = 'Save failed: ' + e.message; }
     }
 
     async function loadRoutineEditor() {
@@ -603,6 +655,8 @@
       try {
         const body = { meeting_url: u };
         if (project) body.project = project;
+        const mandate = (document.getElementById('join-mandate') || {}).value;
+        if (mandate && mandate.trim()) body.mandate = mandate.trim();
         // Pass who's sending Nora so the realtime prompt knows who she's about to
         // talk to. John is the primary dashboard operator; in 90%+ of manual sends
         // he is also the person on the call. The realtime prompt frames this as

@@ -772,6 +772,14 @@ async function initPersistence() {
         console.log(`🗄️  Seeded routine from nora-routine.md (${seed.length} chars)`);
       } catch (e) { console.warn('routine seed failed:', e.message); }
     }
+    // Seed the delegation charter (John-owned: what Nora may do in his name) the same way.
+    if (!(await db.getState('charter'))) {
+      try {
+        const seed = fs.readFileSync(path.join(__dirname, 'nora-charter.md'), 'utf8');
+        await db.setState('charter', { content: seed, updated_at: new Date().toISOString(), updated_by: 'seed' });
+        console.log(`🗄️  Seeded charter from nora-charter.md (${seed.length} chars)`);
+      } catch (e) { console.warn('charter seed failed:', e.message); }
+    }
 
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
@@ -782,6 +790,7 @@ async function initPersistence() {
     _cache.dreams = await db.loadAllDreams();
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
+    _cache.charter = await db.getState('charter');
     slackJoinedThreads = await db.loadAllSlackThreads();
     slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
@@ -989,6 +998,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   if (learnings.length > 0) {
     const learningItems = isRealtime ? learnings.slice(-8) : learnings;
     base = `${base}\n\n[Your learnings: what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior, how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => `- ${m.fact}`).join('\n')}`;
+  }
+
+  // Delegation charter: the authority John has given her. Identity-level and rarely edited, so
+  // it lives in the cached stable base (Slack, Zoom chat, and voice all get it). Cowork gets it
+  // via GET /charter from the routine.
+  const charterDoc = loadCharterSync();
+  if (charterDoc.content) {
+    base = `${base}\n\n[Your delegation charter. What John has authorized you to do in his name. It governs every commitment you make.]\n${charterDoc.content}`;
   }
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
@@ -1270,6 +1287,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     }
     if (meetingContext.subject) {
       lines.push(`Meeting subject: "${meetingContext.subject}".`);
+    }
+    if (meetingContext.mandate) {
+      lines.push(`[Your mandate for THIS meeting, from John]\n"${meetingContext.mandate}"\nThis is your agenda. If it's your meeting to run, open with what you're there to cover and drive toward it. Hold the positions it states; punt what it doesn't cover per your charter. Your debrief to John afterward gets measured against this.`);
     }
     if (lines.length > 0) {
       volatile += `\n\n[Who you're talking to right now]\n${lines.join('\n\n')}`;
@@ -2295,6 +2315,43 @@ async function saveRoutine(content, updatedBy, note) {
   return rec;
 }
 
+// ── Delegation charter ────────────────────────────────────────────────────────
+// John-owned: what Nora may decide/commit in his name, what she punts, hard nevers.
+// Injected into her live prompts (Slack + voice) and fetched by the cowork routine.
+// SYNC accessor because buildSystemPrompt is sync; cache hydrated at boot, PUT updates it.
+function loadCharterSync() {
+  if (_dbReady && _cache.charter && _cache.charter.content) return _cache.charter;
+  try {
+    return { content: fs.readFileSync(path.join(__dirname, 'nora-charter.md'), 'utf8'), updated_at: null, updated_by: 'seed (file)' };
+  } catch { return { content: '', updated_at: null, updated_by: null }; }
+}
+
+// GET /charter — unauthenticated like /prompt (authority rules, no secrets).
+app.get('/charter', (req, res) => {
+  try { res.json(loadCharterSync()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// PUT /charter — John-owned: Nora may not edit her own authority. She proposes changes by
+// DMing John; only the dashboard (or John via API) writes here.
+app.put('/charter', requireAuth, async (req, res) => {
+  const content = req.body && req.body.content;
+  if (typeof content !== 'string' || !content.trim()) {
+    return res.status(400).json({ error: 'content (a non-empty markdown string) is required' });
+  }
+  const updatedBy = (req.body.updated_by || 'unknown').toString();
+  if (/^nora/i.test(updatedBy)) {
+    return res.status(403).json({ error: 'the charter is John-owned; propose changes by DMing John, never by editing it' });
+  }
+  try {
+    const rec = { content, updated_at: new Date().toISOString(), updated_by: updatedBy };
+    if (_dbReady) { await db.setState('charter', rec); _cache.charter = rec; }
+    else { fs.writeFileSync(path.join(__dirname, 'nora-charter.md'), content); }
+    console.log(`📜 Charter updated by ${updatedBy} (${content.length} chars)`);
+    res.json({ ok: true, updated_at: rec.updated_at, updated_by: rec.updated_by, length: content.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 // GET /routine — the routine markdown + metadata. Unauthenticated (no secrets; the harness has the key).
 app.get('/routine', async (req, res) => {
   try { res.json(await loadRoutine()); }
@@ -2518,7 +2575,7 @@ function newSession(projectHint = null) {
 // Join meeting via API — uses output_media for real-time voice agent
 app.post('/join', requireAuth, async (req, res) => {
   try {
-    const { meeting_url, project, sender } = req.body;
+    const { meeting_url, project, sender, mandate } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
 
     // Normalize project hint to canonical project name if it matches a known project (case-insensitive).
@@ -2559,7 +2616,14 @@ app.post('/join', requireAuth, async (req, res) => {
         source: 'manual_join'
       };
     }
-    console.log(`✅ Nora joined via output_media. Bot ID: ${botId}${projectHint ? ` (project hint: ${projectHint})` : ''}${senderName ? ` (sender: ${senderName})` : ''}`);
+    // Mandate: John's brief for THIS meeting ("get them to commit to a launch date, don't give
+    // ground on the QA window"). Rendered into the realtime prompt as her agenda, and echoed
+    // back against in the post-meeting debrief.
+    const mandateText = (typeof mandate === 'string' && mandate.trim()) ? mandate.trim().slice(0, 2000) : null;
+    if (mandateText) {
+      sessions[botId].meetingMeta = { ...(sessions[botId].meetingMeta || {}), mandate: mandateText };
+    }
+    console.log(`✅ Nora joined via output_media. Bot ID: ${botId}${projectHint ? ` (project hint: ${projectHint})` : ''}${senderName ? ` (sender: ${senderName})` : ''}${mandateText ? ' (with mandate)' : ''}`);
     res.json({ bot_id: botId, project_hint: projectHint || null, sender: senderName });
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
@@ -3338,6 +3402,8 @@ app.post('/webhook/status', async (req, res) => {
         // session is torn down (the response was already sent above; this doesn't delay it).
         await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended);
         console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
+        // Post-meeting debrief to John (fire-and-forget; captures its inputs before cleanup).
+        runMeetingDebrief(bot_id, transcriptData, session.meetingMeta).catch(() => {});
       } catch (err) {
         console.error('Transcript save error:', err.message);
       }
@@ -7167,6 +7233,40 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     // Non-fatal — description failures shouldn't disturb the live session.
     console.warn('Screen-share description failed:', err.response?.data?.error?.message || err.message);
   }
+}
+
+// Post-meeting debrief DM to John: what happened, what Nora committed to, what needs him.
+// The core of "send her in your place": John can skip the meeting and still know exactly what
+// came out of it within a minute of it ending. Non-fatal everywhere; a failed debrief never
+// affects transcript filing or session teardown.
+async function runMeetingDebrief(botId, transcriptData, meetingMeta) {
+  try {
+    const t = (transcriptData && transcriptData.transcript) || [];
+    if (t.length < 10) return; // mic checks and micro-meetings don't need a debrief
+    // John's Slack ID lives in memory as a fact (the cowork loop saved it).
+    let johnId = null;
+    for (const m of loadMemory()) {
+      const match = /John Kuefler'?s Slack user ID is (U[A-Z0-9]{6,})/i.exec(m.fact || '');
+      if (match) { johnId = match[1]; break; }
+    }
+    if (!johnId) { console.warn('debrief: John Slack ID not found in memory, skipping'); return; }
+    const lines = t.map(u => `[${u.speaker}]: ${u.text}`).join('\n').slice(0, 24000);
+    const mandateNote = meetingMeta && meetingMeta.mandate
+      ? `\nJohn's mandate for this meeting was: "${meetingMeta.mandate}". Lead with how it went against that mandate.`
+      : '';
+    const resp = await axios.post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-sonnet-4-6',
+      max_tokens: 500,
+      system: `You write Nora's post-meeting debrief DM to John Kuefler. Nora is LimeLight's AI PM and attended this meeting, sometimes in John's place. Write AS Nora in her voice: casual, direct, specific, no corporate filler, never an em dash. Shape: 2 to 6 short lines. First line is the headline of what actually happened. Then ONLY the sections that apply, inline, no headers: commitments Nora made (exact, with dates), asks of John or LimeLight that Nora punted (who asked, what they need, by when she promised him an answer), and decisions only John can make. Skip anything empty. If the meeting was routine and nothing needs John, say so in one line and stop.`,
+      messages: [{ role: 'user', content: `Meeting transcript:${mandateNote}\n\n${lines}\n\nWrite the debrief DM now.` }]
+    }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } });
+    const text = (resp.data.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
+    if (!text) return;
+    await axios.post('https://slack.com/api/chat.postMessage',
+      { channel: johnId, text },
+      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+    console.log(`📋 Meeting debrief DMed to John (${t.length} utterances${meetingMeta && meetingMeta.mandate ? ', mandate-measured' : ''})`);
+  } catch (e) { console.warn('meeting debrief failed (non-fatal):', e.message); }
 }
 
 async function extractMemory(context, trigger, reply, sourceBotId) {
