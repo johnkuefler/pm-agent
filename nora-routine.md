@@ -798,10 +798,18 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
 1. **Pull the worklist.** `GET /interactions?reviewed=false` — the Slack replies she sent that haven't been assessed yet. Cap at ~20 per dream (newest first); leave the rest for tomorrow's dream. If empty, skip the whole movement.
 
-2. **For each interaction, read what happened around it.** The signal is NOT just reactions — it's the whole neighborhood of the message. Use the Slack MCP:
-   - `slack_read_thread` with the interaction's `channel` + `thread_ts` → the replies that came **after** Nora's message. This is the richest signal: did someone say "thanks, exactly" / "actually that's not right, it's X" / ask a follow-up / or did the thread just die?
-   - `slack_read_channel` around the message's timestamp → **adjacent messages** even if not threaded replies. Did the conversation build on her point, ignore it and move on, or contradict it? For a proactive chime-in especially: did anyone engage, or did it land with a thud?
-   - **Reactions** on her message (visible in the read) — 👍✅🎯 lean positive, 👎❌ negative, 🤔 ambiguous. Treat as a weak signal that *confirms* what the replies show, not a primary one.
+2. **For each interaction, read what happened after it.** The signal is NOT just reactions — it's how people responded to her message.
+
+   **Always start with the built-in landing reader — it is the ONE path that works for DMs too:**
+   ```bash
+   curl -s "${BASE}/slack/landing/${channel}/${ts}?type=${channel_type}&key=${KEY}"        # add &thread_ts=... for channel threads
+   ```
+   Pass the interaction's own `channel`, `ts`, and `channel_type`. It returns the human follow-ups that came after her message (`messages: [...]`), for a DM with **anyone** or a channel thread alike. This closes the old blind spot: your cowork Slack MCP cannot read the DM between you and John, so for any `dm_reply` interaction (`channel_type` = `im`/`mpim`) this endpoint is the ONLY way to see whether John replied "thanks" or "no, that's wrong." If it returns `error` with a `scope_hint`, note it in the end-of-run summary and fall back to the trigger-only judgment.
+
+   **Then enrich channel interactions with the Slack MCP** (it adds reactions and wider neighborhood context the endpoint doesn't):
+   - `slack_read_channel` around the message's timestamp → **adjacent messages** even if not threaded replies. Did the conversation build on her point, ignore it, or contradict it? For a proactive chime-in especially: did anyone engage, or did it land with a thud?
+   - **Reactions** on her message — 👍✅🎯 lean positive, 👎❌ negative, 🤔 ambiguous. A weak signal that *confirms* what the replies show, not a primary one. (The landing endpoint surfaces reactions when present, but the MCP read is richer.)
+   - Skip the MCP step for DMs; the landing endpoint already has what you need and the MCP can't see the DM anyway.
 
 3. **Judge how it landed** with a Claude reasoning pass. Classify the `outcome` as one of: `appreciated` (clear positive — acted on, thanked, built upon), `landed` (fine, served its purpose, no friction), `neutral` (no real signal either way), `ignored` (conversation moved on as if she hadn't spoken — especially telling for proactive posts), `corrected` (someone pushed back, fixed, or contradicted her). Write a one-line `signal` describing what the replies/adjacent messages/reactions actually showed.
 
