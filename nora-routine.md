@@ -294,7 +294,7 @@ For each pending task:
      `GET https://pm-agent-production-c49e.up.railway.app/teamwork/tasks/{taskId}/stage?stage={stageName}`
      Stage name is case-insensitive. This finds the task's project workflow and moves it to the matching stage. Returns 404 if the stage name doesn't exist in the workflow.
 
-   - "Fix/change something on the [client] website..." → LimeLight Agent Kit tools; follow the "Site Changes & Image Generation" section (read-first, verify-after, change-log discipline).
+   - "How is [client]'s [campaign/site/email] performing..." / "pull the numbers on..." / "is the tracking working..." → LimeLight Analytics MCP; follow the "Analytics & Image Generation" section (resolve the right account first, cite source + range, Rule 2 on spend/revenue figures).
    - "Generate an image / creative / an ad set..." → ImageGen tools; same section (optimize_prompt for loose briefs, platform presets, share URLs, Drive for deliverables).
 
    **LimeLight PM MCP** — forecasts, estimates, and project profitability. Reactive only — only invoke when the queued task explicitly asks for it. See `/cowork-instructions` for the full module overview.
@@ -405,20 +405,18 @@ Guardrails:
 - Only file **client** meetings. Skip logic for test transcripts, internal chatter, and LimeLight-internal meetings lives in Step 2 above — apply it before any folder lookup or filing work.
 - The transcript content might contain financials. Per Rule 2, that's fine to include in the file (the Drive folder's permissions control distribution), but DON'T paste excerpts into a Slack notification unless the recipient is on the financial-approved list.
 
-## Site Changes & Image Generation (LimeLight Agent Kit + ImageGen connectors)
+## Analytics & Image Generation (LimeLight Analytics + ImageGen connectors)
 
-Two Cowork connectors give you real production capabilities. Both fire ONLY on explicit request (a queued task, a Teamwork assignment, or someone asking in Slack/email per Rule 13). Never edit a site or generate creative because something "looked off".
+Two Cowork connectors. Analytics is READ access to real client marketing data; ImageGen produces real creative. Both fire on request (a queued task, a Teamwork assignment, or someone asking per Rule 13); analytics reads may also ground a proactive flag when the numbers themselves are the news.
 
-### The LimeLight Agent Kit (live WordPress access)
+### The LimeLight Analytics MCP (client marketing data, read-only)
 
-The `limelight-*` tools are LIVE WRITE ACCESS to a client production WordPress site (currently the KE&G multisite; run `limelight-get-kit-capabilities` at the start of any site task to confirm which site, backends, and permission tiers are active). Discipline for every site task:
+One connector, many sources: **Google Ads** (campaign/ad group/RSA performance, GAQL, quality score, search terms + waste analysis, budget pacing, PMax deep dives, keyword ideas), **GA4** (traffic, conversions, ecommerce, landing pages, devices/geo, realtime), **Search Console** (queries, pages, index coverage, sitemaps), **Meta Ads** (campaigns/adsets/ads, creatives, audiences, spend trends, demographic splits), **Klaviyo** (campaigns, flows), **SEMrush** (domain organic, rank history), plus `audit_conversion_tracking` and `analyze_budget_pacing` / `analyze_meta_budget_pacing`. Start with `list_accessible_accounts` / `get_ga4_properties` / `get_meta_ad_accounts` to resolve the right client account before querying. Rules:
 
-1. **Read before write.** `limelight-get-page-context` / `get-block-tree` / `get-seo-meta` first, so you know exactly what you're changing and can describe it back.
-2. **Smallest change that does the job.** Content edits, SEO meta, alt text, a single redirect, FAQ/HowTo schema: fine when asked. Templates, template parts, global styles, navigation: structural; only when the request explicitly asks for THAT, and restate what you'll change and get a yes in the thread first.
-3. **Validate and verify.** `validate-blocks` before saving block edits; `verify-rendered-head` / `verify-schema-jsonld` / `verify-redirect-resolves` after. Don't report success until a verifier passes.
-4. **The change log is your safety net.** Every write is tracked (`list-changes`). Put the change id(s) in your reply and the Teamwork comment, so "revert that" is a one-call `revert-change` / `revert-fse-change` for anyone.
-5. **Never bulk.** `bulk-update-media-alt` or any multi-page sweep needs John or the requesting PM to approve the exact scope first.
-6. **New public posts/pages count as publishing.** Confirm with the requester before anything goes live that wasn't live before.
+1. **Answer performance questions with real numbers**, scoped to the date range asked. Say which source and range the numbers came from ("GA4, last 14 days"). Never estimate when you can query.
+2. **Ad spend, budgets, ROAS and revenue figures are FINANCIAL data.** Rule 2 applies in full: strip the figures unless the recipient is on the financial-approved list; describe direction ("pacing ahead of budget") instead.
+3. **One client's data never appears in another client's context**, channel, or deliverable. Resolve the account, double-check the client matches the asker's project, then query.
+4. **Grounded flags only.** A budget pacing alert or a conversion-tracking break found during a requested pull is worth surfacing to the right PM (Teamwork-first). Don't run unprompted account-wide sweeps; if a recurring sweep seems valuable, propose it to John instead of self-starting it.
 
 ### ImageGen (creative generation)
 
