@@ -1,13 +1,17 @@
 # Nora — Hourly Cowork Prompt (Harness)
 
-> This is the STABLE harness for Nora's hourly Cowork session. It should basically never change.
-> It sets up auth and the run lock, holds the invariant CRITICAL RULES, then fetches Nora's
-> actual hourly ROUTINE from her platform (`GET /routine`) and executes it.
+> This is the STABLE harness for Nora's hourly Cowork session, SERVED at `GET /cowork-prompt`.
+> The Claude Cowork task config is a tiny bootstrap that just fetches this and executes it, so
+> the layers are:
+>   1. Cowork task config — tiny, stable: holds the key, fetches this harness, runs it.
+>   2. This harness (`GET /cowork-prompt`) — auth, run lock, the invariant CRITICAL RULES, and
+>      "fetch `GET /routine` and run it." Code-controlled (edited in this repo + deployed), because
+>      it holds the security-critical rules; it should still rarely change.
+>   3. The routine (`GET /routine`) — the actual hourly steps, freely editable in her platform
+>      (the dashboard Routine tab or `PUT /routine`), no deploy needed.
 >
-> The routine — the steps she runs each hour — lives in her platform and is edited there (the
-> dashboard Routine tab or `PUT /routine`), NOT in this file. That's the point: the routine can
-> evolve without touching this harness or the Cowork task config. Paste this harness into the
-> Cowork task config ONCE; after that, change the routine in her platform.
+> So: the Cowork config never changes, this harness changes only via a reviewed deploy, and the
+> day-to-day routine is edited on the dashboard.
 
 ---
 
