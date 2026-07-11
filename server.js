@@ -4002,6 +4002,50 @@ async function fetchSlackChannelHistory(channel, latestTs, limit = 12) {
   } catch (err) { console.warn('fetchSlackChannelHistory failed:', err.message); return null; }
 }
 
+// Landing reader for the dream's Review movement: given one of Nora's own messages (channel +
+// its ts), fetch what happened AFTER it so she can judge how it landed — the human follow-ups
+// that are the real signal. Works uniformly across DMs and channels, which is the whole point:
+// the cowork Slack MCP can read channels but not the John<->Nora DM, so her self-review was
+// blind to her most direct conversation. This uses her own bot token (which carries im:history)
+// and keys purely off the interaction's channel id, so it works for a DM with ANYONE, not just
+// John, and for channel threads too. Returns { messages: [...human follow-ups...], truncated }
+// or { error } with a scope hint. Reactions are best-effort and usually empty (the bot token
+// has no reactions:read); the follow-up messages are the primary signal per the routine.
+async function fetchSlackLanding(channel, ts, { channelType, threadTs } = {}) {
+  const headers = { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` };
+  const isDM = channelType === 'im' || channelType === 'mpim' || /^D/.test(channel || '');
+  try {
+    let raw = [];
+    if (threadTs && !isDM) {
+      // Channel thread: everything in the thread, then keep what came after her message.
+      const r = await axios.get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, { headers, timeout: 6000 });
+      if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
+      raw = Array.isArray(r.data.messages) ? r.data.messages : [];
+    } else {
+      // DM or non-threaded channel message: history at/after her message (oldest=ts inclusive).
+      const params = new URLSearchParams({ channel, oldest: String(ts), inclusive: 'true', limit: '20' });
+      const r = await axios.get(`https://slack.com/api/conversations.history?${params.toString()}`, { headers, timeout: 6000 });
+      if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
+      raw = (Array.isArray(r.data.messages) ? r.data.messages : []).slice().reverse(); // →chronological
+    }
+    // Keep only what came strictly AFTER her message, and drop her own/bot/system posts —
+    // what's left is how the humans reacted.
+    const after = raw
+      .filter(m => Number(m.ts) > Number(ts))
+      .filter(m => !m.bot_id && m.subtype !== 'bot_message' && (!m.subtype || m.subtype === 'thread_broadcast' || m.subtype === 'file_share'))
+      .map(m => ({ user: m.user || null, text: m.text || '', ts: m.ts, reactions: (m.reactions || []).map(r => ({ name: r.name, count: r.count })) }));
+    return { messages: after.slice(0, 15), truncated: after.length > 15, is_dm: isDM };
+  } catch (err) {
+    return { error: err.message };
+  }
+}
+function scopeHintFor(err, isDM) {
+  if (err !== 'missing_scope') return null;
+  return isDM
+    ? 'Bot is missing im:history (or mpim:history for group DMs). Add it in OAuth & Permissions and reinstall the app.'
+    : 'Bot is missing channels:history / groups:history for this channel. Add it and reinstall.';
+}
+
 // Turn a fetched Slack thread into Claude message history: each message becomes a labeled
 // user turn (or assistant, for Nora's own posts), with link-unfurl previews folded in so she
 // sees what a shared link was about even before we fetch the page. Consecutive same-role
@@ -5914,6 +5958,19 @@ app.get('/slack/threads', requireAuth, async (req, res) => {
     stale_thresholds: { msg_count: THREAD_STALE_MSG_COUNT, age_minutes: THREAD_STALE_AGE_MS / 60000 },
     threads: list
   });
+});
+
+// GET /slack/landing/:channel/:ts — what happened after one of Nora's messages, so the dream's
+// Review movement can judge how it landed. The key fix for DM visibility: pass ?type=im (from
+// the interaction's channel_type) and she reads the DM follow-ups her cowork Slack MCP can't
+// see. ?thread_ts=... for channel threads. Works for any DM partner and any channel.
+app.get('/slack/landing/:channel/:ts', requireAuth, async (req, res) => {
+  const { channel, ts } = req.params;
+  const result = await fetchSlackLanding(channel, ts, {
+    channelType: req.query.type || null,
+    threadTs: req.query.thread_ts || null
+  });
+  res.json(result);
 });
 
 app.delete('/slack/threads/:channel/:ts', requireAuth, (req, res) => {
