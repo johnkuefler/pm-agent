@@ -2496,6 +2496,14 @@ app.get('/avatar-options', (req, res) => {
   res.sendFile(path.join(__dirname, 'avatar-options.html'));
 });
 
+// Sprite frames for the illustrated (ImageGen-made) avatar: base / mouth-ajar / mouth-open /
+// blink variants of the same portrait, swapped per-frame by the audio rig. Whitelisted names.
+app.get('/avatar-frames/:name', (req, res) => {
+  const ok = new Set(['nora-m0.png', 'nora-m1.png', 'nora-m2.png', 'nora-blink.png']);
+  if (!ok.has(req.params.name)) return res.status(404).end();
+  res.sendFile(path.join(__dirname, 'avatar-frames', req.params.name));
+});
+
 // Nora's profile image, displayed on the voice-agent page (which Recall.ai bots open
 // as their video feed in meetings). 404s gracefully if the file isn't present so the
 // page falls back to the letter-N placeholder via its onerror handler.
