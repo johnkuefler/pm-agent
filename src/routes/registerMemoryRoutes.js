@@ -1,7 +1,7 @@
 'use strict';
 
 function registerMemoryRoutes(app, deps) {
-  const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady } = deps;
+  const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady, normalizeMemoryRecord } = deps;
 
   // Memory API — view and edit Nora's memory
   app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
@@ -33,7 +33,7 @@ function registerMemoryRoutes(app, deps) {
     // Memory CAN contain financial content. Distribution is gated at the live handler's
     // output side. Memory is the source of truth; output is where the approval check happens.
     const canonicalProject = project ? ensureProject(project) : '';
-    const entry = { id: newMemoryId(), fact, project: canonicalProject, added: new Date().toISOString().split('T')[0], source: source || 'manual' };
+    const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject, added: new Date().toISOString().split('T')[0], source: source || 'manual' });
     const { memory } = await mutateMemory(m => { m.push(entry); });
     if (canonicalProject) bumpProjectActivity(canonicalProject);
     console.log('🧠 Memory added:', fact);
@@ -96,8 +96,9 @@ function registerMemoryRoutes(app, deps) {
         if (!isNaN(idx) && idx >= 0 && idx < m.length) target = m[idx];
       }
       if (!target) return null;
-      target.fact = fact;
-      if (project !== undefined) target.project = project ? ensureProject(project) : '';
+      const next = normalizeMemoryRecord({ ...target, ...req.body, fact });
+      if (project !== undefined) next.project = project ? ensureProject(project) : '';
+      Object.assign(target, next);
       return target;
     });
     if (!result) return res.status(404).json({ error: 'memory not found' });
@@ -110,6 +111,34 @@ function registerMemoryRoutes(app, deps) {
     await mutateMemory(m => { m.length = 0; });
     console.log('🧠 Memory cleared');
     res.json({ ok: true, memory: [] });
+  });
+
+  app.post('/memory/:id/verify', requireAuth, async (req, res) => {
+    const { result } = await mutateMemory(items => {
+      const target = items.find(item => item.id === req.params.id);
+      if (!target) return null;
+      target.last_verified = req.body?.verified_at || new Date().toISOString();
+      target.verification_count = (Number(target.verification_count) || 0) + 1;
+      if (req.body?.confidence !== undefined) target.confidence = Math.min(1, Math.max(0, Number(req.body.confidence)));
+      if (target.status === 'disputed' && req.body?.resolve === true) target.status = 'active';
+      return target;
+    });
+    if (!result) return res.status(404).json({ error: 'memory not found' });
+    res.json({ ok: true, memory: result });
+  });
+
+  app.post('/memory/:id/contradict', requireAuth, async (req, res) => {
+    const { contradicts, fact } = req.body || {};
+    if (!contradicts && !fact) return res.status(400).json({ error: 'contradicts memory id or fact is required' });
+    const { result } = await mutateMemory(items => {
+      const target = items.find(item => item.id === req.params.id);
+      if (!target) return null;
+      target.status = 'disputed';
+      target.contradicted_by = [...new Set([...(target.contradicted_by || []), contradicts || fact])];
+      return target;
+    });
+    if (!result) return res.status(404).json({ error: 'memory not found' });
+    res.json({ ok: true, memory: result });
   });
 }
 

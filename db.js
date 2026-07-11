@@ -81,7 +81,8 @@ async function init() {
     ALTER TABLE ${DB_SCHEMA}.memory
       ADD COLUMN IF NOT EXISTS salience real NOT NULL DEFAULT 0.3,
       ADD COLUMN IF NOT EXISTS recall_count integer NOT NULL DEFAULT 0,
-      ADD COLUMN IF NOT EXISTS last_recalled timestamptz;
+      ADD COLUMN IF NOT EXISTS last_recalled timestamptz,
+      ADD COLUMN IF NOT EXISTS metadata jsonb NOT NULL DEFAULT '{}'::jsonb;
 
     CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.tasks (
       id            text PRIMARY KEY,
@@ -193,13 +194,14 @@ async function embed(text) {
 // ── memory ─────────────────────────────────────────────────────────────────────
 async function loadAllMemory() {
   const { rows } = await q(
-    `SELECT id, fact, project, added, source, source_bot_id, salience, recall_count, last_recalled FROM ${DB_SCHEMA}.memory ORDER BY ord ASC NULLS LAST, created_at ASC`
+    `SELECT id, fact, project, added, source, source_bot_id, salience, recall_count, last_recalled, metadata FROM ${DB_SCHEMA}.memory ORDER BY ord ASC NULLS LAST, created_at ASC`
   );
   return rows.map((r) => {
     const o = { id: r.id, fact: r.fact, added: r.added, source: r.source, salience: r.salience, recall_count: r.recall_count };
     if (r.project) o.project = r.project;
     if (r.source_bot_id) o.source_bot_id = r.source_bot_id;
     if (r.last_recalled) o.last_recalled = r.last_recalled.toISOString();
+    if (r.metadata && typeof r.metadata === 'object') Object.assign(o, r.metadata);
     return o;
   });
 }
@@ -219,8 +221,8 @@ async function replaceAllMemory(items) {
       if (!m || !m.id || !m.fact) { skipped++; continue; }
       ids.push(m.id);
       await client.query(
-        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, salience, recall_count, last_recalled, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, now())
+        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, salience, recall_count, last_recalled, metadata, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
          ON CONFLICT (id) DO UPDATE SET
            fact = EXCLUDED.fact,
            project = EXCLUDED.project,
@@ -229,13 +231,15 @@ async function replaceAllMemory(items) {
            source_bot_id = EXCLUDED.source_bot_id,
            ord = EXCLUDED.ord,
            salience = EXCLUDED.salience,
+           metadata = EXCLUDED.metadata,
            recall_count = GREATEST(${DB_SCHEMA}.memory.recall_count, EXCLUDED.recall_count),
            last_recalled = GREATEST(${DB_SCHEMA}.memory.last_recalled, EXCLUDED.last_recalled),
            updated_at = now(),
            embedding = CASE WHEN ${DB_SCHEMA}.memory.fact IS DISTINCT FROM EXCLUDED.fact
                             THEN NULL ELSE ${DB_SCHEMA}.memory.embedding END`,
         [m.id, m.fact, m.project || '', m.added || null, m.source || null, m.source_bot_id || null, i,
-         (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0, m.last_recalled || null]
+         (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0, m.last_recalled || null,
+         JSON.stringify({ kind: m.kind, confidence: m.confidence, status: m.status, source_ref: m.source_ref, valid_from: m.valid_from, valid_until: m.valid_until, last_verified: m.last_verified, verification_count: m.verification_count, supersedes: m.supersedes, contradicted_by: m.contradicted_by, sensitivity: m.sensitivity })]
       );
     }
     if (ids.length) {

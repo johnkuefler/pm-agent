@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8">
   <title>Nora - PM Agent</title>
   <meta name="nora-api-key" content="{{NORA_API_KEY}}">
   <!--
@@ -45,6 +46,7 @@
         </div>
         <div class="nav-group">
           <div class="nav-label">System</div>
+          <button class="tab" type="button" data-tab="intelligence" aria-selected="false" onclick="showTab('intelligence')">Intelligence</button>
           <button class="tab" type="button" data-tab="admin" aria-selected="false" onclick="showTab('admin')">Admin</button>
         </div>
       </nav>
@@ -183,6 +185,10 @@
           <option value="">General (no project)</option>
         </select>
         <div class="row">
+          <select id="new-fact-kind" aria-label="Memory type"><option value="fact">Confirmed fact</option><option value="inference">Inference</option><option value="preference">Observed preference</option><option value="commitment">Commitment</option><option value="opinion">Nora's take</option><option value="learning">Behavioral learning</option></select>
+          <select id="new-fact-confidence" aria-label="Confidence"><option value="0.95">High confidence</option><option value="0.75">Medium confidence</option><option value="0.55">Low confidence</option></select>
+        </div>
+        <div class="row">
           <button class="btn btn-primary btn-sm" onclick="addMemory()">Add to Memory</button>
         </div>
         <div id="memory-status" class="toast"></div>
@@ -219,6 +225,56 @@
       </div>
       <div class="section" id="project-add-section">
         <button class="btn btn-primary btn-sm" onclick="showAddProject()">+ New Project</button>
+      </div>
+    </div>
+
+    <!-- Intelligence Tab -->
+    <div id="page-intelligence" class="page">
+      <div class="section intelligence-overview">
+        <h2 style="display:flex;justify-content:space-between;align-items:center;">Nora's intelligence <button class="btn btn-success btn-sm" onclick="loadIntelligence()">Refresh</button></h2>
+        <p class="intelligence-note">Grounded continuity beneath Nora's existing personality: what she remembers, promises, learns about people, tries to improve, and why she chose to speak or act.</p>
+        <div id="intelligence-stats" class="intelligence-stats"></div>
+        <div id="bench-status" class="intelligence-bench">Loading evaluation status...</div>
+      </div>
+
+      <div class="section">
+        <h2>Open commitments</h2>
+        <p class="intelligence-note">Promises are tracked separately from tasks so Nora remembers who owes what to whom and never implies completion before it is confirmed.</p>
+        <div id="commitment-list">Loading...</div>
+        <div class="intelligence-form">
+          <input id="commitment-what" placeholder="What was promised?" />
+          <div class="row"><input id="commitment-owner" placeholder="Owner (default Nora)" /><input id="commitment-due" placeholder="Due date or expectation" /></div>
+          <button class="btn btn-primary btn-sm" onclick="addCommitment()">Add commitment</button>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Conversation episodes</h2>
+        <p class="intelligence-note">Connected meeting, Slack, research, and follow-up events. This is how a question can remain one continuous story across channels.</p>
+        <div id="episode-list">Loading...</div>
+      </div>
+
+      <div class="section">
+        <h2>Relationship observations</h2>
+        <p class="intelligence-note">Evidence-backed observations about how each person works. Nora uses these quietly and never treats them as fixed stereotypes.</p>
+        <div id="relationship-list">Loading...</div>
+      </div>
+
+      <div class="section">
+        <h2>Learning experiments</h2>
+        <p class="intelligence-note">Behavior changes with a hypothesis, signal, and review point—so self-improvement earns its way into Nora's long-term identity.</p>
+        <div id="experiment-list">Loading...</div>
+        <div class="intelligence-form">
+          <input id="experiment-behavior" placeholder="Behavior to try" />
+          <input id="experiment-hypothesis" placeholder="Why it should improve outcomes" />
+          <button class="btn btn-primary btn-sm" onclick="addExperiment()">Start experiment</button>
+        </div>
+      </div>
+
+      <div class="section intelligence-traces">
+        <h2>Recent decisions</h2>
+        <p class="intelligence-note">A concise audit trail of why Nora spoke, stayed silent, acted, or initiated—without exposing private chain-of-thought.</p>
+        <div id="trace-list">Loading...</div>
       </div>
     </div>
 
@@ -520,6 +576,7 @@
   <script src="/assets/js/dashboard-memory.js"></script>
   <script src="/assets/js/dashboard-knowledge.js"></script>
   <script src="/assets/js/dashboard-admin.js"></script>
+  <script src="/assets/js/dashboard-intelligence.js"></script>
   <script src="/assets/js/dashboard-init.js"></script>
 </body>
 </html>

@@ -17,9 +17,19 @@ const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { requireAuth, requireDashboardAuth } = require('./src/middleware/auth');
+const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
+const { createIntelligenceStore } = require('./src/intelligence/store');
+const { reasoningGuidance, scoreMeetingContribution, initiativeDecision } = require('./src/intelligence/policy');
+const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
+const { runBench } = require('./src/intelligence/bench');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
+const intelligence = createIntelligenceStore({
+  filePath: path.join(LOCAL_DATA_DIR, 'nora-intelligence.json'),
+  db,
+  isDbReady: () => _dbReady,
+});
 
 // ── Postgres persistence bridge ──────────────────────────────────────────────
 // When DATABASE_URL is set and db.init() succeeds, Postgres is the source of truth:
@@ -65,6 +75,8 @@ app.use('/assets', express.static(path.join(__dirname, 'public'), {
   fallthrough: false,
   maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0,
 }));
+registerIntelligenceRoutes(app, { requireAuth, store: intelligence });
+app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 
@@ -158,7 +170,10 @@ function mutateMemory(mutator) {
   const run = _memMutationChain.then(async () => {
     const memory = loadMemory();
     // Backfill ids defensively so every entry is addressable by id.
-    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); } }
+    for (const m of memory) {
+      if (!m.id) m.id = newMemoryId();
+      Object.assign(m, normalizeMemoryRecord(m));
+    }
     const result = mutator(memory);
     // Salience-tag anything new (loaded entries already carry theirs from the DB).
     for (const m of memory) { if (m && m.salience === undefined) m.salience = computeSalienceForFact(m.fact, m.source); }
@@ -176,8 +191,14 @@ function backfillMemoryIds() {
   try {
     const memory = loadMemory();
     let changed = false;
-    for (const m of memory) { if (!m.id) { m.id = newMemoryId(); changed = true; } }
-    if (changed) { saveMemory(memory); console.log(`🧠 Backfilled ids on ${memory.length} memory entries`); }
+    for (const m of memory) {
+      if (!m.id) { m.id = newMemoryId(); changed = true; }
+      if (m.kind === undefined || m.confidence === undefined || m.status === undefined) {
+        Object.assign(m, normalizeMemoryRecord(m));
+        changed = true;
+      }
+    }
+    if (changed) { saveMemory(memory); console.log(`🧠 Upgraded ${memory.length} memories to the current schema`); }
   } catch (err) { console.warn('Memory id backfill failed (non-fatal):', err.message); }
 }
 
@@ -568,6 +589,21 @@ function addTask(task) {
     last_run: task.last_run || null
   });
   saveTasks(tasks);
+  if (!task.assignee || /nora/i.test(task.assignee)) {
+    intelligence.addCommitment({
+      what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for,
+      notes: task.detail || '', task_id: id,
+      evidence: task.source_channel ? { channel: task.source_channel, id: task.source_thread_ts || task.source_bot_id || null, captured_at: new Date().toISOString() } : null,
+    });
+  }
+  const episodeCorrelation = task.source_bot_id ? `meeting:${task.source_bot_id}`
+    : task.source_channel ? `slack:${task.source_channel.replace(/^slack:/, '')}:${task.source_thread_ts || 'channel'}`
+      : `task:${id}`;
+  intelligence.recordEpisodeEvent({
+    correlation: episodeCorrelation, title: task.source_bot_id ? 'Meeting follow-up' : 'Task follow-up',
+    channel: 'task', kind: 'commitment_created', actor: task.assignee || 'Nora', text: task.action,
+    source_ref: { channel: task.source_channel || (task.source_bot_id ? 'meeting' : 'task'), id: task.source_thread_ts || task.source_bot_id || id, captured_at: new Date().toISOString() },
+  });
   const sched = task.scheduled_for ? ` (scheduled ${task.scheduled_for})` : '';
   const recur = task.recurrence ? ` [${task.recurrence}]` : '';
   console.log('📋 Task added:', id, task.action + sched + recur);
@@ -983,7 +1019,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     hintCanonical = match ? match.name : projectHint;
   }
 
-  const allMemory = loadMemory();
+  const allMemory = loadMemory().map(item => normalizeMemoryRecord(item));
   const projects = loadProjects();
 
   // Split opinions and learnings out of the memory pool — each renders as its own block.
@@ -994,22 +1030,22 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   //   from how her Slack contributions actually landed (replies, reactions, adjacent chatter).
   //   This is the recursive-self-improvement signal: she gets better at her own job from
   //   real feedback, carried forward as context.
-  const opinions = allMemory.filter(m => m.source === 'opinion');
-  const learnings = allMemory.filter(m => m.source === 'learning');
+  const opinions = allMemory.filter(m => m.source === 'opinion' && memoryIsActive(m));
+  const learnings = allMemory.filter(m => m.source === 'learning' && memoryIsActive(m));
   // Exclude operational markers (Filed transcript X, Dreamed on Y, Sent warmth to Z…) from
   // the knowledge block — they're idempotency bookkeeping, not things to reference in
   // conversation. They live in /markers now; this filter catches any not-yet-migrated
   // stragglers so they never reach her live prompt.
-  const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning' && !markerKeyForFact(m.fact));
+  const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning' && !markerKeyForFact(m.fact) && memoryIsActive(m));
 
   if (opinions.length > 0) {
     const opinionItems = isRealtime ? opinions.slice(-8) : opinions;
-    base = `${base}\n\n[Your takes: opinions you've formed from watching how things go around here]\n${opinionItems.map(m => `- ${m.fact}`).join('\n')}`;
+    base = `${base}\n\n[Your takes: opinions you've formed from watching how things go around here]\n${opinionItems.map(m => memoryPromptLine(m)).join('\n')}`;
   }
 
   if (learnings.length > 0) {
     const learningItems = isRealtime ? learnings.slice(-8) : learnings;
-    base = `${base}\n\n[Your learnings: what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior, how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => `- ${m.fact}`).join('\n')}`;
+    base = `${base}\n\n[Your learnings: what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior, how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => memoryPromptLine(m)).join('\n')}`;
   }
 
   // Delegation charter: the authority John has given her. Identity-level and rarely edited, so
@@ -1044,6 +1080,13 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     }
   }
 
+  // Intelligence substrate: commitments, evidence-backed relationship observations, active
+  // learning experiments, and explicit grounding/repair discipline. These augment Nora's
+  // existing personality and self-model; they do not replace or flatten them.
+  const intelligenceContext = intelligence.promptContext({ project: hintCanonical });
+  if (intelligenceContext) base = `${base}\n\n${intelligenceContext}`;
+  base = `${base}\n\n${reasoningGuidance()}`;
+
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
   // the volatile section. Lives here (function scope) so the volatile half can read it.
   let convFocus = '';
@@ -1077,14 +1120,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
         if (proj.details) memoryBlock += `\n${proj.details}`;
       }
       if (projMemories.length > 0) {
-        memoryBlock += '\n' + projMemories.map(m => `- ${m.fact}`).join('\n');
+        memoryBlock += '\n' + projMemories.map(m => memoryPromptLine(m)).join('\n');
       }
     }
 
     if (general.length > 0) {
       // Pre-hint era used slice(-15). With a higher budget we can include all general
       // memories in realtime too — they're high-signal (team roster, process facts).
-      memoryBlock += '\n\n## General\n' + general.map(m => `- ${m.fact}`).join('\n');
+      memoryBlock += '\n\n## General\n' + general.map(m => memoryPromptLine(m)).join('\n');
     }
 
     // Include the rest of the project list, skipping the hinted one (already rendered above).
@@ -1124,7 +1167,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       }
       if (byProject[name]) {
         const items = isRealtime ? byProject[name].slice(-10) : byProject[name];
-        s += '\n' + items.map(m => `- ${m.fact}`).join('\n');
+        s += '\n' + items.map(m => memoryPromptLine(m)).join('\n');
       }
       return s;
     };
@@ -3819,6 +3862,17 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   } else {
     console.log(`🎙️ Voice: silent (${why || 'not addressed'})`);
   }
+  const meetingPolicy = scoreMeetingContribution({
+    named: addressed,
+    directQuestion: looksLikeQuestion(userText),
+    oneOnOne: !!(session.oneOnOne || soloHuman),
+    humansTalkingToEachOther: !!handoff,
+    uniqueKnowledge: VOLUNTEER_CUE.test(userText || ''),
+  });
+  intelligence.recordTrace({
+    channel: 'meeting', action: 'turn_gate', decision: trigger ? 'speak' : 'stay_silent',
+    confidence: trigger ? 0.9 : 0.75, reasons: [why || 'not addressed', ...meetingPolicy.reasons], preview: userText,
+  });
 }
 
 // ── Slack SEND tool — lets Nora send a Slack message RIGHT NOW to another channel or person when
@@ -4565,6 +4619,15 @@ app.post('/webhook/slack', async (req, res) => {
       console.log(`💬 Slack skip (${isProactive ? 'proactive' : 'thread'} gate): ${query.slice(0, 60)}`);
       return;
     }
+    if (isProactive) {
+      const budget = intelligence.initiativeStatus(`slack:${channel}`);
+      const decision = initiativeDecision({ value: 0.75, urgency: 0.55, confidence: 0.8, interruptionCost: 0.45, budgetRemaining: budget.remaining });
+      intelligence.recordTrace({ channel: `slack:${channel}`, action: 'proactive_gate', decision: decision.allowed ? 'continue' : 'stay_silent', confidence: 0.8, reasons: [decision.reason, `budget ${budget.remaining}/${budget.limit}`], preview: query });
+      if (!decision.allowed) {
+        console.log(`💬 Slack skip (initiative policy): ${decision.reason}`);
+        return;
+      }
+    }
   }
 
   console.log(`💬 Slack [${event.type}/${event.channel_type || '?'}${event.thread_ts ? '/thread' : ''}${mode === 'proactive' ? '/proactive' : ''}] from ${user}: ${query.slice(0, 100)}`);
@@ -4971,6 +5034,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // posts in this channel for PROACTIVE_COOLDOWN_MS so Nora doesn't chatter.
     if (mode === 'proactive') {
       markProactivePost(channel);
+      intelligence.spendInitiative(`slack:${channel}`, { ts: postRes.data && postRes.data.ts, kind: 'proactive' });
     }
 
     // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
@@ -5376,7 +5440,7 @@ app.post('/notify', requireAuth, async (req, res) => {
   }
 });
 
-registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady: () => _dbReady });
+registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady: () => _dbReady, normalizeMemoryRecord });
 
 // ── Cowork run lock ─────────────────────────────────────────────────────────
 // Defense against overlapping hourly cowork runs (the scheduler double-firing or a run
@@ -5395,7 +5459,23 @@ registerMarkerRoutes(app, { requireAuth, loadMarkers, mutateMarkers, loadMemory,
 
 registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects, loadMemory });
 
-registerTaskRoutes(app, { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun });
+registerTaskRoutes(app, {
+  requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
+  onTaskCreated: task => {
+    if (!task.assignee || /nora/i.test(task.assignee)) {
+      intelligence.addCommitment({ what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for, notes: task.detail, task_id: task.id });
+    }
+  },
+  onTaskCompleted: (task, meta) => {
+    if (!meta.recurring) {
+      const commitment = intelligence.list('commitments', item => item.task_id === task.id && item.status === 'open')[0];
+      if (commitment) intelligence.updateCommitment(commitment.id, { status: 'fulfilled', notes: `Task completed ${meta.completed_at}` });
+      const correlation = task.source_bot_id ? `meeting:${task.source_bot_id}`
+        : task.source_channel ? `slack:${task.source_channel.replace(/^slack:/, '')}:${task.source_thread_ts || 'channel'}` : `task:${task.id}`;
+      intelligence.recordEpisodeEvent({ correlation, channel: 'task', kind: 'commitment_fulfilled', actor: 'Nora', text: task.action, at: meta.completed_at });
+    }
+  },
+});
 
 // Cancel/remove a Recall bot regardless of state. leave_call is for bots already in
 // flight (status ready/joining/in_call); scheduled-but-not-started bots return
@@ -5804,6 +5884,12 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 // The old per-utterance full-file rewrite (worst fit for flat files) becomes a serialized
 // upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
 async function saveTranscriptDoc(botId, transcript, ended) {
+  const latest = Array.isArray(transcript) && transcript.length ? transcript[transcript.length - 1] : null;
+  if (latest) intelligence.recordEpisodeEvent({
+    correlation: `meeting:${botId}`, title: 'Meeting', channel: 'meeting', kind: 'utterance',
+    actor: latest.speaker, text: latest.text, at: latest.timestamp,
+    source_ref: { channel: 'meeting', id: botId, captured_at: latest.timestamp },
+  });
   if (_dbReady) return _writeThrough('transcript:' + botId, () => db.upsertTranscript(botId, ended || null, transcript || []));
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
@@ -6024,21 +6110,49 @@ const MAX_INTERACTIONS_KEPT = 600; // a few weeks of Slack activity; trims oldes
 function logInteraction(entry) {
   try {
     const items = loadInteractions();
-    items.push({
+    const interaction = {
       id: `ix-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
       created: new Date().toISOString(),
       reviewed: false,
       outcome: null, // filled in by the dream's Review movement
       ...entry
-    });
+    };
+    items.push(interaction);
     if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
     saveInteractions(items);
+    const episode = intelligence.recordEpisodeEvent({
+      correlation: `slack:${entry.channel}:${entry.thread_ts || entry.ts || 'channel'}`,
+      title: entry.channel_type === 'im' ? `Conversation with ${entry.requester_name || 'teammate'}` : 'Slack conversation',
+      participants: [entry.requester_name || entry.user, 'Nora'], channel: 'slack', kind: entry.kind,
+      actor: 'Nora', text: entry.text,
+      source_ref: { channel: 'slack', id: entry.ts, captured_at: interaction.created },
+    });
+    intelligence.recordTrace({
+      channel: `slack:${entry.channel}`, action: entry.kind, decision: 'responded', confidence: 0.8,
+      reasons: [entry.kind === 'proactive' ? 'passed proactive grounding gate' : 'direct or continued conversation'],
+      episode_id: episode.id, interaction_id: interaction.id, preview: entry.text,
+      source_refs: [{ channel: 'slack', id: entry.ts || entry.thread_ts }],
+    });
   } catch (err) {
     console.warn('logInteraction failed (non-fatal):', err.message);
   }
 }
 
-registerInteractionRoutes(app, { requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT });
+registerInteractionRoutes(app, {
+  requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT,
+  onOutcome: interaction => {
+    intelligence.recordExperimentSample({ outcome: interaction.outcome, interaction_id: interaction.id, value: ['appreciated', 'landed'].includes(interaction.outcome) ? 1 : ['ignored', 'corrected'].includes(interaction.outcome) ? 0 : 0.5 });
+    if (interaction.requester_name && interaction.signal) {
+      intelligence.observeRelationship({
+        name: interaction.requester_name,
+        dimension: 'response_feedback',
+        observation: `${interaction.outcome}: ${interaction.signal}`,
+        confidence: interaction.outcome === 'corrected' ? 0.9 : 0.7,
+        evidence: { channel: 'slack', id: interaction.ts, captured_at: interaction.reviewed_at },
+      });
+    }
+  },
+});
 
 // Dreams — Nora's nightly memory-consolidation + reflection log
 // ============================================================
@@ -6066,7 +6180,18 @@ function saveDreams(dreams) {
 }
 const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
 
-registerDreamRoutes(app, { requireAuth, loadDreams, saveDreams, MAX_DREAMS_KEPT });
+registerDreamRoutes(app, {
+  requireAuth, loadDreams, saveDreams, MAX_DREAMS_KEPT,
+  onDream: dream => {
+    const learnings = [...(dream.review?.learnings_added || []), ...(dream.reflection?.behavior_changes || [])];
+    const existing = intelligence.list('experiments');
+    for (const learning of learnings.slice(0, 4)) {
+      if (!existing.some(item => item.behavior.toLowerCase() === String(learning).toLowerCase() && item.status === 'active')) {
+        intelligence.createExperiment({ behavior: String(learning), hypothesis: 'Applying this observed learning should improve how future interactions land.', metric: 'positive_rate', review_at: new Date(Date.now() + 14 * 86400000).toISOString() });
+      }
+    }
+  },
+});
 
 // Detect if Nora's reply is asking clarifying questions rather than confirming an action
 function isAskingClarification(reply) {
@@ -6219,7 +6344,7 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
 
 Financial figures (dollar amounts, rates, budgets, margins) are FINE to include in memory if they're relevant to the fact being saved. Distribution to non-approved recipients is gated separately at Nora's live-handler output — don't self-censor at the memory layer.
 
-Respond with a JSON array of objects with "fact" (string) and "project" (string — project name if relevant, empty string if general).${projectHint}`,
+Respond with a JSON array of objects with: "fact" (string), "project" (project name or empty), "kind" (fact|preference|commitment|inference), "confidence" (0 to 1), and "source_quote" (the shortest exact phrase supporting it). Never turn an inference into a fact.${projectHint}`,
         messages: [{ role: 'user', content: `Meeting snippet:\n${context}\n\nTriggering message: ${trigger}\n\nNora's response: ${reply}\n\nFacts worth remembering (JSON array or []):` }]
       },
       {
@@ -6253,7 +6378,13 @@ Respond with a JSON array of objects with "fact" (string) and "project" (string 
         const rawProject = typeof item === 'string' ? '' : (item.project || '');
         const project = rawProject ? ensureProject(rawProject) : '';
         if (typeof fact === 'string' && fact.trim() && !existingFacts.has(fact.toLowerCase())) {
-          memory.push({ id: newMemoryId(), fact, project, added: new Date().toISOString().split('T')[0], source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '' });
+          memory.push(normalizeMemoryRecord({
+            id: newMemoryId(), fact, project, added: new Date().toISOString().split('T')[0],
+            source: sourceBotId ? 'meeting' : 'slack', source_bot_id: sourceBotId || '',
+            kind: typeof item === 'object' ? item.kind : undefined,
+            confidence: typeof item === 'object' ? item.confidence : undefined,
+            source_ref: { channel: sourceBotId ? 'meeting' : 'slack', id: sourceBotId || null, url: sourceBotId ? `/transcripts/${sourceBotId}` : null, quote: typeof item === 'object' ? item.source_quote : null, captured_at: new Date().toISOString() },
+          }));
           existingFacts.add(fact.toLowerCase());
           if (project) projectsTouched.add(project);
           n++;
@@ -7081,6 +7212,7 @@ async function start(options = {}) {
     // Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
     // reads a half-hydrated cache. DB failure preserves the existing JSON fallback.
     await initPersistence();
+    await intelligence.init();
     await new Promise((resolve, reject) => {
       const onError = (err) => { server.off('listening', onListening); reject(err); };
       const onListening = () => { server.off('error', onError); resolve(); };
@@ -7128,6 +7260,7 @@ module.exports = {
     sanitizeFilename,
     relativeDayLabel,
     buildBotConfig,
+    buildSystemPrompt,
   },
 };
 

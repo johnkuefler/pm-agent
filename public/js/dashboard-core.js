@@ -20,6 +20,7 @@
       routine: ['Routine', 'Edit the ordered work Nora performs during each scheduled session.'],
       charter: ['Charter', 'Define what Nora may decide, commit to, or escalate on your behalf.'],
       self: ['Self', 'Understand Nora\'s system state, continuity, wants, autobiography, and persona.'],
+      intelligence: ['Intelligence', 'Inspect Nora\'s commitments, continuity, relationship learning, experiments, and decision traces.'],
       admin: ['Administration', 'Monitor connections, bots, access controls, calendar automation, and sync health.']
     };
 
@@ -49,6 +50,7 @@
       if (name === 'routine') loadRoutineEditor();
       if (name === 'charter') loadCharterEditor();
       if (name === 'self') loadSelfTab();
+      if (name === 'intelligence') loadIntelligence();
       if (name === 'admin') loadAdmin();
     }
 

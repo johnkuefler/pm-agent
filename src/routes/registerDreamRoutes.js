@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 
 function registerDreamRoutes(app, deps) {
-  const { requireAuth, loadDreams, saveDreams, MAX_DREAMS_KEPT } = deps;
+  const { requireAuth, loadDreams, saveDreams, MAX_DREAMS_KEPT, onDream } = deps;
 
   // GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
   // dashboard can render without a second round-trip per dream.
@@ -48,6 +48,7 @@ function registerDreamRoutes(app, deps) {
     dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
     const trimmed = dreams.slice(0, MAX_DREAMS_KEPT);
     saveDreams(trimmed);
+    if (onDream) onDream(dream);
     console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before ?? '?'}→${dream.consolidation.memories_after ?? '?'} memories, +${(dream.reflection.takes_added || []).length} takes, +${(dream.review.learnings_added || []).length} learnings`);
     res.json({ ok: true, dream });
   });
