@@ -64,7 +64,7 @@ function design(experiments, overrides = {}) {
 
 test('agency comparator trial causally separates authentic binding from misbinding and raw components', async () => {
   const { store, dir, filePath, experiments } = await setup();
-  assert.equal(store.snapshot().version, 90);
+  assert.equal(store.snapshot().version, 91);
   assert.equal(experiments.every(item => item.audit.complete_chain_verified), true);
   assert.equal(store.agencyComparatorAccessAvailable(), true);
   const learned = store.counterfactualAgencySnapshot().models;

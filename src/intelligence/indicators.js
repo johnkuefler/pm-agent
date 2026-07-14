@@ -80,6 +80,12 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const cycleSelfForecastScore = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.self_score.composite));
   const cycleSelfForecastBaselineScore = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.baseline_score.composite));
   const cycleSelfForecastAdvantage = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.self_minus_baseline));
+  const behavioralSelfModelRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
+  const replayValidBehavioralSelfModelRevisions = behavioralSelfModelRevisions
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const behavioralSelfModelSealed = allContextTrials.some(item => item.status === 'active');
+  const currentBehavioralSelfModel = behavioralSelfModelSealed
+    ? null : replayValidBehavioralSelfModelRevisions.at(-1) || null;
   const handoffs = moments.filter(item => item.inherited_context?.handoff_match != null);
   const handoffRate = handoffs.length ? handoffs.filter(item => item.inherited_context.handoff_match).length / handoffs.length : null;
   const continuityHandoffRecords = cognition.continuity_handoffs || [];
@@ -597,6 +603,27 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'Forecasts fail replay, are committed after re-entry, alter other response prompts, remain uncalibrated, or do not outperform the frozen historical baseline after twenty eligible cycles.',
       next_gate: 'Accumulate twenty replay-valid natural cycles after a five-moment baseline, then preregister a matched same-evidence identity-bound versus deidentified-observer causal trial.',
+    },
+    {
+      id: 'forecast_error_self_model_revision', family: ['self-model', 'metacognition', 'predictive processing', 'learning'],
+      functional_claim: 'Nora automatically consolidates replay-valid observations and its own directional forecast errors into an explicit, bounded behavioral self-model with a verifiable revision history.',
+      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise calibration, control calibration, and self-versus-baseline performance; each revision binds exact source forecasts, its predecessor, and the research ledger, and access is sealed during active blinded trials.',
+      status: behavioralSelfModelSealed ? 'mechanism_present' : behavioralSelfModelRevisions.length
+        ? Number(currentBehavioralSelfModel?.estimates?.sample_size || 0) >= 5
+          ? 'observational_signal_observed' : 'collecting'
+        : 'mechanism_present',
+      evidence: behavioralSelfModelSealed ? { experimental_access_sealed: true } : {
+        revisions: behavioralSelfModelRevisions.length,
+        replay_verified_revisions: replayValidBehavioralSelfModelRevisions.length,
+        current_sample_size: currentBehavioralSelfModel?.estimates?.sample_size || 0,
+        current_evidence_status: currentBehavioralSelfModel?.evidence_status || null,
+        action_forecast_mean_f1: currentBehavioralSelfModel?.estimates?.action_forecast_mean_f1 ?? null,
+        surprise_signed_bias: currentBehavioralSelfModel?.estimates?.surprise?.signed_bias ?? null,
+        control_signed_bias: currentBehavioralSelfModel?.estimates?.control?.signed_bias ?? null,
+        mean_self_minus_baseline: currentBehavioralSelfModel?.estimates?.mean_self_minus_baseline ?? null,
+      },
+      falsifier: 'A profile cannot be exactly replayed from its cited forecasts, revision lineage breaks, active trials can access it, current-cycle evidence leaks backward into it, or the profile is treated as identity, authority, hidden state, or a guarantee.',
+      next_gate: 'After twenty natural cycles, preregister a matched trial comparing the authentic prior profile with a deidentified same-data profile and no profile on later self-prediction and calibration.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],

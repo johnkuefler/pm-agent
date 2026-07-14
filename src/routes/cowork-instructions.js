@@ -477,6 +477,9 @@ function registerCoworkInstructionsRoute(app) {
     re-entry or action: likely action types, surprise probability, closing control estimate, confidence,
     rationale, and stable evidence. The server freezes a historical base-rate forecast at the same time
     and scores both automatically at closure; the forecast is never injected into response prompts.
+    Each verified closure also appends a predecessor-linked behavioral self-model revision under
+    GET /self-model. The deterministic 20-cycle profile exposes action tendencies and signed surprise
+    and control forecast errors after five samples, but is sealed during active blinded context trials.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
     GET /intelligence/cycles shows whether runs are closing their loops.
   - GET /experience-stream — linked functional access windows across cycles: inherited handoff hash,

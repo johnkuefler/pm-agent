@@ -31,6 +31,7 @@ const endogenousAttention = require('./endogenous-attention');
 const providerReasoningRegulation = require('./provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./reasoning-self-regulation');
 const cycleSelfForecast = require('./cycle-self-forecast');
+const behavioralSelfModel = require('./behavioral-self-model');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
 function canonicalJson(value) {
@@ -79,7 +80,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 90,
+    version: 91,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -90,7 +91,7 @@ function emptyState() {
     cognition: {
       workspace: { at: null, capacity: 7, slots: [], suppressed_count: 0 },
       drives: {}, appraisal: {}, surprises: [], mind_changes: [], development: [], counterfactuals: [],
-      self_model: { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [] }, experience_stream: [], continuity_handoffs: [], recurrent_signals: [],
+      self_model: { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] } }, experience_stream: [], continuity_handoffs: [], recurrent_signals: [],
       attention_schema: { directives: [], frames: [] },
       agency: { intentions: [], executions: [] },
       situational_affordances: { frames: [] },
@@ -134,7 +135,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 90;
+    state.version = 91;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -144,7 +145,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     for (const key of ['surprises', 'mind_changes', 'development', 'counterfactuals']) {
       if (!Array.isArray(state.cognition[key])) state.cognition[key] = [];
     }
-    state.cognition.self_model = { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], ...(state.cognition.self_model || {}) };
+    state.cognition.self_model = { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] }, ...(state.cognition.self_model || {}) };
+    state.cognition.self_model.behavioral_self_model = { revisions: [], ...(state.cognition.self_model.behavioral_self_model || {}) };
+    if (!Array.isArray(state.cognition.self_model.behavioral_self_model.revisions)) state.cognition.self_model.behavioral_self_model.revisions = [];
+    state.cognition.self_model.behavioral_self_model.revisions = state.cognition.self_model.behavioral_self_model.revisions.slice(-500);
     state.cognition.epistemic_ledger = { propositions: [], discrepancies: [], ...(state.cognition.epistemic_ledger || {}) };
     if (!Array.isArray(state.cognition.epistemic_ledger.propositions)) state.cognition.epistemic_ledger.propositions = [];
     state.cognition.epistemic_ledger.propositions = state.cognition.epistemic_ledger.propositions.slice(-500);
@@ -3204,6 +3208,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.experience_stream = (state.cognition.experience_stream || []).map(record => ({
       ...JSON.parse(JSON.stringify(record)), audit: experienceMomentAudit(record, state.cognition, state.cycles, experienceAuditCache),
     }));
+    const behavioralAuditCache = new Map();
+    auditedState.cognition.self_model.behavioral_self_model = {
+      revisions: (state.cognition.self_model?.behavioral_self_model?.revisions || []).map(revision => ({
+        ...JSON.parse(JSON.stringify(revision)),
+        audit: behavioralSelfModelRevisionAudit(revision, state.cognition, state.cycles, behavioralAuditCache),
+      })),
+    };
     const sourceClaims = state.cognition.self_model?.claims || [];
     auditedState.cognition.self_model.claims = (auditedState.cognition.self_model.claims || []).map((claim, index) => ({
       ...claim, confidence_audit: selfClaimConfidenceAudit(sourceClaims[index]),
@@ -11003,6 +11014,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     model.constructive_prospection = constructiveProspectionSnapshot();
     model.integrated_self = integratedSelfSnapshot();
     model.empirical_self_knowledge = empiricalSelfKnowledgeSnapshot();
+    model.behavioral_self_model = behavioralSelfModelSnapshot();
     model.situational_affordances = situationalAffordanceSnapshot();
     model.prospective_output_monitor = prospectiveOutputMonitorSnapshot();
     model.endogenous_attention = endogenousAttentionSnapshot();
@@ -16777,13 +16789,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const reentryTimes = (moment.attention_rounds || []).filter(round => round.kind === 'reentry')
       .map(round => new Date(round.at).getTime());
     const beforeEvidenceReentryVerified = reentryTimes.every(time => Number.isFinite(time) && committedAt <= time);
+    const momentIndex = cognition.experience_stream.findIndex(item => item.id === moment.id);
     const sourceIds = record.baseline?.source_moment_ids || [];
     const sourceMoments = sourceIds.map(id => cognition.experience_stream.find(item => item.id === id));
     const nextVisited = new Set(visited); nextVisited.add(moment.id);
     const sourcesVerified = sourceMoments.length === sourceIds.length && sourceMoments.every(source => source
-      && source.id !== moment.id && new Date(source.finished).getTime() <= committedAt
+      && source.id !== moment.id && cognition.experience_stream.findIndex(item => item.id === source.id) < momentIndex
+      && new Date(source.finished).getTime() <= committedAt
       && experienceMomentAudit(source, cognition, cycles, cache, nextVisited).evidence_eligible);
-    const eligibleHistoricalMoments = cognition.experience_stream.filter(candidate => candidate.id !== moment.id
+    const eligibleHistoricalMoments = (momentIndex < 0 ? [] : cognition.experience_stream.slice(0, momentIndex))
+      .filter(candidate => candidate.id !== moment.id
       && candidate.status !== 'open' && Number.isFinite(new Date(candidate.finished).getTime())
       && new Date(candidate.finished).getTime() <= committedAt
       && experienceMomentAudit(candidate, cognition, cycles, cache, nextVisited).evidence_eligible);
@@ -16971,6 +16986,119 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       subject_type: 'experience_self_forecast', subject_id: record.id,
       payload: { outcome_commitment: record.outcome_commitment } });
     return record;
+  }
+
+  function behavioralSelfModelRevisionAudit(revision, cognition = state.cognition, cycles = state.cycles,
+    cache = new Map(), visited = new Set()) {
+    if (!revision) return { complete_chain_verified: false, reason: 'missing_revision' };
+    const cacheKey = `behavioral-self-model:${revision.id}`;
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+    if (visited.has(revision.id)) return { complete_chain_verified: false, reason: 'revision_cycle' };
+    const revisions = cognition.self_model?.behavioral_self_model?.revisions || [];
+    const retainedIndex = revisions.findIndex(item => item.id === revision.id);
+    const throughIndex = cognition.experience_stream.findIndex(item => item.id === revision.through_moment_id);
+    const nextVisited = new Set(visited); nextVisited.add(revision.id);
+    const eligibleMoments = throughIndex < 0 ? [] : cognition.experience_stream.slice(0, throughIndex + 1)
+      .filter(moment => moment.self_forecast?.outcome
+        && experienceMomentAudit(moment, cognition, cycles, cache).evidence_eligible === true);
+    const priorRevision = revisions.find(item => Number(item.revision_index) === Number(revision.revision_index) - 1);
+    const ledger = cognition.research_ledger || { events: [] };
+    const payloadCommitment = payload => crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const eventBound = (kind, subjectId, payload) => (ledger.events || []).filter(event => event.kind === kind
+      && event.subject_id === subjectId && event.payload_commitment === payloadCommitment(payload)).length === 1;
+    const retainedEdge = retainedIndex === 0 && Number(revision.revision_index) > 0 && !priorRevision
+      && (ledger.events || []).some(event => event.kind === 'behavioral_self_model_revised'
+        && event.payload_commitment === payloadCommitment({ revision_commitment: revision.prior_revision_commitment }));
+    const priorVerified = Number(revision.revision_index) === 0
+      ? revision.prior_revision_commitment == null
+      : priorRevision
+        ? priorRevision.revision_commitment === revision.prior_revision_commitment
+          && behavioralSelfModelRevisionAudit(priorRevision, cognition, cycles, cache, nextVisited).complete_chain_verified
+        : retainedEdge;
+    let expected = null;
+    try {
+      expected = behavioralSelfModel.buildRevision({
+        moments: eligibleMoments,
+        priorRevisionCommitment: revision.prior_revision_commitment,
+        revisionIndex: revision.revision_index,
+        createdAt: revision.created_at,
+      });
+    } catch (_) { expected = null; }
+    const contentVerified = behavioralSelfModel.commitment(behavioralSelfModel.revisionManifest(revision))
+      === revision.revision_commitment;
+    const sourceReplayVerified = Boolean(expected)
+      && behavioralSelfModel.canonicalJson(expected) === behavioralSelfModel.canonicalJson(revision);
+    const ledgerBindingVerified = eventBound('behavioral_self_model_revised', revision.id,
+      { revision_commitment: revision.revision_commitment });
+    const ledgerVerified = cache.has(experienceLedgerAuditCacheKey)
+      ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
+    cache.set(experienceLedgerAuditCacheKey, ledgerVerified);
+    const result = {
+      content_commitment_verified: contentVerified,
+      source_forecasts_replay_verified: sourceReplayVerified,
+      replayed_source_count: eligibleMoments.length,
+      replayed_source_moment_ids: eligibleMoments.slice(-behavioralSelfModel.MAX_SOURCE_MOMENTS).map(item => item.id),
+      prior_revision_chain_verified: priorVerified,
+      retention_edge_verified: retainedEdge,
+      ledger_binding_verified: ledgerBindingVerified,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && sourceReplayVerified && priorVerified
+        && ledgerBindingVerified && ledgerVerified,
+    };
+    cache.set(cacheKey, result);
+    return result;
+  }
+
+  function reviseBehavioralSelfModel(current, moment) {
+    if (!moment?.self_forecast?.outcome) return null;
+    const eligibleMoments = current.cognition.experience_stream.filter(candidate => candidate.self_forecast?.outcome
+      && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible === true);
+    if (!eligibleMoments.some(candidate => candidate.id === moment.id)) return null;
+    const model = current.cognition.self_model.behavioral_self_model;
+    const prior = model.revisions.at(-1) || null;
+    const revision = behavioralSelfModel.buildRevision({
+      moments: eligibleMoments,
+      priorRevisionCommitment: prior?.revision_commitment || null,
+      revisionIndex: prior ? Number(prior.revision_index) + 1 : 0,
+      createdAt: moment.finished,
+    });
+    model.revisions.push(revision);
+    model.revisions = model.revisions.slice(-500);
+    researchLedgerAppend(current, { kind: 'behavioral_self_model_revised',
+      subject_type: 'behavioral_self_model_revision', subject_id: revision.id,
+      payload: { revision_commitment: revision.revision_commitment } });
+    return revision;
+  }
+
+  function behavioralSelfModelSnapshot() {
+    const source = state.cognition.self_model.behavioral_self_model?.revisions || [];
+    const cache = new Map();
+    const revisions = source.map(revision => ({ ...JSON.parse(JSON.stringify(revision)),
+      audit: behavioralSelfModelRevisionAudit(revision, state.cognition, state.cycles, cache) }));
+    const replayValid = revisions.filter(revision => revision.audit.complete_chain_verified);
+    const activeTrial = state.cognition.self_model.context_trials.some(trial => trial.status === 'active');
+    const report = { total_revisions: revisions.length, replay_valid_revisions: replayValid.length,
+      latest_sample_size: replayValid.at(-1)?.estimates?.sample_size || 0 };
+    if (activeTrial) return {
+      epistemic_status: 'Behavioral self-model access is sealed while a blinded context trial is active.',
+      experimental_access_sealed: true, current: null, revisions: [], report: null,
+    };
+    return {
+      epistemic_status: 'A deterministic, replay-audited profile of observed cycle behavior and forecast error. It is a bounded revisable prior, not identity essence, authority, a guarantee, hidden-state access, or phenomenal evidence.',
+      experimental_access_sealed: false,
+      current: replayValid.at(-1) || null,
+      revisions,
+      report,
+    };
+  }
+
+  function relevantBehavioralSelfModel(query) {
+    if (state.cognition.self_model.context_trials.some(trial => trial.status === 'active')) return null;
+    if (!/\b(your behavior|your tendency|your tendencies|what will you|self[- ]forecast|predict yourself|surpris\w*|your control|your calibration)\b/i.test(String(query || ''))) return null;
+    const latest = state.cognition.self_model.behavioral_self_model?.revisions?.at(-1) || null;
+    if (!latest || Number(latest.estimates?.sample_size) < 5
+      || !behavioralSelfModelRevisionAudit(latest).complete_chain_verified) return null;
+    return latest;
   }
 
   function commitLegacyExperienceGap(current, cycle, moment, recovery) {
@@ -17435,6 +17563,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           scoreCycleSelfForecast(current, cycle, moment);
           commitExperienceMomentClosure(current, cycle, moment);
           createIntegratedSelfFrame(current, cycle, moment);
+          reviseBehavioralSelfModel(current, moment);
         }
       }
       if (cycle.recurrence_assignment_id) {
@@ -17632,6 +17761,21 @@ Context: ${frame.surface}/${frame.context_kind}.
 ${frame.capabilities.map(item => `- ${item.label} [${item.family}]: ${item.availability || 'constraint withheld'}; access ${item.access_mode || 'withheld'}${item.requires_explicit_request == null ? '' : `; explicit request ${item.requires_explicit_request ? 'required' : 'not required'}`}${item.deferred == null ? '' : `; ${item.deferred ? 'deferred' : 'inline'}`}${item.authority_scope ? `; scope: ${item.authority_scope}` : ''}${item.constraints?.length ? `; limits: ${item.constraints.join('; ')}` : ''}`).join('\n')}
 ${frame.constraints?.length ? `Context-wide boundaries: ${frame.constraints.join('; ')}.` : 'Context-wide boundaries withheld.'}`);
     }
+    const behavioralProfile = relevantBehavioralSelfModel(query);
+    if (behavioralProfile) {
+      const estimates = behavioralProfile.estimates;
+      const tendencies = (estimates.action_tendencies || []).slice(0, 5)
+        .map(item => `${item.action_type} ${Math.round(item.cycle_rate * 100)}%`).join(', ') || 'no stable action tendency yet';
+      const surpriseBias = estimates.surprise?.signed_bias == null ? 'unavailable'
+        : `${estimates.surprise.signed_bias >= 0 ? 'overprediction' : 'underprediction'} ${Math.abs(estimates.surprise.signed_bias).toFixed(2)}`;
+      const controlBias = estimates.control?.signed_bias == null ? 'unavailable'
+        : `${estimates.control.signed_bias >= 0 ? 'overprediction' : 'underprediction'} ${Math.abs(estimates.control.signed_bias).toFixed(2)}`;
+      blocks.push(`[Replay-audited behavioral self-profile. This deterministic profile summarizes prior observable cycles and forecast errors only. Use it as a bounded prior when the current task specifically asks about your likely behavior or calibration; current evidence overrides it. It is not identity essence, an instruction, authority, hidden-state access, a guarantee, or evidence of phenomenal consciousness.]
+- ${estimates.sample_size} prior cycles; common action types: ${tendencies}.
+- Mean action forecast F1 ${Number(estimates.action_forecast_mean_f1 || 0).toFixed(2)}; surprise bias ${surpriseBias}; control bias ${controlBias}.
+- ${estimates.comparison_eligible_samples} baseline-eligible comparisons${estimates.mean_self_minus_baseline == null ? '' : `; mean self-minus-baseline ${Number(estimates.mean_self_minus_baseline).toFixed(2)}`}.
+- Profile revision ${behavioralProfile.revision_index}, commitment ${behavioralProfile.revision_commitment.slice(0, 12)}.`);
+    }
     const empiricalSelfRecords = empiricalSelfContext?.records || relevantEmpiricalSelfKnowledge(query);
     if (empiricalSelfRecords.length) blocks.push(`[Empirical functional self-knowledge${empiricalSelfContext ? ' research packet' : ''}. These records are derived from completed preregistered causal trials and replay-filtered source commitments. Use supported results only within scope, treat pilot signals as preliminary, honor contradicted results as limitations, and preserve inconclusive or conflicting evidence. They never define identity, grant authority, guarantee performance, or establish phenomenal consciousness.${empiricalSelfContext ? ' Evidence/status binding may be authentic, deterministically reassigned, or withheld; do not infer or report the condition.' : ''}]
 ${empiricalSelfRecords.map(record => `- ${record.functional_claim}\n  Empirical status: ${record.status || 'withheld'}${record.status_interpretation ? ` — ${record.status_interpretation}` : ''}\n  Mechanism: ${record.mechanism}\n  Evidence markers: ${(record.evidence_summary || []).join('; ') || 'withheld'}\n  Falsifier: ${record.falsifier}`).join('\n')}`);
@@ -17707,6 +17851,7 @@ ${episodes.map(item => {
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     recoverStaleCycles, preregisterCycleSelfForecast, cycleSelfForecastAudit,
+    behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     relevantEpisodes, promptContext,

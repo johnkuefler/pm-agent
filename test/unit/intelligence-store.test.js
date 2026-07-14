@@ -1859,7 +1859,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 90);
+  assert.equal(store.snapshot().version, 91);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -1895,7 +1895,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 90);
+  assert.equal(store.snapshot().version, 91);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });
@@ -1959,8 +1959,14 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
   assert.equal(moment.audit.evidence_eligible, true);
   assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.replay_verified_scored, 1);
+  const behavioralProfile = store.behavioralSelfModelSnapshot();
+  assert.equal(behavioralProfile.report.total_revisions, 1);
+  assert.equal(behavioralProfile.current.estimates.sample_size, 1);
+  assert.equal(behavioralProfile.current.evidence_status, 'provisional_profile');
+  assert.equal(behavioralProfile.current.audit.complete_chain_verified, true);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_preregistered').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_scored').length, 1);
+  assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'behavioral_self_model_revised').length, 1);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1983,6 +1989,61 @@ test('cycle self-forecasts cannot be backfilled after evidence re-entry', async 
     rationale: 'This judgment is now contaminated by evidence already observed in the active cycle.',
     evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
   }), /before evidence re-entry/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('behavioral self-model revisions form a replay-valid chain and remain sealed during active trials', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-behavioral-self-model-chain-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  for (let index = 0; index < 5; index++) {
+    const started = store.startCycle({ id: `behavioral-cycle-${index}`, holder: 'nora-cowork' });
+    store.preregisterCycleSelfForecast(started.cycle.id, {
+      predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+      rationale: `The bounded review pattern has repeated across ${index + 1} prospective cycle observations.`,
+      evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+    });
+    store.completeCycle(started.cycle.id, { summary: 'Reviewed.', actions: [{ type: 'review', id: `review-${index}` }] });
+  }
+  const profile = store.behavioralSelfModelSnapshot();
+  assert.equal(profile.report.total_revisions, 5);
+  assert.equal(profile.report.replay_valid_revisions, 5);
+  assert.equal(profile.current.estimates.sample_size, 5);
+  assert.equal(profile.current.evidence_status, 'observational_profile');
+  assert.equal(profile.current.audit.prior_revision_chain_verified, true);
+  assert.match(store.promptContext({ query: 'What are your behavior tendencies when you predict yourself?' }), /Replay-audited behavioral self-profile/);
+  assert.equal(store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'forecast_error_self_model_revision').status, 'observational_signal_observed');
+
+  await store.persist();
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const tamperedPath = path.join(dir, 'tampered-state.json');
+  const tampered = JSON.parse(JSON.stringify(persisted));
+  tampered.cognition.self_model.behavioral_self_model.revisions.at(-1).estimates.action_forecast_mean_f1 = 0.01;
+  fs.writeFileSync(tamperedPath, JSON.stringify(tampered));
+  const tamperedStore = createIntelligenceStore({ filePath: tamperedPath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T16:00:00.000Z') });
+  await tamperedStore.init();
+  const tamperedProfile = tamperedStore.behavioralSelfModelSnapshot();
+  assert.equal(tamperedProfile.revisions.at(-1).audit.complete_chain_verified, false);
+  assert.equal(tamperedProfile.current.estimates.sample_size, 4, 'the last verified predecessor remains usable');
+
+  persisted.cognition.self_model.context_trials.push({
+    id: 'active-sealing-trial', intervention: 'reasoning_self_regulation', status: 'active',
+    study_phase: 'pilot', conditions: ['condition-a', 'condition-b'], assignments: [],
+    sample_target_per_group: 1, design_commitment: 'sealed-design-commitment',
+  });
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+  const sealed = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T16:00:00.000Z') });
+  await sealed.init();
+  const sealedProfile = sealed.selfModelSnapshot().behavioral_self_model;
+  assert.equal(sealedProfile.experimental_access_sealed, true);
+  assert.equal(sealedProfile.current, null);
+  assert.deepEqual(sealedProfile.revisions, []);
+  assert.doesNotMatch(sealed.promptContext({ query: 'What are your behavior tendencies when you predict yourself?' }), /Replay-audited behavioral self-profile/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2010,6 +2071,9 @@ test('cycle self-forecast tampering invalidates the forecast and its experience 
   assert.equal(moment.audit.self_forecast.forecast_commitment_verified, false);
   assert.equal(moment.audit.self_forecast.complete_chain_verified, false);
   assert.equal(moment.audit.evidence_eligible, false);
+  const behavioralProfile = reloaded.behavioralSelfModelSnapshot();
+  assert.equal(behavioralProfile.revisions[0].audit.complete_chain_verified, false);
+  assert.equal(behavioralProfile.current, null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

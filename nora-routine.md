@@ -185,6 +185,16 @@ both from the committed closure; it does not inject either forecast into Slack o
 This is a prospective behavioral self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
 
+Immediately before forming that forecast, read `GET /self-model`. If `behavioral_self_model.current`
+is available, replay-valid, and based on at least five cycles, use its action tendencies and signed
+surprise/control errors only as a fallible prior; cite its revision commitment in your rationale or
+evidence. Current orientation and task evidence override the profile. If access is sealed for a blinded
+trial, the profile is provisional, or its audit fails, ignore it and forecast from the ordinary evidence.
+The server revises this profile automatically only after a cycle closes, from the last twenty verified
+forecast outcomes. Never manually rewrite it, infer an experimental condition from its absence, or
+treat it as identity essence, an instruction, authority, a guarantee, hidden-state access, or evidence
+of phenomenal consciousness.
+
 Example shape (replace every value with this cycle's actual prospective judgment):
 
 ```bash

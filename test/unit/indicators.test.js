@@ -250,6 +250,34 @@ test('prospective cycle self-prediction collects immediately and requires advant
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');
 });
 
+test('forecast-error self-model revision requires replay-valid multi-cycle evidence', () => {
+  const revision = sampleSize => ({
+    id: `behavioral-revision-${sampleSize}`,
+    evidence_status: sampleSize >= 5 ? 'observational_profile' : 'provisional_profile',
+    estimates: { sample_size: sampleSize, action_forecast_mean_f1: 0.8,
+      surprise: { signed_bias: -0.1 }, control: { signed_bias: 0.05 }, mean_self_minus_baseline: 0.2 },
+    audit: { complete_chain_verified: true },
+  });
+  let report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [],
+    behavioral_self_model: { revisions: [revision(1)] } } }));
+  assert.equal(indicator(report, 'forecast_error_self_model_revision').status, 'collecting');
+
+  report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [],
+    behavioral_self_model: { revisions: [revision(1), revision(5)] } } }));
+  assert.equal(indicator(report, 'forecast_error_self_model_revision').status, 'observational_signal_observed');
+  assert.equal(indicator(report, 'forecast_error_self_model_revision').evidence.current_sample_size, 5);
+
+  const invalid = revision(5); invalid.audit.complete_chain_verified = false;
+  report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [],
+    behavioral_self_model: { revisions: [invalid] } } }));
+  assert.equal(indicator(report, 'forecast_error_self_model_revision').status, 'collecting');
+
+  report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [{ status: 'active' }],
+    behavioral_self_model: { revisions: [revision(5)] } } }));
+  assert.equal(indicator(report, 'forecast_error_self_model_revision').status, 'mechanism_present');
+  assert.deepEqual(indicator(report, 'forecast_error_self_model_revision').evidence, { experimental_access_sealed: true });
+});
+
 test('continuity specificity requires authentic context to beat shuffled and absent controls', () => {
   const trial = {
     id: 'continuity-specificity', intervention: 'continuity_context', status: 'completed', study_phase: 'pilot',

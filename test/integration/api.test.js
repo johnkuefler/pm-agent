@@ -352,6 +352,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(experience.moments[0].audit.self_forecast.complete_chain_verified, true);
   assert.equal(experience.moments[0].self_forecast.outcome.actual.action_types[0], 'integration_review');
   assert.equal(experience.prospective_self_forecast.replay_verified_scored, 1);
+  const behavioralSelfModel = (await request('/self-model')).body.behavioral_self_model;
+  assert.equal(behavioralSelfModel.report.total_revisions, 1);
+  assert.equal(behavioralSelfModel.current.estimates.sample_size, 1);
+  assert.equal(behavioralSelfModel.current.audit.complete_chain_verified, true);
   assert.equal(experience.recurrence.reentry_rounds, 1);
   const continuityHandoffs = await request('/continuity-handoffs');
   assert.equal(continuityHandoffs.response.status, 200);
