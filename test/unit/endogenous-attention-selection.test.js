@@ -25,7 +25,7 @@ test('endogenous attention selection is prospective, self-schema-specific, and t
   const filePath = path.join(dir, 'state.json');
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: now });
   await store.init();
-  assert.equal(store.snapshot().version, 91);
+  assert.equal(store.snapshot().version, 92);
 
   const packet = endogenousAttention.selectionPacket({ capacity: 2, candidate_manifest: [
     { type: 'commitment', id: 'a', text: 'alpha', score: 3 },

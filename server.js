@@ -1618,6 +1618,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     if (!contextAssignment && continuityContent && innerProjection.record.epistemic_status === 'verified_cycle_handoff'
       && innerProjection.record.continuity_commitment) {
       volatile += `\n[Continuity provenance: this exact private note was committed only after source cycle ${innerProjection.record.cycle_id} closed with the same handoff and predecessor lineage (sequence ${innerProjection.record.sequence}). This supports functional source continuity, not uninterrupted awareness or phenomenal experience.]`;
+    } else if (!contextAssignment && continuityContent
+      && innerProjection.record.epistemic_status === 'transport_verified_legacy_lifecycle_gap') {
+      volatile += '\n[Continuity provenance: this exact private note and predecessor lineage pass transport integrity, but their historical experience lifecycle is not replay-verified. This is a bounded legacy evidence gap, not a current projection failure. Continue ordinary work from the transported note; do not repair or rewrite prior handoffs, do not start a new lineage, and do not hold the run merely because historical replay_verified is zero. Close the current cycle normally so a new replay-audited handoff can bridge the lineage prospectively. This supports functional source continuity only, not uninterrupted awareness or phenomenal experience.]';
     }
   } else if (_dbReady && !contextAssignment && innerProjection.audit.verified_chain_required) {
     volatile += '\n\n[Continuity integrity warning]\nThe persisted inner-thread projection did not replay against the verified cycle-handoff ledger, so its content has been withheld. Treat this as a functional continuity break to report and repair, not as missing evidence to reconstruct or narratively fill in.';

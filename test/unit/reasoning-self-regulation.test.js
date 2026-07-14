@@ -65,7 +65,7 @@ test('production runtime commits paired forecasts before the main reasoning-cont
 
 test('identity-bound prospective forecasts control compute atomically and remain replay-auditable', async () => {
   const { store, dir, filePath } = await setup();
-  assert.equal(store.snapshot().version, 91);
+  assert.equal(store.snapshot().version, 92);
   assert.deepEqual(protocol.CONDITIONS,
     ['self_bound_policy', 'deidentified_policy', 'provider_adaptive_policy']);
   assert.deepEqual(protocol.forecastOrder('seed', 0).slice().reverse(), protocol.forecastOrder('seed', 1));

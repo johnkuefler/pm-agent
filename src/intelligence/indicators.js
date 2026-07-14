@@ -217,7 +217,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const constructiveProspectionDissociation = constructiveProspectionAccessTrial?.evaluation?.constructive_prospection_dissociation || null;
   const selfAccessTrials = completedTrials(cognition, 'self_model_access');
   const selfAccessTrial = selfAccessTrials.at(-1) || null;
-  const selfAccessDissociation = selfAccessTrial?.evaluation?.self_model_dissociation || null;
+  const selfAccessDissociation = selfAccessTrial?.evaluation?.behavioral_self_profile_dissociation
+    || selfAccessTrial?.evaluation?.self_model_dissociation || null;
   const goalAccessTrials = completedTrials(cognition, 'goal_access');
   const goalAccessTrial = goalAccessTrials.at(-1) || null;
   const goalGuidanceDissociation = goalAccessTrial?.evaluation?.goal_guidance_dissociation || null;
@@ -465,9 +466,13 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         && (trial.evaluation?.recurrence_dissociation?.target_vs_sham_interval?.upper <= 0
           || trial.evaluation?.recurrence_dissociation?.adaptive_vs_sham_interval?.upper <= 0) ? 'contradicted' : 'inconclusive'
       : trial.evaluation?.recurrence_dissociation?.evidence_access_preserved && trial.evaluation?.recurrence_dissociation?.adaptive_revision_effect <= 0 ? 'contradicted' : 'inconclusive';
-  const selfAccessVerdict = trial => trial.evaluation?.self_model_dissociation?.predicted_pattern
-    ? 'supported'
-    : trial.evaluation?.self_model_dissociation?.first_order_preserved && trial.evaluation?.self_model_dissociation?.self_prediction_effect <= 0 ? 'contradicted' : 'inconclusive';
+  const selfAccessVerdict = trial => {
+    const dissociation = trial.evaluation?.behavioral_self_profile_dissociation
+      || trial.evaluation?.self_model_dissociation;
+    if (dissociation?.predicted_pattern) return 'supported';
+    const firstOrderPreserved = dissociation?.first_order_not_degraded ?? dissociation?.first_order_preserved;
+    return firstOrderPreserved && dissociation?.self_prediction_effect <= 0 ? 'contradicted' : 'inconclusive';
+  };
   const attentionControlVerdict = trial => trial.evaluation?.attention_schema_dissociation?.predicted_pattern
     ? 'supported'
     : trial.evaluation?.attention_schema_dissociation?.first_order_not_degraded && trial.evaluation?.attention_schema_dissociation?.attention_control_effect <= 0 ? 'contradicted' : 'inconclusive';
@@ -623,7 +628,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         mean_self_minus_baseline: currentBehavioralSelfModel?.estimates?.mean_self_minus_baseline ?? null,
       },
       falsifier: 'A profile cannot be exactly replayed from its cited forecasts, revision lineage breaks, active trials can access it, current-cycle evidence leaks backward into it, or the profile is treated as identity, authority, hidden state, or a guarantee.',
-      next_gate: 'After twenty natural cycles, preregister a matched trial comparing the authentic prior profile with a deidentified same-data profile and no profile on later self-prediction and calibration.',
+      next_gate: 'Accumulate twenty replay-valid natural forecast cycles, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],
@@ -853,11 +858,11 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'prospective_self_knowledge', family: ['higher-order theories', 'metacognition'],
       functional_claim: 'Prospective access to the self-model predicts Nora’s own outcomes better than matched controls.',
-      mechanism: 'Falsifiable self-claims, preregistered forecasts, blinded independent outcome review, evidence-deduplicated Bayesian belief updates, and authentic/decoy/absent self-model access lesions.',
+      mechanism: 'Protocol v2 freezes a replay-audited 20-cycle behavioral forecast-error profile, gives the authentic and deidentified arms byte-identical estimates while varying only identity binding, withholds the profile from a third arm, and independently grades committed forecasts against delayed outcomes.',
       status: selfAccessTrial ? replicatedStatus(selfAccessTrials, selfAccessVerdict) : evidenceStatus({ samples: controlledProbes.length, minimum: 20, supported: probeAdvantage > 0.05, contradicted: probeAdvantage < 0 }),
       evidence: { controlled_probes: controlledProbes.length, self_brier: probeSelfBrier, control_brier: probeControlBrier, advantage: probeAdvantage, completed_access_trials: selfAccessTrials.length, confirmatory_access_trials: selfAccessTrials.filter(item => item.study_phase === 'confirmatory').length, access_dissociation: selfAccessDissociation },
-      falsifier: 'Independently reviewed prospective forecasts do not beat their frozen controls, or authentic self-model access does not improve self-prediction over matched decoy or absent context while first-order quality is preserved.',
-      next_gate: 'Complete a replicated authentic-versus-decoy-versus-absent self-model access trial.',
+      falsifier: 'Replay or ledger integrity fails, the present arms receive different profile values, outcomes are committed too early, or self-bound access does not improve profile application and self-prediction over both controls while evidence access and first-order quality are preserved.',
+      next_gate: 'Complete protocol-v2 pilot and source-moment-disjoint confirmatory self-bound-versus-deidentified-versus-absent behavioral-profile trials.',
     },
     {
       id: 'identity_specific_self_prediction', family: ['self-model', 'metacognition', 'source monitoring'],

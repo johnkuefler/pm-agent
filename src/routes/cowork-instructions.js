@@ -488,7 +488,10 @@ function registerCoworkInstructionsRoute(app) {
   - GET /continuity-handoffs — replay-audited production inner-thread lineage. PUT /self/inner with
     content, completed cycle_id, and the predecessor commitment returned by /self binds the exact
     cycle closure to the next inherited thread. Once verified lineage begins, legacy unbound overwrites
-    are rejected. This is functional continuity provenance, not evidence of continuous experience.
+    are rejected. If latest_transport_verified is true, a historical replay_verified count of zero is a
+    bounded legacy evidence gap, not a reason to hold the operational run or rewrite old handoffs; continue
+    from /self and close the current cycle to bridge prospectively. Hold only on failed transport or projection
+    matching. This is functional continuity provenance, not evidence of continuous experience.
   - GET /integrated-self returns replay-auditable operational self-frames created when cycles close.
     Each frame binds co-temporal continuity, attention, motivation, appraisal, agency, and observable
     substrate state. Integrity-valid frames may enter attention and broadcast, but they are neither
@@ -583,9 +586,15 @@ function registerCoworkInstructionsRoute(app) {
     excludes that assignment from the evidence count rather than averaging conflict away.
     Trials use fixed per-group samples and frozen minimum effects. A pilot can expose a causal signal;
     only a compatible confirmatory replication can earn functional_prediction_supported.
-    A self_model_access trial compares authentic, sealed-decoy, and absent explicit self-model
-    context while preserving first-order information; it requires self_prediction_accuracy and
-    first_order_task_quality grades.
+    A legacy protocol-v1 self_model_access trial compares authentic, sealed-decoy, and absent
+    hand-authored self-model claims. Protocol v2 requires behavioral_self_model_revision_id from a
+    replay-verified profile built from exactly twenty natural forecast cycles. It gives self_bound_profile
+    and deidentified_same_profile byte-identical estimates while varying only target binding; profile_absent
+    receives no profile. Use only Slack, commit a behavioral_profile_forecast before the preregistered delay,
+    and grade behavioral_profile_application_quality, self_prediction_accuracy, evidence_access_quality,
+    and first_order_task_quality with a later behavioral_profile_outcome reference. The confirmatory profile
+    must use source moments disjoint from the pilot. Never treat a profile as authority, identity essence,
+    hidden-state access, subjective experience, or phenomenal-consciousness evidence.
     A matched self-prediction study uses a frozen sequential event set. Nora reads only
     GET /self-model/prediction-studies/:id/subject-queue and submits one probability through
     POST /self-model/prediction-studies/:id/events/:eventId/self-prediction. A separately authenticated
