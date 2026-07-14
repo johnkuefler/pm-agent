@@ -203,6 +203,7 @@ PUT /charter
 GET /charter/history
 POST /charter/rollback
 GET /self
+GET /self/autobiography/history
 GET /self/wants/history
 PUT /self/autobiography
 PUT /self/wants

@@ -19,22 +19,11 @@ async function loadSelfTab() {
           : '<p class="empty">No wants yet. The dream forms them.</p>';
         const bio = s.autobiography || {};
         document.getElementById('self-bio').value = bio.content || '';
-        document.getElementById('self-bio-meta').textContent = bio.updated_at ? `Last updated ${new Date(bio.updated_at).toLocaleString()} by ${bio.updated_by || '?'} · ${(bio.content || '').length.toLocaleString()} chars` : '';
+        document.getElementById('self-bio-meta').textContent = bio.updated_at ? `Revision ${bio.sequence || '?'} · ${bio.provenance_status || 'unclassified'} · last updated ${new Date(bio.updated_at).toLocaleString()} by ${bio.updated_by || '?'} · ${(bio.content || '').length.toLocaleString()} chars · ${bio.audit?.projection_usable ? 'integrity verified' : 'integrity unavailable'}` : (bio.projection_integrity_failure ? 'Autobiography withheld: revision or evidence integrity failed.' : '');
         const p = await (await api('/prompt?json=1')).json();
         document.getElementById('persona-content').value = p.content || '';
         document.getElementById('persona-meta').textContent = p.updated_at ? `Last updated ${new Date(p.updated_at).toLocaleString()} by ${p.updated_by || '?'}${p.note ? ` · "${p.note}"` : ''} · ${(p.content || '').length.toLocaleString()} chars` : `${(p.content || '').length.toLocaleString()} chars (seed)`;
       } catch (e) { document.getElementById('self-inner').textContent = 'Failed to load.'; }
-    }
-
-    async function saveSelfBio() {
-      const content = document.getElementById('self-bio').value; const s = document.getElementById('self-bio-status');
-      if (!content.trim()) { s.className = 'toast err'; s.textContent = 'Cannot be empty.'; return; }
-      if (!confirm("Save her autobiography? This is normally hers to maintain; edit only when something's genuinely wrong.")) return;
-      try {
-        const r = await api('/self/autobiography', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard' }) });
-        const d = await r.json();
-        if (d.ok) { s.className = 'toast ok'; s.textContent = 'Saved.'; loadSelfTab(); } else { s.className = 'toast err'; s.textContent = d.error || 'failed'; }
-      } catch (e) { s.className = 'toast err'; s.textContent = e.message; }
     }
 
     async function savePersona() {

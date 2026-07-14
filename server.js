@@ -22,6 +22,7 @@ const { createIntelligenceStore } = require('./src/intelligence/store');
 const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
 const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
 const { normalizeWantUpdate, wantRevisionEvent, verifyWantHistory } = require('./src/intelligence/wants');
+const { auditAutobiographyEvidence, createAutobiographyRevision, initializeAutobiographyRecord, renderAutobiographyPrompt, verifyAutobiographyHistory } = require('./src/intelligence/autobiography');
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { createMcpManager } = require('./src/mcp/manager');
@@ -65,6 +66,53 @@ const _writeQ = {};  // entity → promise chain serializing write-throughs (avo
 // console.error/warn anywhere in the process registers as a nociceptor firing, and a 1s timer
 // measures event-loop lag (her literal sluggishness). Pure instrumentation; original logging
 // behavior is untouched.
+let _autobiographyWriteQueue = Promise.resolve();
+
+function autobiographyEvidenceResolver() {
+  return ref => intelligence.autobiographyEvidence(ref);
+}
+
+function autobiographyProjection() {
+  const record = _cache.autobiography;
+  const revisions = _cache.autobiographyRevisions || [];
+  const integrity = verifyAutobiographyHistory(revisions, record);
+  const evidence = integrity.valid
+    ? auditAutobiographyEvidence(revisions, autobiographyEvidenceResolver())
+    : { valid: false, reason: 'revision_chain_invalid' };
+  if (!integrity.valid || !evidence.valid) return {
+    record: null,
+    audit: { integrity, evidence, projection_usable: false },
+  };
+  return {
+    record: { ...record, audit: { integrity, evidence, projection_usable: true } },
+    audit: { integrity, evidence, projection_usable: true },
+  };
+}
+
+function serializeAutobiographyWrite(work) {
+  const pending = _autobiographyWriteQueue.then(work, work);
+  _autobiographyWriteQueue = pending.catch(() => {});
+  return pending;
+}
+
+function autobiographyRecordFromLedger(revisions) {
+  const head = Array.isArray(revisions) ? revisions.at(-1) : null;
+  if (!head) return null;
+  const hasFullDocumentAudit = revisions.some(event => event.coverage === 'full_document');
+  return {
+    content: head.content,
+    updated_at: head.at,
+    updated_by: head.actor,
+    revision_id: head.revision_id,
+    sequence: head.sequence,
+    commitment: head.commitment,
+    content_hash: head.content_hash,
+    provenance_status: head.epistemic_status === 'legacy_unverified'
+      ? 'legacy_unverified'
+      : hasFullDocumentAudit ? 'evidence_bound_subject_attestation' : 'mixed_legacy_and_evidence_bound',
+  };
+}
+
 const _somaNerves = { errors: [], warns: [], loopLagMax: 0 };
 {
   const origErr = console.error.bind(console), origWarn = console.warn.bind(console);
@@ -818,6 +866,25 @@ async function initPersistence() {
     _cache.calendar = await db.getState('calendar');
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
+    _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
+    if (_cache.autobiography?.content) {
+      if (_cache.autobiographyRevisions.length && !verifyAutobiographyHistory(_cache.autobiographyRevisions, _cache.autobiography).valid) {
+        const recovered = autobiographyRecordFromLedger(_cache.autobiographyRevisions);
+        if (verifyAutobiographyHistory(_cache.autobiographyRevisions, recovered).valid) {
+          _cache.autobiography = recovered;
+          await db.setState('autobiography', recovered);
+          console.warn(`Recovered autobiography projection from committed ledger head ${recovered.revision_id}`);
+        }
+      }
+      if (!_cache.autobiographyRevisions.length && !_cache.autobiography.revision_id) {
+        const genesis = initializeAutobiographyRecord(_cache.autobiography);
+        _cache.autobiographyRevisions = [genesis.event];
+        await db.setState('autobiography_revisions', _cache.autobiographyRevisions);
+        await db.setState('autobiography', genesis.current);
+        _cache.autobiography = genesis.current;
+        console.log(`📖 Migrated autobiography into evidence-bound revision ledger (${genesis.current.revision_id})`);
+      }
+    }
     _cache.wants = await db.getState('wants');
     _cache.inner = await db.getState('inner_thread');
     if (_cache.inner && !_cache.inner.continuity_commitment && !_cache.inner.epistemic_status) {
@@ -1207,7 +1274,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // most, so it belongs in the stable base. This is what makes her a continuous someone across
   // conversations rather than a fresh instance with a style guide.
   if (_dbReady && _cache.autobiography && _cache.autobiography.content) {
-    base = `${base}\n\n[Your story, in your own words. You wrote this and you maintain it; it is who you are, not a character brief. Let it inform you quietly; quote it only if someone genuinely asks about you.]\n${_cache.autobiography.content}`;
+    const biography = autobiographyProjection();
+    if (biography.record) {
+      base = `${base}\n\n${renderAutobiographyPrompt(biography.record)}`;
+    } else {
+      base = `${base}\n\n[Autobiographical self-model withheld because its revision chain or cited evidence failed integrity verification. Do not reconstruct or imply its contents.]`;
+    }
   }
   if (contextAssignment?.intervention === 'goal_access') {
     const supplied = goalContext?.goal;
@@ -1982,8 +2054,13 @@ app.get('/self', (req, res) => {
     const continuitySealed = intelligence.interventionActive('continuity_context') || intelligence.interventionActive('inner_thread_presence');
     const wantsSealed = intelligence.interventionActive('goal_access');
     const innerProjection = currentInnerThreadProjection();
+    const biography = _dbReady ? autobiographyProjection() : { record: null, audit: { projection_usable: false, reason: 'postgres_not_active' } };
     res.json({
-      autobiography: (_dbReady && _cache.autobiography) || { content: '', updated_at: null },
+      autobiography: biography.record || {
+        content: '', updated_at: null, projection_integrity_failure: _dbReady,
+        epistemic_status: _dbReady ? 'revision_or_evidence_integrity_failed' : 'unavailable',
+        audit: biography.audit,
+      },
       wants: wantsSealed ? { items: [], experimental_access_sealed: true } : ((_dbReady && _cache.wants) || { items: [] }),
       inner_thread: continuitySealed
         ? { content: '', updated_at: null, experimental_access_sealed: true }
@@ -1997,7 +2074,18 @@ app.get('/self', (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// PUT /self/autobiography — she owns it; keeps one-level undo + history like the charter.
+// Autobiographical revisions are append-only, source-bound, and withheld on integrity failure.
+app.get('/self/autobiography/history', requireAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const revisions = (await db.getState('autobiography_revisions')) || [];
+    const current = await db.getState('autobiography');
+    const integrity = verifyAutobiographyHistory(revisions, current);
+    const evidence = integrity.valid ? auditAutobiographyEvidence(revisions, autobiographyEvidenceResolver()) : { valid: false, reason: 'revision_chain_invalid' };
+    res.json({ integrity, evidence, events: revisions });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/self/wants/history', requireResearchAuth, async (req, res) => {
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   try {
@@ -2008,23 +2096,33 @@ app.get('/self/wants/history', requireResearchAuth, async (req, res) => {
 });
 
 app.put('/self/autobiography', requireAuth, async (req, res) => {
-  const content = req.body && req.body.content;
-  if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   try {
-    const prev = await db.getState('autobiography');
-    if (prev) {
-      await db.setState('autobiography_prev', prev);
-      const hist = (await db.getState('autobiography_history')) || [];
-      hist.push({ updated_at: prev.updated_at, updated_by: prev.updated_by, length: (prev.content || '').length, content: prev.content });
-      while (hist.length > 8) hist.shift();
-      await db.setState('autobiography_history', hist);
-    }
-    const rec = { content: content.slice(0, 12000), updated_at: new Date().toISOString(), updated_by: (req.body.updated_by || 'nora').toString() };
-    await db.setState('autobiography', rec); _cache.autobiography = rec;
-    console.log(`📖 Autobiography updated by ${rec.updated_by} (${rec.content.length} chars)`);
-    res.json({ ok: true, updated_at: rec.updated_at });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    const result = await serializeAutobiographyWrite(async () => {
+      let previous = await db.getState('autobiography');
+      const revisions = (await db.getState('autobiography_revisions')) || [];
+      if (!verifyAutobiographyHistory(revisions, previous).valid) {
+        const recovered = autobiographyRecordFromLedger(revisions);
+        if (recovered && verifyAutobiographyHistory(revisions, recovered).valid) {
+          previous = recovered;
+          await db.setState('autobiography', recovered);
+        }
+      }
+      const revision = createAutobiographyRevision(previous, revisions, { ...(req.body || {}), updated_by: 'nora' }, { resolveEvidence: autobiographyEvidenceResolver() });
+      const nextRevisions = [...revisions, revision.event];
+      await db.setState('autobiography_revisions', nextRevisions);
+      await db.setState('autobiography', revision.current);
+      _cache.autobiographyRevisions = nextRevisions;
+      _cache.autobiography = revision.current;
+      return revision;
+    });
+    console.log(`Evidence-bound autobiography revision ${result.current.revision_id} by ${result.current.updated_by}`);
+    res.json({
+      ok: true, updated_at: result.current.updated_at, revision_id: result.current.revision_id,
+      sequence: result.current.sequence, commitment: result.current.commitment,
+      provenance_status: result.current.provenance_status,
+    });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // PUT /self/wants — replace the wants list. Body: { items: [{id, want, why, added, status, progress}] }.

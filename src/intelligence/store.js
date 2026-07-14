@@ -14038,6 +14038,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => attachAssignmentEvidence(current, id, input, clock()));
   }
 
+  function autobiographyEvidence(ref = {}) {
+    let record = null;
+    let status = null;
+    if (ref.type === 'development') {
+      record = state.cognition.development.find(item => item.id === ref.id) || null;
+      status = record?.status || null;
+    } else if (ref.type === 'experience_moment') {
+      record = state.cognition.experience_stream.find(item => item.id === ref.id) || null;
+      status = record ? (record.status === 'open' ? 'open' : 'closed') : null;
+    } else if (ref.type === 'mind_change') {
+      record = state.cognition.mind_changes.find(item => item.id === ref.id) || null;
+      status = record?.status || null;
+    }
+    return record ? { record: JSON.parse(JSON.stringify(record)), status } : null;
+  }
+
   function excludeGlobalBroadcastAssignment(id, reason = 'operational_failure') {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -17145,7 +17161,7 @@ ${episodes.map(item => {
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     relevantEpisodes, promptContext,
-    refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange, recordDevelopment, recordCounterfactual,
+    refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange, recordDevelopment, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,
     recordCognitivePulseResult, recordCognitivePulseFailure, resolveCognitivePulse, cognitivePulseSnapshot,
