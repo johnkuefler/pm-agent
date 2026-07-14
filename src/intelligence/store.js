@@ -11606,11 +11606,50 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         : ['global_broadcast', 'recurrent_feedback', 'introspective_perturbation', 'goal_access', 'integrated_self_binding', 'cognitive_pulse_access', 'epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access', 'constructive_prospection_access', 'agency_comparator_access', 'agency_model_access', 'empirical_self_knowledge_access', 'action_authorship_access', 'situational_affordance_access', 'prospective_output_monitor', 'prospective_output_calibration_access', 'endogenous_attention_selection'].includes(intervention) ? 10 : 2;
       const sampleTarget = Math.max(minimumSampleTarget, Math.min(100, Number(input.sample_target_per_group ?? replicatedTrial?.sample_target_per_group) || 10));
       const enrollmentTarget = intervention === 'prospective_output_calibration_access'
-        ? Math.min(150, sampleTarget + Math.ceil(sampleTarget * 0.5)) : sampleTarget;
+        ? Math.min(150, sampleTarget + Math.ceil(sampleTarget * 0.5))
+        : ['provider_reasoning_regulation', 'reasoning_self_regulation'].includes(intervention)
+          ? Math.max(sampleTarget, Math.min(150, Number(input.enrollment_target_per_group
+            ?? replicatedTrial?.enrollment_target_per_group) || sampleTarget))
+          : sampleTarget;
       const minimumEffect = clamp01(input.minimum_effect ?? replicatedTrial?.minimum_effect ?? 0.1);
       const autoScoreInteractions = input.auto_score_interactions === true;
       const evaluatorTarget = autoScoreInteractions ? 1 : Math.max(1, Math.min(5, Number(input.evaluator_target ?? replicatedTrial?.evaluator_target) || 2));
       const evaluatorTolerance = clamp01(input.evaluator_disagreement_tolerance ?? replicatedTrial?.evaluator_disagreement_tolerance ?? 0.2);
+      let automatedPilotGrading = null;
+      if (input.automated_pilot_grading != null) {
+        if (intervention !== 'reasoning_self_regulation' || studyPhase !== 'pilot' || replicatedTrial) {
+          throw new Error('automated pilot grading is permitted only for the initial reasoning_self_regulation pilot');
+        }
+        const automation = input.automated_pilot_grading;
+        const roles = Array.isArray(automation.evaluator_roles) ? automation.evaluator_roles.map(item => ({
+          evaluator_id: String(item?.evaluator_id || '').slice(0, 120),
+          protocol_version: Number(item?.protocol_version),
+          model: String(item?.model || '').slice(0, 160),
+          role: String(item?.role || '').slice(0, 80),
+          max_tokens: Math.max(1, Math.min(4000, Number(item?.max_tokens) || 0)),
+          system_prompt_commitment: String(item?.system_prompt_commitment || ''),
+          output_schema_commitment: String(item?.output_schema_commitment || ''),
+          prompt_protocol_commitment: String(item?.prompt_protocol_commitment || ''),
+        })) : [];
+        const validHash = value => /^[a-f0-9]{64}$/.test(value);
+        if (automation.evidence_scope !== 'model_graded_pilot_only'
+          || Number(automation.protocol_version) !== 1
+          || !automation.grader_model || roles.length !== evaluatorTarget
+          || new Set(roles.map(item => item.evaluator_id)).size !== roles.length
+          || roles.some(item => !item.evaluator_id || !item.model || item.model !== String(automation.grader_model)
+            || item.protocol_version !== 1 || !item.role || !item.max_tokens
+            || !validHash(item.system_prompt_commitment) || !validHash(item.output_schema_commitment)
+            || !validHash(item.prompt_protocol_commitment))) {
+          throw new Error('automated pilot grading requires a frozen model-graded-only protocol and one valid manifest per evaluator');
+        }
+        automatedPilotGrading = {
+          protocol_version: 1,
+          evidence_scope: 'model_graded_pilot_only',
+          grader_model: String(automation.grader_model).slice(0, 160),
+          evaluator_roles: roles,
+          confirmation_policy: 'stop_after_pilot; confirmation requires evaluator-disjoint externally administered grading',
+        };
+      }
       const prospectiveOutcomeMinDelayMinutes = ['constructive_prospection_access', 'agency_model_access', 'empirical_self_knowledge_access'].includes(intervention)
         ? Math.max(30, Math.min(10080, Number(input.prospective_outcome_min_delay_minutes ?? replicatedTrial?.prospective_outcome_min_delay_minutes) || 30)) : 0;
       const dissociationThresholds = {
@@ -11780,7 +11819,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         output_calibration_context_commitment: outputCalibrationContextCommitment,
         minimum_effect: minimumEffect,
         stopping_rule: intervention === 'prospective_output_calibration_access'
-          ? 'fixed_enrollment_per_group_with_preregistered_missing_outcome_cap' : 'fixed_sample_per_group',
+          ? 'fixed_enrollment_per_group_with_preregistered_missing_outcome_cap'
+          : enrollmentTarget > sampleTarget
+            ? 'fixed_enrollment_per_group_with_preregistered_reliability_attrition_cap'
+            : 'fixed_sample_per_group',
         inference_plan: { method: 'stratified_bootstrap_percentile', confidence: 0.95, iterations: 2000 },
         analysis_seed: analysisSeed, analysis_seed_commitment: crypto.createHash('sha256').update(analysisSeed).digest('hex'),
         evaluator_study_code: crypto.randomBytes(10).toString('hex'),
@@ -11790,6 +11832,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         auto_score_interactions: autoScoreInteractions,
         evaluator_target: evaluatorTarget,
         evaluator_disagreement_tolerance: evaluatorTolerance,
+        automated_pilot_grading: automatedPilotGrading,
         global_broadcast_protocol_version: intervention === 'global_broadcast' ? 2 : null,
         recurrent_feedback_protocol_version: intervention === 'recurrent_feedback' ? 2 : null,
         prospective_outcome_min_delay_minutes: prospectiveOutcomeMinDelayMinutes,
@@ -14765,6 +14808,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         throw new Error('introspective_perturbation assignments require sealed subject and observer diagnoses before grading');
       }
       const evaluatorId = String(input.evaluator_id || 'system-evaluator').slice(0, 120);
+      const automatedEvaluatorRole = trial.automated_pilot_grading?.evaluator_roles
+        ?.find(item => item.evaluator_id === evaluatorId) || null;
+      if (trial.automated_pilot_grading && !automatedEvaluatorRole) {
+        throw new Error('this model-graded pilot accepts only its preregistered blinded evaluator identities');
+      }
       if (trial.intervention === 'provider_reasoning_regulation' && trial.study_phase === 'confirmatory') {
         const pilot = current.cognition.self_model.context_trials.find(item => item.id === trial.replicates_trial_id);
         const pilotEvaluators = new Set((pilot?.assignments || []).flatMap(item =>
@@ -14837,12 +14885,43 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           metrics[name] = number;
         }
       }
+      const gradeObservations = (Array.isArray(input.observations) ? input.observations : [])
+        .map(item => String(item).trim().slice(0, 240)).filter(Boolean).slice(0, 5);
+      const gradeNotes = String(input.notes || '').slice(0, 1000);
+      if (automatedEvaluatorRole) {
+        const modelEvidence = input.evidence.find(item => item?.type === 'blinded_model_grade');
+        const evaluatorMetrics = [...trial.outcome_metrics].sort();
+        const packet = {
+          task_prompt: String(assignment.evidence_package?.task_prompt || '').slice(0, 12000),
+          delivered_answer: String(assignment.evidence_package?.public_response || '').slice(0, 16000),
+          rubrics: Object.fromEntries(evaluatorMetrics.map(metric => {
+            const rubric = trial.metric_rubrics?.[metric] || `Score ${metric} from 0 to 1 using only observable outcome evidence.`;
+            return [metric, (rubricLeaksDesign(rubric, trial.conditions)
+              ? `Score ${metric} from 0 to 1 using only observable outcome evidence.` : rubric).slice(0, 1200)];
+          })),
+        };
+        const expectedOutput = { metrics: Object.fromEntries(evaluatorMetrics.map(metric => [metric, metrics[metric]])),
+          observations: gradeObservations, rationale: gradeNotes.slice(0, 800) };
+        const responseIds = new Set(trial.assignments.flatMap(item => (item.grades || [])
+          .flatMap(grade => (grade.evidence || []).filter(ref => ref.type === 'blinded_model_grade').map(ref => ref.id))));
+        if (!modelEvidence || !modelEvidence.id || responseIds.has(modelEvidence.id)
+          || modelEvidence.evaluator_id !== evaluatorId
+          || Number(modelEvidence.protocol_version) !== trial.automated_pilot_grading.protocol_version
+          || modelEvidence.model !== automatedEvaluatorRole.model
+          || modelEvidence.prompt_protocol_commitment !== automatedEvaluatorRole.prompt_protocol_commitment
+          || modelEvidence.packet_commitment !== crypto.createHash('sha256').update(canonicalJson(packet)).digest('hex')
+          || modelEvidence.output_commitment !== crypto.createHash('sha256').update(canonicalJson(expectedOutput)).digest('hex')
+          || !gradeObservations.length || !gradeNotes) {
+          throw new Error('automated pilot grade does not match its frozen blind packet, provider receipt, and output commitment');
+        }
+      }
       if ((trial.intervention !== 'global_broadcast' || trial.global_broadcast_protocol_version === 2)
         && ['global_broadcast', 'higher_order_monitor', 'recurrent_feedback', 'self_model_access', 'attention_schema_control', 'endogenous_attention_selection', 'continuity_context', 'appraisal_access', 'developmental_revision_access', 'endogenous_dynamics', 'cognitive_pulse_access', 'introspective_perturbation', 'goal_access', 'integrated_self_binding', 'epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access', 'constructive_prospection_access', 'agency_comparator_access', 'agency_model_access', 'empirical_self_knowledge_access', 'action_authorship_access', 'situational_affordance_access', 'prospective_output_monitor', 'prospective_output_calibration_access', 'provider_reasoning_regulation', 'reasoning_self_regulation'].includes(trial.intervention)
         && trial.outcome_metrics.some(name => metrics[name] == null)) throw new Error(`${trial.intervention} assignments require every preregistered metric`);
       const gradeEvidence = input.evidence.slice(0, calibrationOutcomeRecord ? 19 : 20);
       if (calibrationOutcomeRecord) gradeEvidence.push({ type: 'prospective_output_monitor_outcome', id: calibrationOutcomeRecord.id });
-      const grade = { evaluator_id: evaluatorId, score, metrics, evidence: gradeEvidence, notes: String(input.notes || '').slice(0, 1000), graded: gradeNow.toISOString() };
+      const grade = { evaluator_id: evaluatorId, score, metrics, evidence: gradeEvidence,
+        notes: gradeNotes, observations: gradeObservations, graded: gradeNow.toISOString() };
       assignment.grades.push(grade);
       researchLedgerAppend(current, { kind: 'assignment_grade_committed', subject_type: 'context_assignment', subject_id: assignment.id, payload: grade });
       const target = trial.evaluator_target || 1;
@@ -14938,6 +15017,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         || trial.conditions.every(condition => trial.assignments.filter(item => item.condition === condition).length === trial.enrollment_target_per_group);
       const outputCalibrationAllTerminal = trial.intervention !== 'prospective_output_calibration_access'
         || trial.assignments.every(item => ['resolved', 'excluded_protocol'].includes(item.status));
+      const fixedReasoningEnrollment = ['provider_reasoning_regulation', 'reasoning_self_regulation'].includes(trial.intervention)
+        && trial.enrollment_target_per_group > trial.sample_target_per_group;
+      const reasoningEnrollmentComplete = !fixedReasoningEnrollment
+        || trial.conditions.every(condition => trial.assignments.filter(item => item.condition === condition).length
+          === trial.enrollment_target_per_group);
+      const reasoningEnrollmentAllTerminal = !fixedReasoningEnrollment
+        || trial.assignments.every(item => ['resolved', 'excluded_protocol'].includes(item.status));
       if (input.reveal === true) {
         if (!enough) throw new Error('cannot reveal trial before every group reaches the sample target');
         if (!broadcastCoverageEnough) throw new Error('cannot reveal global_broadcast trial before three specialist consumers and three packet types are represented');
@@ -14945,6 +15031,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (!continuityLineageCoverageEnough) throw new Error('cannot reveal protocol-v2 continuity_context trial before every frozen historical lineage control is represented');
         if (!outputCalibrationEnrollmentComplete) throw new Error('cannot reveal prospective_output_calibration_access before every arm reaches its fixed enrollment target');
         if (!outputCalibrationAllTerminal) throw new Error('cannot reveal prospective_output_calibration_access while any enrolled outcome or blind quality grade remains unresolved');
+        if (!reasoningEnrollmentComplete) throw new Error(`cannot reveal ${trial.intervention} before every arm reaches its fixed enrollment target`);
+        if (!reasoningEnrollmentAllTerminal) throw new Error(`cannot reveal ${trial.intervention} while any enrolled production response or blind grade remains unresolved`);
       }
       const means = Object.values(groups).map(group => group.mean).filter(value => value != null);
       const metricResults = Object.fromEntries((trial.outcome_metrics || [trial.outcome_metric]).map(metric => {
@@ -14971,6 +15059,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           excluded_for_disagreement: allResolved.length - resolved.length,
           evaluator_target: trial.evaluator_target || 1,
           disagreement_tolerance: trial.evaluator_disagreement_tolerance,
+          fixed_enrollment_complete: reasoningEnrollmentComplete,
+          fixed_enrollment_all_terminal: reasoningEnrollmentAllTerminal,
         },
         difference_a_minus_b: groups.A?.mean == null || groups.B?.mean == null ? null : groups.A.mean - groups.B.mean,
         blinded_range: means.length > 1 ? Math.max(...means) - Math.min(...means) : null,

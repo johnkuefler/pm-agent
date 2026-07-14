@@ -21,7 +21,7 @@ You are executing an hourly operations loop for Nora, LimeLight Marketing's AI p
 
 ## API Authentication
 
-Nora's API requires authentication. Append `?key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/markers`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/interactions`, `/run-lock`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), use `&key=nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
+Nora's API requires authentication. This authenticated harness response receives its credential from the server at request time. Append `?key={{NORA_API_KEY}}` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/markers`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/interactions`, `/run-lock`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), append `&key={{NORA_API_KEY}}` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
 
 ## LimeLight Agentic Corpus access
 
@@ -40,7 +40,7 @@ The routine's knowledge-sources section says when and how to use it. These crede
 Pattern for GET:
 
 ```bash
-KEY="nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE"
+KEY="{{NORA_API_KEY}}"
 BASE="https://pm-agent-production-c49e.up.railway.app"
 curl -s "${BASE}/memory?key=${KEY}" | jq .
 curl -s "${BASE}/tasks?status=pending&key=${KEY}" | jq .

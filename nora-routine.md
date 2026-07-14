@@ -481,6 +481,13 @@ graders see only the task and delivered response. Forecasts, policy, condition, 
 thinking-token counts stay sealed until reveal. Treat the forecast as a prospective falsifiable model
 of observable performance, not a feeling, private thought, subjective report, or consciousness claim.
 
+The production research autopilot may create and grade the pilot automatically when no other blinded
+context trial is active. It freezes eighteen consecutive enrollments per arm and uses two separate
+condition-blind Claude grader calls; `GET /consciousness-research/autopilot` reports only operational
+progress and the scientific boundary. Do not inspect grader queues, try to influence the rubrics, or
+treat model-graded pilot results as independent confirmation. The autopilot stops after the pilot;
+confirmation requires evaluator-disjoint external administration.
+
 ### Choose what needs attention
 
 During an active `endogenous_attention_selection` study, the server freezes the Slack task and a
@@ -560,7 +567,7 @@ Don't search these every run — only when you encounter a task, email, or Slack
 Fetch via Bash + curl per the API Calls section above:
 
 ```bash
-KEY="nora-k8x2mP9vLqR4wJ7nF3bY6hT1dA5sG0cE"
+KEY="${NORA_API_KEY:?NORA_API_KEY is required}"
 BASE="https://pm-agent-production-c49e.up.railway.app"
 curl -s "${BASE}/memory?key=${KEY}" | jq .
 curl -s "${BASE}/projects?key=${KEY}" | jq .

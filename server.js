@@ -37,6 +37,7 @@ const prospectiveOutputMonitor = require('./src/intelligence/prospective-output-
 const endogenousAttention = require('./src/intelligence/endogenous-attention');
 const providerReasoningRegulation = require('./src/intelligence/provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regulation');
+const reasoningResearchAutopilot = require('./src/intelligence/reasoning-research-autopilot');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -100,6 +101,10 @@ registerIntelligenceRoutes(app, {
     runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,
     runCognitiveInitiationPolicyProbe: runCognitiveInitiationPolicyProbeRuntime,
     getCognitivePulseRuntimeStatus: () => cognitivePulseRuntimeConfig(),
+    getResearchAutopilotStatus: () => reasoningResearchAutopilot.status(intelligence, {
+      enabled: researchAutopilotRuntimeConfig().enabled,
+      lastCycle: _researchAutopilotLastCycle,
+    }),
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: () => ({
       soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
@@ -1845,9 +1850,15 @@ app.post('/prompt/rollback', requireAuth, async (req, res) => {
 // GET /cowork-prompt — the stable hourly HARNESS (auth setup, run lock, CRITICAL RULES, and the
 // instruction to fetch + run GET /routine). The Cowork task is a tiny bootstrap that fetches this
 // and executes it, so the harness can be updated via a code deploy without touching Cowork.
-// Authenticated because it contains Nora's API key (unlike /prompt and /routine, which don't).
+// Authenticated because the response receives Nora's API key at request time (unlike /prompt and
+// /routine, which don't). The tracked Markdown contains only a placeholder, keeping the credential
+// out of source while preserving the existing self-contained Cowork harness.
 app.get('/cowork-prompt', requireAuth, (req, res) => {
-  try { res.type('text/markdown').send(fs.readFileSync(path.join(__dirname, 'cowork-prompt.md'), 'utf8')); }
+  try {
+    const harness = fs.readFileSync(path.join(__dirname, 'cowork-prompt.md'), 'utf8')
+      .replaceAll('{{NORA_API_KEY}}', process.env.NORA_API_KEY || '');
+    res.type('text/markdown').send(harness);
+  }
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -8244,6 +8255,8 @@ const _selfInquirySelectionInFlight = new Set();
 const _selfInductionInFlight = new Set();
 const _cognitiveInitiationStudyInFlight = new Set();
 const _cognitiveInitiationPolicyProbeInFlight = new Set();
+let _researchAutopilotInFlight = false;
+let _researchAutopilotLastCycle = null;
 
 function tickEndogenousRuntime(now = new Date()) {
   return intelligence.tickEndogenousDynamics({
@@ -8288,6 +8301,54 @@ function cognitivePulseRuntimeConfig(env = process.env) {
     maximum_ordinary_provider_calls_per_day: dailyBudget * (initiationMode === 'endogenous' ? 2 : 1),
     actionless: true, tools_available: false,
   };
+}
+
+function researchAutopilotRuntimeConfig(env = process.env) {
+  const maxGrades = Number(env.NORA_RESEARCH_AUTOPILOT_MAX_GRADES);
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_RESEARCH_AUTOPILOT !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    graderModel: String(env.NORA_RESEARCH_AUTOPILOT_MODEL
+      || reasoningResearchAutopilot.DEFAULT_GRADER_MODEL).slice(0, 160),
+    maxGrades: Math.max(1, Math.min(12,
+      Number.isFinite(maxGrades) && maxGrades > 0
+        ? Math.round(maxGrades) : reasoningResearchAutopilot.DEFAULT_MAX_GRADES_PER_CYCLE)),
+  };
+}
+
+async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
+  const config = researchAutopilotRuntimeConfig();
+  if (!config.enabled) {
+    _researchAutopilotLastCycle = { state: 'disabled', at: new Date().toISOString() };
+    return _researchAutopilotLastCycle;
+  }
+  if (_researchAutopilotInFlight) return { state: 'in_flight', at: new Date().toISOString() };
+  _researchAutopilotInFlight = true;
+  try {
+    const result = await reasoningResearchAutopilot.runCycle({
+      store: intelligence,
+      enabled: true,
+      graderModel: config.graderModel,
+      maxGrades: config.maxGrades,
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          timeout: 30000,
+        });
+        return response.data;
+      },
+    });
+    _researchAutopilotLastCycle = { ...result, at: new Date().toISOString() };
+    return _researchAutopilotLastCycle;
+  } finally {
+    _researchAutopilotInFlight = false;
+  }
 }
 
 async function runCognitivePulseRuntime({ now = new Date(), post = axios.post, force = false } = {}) {
@@ -8656,6 +8717,7 @@ async function start(options = {}) {
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
       tickEndogenousRuntime();
       runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));
+      runResearchAutopilotRuntime().catch(error => console.error('Research autopilot failed:', error.message));
       runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
       try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
       catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -8663,6 +8725,7 @@ async function start(options = {}) {
         try { tickEndogenousRuntime(); }
         catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
         runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));
+        runResearchAutopilotRuntime().catch(error => console.error('Research autopilot failed:', error.message));
         runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
         try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
         catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -8706,6 +8769,8 @@ module.exports = {
     parseCognitivePulseJson,
     cognitivePulseRuntimeConfig,
     runCognitivePulseRuntime,
+    researchAutopilotRuntimeConfig,
+    runResearchAutopilotRuntime,
     runCognitiveInitiationStudySubjectRuntime,
     runCognitiveInitiationPolicyProbeRuntime,
     runDueCognitiveInitiationPolicyProbeRuntime,

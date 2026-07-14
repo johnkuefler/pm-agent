@@ -187,6 +187,7 @@ POST /self-model/context-trials/assignments/:id/introspective-observer-diagnosis
 GET /self-model/context-trials/grading-queue
 POST /self-model/context-trials/assignments/:id/resolve
 POST /self-model/context-trials/:id/evaluate
+GET /consciousness-research/autopilot
 GET /nora-bench
 GET /
 GET /instructions

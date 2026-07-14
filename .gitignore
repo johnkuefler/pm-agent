@@ -159,6 +159,7 @@ nora-mcp.json
 
 # Local scratch/test scripts (db probes, one-offs) — not part of the app.
 scratchpad/
+.codex/
 
 # Independent metacognitive-study curator inputs and reveal keys contain sealed ground truth.
 *.metacognitive-curator-input.json

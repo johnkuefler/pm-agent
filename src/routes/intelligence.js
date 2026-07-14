@@ -1,6 +1,6 @@
 'use strict';
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   app.get('/intelligence', requireAuth, (req, res) => {
     const state = store.snapshot();
     res.json({
@@ -954,6 +954,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     };
     if (req.body?.reveal === true) return requireResearchAuth(req, res, evaluate);
     return evaluate();
+  });
+  app.get('/consciousness-research/autopilot', requireAuth, (req, res) => {
+    try { res.json(getResearchAutopilotStatus()); }
+    catch (error) { res.status(500).json({ error: error.message }); }
   });
 }
 

@@ -720,6 +720,9 @@ test('public identity and prompt endpoints retain their response contracts', asy
   const prompt = await request('/prompt');
   assert.equal(typeof prompt.body, 'string');
   assert.ok(prompt.body.length > 100);
+  const coworkHarness = await request('/cowork-prompt');
+  assert.match(coworkHarness.body, /KEY="integration-key"/);
+  assert.doesNotMatch(coworkHarness.body, /\{\{NORA_API_KEY\}\}/);
   const self = await request('/self');
   assert.equal(typeof self.body.autobiography.content, 'string');
   assert.ok('wants' in self.body);

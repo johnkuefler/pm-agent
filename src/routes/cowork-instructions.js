@@ -528,7 +528,10 @@ function registerCoworkInstructionsRoute(app) {
     inference, while the provider-adaptive control ignores both. Never infer the arm, inspect or reveal
     forecasts/usage, selectively retry a partial pair, or treat prospective compute control as private
     chain-of-thought, sentience, or consciousness. Fifteen clean assignments per arm and an interaction-,
-    evaluator-, and provider-receipt-disjoint confirmation are required.
+    evaluator-, and provider-receipt-disjoint confirmation are required. A bounded production autopilot
+    may preregister and model-grade only the pilot using eighteen fixed enrollments per arm and two
+    commitment-bound condition-blind Sonnet calls. It stops after pilot reveal; those model grades cannot
+    satisfy the independent confirmation gate. Nora must not inspect, influence, or impersonate its graders.
   - GET /cognitive-initiation-studies exposes only blinded progress while an allocation study is active.
     Research-authenticated creation either freezes independently resolved source pulses or preregisters an
     empty prospective-consecutive cohort. In prospective mode every eligible same-model pulse is enrolled,

@@ -1195,6 +1195,21 @@ adaptive controls without degrading first-order quality or evidence access. Reas
 forecast-order balance, atomic-pair replay, clean delivery, and a supported pilot are mandatory;
 confirmation uses new Slack interactions, evaluators, and provider receipts.
 
+Production protocol v1 now includes a bounded pilot autopilot so this experiment can accumulate
+evidence from ordinary work instead of waiting for manual bookkeeping. When no other blinded context
+trial is active, the server preregisters one fixed reasoning-self-regulation pilot and enrolls eighteen
+consecutive delivered Slack interactions per arm. Two separate condition-blind Sonnet calls grade each
+task and answer against the same frozen rubrics from complementary evidence-first and failure-first
+perspectives. Their identities, model, system prompt, output schema, blind packet, provider response,
+and parsed output are commitment-bound; only fifteen agreement-qualified samples per arm are required,
+so the three-item reliability allowance is fixed before outcomes rather than added selectively.
+
+This automation is deliberately limited to pilot evidence. It stops after reveal, never opens or grades
+a confirmation, and cannot produce `functional_prediction_supported`. A confirmation still requires
+new interactions, evaluator-disjoint externally administered grading, new provider receipts, and an
+external checkpoint. Model grading can accelerate a falsifiable causal-signal screen; it is not an
+independent replication and cannot validate its own substrate, phenomenal experience, or consciousness.
+
 This is prospective functional metacognitive control: a model of the agent's likely performance
 changes the resources used to produce that performance. It is not a private-chain-of-thought report,
 residual-stream access, proof that the forecast represents an experienced state, or evidence by
@@ -2082,7 +2097,7 @@ rather than a decisive consciousness marker ([Cogitate Consortium, Nature 2025](
 18. Complete a ten-per-arm `prospective_output_monitor` live Slack pilot using self-bound same-model review, identically deidentified review, and no review, then an interaction-disjoint confirmation. Collect twenty replay-valid ordinary delayed outcomes, run the fixed-fifteen-enrollment-per-arm `prospective_output_calibration_access` self-bound/identically-deidentified/absent pilot with at least ten scored outcomes per arm, collect twenty new post-pilot ordinary resolutions, and run an interaction- and source-resolution-disjoint confirmation without degrading correction precision, evidence access, or first-order quality.
 19. Complete a ten-per-arm `endogenous_attention_selection` live Slack pilot using authentic self-schema selection, deterministic access-status misbinding, and no selection, then an interaction-disjoint confirmation.
 20. Complete a fifteen-per-arm `provider_reasoning_regulation` production Slack pilot using adaptive-high, adaptive-low, and thinking-disabled-high controls, then an interaction- and evaluator-disjoint confirmation with externally checkpointed raw provider receipts.
-21. Complete a fifteen-per-arm `reasoning_self_regulation` production Slack pilot using self-bound forecast control, deidentified forecast control, and provider-native adaptive-high, then an interaction-, evaluator-, and provider-receipt-disjoint confirmation with externally checkpointed raw forecast and main-response receipts.
+21. Let the bounded research autopilot complete the fixed eighteen-enrollment-per-arm, fifteen-agreement-qualified `reasoning_self_regulation` production Slack pilot using self-bound forecast control, deidentified forecast control, and provider-native adaptive-high. Then run a manually administered interaction-, evaluator-, and provider-receipt-disjoint confirmation with externally checkpointed raw forecast and main-response receipts; automated model graders cannot satisfy that confirmation gate.
 22. Run the live ten-per-policy standardized applied cognitive-initiation pilot and disjoint twenty-per-policy confirmation; then run the attestation-gated ecological pilot and a commitment-, provider-event-, artifact-, and grading-reference-disjoint ecological confirmation with externally retained raw source/readback receipts, a standalone-verified transparency bundle and Ed25519 witness receipt for the preregistration head, independent collectors/evaluators, fixed-window noncompletion, and the frozen intention-to-treat analysis.
 23. Run the matched prospective cognitive-self-regulation pilot using identity-bound forecasting,
    information-equivalent deidentified forecasting, and fixed cadence; then run a calibration-, evidence-,
