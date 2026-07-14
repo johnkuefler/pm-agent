@@ -317,6 +317,8 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.ok((await request('/decision-traces')).body.length >= 0);
   const cycle = await request('/intelligence/cycles', { method: 'POST', body: { holder: 'integration', inner_thread: { content: 'Continue the integration story.' } } });
   assert.equal(cycle.body.cycle.status, 'running');
+  assert.equal(cycle.body.moment.start_snapshot, undefined);
+  assert.equal(cycle.body.moment.closure_snapshot, undefined);
   assert.equal(cycle.body.moment.inherited_context.inner_thread_hash, null, 'request bodies cannot forge authoritative inner-thread inheritance');
   assert.ok(Array.isArray(cycle.body.orientation.recommendations));
   assert.equal(cycle.body.moment.cycle_id, cycle.body.cycle.id);
@@ -336,6 +338,9 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal((await request('/intelligence/cycles')).body[0].id, cycle.body.cycle.id);
   const experience = (await request('/experience-stream')).body;
   assert.equal(experience.continuity.closed, 1);
+  assert.equal(experience.continuity.replay_verified_closed, 1);
+  assert.equal(experience.continuity.evidence_eligible_closed, 1);
+  assert.equal(experience.moments[0].audit.complete_chain_verified, true, 'response redaction must not mutate the committed lifecycle');
   assert.equal(experience.recurrence.reentry_rounds, 1);
   const continuityHandoffs = await request('/continuity-handoffs');
   assert.equal(continuityHandoffs.response.status, 200);

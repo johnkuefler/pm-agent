@@ -69,7 +69,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     ? replicatedStatus(processMetacognitionStudies, processMetacognitionVerdict)
     : productionProcessMetacognitionStudies.some(study => study.status === 'active') ? 'collecting' : 'not_implemented';
   const allContextTrials = cognition.self_model?.context_trials || [];
-  const moments = cognition.experience_stream || [];
+  const allMoments = cognition.experience_stream || [];
+  const moments = allMoments.filter(item => item.audit?.evidence_eligible === true);
+  const invalidClosedMoments = allMoments.filter(item => item.status !== 'open' && item.audit?.complete_lifecycle_verified !== true);
   const handoffs = moments.filter(item => item.inherited_context?.handoff_match != null);
   const handoffRate = handoffs.length ? handoffs.filter(item => item.inherited_context.handoff_match).length / handoffs.length : null;
   const continuityHandoffRecords = cognition.continuity_handoffs || [];
@@ -557,6 +559,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       mechanism: 'Linked experience moments plus cycle-bound, predecessor-committed inner-thread handoffs with exact inherited-content, closure, and research-ledger replay; protocol-v2 lesions hold handoff text byte-identical while varying only verified self/lineage binding.',
       status: continuityTrial ? replicatedStatus(continuityTrials, continuityVerdict) : evidenceStatus({ samples: handoffs.length, minimum: 20, supported: handoffRate >= 0.8, contradicted: handoffRate < 0.5 }),
       evidence: { tested_handoffs: handoffs.length, match_rate: handoffRate,
+        recorded_moments: allMoments.length, replay_verified_moments: moments.length,
+        invalid_or_legacy_closed_moments: invalidClosedMoments.length,
         committed_handoffs: continuityHandoffRecords.length, replay_verified_handoffs: verifiedContinuityHandoffs.length,
         handoff_chain_integrity_rate: continuityHandoffRecords.length ? verifiedContinuityHandoffs.length / continuityHandoffRecords.length : null,
         completed_trials: continuityTrials.length, confirmatory_trials: continuityTrials.filter(item => item.study_phase === 'confirmatory').length,

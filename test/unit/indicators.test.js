@@ -217,7 +217,8 @@ test('between-invocation dynamics separate ongoing state evolution from replicat
 
 test('adequately sampled continuity can support or contradict its functional prediction', () => {
   const moments = Array.from({ length: 20 }, (_, index) => ({
-    inherited_context: { handoff_match: index < 18 }, attention_rounds: [],
+    status: 'completed', inherited_context: { handoff_match: index < 18 }, attention_rounds: [],
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true },
   }));
   const supported = buildIndicatorReport(stateWith({ experience_stream: moments }));
   assert.equal(indicator(supported, 'temporal_continuity').status, 'observational_signal_observed');

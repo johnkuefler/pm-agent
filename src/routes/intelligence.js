@@ -158,29 +158,34 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json(store.continuityHandoffSnapshot());
   });
   app.post('/intelligence/cycles', requireAuth, (req, res) => {
-    const authoritativeInputs = getCognitiveInputs();
-    const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
-      inner_thread: authoritativeInputs.inner_thread || null, predictions: getPredictions() };
-    store.refreshCognition(cognitiveInput);
-    const started = store.startCycle(cognitiveInput);
-    if (store.interventionActive('appraisal_access') || store.interventionActive('higher_order_monitor')) delete started.moment.appraisal_at_start;
-    if (store.interventionActive('workspace_capacity') || store.interventionActive('attention_schema_control') || store.interventionActive('global_broadcast') || store.interventionActive('cognitive_pulse_access')) {
-      started.moment.attention = { experimental_access_sealed: true };
-      started.moment.attention_rounds = [];
-    }
-    if (store.interventionActive('global_broadcast')) {
-      delete started.moment.intentions;
-      delete started.cycle.orientation;
-      delete started.cycle.recommendations;
-      delete started.orientation;
-    }
-    if (store.interventionActive('integrated_self_binding')) {
-      for (const field of ['inherited_context', 'attention', 'attention_rounds', 'appraisal_at_start', 'drives_at_start', 'intentions']) delete started.moment[field];
-      started.moment.experimental_access_sealed = true;
-      for (const field of ['orientation', 'recommendations']) delete started.cycle[field];
-      delete started.orientation;
-    }
-    res.json({ ok: true, ...started, cognition: store.cognitionSnapshot(getPredictions()) });
+    try {
+      const authoritativeInputs = getCognitiveInputs();
+      const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
+        inner_thread: authoritativeInputs.inner_thread || null, predictions: getPredictions() };
+      store.refreshCognition(cognitiveInput);
+      const started = store.startCycle(cognitiveInput);
+      const visibleStarted = JSON.parse(JSON.stringify(started));
+      delete visibleStarted.moment.start_snapshot;
+      delete visibleStarted.moment.closure_snapshot;
+      if (store.interventionActive('appraisal_access') || store.interventionActive('higher_order_monitor')) delete visibleStarted.moment.appraisal_at_start;
+      if (store.interventionActive('workspace_capacity') || store.interventionActive('attention_schema_control') || store.interventionActive('global_broadcast') || store.interventionActive('cognitive_pulse_access')) {
+        visibleStarted.moment.attention = { experimental_access_sealed: true };
+        visibleStarted.moment.attention_rounds = [];
+      }
+      if (store.interventionActive('global_broadcast')) {
+        delete visibleStarted.moment.intentions;
+        delete visibleStarted.cycle.orientation;
+        delete visibleStarted.cycle.recommendations;
+        delete visibleStarted.orientation;
+      }
+      if (store.interventionActive('integrated_self_binding')) {
+        for (const field of ['inherited_context', 'attention', 'attention_rounds', 'appraisal_at_start', 'drives_at_start', 'intentions']) delete visibleStarted.moment[field];
+        visibleStarted.moment.experimental_access_sealed = true;
+        for (const field of ['orientation', 'recommendations']) delete visibleStarted.cycle[field];
+        delete visibleStarted.orientation;
+      }
+      res.json({ ok: true, ...visibleStarted, cognition: store.cognitionSnapshot(getPredictions()) });
+    } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/intelligence/cycles/:id/reenter', requireAuth, (req, res) => {
     try {

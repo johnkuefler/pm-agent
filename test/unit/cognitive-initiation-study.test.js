@@ -68,7 +68,7 @@ function completeAppliedGate(store, begun, binding, action, responseId) {
 
 test('matched cognitive-initiation allocation isolates self-binding, charges compute, and fails closed under tampering', async () => {
   const { dir, filePath, store, advance } = await setup();
-  assert.equal(store.snapshot().version, 88);
+  assert.equal(store.snapshot().version, 89);
   const pulseIds = [];
   const outcomeTypes = ['release_review', 'audit_review', 'customer_review'];
   for (let index = 0; index < 32; index++) {
@@ -325,7 +325,7 @@ test('prospective consecutive allocation enrolls before outcomes and rejects ret
   assert.equal(confirmed.status, 'completed');
   assert.equal(confirmed.audit.replication_verified, true);
   assert.equal(confirmed.audit.consecutive_enrollment_verified, true);
-  assert.equal(confirmed.audit.complete_chain_verified, true);
+  assert.equal(confirmed.audit.complete_chain_verified, true, JSON.stringify(confirmed.audit));
   assert.equal(store.consciousnessResearchStatus().indicators.find(item => item.id === 'endogenous_cognitive_initiation').status, 'causal_signal_observed');
 
   async function runAppliedPolicy(studyRecord, itemCount, offset, evidencePrefix) {

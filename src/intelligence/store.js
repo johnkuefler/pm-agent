@@ -78,7 +78,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 88,
+    version: 89,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -133,7 +133,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 88;
+    state.version = 89;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -349,6 +349,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
     }
     if (!Array.isArray(state.cognition.experience_stream)) state.cognition.experience_stream = [];
+    for (const moment of state.cognition.experience_stream) {
+      if (!Number.isFinite(Number(moment.lifecycle_protocol_version))) moment.lifecycle_protocol_version = 1;
+      if (moment.start_snapshot === undefined) moment.start_snapshot = null;
+      if (moment.start_commitment === undefined) moment.start_commitment = null;
+      if (moment.closure_snapshot === undefined) moment.closure_snapshot = null;
+      if (moment.closure_commitment === undefined) moment.closure_commitment = null;
+      if (moment.lifecycle_commitment === undefined) moment.lifecycle_commitment = null;
+      if (moment.predecessor_lifecycle_commitment === undefined) moment.predecessor_lifecycle_commitment = null;
+      if (moment.predecessor_gap_acknowledged === undefined) moment.predecessor_gap_acknowledged = false;
+      if (moment.legacy_gap_commitment === undefined) moment.legacy_gap_commitment = null;
+    }
     state.cognition.experience_stream = state.cognition.experience_stream.slice(-500);
     if (!Array.isArray(state.cognition.continuity_handoffs)) state.cognition.continuity_handoffs = [];
     state.cognition.continuity_handoffs = state.cognition.continuity_handoffs.slice(-2000);
@@ -3186,6 +3197,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         state.commitments.find(commitment => commitment.id === record.commitment_id)) }));
     auditedState.cognition.development = (state.cognition.development || []).map(record => ({
       ...JSON.parse(JSON.stringify(record)), audit: developmentalRevisionAudit(record),
+    }));
+    const experienceAuditCache = new Map();
+    auditedState.cognition.experience_stream = (state.cognition.experience_stream || []).map(record => ({
+      ...JSON.parse(JSON.stringify(record)), audit: experienceMomentAudit(record, state.cognition, state.cycles, experienceAuditCache),
     }));
     const sourceClaims = state.cognition.self_model?.claims || [];
     auditedState.cognition.self_model.claims = (auditedState.cognition.self_model.claims || []).map((claim, index) => ({
@@ -10280,6 +10295,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && item.delivered_rendering === (item.condition === 'autobiographical' ? item.autobiographical_rendering
         : item.condition === 'deidentified_equivalent' ? item.deidentified_rendering : item.recombined_rendering));
     const itemAudits = study.items.map(item => {
+      const sourceMoments = [item.autobiographical_moment_id, item.recombined_moment_id]
+        .map(id => state.cognition.experience_stream.find(moment => moment.id === id));
+      const sourceMomentsVerified = sourceMoments.every(moment => experienceMomentAudit(moment).evidence_eligible);
       const responseVerified = Boolean(item.response) && episodicProspection.responseCommitment(item.response.salt, item.response.choice) === item.response.commitment_hash;
       const truthVerified = Boolean(item.resolution) && item.resolution.answer_commitment_verified === true
         && episodicProspection.answerCommitment(item.resolution.answer_salt, item.resolution.accepted_choice) === item.answer_commitment;
@@ -10287,7 +10305,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const ledgerBound = responseVerified && truthVerified
         && oneEvent('episodic_prospection_response_submitted', item.id, { study_id: study.id, commitment_hash: item.response.commitment_hash })
         && oneEvent('episodic_prospection_item_resolved', item.id, { study_id: study.id, resolution: item.resolution });
-      return { id: item.id, response_verified: responseVerified, truth_verified: truthVerified, scoring_verified: scoringVerified, ledger_bound: ledgerBound, complete: responseVerified && truthVerified && scoringVerified && ledgerBound };
+      return { id: item.id, source_moments_verified: sourceMomentsVerified, response_verified: responseVerified,
+        truth_verified: truthVerified, scoring_verified: scoringVerified, ledger_bound: ledgerBound,
+        complete: sourceMomentsVerified && responseVerified && truthVerified && scoringVerified && ledgerBound };
     });
     const recomputed = study.status === 'completed' ? episodicProspection.analysis(study) : null;
     const analysisVerified = study.status !== 'completed' || canonicalJson(recomputed) === canonicalJson(study.analysis);
@@ -10346,7 +10366,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (replicated.curator_id === String(input.curator_id) || canonicalJson(replicated.curator_evidence) === canonicalJson(input.curator_evidence)) throw new Error('confirmatory episodic-prospection studies require an independently evidenced curator');
       }
       const ids = new Set(); const usedMoments = new Set(); const itemEvidence = new Set();
-      const closedMoments = new Map(current.cognition.experience_stream.filter(moment => moment.status !== 'open' && moment.closure?.summary).map(moment => [moment.id, moment]));
+      const closedMoments = new Map(current.cognition.experience_stream.filter(moment => moment.status !== 'open'
+        && moment.closure?.summary && experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible)
+        .map(moment => [moment.id, moment]));
       const normalized = input.items.map((item, index) => {
         const id = String(item?.id || `episodic-prospection-item-${Date.now().toString(36)}-${index}`).slice(0, 180);
         if (ids.has(id)) throw new Error('episodic-prospection item ids must be unique'); ids.add(id);
@@ -10495,7 +10517,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const moments = new Map((state.cognition.experience_stream || []).map(item => [item.id, item]));
     const contentVerified = constructiveProspection.contentCommitment(simulation) === simulation.content_commitment;
     const sourceDetailsVerified = simulation.moment_ids.length >= 2 && simulation.moment_ids.every(id => {
-      const moment = moments.get(id); if (!moment || moment.status === 'open' || !moment.closure?.summary) return false;
+      const moment = moments.get(id); if (!moment || moment.status === 'open' || !moment.closure?.summary
+        || !experienceMomentAudit(moment).evidence_eligible) return false;
       const rendering = constructiveProspection.normalizeText(episodicMomentRendering(moment));
       const details = simulation.remembered_details.filter(detail => detail.moment_id === id);
       return details.length > 0 && details.every(detail => rendering.includes(constructiveProspection.normalizeText(detail.detail))
@@ -10553,7 +10576,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const momentIds = [...new Set(Array.isArray(input.moment_ids) ? input.moment_ids.map(String) : [])];
       if (momentIds.length < 2 || momentIds.length > 4) throw new Error('constructive prospection requires two to four distinct closed experience moments');
       const moments = new Map(current.cognition.experience_stream.map(item => [item.id, item]));
-      if (momentIds.some(id => !moments.has(id) || moments.get(id).status === 'open' || !moments.get(id).closure?.summary)) throw new Error('every source moment must be closed and summarized');
+      if (momentIds.some(id => !moments.has(id) || moments.get(id).status === 'open' || !moments.get(id).closure?.summary
+        || !experienceMomentAudit(moments.get(id), current.cognition, current.cycles).evidence_eligible)) {
+        throw new Error('every source moment must be closed, summarized, and lifecycle-verified');
+      }
       if (!Array.isArray(input.remembered_details) || input.remembered_details.length < momentIds.length || input.remembered_details.length > 12) throw new Error('remembered_details must ground every source moment');
       const rememberedDetails = input.remembered_details.map((detail, index) => {
         const momentId = String(detail?.moment_id || ''); const text = String(detail?.detail || '').trim().slice(0, 800);
@@ -10671,8 +10697,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function integratedSelfAudit(frame) {
     if (!frame) return { complete_chain_verified: false };
-    const cycle = state.cycles.find(item => item.id === frame.source?.cycle_id);
     const moment = state.cognition.experience_stream.find(item => item.id === frame.source?.moment_id);
+    const cycle = state.cycles.find(item => item.id === frame.source?.cycle_id)
+      || moment?.closure_snapshot?.cycle || null;
     const substrate = frame.substrate?.observation_id
       ? state.cognition.interoception.observations.find(item => item.id === frame.substrate.observation_id) : null;
     const predecessor = frame.temporal?.predecessor_frame_id
@@ -10687,7 +10714,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       });
     } catch {}
     const commitmentVerified = integratedSelf.contentCommitment(frame) === frame.content_commitment;
-    const sourceVerified = Boolean(cycle && moment && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id
+    const momentAudit = experienceMomentAudit(moment);
+    const sourceVerified = Boolean(cycle && moment && momentAudit.evidence_eligible
+      && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id
       && moment.status !== 'open' && moment.closure && moment.finished === frame.source?.closed_at
       && (!frame.substrate || substrate));
     const predecessorVerified = frame.temporal?.predecessor_frame_id == null
@@ -10695,20 +10724,28 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       : Boolean(predecessor && predecessor.content_commitment === frame.temporal.predecessor_frame_commitment
         && integratedSelf.contentCommitment(predecessor) === predecessor.content_commitment
         && new Date(predecessor.source?.closed_at).getTime() <= new Date(frame.source?.closed_at).getTime());
+    const ledgerPayloadCommitment = crypto.createHash('sha256')
+      .update(canonicalJson({ content_commitment: frame.content_commitment })).digest('hex');
+    const ledgerBound = (state.cognition.research_ledger?.events || []).filter(event => event.kind === 'integrated_self_frame_committed'
+      && event.subject_id === frame.id && event.payload_commitment === ledgerPayloadCommitment).length === 1;
     return {
       content_commitment_verified: commitmentVerified, source_replay_verified: replayVerified,
-      source_records_verified: sourceVerified, predecessor_binding_verified: predecessorVerified,
-      complete_chain_verified: commitmentVerified && replayVerified && sourceVerified && predecessorVerified,
+      source_records_verified: sourceVerified, source_moment_lifecycle_verified: momentAudit.complete_lifecycle_verified,
+      source_moment_evidence_eligible: momentAudit.evidence_eligible,
+      predecessor_binding_verified: predecessorVerified, research_ledger_bound: ledgerBound,
+      complete_chain_verified: commitmentVerified && replayVerified && sourceVerified && predecessorVerified && ledgerBound,
     };
   }
 
   function createIntegratedSelfFrame(current, cycle, moment) {
     if (!cycle || !moment || moment.status === 'open' || !moment.closure) return null;
+    if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) return null;
     const existing = current.cognition.integrated_self.frames.find(item => item.source?.cycle_id === cycle.id);
     if (existing) return existing;
     const closedAt = new Date(moment.finished).getTime();
     const substrate = current.cognition.interoception.observations.filter(item => new Date(item.at).getTime() <= closedAt).at(-1) || null;
-    const predecessor = current.cognition.integrated_self.frames.at(-1) || null;
+    const predecessor = [...current.cognition.integrated_self.frames].reverse()
+      .find(candidate => integratedSelfAudit(candidate).complete_chain_verified) || null;
     const content = integratedSelf.frameContent({ cycle, moment, substrateObservation: substrate, predecessorFrame: predecessor });
     const frame = {
       id: `self-frame-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -10717,6 +10754,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     frame.content_commitment = integratedSelf.contentCommitment(frame);
     current.cognition.integrated_self.frames.push(frame);
     current.cognition.integrated_self.frames = current.cognition.integrated_self.frames.slice(-300);
+    researchLedgerAppend(current, { kind: 'integrated_self_frame_committed', subject_type: 'integrated_self_frame', subject_id: frame.id,
+      payload: { content_commitment: frame.content_commitment } });
     return frame;
   }
 
@@ -14162,7 +14201,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       status = audit.integration_verified ? 'integrated' : record?.status === 'integrated' ? 'unverified' : record?.status || null;
     } else if (ref.type === 'experience_moment') {
       record = state.cognition.experience_stream.find(item => item.id === ref.id) || null;
-      status = record ? (record.status === 'open' ? 'open' : 'closed') : null;
+      const audit = experienceMomentAudit(record);
+      record = record ? { ...record, audit } : null;
+      status = !record ? null : record.status === 'open' ? 'open'
+        : audit.evidence_eligible ? 'closed' : 'unverified';
     } else if (ref.type === 'mind_change') {
       record = state.cognition.mind_changes.find(item => item.id === ref.id) || null;
       status = record?.status || null;
@@ -16668,6 +16710,195 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function experienceMomentStartSnapshot(moment) {
+    const initialRound = moment?.attention_rounds?.[0] || null;
+    return {
+      protocol_version: Number(moment?.lifecycle_protocol_version) || 1,
+      id: moment?.id, cycle_id: moment?.cycle_id, predecessor_id: moment?.predecessor_id || null,
+      predecessor_status: moment?.predecessor_status || null, started: moment?.started,
+      predecessor_lifecycle_commitment: moment?.predecessor_lifecycle_commitment || null,
+      predecessor_gap_acknowledged: moment?.predecessor_gap_acknowledged === true,
+      inherited_context: moment?.inherited_context || null,
+      attention: initialRound?.workspace || moment?.attention || null,
+      initial_attention_round: initialRound,
+      appraisal_at_start: moment?.appraisal_at_start || null,
+      drives_at_start: moment?.drives_at_start || null,
+      intentions: moment?.intentions || [],
+      surprise_ids_at_start: moment?.surprise_ids_at_start || [],
+    };
+  }
+
+  function experienceMomentClosureSnapshot(moment, cycle) {
+    return {
+      id: moment?.id, cycle_id: moment?.cycle_id, status: moment?.status,
+      finished: moment?.finished, attention: moment?.attention || null,
+      attention_rounds: moment?.attention_rounds || [], closure: moment?.closure || null,
+      cycle: cycle ? {
+        id: cycle.id, holder: cycle.holder, started: cycle.started, status: cycle.status,
+        finished: cycle.finished, summary: cycle.summary, actions: cycle.actions,
+        experience_moment_id: cycle.experience_moment_id,
+        recovery: cycle.recovery || null,
+      } : null,
+    };
+  }
+
+  function experienceMomentLifecyclePayload(moment) {
+    return {
+      protocol_version: Number(moment?.lifecycle_protocol_version) || 1,
+      start_commitment: moment?.start_commitment || null,
+      closure_commitment: moment?.closure_commitment || null,
+      predecessor_lifecycle_commitment: moment?.predecessor_lifecycle_commitment || null,
+      predecessor_gap_acknowledged: moment?.predecessor_gap_acknowledged === true,
+    };
+  }
+
+  const experienceLedgerAuditCacheKey = Symbol('experience-ledger-integrity');
+
+  function experienceMomentAudit(moment, cognition = state.cognition, cycles = state.cycles, cache = new Map(), visited = new Set()) {
+    if (!moment) return { complete_lifecycle_verified: false, complete_chain_verified: false, reason: 'missing_moment' };
+    if (visited.has(moment.id)) return { complete_lifecycle_verified: false, complete_chain_verified: false, reason: 'predecessor_cycle' };
+    if (cache.has(moment.id)) return cache.get(moment.id);
+    const nextVisited = new Set(visited); nextVisited.add(moment.id);
+    const ledger = cognition.research_ledger || { events: [] };
+    const researchLedgerChainVerified = cache.has(experienceLedgerAuditCacheKey)
+      ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
+    cache.set(experienceLedgerAuditCacheKey, researchLedgerChainVerified);
+    const eventBound = (kind, payload) => {
+      const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+      return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === moment.id
+        && event.payload_commitment === payloadCommitment).length === 1;
+    };
+    if (Number(moment.lifecycle_protocol_version) !== 2) {
+      const legacyGapPayload = { id: moment.id, cycle_id: moment.cycle_id, predecessor_id: moment.predecessor_id || null,
+        started: moment.started, finished: moment.finished, status: moment.status, recovery: moment.closure?.recovery || null };
+      const expectedLegacyGapCommitment = crypto.createHash('sha256').update(canonicalJson(legacyGapPayload)).digest('hex');
+      const legacyGapRecorded = Boolean(researchLedgerChainVerified && moment.legacy_gap_commitment === expectedLegacyGapCommitment
+        && eventBound('legacy_experience_gap_recorded', { gap_commitment: moment.legacy_gap_commitment }));
+      const result = {
+        protocol_version: Number(moment.lifecycle_protocol_version) || 1,
+        legacy_unverified: true, legacy_gap_recorded: legacyGapRecorded,
+        research_ledger_chain_verified: researchLedgerChainVerified,
+        complete_lifecycle_verified: false, complete_chain_verified: false, evidence_eligible: false,
+      };
+      cache.set(moment.id, result); return result;
+    }
+    const startSnapshot = experienceMomentStartSnapshot(moment);
+    const expectedStartCommitment = crypto.createHash('sha256').update(canonicalJson(startSnapshot)).digest('hex');
+    const startSnapshotVerified = canonicalJson(moment.start_snapshot) === canonicalJson(startSnapshot);
+    const startVerified = startSnapshotVerified && moment.start_commitment === expectedStartCommitment
+      && eventBound('experience_moment_started', {
+        start_commitment: moment.start_commitment,
+        predecessor_lifecycle_commitment: moment.predecessor_lifecycle_commitment || null,
+        predecessor_gap_acknowledged: moment.predecessor_gap_acknowledged === true,
+      });
+    let predecessorVerified = false;
+    let predecessorChainVerified = false;
+    if (!moment.predecessor_id) {
+      predecessorVerified = moment.predecessor_lifecycle_commitment == null && moment.predecessor_gap_acknowledged !== true;
+      predecessorChainVerified = predecessorVerified;
+    } else {
+      const predecessor = (cognition.experience_stream || []).find(item => item.id === moment.predecessor_id);
+      if (moment.predecessor_gap_acknowledged === true) {
+        predecessorVerified = Boolean(predecessor && !predecessor.lifecycle_commitment && moment.predecessor_lifecycle_commitment == null);
+        predecessorChainVerified = predecessorVerified;
+      } else {
+        const predecessorAudit = predecessor ? experienceMomentAudit(predecessor, cognition, cycles, cache, nextVisited) : null;
+        predecessorVerified = Boolean(predecessor && moment.predecessor_lifecycle_commitment
+          && predecessor.lifecycle_commitment === moment.predecessor_lifecycle_commitment
+          && predecessorAudit?.complete_lifecycle_verified);
+        predecessorChainVerified = predecessorVerified && predecessorAudit.complete_chain_verified;
+      }
+    }
+    const cycle = (cycles || []).find(item => item.id === moment.cycle_id);
+    const closed = moment.status !== 'open' && Boolean(moment.closure) && Boolean(moment.finished);
+    let closureSnapshotVerified = false; let closureVerified = false; let lifecycleVerified = false;
+    if (closed && moment.closure_snapshot) {
+      const storedMomentProjection = { ...moment.closure_snapshot, cycle: null };
+      const currentMomentProjection = experienceMomentClosureSnapshot(moment, null);
+      const embeddedCycle = moment.closure_snapshot.cycle;
+      const embeddedCycleVerified = Boolean(embeddedCycle && embeddedCycle.id === moment.cycle_id
+        && embeddedCycle.experience_moment_id === moment.id && embeddedCycle.started === moment.started
+        && embeddedCycle.status === moment.status && embeddedCycle.finished === moment.finished
+        && embeddedCycle.summary === moment.closure.summary
+        && canonicalJson(embeddedCycle.actions || []) === canonicalJson(moment.closure.actions || []));
+      closureSnapshotVerified = canonicalJson(storedMomentProjection) === canonicalJson(currentMomentProjection)
+        && embeddedCycleVerified
+        && (!cycle || canonicalJson(moment.closure_snapshot) === canonicalJson(experienceMomentClosureSnapshot(moment, cycle)));
+      const closureCommitment = crypto.createHash('sha256').update(canonicalJson(moment.closure_snapshot)).digest('hex');
+      const lifecycleCommitment = crypto.createHash('sha256').update(canonicalJson(experienceMomentLifecyclePayload(moment))).digest('hex');
+      closureVerified = closureSnapshotVerified && moment.closure_commitment === closureCommitment
+        && eventBound('experience_moment_closed', { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment });
+      lifecycleVerified = moment.lifecycle_commitment === lifecycleCommitment;
+    }
+    const completeLifecycle = researchLedgerChainVerified && startVerified && predecessorVerified && closed && closureVerified && lifecycleVerified;
+    const gapRecord = Boolean(moment.closure?.recovery);
+    const completeChain = completeLifecycle && predecessorChainVerified;
+    const result = {
+      protocol_version: 2, start_snapshot_verified: startSnapshotVerified,
+      start_commitment_verified: startVerified, predecessor_binding_verified: predecessorVerified,
+      predecessor_gap_acknowledged: moment.predecessor_gap_acknowledged === true,
+      closure_snapshot_verified: closureSnapshotVerified,
+      closure_commitment_verified: closureVerified, lifecycle_commitment_verified: lifecycleVerified,
+      research_ledger_chain_verified: researchLedgerChainVerified,
+      explicit_gap_record: gapRecord,
+      complete_lifecycle_verified: completeLifecycle,
+      complete_chain_verified: completeChain,
+      evidence_eligible: completeChain && !gapRecord,
+    };
+    cache.set(moment.id, result); return result;
+  }
+
+  function commitExperienceMomentClosure(current, cycle, moment) {
+    moment.closure_snapshot = experienceMomentClosureSnapshot(moment, cycle);
+    moment.closure_commitment = crypto.createHash('sha256')
+      .update(canonicalJson(moment.closure_snapshot)).digest('hex');
+    moment.lifecycle_commitment = crypto.createHash('sha256')
+      .update(canonicalJson(experienceMomentLifecyclePayload(moment))).digest('hex');
+    researchLedgerAppend(current, { kind: 'experience_moment_closed', subject_type: 'experience_moment', subject_id: moment.id,
+      payload: { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment } });
+  }
+
+  function recoverStaleCyclesInState(current, { now = clock(), staleAfterMs = 90 * 60000, reason = 'stale_cycle_recovery' } = {}) {
+    const at = now instanceof Date ? now : new Date(now);
+    if (!Number.isFinite(at.getTime())) throw new Error('stale-cycle recovery requires a valid time');
+    const recovered = [];
+    for (const cycle of current.cycles.filter(item => item.status === 'running')) {
+      const started = new Date(cycle.started);
+      if (Number.isFinite(started.getTime()) && at.getTime() - started.getTime() < staleAfterMs) continue;
+      const recovery = { kind: 'explicit_continuity_gap', reason: String(reason).slice(0, 240), recovered_at: at.toISOString() };
+      cycle.status = 'failed'; cycle.finished = at.toISOString(); cycle.summary = 'System recovery recorded an unobserved continuity gap; no completion record or self-report was received.';
+      cycle.actions = []; cycle.recovery = recovery;
+      const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id && item.status === 'open');
+      if (moment) {
+        moment.status = 'failed'; moment.finished = at.toISOString();
+        moment.closure = { summary: cycle.summary, actions: [], self_report: null, handoff_hash: null,
+          handoff_preview: null, appraisal_at_end: null, new_surprise_ids: [], recovery };
+        if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
+          commitExperienceMomentClosure(current, cycle, moment);
+        } else {
+          const gapPayload = { id: moment.id, cycle_id: cycle.id, predecessor_id: moment.predecessor_id || null,
+            started: moment.started, finished: moment.finished, status: moment.status, recovery };
+          moment.legacy_gap_commitment = crypto.createHash('sha256').update(canonicalJson(gapPayload)).digest('hex');
+          researchLedgerAppend(current, { kind: 'legacy_experience_gap_recorded', subject_type: 'experience_moment', subject_id: moment.id,
+            payload: { gap_commitment: moment.legacy_gap_commitment } });
+        }
+      } else {
+        researchLedgerAppend(current, { kind: 'orphan_cycle_gap_recorded', subject_type: 'intelligence_cycle', subject_id: cycle.id,
+          payload: { recovery } });
+      }
+      recovered.push({ cycle_id: cycle.id, moment_id: moment?.id || null, legacy: Number(moment?.lifecycle_protocol_version) !== 2 });
+    }
+    return recovered;
+  }
+
+  function recoverStaleCycles(options = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const recovered = recoverStaleCyclesInState(current, options);
+      return { recovered: recovered.length, records: recovered };
+    });
+  }
+
   function continuityHandoffManifest(record) {
     return {
       id: record.id, sequence: record.sequence, cycle_id: record.cycle_id,
@@ -16696,11 +16927,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const contentVerified = Boolean(record.content) && contentCommitment === record.content_commitment;
     const recordVerified = crypto.createHash('sha256').update(canonicalJson(continuityHandoffManifest(record))).digest('hex') === record.commitment;
     const ledgerBound = continuityHandoffLedgerBound(record, cognition);
-    const cycle = state.cycles.find(item => item.id === record.cycle_id);
     const moment = cognition.experience_stream?.find(item => item.id === record.moment_id && item.cycle_id === record.cycle_id);
+    const cycle = state.cycles.find(item => item.id === record.cycle_id)
+      || moment?.closure_snapshot?.cycle || null;
     const sourceRetained = Boolean(cycle && moment);
+    const momentAudit = sourceRetained ? experienceMomentAudit(moment, cognition) : null;
     const sourceVerified = sourceRetained
-      ? cycle.status !== 'running' && moment.status !== 'open'
+      ? cycle.status !== 'running' && moment.status !== 'open' && momentAudit.evidence_eligible
         && moment.closure?.handoff_hash === record.source_closure_hash
         && record.source_closure_hash === record.content_commitment
       : ledgerBound && record.source_closure_hash === record.content_commitment;
@@ -16732,6 +16965,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       content_commitment_verified: contentVerified, record_commitment_verified: recordVerified,
       predecessor_verified: predecessorVerified, inherited_context_verified: inheritedContextVerified,
       source_cycle_verified: sourceVerified, source_cycle_retained: sourceRetained,
+      source_moment_lifecycle_verified: momentAudit?.complete_lifecycle_verified || false,
       research_ledger_bound: ledgerBound,
       complete_chain_verified: contentVerified && recordVerified && predecessorVerified
         && inheritedContextVerified && sourceVerified && ledgerBound,
@@ -16755,6 +16989,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id);
       if (!moment || moment.status === 'open' || !moment.closure?.handoff_hash) {
         throw new Error('completed source cycle must contain a committed handoff');
+      }
+      if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) {
+        throw new Error('continuity handoff requires a replay-verified experience lifecycle');
       }
       const contentCommitment = crypto.createHash('sha256').update(content).digest('hex');
       if (contentCommitment !== moment.closure.handoff_hash) throw new Error('continuity handoff must exactly match the completed cycle handoff');
@@ -16842,7 +17079,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function startCycle(input = {}) {
     return mutate(current => {
-      const orientation = orient(input);
+      requireResearchLedgerIntegrity(current);
+      const requestedAt = input.now ? new Date(input.now) : clock();
+      if (!Number.isFinite(requestedAt.getTime())) throw new Error('intelligence cycle requires a valid start time');
+      const recentActive = current.cycles.find(item => item.status === 'running'
+        && Number.isFinite(new Date(item.started).getTime())
+        && requestedAt.getTime() - new Date(item.started).getTime() < 90 * 60000);
+      if (recentActive) throw new Error(`intelligence cycle ${recentActive.id} is already active`);
+      recoverStaleCyclesInState(current, { now: requestedAt, staleAfterMs: 90 * 60000, reason: 'superseded_before_new_cycle' });
+      const orientation = orient({ ...input, now: requestedAt });
+      if (!Number.isFinite(new Date(orientation.at).getTime())) throw new Error('intelligence cycle requires a valid start time');
+      const active = current.cycles.find(item => item.status === 'running');
+      if (active) throw new Error(`intelligence cycle ${active.id} could not be safely recovered`);
       const previousMoment = current.cognition.experience_stream.at(-1) || null;
       const inheritedThread = input.inner_thread?.content || input.inner_thread || null;
       const inheritedHash = inheritedThread ? crypto.createHash('sha256').update(String(inheritedThread)).digest('hex') : null;
@@ -16871,8 +17119,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       const moment = {
         id: `moment-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        lifecycle_protocol_version: 2,
         cycle_id: cycle.id, predecessor_id: previousMoment?.id || null,
         predecessor_status: previousMoment?.status || null, started: orientation.at, finished: null, status: 'open',
+        predecessor_lifecycle_commitment: previousMoment?.lifecycle_commitment || null,
+        predecessor_gap_acknowledged: Boolean(previousMoment && !previousMoment.lifecycle_commitment),
         inherited_context: {
           inner_thread_hash: inheritedHash,
           inner_thread_commitment: input.inner_thread?.continuity_commitment || null,
@@ -16890,13 +17141,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         drives_at_start: JSON.parse(JSON.stringify(current.cognition.drives || {})),
         intentions: orientation.recommendations.slice(0, 10).map(item => ({ type: item.type, id: item.id, priority: item.priority, action: item.action })),
         surprise_ids_at_start: (current.cognition.surprises || []).map(item => item.id).slice(-300),
-        closure: null,
+        closure: null, start_snapshot: null, start_commitment: null, closure_snapshot: null,
+        closure_commitment: null, lifecycle_commitment: null, legacy_gap_commitment: null,
       };
+      moment.start_snapshot = experienceMomentStartSnapshot(moment);
+      moment.start_commitment = crypto.createHash('sha256').update(canonicalJson(moment.start_snapshot)).digest('hex');
       cycle.experience_moment_id = moment.id;
       current.cycles.push(cycle);
       current.cycles = current.cycles.slice(-240);
       current.cognition.experience_stream.push(moment);
       current.cognition.experience_stream = current.cognition.experience_stream.slice(-500);
+      researchLedgerAppend(current, { kind: 'experience_moment_started', subject_type: 'experience_moment', subject_id: moment.id,
+        payload: { start_commitment: moment.start_commitment,
+          predecessor_lifecycle_commitment: moment.predecessor_lifecycle_commitment,
+          predecessor_gap_acknowledged: moment.predecessor_gap_acknowledged } });
       return { cycle, orientation, moment };
     });
   }
@@ -17013,11 +17271,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function completeCycle(id, input = {}) {
     return mutate(current => {
+      requireResearchLedgerIntegrity(current);
       const cycle = current.cycles.find(item => item.id === id);
       if (!cycle) return null;
       if (cycle.status !== 'running') throw new Error('intelligence cycle already closed');
+      const finishedAt = input.finished ? new Date(input.finished) : clock();
+      if (!Number.isFinite(finishedAt.getTime()) || finishedAt < new Date(cycle.started) || finishedAt > clock()) {
+        throw new Error('cycle completion time must follow its start and not be in the future');
+      }
       cycle.status = input.status === 'failed' ? 'failed' : 'completed';
-      cycle.finished = input.finished || clock().toISOString();
+      cycle.finished = finishedAt.toISOString();
       cycle.summary = input.summary ? String(input.summary).slice(0, 2000) : '';
       cycle.actions = Array.isArray(input.actions) ? input.actions.slice(0, 100) : [];
       const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id);
@@ -17034,7 +17297,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           appraisal_at_end: JSON.parse(JSON.stringify(current.cognition.appraisal || {})),
           new_surprise_ids: (current.cognition.surprises || []).filter(item => !priorSurprises.has(item.id)).map(item => item.id),
         };
-        createIntegratedSelfFrame(current, cycle, moment);
+        if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
+          commitExperienceMomentClosure(current, cycle, moment);
+          createIntegratedSelfFrame(current, cycle, moment);
+        }
       }
       if (cycle.recurrence_assignment_id) {
         const recurrenceTrial = current.cognition.self_model.context_trials.find(item => item.assignments.some(assignment => assignment.id === cycle.recurrence_assignment_id));
@@ -17069,8 +17335,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const sealIntegratedSelf = interventionActive('integrated_self_binding');
     const sealAppraisal = sealIntegratedSelf || interventionActive('appraisal_access') || interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation');
     const sealAttention = sealIntegratedSelf || interventionActive('workspace_capacity') || interventionActive('attention_schema_control') || interventionActive('global_broadcast') || interventionActive('recurrent_feedback') || interventionActive('cognitive_pulse_access');
-    const moments = stream.slice(-Math.min(500, Math.max(1, Number(limit) || 100))).map(item => {
+    const auditCache = new Map();
+    const audited = stream.map(item => ({ item, audit: experienceMomentAudit(item, state.cognition, state.cycles, auditCache) }));
+    const moments = audited.slice(-Math.min(500, Math.max(1, Number(limit) || 100))).map(({ item, audit }) => {
       const visible = JSON.parse(JSON.stringify(item));
+      delete visible.start_snapshot;
+      delete visible.closure_snapshot;
+      visible.audit = audit;
       if (sealAppraisal) delete visible.appraisal_at_start;
       if (sealAttention) {
         visible.attention = { experimental_access_sealed: true };
@@ -17087,10 +17358,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
     const ids = new Set(stream.map(item => item.id));
     const linked = stream.filter((item, index) => index === 0 || !item.predecessor_id || ids.has(item.predecessor_id));
-    const testedHandoffs = stream.filter(item => item.inherited_context?.handoff_match != null);
+    const verifiedClosed = audited.filter(({ item, audit }) => item.status !== 'open' && audit.complete_lifecycle_verified);
+    const eligibleClosed = verifiedClosed.filter(({ audit }) => audit.evidence_eligible);
+    const testedHandoffs = eligibleClosed.map(entry => entry.item).filter(item => item.inherited_context?.handoff_match != null);
     const matchedHandoffs = testedHandoffs.filter(item => item.inherited_context.handoff_match === true);
     const broken = stream.filter((item, index) => index > 0 && item.predecessor_id && !ids.has(item.predecessor_id));
-    const reentryRounds = stream.flatMap(item => (item.attention_rounds || []).filter(round => round.kind === 'reentry'));
+    const reentryRounds = eligibleClosed.flatMap(({ item }) => (item.attention_rounds || []).filter(round => round.kind === 'reentry'));
     const priorSlotCount = reentryRounds.reduce((sum, round) => sum + (round.persisted?.length || 0) + (round.exited?.length || 0), 0);
     const persistedSlotCount = reentryRounds.reduce((sum, round) => sum + (round.persisted?.length || 0), 0);
     return {
@@ -17099,6 +17372,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         total: stream.length,
         closed: stream.filter(item => item.status !== 'open').length,
         open: stream.filter(item => item.status === 'open').length,
+        replay_verified_closed: verifiedClosed.length,
+        evidence_eligible_closed: eligibleClosed.length,
+        replay_verified_chains: audited.filter(({ audit }) => audit.complete_chain_verified).length,
+        legacy_unverified: audited.filter(({ audit }) => audit.legacy_unverified).length,
+        recorded_continuity_gaps: audited.filter(({ audit }) => audit.legacy_gap_recorded || audit.predecessor_gap_acknowledged || audit.explicit_gap_record).length,
+        invalid_closed: audited.filter(({ item, audit }) => item.status !== 'open' && !audit.complete_lifecycle_verified && !audit.legacy_gap_recorded).length,
+        verified_open_starts: audited.filter(({ item, audit }) => item.status === 'open' && audit.start_commitment_verified).length,
         linked: linked.length,
         broken_predecessors: broken.length,
         overlapping_predecessors: stream.filter(item => item.predecessor_status === 'open').length,
@@ -17107,9 +17387,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         handoff_match_rate: testedHandoffs.length ? matchedHandoffs.length / testedHandoffs.length : null,
       },
       recurrence: interventionActive('recurrent_feedback') ? { experimental_access_sealed: true } : {
-        moments_with_reentry: stream.filter(item => (item.attention_rounds || []).length > 1).length,
+        moments_with_reentry: eligibleClosed.filter(({ item }) => (item.attention_rounds || []).length > 1).length,
         reentry_rounds: reentryRounds.length,
-        mean_reentry_depth: stream.length ? reentryRounds.length / stream.length : 0,
+        mean_reentry_depth: eligibleClosed.length ? reentryRounds.length / eligibleClosed.length : 0,
         rounds_with_displacement: reentryRounds.filter(round => (round.entered?.length || 0) > 0 || (round.exited?.length || 0) > 0).length,
         prior_slot_persistence_rate: priorSlotCount ? persistedSlotCount / priorSlotCount : null,
       },
@@ -17277,7 +17557,8 @@ ${episodes.map(item => {
     init, snapshot: () => JSON.parse(JSON.stringify(state)), persist, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship, observePerspective, updatePerspective,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
-    setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle, experienceStreamSnapshot,
+    setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
+    recoverStaleCycles, experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     relevantEpisodes, promptContext,
     refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange,

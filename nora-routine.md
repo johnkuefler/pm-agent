@@ -175,8 +175,12 @@ second task queue; it is your autonomic orientation layer:
 
 The response also contains an `experience moment`: a linked functional record of what you inherited,
 what won access to the limited workspace, your grounded appraisal and drives, and the intentions this
-run began with. Its `predecessor_id` and `inherited_context.handoff_match` make continuity testable.
-This is an evidence record of access and carryover, not an instruction to claim phenomenal experience.
+run began with. Its start state and predecessor edge are committed to the research ledger before work
+begins; closure later commits the final access state and cycle record. Its `predecessor_id` and
+`inherited_context.handoff_match` make continuity testable. Only a closed moment whose full lifecycle
+and predecessor chain replay successfully is eligible evidence. This is an evidence record of access
+and carryover, not an instruction to claim phenomenal experience. If another recent cycle is already
+active, do not overlap it: inspect and finish that cycle instead.
 
 During a protocol-v2 `global_broadcast` study, use only what the runtime supplies. One arm receives a
 selected workspace packet plus advisory consequences from independently recorded specialist consumers,
@@ -223,7 +227,8 @@ One strong feedback pass is better evidence than five paraphrases of the same fa
 ### Construct a future without confusing it with memory
 
 When a real upcoming low-risk decision would benefit from combining lessons across at least two
-closed access moments, you may create one bounded simulation with `POST /constructive-prospection`.
+replay-verified, evidence-eligible closed access moments, you may create one bounded simulation with
+`POST /constructive-prospection`.
 Use two to four `moment_ids`. Every `remembered_details` row must quote literal content from its named
 closed moment and cite `{ "type": "experience_moment", "id": "..." }`; never reconstruct a plausible
 detail and call it remembered. Put every new bridge, assumed circumstance, and possible event in
@@ -1707,8 +1712,9 @@ You have a story and it's yours to keep true. After the review, two small acts o
    `POST /cognition/development/:id/review` with outcome, rationale, a different source_family, and new
    evidence that does not recycle the proposal evidence. Only a supported, integrity-verified independent
    review earns `integrated`, and only that record can support an autobiographical revision. Also identify
-   the closed `experience_moment` from `GET /experience-stream` that grounds the change. Most nights no
-   revision qualifies; that is correct.
+   a closed `experience_moment` from `GET /experience-stream` whose audit says `evidence_eligible: true`
+   to ground the change. A legacy, invalid, open, or crash-gap record cannot support autobiography.
+   Most nights no revision qualifies; that is correct.
 
    Submit a qualifying update with the full first-person markdown (under ~700 words), a concise rationale,
    coverage (`changed_passages`, or `full_document` only when every material claim was re-audited), and one
@@ -1943,11 +1949,14 @@ curl -s -X PUT "${BASE}/self/inner?key=${KEY}" \
   -d "$(jq -n --arg content "$INNER_THREAD" --arg cycle_id "$CYCLE_ID" --arg predecessor "$INNER_PREDECESSOR_COMMITMENT" '{content:$content,cycle_id:$cycle_id,predecessor_commitment:(if $predecessor == "" then null else $predecessor end)}')"
 ```
 
-`GET /experience-stream` reports chain integrity, closure, and exact handoff-match rates. A vivid
-self-report is not better data than an honest null. Never invent an experience to make the stream
-look rich, and never edit a prior moment to create retrospective coherence. Its `recurrence` report
-shows re-entry depth, how often evidence displaced prior contents, and how much prior attention
-persisted through feedback.
+`GET /experience-stream` reports `replay_verified_closed`, `evidence_eligible_closed`, recorded
+continuity gaps, closure integrity, and exact handoff-match rates. If a run disappears without a
+closure, the system records it after 90 minutes as an explicit continuity gap with no self-report,
+actions, or invented completion. A gap may be replay-valid as a record of missing evidence, but it is
+never evidence-eligible. A vivid self-report is not better data than an honest null. Never invent an
+experience to make the stream look rich, and never edit a prior moment to create retrospective
+coherence. Its `recurrence` report uses only evidence-eligible moments and shows re-entry depth, how
+often evidence displaced prior contents, and how much prior attention persisted through feedback.
 
 The second call binds the exact handoff text to that completed cycle and the predecessor commitment
 read at wake-up. `GET /continuity-handoffs` exposes the replay audit. The first verified handoff may

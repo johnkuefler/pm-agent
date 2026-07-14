@@ -1859,7 +1859,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 88);
+  assert.equal(store.snapshot().version, 89);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -1895,21 +1895,34 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 88);
+  assert.equal(store.snapshot().version, 89);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });
   assert.equal(first.moment.predecessor_id, null);
   assert.equal(first.moment.attention.capacity, 7);
+  assert.equal(first.moment.lifecycle_protocol_version, 2);
+  assert.equal(store.experienceMomentAudit(first.moment).start_commitment_verified, true);
+  assert.equal(store.experienceMomentAudit(first.moment).complete_lifecycle_verified, false);
+  assert.throws(() => store.startCycle({ id: 'overlapping-cycle' }), /already active/);
   store.completeCycle(first.cycle.id, { summary: 'Reviewed the unresolved question', actions: [{ type: 'review', id: 'r1' }], self_report: 'I am less uncertain now.', handoff: 'Follow the remaining evidence tomorrow.' });
+  const firstClosed = store.experienceStreamSnapshot().moments[0];
+  assert.equal(firstClosed.audit.complete_lifecycle_verified, true);
+  assert.equal(firstClosed.audit.evidence_eligible, true);
+  assert.equal(firstClosed.start_snapshot, undefined);
   const second = store.startCycle({ holder: 'nora', inner_thread: { content: 'Follow the remaining evidence tomorrow.', updated_at: '2026-07-11T15:00:00Z' } });
   assert.equal(second.moment.predecessor_id, first.moment.id);
+  assert.equal(second.moment.predecessor_lifecycle_commitment, firstClosed.lifecycle_commitment);
+  assert.equal(second.moment.predecessor_gap_acknowledged, false);
   assert.equal(second.moment.inherited_context.handoff_match, true);
   store.completeCycle(second.cycle.id, { summary: 'Continued from the handoff', handoff: 'The evidence is still incomplete.' });
   assert.throws(() => store.completeCycle(second.cycle.id, { summary: 'Rewrite history' }), /already closed/);
   const stream = store.experienceStreamSnapshot();
   assert.equal(stream.continuity.total, 2);
   assert.equal(stream.continuity.closed, 2);
+  assert.equal(stream.continuity.replay_verified_closed, 2);
+  assert.equal(stream.continuity.evidence_eligible_closed, 2);
+  assert.equal(stream.continuity.replay_verified_chains, 2);
   assert.equal(stream.continuity.tested_handoffs, 1);
   assert.equal(stream.continuity.handoff_match_rate, 1);
   assert.equal(stream.moments[0].closure.self_report, 'I am less uncertain now.');
@@ -1917,6 +1930,81 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   const cognition = store.cognitionSnapshot();
   assert.equal(cognition.experience_stream, undefined);
   assert.equal(cognition.experience_stream_summary.total, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('stale cycles become explicit non-evidentiary gaps before a new cycle can start', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-experience-gap-'));
+  const filePath = path.join(dir, 'state.json');
+  let now = new Date('2026-07-11T15:00:00.000Z');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date(now) });
+  await store.init();
+  const abandoned = store.startCycle({ id: 'abandoned-cycle' });
+  now = new Date('2026-07-11T15:30:00.000Z');
+  assert.throws(() => store.startCycle({ id: 'premature-successor' }), /already active/);
+
+  now = new Date('2026-07-11T17:00:00.000Z');
+  const successor = store.startCycle({ id: 'verified-successor' });
+  const gap = store.experienceStreamSnapshot().moments.find(item => item.id === abandoned.moment.id);
+  assert.equal(gap.status, 'failed');
+  assert.equal(gap.closure.self_report, null);
+  assert.equal(gap.closure.recovery.kind, 'explicit_continuity_gap');
+  assert.equal(gap.audit.complete_lifecycle_verified, true);
+  assert.equal(gap.audit.explicit_gap_record, true);
+  assert.equal(gap.audit.evidence_eligible, false);
+  assert.equal(store.autobiographyEvidence({ type: 'experience_moment', id: gap.id }).status, 'unverified');
+  assert.equal(store.experienceStreamSnapshot().continuity.recorded_continuity_gaps, 1);
+
+  store.completeCycle(successor.cycle.id, { summary: 'This cycle actually returned a closure record.' });
+  const closed = store.experienceStreamSnapshot().moments.find(item => item.id === successor.moment.id);
+  assert.equal(closed.audit.complete_chain_verified, true);
+  assert.equal(closed.audit.evidence_eligible, true);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('legacy open moments recover as committed gaps without becoming experience evidence', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-legacy-experience-gap-'));
+  const filePath = path.join(dir, 'state.json');
+  fs.writeFileSync(filePath, JSON.stringify({
+    version: 88,
+    cycles: [{ id: 'legacy-running-cycle', holder: 'nora', started: '2026-07-11T12:00:00.000Z', status: 'running', actions: [], summary: '', finished: null, experience_moment_id: 'legacy-open-moment' }],
+    cognition: { experience_stream: [{ id: 'legacy-open-moment', cycle_id: 'legacy-running-cycle', predecessor_id: null, started: '2026-07-11T12:00:00.000Z', finished: null, status: 'open', attention_rounds: [], closure: null }] },
+  }));
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  const recovery = store.recoverStaleCycles({ reason: 'startup_recovery' });
+  assert.equal(recovery.recovered, 1);
+  const gap = store.experienceStreamSnapshot().moments[0];
+  assert.equal(gap.audit.legacy_gap_recorded, true);
+  assert.equal(gap.audit.complete_lifecycle_verified, false);
+  assert.equal(gap.audit.evidence_eligible, false);
+  assert.equal(gap.closure.self_report, null);
+  assert.equal(store.autobiographyEvidence({ type: 'experience_moment', id: gap.id }).status, 'unverified');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('experience lifecycle tampering invalidates autobiographical and integrated-self evidence', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-experience-tamper-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  const started = store.startCycle({ id: 'tamper-source-cycle' });
+  store.completeCycle(started.cycle.id, { summary: 'Original closure summary.', self_report: 'Original bounded report.' });
+  const before = store.experienceStreamSnapshot().moments[0];
+  assert.equal(before.audit.evidence_eligible, true);
+  assert.equal(store.integratedSelfSnapshot().report.integrity_verified, 1);
+  await store.persist();
+
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  persisted.cognition.experience_stream[0].closure.summary = 'Post-hoc rewritten closure.';
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T16:00:00.000Z') });
+  await reloaded.init();
+  const after = reloaded.experienceStreamSnapshot().moments[0];
+  assert.equal(after.audit.closure_commitment_verified, false);
+  assert.equal(after.audit.evidence_eligible, false);
+  assert.equal(reloaded.autobiographyEvidence({ type: 'experience_moment', id: after.id }).status, 'unverified');
+  assert.equal(reloaded.integratedSelfSnapshot().report.integrity_verified, 0);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
