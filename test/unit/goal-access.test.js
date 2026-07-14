@@ -59,7 +59,7 @@ test('goal-access design requires prospectively attested authentic aims and matc
   const trial = store.createContextTrial(design());
   assert.deepEqual(trial.conditions, ['authentic_goal', 'matched_decoy', 'absent_goal']);
   assert.equal(trial.sample_target_per_group, 10);
-  const publicTrial = store.selfModelSnapshot().context_trials.find(item => item.id === trial.id);
+  const publicTrial = store.selfModelSnapshot().context_trials.find(item => item.status === 'active');
   assert.equal(publicTrial.intervention, undefined);
   assert.equal(publicTrial.authentic_goal, undefined);
   assert.equal(publicTrial.decoy_goals, undefined);

@@ -10859,8 +10859,40 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       model.experimental_access_sealed = true;
     }
     model.context_trials = model.context_trials.map(trial => {
-      const visible = { ...trial };
       const designSealed = ['active', 'aborted'].includes(trial.status);
+      if (designSealed) {
+        const assignments = Array.isArray(trial.assignments) ? trial.assignments : [];
+        const resolvedTotal = assignments.filter(item => item.status === 'resolved').length;
+        const excludedTotal = assignments.filter(item => item.status !== 'resolved'
+          && /excluded|aborted|closed/.test(String(item.status || ''))).length;
+        const pendingTotal = Math.max(0, assignments.length - resolvedTotal - excludedTotal);
+        const evidenceCapturedTotal = assignments.filter(item => item.evidence_package || item.public_response
+          || item.outcome || item.intervention_receipt).length;
+        const targetPerGroup = Number(trial.enrollment_target_per_group || trial.sample_target_per_group || 0);
+        const targetTotal = targetPerGroup * (Array.isArray(trial.conditions) ? trial.conditions.length : 0);
+        return {
+          sealed_reference: trial.design_commitment
+            ? `sealed-context-trial-${String(trial.design_commitment).slice(0, 12)}`
+            : 'sealed-context-trial',
+          hypothesis: 'Blinded functional trial',
+          study_phase: trial.study_phase || 'legacy_unreplicated',
+          status: trial.status,
+          created: trial.created || null,
+          completed: trial.completed || null,
+          design_commitment: trial.design_commitment || null,
+          design_sealed: true,
+          assignment_progress: {
+            assigned_total: assignments.length,
+            resolved_total: resolvedTotal,
+            excluded_total: excludedTotal,
+            pending_total: pendingTotal,
+            evidence_captured_total: evidenceCapturedTotal,
+            grades_received_total: assignments.reduce((total, item) => total + (Array.isArray(item.grades) ? item.grades.length : 0), 0),
+            target_total: targetTotal,
+          },
+        };
+      }
+      const visible = { ...trial };
       if (!designSealed && trial.intervention === 'introspective_perturbation') visible.introspective_trial_audit = introspectiveTrialAudit(trial);
       if (!designSealed && trial.intervention === 'goal_access') visible.goal_trial_audit = goalTrialAudit(trial);
       if (!designSealed && trial.intervention === 'continuity_context' && trial.continuity_protocol_version === 2) visible.continuity_lineage_trial_audit = continuityLineageTrialAudit(trial);
@@ -10936,11 +10968,6 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (designSealed) delete visible.decoy_goals;
       if (designSealed) delete visible.decoy_goal_commitments;
       if (designSealed) delete visible.endogenous_baseline_snapshot;
-      if (designSealed) {
-        visible.design_sealed = true;
-        visible.hypothesis = 'Blinded functional trial';
-        for (const field of ['intervention', 'surfaces', 'conditions', 'outcome_metric', 'outcome_metrics', 'metric_rubrics', 'dissociation_thresholds', 'guardrails', 'minimum_effect', 'stopping_rule', 'inference_plan', 'analysis_seed_commitment', 'replicates_trial_id', 'evaluator_target', 'evaluator_disagreement_tolerance', 'auto_score_interactions', 'continuity_protocol_version', 'global_broadcast_protocol_version', 'recurrent_feedback_protocol_version', 'prospective_outcome_min_delay_minutes', 'evaluation']) delete visible[field];
-      }
       visible.assignments = (visible.assignments || []).map(assignment => {
         const redacted = { ...assignment };
         if (!designSealed && trial.intervention === 'introspective_perturbation') redacted.introspective_audit = introspectiveAssignmentAudit(assignment);
@@ -10985,32 +11012,6 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         }
         if (!designSealed && trial.intervention === 'reasoning_self_regulation' && assignment.status === 'resolved') {
           redacted.reasoning_self_regulation_audit = reasoningSelfRegulationAssignmentAudit(assignment);
-        }
-        if (designSealed) {
-          redacted.grades_received = (redacted.grades || []).length;
-          redacted.grades_required = trial.evaluator_target || 1;
-          delete redacted.condition;
-          delete redacted.group;
-          delete redacted.grades;
-          delete redacted.outcome;
-          delete redacted.evidence_package;
-          delete redacted.intervention_receipt;
-          delete redacted.self_diagnosis;
-          delete redacted.observer_diagnosis;
-          delete redacted.task_prompt;
-          delete redacted.public_response;
-          delete redacted.action_authorship_context;
-          delete redacted.situational_affordance_context;
-          delete redacted.output_monitor_record_id;
-          delete redacted.output_monitor_receipt_commitment;
-          delete redacted.attention_selection_record_id;
-          delete redacted.attention_selection_receipt_commitment;
-          delete redacted.reasoning_regulation_request;
-          delete redacted.reasoning_forecast_order;
-          delete redacted.reasoning_self_regulation_request;
-          delete redacted.reasoning_self_regulation_forecast_pair;
-          delete redacted.reasoning_self_regulation_policy;
-          delete redacted.reasoning_self_regulation_main_request;
         }
         return redacted;
       });
@@ -16280,7 +16281,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       };
     }
     if (sealAppraisal || sealWorkspace || sealSelfModel || sealHigherOrder || sealDevelopment || sealEndogenous || sealGoal || sealCognitivePulse || sealEpistemicOwnership) snapshot.experimental_access_sealed = true;
-    if (!sealSelfModel) snapshot.self_model.report = selfModelReport(snapshot.self_model);
+    if (!sealSelfModel) {
+      snapshot.self_model.context_trials = selfModelSnapshot().context_trials;
+      snapshot.self_model.report = selfModelReport(snapshot.self_model);
+    }
     return { ...snapshot, calibration: calibration(predictions) };
   }
 

@@ -519,9 +519,11 @@ test('a blinded pulse-access trial isolates model inference from identical packe
   assert.equal(store.cognitionSnapshot().background_inference.experimental_access_sealed, true);
   assert.equal(store.endogenousDynamicsSnapshot().experimental_access_sealed, true);
   assert.equal(store.prepareCognitivePulse({ model: 'test-model', force: true }).reason, 'active_blinded_trial');
-  const publicActive = store.selfModelSnapshot().context_trials.find(item => item.id === trial.id);
+  const publicActive = store.selfModelSnapshot().context_trials.find(item => item.status === 'active');
   assert.equal(publicActive.design_sealed, true);
   assert.equal(publicActive.cognitive_pulse_pool_commitment, undefined);
+  assert.equal(publicActive.id, undefined);
+  assert.equal(publicActive.assignments, undefined);
 
   const counts = { live_hypothesis: 0, deterministic_packet: 0, absent_pulse: 0 };
   const sourceCounts = { live_hypothesis: {}, deterministic_packet: {}, absent_pulse: {} };

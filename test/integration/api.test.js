@@ -654,8 +654,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   } });
   assert.equal(recurrenceObservation.body.experimental_outcome_sealed, true);
   assert.equal(recurrenceObservation.body.signal, undefined);
-  const visibleRecurrenceTrial = (await request('/self-model')).body.context_trials.find(item => item.id === recurrenceTrial.body.trial.id);
-  assert.equal(visibleRecurrenceTrial.assignments[0].condition, undefined);
+  const visibleRecurrenceTrial = (await request('/self-model')).body.context_trials.find(item => item.design_commitment === recurrenceTrial.body.trial.design_commitment);
+  assert.equal(visibleRecurrenceTrial.assignments, undefined);
+  assert.equal(visibleRecurrenceTrial.id, undefined);
+  assert.equal(visibleRecurrenceTrial.assignment_progress.assigned_total, 1);
   await request('/intelligence/cycles/integration-recurrence-cycle/complete', { method: 'PATCH', body: { summary: 'Recorded the revised integration result' } });
   assert.equal((await request('/self-model/context-trials/grading-queue')).response.status, 401);
   const gradingQueue = await request('/self-model/context-trials/grading-queue', { headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' } });
@@ -690,15 +692,17 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(secondGrade.body.assignment.status, 'resolved');
   assert.equal(secondGrade.body.assignment.grades_received, 2);
   assert.equal(secondGrade.body.assignment.condition, undefined);
-  const activeSnapshot = (await request('/self-model')).body.context_trials.find(item => item.id === recurrenceTrial.body.trial.id).assignments[0];
-  assert.equal(activeSnapshot.group, undefined);
-  assert.equal(activeSnapshot.outcome, undefined);
-  assert.equal(activeSnapshot.grades, undefined);
-  const activeTrialView = (await request('/self-model')).body.context_trials.find(item => item.id === recurrenceTrial.body.trial.id);
+  const activeTrialView = (await request('/self-model')).body.context_trials.find(item => item.design_commitment === recurrenceTrial.body.trial.design_commitment);
   assert.equal(activeTrialView.design_sealed, true);
   assert.equal(activeTrialView.intervention, undefined);
   assert.equal(activeTrialView.conditions, undefined);
   assert.equal(activeTrialView.outcome_metrics, undefined);
+  assert.equal(activeTrialView.assignments, undefined);
+  assert.equal(activeTrialView.assignment_progress.resolved_total, 1);
+  const activeTrialJson = JSON.stringify(activeTrialView);
+  assert.doesNotMatch(activeTrialJson, new RegExp(recurrenceTrial.body.trial.id));
+  assert.doesNotMatch(activeTrialJson, new RegExp(gradingItem.assignment_id));
+  assert.doesNotMatch(activeTrialJson, /targeted_reentry|sham_reentry|record_only|integration-evaluator/);
   const abortBody = {
     reason_code: 'external_change', explanation: 'Integration harness ended before the fixed sample target.',
     evidence: [{ type: 'integration_harness', id: 'shutdown' }],

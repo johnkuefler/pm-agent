@@ -230,10 +230,10 @@ test('protocol-v2 continuity trial holds handoff text constant and causally vari
       evidence: [{ type: 'blinded_review', id: assignment.assignment_id }],
     });
   }
-  const activeVisible = store.selfModelSnapshot().context_trials.find(item => item.id === trial.id);
+  const activeVisible = store.selfModelSnapshot().context_trials.find(item => item.status === 'active');
   assert.equal(activeVisible.design_sealed, true);
   assert.equal(activeVisible.continuity_protocol_version, undefined);
-  assert.ok(activeVisible.assignments.every(item => !('continuity_context_packet' in item) && !('intervention_receipt' in item)));
+  assert.equal(activeVisible.assignments, undefined);
 
   const evaluation = store.evaluateContextTrial(trial.id, { reveal: true });
   assert.equal(evaluation.continuity_dissociation.protocol_version, 2);

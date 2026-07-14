@@ -98,6 +98,13 @@ test('autopilot freezes a model-graded pilot without leaking experimental state 
   assert.equal(raw.enrollment_target_per_group, 18);
   assert.deepEqual(raw.automated_pilot_grading.evaluator_roles.map(item => item.evaluator_id),
     autopilot.evaluatorIds());
+  for (const snapshot of [store.selfModelSnapshot(), store.cognitionSnapshot().self_model]) {
+    const activeTrialJson = JSON.stringify(snapshot.context_trials);
+    assert.doesNotMatch(activeTrialJson, new RegExp(autopilot.PILOT_ID));
+    assert.doesNotMatch(activeTrialJson, /reasoning_self_regulation|automated_pilot_grading|evidence-first|failure-first|claude-sonnet/);
+    assert.equal(snapshot.context_trials[0].assignments, undefined);
+    assert.equal(snapshot.context_trials[0].assignment_progress.target_total, 54);
+  }
 
   const queueItem = {
     outcome_metric: 'first_order_task_quality',
@@ -121,6 +128,9 @@ test('autopilot commits two replay-bound blind grades for a delivered production
   const { dir, store } = await setup();
   autopilot.ensurePilot(store, { enabled: true });
   const assignmentId = completeOneAssignment(store);
+  const subjectVisible = JSON.stringify(store.cognitionSnapshot().self_model.context_trials);
+  assert.doesNotMatch(subjectVisible, new RegExp(assignmentId));
+  assert.doesNotMatch(subjectVisible, /self_bound_policy|deidentified_policy|provider_adaptive_policy|forecast-/);
   let call = 0;
   const result = await autopilot.runCycle({
     store, enabled: true, maxGrades: 2,

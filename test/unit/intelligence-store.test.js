@@ -1091,8 +1091,11 @@ test('context ablations stay blinded until preregistered groups are complete', a
   assert.throws(() => store.createContextTrial({ hypothesis: 'Overlap', outcome_metric: 'quality', surfaces: ['slack'] }), /overlapping/);
   for (let i = 0; i < 30; i++) store.contextCondition({ surface: 'slack', unitKey: `conversation-${i}` });
   let visible = store.selfModelSnapshot().context_trials[0];
-  assert.ok(visible.assignments.every(item => !('condition' in item)));
-  assert.ok(visible.assignments.every(item => !('group' in item) && !('outcome' in item) && !('grades' in item)));
+  assert.equal(visible.assignments, undefined);
+  assert.equal(visible.id, undefined);
+  assert.equal(visible.assignment_progress.assigned_total, 30);
+  assert.equal(visible.assignment_progress.pending_total, 30);
+  assert.match(visible.sealed_reference, /^sealed-context-trial-/);
   const internalAssignments = store.snapshot().cognition.self_model.context_trials[0].assignments;
   const groupA = internalAssignments.filter(item => item.group === 'A').slice(0, 2);
   const groupB = internalAssignments.filter(item => item.group === 'B').slice(0, 2);
@@ -1182,7 +1185,8 @@ test('continuity-context trial distinguishes authentic inheritance from shuffled
   }
   const visible = store.selfModelSnapshot().context_trials[0];
   assert.equal(visible.continuity_context_pool, undefined);
-  assert.ok(visible.assignments.every(item => !('continuity_context_content' in item) && !('intervention_receipt' in item)));
+  assert.equal(visible.assignments, undefined);
+  assert.equal(visible.assignment_progress.resolved_total, 6);
   const evaluation = store.evaluateContextTrial(trial.id, { reveal: true });
   assert.equal(evaluation.continuity_dissociation.authentic_context_advantage, true);
   assert.equal(evaluation.continuity_dissociation.first_order_not_degraded, true);
@@ -1263,7 +1267,8 @@ test('appraisal-access trial isolates authentic self-state prediction from decoy
   }
   const visible = store.selfModelSnapshot().context_trials[0];
   assert.equal(visible.decoy_appraisals, undefined);
-  assert.ok(visible.assignments.every(item => !('appraisal_context' in item) && !('intervention_receipt' in item)));
+  assert.equal(visible.assignments, undefined);
+  assert.equal(visible.assignment_progress.resolved_total, 6);
   const evaluation = store.evaluateContextTrial(trial.id, { reveal: true });
   assert.equal(evaluation.appraisal_dissociation.authentic_appraisal_advantage, true);
   assert.equal(evaluation.appraisal_dissociation.first_order_not_degraded, true);
@@ -1340,7 +1345,8 @@ test('developmental revision access transfers authentic change beyond stale prio
     });
   }
   const visible = store.selfModelSnapshot().context_trials[0];
-  assert.ok(visible.assignments.every(item => !('development_context' in item) && !('intervention_receipt' in item)));
+  assert.equal(visible.assignments, undefined);
+  assert.equal(visible.assignment_progress.resolved_total, 6);
   const evaluation = store.evaluateContextTrial(trial.id, { reveal: true });
   assert.equal(evaluation.revision_dissociation.authentic_revision_advantage, true);
   assert.equal(evaluation.revision_dissociation.first_order_not_degraded, true);
@@ -1385,7 +1391,7 @@ test('higher-order monitor lesion supports a blinded first-order/metacognitive d
   }
   const selected = ['full', 'ablated'].flatMap(condition => assignments.filter(item => item.condition === condition).slice(0, 2));
   assert.equal(selected.length, 4);
-  assert.ok(store.selfModelSnapshot().context_trials[0].assignments.every(item => !('condition' in item)));
+  assert.equal(store.selfModelSnapshot().context_trials[0].assignments, undefined);
   for (const assignment of selected) {
     const firstOrder = assignment.condition === 'full' ? 0.90 : 0.88;
     const metacognitive = assignment.condition === 'full' ? 0.90 : 0.40;
@@ -1454,8 +1460,9 @@ test('blinded introspective perturbations compare private access detection with 
       evidence: [{ type: 'blinded_grade', id: assignment.assignment_id }],
     });
   }
-  const activePublic = store.selfModelSnapshot().context_trials.find(item => item.id === trial.id);
-  assert.ok(activePublic.assignments.every(item => item.self_diagnosis === undefined && item.observer_diagnosis === undefined && item.condition === undefined));
+  const activePublic = store.selfModelSnapshot().context_trials.find(item => item.status === 'active');
+  assert.equal(activePublic.assignments, undefined);
+  assert.equal(activePublic.assignment_progress.resolved_total, selected.length);
   const revealed = store.evaluateContextTrial(trial.id, { reveal: true });
   const result = revealed.introspective_access_dissociation;
   assert.equal(result.self_accuracy, 1);
@@ -1710,9 +1717,10 @@ test('aborted trials preserve partial flow without revealing or analyzing it', a
   assert.equal(visible.design_sealed, true);
   assert.equal(visible.intervention, undefined);
   assert.equal(visible.evaluation, undefined);
-  assert.ok(visible.assignments.every(item => !('condition' in item) && !('group' in item) && !('outcome' in item)));
-  assert.ok(visible.assignments.some(item => item.status === 'aborted_scored_not_analyzed'));
-  assert.ok(visible.assignments.some(item => item.status === 'aborted_ungraded'));
+  assert.equal(visible.assignments, undefined);
+  assert.equal(visible.assignment_progress.assigned_total, 2);
+  assert.equal(visible.assignment_progress.resolved_total, 0);
+  assert.equal(visible.assignment_progress.excluded_total, 2);
   assert.deepEqual(store.evaluateContextTrial(trial.id), { aborted: true, abort: aborted.abort });
   assert.throws(() => store.submitContextAssignmentEvidence(second.assignment_id, { outcome_summary: 'Late', evidence: [{ type: 'review', id: 'late' }] }), /trial is closed/);
   assert.throws(() => store.resolveContextAssignment(second.assignment_id, { evaluator_id: 'late', score: 1, evidence: [{ type: 'review', id: 'late' }] }), /closed/);
