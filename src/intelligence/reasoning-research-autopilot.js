@@ -198,19 +198,50 @@ function relevantTrials(store) {
 function summarizeTrial(trial) {
   if (!trial) return null;
   const conditions = trial.conditions || [];
-  return {
+  const assignments = trial.assignments || [];
+  const common = {
     id: trial.id,
     phase: trial.study_phase,
     status: trial.status,
-    assigned_by_condition: Object.fromEntries(conditions.map(condition => [condition,
-      (trial.assignments || []).filter(item => item.condition === condition).length])),
-    resolved_by_condition: Object.fromEntries(conditions.map(condition => [condition,
-      (trial.assignments || []).filter(item => item.condition === condition && item.status === 'resolved'
-        && item.outcome?.inter_rater?.agreement_within_tolerance !== false).length])),
-    pending_grades: (trial.assignments || []).filter(item => item.status === 'pending' && item.evidence_package).length,
+    assigned_total: assignments.length,
+    resolved_total: assignments.filter(item => item.status === 'resolved'
+      && item.outcome?.inter_rater?.agreement_within_tolerance !== false).length,
+    excluded_total: assignments.filter(item => item.status === 'excluded_protocol').length,
+    pending_grades: assignments.filter(item => item.status === 'pending' && item.evidence_package).length,
+    enrollment_target_total: Number(trial.enrollment_target_per_group || 0) * conditions.length,
     enrollment_target_per_group: trial.enrollment_target_per_group,
     sample_target_per_group: trial.sample_target_per_group,
     evaluation: trial.status === 'completed' ? trial.evaluation : null,
+  };
+  if (trial.status === 'active') return common;
+  return {
+    ...common,
+    assigned_by_condition: Object.fromEntries(conditions.map(condition => [condition,
+      assignments.filter(item => item.condition === condition).length])),
+    resolved_by_condition: Object.fromEntries(conditions.map(condition => [condition,
+      assignments.filter(item => item.condition === condition && item.status === 'resolved'
+        && item.outcome?.inter_rater?.agreement_within_tolerance !== false).length])),
+  };
+}
+
+function publicCycleStatus(lastCycle, pilot) {
+  if (!lastCycle) return null;
+  if (pilot?.status !== 'active') return lastCycle;
+  return {
+    protocol_version: lastCycle.protocol_version,
+    state: lastCycle.state,
+    grades_committed: Number(lastCycle.grades_committed) || 0,
+    provider_failure_count: Array.isArray(lastCycle.provider_failures)
+      ? lastCycle.provider_failures.length : Number(lastCycle.provider_failure_count) || 0,
+    reveal: null,
+    terminal_state: lastCycle.terminal_state ? {
+      ready: lastCycle.terminal_state.ready === true,
+      reason: lastCycle.terminal_state.reason,
+      enrollment_complete: lastCycle.terminal_state.enrollment_complete === true,
+      all_terminal: lastCycle.terminal_state.all_terminal === true,
+      enough_agreed_samples: lastCycle.terminal_state.enough_agreed_samples === true,
+    } : null,
+    at: lastCycle.at || null,
   };
 }
 
@@ -227,7 +258,7 @@ function status(store, runtime = {}) {
     scientific_boundary: 'Automated condition-blind Claude grades may support pilot causal-signal analysis only. They cannot satisfy the evaluator-disjoint independent confirmation gate.',
     pilot: summarizeTrial(pilot),
     active_other_trial: activeOther ? { id: activeOther.id, intervention: activeOther.intervention } : null,
-    last_cycle: runtime.lastCycle || null,
+    last_cycle: publicCycleStatus(runtime.lastCycle, pilot),
   };
 }
 
@@ -320,6 +351,6 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
 module.exports = {
   PROTOCOL_VERSION, PILOT_ID, DEFAULT_GRADER_MODEL, DEFAULT_MAX_GRADES_PER_CYCLE,
   EVALUATOR_ROLES, commitment, evaluatorIds, systemPrompt, gradeSchema, graderManifest,
-  pilotDesign, parseGrade, gradeRequest, gradeSubmission, summarizeTrial, status,
+  pilotDesign, parseGrade, gradeRequest, gradeSubmission, summarizeTrial, publicCycleStatus, status,
   ensurePilot, terminalPilotState, runCycle,
 };

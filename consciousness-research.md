@@ -1219,6 +1219,12 @@ new interactions, evaluator-disjoint externally administered grading, new provid
 external checkpoint. Model grading can accelerate a falsifiable causal-signal screen; it is not an
 independent replication and cannot validate its own substrate, phenomenal experience, or consciousness.
 
+While the pilot is active, its operational status exposes only total enrolled, resolved, excluded, and
+awaiting-grade counts. It withholds condition names, per-arm counts, assignment identifiers, evaluator
+identities, failure details, and per-arm agreement counts. This prevents block progress from becoming an
+allocation side channel. Per-arm results appear only after the trial has completed and its mapping is
+legitimately revealed.
+
 This is prospective functional metacognitive control: a model of the agent's likely performance
 changes the resources used to produce that performance. It is not a private-chain-of-thought report,
 residual-stream access, proof that the forecast represents an experienced state, or evidence by

@@ -151,7 +151,32 @@ test('autopilot commits two replay-bound blind grades for a delivered production
   const status = autopilot.status(store, { enabled: true, lastCycle: result });
   assert.equal(status.mode, 'model_graded_pilot_only');
   assert.match(status.scientific_boundary, /cannot satisfy.*independent confirmation/i);
+  assert.equal(status.pilot.assigned_total, 1);
+  assert.equal(status.pilot.enrollment_target_total, 54);
+  assert.equal(status.pilot.assigned_by_condition, undefined);
+  assert.equal(status.pilot.resolved_by_condition, undefined);
+  assert.equal(status.last_cycle.terminal_state.included_by_condition, undefined);
+  assert.equal(status.last_cycle.provider_failures, undefined);
+  assert.doesNotMatch(JSON.stringify(status), /self_bound_policy|deidentified_policy|provider_adaptive_policy/);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('closed pilot status may reveal aggregate arm results only after blinding ends', () => {
+  const trial = {
+    id: autopilot.PILOT_ID, study_phase: 'pilot', status: 'completed',
+    conditions: ['arm-a', 'arm-b'], enrollment_target_per_group: 2, sample_target_per_group: 1,
+    assignments: [
+      { condition: 'arm-a', status: 'resolved', outcome: { inter_rater: { agreement_within_tolerance: true } } },
+      { condition: 'arm-a', status: 'excluded_protocol' },
+      { condition: 'arm-b', status: 'resolved', outcome: { inter_rater: { agreement_within_tolerance: true } } },
+      { condition: 'arm-b', status: 'excluded_protocol' },
+    ],
+    evaluation: { revealed: true },
+  };
+  const summary = autopilot.summarizeTrial(trial);
+  assert.deepEqual(summary.assigned_by_condition, { 'arm-a': 2, 'arm-b': 2 });
+  assert.deepEqual(summary.resolved_by_condition, { 'arm-a': 1, 'arm-b': 1 });
+  assert.deepEqual(summary.evaluation, { revealed: true });
 });
 
 test('autopilot waits rather than displacing another active blinded trial', async () => {

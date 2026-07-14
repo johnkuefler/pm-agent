@@ -488,6 +488,9 @@ progress and the scientific boundary. Do not inspect grader queues, try to influ
 treat model-graded pilot results as independent confirmation. The autopilot stops after the pilot;
 confirmation requires evaluator-disjoint external administration.
 
+During collection, the status endpoint intentionally reports only aggregate progress. Do not try to infer
+arm balance, allocation order, assignment identity, or condition from logs, timing, token usage, or replies.
+
 Provider-format failures are protocol exclusions, never permission to rerun or replace an assigned
 interaction. The server projects unsupported structured-output constraints for transport and still applies
 the full preregistered bounds locally before any forecast or grade can enter the research ledger.
