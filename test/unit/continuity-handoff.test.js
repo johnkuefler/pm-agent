@@ -146,6 +146,73 @@ test('tampering with a retained continuity record invalidates it and its descend
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('restart preserves exact legacy handoff transport and anchors the next replay-verified lifecycle', async () => {
+  const { dir, filePath, store } = await setup();
+  const legacyText = 'Carry the exact unresolved launch threshold across the lifecycle migration.';
+  const legacyCycle = closeWithHandoff(store, {
+    id: 'legacy-lifecycle-cycle', inherited: { content: 'Pre-migration thread.' }, handoff: legacyText,
+  });
+  const legacyHandoff = store.recordContinuityHandoff({
+    cycle_id: legacyCycle.cycle.id, content: legacyText, predecessor_commitment: null,
+  });
+  await store.persist();
+
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const legacyMoment = persisted.cognition.experience_stream.find(item => item.id === legacyCycle.moment.id);
+  legacyMoment.lifecycle_protocol_version = 1;
+  legacyMoment.start_snapshot = null;
+  legacyMoment.start_commitment = null;
+  legacyMoment.closure_snapshot = null;
+  legacyMoment.closure_commitment = null;
+  legacyMoment.lifecycle_commitment = null;
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+
+  let now = new Date('2026-07-13T16:00:00.000Z');
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date(now) });
+  await reloaded.init();
+  const legacySnapshot = reloaded.continuityHandoffSnapshot();
+  assert.equal(legacySnapshot.report.replay_verified, 0);
+  assert.equal(legacySnapshot.report.transport_verified, 1);
+  assert.equal(legacySnapshot.report.legacy_source_lifecycle_gaps, 1);
+  assert.equal(legacySnapshot.handoffs[0].audit.transport_chain_verified, true);
+  assert.equal(legacySnapshot.handoffs[0].audit.research_ledger_chain_verified, true);
+  assert.equal(legacySnapshot.handoffs[0].audit.complete_chain_verified, false);
+  const legacyProjection = {
+    content: legacyHandoff.content, continuity_commitment: legacyHandoff.commitment,
+    predecessor_commitment: legacyHandoff.predecessor_commitment, cycle_id: legacyHandoff.cycle_id,
+    moment_id: legacyHandoff.moment_id, sequence: legacyHandoff.sequence,
+  };
+  const projectionAudit = reloaded.continuityProjectionAudit(legacyProjection);
+  assert.equal(projectionAudit.usable, true);
+  assert.equal(projectionAudit.transport_chain_verified, true);
+  assert.equal(projectionAudit.experience_replay_verified, false);
+
+  const retry = reloaded.recordContinuityHandoff({
+    cycle_id: legacyCycle.cycle.id, content: legacyText, predecessor_commitment: null,
+  });
+  assert.equal(retry.id, legacyHandoff.id, 'idempotent projection repair must not rewrite legacy evidence');
+  assert.equal(retry.audit.transport_chain_verified, true);
+
+  const nextText = 'The launch threshold remains unresolved; use only new evidence to revise it.';
+  const nextCycle = closeWithHandoff(reloaded, {
+    id: 'post-migration-cycle', inherited: {
+      content: legacyHandoff.content, continuity_commitment: legacyHandoff.commitment,
+      updated_at: legacyHandoff.recorded_at,
+    }, handoff: nextText,
+  });
+  assert.equal(nextCycle.moment.predecessor_gap_acknowledged, true);
+  const anchored = reloaded.recordContinuityHandoff({
+    cycle_id: nextCycle.cycle.id, content: nextText, predecessor_commitment: legacyHandoff.commitment,
+  });
+  assert.equal(anchored.audit.transport_chain_verified, true);
+  assert.equal(anchored.audit.complete_chain_verified, true);
+  const anchoredSnapshot = reloaded.continuityHandoffSnapshot();
+  assert.equal(anchoredSnapshot.report.transport_verified, 2);
+  assert.equal(anchoredSnapshot.report.replay_verified, 1);
+  assert.equal(anchoredSnapshot.report.legacy_source_lifecycle_gaps, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('protocol-v2 continuity trial holds handoff text constant and causally varies only verified lineage binding', async () => {
   const { dir, filePath, store, setNow } = await setup();
   const firstText = 'The unresolved release question is whether the rollback signal is strong enough.';

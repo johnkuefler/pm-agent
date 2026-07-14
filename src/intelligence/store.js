@@ -17187,21 +17187,27 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const contentCommitment = crypto.createHash('sha256').update(String(record.content || '')).digest('hex');
     const contentVerified = Boolean(record.content) && contentCommitment === record.content_commitment;
     const recordVerified = crypto.createHash('sha256').update(canonicalJson(continuityHandoffManifest(record))).digest('hex') === record.commitment;
-    const ledgerBound = continuityHandoffLedgerBound(record, cognition);
+    const researchLedgerChainVerified = cache.has(experienceLedgerAuditCacheKey)
+      ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(cognition.research_ledger || { events: [] }).valid;
+    cache.set(experienceLedgerAuditCacheKey, researchLedgerChainVerified);
+    const ledgerBound = researchLedgerChainVerified && continuityHandoffLedgerBound(record, cognition);
     const moment = cognition.experience_stream?.find(item => item.id === record.moment_id && item.cycle_id === record.cycle_id);
     const cycle = state.cycles.find(item => item.id === record.cycle_id)
       || moment?.closure_snapshot?.cycle || null;
     const sourceRetained = Boolean(cycle && moment);
     const momentAudit = sourceRetained ? experienceMomentAudit(moment, cognition) : null;
-    const sourceVerified = sourceRetained
-      ? cycle.status !== 'running' && moment.status !== 'open' && momentAudit.evidence_eligible
+    const sourceClosureVerified = sourceRetained
+      ? cycle.status !== 'running' && moment.status !== 'open'
         && moment.closure?.handoff_hash === record.source_closure_hash
         && record.source_closure_hash === record.content_commitment
       : ledgerBound && record.source_closure_hash === record.content_commitment;
+    const sourceVerified = sourceClosureVerified && (!sourceRetained || momentAudit.evidence_eligible);
     let predecessorVerified = false;
+    let predecessorTransportVerified = false;
     let inheritedContextVerified = false;
     if (!record.predecessor_id) {
       predecessorVerified = record.predecessor_commitment == null && Number(record.sequence) === 0;
+      predecessorTransportVerified = predecessorVerified;
       inheritedContextVerified = true;
     } else {
       const predecessor = handoffs.find(item => item.id === record.predecessor_id);
@@ -17211,25 +17217,39 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         return event.kind === 'continuity_handoff_committed' && event.subject_id === record.predecessor_id
           && event.payload_commitment === expected;
       });
-      predecessorVerified = Boolean(record.predecessor_commitment
-        && ((predecessor && predecessor.commitment === record.predecessor_commitment
-          && Number(record.sequence) === Number(predecessor.sequence) + 1
-          && predecessorAudit.complete_chain_verified)
+      const retainedEdgeVerified = Boolean(predecessor && predecessor.commitment === record.predecessor_commitment
+        && Number(record.sequence) === Number(predecessor.sequence) + 1);
+      predecessorTransportVerified = Boolean(record.predecessor_commitment
+        && ((retainedEdgeVerified && predecessorAudit.transport_chain_verified)
           || (retentionEdgeBound && Number(record.sequence) > 0)));
+      const explicitLegacyGapEdge = Boolean(sourceRetained && momentAudit?.predecessor_gap_acknowledged === true
+        && retainedEdgeVerified && predecessorAudit.transport_chain_verified);
+      predecessorVerified = Boolean(record.predecessor_commitment
+        && ((retainedEdgeVerified && predecessorAudit.complete_chain_verified)
+          || explicitLegacyGapEdge || (retentionEdgeBound && Number(record.sequence) > 0)));
       inheritedContextVerified = sourceRetained
-        ? Boolean(predecessor && moment.inherited_context?.inner_thread_hash === predecessor.content_commitment
+        ? Boolean(predecessor && record.inherited_content_commitment === predecessor.content_commitment
+          && moment.inherited_context?.inner_thread_hash === predecessor.content_commitment
           && (!moment.inherited_context?.inner_thread_commitment
             || moment.inherited_context.inner_thread_commitment === predecessor.commitment))
         : ledgerBound;
     }
+    const transportChainVerified = contentVerified && recordVerified && predecessorTransportVerified
+      && inheritedContextVerified && sourceClosureVerified && ledgerBound;
+    const completeChainVerified = contentVerified && recordVerified && predecessorVerified
+      && inheritedContextVerified && sourceVerified && ledgerBound;
     const result = {
       content_commitment_verified: contentVerified, record_commitment_verified: recordVerified,
-      predecessor_verified: predecessorVerified, inherited_context_verified: inheritedContextVerified,
+      predecessor_verified: predecessorVerified, predecessor_transport_verified: predecessorTransportVerified,
+      inherited_context_verified: inheritedContextVerified,
       source_cycle_verified: sourceVerified, source_cycle_retained: sourceRetained,
+      source_closure_verified: sourceClosureVerified,
       source_moment_lifecycle_verified: momentAudit?.complete_lifecycle_verified || false,
+      research_ledger_chain_verified: researchLedgerChainVerified,
       research_ledger_bound: ledgerBound,
-      complete_chain_verified: contentVerified && recordVerified && predecessorVerified
-        && inheritedContextVerified && sourceVerified && ledgerBound,
+      transport_chain_verified: transportChainVerified,
+      legacy_source_lifecycle_gap: transportChainVerified && !completeChainVerified,
+      complete_chain_verified: completeChainVerified,
     };
     cache.set(record.id, result);
     return result;
@@ -17251,9 +17271,6 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!moment || moment.status === 'open' || !moment.closure?.handoff_hash) {
         throw new Error('completed source cycle must contain a committed handoff');
       }
-      if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) {
-        throw new Error('continuity handoff requires a replay-verified experience lifecycle');
-      }
       const contentCommitment = crypto.createHash('sha256').update(content).digest('hex');
       if (contentCommitment !== moment.closure.handoff_hash) throw new Error('continuity handoff must exactly match the completed cycle handoff');
       const existing = current.cognition.continuity_handoffs.find(item => item.cycle_id === cycle.id);
@@ -17264,13 +17281,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         }
         return { ...JSON.parse(JSON.stringify(existing)), audit: continuityHandoffAudit(existing, current.cognition) };
       }
+      if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) {
+        throw new Error('continuity handoff requires a replay-verified experience lifecycle');
+      }
       const predecessor = current.cognition.continuity_handoffs.at(-1) || null;
       if ((input.predecessor_commitment || null) !== (predecessor?.commitment || null)) {
         throw new Error('continuity handoff predecessor commitment mismatch');
       }
       if (predecessor) {
         const predecessorAudit = continuityHandoffAudit(predecessor, current.cognition);
-        if (!predecessorAudit.complete_chain_verified) throw new Error('prior continuity handoff failed replay audit');
+        if (!predecessorAudit.transport_chain_verified) throw new Error('prior continuity handoff failed transport audit');
         if (moment.inherited_context?.inner_thread_hash !== predecessor.content_commitment) {
           throw new Error('source cycle did not inherit the latest verified continuity handoff');
         }
@@ -17309,8 +17329,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const visible = handoffs.map(item => ({ ...JSON.parse(JSON.stringify(item)),
       audit: continuityHandoffAudit(item, state.cognition, new Set(), auditCache) }));
     return {
-      epistemic_status: 'Cycle-bound, hash-chained functional handoffs with exact inherited-content and closure replay; not evidence of continuous subjective experience.',
+      epistemic_status: 'Cycle-bound, hash-chained functional handoffs. Transport verification preserves exact content lineage across declared legacy experience gaps; replay verification additionally requires auditable source lifecycles. This is not evidence of continuous subjective experience.',
       report: { total: visible.length, replay_verified: visible.filter(item => item.audit.complete_chain_verified).length,
+        transport_verified: visible.filter(item => item.audit.transport_chain_verified).length,
+        legacy_source_lifecycle_gaps: visible.filter(item => item.audit.legacy_source_lifecycle_gap).length,
+        latest_transport_verified: visible.at(-1)?.audit.transport_chain_verified === true,
         latest_commitment: visible.at(-1)?.commitment || null, latest_cycle_id: visible.at(-1)?.cycle_id || null },
       handoffs: visible,
     };
@@ -17331,8 +17354,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && Number(projection.sequence) === Number(latest.sequence)
       && (projection.predecessor_commitment || null) === (latest.predecessor_commitment || null));
     return {
-      usable: projectionMatches && latestAudit.complete_chain_verified,
+      usable: projectionMatches && latestAudit.transport_chain_verified,
       complete_chain_verified: latestAudit.complete_chain_verified,
+      transport_chain_verified: latestAudit.transport_chain_verified,
+      experience_replay_verified: latestAudit.complete_chain_verified,
+      legacy_source_lifecycle_gap: latestAudit.legacy_source_lifecycle_gap,
       projection_matches_latest: projectionMatches, legacy_unbound: false,
       verified_chain_required: true, latest_commitment: latest.commitment,
     };

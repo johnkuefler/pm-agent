@@ -1097,7 +1097,16 @@ function relativeDayLabel(date, now = new Date()) {
 
 function currentInnerThreadProjection() {
   const audit = intelligence.continuityProjectionAudit(_cache.inner || null);
-  return { record: audit.usable ? (_cache.inner || null) : null, audit };
+  const record = !audit.usable ? null : audit.legacy_unbound
+    ? { ...(_cache.inner || {}), epistemic_status: 'legacy_unbound' }
+    : {
+      ...(_cache.inner || {}),
+      epistemic_status: audit.complete_chain_verified
+        ? 'verified_cycle_handoff' : 'transport_verified_legacy_lifecycle_gap',
+      transport_chain_verified: audit.transport_chain_verified === true,
+      experience_replay_verified: audit.complete_chain_verified === true,
+    };
+  return { record, audit };
 }
 
 function runtimeSituationalCapabilities({ surface, direct, financialApproved, mcp = null }) {
@@ -2265,7 +2274,10 @@ app.put('/self/inner', requireAuth, async (req, res) => {
       rec = { content: handoff.content, updated_at: handoff.recorded_at,
         continuity_commitment: handoff.commitment, predecessor_commitment: handoff.predecessor_commitment,
         cycle_id: handoff.cycle_id, moment_id: handoff.moment_id, sequence: handoff.sequence,
-        epistemic_status: 'verified_cycle_handoff' };
+        epistemic_status: handoff.audit.complete_chain_verified
+          ? 'verified_cycle_handoff' : 'transport_verified_legacy_lifecycle_gap',
+        transport_chain_verified: handoff.audit.transport_chain_verified === true,
+        experience_replay_verified: handoff.audit.complete_chain_verified === true };
     } else {
       const chain = intelligence.continuityHandoffSnapshot();
       if ((chain.report?.total || 0) > 0) return res.status(409).json({

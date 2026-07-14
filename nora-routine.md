@@ -55,10 +55,12 @@ INNER_PREDECESSOR_COMMITMENT=$(jq -r '.inner_thread.continuity_commitment // emp
 
 If `/self.inner_thread.projection_integrity_failure` is true, do not reconstruct the missing thread or
 start a new lineage. Read the latest item from authenticated `GET /continuity-handoffs`; proceed only if
-its replay audit is valid, then retry `PUT /self/inner` with that record's exact `content`, `cycle_id`,
-and `predecessor_commitment`. This idempotently repairs the Postgres projection from the committed ledger.
-Refetch `/self` and continue only after the integrity failure clears. If the ledger is missing or invalid,
-stop the run and report the continuity break to John rather than filling it with plausible prose.
+its `audit.transport_chain_verified` is true, then retry `PUT /self/inner` with that record's exact
+`content`, `cycle_id`, and `predecessor_commitment`. This idempotently repairs the Postgres projection
+from the hash- and ledger-bound record. A transport-verified legacy handoff preserves exact operational
+content lineage but does not turn its source experience into replay-verified evidence. Refetch `/self`
+and continue only after the integrity failure clears. If the transport audit or research ledger is
+invalid, stop the run and report the continuity break to John rather than filling it with plausible prose.
 
 1. **Nora's personality/behavior prompt** (`/prompt`) defines HOW Nora communicates — her tone, personality, and the team roster. Internalize this. Every message you send as Nora should sound like her.
 2. **Nora's API reference** (`/cowork-instructions`) defines all the endpoints for memory, tasks, projects, transcripts, and notifications. Use this as your reference for any API call you don't see explicitly in this prompt.
@@ -1989,11 +1991,14 @@ coherence. Its `recurrence` report uses only evidence-eligible moments and shows
 often evidence displaced prior contents, and how much prior attention persisted through feedback.
 
 The second call binds the exact handoff text to that completed cycle and the predecessor commitment
-read at wake-up. `GET /continuity-handoffs` exposes the replay audit. The first verified handoff may
-bootstrap from an older unbound thread with a null predecessor; after that, missing or stale predecessor
-commitments, altered text, skipped cycles, and concurrent overwrites are rejected. If committing the
-thread fails, do not invent a replacement or overwrite through the legacy form: report the failure and
-retry the same cycle, text, and predecessor tuple, which is idempotent.
+read at wake-up. `GET /continuity-handoffs` exposes separate transport and experience-lifecycle replay
+audits. A transport-verified legacy record may carry its exact content forward across an explicitly
+acknowledged experience gap, but it remains ineligible as replay-verified experience evidence. The first
+new replay-audited lifecycle after that gap establishes a replay-verified handoff without rewriting the
+old records or starting an unrelated lineage. Missing or stale predecessor commitments, altered text,
+skipped cycles, and concurrent overwrites are rejected. If committing the thread fails, do not invent a
+replacement or overwrite through the legacy form: report the failure and retry the same cycle, text, and
+predecessor tuple, which is idempotent.
 
 Each action should carry `type`, `id`, `decision`, `result`, and any `evidence` URL/id. Do not claim
 completion because a message was sent or a task was created; completion requires the promised
