@@ -488,6 +488,10 @@ progress and the scientific boundary. Do not inspect grader queues, try to influ
 treat model-graded pilot results as independent confirmation. The autopilot stops after the pilot;
 confirmation requires evaluator-disjoint external administration.
 
+Provider-format failures are protocol exclusions, never permission to rerun or replace an assigned
+interaction. The server projects unsupported structured-output constraints for transport and still applies
+the full preregistered bounds locally before any forecast or grade can enter the research ledger.
+
 ### Choose what needs attention
 
 During an active `endogenous_attention_selection` study, the server freezes the Slack task and a

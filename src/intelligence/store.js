@@ -17,6 +17,7 @@ const cognitiveInitiation = require('./cognitive-initiation');
 const cognitiveSelfRegulation = require('./cognitive-self-regulation');
 const cognitiveSelfRegulationStudy = require('./cognitive-self-regulation-study');
 const processMetacognitionStudy = require('./process-metacognition-study');
+const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
 const cognitiveInitiationStudy = require('./cognitive-initiation-study');
 const cognitiveInitiationPolicyStudy = require('./cognitive-initiation-policy-study');
 const cognitiveInitiationEcologicalStudy = require('./cognitive-initiation-ecological-study');
@@ -14276,7 +14277,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       thinking: JSON.parse(JSON.stringify(reasoningSelfRegulation.FORECAST_REQUEST_CONFIG.thinking)),
       output_config: {
         effort: reasoningSelfRegulation.FORECAST_REQUEST_CONFIG.output_config.effort,
-        format: { type: 'json_schema', schema: JSON.parse(JSON.stringify(reasoningSelfRegulation.FORECAST_SCHEMA)) },
+        format: { type: 'json_schema', schema: anthropicCompatibleSchema(reasoningSelfRegulation.FORECAST_SCHEMA) },
       },
     };
   }
@@ -14302,6 +14303,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         const manifest = { model: reasoningSelfRegulation.SUBJECT_MODEL,
           max_tokens: reasoningSelfRegulation.FORECAST_MAX_TOKENS,
           thinking: config.thinking, output_config: config.output_config,
+          logical_schema_commitment: reasoningSelfRegulation.commitment(reasoningSelfRegulation.FORECAST_SCHEMA),
+          transport_schema_projection: 'anthropic_supported_subset_v1',
           system_commitment: reasoningSelfRegulation.commitment(system),
           user_commitment: reasoningSelfRegulation.commitment(user),
           packet_commitment: reasoningSelfRegulation.commitment(packets[binding]) };
@@ -14492,6 +14495,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const expected = { model: reasoningSelfRegulation.SUBJECT_MODEL,
         max_tokens: reasoningSelfRegulation.FORECAST_MAX_TOKENS,
         thinking: forecastConfig.thinking, output_config: forecastConfig.output_config,
+        logical_schema_commitment: reasoningSelfRegulation.commitment(reasoningSelfRegulation.FORECAST_SCHEMA),
+        transport_schema_projection: 'anthropic_supported_subset_v1',
         system_commitment: reasoningSelfRegulation.commitment(system),
         user_commitment: reasoningSelfRegulation.commitment(user),
         packet_commitment: reasoningSelfRegulation.commitment(packet) };

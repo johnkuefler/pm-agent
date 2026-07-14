@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
 
 const PROTOCOL_VERSION = 1;
 const PILOT_ID = 'reasoning-self-regulation-production-pilot-v1';
@@ -147,7 +148,7 @@ function gradeRequest(queueItem, { graderModel = DEFAULT_GRADER_MODEL, role = EV
       max_tokens: manifest.max_tokens,
       system: systemPrompt(role),
       messages: [{ role: 'user', content: `Evaluate this frozen packet.\n${JSON.stringify(packet)}` }],
-      output_config: { format: { type: 'json_schema', schema: gradeSchema(metrics) } },
+      output_config: { format: { type: 'json_schema', schema: anthropicCompatibleSchema(gradeSchema(metrics)) } },
     },
   };
 }

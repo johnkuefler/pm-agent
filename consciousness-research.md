@@ -1204,6 +1204,15 @@ perspectives. Their identities, model, system prompt, output schema, blind packe
 and parsed output are commitment-bound; only fifteen agreement-qualified samples per arm are required,
 so the three-item reliability allowance is fixed before outcomes rather than added selectively.
 
+The logical forecast and grading schemas retain their preregistered numeric, item-count, and text-length
+bounds. Anthropic's structured-output grammar does not accept those constraint keywords directly, so the
+transport deterministically removes only the unsupported keywords and copies each bound into the field
+description. Nora then validates every returned value against the full logical schema before committing a
+provider receipt. The logical schema commitment therefore remains the evidentiary object; provider-side
+constrained decoding supplies shape validity but cannot weaken or replace local bound validation. The first
+production enrollment was prospectively retained as an `excluded_protocol` transport failure before this
+compatibility repair, with zero forecast receipts, and is not selectively replaced.
+
 This automation is deliberately limited to pilot evidence. It stops after reveal, never opens or grades
 a confirmation, and cannot produce `functional_prediction_supported`. A confirmation still requires
 new interactions, evaluator-disjoint externally administered grading, new provider receipts, and an

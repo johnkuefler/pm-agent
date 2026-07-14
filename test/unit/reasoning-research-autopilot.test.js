@@ -109,6 +109,10 @@ test('autopilot freezes a model-graded pilot without leaking experimental state 
   assert.deepEqual(Object.keys(built.packet).sort(), ['delivered_answer', 'rubrics', 'task_prompt']);
   assert.doesNotMatch(JSON.stringify(built.packet), /condition|forecast|token|self_bound|deidentified/i);
   assert.equal(built.manifest.prompt_protocol_commitment.length, 64);
+  assert.doesNotMatch(JSON.stringify(built.request.output_config.format.schema),
+    /"(?:minimum|maximum|minLength|maxLength|minItems|maxItems)"/);
+  assert.equal(built.manifest.output_schema_commitment,
+    autopilot.commitment(autopilot.gradeSchema(design.outcome_metrics.slice().sort())));
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
