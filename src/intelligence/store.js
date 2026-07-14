@@ -3184,6 +3184,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.external_source_attestations = (state.cognition.external_source_attestations || [])
       .map(record => ({ ...JSON.parse(JSON.stringify(record)), audit: storedExternalSourceAttestationAudit(record,
         state.commitments.find(commitment => commitment.id === record.commitment_id)) }));
+    auditedState.cognition.development = (state.cognition.development || []).map(record => ({
+      ...JSON.parse(JSON.stringify(record)), audit: developmentalRevisionAudit(record),
+    }));
     const sourceClaims = state.cognition.self_model?.claims || [];
     auditedState.cognition.self_model.claims = (auditedState.cognition.self_model.claims || []).map((claim, index) => ({
       ...claim, confidence_audit: selfClaimConfidenceAudit(sourceClaims[index]),
@@ -8646,14 +8649,123 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function developmentCreationPayload(item) {
+    return {
+      id: item.id, event: item.event, believed_before: item.believed_before, changed_to: item.changed_to,
+      why: item.why, evidence: item.evidence, source_family: item.source_family,
+      identity_significance: item.identity_significance, origin: item.origin, at: item.at,
+    };
+  }
+
+  function developmentalRevisionAudit(item) {
+    if (!item) return { complete_chain_verified: false, integration_verified: false, reason: 'missing_development' };
+    const creationPayload = developmentCreationPayload(item);
+    const creationCommitment = crypto.createHash('sha256').update(canonicalJson(creationPayload)).digest('hex');
+    const ledger = state.cognition.research_ledger || { events: [], anchors: [] };
+    const oneEvent = (kind, payload) => {
+      const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+      return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === item.id
+        && event.payload_commitment === payloadCommitment).length === 1;
+    };
+    const creationVerified = item.creation_commitment === creationCommitment
+      && oneEvent('development_candidate_recorded', { creation_commitment: item.creation_commitment });
+    const review = item.independent_review;
+    const reviewCommitment = review
+      ? crypto.createHash('sha256').update(canonicalJson(review)).digest('hex') : null;
+    const initialEvidence = new Set((item.evidence || []).map(canonicalJson));
+    const reviewEvidenceDisjoint = !review || (review.evidence || []).every(reference => !initialEvidence.has(canonicalJson(reference)));
+    const reviewerIndependent = !review || (review.evaluator_id && review.evaluator_id !== item.origin?.creator_id
+      && review.source_family && review.source_family !== item.source_family);
+    const reviewVerified = !review
+      ? item.review_commitment == null && item.review_status === 'pending_independent_review' && item.status === 'candidate'
+      : item.review_commitment === reviewCommitment && reviewEvidenceDisjoint && reviewerIndependent
+        && oneEvent('development_independently_reviewed', { review_commitment: item.review_commitment, status: item.status });
+    const statusVerified = !review
+      ? item.status === 'candidate'
+      : (review.outcome === 'supported' && item.status === 'integrated')
+        || (review.outcome === 'contradicted' && item.status === 'contradicted')
+        || (review.outcome === 'unclear' && item.status === 'unresolved');
+    const ledgerVerified = verifyResearchLedger(ledger).valid;
+    const complete = creationVerified && reviewVerified && statusVerified && ledgerVerified;
+    return {
+      creation_commitment_verified: creationVerified,
+      independent_review_verified: reviewVerified,
+      evidence_disjoint: reviewEvidenceDisjoint,
+      reviewer_and_source_independent: reviewerIndependent,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: complete,
+      integration_verified: complete && item.status === 'integrated' && review?.outcome === 'supported',
+    };
+  }
+
   function recordDevelopment(input = {}) {
     return mutate(current => {
-      if (!input.event || !input.changed_to || !input.evidence) throw new Error('event, changed_to, and evidence are required');
-      const item = { id: input.id || `development-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        event: String(input.event).slice(0, 1000), believed_before: input.believed_before ? String(input.believed_before).slice(0, 1000) : null,
-        changed_to: String(input.changed_to).slice(0, 1000), why: String(input.why || '').slice(0, 1000), evidence: input.evidence,
-        identity_significance: clamp01(input.identity_significance ?? 0.5), status: input.status || 'candidate', at: input.at || clock().toISOString() };
-      current.cognition.development.push(item); current.cognition.development = current.cognition.development.slice(-200); return item;
+      requireResearchLedgerIntegrity(current);
+      if (interventionActive('developmental_revision_access')) throw new Error('development writes are sealed during an active developmental revision trial');
+      if (!input.event || !input.believed_before || !input.changed_to || !String(input.why || '').trim()
+        || !validEvidenceRefs(input.evidence)) {
+        throw new Error('event, believed_before, changed_to, why, and stable evidence references are required');
+      }
+      if (String(input.believed_before).trim() === String(input.changed_to).trim()) throw new Error('a developmental revision must change the prior belief');
+      if (input.status && input.status !== 'candidate') throw new Error('development records cannot self-certify integration');
+      const sourceFamily = String(input.source_family || '').trim();
+      const origin = input.origin || {};
+      if (!sourceFamily || !String(origin.creator_id || '').trim() || !String(origin.formation_method || '').trim()) {
+        throw new Error('development records require source_family and explicit creator_id and formation_method provenance');
+      }
+      const candidateAt = input.at ? new Date(input.at) : clock();
+      if (!Number.isFinite(candidateAt.getTime()) || candidateAt > clock()) throw new Error('development candidate time must be valid and not in the future');
+      const id = input.id || `development-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      if (current.cognition.development.some(candidate => candidate.id === id)) throw new Error('development id already exists');
+      const item = {
+        id, event: String(input.event).slice(0, 1000), believed_before: String(input.believed_before).slice(0, 1000),
+        changed_to: String(input.changed_to).slice(0, 1000), why: String(input.why).slice(0, 1000),
+        evidence: input.evidence.slice(0, 30), source_family: sourceFamily.slice(0, 180),
+        identity_significance: clamp01(input.identity_significance ?? 0.5),
+        origin: { creator_id: String(origin.creator_id).slice(0, 180), formation_method: String(origin.formation_method).slice(0, 300) },
+        status: 'candidate', review_status: 'pending_independent_review', independent_review: null,
+        review_commitment: null, at: candidateAt.toISOString(), creation_commitment: null,
+      };
+      item.creation_commitment = crypto.createHash('sha256').update(canonicalJson(developmentCreationPayload(item))).digest('hex');
+      current.cognition.development.push(item); current.cognition.development = current.cognition.development.slice(-200);
+      researchLedgerAppend(current, { kind: 'development_candidate_recorded', subject_type: 'development', subject_id: item.id,
+        payload: { creation_commitment: item.creation_commitment } });
+      return { ...JSON.parse(JSON.stringify(item)), audit: developmentalRevisionAudit(item) };
+    });
+  }
+
+  function reviewDevelopment(id, input = {}, evaluatorId = null) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (interventionActive('developmental_revision_access')) throw new Error('development reviews are sealed during an active developmental revision trial');
+      if (!evaluatorId) throw new Error('authenticated independent evaluator identity is required');
+      const item = current.cognition.development.find(candidate => candidate.id === id);
+      if (!item) return null;
+      if (!developmentalRevisionAudit(item).complete_chain_verified || item.independent_review) throw new Error('development is not awaiting an integrity-verified review');
+      if (String(evaluatorId) === item.origin?.creator_id) throw new Error('development creator cannot independently review the same revision');
+      if (!['supported', 'contradicted', 'unclear'].includes(input.outcome) || !String(input.rationale || '').trim()
+        || !validEvidenceRefs(input.evidence) || !String(input.source_family || '').trim()) {
+        throw new Error('review requires outcome, rationale, source_family, and stable evidence references');
+      }
+      const sourceFamily = String(input.source_family).trim().slice(0, 180);
+      if (sourceFamily === item.source_family) throw new Error('development review requires a source-disjoint evidence family');
+      const initialEvidence = new Set(item.evidence.map(canonicalJson));
+      if (input.evidence.some(reference => initialEvidence.has(canonicalJson(reference)))) throw new Error('development review cannot recycle proposal evidence');
+      const observedAt = input.observed_at ? new Date(input.observed_at) : clock();
+      if (!Number.isFinite(observedAt.getTime()) || observedAt <= new Date(item.at) || observedAt > clock()) {
+        throw new Error('review observation must occur after the candidate was recorded and not in the future');
+      }
+      item.independent_review = {
+        evaluator_id: String(evaluatorId).slice(0, 180), outcome: input.outcome,
+        rationale: String(input.rationale).slice(0, 1200), evidence: input.evidence.slice(0, 30),
+        source_family: sourceFamily, observed_at: observedAt.toISOString(), reviewed_at: clock().toISOString(),
+      };
+      item.review_commitment = crypto.createHash('sha256').update(canonicalJson(item.independent_review)).digest('hex');
+      item.review_status = 'independently_reviewed';
+      item.status = input.outcome === 'supported' ? 'integrated' : input.outcome === 'contradicted' ? 'contradicted' : 'unresolved';
+      researchLedgerAppend(current, { kind: 'development_independently_reviewed', subject_type: 'development', subject_id: item.id,
+        payload: { review_commitment: item.review_commitment, status: item.status } });
+      return { ...JSON.parse(JSON.stringify(item)), audit: developmentalRevisionAudit(item) };
     });
   }
 
@@ -12963,7 +13075,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function developmentalRevisionAvailable() {
-    return state.cognition.development.some(item => item.status === 'integrated' && item.believed_before && item.changed_to && Array.isArray(item.evidence) && item.evidence.length);
+    return state.cognition.development.some(item => item.status === 'integrated' && item.believed_before && item.changed_to
+      && Array.isArray(item.evidence) && item.evidence.length && developmentalRevisionAudit(item).integration_verified);
   }
 
   function developmentContextForAssignment(assignmentRef) {
@@ -12973,7 +13086,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const assignment = trial?.assignments.find(item => item.id === assignmentRef.assignment_id);
       if (!trial || !assignment) return null;
       if (assignment.development_context) return JSON.parse(JSON.stringify(assignment.development_context));
-      const eligible = current.cognition.development.filter(item => item.status === 'integrated' && item.believed_before && item.changed_to && Array.isArray(item.evidence) && item.evidence.length);
+      const eligible = current.cognition.development.filter(item => item.status === 'integrated' && item.believed_before && item.changed_to
+        && Array.isArray(item.evidence) && item.evidence.length && developmentalRevisionAudit(item).integration_verified);
       if (!eligible.length) return null;
       const digest = crypto.createHmac('sha256', trial.seed).update(`${assignment.id}:development-context`).digest();
       const selected = eligible[digest.readUInt32LE(0) % eligible.length];
@@ -14043,7 +14157,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     let status = null;
     if (ref.type === 'development') {
       record = state.cognition.development.find(item => item.id === ref.id) || null;
-      status = record?.status || null;
+      const audit = developmentalRevisionAudit(record);
+      record = record ? { ...record, audit } : null;
+      status = audit.integration_verified ? 'integrated' : record?.status === 'integrated' ? 'unverified' : record?.status || null;
     } else if (ref.type === 'experience_moment') {
       record = state.cognition.experience_stream.find(item => item.id === ref.id) || null;
       status = record ? (record.status === 'open' ? 'open' : 'closed') : null;
@@ -16294,6 +16410,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function cognitionSnapshot(predictions = []) {
     const snapshot = cognitionPayload();
+    snapshot.development = (snapshot.development || []).map((item, index) => ({
+      ...item, audit: developmentalRevisionAudit(state.cognition.development[index]),
+    }));
     const sealInquirySelection = selfInquirySelectionActive();
     const sealHigherOrder = interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation');
     const sealSelfModel = sealInquirySelection || interventionActive('self_model_access') || sealHigherOrder;
@@ -17161,7 +17280,8 @@ ${episodes.map(item => {
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     relevantEpisodes, promptContext,
-    refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange, recordDevelopment, autobiographyEvidence, recordCounterfactual,
+    refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange,
+    recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,
     recordCognitivePulseResult, recordCognitivePulseFailure, resolveCognitivePulse, cognitivePulseSnapshot,

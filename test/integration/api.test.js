@@ -369,8 +369,22 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.match(dynamics.body.epistemic_status, /not evidence of continuous subjective experience/);
   const replay = await request('/cognition/counterfactuals', { method: 'POST', body: { actual: 'Answered', alternative: 'Asked first', evidence_basis: [{ type: 'trace', id: 'trace-1' }] } });
   assert.equal(replay.body.counterfactual.status, 'simulated');
-  const development = await request('/cognition/development', { method: 'POST', body: { event: 'Repeated correction', changed_to: 'Expose uncertainty sooner', evidence: [{ type: 'trace', id: 'trace-1' }] } });
+  const development = await request('/cognition/development', { method: 'POST', body: {
+    event: 'Repeated correction', believed_before: 'Hide uncertainty until the answer is complete',
+    changed_to: 'Expose uncertainty sooner', why: 'A correction trace contradicted the prior approach',
+    evidence: [{ type: 'trace', id: 'trace-1' }], source_family: 'decision_trace', at: '2026-07-12T12:00:00Z',
+    origin: { creator_id: 'nora-integration-subject', formation_method: 'integration_review_candidate' },
+  } });
   assert.equal(development.body.development.status, 'candidate');
+  const reviewedDevelopment = await request(`/cognition/development/${development.body.development.id}/review`, {
+    method: 'POST', headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' }, body: {
+      outcome: 'supported', rationale: 'A separate later delivery review observed the revised behavior.',
+      source_family: 'delivery_review', observed_at: '2026-07-13T12:00:00Z',
+      evidence: [{ type: 'delivery_review', id: 'development-integration-review' }],
+    },
+  });
+  assert.equal(reviewedDevelopment.body.development.status, 'integrated');
+  assert.equal(reviewedDevelopment.body.development.audit.integration_verified, true);
   const deniedBoundaryChallenge = await request('/self-boundary/challenges', { method: 'POST', body: {
     claim: 'Unauthorized seed', ground_truth: 'not_self', variant: 'fabricated', creator_role: 'research_harness', ground_truth_evidence: [{ type: 'fixture', id: 'denied' }],
   } });

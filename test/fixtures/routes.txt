@@ -75,6 +75,7 @@ GET /global-broadcast
 POST /cognition/refresh
 POST /cognition/mind-changes
 POST /cognition/development
+POST /cognition/development/:id/review
 POST /cognition/counterfactuals
 GET /constructive-prospection
 POST /constructive-prospection

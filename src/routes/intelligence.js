@@ -396,6 +396,13 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try { res.json({ ok: true, development: store.recordDevelopment(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
+  app.post('/cognition/development/:id/review', requireEvaluatorAuth, (req, res) => {
+    try {
+      const development = store.reviewDevelopment(req.params.id, req.body || {}, req.evaluatorId);
+      if (!development) return res.status(404).json({ error: 'development record not found' });
+      res.json({ ok: true, development });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.post('/cognition/counterfactuals', requireAuth, (req, res) => {
     try { res.json({ ok: true, counterfactual: store.recordCounterfactual(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }

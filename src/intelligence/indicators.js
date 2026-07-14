@@ -785,7 +785,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       functional_claim: 'An evidence-driven revision to Nora\'s self-model transfers specifically to later behavior rather than acting as inert narrative accumulation.',
       mechanism: 'Integrated developmental records with authentic-revision, stale-prior, and absent-context lesions.',
       status: revisionTransferTrial ? replicatedStatus(revisionTransferTrials, revisionTransferVerdict) : 'mechanism_present',
-      evidence: { integrated_revisions: (cognition.development || []).filter(item => item.status === 'integrated' && item.believed_before).length, completed_trials: revisionTransferTrials.length, confirmatory_trials: revisionTransferTrials.filter(item => item.study_phase === 'confirmatory').length, revision_dissociation: revisionDissociation },
+      evidence: { integrated_revisions: (cognition.development || []).filter(item => item.status === 'integrated'
+        && item.believed_before && item.audit?.integration_verified).length, completed_trials: revisionTransferTrials.length,
+      confirmatory_trials: revisionTransferTrials.filter(item => item.study_phase === 'confirmatory').length, revision_dissociation: revisionDissociation },
       falsifier: 'Authentic revised context does not outperform the stale prior belief and absence, or apparent transfer depends on general task degradation.',
       next_gate: 'Complete a replicated authentic-revision-versus-stale-prior-versus-absent transfer trial.',
     },

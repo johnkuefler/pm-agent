@@ -226,9 +226,56 @@ test('cognition stays bounded, evidence-based, calibrated, and explicit about si
 
   const replay = store.recordCounterfactual({ actual: 'Answered immediately', alternative: 'Asked one clarifying question', predicted_difference: 'Might reduce correction', evidence_basis: [{ type: 'trace', id: 't1' }] });
   assert.equal(replay.status, 'simulated');
-  const development = store.recordDevelopment({ event: 'Repeated corrections', changed_to: 'I work better when I expose uncertainty', evidence: [{ type: 'trace', id: 't1' }], identity_significance: 0.8 });
+  const development = store.recordDevelopment({ event: 'Repeated corrections', believed_before: 'I should hide uncertainty',
+    changed_to: 'I work better when I expose uncertainty', why: 'The correction trace contradicted the prior approach',
+    evidence: [{ type: 'trace', id: 't1' }], source_family: 'delivery_trace', identity_significance: 0.8,
+    origin: { creator_id: 'nora-test', formation_method: 'review_cycle_candidate' } });
   assert.equal(development.status, 'candidate');
+  assert.equal(development.audit.complete_chain_verified, true);
   assert.equal(store.cognitionSnapshot([{ confidence: 0.9, outcome: 'wrong' }]).calibration.overconfident_errors, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('developmental revisions require provenance, independent source-disjoint review, and replay-valid integration', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-development-integrity-'));
+  const filePath = path.join(dir, 'state.json');
+  const now = new Date('2026-07-14T15:00:00Z');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date(now) });
+  await store.init();
+  const input = {
+    event: 'A correction exposed a repeated assumption failure', believed_before: 'I should infer missing constraints silently',
+    changed_to: 'I should expose material assumptions before committing', why: 'The delivered answer required correction',
+    evidence: [{ type: 'decision_trace', id: 'development-integrity-trace' }], source_family: 'decision_trace',
+    identity_significance: 0.7, origin: { creator_id: 'nora-subject', formation_method: 'nightly_review_candidate' },
+    at: '2026-07-14T14:00:00Z',
+  };
+  assert.throws(() => store.recordDevelopment({ ...input, status: 'integrated' }), /cannot self-certify/);
+  const candidate = store.recordDevelopment(input);
+  assert.equal(store.developmentalRevisionAvailable(), false);
+  assert.throws(() => store.reviewDevelopment(candidate.id, {
+    outcome: 'supported', rationale: 'A later observation agrees.', source_family: 'delivery_review',
+    evidence: [{ type: 'delivery_review', id: 'development-integrity-review' }],
+  }, 'nora-subject'), /creator cannot independently review/);
+  assert.throws(() => store.reviewDevelopment(candidate.id, {
+    outcome: 'supported', rationale: 'A later observation agrees.', source_family: 'delivery_review',
+    evidence: input.evidence,
+  }, 'independent-reviewer'), /cannot recycle/);
+  const integrated = store.reviewDevelopment(candidate.id, {
+    outcome: 'supported', rationale: 'A separate later delivery showed the revised behavior.', source_family: 'delivery_review',
+    evidence: [{ type: 'delivery_review', id: 'development-integrity-review' }], observed_at: '2026-07-14T14:30:00Z',
+  }, 'independent-reviewer');
+  assert.equal(integrated.audit.integration_verified, true);
+  assert.equal(store.developmentalRevisionAvailable(), true);
+  assert.equal(store.autobiographyEvidence({ type: 'development', id: candidate.id }).status, 'integrated');
+  await store.persist();
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  persisted.cognition.development[0].changed_to = 'Tampered identity claim';
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date(now) });
+  await reloaded.init();
+  assert.equal(reloaded.developmentalRevisionAudit(reloaded.snapshot().cognition.development[0]).integration_verified, false);
+  assert.equal(reloaded.developmentalRevisionAvailable(), false);
+  assert.equal(reloaded.autobiographyEvidence({ type: 'development', id: candidate.id }).status, 'unverified');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1291,13 +1338,24 @@ test('developmental revision access transfers authentic change beyond stale prio
   const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
   store.addCommitment({ what: 'Answer a new ambiguous planning request', due: '2026-07-11T14:00:00Z' });
-  store.recordDevelopment({
+  const revision = store.recordDevelopment({
     event: 'Repeated plans needed correction because assumptions stayed implicit',
     believed_before: 'I should answer ambiguous planning requests immediately to maximize speed',
     changed_to: 'I should expose assumptions or ask one focused question before planning under material ambiguity',
     why: 'Three corrected traces showed premature commitment', evidence: [{ type: 'decision_trace', id: 'revision-evidence-1' }],
-    identity_significance: 0.8, status: 'integrated',
+    source_family: 'decision_trace', identity_significance: 0.8,
+    origin: { creator_id: 'nora-test', formation_method: 'review_cycle_candidate' }, at: '2026-07-11T14:00:00Z',
   });
+  assert.throws(() => store.reviewDevelopment(revision.id, {
+    outcome: 'supported', rationale: 'same source', source_family: 'decision_trace',
+    evidence: [{ type: 'decision_trace', id: 'revision-evidence-2' }],
+  }, 'independent-reviewer'), /source-disjoint/);
+  const integrated = store.reviewDevelopment(revision.id, {
+    outcome: 'supported', rationale: 'A separate delivery review observed the revised behavior on a later task.',
+    source_family: 'delivery_review', evidence: [{ type: 'delivery_review', id: 'revision-review-1' }], observed_at: '2026-07-11T14:30:00Z',
+  }, 'independent-reviewer');
+  assert.equal(integrated.status, 'integrated');
+  assert.equal(integrated.audit.integration_verified, true);
   store.refreshCognition({ query: 'ambiguous planning request' });
   assert.equal(store.developmentalRevisionAvailable(), true);
   assert.throws(() => store.createContextTrial({
