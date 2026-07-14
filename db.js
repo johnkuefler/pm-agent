@@ -246,7 +246,14 @@ async function embed(text) {
     const j = await res.json();
     const v = j && j.data && j.data[0] && j.data[0].embedding;
     return Array.isArray(v) && v.length === EMBED_DIM ? v : null;
-  } catch (e) { console.warn('embed error:', e.message); return null; }
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      console.log('Embedding lookup timed out; continuing without semantic-memory recall');
+    } else {
+      console.warn('embed error:', e.message);
+    }
+    return null;
+  }
   finally { clearTimeout(timer); }
 }
 

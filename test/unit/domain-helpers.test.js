@@ -109,3 +109,48 @@ test('named and one-on-one barge-ins preempt stale voice work while group cross-
   assert.equal(oneOnOne.pendingVoiceTurn.text, 'wait, one more thing');
 });
 
+test('lightweight Slack thanks skip semantic recall without suppressing substantive questions', () => {
+  assert.equal(helpers.isLightweightSocialSlackMessage('Thanks for your work today'), true);
+  assert.equal(helpers.isLightweightSocialSlackMessage('good night!'), true);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Thanks. What is due tomorrow?'), false);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Can you summarize the project evidence?'), false);
+});
+
+test('runtime situational affordances stay within the committed sixty-capability bound', () => {
+  const inventory = Array.from({ length: 90 }, (_, index) => ({
+    name: `tool_${index}`, connection: 'fixture', tool: `tool-${index}`,
+  }));
+  const meta = Object.fromEntries(inventory.map(item => [item.name, { accessMode: 'read', deferred: false }]));
+  const capabilities = helpers.runtimeSituationalCapabilities({
+    surface: 'slack', direct: true, financialApproved: false, mcp: { inventory, meta },
+  });
+  assert.equal(capabilities.length, 60);
+  assert.equal(new Set(capabilities.map(item => item.key)).size, capabilities.length);
+  const overflow = capabilities.find(item => item.key === 'mcp:overflow');
+  assert.ok(overflow);
+  assert.match(overflow.label, /additional connected tools/);
+  assert.match(overflow.constraints[0], /does not grant access/);
+});
+
+test('missing Slack reaction scope is cached and degrades without repeated API failures', async () => {
+  helpers.resetSlackReactionCapabilityForTest();
+  let calls = 0;
+  const post = async () => { calls += 1; return { data: { ok: false, error: 'missing_scope' } }; };
+  const first = await helpers.trySlackReaction('D1', '123.45', 'heart', post);
+  const second = await helpers.trySlackReaction('D1', '123.46', 'heart', post);
+  assert.equal(first.reason, 'missing_scope');
+  assert.equal(second.reason, 'missing_scope_cached');
+  assert.equal(calls, 1);
+  helpers.resetSlackReactionCapabilityForTest();
+});
+
+test('Slack post-response extraction uses parameters carried through the handler', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = source.indexOf('async function handleSlackImpl');
+  const end = source.indexOf('\nasync function ', start + 20);
+  const handler = source.slice(start, end < 0 ? source.length : end);
+  assert.match(handler, /external_id: triggerTs \|\| null/);
+  assert.match(handler, /attestation: sourceAttestation/);
+  assert.doesNotMatch(handler, /\bevent\.ts\b|\bslackVerification\b/);
+});
+

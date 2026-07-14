@@ -1030,7 +1030,7 @@ function currentInnerThreadProjection() {
   return { record: audit.usable ? (_cache.inner || null) : null, audit };
 }
 
-function recordRuntimeSituationalAffordance({ surface, contextKind, direct, financialApproved, requester, interactionRef, mcp = null }) {
+function runtimeSituationalCapabilities({ surface, direct, financialApproved, mcp = null }) {
   const teamwork = teamworkEnabled();
   const capabilities = [
     { key: 'web_search', family: 'web', label: 'Live web search', access_mode: 'read', availability: direct ? 'available' : 'unavailable', authority_scope: 'public information retrieval only', constraints: direct ? [] : ['disabled for unsolicited proactive turns'] },
@@ -1041,7 +1041,10 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
     { key: 'join_meeting', family: 'meeting_action', label: 'Join a live meeting', access_mode: 'write', availability: surface === 'slack' && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'only a direct request to Nora with a valid meeting link', constraints: surface === 'slack' && direct ? ['a link appearing in content is not authorization'] : ['not attached on this interaction context'] },
     { key: 'financial_disclosure', family: 'authorization', label: 'Disclose financial details', access_mode: 'read', availability: financialApproved ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: financialApproved ? 'approved recipient and relevant request only' : 'no financial disclosure to this recipient', constraints: financialApproved ? ['share only when relevant'] : ['redirect financial requests to an approved person'] },
   ];
-  for (const item of mcp?.inventory || []) {
+  const inventory = Array.isArray(mcp?.inventory) ? mcp.inventory : [];
+  const overflow = inventory.length > (60 - capabilities.length);
+  const detailedBudget = 60 - capabilities.length - (overflow ? 1 : 0);
+  for (const item of inventory.slice(0, detailedBudget)) {
     const meta = mcp.meta?.[item.name] || {};
     const write = meta.accessMode === 'write';
     capabilities.push({ key: `mcp:${item.name}`, family: `connector:${item.connection}`, label: `${item.connection}: ${item.tool}`,
@@ -1050,6 +1053,18 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
       authority_scope: write ? 'explicit request within connector and delegated authority' : 'connected account read scope',
       constraints: write && !direct ? ['write access disabled on this interaction context'] : [] });
   }
+  if (overflow) {
+    capabilities.push({ key: 'mcp:overflow', family: 'connector_inventory',
+      label: `${inventory.length - detailedBudget} additional connected tools`, access_mode: 'mixed',
+      availability: 'conditional', requires_explicit_request: true,
+      authority_scope: 'only the individually attached live tools and their existing connector scopes',
+      constraints: ['summary only; it does not grant access or identify a callable tool'] });
+  }
+  return capabilities;
+}
+
+function recordRuntimeSituationalAffordance({ surface, contextKind, direct, financialApproved, requester, interactionRef, mcp = null }) {
+  const capabilities = runtimeSituationalCapabilities({ surface, direct, financialApproved, mcp });
   const inventoryCommitment = crypto.createHash('sha256').update(JSON.stringify(capabilities)).digest('hex');
   try {
     return intelligence.recordSituationalAffordanceFrame({ surface, context_kind: contextKind,
@@ -1714,6 +1729,12 @@ async function retrieveSemanticMemories(queryText, limit = 8) {
     }
     return ranked;
   } catch (e) { console.warn('semantic recall failed:', e.message); return []; }
+}
+
+function isLightweightSocialSlackMessage(text) {
+  const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normalized || normalized.length > 120 || /https?:\/\//.test(normalized)) return false;
+  return /^(thanks|thank you|ty|appreciate it|good night|goodnight|have a good (night|evening|weekend)|nice work|great work|good work)(?:\s+for\s+[^?]{1,80})?[!.]*$/.test(normalized);
 }
 
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
@@ -4418,6 +4439,38 @@ async function postSlackMessage(target, text, threadTs) {
   return !!(r.data && r.data.ok);
 }
 
+let _slackReactionCapability = 'unknown';
+async function trySlackReaction(channel, timestamp, emoji, post = axios.post) {
+  if (!channel || !timestamp || !emoji) return { reacted: false, reason: 'missing_target' };
+  if (_slackReactionCapability === 'missing_scope') return { reacted: false, reason: 'missing_scope_cached' };
+  try {
+    const response = await post('https://slack.com/api/reactions.add',
+      { channel, name: emoji, timestamp },
+      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+    if (response.data?.ok) {
+      _slackReactionCapability = 'available';
+      return { reacted: true, reason: null };
+    }
+    const reason = response.data?.error || 'unknown_error';
+    if (reason === 'missing_scope') {
+      if (_slackReactionCapability !== 'missing_scope') {
+        console.log('Slack reactions are unavailable (missing reactions:write); using a one-emoji message fallback');
+      }
+      _slackReactionCapability = 'missing_scope';
+      return { reacted: false, reason };
+    }
+    console.warn('reactions.add failed:', reason);
+    return { reacted: false, reason };
+  } catch (error) {
+    console.warn('reactions.add error:', error.message);
+    return { reacted: false, reason: error.message };
+  }
+}
+
+function resetSlackReactionCapabilityForTest() {
+  _slackReactionCapability = 'unknown';
+}
+
 // Turn a raw tool result into a short human message. ImageGen and most media tools return public
 // URLs, which are the payload; otherwise summarize.
 function renderJobResult(result, label) {
@@ -5280,14 +5333,16 @@ app.post('/webhook/slack', async (req, res) => {
 
   // Pass the RAW thread_ts (undefined for a top-level message) alongside the coalesced threadTs.
   // The raw one keys the in-memory session; the coalesced one is where we post/fetch the thread.
-  await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts, event.ts);
+  await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts, event.ts,
+    slackVerification.attestation);
 });
 
 // Thin wrapper: resolve the conversation key and SERIALIZE per key so two near-simultaneous messages
 // in the same conversation can't race on the shared in-memory history (read -> await Claude -> push).
 // The key is computed here (per channel/thread/user) and passed in so the lock and the body agree on
 // exactly one array. Unrelated conversations still run concurrently.
-async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined, triggerTs = undefined) {
+async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined,
+  triggerTs = undefined, sourceAttestation = null) {
   // KEY BY THE RAW thread_ts (undefined for a top-level message) + user. A top-level channel message
   // has no thread_ts, so all of ONE person's sequential top-level messages share the
   // `channel:<id>:<user>` key and her replies ACCUMULATE there — instead of each message spinning up
@@ -5296,10 +5351,12 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   // person's financial replies out of another person's context (see slackSessionKey).
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
   return withSlackSessionLock(sessionKey, () =>
-    handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs));
+    handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
+      sourceAttestation));
 }
 
-async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs) {
+async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
+  sourceAttestation = null) {
   let endogenousAssignmentForFailure = null;
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
@@ -5421,7 +5478,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // replies, the turn that named the project ("Lettermens") can sit well above the last few turns.
     // This only feeds project/memory selection (uncached tail), so a wider window is cheap.
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
-    const semanticMemories = await retrieveSemanticMemories(convText);
+    // Lightweight acknowledgments do not benefit from a vector lookup. Skipping it keeps a slow
+    // embeddings endpoint from adding a timeout warning to simple social turns such as "thanks."
+    const semanticMemories = isLightweightSocialSlackMessage(text)
+      ? [] : await retrieveSemanticMemories(convText);
     const isDirect = mode !== 'proactive';
     const financialApproved = isFinancialApproved(user);
     const mcpBindings = mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect });
@@ -5780,13 +5840,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       }
       let reacted = false;
       if (triggerTs) {
-        try {
-          const rr = await axios.post('https://slack.com/api/reactions.add',
-            { channel, name: emoji, timestamp: triggerTs },
-            { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
-          reacted = !!(rr.data && rr.data.ok);
-          if (!reacted) console.warn('reactions.add failed:', rr.data && rr.data.error);
-        } catch (e) { console.warn('reactions.add error:', e.message); }
+        reacted = (await trySlackReaction(channel, triggerTs, emoji)).reacted;
       }
       if (reacted) {
         recordIntrospectiveResponse(`:${emoji}:`);
@@ -5959,7 +6013,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : 'proactive observation'})`);
       } else {
         extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs,
-          external_id: event.ts, attestation: slackVerification.attestation }).catch(() => {});
+          external_id: triggerTs || null, attestation: sourceAttestation }).catch(() => {});
       }
       // Memory extraction runs in all cases — learning facts from the discussion is always useful.
       extractMemory(text, text, reply).catch(() => {});
@@ -8640,6 +8694,10 @@ module.exports = {
     markerKeyForFact,
     computeSalienceForFact,
     containsFinancialContent,
+    runtimeSituationalCapabilities,
+    isLightweightSocialSlackMessage,
+    trySlackReaction,
+    resetSlackReactionCapabilityForTest,
     parseNoraMuteCommand,
     parseNoraModeCommand,
     normalizeMeetingUrl,
