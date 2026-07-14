@@ -17449,7 +17449,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === subjectId
         && event.payload_commitment === payloadCommitment).length === 1;
     };
-    const manifestVerified = record.protocol_version === 1 && record.cycle_id === moment.cycle_id
+    const manifestVerified = [1, 2].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
     const preregistrationBound = manifestVerified && eventBound('experience_self_forecast_preregistered', record.id,
@@ -17473,7 +17473,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && candidate.status !== 'open' && Number.isFinite(new Date(candidate.finished).getTime())
       && new Date(candidate.finished).getTime() <= committedAt
       && experienceMomentAudit(candidate, cognition, cycles, cache, nextVisited).evidence_eligible);
-    const baselineVerified = sourcesVerified && canonicalJson(cycleSelfForecast.baselineFromMoments(eligibleHistoricalMoments))
+    const baselineVerified = sourcesVerified && canonicalJson(cycleSelfForecast.baselineFromMoments(
+      eligibleHistoricalMoments, record.protocol_version))
       === canonicalJson(record.baseline);
     let outcomeVerified = record.outcome == null && record.outcome_commitment == null;
     let scoringBound = false;
@@ -17481,6 +17482,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const expected = cycleSelfForecast.scoreRecord(record, {
         actions: moment.closure.actions || [], newSurpriseIds: moment.closure.new_surprise_ids || [],
         controlAtClose: moment.closure.appraisal_at_end?.control,
+        appraisalAtClose: moment.closure.appraisal_at_end,
+        attentionAtClose: moment.attention,
+        reentryOccurred: (moment.attention_rounds || []).length > 1,
         scoredAt: record.outcome.scored_at,
       });
       const expectedCommitment = cycleSelfForecast.commitment({ forecast_commitment: record.forecast_commitment, outcome: expected });
@@ -17633,7 +17637,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && candidate.status !== 'open'
         && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
       const committedAt = clock().toISOString();
-      moment.self_forecast = cycleSelfForecast.createRecord({ input, cycle, moment, baselineMoments, committedAt });
+      const forecastRecord = cycleSelfForecast.createRecord({ input, cycle, moment, baselineMoments, committedAt });
+      if (current.cognition.experience_stream.some(candidate => candidate.id !== moment.id
+        && Number(candidate.self_forecast?.protocol_version) >= 2)
+        && Number(forecastRecord.protocol_version) < 2) {
+        throw new Error('cycle self-forecast protocol cannot downgrade after integrated self-state prediction begins');
+      }
+      moment.self_forecast = forecastRecord;
       researchLedgerAppend(current, { kind: 'experience_self_forecast_preregistered',
         subject_type: 'experience_self_forecast', subject_id: moment.self_forecast.id,
         payload: { forecast_commitment: moment.self_forecast.forecast_commitment } });
@@ -17648,6 +17658,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     record.outcome = cycleSelfForecast.scoreRecord(record, {
       actions: moment.closure?.actions || [], newSurpriseIds: moment.closure?.new_surprise_ids || [],
       controlAtClose: moment.closure?.appraisal_at_end?.control,
+      appraisalAtClose: moment.closure?.appraisal_at_end,
+      attentionAtClose: moment.attention,
+      reentryOccurred: (moment.attention_rounds || []).length > 1,
       scoredAt: moment.finished,
     });
     record.outcome_commitment = cycleSelfForecast.commitment({
@@ -18375,6 +18388,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const meanForecastAdvantage = baselineEligibleForecasts.length
       ? baselineEligibleForecasts.reduce((sum, { item }) => sum + item.self_forecast.outcome.self_minus_baseline, 0)
         / baselineEligibleForecasts.length : null;
+    const integratedStateForecasts = scoredSelfForecasts.filter(({ item }) =>
+      Number(item.self_forecast.protocol_version) >= 2 && item.self_forecast.outcome.self_state_score);
+    const integratedStateBaselineEligible = integratedStateForecasts.filter(({ item }) =>
+      item.self_forecast.outcome.self_state_baseline_comparison_eligible === true);
+    const meanIntegratedStateAdvantage = integratedStateBaselineEligible.length
+      ? integratedStateBaselineEligible.reduce((sum, { item }) =>
+        sum + item.self_forecast.outcome.self_state_minus_baseline, 0) / integratedStateBaselineEligible.length : null;
     return {
       epistemic_status: 'A linked record of functional access windows and continuity handoffs; not a claim that the recorded moments are phenomenal experiences.',
       continuity: {
@@ -18406,7 +18426,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         preregistered: selfForecasts.length, replay_verified_scored: scoredSelfForecasts.length,
         baseline_comparison_eligible: baselineEligibleForecasts.length,
         mean_self_minus_baseline: meanForecastAdvantage,
-        interpretation: 'Prospective behavioral calibration against a frozen historical baseline; not hidden-state access or a phenomenal report.',
+        integrated_state_forecasts: integratedStateForecasts.length,
+        integrated_state_baseline_eligible: integratedStateBaselineEligible.length,
+        mean_integrated_state_minus_baseline: meanIntegratedStateAdvantage,
+        interpretation: 'Prospective behavioral and cross-domain operational self-state calibration against frozen historical baselines; not hidden-state access or a phenomenal report.',
       },
       moments,
     };

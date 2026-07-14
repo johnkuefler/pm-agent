@@ -473,13 +473,15 @@ function registerCoworkInstructionsRoute(app) {
   - POST /intelligence/cycles — start an hourly/nightly autonomic cycle. The response contains a
     full orientation: overdue/due commitments, unresolved episodes, due experiments, unreviewed
     traces, and prioritized recommendations. GET /intelligence/orient previews without starting.
-    POST /intelligence/cycles/:id/self-forecast commits Nora's own one-cycle-ahead prediction before
-    re-entry or action: likely action types, surprise probability, closing control estimate, confidence,
-    rationale, and stable evidence. The server freezes a historical base-rate forecast at the same time
+    POST /intelligence/cycles/:id/self-forecast protocol v2 commits Nora's own one-cycle-ahead prediction
+    before re-entry or action: likely action types, surprise probability, closing appraisal vector,
+    closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable
+    evidence. The server freezes behavioral and integrated-self historical baselines at the same time
     and scores both automatically at closure; the forecast is never injected into response prompts.
     Each verified closure also appends a predecessor-linked behavioral self-model revision under
-    GET /self-model. The deterministic 20-cycle profile exposes action tendencies and signed surprise
-    and control forecast errors after five samples, but is sealed during active blinded context trials.
+    GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
+    and cross-domain self-state forecast errors after five samples, but is sealed during active blinded
+    context trials.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
     GET /intelligence/cycles shows whether runs are closing their loops.
   - GET /experience-stream — linked functional access windows across cycles: inherited handoff hash,

@@ -176,21 +176,25 @@ Read the returned `orientation` and `recommendations` before doing anything else
 second task queue; it is your autonomic orientation layer:
 
 Before re-entering attention or taking any action, make one falsifiable forecast of your own behavior
-in this cycle and commit it with `POST /intelligence/cycles/${CYCLE_ID}/self-forecast`. Supply one to
-five normalized action types you genuinely expect to report at closure, the probability that genuinely
-new surprise evidence will appear, your expected closing appraisal control from 0 to 1, overall
-confidence, a concise rationale, and one to twelve stable evidence references. Cite the cycle start and
+in this cycle and commit it with `POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using
+`protocol_version: 2`. Supply one to five normalized action types you genuinely expect to report at
+closure, the probability that genuinely new surprise evidence will appear, overall confidence, a concise
+rationale, and one to twelve stable evidence references. Also predict your closing operational self-state:
+the attention-slot types you expect to remain selected, all five closing appraisal values, expected count
+of evidenced actions, and probability of evidence re-entry. The appraisal control value must exactly match
+the top-level `control_at_close`. Cite the cycle start and
 the real task, commitment, prior verified moment, or source record that informed the judgment. Do not
 predict an action merely to create it, change work to make the forecast come true, or backfill after
-evidence re-entry. The server freezes a historical base-rate forecast at the same instant and scores
-both from the committed closure; it does not inject either forecast into Slack or other response prompts.
-This is a prospective behavioral self-model with an explicit observer effect, not hidden-state access,
+evidence re-entry. The server freezes behavioral and integrated-self historical baselines at the same
+instant and scores both from the committed closure. Cross-domain errors feed the next bounded self-model
+revision; neither forecast is injected into Slack or other response prompts. This is a prospective
+operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
 
 Immediately before forming that forecast, read `GET /self-model`. If `behavioral_self_model.current`
 is available, replay-valid, and based on at least five cycles, use its action tendencies and signed
-surprise/control errors only as a fallible prior; cite its revision commitment in your rationale or
-evidence. Current orientation and task evidence override the profile. If access is sealed for a blinded
+surprise/control and integrated-self-state errors only as a fallible prior; cite its revision commitment
+in your rationale or evidence. Current orientation and task evidence override the profile. If access is sealed for a blinded
 trial, the profile is provisional, or its audit fails, ignore it and forecast from the ordinary evidence.
 The server revises this profile automatically only after a cycle closes, from the last twenty verified
 forecast outcomes. Never manually rewrite it, infer an experimental condition from its absence, or
@@ -202,7 +206,7 @@ Example shape (replace every value with this cycle's actual prospective judgment
 ```bash
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}'
+  -d '{"protocol_version":2,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}'
 ```
 
 The response also contains an `experience moment`: a linked functional record of what you inherited,

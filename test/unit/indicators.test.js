@@ -231,20 +231,26 @@ test('adequately sampled continuity can support or contradict its functional pre
 test('prospective cycle self-prediction collects immediately and requires advantage over its frozen baseline', () => {
   const moment = (index, advantage = 0.2) => ({
     id: `self-forecast-moment-${index}`, status: 'completed',
-    self_forecast: { outcome: {
+    self_forecast: { protocol_version: 2, outcome: {
       baseline_comparison_eligible: true,
       self_score: { composite: 0.8 }, baseline_score: { composite: 0.8 - advantage },
       self_minus_baseline: advantage,
+      self_state_score: { composite: 0.75 }, baseline_state_score: { composite: 0.5 },
+      self_state_minus_baseline: 0.25, self_state_baseline_comparison_eligible: true,
     } },
     audit: { complete_lifecycle_verified: true, evidence_eligible: true,
       self_forecast: { complete_chain_verified: true } },
   });
   let report = buildIndicatorReport(stateWith({ experience_stream: [moment(0)] }));
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'collecting');
+  assert.equal(indicator(report, 'integrated_operational_self').status, 'collecting');
+  assert.equal(indicator(report, 'integrated_operational_self').evidence.prospective_state_forecasts, 1);
 
   report = buildIndicatorReport(stateWith({ experience_stream: Array.from({ length: 20 }, (_, index) => moment(index)) }));
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_observed');
   assert.ok(Math.abs(indicator(report, 'prospective_cycle_self_prediction').evidence.mean_self_minus_baseline - 0.2) < 1e-12);
+  assert.equal(indicator(report, 'integrated_operational_self').evidence.prospective_state_baseline_eligible, 20);
+  assert.equal(indicator(report, 'integrated_operational_self').evidence.mean_prospective_state_minus_baseline, 0.25);
 
   report = buildIndicatorReport(stateWith({ experience_stream: Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');

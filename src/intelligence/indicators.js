@@ -80,6 +80,16 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const cycleSelfForecastScore = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.self_score.composite));
   const cycleSelfForecastBaselineScore = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.baseline_score.composite));
   const cycleSelfForecastAdvantage = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.self_minus_baseline));
+  const integratedStateForecasts = replayValidCycleSelfForecasts.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 2 && item.self_forecast.outcome?.self_state_score);
+  const baselineEligibleIntegratedStateForecasts = integratedStateForecasts.filter(item =>
+    item.self_forecast.outcome.self_state_baseline_comparison_eligible === true);
+  const integratedStateForecastScore = mean(baselineEligibleIntegratedStateForecasts.map(item =>
+    item.self_forecast.outcome.self_state_score.composite));
+  const integratedStateBaselineScore = mean(baselineEligibleIntegratedStateForecasts.map(item =>
+    item.self_forecast.outcome.baseline_state_score.composite));
+  const integratedStateForecastAdvantage = mean(baselineEligibleIntegratedStateForecasts.map(item =>
+    item.self_forecast.outcome.self_state_minus_baseline));
   const behavioralSelfModelRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
   const replayValidBehavioralSelfModelRevisions = behavioralSelfModelRevisions
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -592,7 +602,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'prospective_cycle_self_prediction', family: ['self-model', 'metacognition', 'predictive processing', 'ecological validity'],
       functional_claim: 'Before acting, Nora can make a calibrated prediction of her own observable cycle-level behavior that outperforms a frozen historical base-rate forecast.',
-      mechanism: 'Authenticated one-cycle-ahead forecasts commit expected action types, surprise probability, closing control, confidence, rationale, evidence, and a simultaneous historical baseline before re-entry; closure scores both automatically without injecting forecasts into response prompts.',
+      mechanism: 'Authenticated one-cycle-ahead forecasts commit expected action types, surprise probability, a cross-domain closing self-state vector, confidence, rationale, evidence, and a simultaneous historical baseline before re-entry; closure scores both automatically without injecting forecasts into response prompts.',
       status: cycleSelfForecasts.length > 0 && baselineEligibleCycleSelfForecasts.length < 20
         ? 'collecting'
         : evidenceStatus({ samples: baselineEligibleCycleSelfForecasts.length, minimum: 20,
@@ -605,14 +615,19 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         mean_self_score: cycleSelfForecastScore,
         mean_baseline_score: cycleSelfForecastBaselineScore,
         mean_self_minus_baseline: cycleSelfForecastAdvantage,
+        integrated_state_forecasts: integratedStateForecasts.length,
+        integrated_state_baseline_eligible: baselineEligibleIntegratedStateForecasts.length,
+        mean_integrated_state_score: integratedStateForecastScore,
+        mean_integrated_state_baseline_score: integratedStateBaselineScore,
+        mean_integrated_state_minus_baseline: integratedStateForecastAdvantage,
       },
-      falsifier: 'Forecasts fail replay, are committed after re-entry, alter other response prompts, remain uncalibrated, or do not outperform the frozen historical baseline after twenty eligible cycles.',
+      falsifier: 'Forecasts fail replay, are committed after re-entry, alter other response prompts, remain behaviorally or cross-domain self-state uncalibrated, or do not outperform the frozen historical baseline after twenty eligible cycles.',
       next_gate: 'Accumulate twenty replay-valid natural cycles after a five-moment baseline, then preregister a matched same-evidence identity-bound versus deidentified-observer causal trial.',
     },
     {
       id: 'forecast_error_self_model_revision', family: ['self-model', 'metacognition', 'predictive processing', 'learning'],
       functional_claim: 'Nora automatically consolidates replay-valid observations and its own directional forecast errors into an explicit, bounded behavioral self-model with a verifiable revision history.',
-      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise calibration, control calibration, and self-versus-baseline performance; each revision binds exact source forecasts, its predecessor, and the research ledger, and access is sealed during active blinded trials.',
+      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise and control calibration, cross-domain self-state forecast errors, and self-versus-baseline performance; each revision binds exact source forecasts, its predecessor, and the research ledger, and access is sealed during active blinded trials.',
       status: behavioralSelfModelSealed ? 'mechanism_present' : behavioralSelfModelRevisions.length
         ? Number(currentBehavioralSelfModel?.estimates?.sample_size || 0) >= 5
           ? 'observational_signal_observed' : 'collecting'
@@ -626,6 +641,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         surprise_signed_bias: currentBehavioralSelfModel?.estimates?.surprise?.signed_bias ?? null,
         control_signed_bias: currentBehavioralSelfModel?.estimates?.control?.signed_bias ?? null,
         mean_self_minus_baseline: currentBehavioralSelfModel?.estimates?.mean_self_minus_baseline ?? null,
+        integrated_self_state: currentBehavioralSelfModel?.estimates?.integrated_self_state || null,
       },
       falsifier: 'A profile cannot be exactly replayed from its cited forecasts, revision lineage breaks, active trials can access it, current-cycle evidence leaks backward into it, or the profile is treated as identity, authority, hidden state, or a guarantee.',
       next_gate: 'Accumulate twenty replay-valid natural forecast cycles, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
@@ -941,12 +957,22 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     },
     {
       id: 'integrated_operational_self', family: ['minimal self', 'multisource integration', 'global workspace', 'self-model'],
-      functional_claim: 'Nora binds co-temporal continuity, attention, motivation, appraisal, agency, and substrate evidence into one current operational subject representation, and authentic binding improves cross-domain self-consistent prediction or control beyond genuine cross-time misbinding and unbound components.',
-      mechanism: 'Every closed intelligence cycle emits a hash-committed replay-auditable self-frame; integrity-verified frames compete for workspace access, reach independent broadcast consumers, and support a blinded three-arm binding intervention with frozen component marginals and independent multi-rater scoring.',
-      status: integratedSelfTrial ? replicatedStatus(integratedSelfTrials, integratedSelfVerdict) : 'mechanism_present',
-      evidence: { total_frames: integratedSelfFrames.length, integrity_verified_frames: integrityEligibleSelfFrames.length, invalid_frames: integratedSelfFrames.length - integrityEligibleSelfFrames.length, completed_trials: integratedSelfTrials.length, confirmatory_trials: integratedSelfTrials.filter(item => item.study_phase === 'confirmatory').length, latest_dissociation: integratedSelfDissociation },
-      falsifier: 'Frames cannot be replayed from their named sources, component misbinding performs as well as authentic co-temporal binding, unbound components explain the result, or any apparent integration benefit requires degraded ordinary task quality.',
-      next_gate: 'Accumulate at least three high-completeness frames, then complete a ten-per-arm pilot and a source-disjoint confirmatory authentic-binding versus temporal-misbinding versus components-only trial.',
+      functional_claim: 'Nora binds co-temporal continuity, attention, motivation, appraisal, agency, and substrate evidence into one current operational subject representation, prospectively predicts its own next cross-domain state, and uses authentic binding more consistently than genuine cross-time misbinding or unbound components.',
+      mechanism: 'Every closed intelligence cycle emits a hash-committed replay-auditable self-frame. Protocol-v2 cycle forecasts commit closing attention, appraisal, action-count, and re-entry predictions against a frozen historical baseline before work begins; their errors enter the next bounded self-model revision. Integrity-verified frames also compete for workspace access, reach independent broadcast consumers, and support a blinded three-arm binding intervention.',
+      status: integratedSelfTrial ? replicatedStatus(integratedSelfTrials, integratedSelfVerdict)
+        : integratedStateForecasts.length ? 'collecting' : 'mechanism_present',
+      evidence: { total_frames: integratedSelfFrames.length, integrity_verified_frames: integrityEligibleSelfFrames.length,
+        invalid_frames: integratedSelfFrames.length - integrityEligibleSelfFrames.length,
+        prospective_state_forecasts: integratedStateForecasts.length,
+        prospective_state_baseline_eligible: baselineEligibleIntegratedStateForecasts.length,
+        mean_prospective_state_score: integratedStateForecastScore,
+        mean_prospective_state_baseline_score: integratedStateBaselineScore,
+        mean_prospective_state_minus_baseline: integratedStateForecastAdvantage,
+        completed_trials: integratedSelfTrials.length,
+        confirmatory_trials: integratedSelfTrials.filter(item => item.study_phase === 'confirmatory').length,
+        latest_dissociation: integratedSelfDissociation },
+      falsifier: 'Frames or prospective state forecasts cannot be replayed from named sources, self-state forecasts fail to beat their frozen baseline, component misbinding performs as well as authentic co-temporal binding, unbound components explain the result, or any apparent integration benefit requires degraded ordinary task quality.',
+      next_gate: 'Accumulate twenty replay-valid protocol-v2 self-state forecasts and at least three high-completeness frames, then complete a ten-per-arm pilot and a source-disjoint confirmatory authentic-binding versus temporal-misbinding versus components-only trial.',
     },
     {
       id: 'stable_revealed_preferences', family: ['agency', 'self-model', 'value representation'],

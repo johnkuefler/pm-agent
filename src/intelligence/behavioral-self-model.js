@@ -22,7 +22,13 @@ function mean(values) {
   return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : null;
 }
 
-function profileEstimates(moments = []) {
+function meanDefined(values) {
+  const finite = values.filter(value => value !== null && value !== undefined)
+    .map(Number).filter(Number.isFinite);
+  return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : null;
+}
+
+function profileEstimates(moments = [], protocolVersion = 1) {
   const retained = moments.slice(-MAX_SOURCE_MOMENTS);
   const actionCounts = new Map();
   for (const moment of retained) {
@@ -46,7 +52,7 @@ function profileEstimates(moments = []) {
   const meanPredictedSurprise = mean(predictedSurprise);
   const meanObservedControl = mean(controlRows.map(row => row.observed));
   const meanPredictedControl = mean(controlRows.map(row => row.predicted));
-  return {
+  const estimates = {
     sample_size: retained.length,
     action_tendencies: actionTendencies,
     action_forecast_mean_f1: mean(outcomes.map(outcome => outcome.self_score.action_f1)),
@@ -70,6 +76,34 @@ function profileEstimates(moments = []) {
     mean_baseline_score: mean(comparisonEligible.map(outcome => outcome.baseline_score.composite)),
     mean_self_minus_baseline: mean(comparisonEligible.map(outcome => outcome.self_minus_baseline)),
   };
+  if (Number(protocolVersion) >= 2) {
+    const stateRows = retained.filter(moment => Number(moment.self_forecast?.protocol_version) >= 2
+      && moment.self_forecast?.outcome?.self_state_score
+      && moment.self_forecast?.forecast?.self_state_prediction);
+    const stateComparisonRows = stateRows.filter(moment =>
+      moment.self_forecast.outcome.self_state_baseline_comparison_eligible === true);
+    const appraisalKeys = ['valence', 'arousal', 'control', 'social_safety', 'coherence'];
+    estimates.integrated_self_state = {
+      samples: stateRows.length,
+      attention_forecast_mean_f1: mean(stateRows.map(moment =>
+        moment.self_forecast.outcome.self_state_score.attention_f1)),
+      action_count_mean_absolute_error: mean(stateRows.map(moment =>
+        moment.self_forecast.outcome.self_state_score.action_count_absolute_error)),
+      appraisal_signed_bias: Object.fromEntries(appraisalKeys.map(key => [key, meanDefined(stateRows.map(moment => {
+        const predictedRaw = moment.self_forecast.forecast.self_state_prediction.appraisal_at_close?.[key];
+        const actualRaw = moment.self_forecast.outcome.self_state_actual?.appraisal_at_close?.[key];
+        const predicted = predictedRaw == null ? NaN : Number(predictedRaw);
+        const actual = actualRaw == null ? NaN : Number(actualRaw);
+        return Number.isFinite(predicted) && Number.isFinite(actual) ? predicted - actual : null;
+      }))])),
+      reentry_mean_brier: mean(stateRows.map(moment => moment.self_forecast.outcome.self_state_score.reentry_brier)),
+      comparison_eligible_samples: stateComparisonRows.length,
+      mean_self_score: mean(stateComparisonRows.map(moment => moment.self_forecast.outcome.self_state_score.composite)),
+      mean_baseline_score: mean(stateComparisonRows.map(moment => moment.self_forecast.outcome.baseline_state_score.composite)),
+      mean_self_minus_baseline: mean(stateComparisonRows.map(moment => moment.self_forecast.outcome.self_state_minus_baseline)),
+    };
+  }
+  return estimates;
 }
 
 function revisionManifest(revision) {
@@ -92,18 +126,21 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
   const retained = moments.slice(-MAX_SOURCE_MOMENTS);
   if (!retained.length) throw new Error('behavioral self-model revision requires a scored forecast moment');
   const throughMoment = retained.at(-1);
+  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 2) ? 2 : 1;
   const revision = {
-    protocol_version: 1,
+    protocol_version: protocolVersion,
     id: `behavioral-self-revision-${revisionIndex}-${throughMoment.id}`.slice(0, 300),
     revision_index: revisionIndex,
     prior_revision_commitment: priorRevisionCommitment,
     through_moment_id: throughMoment.id,
     source_moment_ids: retained.map(moment => moment.id),
     source_forecast_ids: retained.map(moment => moment.self_forecast.id),
-    estimates: profileEstimates(retained),
+    estimates: profileEstimates(retained, protocolVersion),
     evidence_status: retained.length >= 5 ? 'observational_profile' : 'provisional_profile',
     created_at: createdAt,
-    epistemic_limit: 'A deterministic summary of replay-valid observed cycle behavior and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.',
+    epistemic_limit: protocolVersion >= 2
+      ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'
+      : 'A deterministic summary of replay-valid observed cycle behavior and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.',
     revision_commitment: null,
   };
   revision.revision_commitment = commitment(revisionManifest(revision));

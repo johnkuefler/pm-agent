@@ -1945,7 +1945,13 @@ test('cycle self-forecasts commit before action and score automatically against 
     rationale: 'There is one bounded task in the current orientation.', evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
   }), /one to five/);
   const forecast = store.preregisterCycleSelfForecast(started.cycle.id, {
+    protocol_version: 2,
     predicted_action_types: ['Review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.7, coherence: 0.8 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
     rationale: 'The current orientation contains one bounded review and no urgent external work.',
     evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
   });
@@ -1956,17 +1962,41 @@ test('cycle self-forecasts commit before action and score automatically against 
   store.completeCycle(started.cycle.id, { summary: 'Reviewed the bounded item.', actions: [{ type: 'review', id: 'review-1' }] });
   const moment = store.experienceStreamSnapshot().moments[0];
   assert.equal(moment.self_forecast.outcome.actual.action_types[0], 'review');
+  assert.equal(moment.self_forecast.protocol_version, 2);
+  assert.equal(moment.self_forecast.outcome.self_state_actual.action_count, 1);
+  assert.ok(Number.isFinite(moment.self_forecast.outcome.self_state_score.composite));
+  assert.equal(moment.self_forecast.outcome.self_state_score.appraisal_mean_absolute_error, null);
   assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
   assert.equal(moment.audit.evidence_eligible, true);
   assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.replay_verified_scored, 1);
   const behavioralProfile = store.behavioralSelfModelSnapshot();
   assert.equal(behavioralProfile.report.total_revisions, 1);
   assert.equal(behavioralProfile.current.estimates.sample_size, 1);
+  assert.equal(behavioralProfile.current.protocol_version, 2);
+  assert.equal(behavioralProfile.current.estimates.integrated_self_state.samples, 1);
   assert.equal(behavioralProfile.current.evidence_status, 'provisional_profile');
   assert.equal(behavioralProfile.current.audit.complete_chain_verified, true);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_preregistered').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_scored').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'behavioral_self_model_revised').length, 1);
+  const next = store.startCycle({ id: 'self-forecast-no-downgrade', holder: 'nora-cowork' });
+  assert.throws(() => store.preregisterCycleSelfForecast(next.cycle.id, {
+    predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+    rationale: 'A legacy forecast must not silently discard integrated self-state calibration.',
+    evidence: [{ type: 'intelligence_cycle', id: next.cycle.id }],
+  }), /cannot downgrade/);
+  store.completeCycle(next.cycle.id, { status: 'failed', summary: 'Closed after downgrade rejection.', actions: [] });
+  await store.persist();
+  const tamperedPath = path.join(dir, 'tampered.json');
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  persisted.cognition.experience_stream[0].self_forecast.forecast.self_state_prediction.expected_action_count = 99;
+  fs.writeFileSync(tamperedPath, JSON.stringify(persisted));
+  const tampered = createIntelligenceStore({ filePath: tamperedPath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await tampered.init();
+  assert.equal(tampered.experienceStreamSnapshot().moments[0].audit.self_forecast.complete_chain_verified, false);
+  assert.equal(tampered.behavioralSelfModelSnapshot().current, null);
+  assert.equal(tampered.behavioralSelfModelSnapshot().report.replay_valid_revisions, 0);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
