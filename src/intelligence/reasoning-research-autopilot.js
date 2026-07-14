@@ -213,7 +213,15 @@ function summarizeTrial(trial) {
     sample_target_per_group: trial.sample_target_per_group,
     evaluation: trial.status === 'completed' ? trial.evaluation : null,
   };
-  if (trial.status === 'active') return common;
+  if (trial.status === 'active') {
+    const { id, ...sealed } = common;
+    return {
+      ...sealed,
+      sealed_reference: trial.design_commitment
+        ? `sealed-research-pilot-${String(trial.design_commitment).slice(0, 12)}` : 'sealed-research-pilot',
+      design_sealed: true,
+    };
+  }
   return {
     ...common,
     assigned_by_condition: Object.fromEntries(conditions.map(condition => [condition,
@@ -257,7 +265,7 @@ function status(store, runtime = {}) {
     mode: 'model_graded_pilot_only',
     scientific_boundary: 'Automated condition-blind Claude grades may support pilot causal-signal analysis only. They cannot satisfy the evaluator-disjoint independent confirmation gate.',
     pilot: summarizeTrial(pilot),
-    active_other_trial: activeOther ? { id: activeOther.id, intervention: activeOther.intervention } : null,
+    active_other_trial: activeOther ? { status: activeOther.status, design_sealed: true } : null,
     last_cycle: publicCycleStatus(runtime.lastCycle, pilot),
   };
 }

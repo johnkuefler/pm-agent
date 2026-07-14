@@ -163,11 +163,14 @@ test('autopilot commits two replay-bound blind grades for a delivered production
   assert.match(status.scientific_boundary, /cannot satisfy.*independent confirmation/i);
   assert.equal(status.pilot.assigned_total, 1);
   assert.equal(status.pilot.enrollment_target_total, 54);
+  assert.equal(status.pilot.id, undefined);
+  assert.equal(status.pilot.design_sealed, true);
   assert.equal(status.pilot.assigned_by_condition, undefined);
   assert.equal(status.pilot.resolved_by_condition, undefined);
   assert.equal(status.last_cycle.terminal_state.included_by_condition, undefined);
   assert.equal(status.last_cycle.provider_failures, undefined);
   assert.doesNotMatch(JSON.stringify(status), /self_bound_policy|deidentified_policy|provider_adaptive_policy/);
+  assert.doesNotMatch(JSON.stringify(status), new RegExp(autopilot.PILOT_ID));
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -260,4 +263,6 @@ test('server schedules the bounded autopilot only outside test mode', () => {
   assert.match(server, /NORA_RESEARCH_AUTOPILOT !== '0'/);
   assert.match(server, /NORA_TEST_MODE !== '1'/);
   assert.match(server, /getResearchAutopilotStatus/);
+  assert.match(server, /globalBroadcastResearchAutopilot\.runCycle/);
+  assert.match(server, /reasoningPilot && \['completed', 'aborted'\]\.includes\(reasoningPilot\.status\)/);
 });

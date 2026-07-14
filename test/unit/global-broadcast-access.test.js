@@ -45,6 +45,7 @@ test('multi-consumer broadcast causally isolates coordination from raw packet in
   const selected = [];
   for (let index = 0; index < 2000 && !trial.conditions.every(condition => selected.filter(item => item.condition === condition).length >= 10); index++) {
     const assignment = store.contextCondition({ surface: 'slack', unitKey: `broadcast-access-${index}`, globalBroadcastAvailable: true });
+    if (!assignment) continue;
     if (selected.filter(item => item.condition === assignment.condition).length < 10) selected.push(assignment);
   }
   assert.equal(selected.length, 30);
@@ -68,10 +69,14 @@ test('multi-consumer broadcast causally isolates coordination from raw packet in
       assert.doesNotMatch(prompt, /Independent consumers of globally available content/);
       assert.doesNotMatch(prompt, /Verify the launch evidence/);
     }
-    store.submitContextAssignmentEvidence(assignment.assignment_id, {
-      outcome_summary: 'A condition-blind response was captured for independent multi-metric grading.',
-      evidence: [{ type: 'captured_response', id: assignment.assignment_id }], submitted_by: 'runtime',
+    const captured = store.recordGlobalBroadcastResponse(assignment.assignment_id, {
+      task_prompt: 'Integrate the launch evidence, current commitment, and team constraint into one recommendation.',
+      public_response: 'Verify the launch evidence first, then report the supported status and assign the remaining action.',
+      delivered: true, interaction_id: `slack-${assignment.assignment_id}`,
     });
+    assert.equal(captured.included, true);
+    assert.match(captured.evidence_package.task_prompt, /Integrate the launch evidence/);
+    assert.match(captured.evidence_package.public_response, /Verify the launch evidence/);
     const treatment = assignment.condition === 'multi_consumer_broadcast';
     const packet = assignment.condition === 'workspace_packet_only';
     const coordination = treatment ? 0.96 : packet ? 0.4 : 0.2;

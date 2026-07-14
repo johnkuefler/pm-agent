@@ -532,6 +532,14 @@ function registerCoworkInstructionsRoute(app) {
     may preregister and model-grade only the pilot using eighteen fixed enrollments per arm and two
     commitment-bound condition-blind Sonnet calls. It stops after pilot reveal; those model grades cannot
     satisfy the independent confirmation gate. Nora must not inspect, influence, or impersonate its graders.
+    After that pilot closes, the same scheduler may preregister a separate global_broadcast pilot; it never
+    overlaps or alters the active reasoning study. The broadcast pilot enrolls exactly ten delivered direct
+    Slack responses per arm, compares specialist-consumer use against the exact raw packet and packet absence,
+    and atomically captures only the frozen conversation, current request, and delivered answer for two
+    condition-blind graders. Silence, reactions, handler failures, and failed Slack delivery are terminal
+    exclusions, never invisible retries. Model grades remain pilot-only, and confirmation must use new
+    interaction units and evaluator-disjoint external grading. While any pilot is active,
+    GET /consciousness-research/autopilot exposes only an anonymous preregistration and aggregate progress.
   - GET /cognitive-initiation-studies exposes only blinded progress while an allocation study is active.
     Research-authenticated creation either freezes independently resolved source pulses or preregisters an
     empty prospective-consecutive cohort. In prospective mode every eligible same-model pulse is enrolled,

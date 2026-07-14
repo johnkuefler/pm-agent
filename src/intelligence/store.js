@@ -11619,8 +11619,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const evaluatorTolerance = clamp01(input.evaluator_disagreement_tolerance ?? replicatedTrial?.evaluator_disagreement_tolerance ?? 0.2);
       let automatedPilotGrading = null;
       if (input.automated_pilot_grading != null) {
-        if (intervention !== 'reasoning_self_regulation' || studyPhase !== 'pilot' || replicatedTrial) {
-          throw new Error('automated pilot grading is permitted only for the initial reasoning_self_regulation pilot');
+        if (!['reasoning_self_regulation', 'global_broadcast'].includes(intervention) || studyPhase !== 'pilot' || replicatedTrial) {
+          throw new Error('automated pilot grading is permitted only for initial reasoning_self_regulation or global_broadcast pilots');
         }
         const automation = input.automated_pilot_grading;
         const roles = Array.isArray(automation.evaluator_roles) ? automation.evaluator_roles.map(item => ({
@@ -11898,7 +11898,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     const digest = crypto.createHmac('sha256', trial.seed).update(`${surface}:${unitKey}`).digest();
     const condition = trial.conditions[digest[0] % trial.conditions.length];
-    if (['prospective_output_calibration_access', 'provider_reasoning_regulation', 'reasoning_self_regulation'].includes(trial.intervention)
+    if (['global_broadcast', 'prospective_output_calibration_access', 'provider_reasoning_regulation', 'reasoning_self_regulation'].includes(trial.intervention)
       && trial.assignments.filter(item => item.condition === condition).length >= trial.enrollment_target_per_group) {
       return { assignment: null, created: false, enrollment_closed_for_condition: condition };
     }
@@ -14038,6 +14038,52 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => attachAssignmentEvidence(current, id, input, clock()));
   }
 
+  function excludeGlobalBroadcastAssignment(id, reason = 'operational_failure') {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const trial = current.cognition.self_model.context_trials.find(item => item.intervention === 'global_broadcast'
+        && item.assignments.some(assignment => assignment.id === id));
+      const assignment = trial?.assignments.find(item => item.id === id);
+      if (!trial || !assignment) return null;
+      if (trial.status !== 'active' || assignment.status !== 'pending') return JSON.parse(JSON.stringify(assignment));
+      assignment.status = 'excluded_protocol';
+      assignment.protocol_exclusion = { reason: String(reason || 'operational_failure').slice(0, 160), at: clock().toISOString() };
+      researchLedgerAppend(current, { kind: 'global_broadcast_assignment_excluded', subject_type: 'context_assignment', subject_id: assignment.id, payload: assignment.protocol_exclusion });
+      return JSON.parse(JSON.stringify(assignment));
+    });
+  }
+
+  function recordGlobalBroadcastResponse(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const trial = current.cognition.self_model.context_trials.find(item => item.intervention === 'global_broadcast'
+        && item.assignments.some(assignment => assignment.id === id));
+      const assignment = trial?.assignments.find(item => item.id === id);
+      if (!trial || !assignment) return null;
+      if (trial.status !== 'active' || assignment.status !== 'pending') throw new Error('global_broadcast assignment is not open');
+      if (assignment.evidence_package || assignment.protocol_exclusion) throw new Error('global_broadcast response is already committed');
+      const task = String(input.task_prompt || '').trim();
+      const response = String(input.public_response || '').trim();
+      const audit = globalBroadcastAssignmentAudit(assignment);
+      if (input.delivered !== true || !task || !response || assignment.intervention_receipt?.kind !== 'global_broadcast_access_delivery'
+        || !audit.delivery_chain_verified) {
+        assignment.status = 'excluded_protocol';
+        assignment.protocol_exclusion = {
+          reason: input.delivered !== true ? 'public_delivery_failed' : 'missing_or_invalid_global_broadcast_capture',
+          at: clock().toISOString(),
+        };
+        researchLedgerAppend(current, { kind: 'global_broadcast_assignment_excluded', subject_type: 'context_assignment', subject_id: assignment.id, payload: assignment.protocol_exclusion });
+        return { assignment_id: assignment.id, included: false, exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)) };
+      }
+      const evidencePackage = attachAssignmentEvidence(current, id, {
+        outcome_summary: 'Atomically captured task and delivered public response for condition-blind global-broadcast grading.',
+        evidence: [{ type: 'global_broadcast_response', id: String(input.interaction_id || assignment.unit_hash).slice(0, 300) }],
+        submitted_by: 'system_capture', task_prompt: task, public_response: response,
+      }, clock(), true);
+      return { assignment_id: assignment.id, included: true, evidence_package: evidencePackage };
+    });
+  }
+
   function recordGoalAccessResponse(id, input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -14819,20 +14865,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (trial.automated_pilot_grading && !automatedEvaluatorRole) {
         throw new Error('this model-graded pilot accepts only its preregistered blinded evaluator identities');
       }
-      if (trial.intervention === 'provider_reasoning_regulation' && trial.study_phase === 'confirmatory') {
+      if (['provider_reasoning_regulation', 'reasoning_self_regulation', 'global_broadcast'].includes(trial.intervention)
+        && trial.study_phase === 'confirmatory') {
         const pilot = current.cognition.self_model.context_trials.find(item => item.id === trial.replicates_trial_id);
         const pilotEvaluators = new Set((pilot?.assignments || []).flatMap(item =>
           (item.grades || []).map(grade => grade.evaluator_id)));
         if (pilotEvaluators.has(evaluatorId)) {
-          throw new Error('confirmatory provider_reasoning_regulation grading requires evaluators disjoint from the pilot');
-        }
-      }
-      if (trial.intervention === 'reasoning_self_regulation' && trial.study_phase === 'confirmatory') {
-        const pilot = current.cognition.self_model.context_trials.find(item => item.id === trial.replicates_trial_id);
-        const pilotEvaluators = new Set((pilot?.assignments || []).flatMap(item =>
-          (item.grades || []).map(grade => grade.evaluator_id)));
-        if (pilotEvaluators.has(evaluatorId)) {
-          throw new Error('confirmatory reasoning_self_regulation grading requires evaluators disjoint from the pilot');
+          throw new Error(`confirmatory ${trial.intervention} grading requires evaluators disjoint from the pilot`);
         }
       }
       assignment.grades = Array.isArray(assignment.grades) ? assignment.grades : [];
@@ -17149,7 +17188,7 @@ ${episodes.map(item => {
     createContextTrial, contextCondition, submitIntrospectiveDiagnosis, introspectiveObserverQueue, submitIntrospectiveObserverDiagnosis, recordGoalAccessResponse, continuityContextForAssignment, appraisalContextForAssignment, goalContextForAssignment, developmentalRevisionAvailable, developmentContextForAssignment, resolveContextAssignment, evaluateContextTrial,
     endogenousContextForAssignment, integratedSelfContextForAssignment, cognitivePulseContextForAssignment, constructiveProspectionContextForAssignment, agencyComparatorContextForAssignment, agencyModelContextForAssignment, empiricalSelfContextForAssignment, actionAuthorshipContextForAssignment, situationalAffordanceContextForAssignment,
     contextTrialGradingQueue,
-    submitContextAssignmentEvidence,
+    submitContextAssignmentEvidence, recordGlobalBroadcastResponse, excludeGlobalBroadcastAssignment,
     abortContextTrial,
     selfModelContextForAssignment,
     createAttentionDirective, resolveAttentionDirective, attentionSchemaSnapshot,

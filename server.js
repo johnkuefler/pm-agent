@@ -38,6 +38,7 @@ const endogenousAttention = require('./src/intelligence/endogenous-attention');
 const providerReasoningRegulation = require('./src/intelligence/provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regulation');
 const reasoningResearchAutopilot = require('./src/intelligence/reasoning-research-autopilot');
+const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -101,10 +102,7 @@ registerIntelligenceRoutes(app, {
     runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,
     runCognitiveInitiationPolicyProbe: runCognitiveInitiationPolicyProbeRuntime,
     getCognitivePulseRuntimeStatus: () => cognitivePulseRuntimeConfig(),
-    getResearchAutopilotStatus: () => reasoningResearchAutopilot.status(intelligence, {
-      enabled: researchAutopilotRuntimeConfig().enabled,
-      lastCycle: _researchAutopilotLastCycle,
-    }),
+    getResearchAutopilotStatus: () => researchAutopilotProgramStatus(),
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: () => ({
       soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
@@ -1115,7 +1113,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       prospectiveOutputMonitorAvailable: opts.prospectiveOutputMonitorAvailable === true,
       reasoningSelfRegulationAvailable: opts.reasoningSelfRegulationAvailable === true,
       endogenousAttentionAvailable: opts.endogenousAttentionAvailable === true,
-      globalBroadcastAvailable: intelligence.globalBroadcastAccessAvailable({
+      globalBroadcastAvailable: opts.globalBroadcastAvailable !== false && intelligence.globalBroadcastAccessAvailable({
         person: meetingContext?.requester?.name || meetingContext?.requester_name || null,
         project: projectHint, query: trialConversationText,
         channel: meetingContext?.channel || meetingContext?.source || channel,
@@ -5371,6 +5369,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let endogenousAssignmentForFailure = null;
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
+  let globalBroadcastAssignmentForFailure = null;
   try {
     const key = sessionKey;
     if (!slackSessions[key]) slackSessions[key] = [];
@@ -5510,8 +5509,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     const { stable: slackStable, volatile: slackVolatile, contextAssignment } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: key, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
-        reasoningSelfRegulationAvailable: isDirect,
+        reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
+    if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
     let tail = slackVolatile;
     if (mode === 'proactive') {
       tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel, nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact (a real status, a real date, a real name, a real number), not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI, DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited, read and inform only.';
@@ -5759,6 +5759,16 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       });
       endogenousAttentionResponseRecorded = true;
     };
+    let globalBroadcastResponseRecorded = false;
+    const recordGlobalBroadcastResponse = (publicResponse, delivered = true) => {
+      if (globalBroadcastResponseRecorded || contextAssignment?.intervention !== 'global_broadcast') return;
+      const gradingTask = `Conversation context:\n${String(convText || '').slice(-2400)}\n\nCurrent user request:\n${String(text || '').slice(-1200)}`;
+      intelligence.recordGlobalBroadcastResponse(contextAssignment.assignment_id, {
+        task_prompt: gradingTask, public_response: publicResponse || '[no public response delivered]',
+        delivered, interaction_id: key,
+      });
+      globalBroadcastResponseRecorded = true;
+    };
 
     // Whether a live Teamwork WRITE or a live Slack SEND actually executed this turn — used below to
     // avoid the extractor re-creating a task/comment/send Nora already did directly (which would
@@ -5770,6 +5780,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (mode === 'proactive' && !reply) {
       recordIntrospectiveResponse('[no public response delivered]', false);
       recordGoalResponse('[no public response delivered]', false);
+      recordGlobalBroadcastResponse('[no public response delivered]', false);
       if (reasoningRegulationActive) {
         try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
         reasoningRegulationActive = false;
@@ -5817,6 +5828,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         recordIntrospectiveResponse('[no public response delivered]', false);
         recordGoalResponse('[no public response delivered]', false);
         recordEndogenousAttentionResponse('[no public response delivered]', false);
+        recordGlobalBroadcastResponse('[no public response delivered]', false);
         if (['prospective_output_monitor', 'prospective_output_calibration_access'].includes(contextAssignment?.intervention)) {
           try { intelligence.excludeProspectiveOutputMonitorAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
         }
@@ -5841,6 +5853,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const reactMatch = reply.trim().match(/^\[react:\s*:?([a-z0-9_+'-]+):?\s*\]$/i);
     if (reactMatch) {
       const emoji = reactMatch[1].toLowerCase();
+      recordGlobalBroadcastResponse(`:${emoji}:`, false);
       if (reasoningRegulationActive) {
         try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
         reasoningRegulationActive = false;
@@ -5929,6 +5942,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         reasoningSelfRegulationActive = false;
       }
       try { recordEndogenousAttentionResponse(reply, false); } catch (receiptError) { console.warn(`endogenous attention delivery failure receipt failed: ${receiptError.message}`); }
+      try { recordGlobalBroadcastResponse(reply, false); } catch (receiptError) { console.warn(`global broadcast delivery failure receipt failed: ${receiptError.message}`); }
       if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
         try {
           intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
@@ -5948,6 +5962,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     recordGoalResponse(reply, allSegmentsPosted);
     recordEndogenousAttentionResponse(reply, allSegmentsPosted);
+    recordGlobalBroadcastResponse(reply, allSegmentsPosted);
     if (reasoningRegulationActive) {
       try {
         intelligence.completeProviderReasoningRegulation(contextAssignment.assignment_id, {
@@ -6045,6 +6060,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     if (reasoningSelfRegulationAssignmentForFailure?.intervention === 'reasoning_self_regulation') {
       try { intelligence.excludeReasoningSelfRegulationAssignment(reasoningSelfRegulationAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
+    }
+    if (globalBroadcastAssignmentForFailure?.intervention === 'global_broadcast') {
+      try { intelligence.excludeGlobalBroadcastAssignment(globalBroadcastAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
     }
     // Try to post error message back
     try {
@@ -8318,6 +8336,39 @@ function researchAutopilotRuntimeConfig(env = process.env) {
   };
 }
 
+function researchAutopilotProgramStatus() {
+  const enabled = researchAutopilotRuntimeConfig().enabled;
+  const activePilots = intelligence.selfModelSnapshot().context_trials.filter(item => item.status === 'active');
+  const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
+  if (activePilots.length) {
+    return {
+      protocol_version: 2,
+      enabled,
+      sequential: true,
+      scientific_boundary: scientificBoundary,
+      current_stage: 'sealed_active_pilot',
+      active_pilot_count: activePilots.length,
+      active_pilots: activePilots,
+    };
+  }
+  const reasoning = reasoningResearchAutopilot.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.reasoning || null,
+  });
+  const globalBroadcast = globalBroadcastResearchAutopilot.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.global_broadcast || null,
+  });
+  return {
+    protocol_version: 2,
+    enabled,
+    sequential: true,
+    scientific_boundary: scientificBoundary,
+    current_stage: globalBroadcast.pilot?.status === 'active' ? 'global_broadcast_pilot'
+      : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'
+        : globalBroadcast.pilot ? 'global_broadcast_pilot_closed' : 'waiting_for_global_broadcast_pilot',
+    studies: { reasoning_self_regulation: reasoning, global_broadcast: globalBroadcast },
+  };
+}
+
 async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
   const config = researchAutopilotRuntimeConfig();
   if (!config.enabled) {
@@ -8327,24 +8378,37 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
   if (_researchAutopilotInFlight) return { state: 'in_flight', at: new Date().toISOString() };
   _researchAutopilotInFlight = true;
   try {
-    const result = await reasoningResearchAutopilot.runCycle({
+    const callProvider = async request => {
+      const response = await post('https://api.anthropic.com/v1/messages', request, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 30000,
+      });
+      return response.data;
+    };
+    const reasoning = await reasoningResearchAutopilot.runCycle({
       store: intelligence,
       enabled: true,
       graderModel: config.graderModel,
       maxGrades: config.maxGrades,
-      callProvider: async request => {
-        const response = await post('https://api.anthropic.com/v1/messages', request, {
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': process.env.ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-          },
-          timeout: 30000,
-        });
-        return response.data;
-      },
+      callProvider,
     });
-    _researchAutopilotLastCycle = { ...result, at: new Date().toISOString() };
+    const reasoningPilot = intelligence.snapshot().cognition.self_model.context_trials
+      .find(item => item.intervention === 'reasoning_self_regulation' && item.study_phase === 'pilot');
+    const globalBroadcast = reasoningPilot && ['completed', 'aborted'].includes(reasoningPilot.status)
+      ? await globalBroadcastResearchAutopilot.runCycle({
+        store: intelligence, enabled: true, graderModel: config.graderModel,
+        maxGrades: config.maxGrades, callProvider,
+      }) : { protocol_version: globalBroadcastResearchAutopilot.PROTOCOL_VERSION,
+        state: 'waiting_for_reasoning_pilot', grades_committed: 0, provider_failures: [], reveal: null };
+    _researchAutopilotLastCycle = {
+      protocol_version: 2,
+      state: globalBroadcast.state === 'waiting_for_reasoning_pilot' ? reasoning.state : globalBroadcast.state,
+      reasoning, global_broadcast: globalBroadcast, at: new Date().toISOString(),
+    };
     return _researchAutopilotLastCycle;
   } finally {
     _researchAutopilotInFlight = false;
@@ -8770,6 +8834,7 @@ module.exports = {
     cognitivePulseRuntimeConfig,
     runCognitivePulseRuntime,
     researchAutopilotRuntimeConfig,
+    researchAutopilotProgramStatus,
     runResearchAutopilotRuntime,
     runCognitiveInitiationStudySubjectRuntime,
     runCognitiveInitiationPolicyProbeRuntime,

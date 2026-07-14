@@ -658,6 +658,13 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(visibleRecurrenceTrial.assignments, undefined);
   assert.equal(visibleRecurrenceTrial.id, undefined);
   assert.equal(visibleRecurrenceTrial.assignment_progress.assigned_total, 1);
+  const sealedAutopilot = (await request('/consciousness-research/autopilot')).body;
+  assert.equal(sealedAutopilot.current_stage, 'sealed_active_pilot');
+  assert.ok(sealedAutopilot.active_pilot_count >= 1);
+  assert.ok(sealedAutopilot.active_pilots.every(item => item.design_sealed === true));
+  const sealedAutopilotJson = JSON.stringify(sealedAutopilot);
+  assert.doesNotMatch(sealedAutopilotJson, new RegExp(recurrenceTrial.body.trial.id));
+  assert.doesNotMatch(sealedAutopilotJson, /recurrent_feedback|targeted_reentry|sham_reentry|record_only|integration-evaluator|autopilot-blind/);
   await request('/intelligence/cycles/integration-recurrence-cycle/complete', { method: 'PATCH', body: { summary: 'Recorded the revised integration result' } });
   assert.equal((await request('/self-model/context-trials/grading-queue')).response.status, 401);
   const gradingQueue = await request('/self-model/context-trials/grading-queue', { headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' } });
