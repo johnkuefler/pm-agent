@@ -195,6 +195,13 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, ...result });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
+  app.post('/intelligence/cycles/:id/self-forecast', requireAuth, (req, res) => {
+    try {
+      const forecast = store.preregisterCycleSelfForecast(req.params.id, req.body || {});
+      if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
+      res.json({ ok: true, forecast });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
     try {
       const cycle = store.completeCycle(req.params.id, req.body || {});

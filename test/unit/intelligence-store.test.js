@@ -1859,7 +1859,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 89);
+  assert.equal(store.snapshot().version, 90);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -1895,7 +1895,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 89);
+  assert.equal(store.snapshot().version, 90);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });
@@ -1930,6 +1930,86 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   const cognition = store.cognitionSnapshot();
   assert.equal(cognition.experience_stream, undefined);
   assert.equal(cognition.experience_stream_summary.total, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('cycle self-forecasts commit before action and score automatically against a frozen baseline', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-self-forecast-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  const started = store.startCycle({ id: 'self-forecast-cycle', holder: 'nora-cowork' });
+  assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, {
+    predicted_action_types: [], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+    rationale: 'There is one bounded task in the current orientation.', evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+  }), /one to five/);
+  const forecast = store.preregisterCycleSelfForecast(started.cycle.id, {
+    predicted_action_types: ['Review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+    rationale: 'The current orientation contains one bounded review and no urgent external work.',
+    evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+  });
+  assert.equal(forecast.audit.preregistration_verified, true);
+  assert.equal(forecast.baseline.kind, 'uninformative_prior');
+  assert.equal(forecast.baseline.sample_size, 0);
+  assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, forecast.forecast), /already committed/);
+  store.completeCycle(started.cycle.id, { summary: 'Reviewed the bounded item.', actions: [{ type: 'review', id: 'review-1' }] });
+  const moment = store.experienceStreamSnapshot().moments[0];
+  assert.equal(moment.self_forecast.outcome.actual.action_types[0], 'review');
+  assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
+  assert.equal(moment.audit.evidence_eligible, true);
+  assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.replay_verified_scored, 1);
+  assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_preregistered').length, 1);
+  assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_scored').length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('cycle self-forecasts cannot be backfilled after evidence re-entry', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-self-forecast-order-'));
+  const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  store.addCommitment({ what: 'Inspect new evidence prospectively' });
+  store.refreshCognition({ wants: [{ id: 'forecast-order-want', want: 'Inspect new evidence prospectively' }] });
+  const started = store.startCycle({ id: 'self-forecast-order-cycle' });
+  const target = started.moment.attention.slots[0];
+  store.reenterCycle(started.cycle.id, {
+    signal: 'New evidence entered the cycle before any forecast was committed.',
+    evidence: [{ type: 'test_observation', id: 'reentry-before-forecast' }],
+    feedback_to: [{ type: target.type, id: target.id }],
+  });
+  assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, {
+    predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+    rationale: 'This judgment is now contaminated by evidence already observed in the active cycle.',
+    evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+  }), /before evidence re-entry/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('cycle self-forecast tampering invalidates the forecast and its experience evidence', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-self-forecast-tamper-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  const started = store.startCycle({ id: 'self-forecast-tamper-cycle' });
+  store.preregisterCycleSelfForecast(started.cycle.id, {
+    predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
+    rationale: 'The current orientation contains one bounded review target to inspect.',
+    evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+  });
+  store.completeCycle(started.cycle.id, { summary: 'Reviewed.', actions: [{ type: 'review', id: 'review-1' }] });
+  await store.persist();
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  persisted.cognition.experience_stream[0].self_forecast.forecast.rationale = 'Rewritten after observing the outcome.';
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T16:00:00.000Z') });
+  await reloaded.init();
+  const moment = reloaded.experienceStreamSnapshot().moments[0];
+  assert.equal(moment.audit.self_forecast.forecast_commitment_verified, false);
+  assert.equal(moment.audit.self_forecast.complete_chain_verified, false);
+  assert.equal(moment.audit.evidence_eligible, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

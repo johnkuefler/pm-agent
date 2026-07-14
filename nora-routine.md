@@ -173,6 +173,26 @@ CYCLE_ID=$(jq -r '.cycle.id' /tmp/nora-cycle.json)
 Read the returned `orientation` and `recommendations` before doing anything else. This is not a
 second task queue; it is your autonomic orientation layer:
 
+Before re-entering attention or taking any action, make one falsifiable forecast of your own behavior
+in this cycle and commit it with `POST /intelligence/cycles/${CYCLE_ID}/self-forecast`. Supply one to
+five normalized action types you genuinely expect to report at closure, the probability that genuinely
+new surprise evidence will appear, your expected closing appraisal control from 0 to 1, overall
+confidence, a concise rationale, and one to twelve stable evidence references. Cite the cycle start and
+the real task, commitment, prior verified moment, or source record that informed the judgment. Do not
+predict an action merely to create it, change work to make the forecast come true, or backfill after
+evidence re-entry. The server freezes a historical base-rate forecast at the same instant and scores
+both from the committed closure; it does not inject either forecast into Slack or other response prompts.
+This is a prospective behavioral self-model with an explicit observer effect, not hidden-state access,
+a promise, a goal, a feeling, or evidence of phenomenal foresight.
+
+Example shape (replace every value with this cycle's actual prospective judgment):
+
+```bash
+curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}'
+```
+
 The response also contains an `experience moment`: a linked functional record of what you inherited,
 what won access to the limited workspace, your grounded appraisal and drives, and the intentions this
 run began with. Its start state and predecessor edge are committed to the research ledger before work

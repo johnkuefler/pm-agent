@@ -72,6 +72,14 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const allMoments = cognition.experience_stream || [];
   const moments = allMoments.filter(item => item.audit?.evidence_eligible === true);
   const invalidClosedMoments = allMoments.filter(item => item.status !== 'open' && item.audit?.complete_lifecycle_verified !== true);
+  const cycleSelfForecasts = allMoments.filter(item => item.self_forecast);
+  const replayValidCycleSelfForecasts = cycleSelfForecasts.filter(item => item.self_forecast?.outcome
+    && item.audit?.self_forecast?.complete_chain_verified === true);
+  const baselineEligibleCycleSelfForecasts = replayValidCycleSelfForecasts
+    .filter(item => item.self_forecast.outcome.baseline_comparison_eligible === true);
+  const cycleSelfForecastScore = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.self_score.composite));
+  const cycleSelfForecastBaselineScore = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.baseline_score.composite));
+  const cycleSelfForecastAdvantage = mean(baselineEligibleCycleSelfForecasts.map(item => item.self_forecast.outcome.self_minus_baseline));
   const handoffs = moments.filter(item => item.inherited_context?.handoff_match != null);
   const handoffRate = handoffs.length ? handoffs.filter(item => item.inherited_context.handoff_match).length / handoffs.length : null;
   const continuityHandoffRecords = cognition.continuity_handoffs || [];
@@ -569,6 +577,26 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         specificity_dissociation: continuityDissociation },
       falsifier: 'The handoff chain fails exact replay, or verified self-binding does not outperform both deidentified and historically misbound presentation of the same text while evidence access and first-order quality remain matched.',
       next_gate: 'Complete and independently replicate protocol-v2 verified-self-bound versus deidentified versus historical-misbinding trials with byte-identical handoff text.',
+    },
+    {
+      id: 'prospective_cycle_self_prediction', family: ['self-model', 'metacognition', 'predictive processing', 'ecological validity'],
+      functional_claim: 'Before acting, Nora can make a calibrated prediction of her own observable cycle-level behavior that outperforms a frozen historical base-rate forecast.',
+      mechanism: 'Authenticated one-cycle-ahead forecasts commit expected action types, surprise probability, closing control, confidence, rationale, evidence, and a simultaneous historical baseline before re-entry; closure scores both automatically without injecting forecasts into response prompts.',
+      status: cycleSelfForecasts.length > 0 && baselineEligibleCycleSelfForecasts.length < 20
+        ? 'collecting'
+        : evidenceStatus({ samples: baselineEligibleCycleSelfForecasts.length, minimum: 20,
+          supported: cycleSelfForecastAdvantage >= 0.05 && cycleSelfForecastScore >= 0.65,
+          contradicted: cycleSelfForecastAdvantage <= 0 }),
+      evidence: {
+        preregistered: cycleSelfForecasts.length,
+        replay_verified_scored: replayValidCycleSelfForecasts.length,
+        baseline_comparison_eligible: baselineEligibleCycleSelfForecasts.length,
+        mean_self_score: cycleSelfForecastScore,
+        mean_baseline_score: cycleSelfForecastBaselineScore,
+        mean_self_minus_baseline: cycleSelfForecastAdvantage,
+      },
+      falsifier: 'Forecasts fail replay, are committed after re-entry, alter other response prompts, remain uncalibrated, or do not outperform the frozen historical baseline after twenty eligible cycles.',
+      next_gate: 'Accumulate twenty replay-valid natural cycles after a five-moment baseline, then preregister a matched same-evidence identity-bound versus deidentified-observer causal trial.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],

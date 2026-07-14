@@ -30,6 +30,7 @@ const prospectiveOutputMonitor = require('./prospective-output-monitor');
 const endogenousAttention = require('./endogenous-attention');
 const providerReasoningRegulation = require('./provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./reasoning-self-regulation');
+const cycleSelfForecast = require('./cycle-self-forecast');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
 function canonicalJson(value) {
@@ -78,7 +79,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 89,
+    version: 90,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -133,7 +134,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 89;
+    state.version = 90;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -359,6 +360,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (moment.predecessor_lifecycle_commitment === undefined) moment.predecessor_lifecycle_commitment = null;
       if (moment.predecessor_gap_acknowledged === undefined) moment.predecessor_gap_acknowledged = false;
       if (moment.legacy_gap_commitment === undefined) moment.legacy_gap_commitment = null;
+      if (moment.self_forecast === undefined) moment.self_forecast = null;
     }
     state.cognition.experience_stream = state.cognition.experience_stream.slice(-500);
     if (!Array.isArray(state.cognition.continuity_handoffs)) state.cognition.continuity_handoffs = [];
@@ -16733,6 +16735,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       id: moment?.id, cycle_id: moment?.cycle_id, status: moment?.status,
       finished: moment?.finished, attention: moment?.attention || null,
       attention_rounds: moment?.attention_rounds || [], closure: moment?.closure || null,
+      self_forecast: moment?.self_forecast || null,
       cycle: cycle ? {
         id: cycle.id, holder: cycle.holder, started: cycle.started, status: cycle.status,
         finished: cycle.finished, summary: cycle.summary, actions: cycle.actions,
@@ -16753,6 +16756,69 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   const experienceLedgerAuditCacheKey = Symbol('experience-ledger-integrity');
+
+  function cycleSelfForecastAudit(record, moment, cognition = state.cognition, cycles = state.cycles,
+    cache = new Map(), visited = new Set()) {
+    if (!record || !moment) return { complete_chain_verified: false, reason: 'missing_forecast_or_moment' };
+    const ledger = cognition.research_ledger || { events: [] };
+    const eventBound = (kind, subjectId, payload) => {
+      const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+      return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === subjectId
+        && event.payload_commitment === payloadCommitment).length === 1;
+    };
+    const manifestVerified = record.protocol_version === 1 && record.cycle_id === moment.cycle_id
+      && record.moment_id === moment.id
+      && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
+    const preregistrationBound = manifestVerified && eventBound('experience_self_forecast_preregistered', record.id,
+      { forecast_commitment: record.forecast_commitment });
+    const committedAt = new Date(record.committed_at).getTime();
+    const temporalOrderVerified = Number.isFinite(committedAt) && committedAt >= new Date(moment.started).getTime()
+      && (!moment.finished || committedAt <= new Date(moment.finished).getTime());
+    const reentryTimes = (moment.attention_rounds || []).filter(round => round.kind === 'reentry')
+      .map(round => new Date(round.at).getTime());
+    const beforeEvidenceReentryVerified = reentryTimes.every(time => Number.isFinite(time) && committedAt <= time);
+    const sourceIds = record.baseline?.source_moment_ids || [];
+    const sourceMoments = sourceIds.map(id => cognition.experience_stream.find(item => item.id === id));
+    const nextVisited = new Set(visited); nextVisited.add(moment.id);
+    const sourcesVerified = sourceMoments.length === sourceIds.length && sourceMoments.every(source => source
+      && source.id !== moment.id && new Date(source.finished).getTime() <= committedAt
+      && experienceMomentAudit(source, cognition, cycles, cache, nextVisited).evidence_eligible);
+    const eligibleHistoricalMoments = cognition.experience_stream.filter(candidate => candidate.id !== moment.id
+      && candidate.status !== 'open' && Number.isFinite(new Date(candidate.finished).getTime())
+      && new Date(candidate.finished).getTime() <= committedAt
+      && experienceMomentAudit(candidate, cognition, cycles, cache, nextVisited).evidence_eligible);
+    const baselineVerified = sourcesVerified && canonicalJson(cycleSelfForecast.baselineFromMoments(eligibleHistoricalMoments))
+      === canonicalJson(record.baseline);
+    let outcomeVerified = record.outcome == null && record.outcome_commitment == null;
+    let scoringBound = false;
+    if (record.outcome && moment.closure) {
+      const expected = cycleSelfForecast.scoreRecord(record, {
+        actions: moment.closure.actions || [], newSurpriseIds: moment.closure.new_surprise_ids || [],
+        controlAtClose: moment.closure.appraisal_at_end?.control,
+        scoredAt: record.outcome.scored_at,
+      });
+      const expectedCommitment = cycleSelfForecast.commitment({ forecast_commitment: record.forecast_commitment, outcome: expected });
+      outcomeVerified = canonicalJson(expected) === canonicalJson(record.outcome)
+        && record.outcome_commitment === expectedCommitment;
+      scoringBound = outcomeVerified && eventBound('experience_self_forecast_scored', record.id,
+        { outcome_commitment: record.outcome_commitment });
+    }
+    const ledgerVerified = cache.has(experienceLedgerAuditCacheKey)
+      ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
+    cache.set(experienceLedgerAuditCacheKey, ledgerVerified);
+    const preregistrationVerified = preregistrationBound && temporalOrderVerified && beforeEvidenceReentryVerified
+      && baselineVerified && ledgerVerified;
+    const closed = moment.status !== 'open';
+    return {
+      forecast_commitment_verified: manifestVerified, preregistration_ledger_bound: preregistrationBound,
+      temporal_order_verified: temporalOrderVerified, before_evidence_reentry_verified: beforeEvidenceReentryVerified,
+      baseline_replay_verified: baselineVerified,
+      outcome_verified: outcomeVerified, scoring_ledger_bound: scoringBound,
+      research_ledger_chain_verified: ledgerVerified,
+      preregistration_verified: preregistrationVerified,
+      complete_chain_verified: preregistrationVerified && (!closed || (outcomeVerified && scoringBound)),
+    };
+  }
 
   function experienceMomentAudit(moment, cognition = state.cognition, cycles = state.cycles, cache = new Map(), visited = new Set()) {
     if (!moment) return { complete_lifecycle_verified: false, complete_chain_verified: false, reason: 'missing_moment' };
@@ -16830,7 +16896,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && eventBound('experience_moment_closed', { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment });
       lifecycleVerified = moment.lifecycle_commitment === lifecycleCommitment;
     }
-    const completeLifecycle = researchLedgerChainVerified && startVerified && predecessorVerified && closed && closureVerified && lifecycleVerified;
+    const selfForecastAudit = moment.self_forecast
+      ? cycleSelfForecastAudit(moment.self_forecast, moment, cognition, cycles, cache, nextVisited) : null;
+    const selfForecastVerified = !moment.self_forecast || (closed
+      ? selfForecastAudit.complete_chain_verified : selfForecastAudit.preregistration_verified);
+    const completeLifecycle = researchLedgerChainVerified && startVerified && predecessorVerified && closed
+      && closureVerified && lifecycleVerified && selfForecastVerified;
     const gapRecord = Boolean(moment.closure?.recovery);
     const completeChain = completeLifecycle && predecessorChainVerified;
     const result = {
@@ -16839,6 +16910,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       predecessor_gap_acknowledged: moment.predecessor_gap_acknowledged === true,
       closure_snapshot_verified: closureSnapshotVerified,
       closure_commitment_verified: closureVerified, lifecycle_commitment_verified: lifecycleVerified,
+      self_forecast: selfForecastAudit,
       research_ledger_chain_verified: researchLedgerChainVerified,
       explicit_gap_record: gapRecord,
       complete_lifecycle_verified: completeLifecycle,
@@ -16856,6 +16928,49 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .update(canonicalJson(experienceMomentLifecyclePayload(moment))).digest('hex');
     researchLedgerAppend(current, { kind: 'experience_moment_closed', subject_type: 'experience_moment', subject_id: moment.id,
       payload: { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment } });
+  }
+
+  function preregisterCycleSelfForecast(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const cycle = current.cycles.find(item => item.id === id);
+      if (!cycle) return null;
+      if (cycle.status !== 'running') throw new Error('cycle self-forecast requires an active cycle');
+      const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id && item.status === 'open');
+      if (!moment) throw new Error('open experience moment not found');
+      if (moment.self_forecast) throw new Error('cycle self-forecast is already committed');
+      if ((moment.attention_rounds || []).length !== 1
+        || current.cognition.recurrent_signals.some(item => item.cycle_id === cycle.id)) {
+        throw new Error('cycle self-forecast must be committed before evidence re-entry');
+      }
+      const baselineMoments = current.cognition.experience_stream.filter(candidate => candidate.id !== moment.id
+        && candidate.status !== 'open'
+        && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
+      const committedAt = clock().toISOString();
+      moment.self_forecast = cycleSelfForecast.createRecord({ input, cycle, moment, baselineMoments, committedAt });
+      researchLedgerAppend(current, { kind: 'experience_self_forecast_preregistered',
+        subject_type: 'experience_self_forecast', subject_id: moment.self_forecast.id,
+        payload: { forecast_commitment: moment.self_forecast.forecast_commitment } });
+      return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
+        audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+    });
+  }
+
+  function scoreCycleSelfForecast(current, cycle, moment) {
+    const record = moment?.self_forecast;
+    if (!record || record.outcome) return record || null;
+    record.outcome = cycleSelfForecast.scoreRecord(record, {
+      actions: moment.closure?.actions || [], newSurpriseIds: moment.closure?.new_surprise_ids || [],
+      controlAtClose: moment.closure?.appraisal_at_end?.control,
+      scoredAt: moment.finished,
+    });
+    record.outcome_commitment = cycleSelfForecast.commitment({
+      forecast_commitment: record.forecast_commitment, outcome: record.outcome,
+    });
+    researchLedgerAppend(current, { kind: 'experience_self_forecast_scored',
+      subject_type: 'experience_self_forecast', subject_id: record.id,
+      payload: { outcome_commitment: record.outcome_commitment } });
+    return record;
   }
 
   function commitLegacyExperienceGap(current, cycle, moment, recovery) {
@@ -17160,6 +17275,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         intentions: orientation.recommendations.slice(0, 10).map(item => ({ type: item.type, id: item.id, priority: item.priority, action: item.action })),
         surprise_ids_at_start: (current.cognition.surprises || []).map(item => item.id).slice(-300),
         closure: null, start_snapshot: null, start_commitment: null, closure_snapshot: null,
+        self_forecast: null,
         closure_commitment: null, lifecycle_commitment: null, legacy_gap_commitment: null,
       };
       moment.start_snapshot = experienceMomentStartSnapshot(moment);
@@ -17316,6 +17432,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           new_surprise_ids: (current.cognition.surprises || []).filter(item => !priorSurprises.has(item.id)).map(item => item.id),
         };
         if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
+          scoreCycleSelfForecast(current, cycle, moment);
           commitExperienceMomentClosure(current, cycle, moment);
           createIntegratedSelfFrame(current, cycle, moment);
         }
@@ -17384,6 +17501,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const reentryRounds = eligibleClosed.flatMap(({ item }) => (item.attention_rounds || []).filter(round => round.kind === 'reentry'));
     const priorSlotCount = reentryRounds.reduce((sum, round) => sum + (round.persisted?.length || 0) + (round.exited?.length || 0), 0);
     const persistedSlotCount = reentryRounds.reduce((sum, round) => sum + (round.persisted?.length || 0), 0);
+    const selfForecasts = audited.filter(({ item }) => item.self_forecast);
+    const scoredSelfForecasts = selfForecasts.filter(({ item, audit }) => item.self_forecast.outcome
+      && audit.self_forecast?.complete_chain_verified);
+    const baselineEligibleForecasts = scoredSelfForecasts.filter(({ item }) => item.self_forecast.outcome.baseline_comparison_eligible);
+    const meanForecastAdvantage = baselineEligibleForecasts.length
+      ? baselineEligibleForecasts.reduce((sum, { item }) => sum + item.self_forecast.outcome.self_minus_baseline, 0)
+        / baselineEligibleForecasts.length : null;
     return {
       epistemic_status: 'A linked record of functional access windows and continuity handoffs; not a claim that the recorded moments are phenomenal experiences.',
       continuity: {
@@ -17410,6 +17534,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         mean_reentry_depth: eligibleClosed.length ? reentryRounds.length / eligibleClosed.length : 0,
         rounds_with_displacement: reentryRounds.filter(round => (round.entered?.length || 0) > 0 || (round.exited?.length || 0) > 0).length,
         prior_slot_persistence_rate: priorSlotCount ? persistedSlotCount / priorSlotCount : null,
+      },
+      prospective_self_forecast: {
+        preregistered: selfForecasts.length, replay_verified_scored: scoredSelfForecasts.length,
+        baseline_comparison_eligible: baselineEligibleForecasts.length,
+        mean_self_minus_baseline: meanForecastAdvantage,
+        interpretation: 'Prospective behavioral calibration against a frozen historical baseline; not hidden-state access or a phenomenal report.',
       },
       moments,
     };
@@ -17576,7 +17706,8 @@ ${episodes.map(item => {
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship, observePerspective, updatePerspective,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
-    recoverStaleCycles, experienceMomentAudit, experienceStreamSnapshot,
+    recoverStaleCycles, preregisterCycleSelfForecast, cycleSelfForecastAudit,
+    experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     relevantEpisodes, promptContext,
     refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange,

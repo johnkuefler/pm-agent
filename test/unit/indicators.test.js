@@ -228,6 +228,28 @@ test('adequately sampled continuity can support or contradict its functional pre
   assert.equal(indicator(contradicted, 'temporal_continuity').status, 'observational_signal_contradicted');
 });
 
+test('prospective cycle self-prediction collects immediately and requires advantage over its frozen baseline', () => {
+  const moment = (index, advantage = 0.2) => ({
+    id: `self-forecast-moment-${index}`, status: 'completed',
+    self_forecast: { outcome: {
+      baseline_comparison_eligible: true,
+      self_score: { composite: 0.8 }, baseline_score: { composite: 0.8 - advantage },
+      self_minus_baseline: advantage,
+    } },
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true,
+      self_forecast: { complete_chain_verified: true } },
+  });
+  let report = buildIndicatorReport(stateWith({ experience_stream: [moment(0)] }));
+  assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'collecting');
+
+  report = buildIndicatorReport(stateWith({ experience_stream: Array.from({ length: 20 }, (_, index) => moment(index)) }));
+  assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_observed');
+  assert.ok(Math.abs(indicator(report, 'prospective_cycle_self_prediction').evidence.mean_self_minus_baseline - 0.2) < 1e-12);
+
+  report = buildIndicatorReport(stateWith({ experience_stream: Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
+  assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');
+});
+
 test('continuity specificity requires authentic context to beat shuffled and absent controls', () => {
   const trial = {
     id: 'continuity-specificity', intervention: 'continuity_context', status: 'completed', study_phase: 'pilot',

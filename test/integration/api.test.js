@@ -322,13 +322,21 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(cycle.body.moment.inherited_context.inner_thread_hash, null, 'request bodies cannot forge authoritative inner-thread inheritance');
   assert.ok(Array.isArray(cycle.body.orientation.recommendations));
   assert.equal(cycle.body.moment.cycle_id, cycle.body.cycle.id);
+  const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
+    predicted_action_types: ['integration_review'], surprise_probability: 0.2,
+    control_at_close: 0.7, confidence: 0.7,
+    rationale: 'The integration cycle has one bounded review path and no expected external dependency.',
+    evidence: [{ type: 'intelligence_cycle', id: cycle.body.cycle.id }],
+  } });
+  assert.equal(selfForecast.response.status, 200);
+  assert.equal(selfForecast.body.forecast.audit.preregistration_verified, true);
   const attentionTarget = cycle.body.moment.attention.slots[0];
   const reentry = await request(`/intelligence/cycles/${cycle.body.cycle.id}/reenter`, { method: 'POST', body: {
     signal: 'The integration observation should return to attention', evidence: [{ type: 'integration', id: 'observation-1' }],
     feedback_to: [{ type: attentionTarget.type, id: attentionTarget.id }],
   } });
   assert.equal(reentry.body.round.kind, 'reentry');
-  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete`, { method: 'PATCH', body: { summary: 'Integration cycle complete', actions: [], self_report: 'The cycle is coherent.', handoff: 'Continue the integration story.' } });
+  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete`, { method: 'PATCH', body: { summary: 'Integration cycle complete', actions: [{ type: 'integration_review', id: 'integration-review-1' }], self_report: 'The cycle is coherent.', handoff: 'Continue the integration story.' } });
   assert.equal(finishedCycle.body.cycle.status, 'completed');
   const integratedSelf = await request('/integrated-self');
   assert.equal(integratedSelf.response.status, 200);
@@ -341,6 +349,9 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(experience.continuity.replay_verified_closed, 1);
   assert.equal(experience.continuity.evidence_eligible_closed, 1);
   assert.equal(experience.moments[0].audit.complete_chain_verified, true, 'response redaction must not mutate the committed lifecycle');
+  assert.equal(experience.moments[0].audit.self_forecast.complete_chain_verified, true);
+  assert.equal(experience.moments[0].self_forecast.outcome.actual.action_types[0], 'integration_review');
+  assert.equal(experience.prospective_self_forecast.replay_verified_scored, 1);
   assert.equal(experience.recurrence.reentry_rounds, 1);
   const continuityHandoffs = await request('/continuity-handoffs');
   assert.equal(continuityHandoffs.response.status, 200);

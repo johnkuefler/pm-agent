@@ -27,6 +27,7 @@ GET /experience-stream
 GET /continuity-handoffs
 POST /intelligence/cycles
 POST /intelligence/cycles/:id/reenter
+POST /intelligence/cycles/:id/self-forecast
 PATCH /intelligence/cycles/:id/complete
 GET /cognition
 GET /endogenous-dynamics
