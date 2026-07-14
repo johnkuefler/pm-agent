@@ -144,6 +144,16 @@ app.use('/assets', express.static(path.join(__dirname, 'public'), {
   maxAge: 0,
   setHeaders: res => res.setHeader('Cache-Control', 'no-cache'),
 }));
+
+function currentCognitiveInputs() {
+  return {
+    soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
+    wants: intelligence.interventionActive('goal_access') ? [] : (_cache.wants?.items || []).filter(item => item.status === 'active'),
+    inner_thread: currentInnerThreadProjection().record,
+    unanswered_people: loadInteractions().filter(item => !item.reviewed).length,
+  };
+}
+
 registerIntelligenceRoutes(app, {
     requireAuth, requireResearchAuth, requireEvaluatorAuth, store: intelligence,
     runSelfInquirySelectionSubject: runSelfInquirySelectionSubjectRuntime,
@@ -153,12 +163,7 @@ registerIntelligenceRoutes(app, {
     getCognitivePulseRuntimeStatus: () => cognitivePulseRuntimeConfig(),
     getResearchAutopilotStatus: () => researchAutopilotProgramStatus(),
     getPredictions: () => (_cache.predictions?.items || []),
-    getCognitiveInputs: () => ({
-      soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
-      wants: intelligence.interventionActive('goal_access') ? [] : (_cache.wants?.items || []).filter(item => item.status === 'active'),
-      inner_thread: currentInnerThreadProjection().record,
-      unanswered_people: loadInteractions().filter(item => !item.reviewed).length,
-  }),
+    getCognitiveInputs: currentCognitiveInputs,
 });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
 
@@ -6641,7 +6646,44 @@ registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject
 // a non-expired lock, the new run SKIPS its memory-mutating work and exits. Advisory and
 // in-memory (a deploy clears it — fine, deploys are rare). TTL auto-expires so a crashed
 // run can't wedge the lock forever.
-registerRunLockRoutes(app, requireAuth);
+registerRunLockRoutes(app, requireAuth, {
+  onAcquire: ({ holder }) => {
+    if (!/^run-/.test(holder)) return null;
+    const cognitiveInput = {
+      ...currentCognitiveInputs(),
+      predictions: _cache.predictions?.items || [],
+      kind: 'hourly',
+      holder: 'nora-cowork',
+      resume_active: true,
+    };
+    intelligence.refreshCognition(cognitiveInput);
+    const started = intelligence.startCycle(cognitiveInput);
+    return {
+      kind: 'run_bound_intelligence_cycle',
+      cycle_id: started.cycle.id,
+      moment_id: started.moment.id,
+      resumed: started.resumed === true,
+      forecast_protocol_version: 2,
+      next_required_action: `POST /intelligence/cycles/${started.cycle.id}/self-forecast before operational tools`,
+    };
+  },
+  onRelease: ({ lifecycle }) => {
+    if (!lifecycle?.cycle_id) return lifecycle;
+    const cycle = intelligence.list('cycles').find(item => item.id === lifecycle.cycle_id);
+    if (!cycle) return { ...lifecycle, closure_status: 'cycle_missing' };
+    if (cycle.status !== 'running') return { ...lifecycle, closure_status: cycle.status };
+    const recovery = intelligence.recoverStaleCycles({
+      staleAfterMs: 0,
+      reason: 'run_lock_released_before_cycle_close',
+    });
+    const recovered = recovery.records.find(item => item.cycle_id === lifecycle.cycle_id);
+    return {
+      ...lifecycle,
+      closure_status: recovered ? 'explicit_gap_recorded' : 'recovery_not_recorded',
+      evidence_eligible: false,
+    };
+  },
+});
 
 // ── Markers API (operational idempotency bookkeeping; NOT knowledge) ─────────
 // The cowork loop writes/checks markers here instead of stuffing them into /memory.

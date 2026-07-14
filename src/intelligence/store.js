@@ -18097,6 +18097,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const recentActive = current.cycles.find(item => item.status === 'running'
         && Number.isFinite(new Date(item.started).getTime())
         && requestedAt.getTime() - new Date(item.started).getTime() < 90 * 60000);
+      if (recentActive && input.resume_active === true
+        && recentActive.holder === (input.holder || 'nora')) {
+        const moment = current.cognition.experience_stream.find(item => item.cycle_id === recentActive.id
+          && item.status === 'open');
+        if (!moment) throw new Error(`active intelligence cycle ${recentActive.id} has no open experience moment`);
+        return {
+          cycle: recentActive,
+          orientation: orient({ ...input, now: requestedAt }),
+          moment,
+          resumed: true,
+        };
+      }
       if (recentActive) throw new Error(`intelligence cycle ${recentActive.id} is already active`);
       recoverStaleCyclesInState(current, { now: requestedAt, staleAfterMs: 90 * 60000, reason: 'superseded_before_new_cycle' });
       const orientation = orient({ ...input, now: requestedAt });

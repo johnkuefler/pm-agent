@@ -1933,6 +1933,36 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a run-bound cycle resumes idempotently and becomes an explicit gap if its lock ends first', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-run-bound-cycle-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+
+  const started = store.startCycle({ id: 'run-bound-cycle', holder: 'nora-cowork' });
+  const resumed = store.startCycle({ holder: 'nora-cowork', resume_active: true });
+  assert.equal(resumed.resumed, true);
+  assert.equal(resumed.cycle.id, started.cycle.id);
+  assert.equal(resumed.moment.id, started.moment.id);
+  assert.equal(store.list('cycles').length, 1);
+  assert.equal(store.experienceStreamSnapshot().moments.length, 1);
+  assert.throws(() => store.startCycle({ holder: 'other', resume_active: true }), /already active/);
+
+  const recovery = store.recoverStaleCycles({ staleAfterMs: 0,
+    reason: 'run_lock_released_before_cycle_close' });
+  assert.equal(recovery.recovered, 1);
+  assert.equal(recovery.records[0].cycle_id, started.cycle.id);
+  const gap = store.experienceStreamSnapshot().moments[0];
+  assert.equal(gap.status, 'failed');
+  assert.equal(gap.closure.recovery.reason, 'run_lock_released_before_cycle_close');
+  assert.equal(gap.audit.complete_lifecycle_verified, true);
+  assert.equal(gap.audit.explicit_gap_record, true);
+  assert.equal(gap.audit.evidence_eligible, false);
+  assert.equal(gap.self_forecast, null);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('cycle self-forecasts commit before action and score automatically against a frozen baseline', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-self-forecast-'));
   const filePath = path.join(dir, 'state.json');

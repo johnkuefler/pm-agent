@@ -161,7 +161,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try {
       const authoritativeInputs = getCognitiveInputs();
       const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
-        inner_thread: authoritativeInputs.inner_thread || null, predictions: getPredictions() };
+        inner_thread: authoritativeInputs.inner_thread || null, predictions: getPredictions(),
+        resume_active: true };
       store.refreshCognition(cognitiveInput);
       const started = store.startCycle(cognitiveInput);
       const visibleStarted = JSON.parse(JSON.stringify(started));

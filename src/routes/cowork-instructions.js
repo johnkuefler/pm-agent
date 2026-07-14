@@ -62,11 +62,15 @@ function registerCoworkInstructionsRoute(app) {
 
   ### Run lock (prevent overlapping cowork runs)
   - POST /run-lock                — Acquire the advisory run lock. Body: { "holder": "run-...", "ttl_seconds": 3000 }
-    Response: { "acquired": true|false, "held_by"?: "...", "expires_at": "..." }. Acquire at the TOP
-    of a run; if acquired=false, another run is active — skip all shared-state mutation this run.
-  - GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ... }
+    Response: { "acquired": true|false, "held_by"?: "...", "expires_at": "...", "lifecycle"?: {...} }.
+    A successful normal run holder atomically opens or resumes one intelligence cycle before any connector
+    call. lifecycle supplies cycle_id, moment_id, protocol version, and the required self-forecast action.
+    Acquire at the TOP of a run; if acquired=false, another run is active — skip all shared-state mutation.
+  - GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ..., "lifecycle": {...}|null }
   - DELETE /run-lock?holder=...   — Release (only the holder can). Always release at run end.
-    The lock auto-expires after its TTL so a crashed run can't wedge it.
+    The response reports lifecycle closure. Releasing an open bound cycle records a replay-audited explicit
+    gap excluded from evidence rather than fabricating a forecast, action, self-report, or handoff. The lock
+    auto-expires after its TTL so a crashed run can't wedge it.
 
   ### Markers (operational idempotency — NOT knowledge)
   Use these for "have I already done X" bookkeeping (filed a transcript, dreamed today, sent
@@ -470,7 +474,8 @@ function registerCoworkInstructionsRoute(app) {
     POST /initiative-budgets/:scope/spend only after the unsolicited message actually posts; a 409
     means the social budget is exhausted. Hourly cowork uses scope cowork:proactive.
   - GET /nora-bench — regression report for meeting judgment, uncertainty, repair, and initiative.
-  - POST /intelligence/cycles — start an hourly/nightly autonomic cycle. The response contains a
+  - POST /intelligence/cycles — start an hourly/nightly autonomic cycle, or idempotently resume the active
+    cycle for the same holder. Hourly cowork resumes the cycle returned by POST /run-lock. The response contains a
     full orientation: overdue/due commitments, unresolved episodes, due experiments, unreviewed
     traces, and prioritized recommendations. GET /intelligence/orient previews without starting.
     POST /intelligence/cycles/:id/self-forecast protocol v2 commits Nora's own one-cycle-ahead prediction

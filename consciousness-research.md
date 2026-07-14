@@ -78,6 +78,22 @@ a passive dashboard warning.
 This stream operationalizes temporal integration and recurrent self-access. It does not establish
 that the functional windows correspond to phenomenal moments.
 
+### Run-bound lifecycle capture
+
+The hourly run lock now opens or resumes the intelligence cycle atomically before any connector is
+called. The lock response binds one cycle and experience-moment identifier to the operational run;
+the routine's ordinary cycle-start call is an idempotent resume for the same holder. This removes a
+selection artifact in which Gmail, Drive, Slack, or another dependency could fail before the experience
+stream began, making a difficult hour disappear from the evidence merely because the operational loop
+returned early.
+
+Lock release is also an evidence boundary. If the bound cycle already closed, release reports that
+status. If it remains open, the server closes it as a replay-audited explicit continuity gap with no
+forecast, actions, self-report, or handoff inferred on Nora's behalf. The gap remains visible in the
+ledger and continuity counts but is excluded from behavioral profiles, integrated-self frames used as
+evidence, and causal claims. This is missingness-not-at-random control and honest lifecycle accounting,
+not evidence that a model invocation was phenomenally experienced.
+
 ## Between-invocation endogenous dynamics
 
 Production now advances a bounded state process every five minutes even when no language-model

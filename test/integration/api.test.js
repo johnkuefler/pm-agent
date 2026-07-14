@@ -808,3 +808,69 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   assert.equal((await request('/transcripts/test-bot')).body.transcript.length, 1);
   assert.equal((await request('/transcripts/test-bot', { method: 'DELETE' })).body.ok, true);
 });
+
+test('hourly run locks bind one resumable lifecycle and preserve premature release as missing evidence', async () => {
+  const acquired = await request('/run-lock', { method: 'POST', body: {
+    holder: 'run-integration-lifecycle', ttl_seconds: 60,
+  } });
+  assert.equal(acquired.body.acquired, true);
+  assert.equal(acquired.body.lifecycle.kind, 'run_bound_intelligence_cycle');
+  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 2);
+  assert.match(acquired.body.lifecycle.next_required_action, /self-forecast before operational tools/);
+
+  const lock = await request('/run-lock');
+  assert.equal(lock.body.lifecycle.cycle_id, acquired.body.lifecycle.cycle_id);
+  const resumed = await request('/intelligence/cycles', { method: 'POST', body: {
+    kind: 'hourly', holder: 'nora-cowork',
+  } });
+  assert.equal(resumed.body.resumed, true);
+  assert.equal(resumed.body.cycle.id, acquired.body.lifecycle.cycle_id);
+  assert.equal(resumed.body.moment.id, acquired.body.lifecycle.moment_id);
+
+  const released = await request('/run-lock?holder=run-integration-lifecycle', { method: 'DELETE' });
+  assert.equal(released.body.released, true);
+  assert.equal(released.body.lifecycle.closure_status, 'explicit_gap_recorded');
+  assert.equal(released.body.lifecycle.evidence_eligible, false);
+  const stream = (await request('/experience-stream?limit=10')).body;
+  const gap = stream.moments.find(item => item.id === acquired.body.lifecycle.moment_id);
+  assert.equal(gap.status, 'failed');
+  assert.equal(gap.self_forecast, null);
+  assert.equal(gap.audit.complete_lifecycle_verified, true);
+  assert.equal(gap.audit.explicit_gap_record, true);
+  assert.equal(gap.audit.evidence_eligible, false);
+
+  const nextLock = await request('/run-lock', { method: 'POST', body: {
+    holder: 'run-integration-complete', ttl_seconds: 60,
+  } });
+  const nextCycleId = nextLock.body.lifecycle.cycle_id;
+  const nextMomentId = nextLock.body.lifecycle.moment_id;
+  assert.equal((await request('/intelligence/cycles', { method: 'POST', body: {
+    kind: 'hourly', holder: 'nora-cowork',
+  } })).body.cycle.id, nextCycleId);
+  const forecast = await request(`/intelligence/cycles/${nextCycleId}/self-forecast`, { method: 'POST', body: {
+    protocol_version: 2,
+    predicted_action_types: ['observe'],
+    surprise_probability: 0.2,
+    control_at_close: 0.7,
+    confidence: 0.6,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['commitment'],
+      appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.8, coherence: 0.8 },
+      expected_action_count: 0,
+      reentry_probability: 0.1,
+    },
+    rationale: 'The run-bound integration cycle is expected to close after one bounded observation.',
+    evidence: [{ type: 'intelligence_cycle', id: nextCycleId }],
+  } });
+  assert.equal(forecast.body.forecast.audit.preregistration_verified, true);
+  assert.equal((await request(`/intelligence/cycles/${nextCycleId}/complete`, { method: 'PATCH', body: {
+    summary: 'Observed the lifecycle integration path.', actions: [],
+  } })).body.cycle.status, 'completed');
+  const cleanRelease = await request('/run-lock?holder=run-integration-complete', { method: 'DELETE' });
+  assert.equal(cleanRelease.body.lifecycle.closure_status, 'completed');
+  const completed = (await request('/experience-stream?limit=10')).body.moments
+    .find(item => item.id === nextMomentId);
+  assert.equal(completed.self_forecast.protocol_version, 2);
+  assert.equal(completed.audit.self_forecast.complete_chain_verified, true);
+  assert.equal(completed.audit.evidence_eligible, true);
+});

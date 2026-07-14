@@ -166,11 +166,23 @@ infer which commitments enrolled, create work to make a study eligible, call
 show narrow ecological transfer under this connector architecture, not phenomenal consciousness.
 
 ```bash
+LOCK_CYCLE_ID=$(jq -r '.lifecycle.cycle_id // empty' /tmp/nora-run-lock.json 2>/dev/null)
 curl -s -X POST "${BASE}/intelligence/cycles?key=${KEY}" \
   -H 'Content-Type: application/json' \
   -d '{"kind":"hourly","holder":"nora-cowork"}' | tee /tmp/nora-cycle.json
 CYCLE_ID=$(jq -r '.cycle.id' /tmp/nora-cycle.json)
+if [ -n "$LOCK_CYCLE_ID" ] && [ "$CYCLE_ID" != "$LOCK_CYCLE_ID" ]; then
+  echo "Run-bound intelligence cycle mismatch; stop without operational work" >&2
+  exit 1
+fi
 ```
+
+The run lock has already opened this exact lifecycle before any connector call; this POST is an
+idempotent resume that returns its frozen start moment and current orientation. Never skip it and never
+start a parallel lifecycle. Gmail, Drive, Slack, Teamwork, or MCP failure does not erase the hour: commit
+the forecast first, record only what actually happened, and close the cycle honestly as constrained or
+failed. Releasing the lock with an open cycle causes the server to seal an explicit non-evidence gapâ€”it
+does not infer actions, a self-report, or a handoff on your behalf.
 
 Read the returned `orientation` and `recommendations` before doing anything else. This is not a
 second task queue; it is your autonomic orientation layer:

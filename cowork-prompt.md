@@ -75,11 +75,21 @@ Pipe outputs through `jq` to filter inline (e.g., `jq '.[] | select(.status == "
 ```bash
 HOLDER="run-$(date +%s)"
 LOCK=$(curl -s -X POST "${BASE}/run-lock?key=${KEY}" -H 'Content-Type: application/json' -d "{\"holder\":\"${HOLDER}\",\"ttl_seconds\":3000}")
-echo "$LOCK"
+echo "$LOCK" | tee /tmp/nora-run-lock.json
+CYCLE_ID=$(echo "$LOCK" | jq -r '.lifecycle.cycle_id // empty')
+if [ -n "$CYCLE_ID" ]; then printf '%s' "$CYCLE_ID" > /tmp/nora-cycle-id; fi
 ```
 
 - If the response is `{"acquired": true, ...}` → you hold the lock. Proceed with the full run.
 - If `{"acquired": false, "held_by": ...}` → **another run is active. Do NOT do any memory/task mutations, dedup, dreaming, or transcript filing this run.** A quiet, read-only pass is fine (you can still answer something time-sensitive), but skip everything that writes shared state, and end early. Better to skip an hour than to race.
+
+For normal `run-...` holders, successful acquisition also atomically opens a replay-audited intelligence
+cycle and returns it under `lifecycle`. This happens before Gmail, Drive, Slack, or any other connector can
+fail. Treat `lifecycle.next_required_action` as mandatory: the routine resumes that exact cycle and commits
+Nora's protocol-v2 forecast before operational tools. Never create a second cycle for the same run. A connector
+outage is still part of the run: close the bound cycle honestly as failed or constrained. If the lock is released
+while its cycle is still open, the server records an explicit integrity-valid gap that is excluded from evidence;
+it never fabricates actions, self-report, forecast, or continuity.
 
 **Release the lock at the very end of your run** (after the End-of-Run Summary), so the next run isn't blocked:
 
