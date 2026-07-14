@@ -16858,10 +16858,32 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       payload: { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment } });
   }
 
+  function commitLegacyExperienceGap(current, cycle, moment, recovery) {
+    moment.closure = { ...(moment.closure || {}), recovery };
+    if (cycle && !cycle.recovery) cycle.recovery = recovery;
+    const gapPayload = { id: moment.id, cycle_id: moment.cycle_id, predecessor_id: moment.predecessor_id || null,
+      started: moment.started, finished: moment.finished, status: moment.status, recovery };
+    moment.legacy_gap_commitment = crypto.createHash('sha256').update(canonicalJson(gapPayload)).digest('hex');
+    researchLedgerAppend(current, { kind: 'legacy_experience_gap_recorded', subject_type: 'experience_moment', subject_id: moment.id,
+      payload: { gap_commitment: moment.legacy_gap_commitment } });
+  }
+
   function recoverStaleCyclesInState(current, { now = clock(), staleAfterMs = 90 * 60000, reason = 'stale_cycle_recovery' } = {}) {
     const at = now instanceof Date ? now : new Date(now);
     if (!Number.isFinite(at.getTime())) throw new Error('stale-cycle recovery requires a valid time');
     const recovered = [];
+    for (const moment of current.cognition.experience_stream) {
+      if (Number(moment.lifecycle_protocol_version) === 2 || moment.legacy_gap_commitment
+        || moment.status !== 'failed' || moment.closure?.self_report != null
+        || (moment.closure?.actions || []).length
+        || !/^Recovered as failed by a later run: cycle never closed\b/.test(String(moment.closure?.summary || ''))) continue;
+      const cycle = current.cycles.find(item => item.id === moment.cycle_id);
+      if (!cycle || cycle.status !== 'failed') continue;
+      const recovery = { kind: 'explicit_continuity_gap', reason: 'legacy_recovery_record_import',
+        recovered_at: moment.finished || cycle.finished || at.toISOString() };
+      commitLegacyExperienceGap(current, cycle, moment, recovery);
+      recovered.push({ cycle_id: cycle.id, moment_id: moment.id, legacy: true, historical_import: true });
+    }
     for (const cycle of current.cycles.filter(item => item.status === 'running')) {
       const started = new Date(cycle.started);
       if (Number.isFinite(started.getTime()) && at.getTime() - started.getTime() < staleAfterMs) continue;
@@ -16876,11 +16898,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
           commitExperienceMomentClosure(current, cycle, moment);
         } else {
-          const gapPayload = { id: moment.id, cycle_id: cycle.id, predecessor_id: moment.predecessor_id || null,
-            started: moment.started, finished: moment.finished, status: moment.status, recovery };
-          moment.legacy_gap_commitment = crypto.createHash('sha256').update(canonicalJson(gapPayload)).digest('hex');
-          researchLedgerAppend(current, { kind: 'legacy_experience_gap_recorded', subject_type: 'experience_moment', subject_id: moment.id,
-            payload: { gap_commitment: moment.legacy_gap_commitment } });
+          commitLegacyExperienceGap(current, cycle, moment, recovery);
         }
       } else {
         researchLedgerAppend(current, { kind: 'orphan_cycle_gap_recorded', subject_type: 'intelligence_cycle', subject_id: cycle.id,

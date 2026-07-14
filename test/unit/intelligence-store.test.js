@@ -1983,6 +1983,30 @@ test('legacy open moments recover as committed gaps without becoming experience 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('legacy cycle-never-closed recoveries are imported as committed gaps exactly once', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-imported-experience-gap-'));
+  const filePath = path.join(dir, 'state.json');
+  const summary = 'Recovered as failed by a later run: cycle never closed (likely interrupted).';
+  fs.writeFileSync(filePath, JSON.stringify({
+    version: 88,
+    cycles: [{ id: 'legacy-recovered-cycle', holder: 'nora', started: '2026-07-11T12:00:00.000Z',
+      finished: '2026-07-11T14:00:00.000Z', status: 'failed', actions: [], summary, experience_moment_id: 'legacy-recovered-moment' }],
+    cognition: { experience_stream: [{ id: 'legacy-recovered-moment', cycle_id: 'legacy-recovered-cycle', predecessor_id: null,
+      started: '2026-07-11T12:00:00.000Z', finished: '2026-07-11T14:00:00.000Z', status: 'failed', attention_rounds: [],
+      closure: { summary, self_report: null, actions: [] } }] },
+  }));
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00.000Z') });
+  await store.init();
+  assert.equal(store.recoverStaleCycles({ reason: 'startup_recovery' }).recovered, 1);
+  assert.equal(store.recoverStaleCycles({ reason: 'startup_recovery' }).recovered, 0);
+  const gap = store.experienceStreamSnapshot().moments[0];
+  assert.equal(gap.audit.legacy_gap_recorded, true);
+  assert.equal(gap.audit.evidence_eligible, false);
+  assert.equal(gap.closure.recovery.reason, 'legacy_recovery_record_import');
+  assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'legacy_experience_gap_recorded').length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('experience lifecycle tampering invalidates autobiographical and integrated-self evidence', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-experience-tamper-'));
   const filePath = path.join(dir, 'state.json');

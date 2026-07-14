@@ -8863,7 +8863,7 @@ async function start(options = {}) {
     const staleCycleRecovery = intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
     await intelligence.persist();
     if (staleCycleRecovery.recovered) {
-      console.warn(`Recorded ${staleCycleRecovery.recovered} stale intelligence cycle(s) as explicit continuity gaps`);
+      console.warn(`Recorded ${staleCycleRecovery.recovered} legacy or stale intelligence cycle(s) as explicit continuity gaps`);
     }
     try { await mcpManager.migrate(); }
     catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
