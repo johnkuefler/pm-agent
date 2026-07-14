@@ -858,10 +858,10 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'prospective_self_knowledge', family: ['higher-order theories', 'metacognition'],
       functional_claim: 'Prospective access to the self-model predicts Nora’s own outcomes better than matched controls.',
-      mechanism: 'Protocol v2 freezes a replay-audited 20-cycle behavioral forecast-error profile, gives the authentic and deidentified arms byte-identical estimates while varying only identity binding, withholds the profile from a third arm, and independently grades committed forecasts against delayed outcomes.',
+      mechanism: 'Protocol v2 freezes a replay-audited 20-cycle behavioral forecast-error profile and exposes it only to a separate provider-receipted pre-response forecast call. Authentic and deidentified arms receive byte-identical estimates with only identity binding varied; a third arm receives no profile. The later production answer is profile-blind in every arm, and independent evaluators grade the committed forecast against its delayed outcome.',
       status: selfAccessTrial ? replicatedStatus(selfAccessTrials, selfAccessVerdict) : evidenceStatus({ samples: controlledProbes.length, minimum: 20, supported: probeAdvantage > 0.05, contradicted: probeAdvantage < 0 }),
       evidence: { controlled_probes: controlledProbes.length, self_brier: probeSelfBrier, control_brier: probeControlBrier, advantage: probeAdvantage, completed_access_trials: selfAccessTrials.length, confirmatory_access_trials: selfAccessTrials.filter(item => item.study_phase === 'confirmatory').length, access_dissociation: selfAccessDissociation },
-      falsifier: 'Replay or ledger integrity fails, the present arms receive different profile values, outcomes are committed too early, or self-bound access does not improve profile application and self-prediction over both controls while evidence access and first-order quality are preserved.',
+      falsifier: 'Replay or ledger ordering fails, present arms receive different profile values, the profile or forecast leaks into the production answer, the forecast is committed after inference, outcomes are graded too early, or self-bound access does not improve profile application and self-prediction over both controls while evidence access and first-order quality are preserved.',
       next_gate: 'Complete protocol-v2 pilot and source-moment-disjoint confirmatory self-bound-versus-deidentified-versus-absent behavioral-profile trials.',
     },
     {

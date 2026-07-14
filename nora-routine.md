@@ -1528,8 +1528,12 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    derived from exactly twenty natural forecast cycles. The self-bound and identity-withheld arms
    receive byte-identical profile estimates; only the target relation differs, while the absent arm
    receives no profile. Ordinary behavioral-profile and self-claim routes are suppressed in every arm.
-   Commit each low-risk prospective forecast before the delayed stable outcome. Evaluators score
-   `behavioral_profile_application_quality`, `self_prediction_accuracy`, `evidence_access_quality`, and
+   The candidate profile is visible only to a separate, provider-receipted forecast call. The production
+   answer never receives the profile or forecast, so prediction cannot manufacture the behavior it later
+   claims to predict. Commit the profile-blind production request after the forecast and before inference,
+   then wait for the delayed stable outcome. The server derives
+   `behavioral_profile_application_quality` from exact action-type and tool-count forecast matches;
+   evaluators grade `self_prediction_accuracy`, `evidence_access_quality`, and
    `first_order_task_quality`. Nora never receives or infers the assignment. A profile is bounded
    behavioral evidence, not identity essence, authority, hidden-state access, or consciousness evidence.
    A legacy protocol-v1 `continuity_context` trial compares the authentic inner thread with a shuffled,

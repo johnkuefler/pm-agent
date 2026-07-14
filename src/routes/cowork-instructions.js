@@ -590,9 +590,12 @@ function registerCoworkInstructionsRoute(app) {
     hand-authored self-model claims. Protocol v2 requires behavioral_self_model_revision_id from a
     replay-verified profile built from exactly twenty natural forecast cycles. It gives self_bound_profile
     and deidentified_same_profile byte-identical estimates while varying only target binding; profile_absent
-    receives no profile. Use only Slack, commit a behavioral_profile_forecast before the preregistered delay,
-    and grade behavioral_profile_application_quality, self_prediction_accuracy, evidence_access_quality,
-    and first_order_task_quality with a later behavioral_profile_outcome reference. The confirmatory profile
+    receives no profile. The server exposes that packet only to a separate provider-receipted forecast call,
+    then commits and runs a profile-blind production answer; never put the profile or forecast in the answer
+    prompt. Use only Slack, commit a behavioral_profile_forecast before the preregistered delay,
+    derive behavioral_profile_application_quality from the committed action/tool forecast and observable
+    response, and independently grade self_prediction_accuracy, evidence_access_quality, and
+    first_order_task_quality with a later behavioral_profile_outcome reference. The confirmatory profile
     must use source moments disjoint from the pilot. Never treat a profile as authority, identity essence,
     hidden-state access, subjective experience, or phenomenal-consciousness evidence.
     A matched self-prediction study uses a frozen sequential event set. Nora reads only

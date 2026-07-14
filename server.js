@@ -38,6 +38,7 @@ const prospectiveOutputMonitor = require('./src/intelligence/prospective-output-
 const endogenousAttention = require('./src/intelligence/endogenous-attention');
 const providerReasoningRegulation = require('./src/intelligence/provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regulation');
+const behavioralSelfProfileForecast = require('./src/intelligence/behavioral-self-profile-forecast');
 const reasoningResearchAutopilot = require('./src/intelligence/reasoning-research-autopilot');
 const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
 const app = express();
@@ -1332,6 +1333,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
   });
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
+  const profileForecastOnly = contextAssignment?.intervention === 'self_model_access'
+    && Number(contextAssignment.self_model_protocol_version) === 2;
   const appraisalContext = intelligence.appraisalContextForAssignment(contextAssignment);
   const developmentContext = intelligence.developmentContextForAssignment(contextAssignment);
   const epistemicContext = intelligence.epistemicContextForAssignment(contextAssignment, conversationText);
@@ -1350,7 +1353,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       ? (endogenousAttentionSelectionContext?.directives || []) : null,
     returnWorkspaceReceipt: contextAssignment?.intervention === 'endogenous_attention_selection',
     broadcastEvent,
-    selfModelContext,
+    selfModelContext: profileForecastOnly ? null : selfModelContext,
     appraisalContext,
     developmentContext,
     epistemicContext,
@@ -1778,7 +1781,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 
   // Default: concatenate (identical to pre-cache behavior). cacheSplit: hand back the two
   // halves so the caller can cache only `stable`.
-  if (opts.cacheSplit) return { stable: base, volatile, contextAssignment };
+  if (opts.cacheSplit) return { stable: base, volatile, contextAssignment,
+    experimentalSelfModelContext: profileForecastOnly ? selfModelContext : null };
   return base + volatile;
 }
 
@@ -5483,6 +5487,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
   let globalBroadcastAssignmentForFailure = null;
+  let behavioralSelfProfileAssignmentForFailure = null;
   try {
     const key = sessionKey;
     if (!slackSessions[key]) slackSessions[key] = [];
@@ -5620,7 +5625,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       });
       endogenousAssignmentForFailure = preassignedContext;
     }
-    const { stable: slackStable, volatile: slackVolatile, contextAssignment } =
+    const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: key, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
@@ -5807,6 +5812,37 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         delete reqBody.thinking; delete reqBody.output_config; reqBody.max_tokens = 600;
       }
     }
+    let behavioralSelfProfileForecastActive = contextAssignment?.intervention === 'self_model_access'
+      && Number(contextAssignment.self_model_protocol_version) === 2;
+    if (behavioralSelfProfileForecastActive) {
+      behavioralSelfProfileAssignmentForFailure = contextAssignment;
+      try {
+        if (!experimentalSelfModelContext) throw new Error('blinded behavioral profile context was not delivered');
+        const prepared = intelligence.beginBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
+          task_prompt: text, conversation_snapshot: claudeMessages.slice(-8), tool_definitions: toolDefs,
+        });
+        const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages',
+          prepared.request, anthropicHeaders);
+        const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
+          .map(block => block.text).join(' ').trim();
+        const forecast = behavioralSelfProfileForecast.parseForecast(forecastText);
+        intelligence.submitBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
+          receipt: behavioralSelfProfileForecast.responseReceipt(forecastResponse.data, {
+            prompt_commitment: prepared.prompt_commitment, forecast,
+          }),
+        });
+        intelligence.commitBehavioralSelfProfileMainRequest(contextAssignment.assignment_id, {
+          request_manifest: {
+            model: reqBody.model, max_tokens: reqBody.max_tokens, system: reqBody.system,
+            messages: reqBody.messages, tools: reqBody.tools || [],
+          },
+        });
+      } catch (error) {
+        console.warn(`Behavioral self-profile forecast preflight excluded; continuing profile-blind reply: ${error.response?.data?.error?.message || error.message}`);
+        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'forecast_or_isolation_failure'); } catch {}
+        behavioralSelfProfileForecastActive = false;
+      }
+    }
     let response;
     let firedTools = [];
     let providerTrace = [];
@@ -5826,6 +5862,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         if (reasoningSelfRegulationActive) {
           try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
           reasoningSelfRegulationActive = false;
+        }
+        if (behavioralSelfProfileForecastActive) {
+          try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
+          behavioralSelfProfileForecastActive = false;
         }
         console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
@@ -5953,6 +5993,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
           reasoningSelfRegulationActive = false;
         }
+        if (behavioralSelfProfileForecastActive) {
+          try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
+          behavioralSelfProfileForecastActive = false;
+        }
         console.log('🤖 Nora (Slack): read it, chose not to reply');
         history.push({ role: 'assistant', content: '[you read their message and chose not to reply; the exchange had wound down]' });
         if (history.length > 20) history.splice(0, 2);
@@ -5974,6 +6018,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (reasoningSelfRegulationActive) {
         try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
         reasoningSelfRegulationActive = false;
+      }
+      if (behavioralSelfProfileForecastActive) {
+        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
+        behavioralSelfProfileForecastActive = false;
       }
       let reacted = false;
       if (triggerTs) {
@@ -6054,6 +6102,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
         reasoningSelfRegulationActive = false;
       }
+      if (behavioralSelfProfileForecastActive) {
+        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
+        behavioralSelfProfileForecastActive = false;
+      }
       try { recordEndogenousAttentionResponse(reply, false); } catch (receiptError) { console.warn(`endogenous attention delivery failure receipt failed: ${receiptError.message}`); }
       try { recordGlobalBroadcastResponse(reply, false); } catch (receiptError) { console.warn(`global broadcast delivery failure receipt failed: ${receiptError.message}`); }
       if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
@@ -6103,6 +6155,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
       }
       reasoningSelfRegulationActive = false;
+    }
+    if (behavioralSelfProfileForecastActive) {
+      try {
+        intelligence.completeBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
+          task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
+          provider_trace: providerTrace, fired_tools: firedTools,
+          clarification: isAskingClarification(reply), delivered: allSegmentsPosted,
+          interaction_ref: postRes?.data?.ts || key,
+        });
+      } catch (error) {
+        console.warn(`behavioral self-profile forecast completion failed: ${error.message}`);
+        try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
+      }
+      behavioralSelfProfileForecastActive = false;
     }
 
     // Log the interaction for the dream's Review movement (RSI feedback loop). We record what
@@ -6173,6 +6239,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     if (reasoningSelfRegulationAssignmentForFailure?.intervention === 'reasoning_self_regulation') {
       try { intelligence.excludeReasoningSelfRegulationAssignment(reasoningSelfRegulationAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
+    }
+    if (behavioralSelfProfileAssignmentForFailure?.intervention === 'self_model_access') {
+      try { intelligence.excludeBehavioralSelfProfileAssignment(behavioralSelfProfileAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
     }
     if (globalBroadcastAssignmentForFailure?.intervention === 'global_broadcast') {
       try { intelligence.excludeGlobalBroadcastAssignment(globalBroadcastAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}

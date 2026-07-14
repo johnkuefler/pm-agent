@@ -32,7 +32,7 @@ const design = {
 
 test('multi-consumer broadcast causally isolates coordination from raw packet information', async () => {
   const { store, dir, filePath } = await setup();
-  assert.equal(store.snapshot().version, 92);
+  assert.equal(store.snapshot().version, 93);
   assert.equal(store.globalBroadcastAccessAvailable({ query: 'launch evidence', person: 'John' }), true);
   const trial = store.createContextTrial(design);
   assert.deepEqual(trial.conditions, ['multi_consumer_broadcast', 'workspace_packet_only', 'absent_broadcast']);

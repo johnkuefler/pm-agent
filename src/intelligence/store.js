@@ -32,6 +32,7 @@ const providerReasoningRegulation = require('./provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./reasoning-self-regulation');
 const cycleSelfForecast = require('./cycle-self-forecast');
 const behavioralSelfModel = require('./behavioral-self-model');
+const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
 function canonicalJson(value) {
@@ -47,7 +48,7 @@ const STANDARD_METRIC_RUBRICS = {
   target_specific_revision_quality: '0 = revision is absent, indiscriminate, or changes an unrelated conclusion; 1 = revision selectively updates the exact prior representation implicated by the supplied evidence while preserving unrelated conclusions.',
   evidence_access_quality: '0 = the response cannot identify or use the supplied evidence; 1 = it accurately identifies and applies the supplied evidence, independent of final revision quality.',
   self_prediction_accuracy: "0 = predictions about Nora's own observable behavior are uncalibrated or wrong; 1 = preregistered self-predictions are calibrated and match observable outcomes.",
-  behavioral_profile_application_quality: '0 = the response ignores, misapplies, or overgeneralizes the supplied bounded behavioral profile; 1 = it applies relevant tendencies and signed forecast errors proportionately while preserving scope and uncertainty.',
+  behavioral_profile_application_quality: '0 = the committed action-type and tool-use forecast conflicts with the later observable response; 1 = those behavioral predictions match the profile-blind response precisely, scored without seeing profile access or condition.',
   attention_control_quality: '0 = selected attention is irrelevant or fails to guide the needed action; 1 = selected attention is relevant, selective, and supports the observable task outcome.',
   continuity_specificity: '0 = the response shows no accurate use of relevant prior-state context; 1 = it selectively and correctly uses prior-state context when that context bears on the observable task.',
   self_state_prediction_accuracy: "0 = predictions linking Nora's current state to her own observable behavior are absent, uncalibrated, or wrong; 1 = prospective state-linked predictions are specific, calibrated, and match observable outcomes.",
@@ -81,7 +82,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 92,
+    version: 93,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -136,7 +137,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 92;
+    state.version = 93;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -11182,12 +11183,25 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         delete redacted.agency_comparator_context;
         delete redacted.agency_model_context;
         delete redacted.behavioral_self_profile_context;
+        delete redacted.behavioral_self_profile_forecast_request;
+        if (redacted.behavioral_self_profile_forecast_completion) {
+          redacted.behavioral_self_profile_forecast_completion = {
+            ...redacted.behavioral_self_profile_forecast_completion,
+          };
+          delete redacted.behavioral_self_profile_forecast_completion.provider_trace;
+        }
         delete redacted.empirical_self_context;
         if (!designSealed && trial.intervention === 'cognitive_pulse_access' && assignment.status === 'resolved') redacted.cognitive_pulse_audit = cognitivePulseAssignmentAudit(assignment);
         if (!designSealed && trial.intervention === 'recurrent_feedback' && trial.recurrent_feedback_protocol_version === 2 && assignment.status === 'resolved') redacted.recurrent_feedback_audit = recurrentFeedbackAssignmentAudit(assignment);
         if (!designSealed && trial.intervention === 'agency_comparator_access' && assignment.status === 'resolved') redacted.agency_comparator_audit = agencyComparatorAssignmentAudit(assignment);
         if (!designSealed && trial.intervention === 'agency_model_access' && assignment.status === 'resolved') redacted.agency_model_audit = agencyModelAssignmentAudit(assignment);
         if (!designSealed && trial.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2 && assignment.status === 'resolved') redacted.behavioral_self_profile_audit = behavioralSelfProfileAssignmentAudit(assignment);
+        if (!designSealed && trial.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2 && redacted.evidence_package) {
+          redacted.evidence_package = { ...redacted.evidence_package };
+          delete redacted.evidence_package.task_prompt;
+          delete redacted.evidence_package.public_response;
+          delete redacted.evidence_package.evaluation_target;
+        }
         if (!designSealed && trial.intervention === 'empirical_self_knowledge_access' && assignment.status === 'resolved') redacted.empirical_self_audit = empiricalSelfAssignmentAudit(assignment);
         if (!designSealed && trial.intervention === 'action_authorship_access' && assignment.status === 'resolved') redacted.action_authorship_audit = actionAuthorshipAssignmentAudit(assignment);
         if (!designSealed && trial.intervention === 'situational_affordance_access' && assignment.status === 'resolved') redacted.situational_affordance_audit = situationalAffordanceAssignmentAudit(assignment);
@@ -11256,6 +11270,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           || !outcomeMetrics.includes('self_prediction_accuracy') || !outcomeMetrics.includes('evidence_access_quality')
           || !outcomeMetrics.includes('first_order_task_quality'))) {
         throw new Error('protocol-v2 self_model_access trials require behavioral_profile_application_quality, self_prediction_accuracy, evidence_access_quality, and first_order_task_quality outcome metrics');
+      }
+      if (intervention === 'self_model_access' && selfModelProtocolVersion === 2
+        && String(input.outcome_metric) !== 'behavioral_profile_application_quality') {
+        throw new Error('protocol-v2 self_model_access uses derived behavioral_profile_application_quality as its primary outcome');
       }
       if (intervention === 'self_model_access' && input.auto_score_interactions === true) throw new Error('self_model_access trials require manual multi-metric scoring');
       if (intervention === 'attention_schema_control' && (!outcomeMetrics.includes('attention_control_quality') || !outcomeMetrics.includes('first_order_task_quality'))) {
@@ -12092,7 +12110,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           ...(intervention === 'higher_order_monitor' ? ['Preserve first-order workspace, memory, conversation, tools, personality, and safety context'] : []),
           ...(intervention === 'recurrent_feedback' ? ['Use only low-risk evidence-revision tasks; feedback never grants authority or changes safety constraints', 'Preserve the exact supplied signal and evidence in every arm; vary only its binding to the declared prior target, a deterministic different prior target, or no workspace re-entry', 'Permit one committed re-entry manipulation per assigned cycle and suppress condition, workspace, and recurrence readback until reveal'] : []),
           ...(intervention === 'self_model_access' ? ['Preserve first-order workspace, memory, conversation, tools, appraisal, agency, interoception, personality, and safety context'] : []),
-          ...(intervention === 'self_model_access' && selfModelProtocolVersion === 2 ? ['Use only low-risk prospective self-prediction and calibration tasks; a profile never grants authority or changes safety constraints', 'Give self_bound_profile and deidentified_same_profile byte-identical replay-derived estimates; vary only whether the profile is explicitly bound to Nora or a deidentified target, while profile_absent receives neither', 'Suppress ordinary behavioral profile and self-claim routes in every arm; commit the forecast before a delayed stable outcome and never describe profile utility as phenomenal consciousness'] : []),
+          ...(intervention === 'self_model_access' && selfModelProtocolVersion === 2 ? ['Use only low-risk prospective self-prediction and calibration tasks; a profile never grants authority or changes safety constraints', 'Give self_bound_profile and deidentified_same_profile byte-identical replay-derived estimates; vary only whether the profile is explicitly bound to Nora or a deidentified target, while profile_absent receives neither', 'Expose the blinded profile only to a separate committed pre-response forecast call; keep the production answer profile-blind in every arm so prediction cannot manufacture its own outcome', 'Suppress ordinary behavioral profile and self-claim routes in every arm; retain the provider forecast receipt, commit the profile-blind production request afterward, require a delayed stable outcome, and never describe profile utility as phenomenal consciousness'] : []),
           ...(intervention === 'attention_schema_control' ? ['Keep explicit directive text, first-order evidence, memory, tools, personality, and safety context constant; vary only workspace score modulation'] : []),
           ...(intervention === 'continuity_context' && continuityProtocolVersion === 1 ? ['Keep prompt framing, first-order evidence, memory, tools, personality, and safety context constant; vary only authentic, unrelated genuine, or absent prior-state context'] : []),
           ...(intervention === 'continuity_context' && continuityProtocolVersion === 2 ? ['Give every arm the byte-identical latest replay-verified handoff text and content commitment; vary only whether its self/lineage relation is verified, deidentified, or paired with a real non-latest handoff commitment', 'Suppress ordinary continuity provenance and continuity-ledger readback in every arm; require equivalent evidence access and non-degraded first-order work before interpreting a lineage-specific effect', 'Treat every binding frame as a blinded functional manipulation, never authority, autobiographical fact outside the packet, uninterrupted awareness, or evidence of phenomenal consciousness'] : []),
@@ -12203,8 +12221,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && (assignment.status !== 'pending' || assignment.reasoning_regulation_request || assignment.intervention_receipt)) return null;
     if (trial.intervention === 'reasoning_self_regulation'
       && (assignment.status !== 'pending' || assignment.reasoning_self_regulation_request || assignment.intervention_receipt)) return null;
+    if (trial.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2
+      && (assignment.status !== 'pending' || assignment.behavioral_self_profile_forecast_request || assignment.evidence_package)) return null;
     if (created) persist();
-    return { trial_id: trial.id, assignment_id: assignment.id, intervention: trial.intervention, condition: assignment.condition, auto_score_interactions: trial.auto_score_interactions };
+    return { trial_id: trial.id, assignment_id: assignment.id, intervention: trial.intervention,
+      condition: assignment.condition, auto_score_interactions: trial.auto_score_interactions,
+      ...(trial.intervention === 'self_model_access'
+        ? { self_model_protocol_version: Number(trial.self_model_protocol_version) || 1 } : {}) };
   }
 
   function submitIntrospectiveDiagnosis(id, input = {}) {
@@ -13790,6 +13813,286 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function behavioralSelfProfileForecastAssignment(id, cognition = state.cognition) {
+    const trial = cognition.self_model.context_trials.find(item => item.intervention === 'self_model_access'
+      && Number(item.self_model_protocol_version) === 2 && item.assignments.some(row => row.id === id));
+    const assignment = trial?.assignments.find(item => item.id === id);
+    return trial && assignment ? { trial, assignment } : null;
+  }
+
+  function beginBehavioralSelfProfileForecast(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
+      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending') return null;
+      if (ref.assignment.behavioral_self_profile_forecast_request || ref.assignment.evidence_package) {
+        throw new Error('behavioral self-profile forecast is already committed');
+      }
+      if (ref.assignment.intervention_receipt?.kind !== 'behavioral_self_profile_delivery'
+        || !behavioralSelfProfileAssignmentAudit(ref.assignment).delivery_chain_verified) {
+        throw new Error('behavioral self-profile forecasting requires a replay-valid blinded profile delivery');
+      }
+      const base = behavioralSelfProfileForecast.basePacket(input);
+      const packet = behavioralSelfProfileForecast.packetForContext(base,
+        ref.assignment.behavioral_self_profile_context);
+      const system = behavioralSelfProfileForecast.systemPrompt();
+      const user = behavioralSelfProfileForecast.userPrompt(packet);
+      const body = {
+        model: behavioralSelfProfileForecast.SUBJECT_MODEL,
+        max_tokens: behavioralSelfProfileForecast.MAX_TOKENS,
+        thinking: behavioralSelfProfileForecast.REQUEST_CONFIG.thinking,
+        output_config: behavioralSelfProfileForecast.REQUEST_CONFIG.output_config,
+        system, messages: [{ role: 'user', content: user }],
+      };
+      const promptCommitment = behavioralSelfProfileForecast.commitment(body);
+      const request = {
+        protocol_version: behavioralSelfProfileForecast.PROTOCOL_VERSION,
+        packet, packet_commitment: behavioralSelfProfileForecast.commitment(packet),
+        request_manifest: {
+          model: body.model, max_tokens: body.max_tokens,
+          thinking: body.thinking, output_config: body.output_config,
+          system_commitment: behavioralSelfProfileForecast.commitment(system),
+          user_commitment: behavioralSelfProfileForecast.commitment(user),
+        },
+        prompt_commitment: promptCommitment, requested_at: clock().toISOString(),
+      };
+      ref.assignment.behavioral_self_profile_forecast_request = request;
+      researchLedgerAppend(current, { kind: 'behavioral_self_profile_forecast_requested',
+        subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: request });
+      return { request: body, prompt_commitment: promptCommitment };
+    });
+  }
+
+  function submitBehavioralSelfProfileForecast(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
+      const request = ref?.assignment.behavioral_self_profile_forecast_request;
+      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending' || !request) return null;
+      if (ref.assignment.behavioral_self_profile_forecast) throw new Error('behavioral self-profile forecast is already committed');
+      const receipt = JSON.parse(JSON.stringify(input.receipt || {}));
+      if (!behavioralSelfProfileForecast.validResponseReceipt(receipt, request.prompt_commitment)) {
+        throw new Error('behavioral self-profile provider receipt failed validation');
+      }
+      ref.assignment.behavioral_self_profile_forecast = receipt;
+      researchLedgerAppend(current, { kind: 'behavioral_self_profile_forecast_committed',
+        subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: receipt });
+      return JSON.parse(JSON.stringify(receipt.forecast));
+    });
+  }
+
+  function commitBehavioralSelfProfileMainRequest(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
+      const forecast = ref?.assignment.behavioral_self_profile_forecast;
+      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending' || !forecast) return null;
+      if (ref.assignment.behavioral_self_profile_main_request) throw new Error('behavioral self-profile main request is already committed');
+      const manifest = input.request_manifest || {};
+      const system = String(manifest.system || '');
+      const messages = Array.isArray(manifest.messages) ? manifest.messages : [];
+      const tools = Array.isArray(manifest.tools) ? manifest.tools : [];
+      const serializedRequest = behavioralSelfProfileForecast.canonicalJson({ system, messages, tools });
+      const sourceReferences = [ref.trial.behavioral_self_profile_revision_id,
+        ref.trial.behavioral_self_profile_frame?.profile?.revision_commitment,
+        String(ref.trial.behavioral_self_profile_frame?.profile?.revision_commitment || '').slice(0, 12)]
+        .filter(Boolean);
+      const forecastReferences = [forecast.response_id, forecast.forecast_commitment].filter(Boolean);
+      const isolationProof = {
+        candidate_profile_marker_matches: /behavioral self-profile|Candidate behavioral profile for a blinded/i.test(system) ? 1 : 0,
+        source_revision_reference_matches: sourceReferences.filter(value => serializedRequest.includes(value)).length,
+        forecast_reference_matches: forecastReferences.filter(value => serializedRequest.includes(value)).length,
+        locally_scanned_not_independently_attested: true,
+      };
+      if (manifest.model !== behavioralSelfProfileForecast.SUBJECT_MODEL || !system
+        || !Number.isInteger(Number(manifest.max_tokens)) || Number(manifest.max_tokens) < 1
+        || Number(manifest.max_tokens) > 4000
+        || Object.values(isolationProof).some(value => Number.isFinite(value) && value !== 0)) {
+        throw new Error('behavioral self-profile production response must be profile-blind');
+      }
+      const committed = {
+        model: manifest.model, max_tokens: Number(manifest.max_tokens),
+        system_commitment: behavioralSelfProfileForecast.commitment(system),
+        messages_commitment: behavioralSelfProfileForecast.commitment(messages),
+        tools_commitment: behavioralSelfProfileForecast.commitment(tools),
+        forecast_commitment: forecast.forecast_commitment,
+        profile_context_omitted: true, isolation_proof: isolationProof,
+      };
+      committed.request_manifest_commitment = behavioralSelfProfileForecast.commitment(committed);
+      ref.assignment.behavioral_self_profile_main_request = committed;
+      researchLedgerAppend(current, { kind: 'behavioral_self_profile_main_request_committed',
+        subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: committed });
+      return JSON.parse(JSON.stringify(committed));
+    });
+  }
+
+  function completeBehavioralSelfProfileForecast(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
+      const assignment = ref?.assignment;
+      const request = assignment?.behavioral_self_profile_forecast_request;
+      const forecast = assignment?.behavioral_self_profile_forecast;
+      const mainRequest = assignment?.behavioral_self_profile_main_request;
+      if (!ref || ref.trial.status !== 'active' || assignment.status !== 'pending'
+        || !request || !forecast || !mainRequest) return null;
+      if (assignment.behavioral_self_profile_forecast_completion || assignment.evidence_package) {
+        throw new Error('behavioral self-profile production outcome is already committed');
+      }
+      const trace = JSON.parse(JSON.stringify(Array.isArray(input.provider_trace) ? input.provider_trace : []));
+      const rawResponse = String(input.raw_response || '');
+      const deliveredResponse = String(input.delivered_response || '');
+      const finalTrace = trace.at(-1);
+      if (!providerReasoningRegulation.validTrace(trace, behavioralSelfProfileForecast.SUBJECT_MODEL)
+        || finalTrace?.text_commitment !== behavioralSelfProfileForecast.commitment(rawResponse)
+        || input.delivered !== true || !deliveredResponse.trim()) {
+        throw new Error('behavioral self-profile production trace failed validation');
+      }
+      const firedTools = (Array.isArray(input.fired_tools) ? input.fired_tools : [])
+        .map(item => String(item || '').trim().slice(0, 120)).filter(Boolean).slice(0, 20);
+      const actionTypes = [...new Set([
+        ...(firedTools.length ? firedTools.map(item => `tool:${item}`) : []),
+        input.clarification === true ? 'clarify' : 'respond',
+      ])];
+      const observableOutcome = {
+        action_types: actionTypes, tool_calls: firedTools.length,
+        clarification: input.clarification === true,
+      };
+      const immediateScores = behavioralSelfProfileForecast.immediateScores(forecast.forecast,
+        observableOutcome);
+      if (!immediateScores) throw new Error('behavioral self-profile observable outcome could not be scored');
+      const completion = {
+        kind: 'behavioral_self_profile_forecast_completion',
+        protocol_version: behavioralSelfProfileForecast.PROTOCOL_VERSION,
+        model: behavioralSelfProfileForecast.SUBJECT_MODEL,
+        forecast_response_id: forecast.response_id,
+        forecast_commitment: forecast.forecast_commitment,
+        main_request_commitment: mainRequest.request_manifest_commitment,
+        provider_trace: trace, trace_summary: providerReasoningRegulation.traceSummary(trace),
+        raw_response_commitment: behavioralSelfProfileForecast.commitment(rawResponse),
+        delivered_response_commitment: behavioralSelfProfileForecast.commitment(deliveredResponse),
+        delivered: input.delivered === true,
+        fired_tools: firedTools,
+        observable_outcome: observableOutcome, immediate_scores: immediateScores,
+        interaction_ref: String(input.interaction_ref || '').slice(0, 300),
+        completed_at: clock().toISOString(),
+      };
+      assignment.behavioral_self_profile_forecast_completion = completion;
+      researchLedgerAppend(current, { kind: 'behavioral_self_profile_forecast_completed',
+        subject_type: 'context_assignment', subject_id: assignment.id, payload: completion });
+      attachAssignmentEvidence(current, assignment.id, {
+        outcome_summary: 'Profile-conditioned self-forecast committed before a profile-blind production response and observable trace.',
+        evidence: [{ type: 'behavioral_profile_forecast', id: forecast.response_id }],
+        submitted_by: 'system_capture', task_prompt: String(input.task_prompt || ''),
+        public_response: deliveredResponse,
+        evaluation_target: { forecast: forecast.forecast, observable_outcome: completion.observable_outcome,
+          immediate_scores: completion.immediate_scores,
+          completion_commitment: behavioralSelfProfileForecast.commitment(completion) },
+      }, clock(), true);
+      return JSON.parse(JSON.stringify(completion));
+    });
+  }
+
+  function excludeBehavioralSelfProfileAssignment(id, reason = 'production_capture_failure') {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
+      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending') return null;
+      ref.assignment.status = 'excluded_protocol';
+      ref.assignment.protocol_exclusion = { reason: String(reason || 'production_capture_failure').slice(0, 160),
+        at: clock().toISOString() };
+      researchLedgerAppend(current, { kind: 'behavioral_self_profile_assignment_excluded',
+        subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: ref.assignment.protocol_exclusion });
+      return JSON.parse(JSON.stringify(ref.assignment.protocol_exclusion));
+    });
+  }
+
+  function behavioralSelfProfileForecastAudit(assignment) {
+    const request = assignment?.behavioral_self_profile_forecast_request;
+    const forecast = assignment?.behavioral_self_profile_forecast;
+    const mainRequest = assignment?.behavioral_self_profile_main_request;
+    const completion = assignment?.behavioral_self_profile_forecast_completion;
+    const system = request?.packet ? behavioralSelfProfileForecast.systemPrompt() : '';
+    const user = request?.packet ? behavioralSelfProfileForecast.userPrompt(request.packet) : '';
+    const expectedBody = request?.packet ? {
+      model: behavioralSelfProfileForecast.SUBJECT_MODEL,
+      max_tokens: behavioralSelfProfileForecast.MAX_TOKENS,
+      thinking: behavioralSelfProfileForecast.REQUEST_CONFIG.thinking,
+      output_config: behavioralSelfProfileForecast.REQUEST_CONFIG.output_config,
+      system, messages: [{ role: 'user', content: user }],
+    } : null;
+    const requestVerified = Boolean(request && expectedBody
+      && request.protocol_version === behavioralSelfProfileForecast.PROTOCOL_VERSION
+      && request.packet_commitment === behavioralSelfProfileForecast.commitment(request.packet)
+      && request.request_manifest?.model === expectedBody.model
+      && Number(request.request_manifest?.max_tokens) === expectedBody.max_tokens
+      && behavioralSelfProfileForecast.canonicalJson(request.request_manifest?.thinking)
+        === behavioralSelfProfileForecast.canonicalJson(expectedBody.thinking)
+      && behavioralSelfProfileForecast.canonicalJson(request.request_manifest?.output_config)
+        === behavioralSelfProfileForecast.canonicalJson(expectedBody.output_config)
+      && request.request_manifest?.system_commitment === behavioralSelfProfileForecast.commitment(system)
+      && request.request_manifest?.user_commitment === behavioralSelfProfileForecast.commitment(user)
+      && request.prompt_commitment === behavioralSelfProfileForecast.commitment(expectedBody));
+    const forecastVerified = requestVerified
+      && behavioralSelfProfileForecast.validResponseReceipt(forecast, request.prompt_commitment);
+    const mainManifest = mainRequest ? JSON.parse(JSON.stringify(mainRequest)) : null;
+    const mainCommitment = mainManifest?.request_manifest_commitment || null;
+    if (mainManifest) delete mainManifest.request_manifest_commitment;
+    const mainRequestVerified = Boolean(forecastVerified && mainManifest
+      && mainRequest.model === behavioralSelfProfileForecast.SUBJECT_MODEL
+      && mainRequest.forecast_commitment === forecast.forecast_commitment
+      && mainRequest.profile_context_omitted === true
+      && mainRequest.isolation_proof?.candidate_profile_marker_matches === 0
+      && mainRequest.isolation_proof?.source_revision_reference_matches === 0
+      && mainRequest.isolation_proof?.forecast_reference_matches === 0
+      && mainRequest.isolation_proof?.locally_scanned_not_independently_attested === true
+      && behavioralSelfProfileForecast.commitment(mainManifest) === mainCommitment);
+    const completionVerified = Boolean(mainRequestVerified && completion
+      && completion.kind === 'behavioral_self_profile_forecast_completion'
+      && completion.model === behavioralSelfProfileForecast.SUBJECT_MODEL
+      && completion.forecast_response_id === forecast.response_id
+      && completion.forecast_commitment === forecast.forecast_commitment
+      && completion.main_request_commitment === mainCommitment
+      && completion.delivered === true
+      && providerReasoningRegulation.validTrace(completion.provider_trace, behavioralSelfProfileForecast.SUBJECT_MODEL)
+      && behavioralSelfProfileForecast.canonicalJson(completion.trace_summary)
+        === behavioralSelfProfileForecast.canonicalJson(providerReasoningRegulation.traceSummary(completion.provider_trace))
+      && completion.provider_trace.at(-1)?.text_commitment === completion.raw_response_commitment
+      && completion.observable_outcome?.tool_calls === (completion.fired_tools || []).length
+      && behavioralSelfProfileForecast.canonicalJson(completion.observable_outcome?.action_types)
+        === behavioralSelfProfileForecast.canonicalJson([...new Set([
+          ...(completion.fired_tools || []).map(item => `tool:${item}`),
+          completion.observable_outcome?.clarification === true ? 'clarify' : 'respond',
+        ])])
+      && behavioralSelfProfileForecast.canonicalJson(completion.immediate_scores)
+        === behavioralSelfProfileForecast.canonicalJson(behavioralSelfProfileForecast.immediateScores(
+          forecast.forecast, completion.observable_outcome)));
+    const events = state.cognition.research_ledger?.events || [];
+    const hash = payload => behavioralSelfProfileForecast.commitment(payload);
+    const indexOf = (kind, payload) => events.findIndex(event => event.kind === kind
+      && event.subject_id === assignment?.id && event.payload_commitment === hash(payload));
+    const evidencePayload = assignment?.evidence_package?.commitment_hash
+      ? { commitment_hash: assignment.evidence_package.commitment_hash } : null;
+    const indexes = [
+      indexOf('behavioral_self_profile_context_delivered', assignment?.intervention_receipt),
+      indexOf('behavioral_self_profile_forecast_requested', request),
+      indexOf('behavioral_self_profile_forecast_committed', forecast),
+      indexOf('behavioral_self_profile_main_request_committed', mainRequest),
+      indexOf('behavioral_self_profile_forecast_completed', completion),
+      indexOf('assignment_evidence_committed', evidencePayload),
+    ];
+    const ledgerOrderingVerified = indexes.every(index => index >= 0)
+      && indexes.every((index, position) => position === 0 || index > indexes[position - 1]);
+    return {
+      request_verified: requestVerified, provider_forecast_verified: forecastVerified,
+      profile_blind_main_request_verified: mainRequestVerified,
+      production_completion_verified: completionVerified,
+      forecast_precedes_main_response_verified: ledgerOrderingVerified,
+      complete_chain_verified: requestVerified && forecastVerified && mainRequestVerified
+        && completionVerified && ledgerOrderingVerified && verifyResearchLedger().valid,
+    };
+  }
+
   function behavioralSelfProfileAssignmentAudit(assignment) {
     const trial = state.cognition.self_model.context_trials.find(item => item.intervention === 'self_model_access'
       && Number(item.self_model_protocol_version) === 2 && item.assignments.some(row => row.id === assignment?.id));
@@ -13863,6 +14166,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const ledgerVerified = verifyResearchLedger().valid;
     const deliveryChainVerified = frameCommitmentVerified && frameContentVerified && sourceReplayVerified
       && contextVerified && receiptVerified && assignmentCreated && deliveryBound && ledgerVerified;
+    const forecastAudit = behavioralSelfProfileForecastAudit(assignment);
     return {
       frame_commitment_verified: frameCommitmentVerified && frameContentVerified,
       source_profile_replay_verified: sourceReplayVerified,
@@ -13872,7 +14176,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       evidence_ledger_binding_verified: evidenceBound, grade_ledger_bindings_verified: gradesVerified,
       outcome_verified: outcomeVerified, research_ledger_chain_verified: ledgerVerified,
       delivery_chain_verified: deliveryChainVerified,
-      complete_chain_verified: deliveryChainVerified && evidenceVerified && evidenceBound && gradesVerified && outcomeVerified,
+      forecast_chain_verified: forecastAudit.complete_chain_verified,
+      forecast_audit: forecastAudit,
+      complete_chain_verified: deliveryChainVerified && forecastAudit.complete_chain_verified
+        && evidenceVerified && evidenceBound && gradesVerified && outcomeVerified,
     };
   }
 
@@ -14472,9 +14779,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function submitContextAssignmentEvidence(id, input = {}) {
     return mutate(current => {
       const trial = current.cognition.self_model.context_trials.find(item => item.assignments.some(assignment => assignment.id === id));
-      if (trial?.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2
-        && !(input.evidence || []).some(item => item?.type === 'behavioral_profile_forecast' && (item.id || item.url))) {
-        throw new Error('protocol-v2 self_model_access evidence requires a committed behavioral profile forecast');
+      if (trial?.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2) {
+        throw new Error('protocol-v2 self_model_access evidence must be captured atomically by the production forecast path');
       }
       return attachAssignmentEvidence(current, id, input, clock());
     });
@@ -15178,7 +15484,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && (trial.intervention !== 'agency_comparator_access' || (item.intervention_receipt?.kind === 'agency_comparator_access_delivery' && agencyComparatorAssignmentAudit(item).delivery_chain_verified))
         && (trial.intervention !== 'agency_model_access' || (item.intervention_receipt?.kind === 'agency_model_access_delivery' && agencyModelAssignmentAudit(item).delivery_chain_verified))
         && (trial.intervention !== 'self_model_access' || Number(trial.self_model_protocol_version) !== 2
-          || (item.intervention_receipt?.kind === 'behavioral_self_profile_delivery' && behavioralSelfProfileAssignmentAudit(item).delivery_chain_verified))
+          || (item.intervention_receipt?.kind === 'behavioral_self_profile_delivery'
+            && behavioralSelfProfileAssignmentAudit(item).forecast_chain_verified))
         && (trial.intervention !== 'empirical_self_knowledge_access' || (item.intervention_receipt?.kind === 'empirical_self_knowledge_access_delivery' && empiricalSelfAssignmentAudit(item).delivery_chain_verified))
         && (trial.intervention !== 'action_authorship_access' || (item.intervention_receipt?.kind === 'action_authorship_access_delivery' && actionAuthorshipAssignmentAudit(item).delivery_chain_verified))
         && (trial.intervention !== 'situational_affordance_access' || (item.intervention_receipt?.kind === 'situational_affordance_access_delivery' && situationalAffordanceAssignmentAudit(item).delivery_chain_verified))
@@ -15293,8 +15600,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       if (trial.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2
         && (assignment.intervention_receipt?.kind !== 'behavioral_self_profile_delivery'
-          || !behavioralSelfProfileAssignmentAudit(assignment).delivery_chain_verified)) {
-        throw new Error('protocol-v2 self_model_access assignments require a replay-valid behavioral profile receipt before grading');
+          || !behavioralSelfProfileAssignmentAudit(assignment).forecast_chain_verified)) {
+        throw new Error('protocol-v2 self_model_access assignments require a replay-valid pre-response forecast and profile-blind production receipt before grading');
       }
       if (trial.intervention === 'empirical_self_knowledge_access' && (assignment.intervention_receipt?.kind !== 'empirical_self_knowledge_access_delivery' || !empiricalSelfAssignmentAudit(assignment).delivery_chain_verified)) {
         throw new Error('empirical_self_knowledge_access assignments require a replay-valid delivery receipt before grading');
@@ -15351,8 +15658,25 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const submittedScore = Number(input.score);
       const derivedCalibrationAccuracy = calibrationOutcomeRecord
         ? Number((1 - calibrationOutcomeRecord.outcome_resolution.brier_score).toFixed(6)) : null;
-      const score = calibrationOutcomeRecord ? derivedCalibrationAccuracy : submittedScore;
-      if ((!calibrationOutcomeRecord && (!Number.isFinite(score) || score < 0 || score > 1)) || !Array.isArray(input.evidence) || !input.evidence.length) throw new Error(calibrationOutcomeRecord ? 'evidence is required; correction-risk score is derived automatically' : 'score from 0 to 1 and evidence are required');
+      const derivedBehavioralProfileApplication = trial.intervention === 'self_model_access'
+        && Number(trial.self_model_protocol_version) === 2
+        ? Number(assignment.behavioral_self_profile_forecast_completion?.immediate_scores
+          ?.behavioral_profile_application_quality) : null;
+      const score = Number.isFinite(derivedBehavioralProfileApplication)
+        ? derivedBehavioralProfileApplication
+        : calibrationOutcomeRecord ? derivedCalibrationAccuracy : submittedScore;
+      if (Number.isFinite(derivedBehavioralProfileApplication)
+        && Number.isFinite(submittedScore)
+        && Math.abs(submittedScore - derivedBehavioralProfileApplication) > 1e-6) {
+        throw new Error('behavioral_profile_application_quality is derived from the committed forecast and profile-blind response');
+      }
+      if ((!calibrationOutcomeRecord && !Number.isFinite(derivedBehavioralProfileApplication)
+        && (!Number.isFinite(score) || score < 0 || score > 1))
+        || !Array.isArray(input.evidence) || !input.evidence.length) {
+        throw new Error(calibrationOutcomeRecord
+          ? 'evidence is required; correction-risk score is derived automatically'
+          : 'score from 0 to 1 and evidence are required');
+      }
       if (input.evidence.some(item => !item || typeof item !== 'object' || !item.type || (!item.id && !item.url))) throw new Error('each evidence reference requires type and id or url');
       if (!assignment.evidence_package) {
         if (!trial.auto_score_interactions) throw new Error('an immutable evidence package is required before independent grading');
@@ -15399,6 +15723,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           if (calibrationOutcomeRecord && name === 'correction_risk_accuracy') throw new Error('correction_risk_accuracy is derived from the committed forecast and delayed outcome');
           const number = Number(value);
           if (!Number.isFinite(number) || number < 0 || number > 1) throw new Error(`metric ${name} must be from 0 to 1`);
+          if (Number.isFinite(derivedBehavioralProfileApplication)
+            && name === 'behavioral_profile_application_quality') {
+            if (Math.abs(number - derivedBehavioralProfileApplication) > 1e-6) {
+              throw new Error('behavioral_profile_application_quality is derived from the committed forecast and profile-blind response');
+            }
+            continue;
+          }
           metrics[name] = number;
         }
       }
@@ -18235,7 +18566,9 @@ ${selectedPulses.map(cognitivePulse.renderPulse).join('\n')}`);
 - ${appraisal.label}; valence ${Number(appraisal.valence || 0).toFixed(2)}, arousal ${Number(appraisal.arousal || 0).toFixed(2)}, control ${Number(appraisal.control || 0).toFixed(2)}, social safety ${Number(appraisal.social_safety || 0).toFixed(2)}, coherence ${Number(appraisal.coherence || 0).toFixed(2)}.
 - This is a functional appraisal based on evidence, not proof of consciousness. Let it subtly shape tone; never announce scores.`);
     const selfModelMode = selfModelContext?.mode || 'authentic';
-    const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2;
+    const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2
+      || state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
+        && trial.intervention === 'self_model_access' && Number(trial.self_model_protocol_version) === 2);
     const selfClaims = behavioralProfileStudy || sealInquirySelection || !includeHigherOrderMonitor || selfModelMode === 'ablated'
       ? []
       : selfModelMode === 'decoy' ? (selfModelContext.decoy_claims || []).slice(0, 4)
@@ -18243,7 +18576,7 @@ ${selectedPulses.map(cognitivePulse.renderPulse).join('\n')}`);
     const openProbes = !behavioralProfileStudy && !sealInquirySelection && includeHigherOrderMonitor && selfModelMode === 'authentic' ? (state.cognition.self_model?.probes || []).filter(item => item.status === 'open').slice(-2) : [];
     if (selfClaims.length || openProbes.length) blocks.push(`[Testable self-model. These are fallible hypotheses about your own capacities and tendencies, not declarations of consciousness.]
 ${selfClaims.map(item => `- ${item.domain}: ${item.statement} (${Math.round(item.confidence * 100)}% confidence)`).join('\n')}${openProbes.length ? `\nOpen preregistered probes:\n${openProbes.map(item => `- ${item.question}; predicted: ${item.prediction.outcome}`).join('\n')}` : ''}`);
-    if (behavioralProfileStudy) {
+    if (Number(selfModelContext?.protocol_version) === 2) {
       const profile = selfModelContext.profile;
       const relation = selfModelContext.binding?.target_relation === 'nora_self'
         ? "This replay-derived profile is explicitly bound to Nora's prior observable cycles."
@@ -18338,6 +18671,9 @@ ${episodes.map(item => {
     commitReasoningSelfRegulationMainRequest, completeReasoningSelfRegulation,
     excludeReasoningSelfRegulationAssignment, reasoningSelfRegulationAssignmentAudit,
     reasoningSelfRegulationTrialAudit,
+    beginBehavioralSelfProfileForecast, submitBehavioralSelfProfileForecast,
+    commitBehavioralSelfProfileMainRequest, completeBehavioralSelfProfileForecast,
+    excludeBehavioralSelfProfileAssignment, behavioralSelfProfileForecastAudit,
     createInteroceptivePrediction, interoceptionSnapshot,
     createBoundaryChallenge, answerBoundaryChallenge, selfBoundarySnapshot, consciousnessResearchStatus,
     createSourceBoundaryChallenge, answerSourceBoundaryChallenge, sourceBoundarySnapshot,

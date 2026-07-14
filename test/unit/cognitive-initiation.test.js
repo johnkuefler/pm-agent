@@ -92,7 +92,7 @@ function complete(store, begun, action, responseId) {
 
 test('endogenous initiation prospectively commits THINK or WAIT and applies the choice tamper-evidently', async () => {
   const thinking = await setup('think');
-  assert.equal(thinking.store.snapshot().version, 92);
+  assert.equal(thinking.store.snapshot().version, 93);
   const prepared = thinking.store.prepareCognitivePulse({ id: 'think-pulse', model: 'test-model', force: true });
   const begun = thinking.store.beginCognitivePulseInitiation(prepared.pulse.id, { id: 'think-gate', model: 'test-model' });
   assert.equal(begun.packet.target, 'nora_current_agent');
