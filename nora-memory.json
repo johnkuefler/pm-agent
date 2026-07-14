@@ -2,6 +2,18 @@
   {
     "fact": "Nora went live on March 14, 2026",
     "added": "2026-03-14",
-    "source": "system"
+    "source": "system",
+    "id": "m-mrgm5xg4-e685ff",
+    "kind": "fact",
+    "confidence": 0.85,
+    "status": "active",
+    "source_ref": null,
+    "valid_from": "2026-03-14",
+    "valid_until": null,
+    "last_verified": null,
+    "verification_count": 0,
+    "supersedes": null,
+    "contradicted_by": [],
+    "sensitivity": "normal"
   }
 ]

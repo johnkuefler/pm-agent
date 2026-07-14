@@ -159,3 +159,17 @@ nora-mcp.json
 
 # Local scratch/test scripts (db probes, one-offs) — not part of the app.
 scratchpad/
+
+# Independent metacognitive-study curator inputs and reveal keys contain sealed ground truth.
+*.metacognitive-curator-input.json
+*.metacognitive-secret.json
+
+# Epistemic-action curator inputs, sealed diagnostic corpora, and reveal salts stay outside Nora-readable source.
+*.epistemic-action-curator-input.json
+*.epistemic-action-sealed.json
+*.epistemic-action-secret.json
+
+# Episodic-prospection curator inputs and truth reveals stay outside Nora-readable source.
+*.episodic-prospection-curator-input.json
+*.episodic-prospection-sealed.json
+*.episodic-prospection-secret.json

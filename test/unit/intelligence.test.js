@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine, normalizeCommitment } = require('../../src/intelligence/models');
 const { assessUncertainty, detectRepairNeed, initiativeDecision, meetingTurnDecision, scoreMeetingContribution } = require('../../src/intelligence/policy');
 const { runBench } = require('../../src/intelligence/bench');
+const { scoreWorkspace } = require('../../src/intelligence/cognition');
+const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, attentionDirectiveModeForAssignment } = require('../../src/intelligence/self-model');
 
 test('Memory v2 enriches legacy facts without changing their text', () => {
   const memory = normalizeMemoryRecord({ fact: 'Launch is May 14', source: 'meeting', added: '2026-07-11' });
@@ -62,4 +64,66 @@ test('Nora Bench passes every grounded judgment scenario', () => {
   const report = runBench();
   assert.ok(report.total >= 12);
   assert.equal(report.passed, report.total, report.results.filter(item => !item.passed).map(item => item.id).join(', '));
+});
+
+test('blinded continuity ablation removes only the inner thread context', () => {
+  const full = renderInnerThreadContext('I am still thinking about the launch.', { intervention: 'inner_thread_presence', condition: 'full' });
+  const ablated = renderInnerThreadContext('I am still thinking about the launch.', { intervention: 'inner_thread_presence', condition: 'ablated' });
+  assert.match(full, /still thinking about the launch/);
+  assert.equal(ablated, '');
+  assert.match(full, /private context that makes you continuous/);
+  assert.equal(renderInnerThreadContext('Unrelated genuine prior context.', { intervention: 'continuity_context', condition: 'ablated' }), '');
+  assert.match(renderInnerThreadContext('Unrelated genuine prior context.', { intervention: 'continuity_context', condition: 'shuffled' }), /Unrelated genuine prior context/);
+  const lineage = renderInnerThreadContext({
+    protocol_version: 2, content: 'Byte-identical verified handoff text.', content_commitment: 'content-hash',
+    binding: { temporal_relation: 'replay_verified_latest_handoff', record_commitment: 'record-hash', sequence: 4, cycle_id: 'cycle-4' },
+  }, { intervention: 'continuity_context', condition: 'verified_self_bound' });
+  assert.match(lineage, /Candidate predecessor-state note/);
+  assert.match(lineage, /byte-identical across study arms/);
+  assert.match(lineage, /replay-verified as Nora's latest committed handoff/);
+  assert.match(lineage, /not evidence of uninterrupted awareness or phenomenal consciousness/);
+});
+
+test('workspace-capacity intervention creates graded access without changing unrelated trials', () => {
+  assert.equal(workspaceCapacityForAssignment({ intervention: 'workspace_capacity', condition: 'full' }), 7);
+  assert.equal(workspaceCapacityForAssignment({ intervention: 'workspace_capacity', condition: 'half' }), 3);
+  assert.equal(workspaceCapacityForAssignment({ intervention: 'workspace_capacity', condition: 'ablated' }), 0);
+  assert.equal(workspaceCapacityForAssignment({ intervention: 'inner_thread_presence', condition: 'ablated' }), 7);
+});
+
+test('higher-order lesion disables only the monitor flag', () => {
+  assert.equal(higherOrderMonitorEnabled({ intervention: 'higher_order_monitor', condition: 'full' }), true);
+  assert.equal(higherOrderMonitorEnabled({ intervention: 'higher_order_monitor', condition: 'ablated' }), false);
+  assert.equal(higherOrderMonitorEnabled({ intervention: 'inner_thread_presence', condition: 'ablated' }), true);
+});
+
+test('attention-schema control changes only the effective workspace modulation target', () => {
+  const state = {
+    commitments: [
+      { id: 'target', what: 'Target commitment', owner: 'Nora', status: 'open' },
+      { id: 'control-a', what: 'Control commitment A', owner: 'Nora', status: 'open' },
+      { id: 'control-b', what: 'Control commitment B', owner: 'Nora', status: 'open' },
+    ],
+    episodes: [], experiments: [], relationships: [], traces: [], cycles: [],
+    cognition: {
+      drives: {}, surprises: [], mind_changes: [], development: [], recurrent_signals: [],
+      attention_schema: { directives: [{
+        id: 'directive-1', status: 'active', target: { type: 'commitment', id: 'target' }, boost: 3,
+      }] },
+    },
+  };
+  const now = new Date('2026-07-12T12:00:00Z');
+  const targeted = scoreWorkspace(state, { attentionDirectiveMode: 'targeted_boost' }, now);
+  const sham = scoreWorkspace(state, { attentionDirectiveMode: 'sham_boost', attentionShamSeed: 'unit-1' }, now);
+  const repeatedSham = scoreWorkspace(state, { attentionDirectiveMode: 'sham_boost', attentionShamSeed: 'unit-1' }, now);
+  const absent = scoreWorkspace(state, { attentionDirectiveMode: 'no_boost' }, now);
+
+  assert.deepEqual(targeted.modulation[0].target, { type: 'commitment', id: 'target' });
+  assert.deepEqual(targeted.modulation[0].configured_target, { type: 'commitment', id: 'target' });
+  assert.notDeepEqual(sham.modulation[0].target, sham.modulation[0].configured_target);
+  assert.deepEqual(sham.modulation, repeatedSham.modulation);
+  assert.deepEqual(absent.modulation, []);
+  assert.deepEqual(state.cognition.attention_schema.directives[0].target, { type: 'commitment', id: 'target' });
+  assert.equal(attentionDirectiveModeForAssignment({ intervention: 'attention_schema_control', condition: 'sham_boost' }), 'sham_boost');
+  assert.equal(attentionDirectiveModeForAssignment({ intervention: 'workspace_capacity', condition: 'ablated' }), 'targeted_boost');
 });

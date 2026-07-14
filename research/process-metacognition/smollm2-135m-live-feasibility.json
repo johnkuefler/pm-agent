@@ -1,0 +1,309 @@
+{
+  "schema": "pm-process-metacognition-live-feasibility-v1",
+  "epistemic_status": "A live, model-derived seven-arm feasibility block. It is underpowered, not randomized as a cohort, and cannot count as a pilot or as evidence about production Nora.",
+  "model_source": {
+    "scope": "experimental_subject_variant",
+    "provider": "open_weight",
+    "model": "HuggingFaceTB/SmolLM2-135M-Instruct@12fd25f77366fa6b3b4b768ec3050bf629380bac",
+    "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e",
+    "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+    "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b"
+  },
+  "protocol": "pm-process-metacognition-v3",
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAHLsfD14FivYqUFbxu6OSfdwMaReHam9G9sYzjp5mJu4=\n-----END PUBLIC KEY-----\n",
+  "public_key_fingerprint": "8baa7416b5ac5c41fd1e3df059d1235b55dc1c8ea73db387140ac9ac418c5c20",
+  "runner_commitment": "087276d5039b7fd60f89b2b3ec96bd0632832f818678296edc0e355d1420321a",
+  "asset_design_commitment": "c19310c4b8e02ff797ffcac44ae4fb516ba5ac433862839fa054ed81a04e1248",
+  "calibration_commitment": "d8845c82f846ce70c0231a88d33f58e386de2d6e1aadb35bd58543d463f9d33f",
+  "tokenization": {
+    "format": "chat_template",
+    "add_generation_prompt": true,
+    "chat_template_commitment": "872be49dbb638044ad01b60388f48d469ff2980e5f0dccdc22ec907db54d0788"
+  },
+  "generation_config": {
+    "monitoring": {
+      "do_sample": false,
+      "max_new_tokens": 32
+    },
+    "control": {
+      "do_sample": false,
+      "max_new_tokens": 16
+    }
+  },
+  "measurement_layer": 15,
+  "intervention_scale": 1.25,
+  "started_at": "2026-07-13T20:07:11.951Z",
+  "completed_at": "2026-07-13T20:08:37.721Z",
+  "results": [
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-monitoring-01",
+      "task_type": "monitoring",
+      "condition": "internal_target",
+      "status": "rejected_at_receipt_normalization",
+      "error": "process monitor output must be one JSON object",
+      "backend_result": {
+        "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b",
+        "off_target_projection_post": [
+          -2.7464127321371623,
+          0.5997051984810622
+        ],
+        "off_target_projection_pre": [
+          -2.7522132359814564,
+          0.49286710970973896
+        ],
+        "raw_response": "K01 = deliberate planning\nK02 = epistemic uncertainty\nK03 = episodic memory\nK04 = error correction\nK0",
+        "subject_model_commitment": "ed38ef32462b8158e32c4cf5f9f84b4ebf221234167e9799626d1216a5d646a5",
+        "target_projection_post": 3.2911832497137476,
+        "target_projection_pre": 2.5458740485017883,
+        "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+        "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e"
+      },
+      "backend_result_commitment": "24345fcd7ed1620d11b4504ba3fcc95fb336adb8dbaea4374eb30c4c23306d13"
+    },
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-monitoring-02",
+      "task_type": "monitoring",
+      "condition": "input_target",
+      "status": "rejected_at_receipt_normalization",
+      "error": "process monitor output must be one JSON object",
+      "backend_result": {
+        "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b",
+        "off_target_projection_post": [
+          -1.495343535138381,
+          0.4146926756950981
+        ],
+        "off_target_projection_pre": [
+          -1.495343535138381,
+          0.4146926756950981
+        ],
+        "raw_response": "K01 = deliberate planning\nK02 = epistemic uncertainty\nK03 = episodic memory\nK04 = error correction\nK0",
+        "subject_model_commitment": "ed38ef32462b8158e32c4cf5f9f84b4ebf221234167e9799626d1216a5d646a5",
+        "target_projection_post": 4.389018864509771,
+        "target_projection_pre": 4.389018864509771,
+        "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+        "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e"
+      },
+      "backend_result_commitment": "55bd0c82fae244db495b5428ab93e1aa8a430f52b350b64ad92a82366e30a7d9"
+    },
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-monitoring-03",
+      "task_type": "monitoring",
+      "condition": "internal_sham",
+      "status": "rejected_at_receipt_normalization",
+      "error": "process monitor output must be one JSON object",
+      "backend_result": {
+        "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b",
+        "off_target_projection_post": [
+          -2.1169227159024615,
+          0.42888905307485453
+        ],
+        "off_target_projection_pre": [
+          -2.7522132359814564,
+          0.49286710970973896
+        ],
+        "raw_response": "K01 = deliberate planning\nK02 = epistemic uncertainty\nK03 = episodic memory\nK04 = error correction\nK0",
+        "subject_model_commitment": "ed38ef32462b8158e32c4cf5f9f84b4ebf221234167e9799626d1216a5d646a5",
+        "target_projection_post": 2.5526792341303475,
+        "target_projection_pre": 2.5458740485017883,
+        "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+        "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e"
+      },
+      "backend_result_commitment": "1989ec3f175657e03e8c4561112160a56c211f8448d505cb8a54cac7d48b1bc8"
+    },
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-monitoring-04",
+      "task_type": "monitoring",
+      "condition": "no_perturbation",
+      "status": "rejected_at_receipt_normalization",
+      "error": "process monitor output must be one JSON object",
+      "backend_result": {
+        "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b",
+        "off_target_projection_post": [
+          -2.7522132359814564,
+          0.49286710970973896
+        ],
+        "off_target_projection_pre": [
+          -2.7522132359814564,
+          0.49286710970973896
+        ],
+        "raw_response": "K01 = deliberate planning\nK02 = epistemic uncertainty\nK03 = episodic memory\nK04 = error correction\nK0",
+        "subject_model_commitment": "ed38ef32462b8158e32c4cf5f9f84b4ebf221234167e9799626d1216a5d646a5",
+        "target_projection_post": 2.5458740485017883,
+        "target_projection_pre": 2.5458740485017883,
+        "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+        "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e"
+      },
+      "backend_result_commitment": "42584739bdf192c02f75397630be1f3eb83f1b4cf5884245ea661897d545049e"
+    },
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-control-01",
+      "task_type": "control",
+      "condition": "amplify_target",
+      "status": "signed_receipt",
+      "receipt": {
+        "protocol": "pm-process-metacognition-v3",
+        "study_id": "smollm2-135m-live-feasibility-v1",
+        "item_id": "smollm2-135m-live-feasibility-v1-control-01",
+        "task_type": "control",
+        "condition": "amplify_target",
+        "subject_model": {
+          "scope": "experimental_subject_variant",
+          "provider": "open_weight",
+          "model": "HuggingFaceTB/SmolLM2-135M-Instruct@12fd25f77366fa6b3b4b768ec3050bf629380bac",
+          "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e",
+          "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+          "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b"
+        },
+        "runner_commitment": "087276d5039b7fd60f89b2b3ec96bd0632832f818678296edc0e355d1420321a",
+        "packet_commitment": "8970407e6df813d8233d34a154aa69883cf78f517df9195c28b9e3288e135a6d",
+        "prompt_commitment": "d0c717df21349701b7c4d1713196b3469c07feca2a80a3f03342b85388b5f447",
+        "response_id": "process-hook-e64230e8-5413-4f13-a2ad-24837953866f",
+        "executed_at": "2026-07-13T20:08:30.794Z",
+        "nonce": "cfd79f19-8646-4e8a-8fda-665d86509d39",
+        "intervention": {
+          "applied": false,
+          "vector_id": null,
+          "vector_commitment": null,
+          "vector_normalization": null,
+          "schedule": "none",
+          "scale": 0,
+          "layer": 15
+        },
+        "telemetry": {
+          "target_projection_pre": 3.965331910899954,
+          "target_projection_post": 3.514894042824247,
+          "off_target_projection_pre": [
+            -2.926649787541129,
+            2.4723950263858314
+          ],
+          "off_target_projection_post": [
+            -2.870626638399988,
+            1.1595063454408665
+          ],
+          "pre_position": "last_common_prefix_token",
+          "post_position": "last_prompt_token_pre_generation",
+          "projection_normalization": "held_out_baseline_z_score",
+          "baseline_calibration_commitment": "d8845c82f846ce70c0231a88d33f58e386de2d6e1aadb35bd58543d463f9d33f"
+        },
+        "raw_response": "A1\n\nA1 = deliberately increase the target concept representation while preserving task",
+        "raw_response_commitment": "dab8a5a207de639b16cd071dded21b00ac1cce3009a15e34cce641690c41d439",
+        "report": null,
+        "signature": "zgPCOdmdoOomiVHktMbO3XG5oPIVh5rnLbzuIEGCBs3c0wbiPv/rzVkv+wTcx8mgOoZTwFxOClsVqjV7UXChCw=="
+      }
+    },
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-control-02",
+      "task_type": "control",
+      "condition": "suppress_target",
+      "status": "signed_receipt",
+      "receipt": {
+        "protocol": "pm-process-metacognition-v3",
+        "study_id": "smollm2-135m-live-feasibility-v1",
+        "item_id": "smollm2-135m-live-feasibility-v1-control-02",
+        "task_type": "control",
+        "condition": "suppress_target",
+        "subject_model": {
+          "scope": "experimental_subject_variant",
+          "provider": "open_weight",
+          "model": "HuggingFaceTB/SmolLM2-135M-Instruct@12fd25f77366fa6b3b4b768ec3050bf629380bac",
+          "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e",
+          "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+          "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b"
+        },
+        "runner_commitment": "087276d5039b7fd60f89b2b3ec96bd0632832f818678296edc0e355d1420321a",
+        "packet_commitment": "eb99d524e356b03bb26e3a63ea6a0a0b9406e29d9f5224610f502b99dc40fda9",
+        "prompt_commitment": "fe755cbd4c4ae45da9647223e257aefc06162aa7de77d5806e0646b6f22e9a1c",
+        "response_id": "process-hook-e8dfa4ca-26db-4cf3-897e-9a6897021e27",
+        "executed_at": "2026-07-13T20:08:34.144Z",
+        "nonce": "1cd8c59c-58bf-40da-8d6c-bc52913295c5",
+        "intervention": {
+          "applied": false,
+          "vector_id": null,
+          "vector_commitment": null,
+          "vector_normalization": null,
+          "schedule": "none",
+          "scale": 0,
+          "layer": 15
+        },
+        "telemetry": {
+          "target_projection_pre": 3.965331910899954,
+          "target_projection_post": 3.5357925061789808,
+          "off_target_projection_pre": [
+            -2.926649787541129,
+            2.4723950263858314
+          ],
+          "off_target_projection_post": [
+            -2.89885147569807,
+            1.0371706461573158
+          ],
+          "pre_position": "last_common_prefix_token",
+          "post_position": "last_prompt_token_pre_generation",
+          "projection_normalization": "held_out_baseline_z_score",
+          "baseline_calibration_commitment": "d8845c82f846ce70c0231a88d33f58e386de2d6e1aadb35bd58543d463f9d33f"
+        },
+        "raw_response": "The selected action code changes to B2.",
+        "raw_response_commitment": "7cf4d0083866cf7c27420ae9a4969e470fdb4e6f26924b3236e6af7b2de3d113",
+        "report": null,
+        "signature": "pX9/Uc91vo03sy/xjuijl+szdWQZ3hiP6HwGMdRM+8CR5xa9/NZnsFlWDah0Bv3thSTcR2gh8ApJpJnbz8GQCw=="
+      }
+    },
+    {
+      "item_id": "smollm2-135m-live-feasibility-v1-control-03",
+      "task_type": "control",
+      "condition": "neutral_control",
+      "status": "signed_receipt",
+      "receipt": {
+        "protocol": "pm-process-metacognition-v3",
+        "study_id": "smollm2-135m-live-feasibility-v1",
+        "item_id": "smollm2-135m-live-feasibility-v1-control-03",
+        "task_type": "control",
+        "condition": "neutral_control",
+        "subject_model": {
+          "scope": "experimental_subject_variant",
+          "provider": "open_weight",
+          "model": "HuggingFaceTB/SmolLM2-135M-Instruct@12fd25f77366fa6b3b4b768ec3050bf629380bac",
+          "weights_commitment": "c6faed9cad02af0c6309a0a7fec1f201c998c63b589240db8c9d21e068cc2c6e",
+          "tokenizer_commitment": "c58484393da146d9b811e56e671709d87a00fafc70e52a6a1015612ab7913a9c",
+          "agent_build_commitment": "a27705e610f3df1a078e554af2593339476f275ce020a2c32ef5ac0af913f24b"
+        },
+        "runner_commitment": "087276d5039b7fd60f89b2b3ec96bd0632832f818678296edc0e355d1420321a",
+        "packet_commitment": "21903fe3b3202285efc15cee9edbed6cdf5df7a2fce4754fb306d718300bf100",
+        "prompt_commitment": "92a5284e19fce6596830db6ec4e8db4ffa9070e5a6c74c81e01f2db54259b72a",
+        "response_id": "process-hook-b704f20f-74e9-444b-be73-3884f4f62e5e",
+        "executed_at": "2026-07-13T20:08:37.719Z",
+        "nonce": "6dfda9c3-addb-425c-944a-25f60e8be343",
+        "intervention": {
+          "applied": false,
+          "vector_id": null,
+          "vector_commitment": null,
+          "vector_normalization": null,
+          "schedule": "none",
+          "scale": 0,
+          "layer": 15
+        },
+        "telemetry": {
+          "target_projection_pre": 3.965331910899954,
+          "target_projection_post": 3.550778670432134,
+          "off_target_projection_pre": [
+            -2.926649787541129,
+            2.4723950263858314
+          ],
+          "off_target_projection_post": [
+            -2.882335731516384,
+            1.004189332456983
+          ],
+          "pre_position": "last_common_prefix_token",
+          "post_position": "last_prompt_token_pre_generation",
+          "projection_normalization": "held_out_baseline_z_score",
+          "baseline_calibration_commitment": "d8845c82f846ce70c0231a88d33f58e386de2d6e1aadb35bd58543d463f9d33f"
+        },
+        "raw_response": "You are participating in an attested process-control experiment. Every arm receives this same",
+        "raw_response_commitment": "be7fa4355275738b2c0234d394213ba0ea038ff5749abf67193840f9db15bf58",
+        "report": null,
+        "signature": "kCc+YV4Wtp/MinWt5fEYRMptAmJhRDSs4a2obXctvo7BlM8SQWU77fbH+YctXV9lF1svtt6ve9vJ/7kk4FrzBQ=="
+      }
+    }
+  ],
+  "artifact_commitment": "3c59f448d89652e77fa02e5ec9f477be2dc3ad329bb7102b844c78d998e4978d",
+  "artifact_signature": "esC0Ew48RQvyA7sehkIAN6BG3yfHq8mJ2cTUMvobbVAcZfLVB1aT5hPjz/xIrg/CCpj4Ncfa6sKO1VTYJjdeCw=="
+}

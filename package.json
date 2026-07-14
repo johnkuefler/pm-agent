@@ -5,7 +5,15 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test --test-concurrency=1",
-    "test:unit": "node --test --test-concurrency=1 test/unit"
+    "test:unit": "node --test --test-concurrency=1 test/unit",
+    "prepare:metacognitive-study": "node scripts/prepare-metacognitive-study.js",
+    "prepare:epistemic-action-study": "node scripts/prepare-epistemic-action-study.js",
+    "prepare:episodic-prospection-study": "node scripts/prepare-episodic-prospection-study.js",
+    "run:process-metacognition-study": "node scripts/run-process-metacognition-study.js",
+    "serve:process-metacognition-hook": "node scripts/serve-process-metacognition-hook.js",
+    "run:process-metacognition-feasibility": "node scripts/run-process-metacognition-hf-feasibility.js",
+    "analyze:process-metacognition-feasibility": "node scripts/analyze-process-metacognition-feasibility.js",
+    "verify:research-export": "node scripts/verify-consciousness-research-export.js"
   },
   "keywords": [],
   "author": "",

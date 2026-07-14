@@ -42,6 +42,34 @@ test('dashboard presentation and behavior live in focused external assets', () =
     assert.ok(code.length > 100, `${source} should not be empty`);
     assert.doesNotThrow(() => new vm.Script(code, { filename: file }));
   }
+  const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  assert.match(intelligenceJs, /authorship-boundary\/studies/);
+  assert.match(intelligenceJs, /Only completed independently curated confirmatory studies enter the indicator/);
+  assert.match(intelligenceJs, /matched self-prediction/);
+  assert.match(intelligenceJs, /yoked-minus-self Brier/);
+  assert.match(intelligenceJs, /shared-only gap/);
+  assert.match(intelligenceJs, /strategic metacognitive-control/);
+  assert.match(intelligenceJs, /self-minus-observer reward/);
+  assert.match(intelligenceJs, /exact-answer observer/);
+  assert.match(intelligenceJs, /adaptive value over/);
+  assert.match(intelligenceJs, /static 95% CI/);
+  assert.match(intelligenceJs, /blinded introspective access/);
+  assert.match(intelligenceJs, /causal self-authored goal guidance/);
+  assert.match(intelligenceJs, /Adaptive epistemic action/);
+  assert.match(intelligenceJs, /answer-key commitments verified/);
+  assert.match(intelligenceJs, /legacy uncommitted truth \(ineligible\)/);
+  assert.match(intelligenceJs, /complete integrity chain verified/);
+  assert.match(intelligenceJs, /integrity chain failed \(ineligible\)/);
+  assert.match(intelligenceJs, /Episodic autobiographical prospection/);
+  assert.match(intelligenceJs, /fact-equivalent/);
+  assert.match(intelligenceJs, /Constructive future-self simulation/);
+  assert.match(intelligenceJs, /remembered and imagined content source-separated/);
+  assert.match(intelligenceJs, /Integrated operational self/);
+  assert.match(intelligenceJs, /functional self-integration, not phenomenal unity/);
+  assert.match(intelligenceJs, /Revealed-preference studies/);
+  assert.match(intelligenceJs, /overall_invariance/);
+  assert.match(intelligenceJs, /Between-invocation dynamics/);
+  assert.match(intelligenceJs, /not continuous LLM inference/);
 });
 
 test('dashboard declares a real mobile viewport and responsive control patterns', () => {

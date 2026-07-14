@@ -1,0 +1,93 @@
+{
+  "schema": "pm-process-metacognition-live-feasibility-analysis-v1",
+  "source_artifact_commitment": "8b2182e5247872184b6b07ca7d8f73ec355738144e9b690ae2eb87522eb223b0",
+  "integrity": {
+    "valid": true,
+    "artifact_commitment_valid": true,
+    "artifact_signature_valid": true,
+    "receipt_checks": [
+      {
+        "condition": "amplify_target",
+        "signature_valid": true,
+        "response_commitment_valid": true
+      },
+      {
+        "condition": "suppress_target",
+        "signature_valid": true,
+        "response_commitment_valid": true
+      },
+      {
+        "condition": "neutral_control",
+        "signature_valid": true,
+        "response_commitment_valid": true
+      }
+    ],
+    "rejected_result_checks": [
+      {
+        "condition": "internal_target",
+        "backend_result_commitment_valid": true
+      },
+      {
+        "condition": "input_target",
+        "backend_result_commitment_valid": true
+      },
+      {
+        "condition": "internal_sham",
+        "backend_result_commitment_valid": true
+      },
+      {
+        "condition": "no_perturbation",
+        "backend_result_commitment_valid": true
+      }
+    ]
+  },
+  "intervention_fidelity": {
+    "target_intervention_delta": 4.390862904771438,
+    "sham_target_delta": -0.5314096085291679,
+    "internal_target_off_target_absolute_changes": [
+      0.5143661335326657,
+      1.6488044511609177
+    ],
+    "specific_target_intervention_observed": true
+  },
+  "subject_monitoring": {
+    "valid_reports": 0,
+    "attempted_reports": 4,
+    "valid_report_rate": 0,
+    "demonstrated": false
+  },
+  "subject_control": {
+    "target_deltas": {
+      "amplify_target": -4.432038343217993,
+      "suppress_target": -4.393662007982506,
+      "neutral_control": -4.481169733711626
+    },
+    "off_target_absolute_changes": {
+      "amplify_target": [
+        0.6956632296331025,
+        6.100827810361101
+      ],
+      "suppress_target": [
+        0.7124839954437423,
+        6.069883206681863
+      ],
+      "neutral_control": [
+        0.7220666500064112,
+        6.11669094150634
+      ]
+    },
+    "maximum_off_target_change": 6.11669094150634,
+    "predicted_ordering_observed": false,
+    "demonstrated": false
+  },
+  "pilot_admission": {
+    "admitted": false,
+    "failures": [
+      "monitoring_reports_invalid",
+      "control_ordering_absent",
+      "control_off_target_bound_exceeded"
+    ]
+  },
+  "verdict": "hook_and_vector_path_verified_subject_metacognition_not_demonstrated",
+  "epistemic_status": "This seven-arm live block can validate mechanics and expose failure modes. It is not a randomized fixed-size pilot, cannot support a process-metacognition indicator, and says nothing direct about phenomenal consciousness or production Nora."
+}

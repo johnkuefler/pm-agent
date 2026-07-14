@@ -415,7 +415,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
         executors[name] = args => callTool(connection.id, tool.name, args);
         // meta lets a live turn recognize a deferred tool and enqueue it (by connection + real
         // tool name) instead of running it inline; the background worker runs it via callTool.
-        meta[name] = { connectionId: connection.id, toolName: tool.name, connectionName: connection.name, deferred: toolIsDeferred(connection, tool) };
+        meta[name] = { connectionId: connection.id, toolName: tool.name, connectionName: connection.name, deferred: toolIsDeferred(connection, tool), accessMode: writeCapable ? 'write' : 'read' };
         inventory.push({ connection: connection.name, tool: tool.name, name, access_mode: connection.access_mode || 'read_only', deferred: meta[name].deferred });
       }
     }

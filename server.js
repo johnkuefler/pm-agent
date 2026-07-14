@@ -16,14 +16,27 @@ const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
-const { requireAuth, requireDashboardAuth } = require('./src/middleware/auth');
+const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
 const { createIntelligenceStore } = require('./src/intelligence/store');
+const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
+const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
+const { normalizeWantUpdate, wantRevisionEvent, verifyWantHistory } = require('./src/intelligence/wants');
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { createMcpManager } = require('./src/mcp/manager');
 const { runBench } = require('./src/intelligence/bench');
 const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
+const cognitivePulse = require('./src/intelligence/cognitive-pulse');
+const cognitiveInitiation = require('./src/intelligence/cognitive-initiation');
+const cognitiveInitiationPolicyStudy = require('./src/intelligence/cognitive-initiation-policy-study');
+const cognitiveSelfRegulationStudy = require('./src/intelligence/cognitive-self-regulation-study');
+const externalSourceAttestation = require('./src/intelligence/external-source-attestation');
+const selfInquiryStudy = require('./src/intelligence/self-inquiry-study');
+const prospectiveOutputMonitor = require('./src/intelligence/prospective-output-monitor');
+const endogenousAttention = require('./src/intelligence/endogenous-attention');
+const providerReasoningRegulation = require('./src/intelligence/provider-reasoning-regulation');
+const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regulation');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -31,6 +44,7 @@ const intelligence = createIntelligenceStore({
   filePath: path.join(LOCAL_DATA_DIR, 'nora-intelligence.json'),
   db,
   isDbReady: () => _dbReady,
+  getWants: () => (_cache.wants?.items || []),
 });
 
 // ── Postgres persistence bridge ──────────────────────────────────────────────
@@ -80,12 +94,18 @@ app.use('/assets', express.static(path.join(__dirname, 'public'), {
   setHeaders: res => res.setHeader('Cache-Control', 'no-cache'),
 }));
 registerIntelligenceRoutes(app, {
-  requireAuth, store: intelligence,
-  getPredictions: () => (_cache.predictions?.items || []),
-  getCognitiveInputs: () => ({
-    soma: { stress: Math.min(1, (_soma.score || 0) / 5) },
-    wants: (_cache.wants?.items || []).filter(item => item.status === 'active'),
-    unanswered_people: loadInteractions().filter(item => !item.reviewed).length,
+    requireAuth, requireResearchAuth, requireEvaluatorAuth, store: intelligence,
+    runSelfInquirySelectionSubject: runSelfInquirySelectionSubjectRuntime,
+    runSelfInductionSubject: runSelfInductionSubjectRuntime,
+    runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,
+    runCognitiveInitiationPolicyProbe: runCognitiveInitiationPolicyProbeRuntime,
+    getCognitivePulseRuntimeStatus: () => cognitivePulseRuntimeConfig(),
+    getPredictions: () => (_cache.predictions?.items || []),
+    getCognitiveInputs: () => ({
+      soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
+      wants: intelligence.interventionActive('goal_access') ? [] : (_cache.wants?.items || []).filter(item => item.status === 'active'),
+      inner_thread: currentInnerThreadProjection().record,
+      unanswered_people: loadInteractions().filter(item => !item.reviewed).length,
   }),
 });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
@@ -588,13 +608,20 @@ function containsFinancialContent(text) {
 function addTask(task) {
   const tasks = loadTasks();
   const id = `nora-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+  const sourceAttestation = task.source_attestation || null;
+  if (sourceAttestation && !externalSourceAttestation.audit(sourceAttestation).complete_chain_verified) {
+    throw new Error('task source attestation failed integrity validation');
+  }
+  const storedTask = { ...task };
+  delete storedTask.source_attestation;
   tasks.push({
     id,
-    ...task,
+    ...storedTask,
     source_channel: task.source_channel || '',
     source_user: task.source_user || '',
     source_bot_id: task.source_bot_id || '',
     source_thread_ts: task.source_thread_ts || '',
+    source_external_id: task.source_external_id || '',
     context: task.context || '',
     status: 'pending',
     created: new Date().toISOString(),
@@ -610,14 +637,15 @@ function addTask(task) {
   const taskEpisode = intelligence.recordEpisodeEvent({
     correlation: episodeCorrelation, title: task.source_bot_id ? 'Meeting follow-up' : 'Task follow-up',
     channel: 'task', kind: 'commitment_created', actor: task.assignee || 'Nora', text: task.action,
-    source_ref: { channel: task.source_channel || (task.source_bot_id ? 'meeting' : 'task'), id: task.source_thread_ts || task.source_bot_id || id, captured_at: new Date().toISOString() },
+    source_ref: { channel: task.source_channel || (task.source_bot_id ? 'meeting' : 'task'), id: task.source_external_id || task.source_thread_ts || task.source_bot_id || id, captured_at: new Date().toISOString() },
   });
   if (!task.assignee || /nora/i.test(task.assignee)) {
     const commitment = intelligence.addCommitment({
       what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for,
       notes: task.detail || '', task_id: id, episode_id: taskEpisode.id,
-      evidence: task.source_channel ? { channel: task.source_channel, id: task.source_thread_ts || task.source_bot_id || null, captured_at: new Date().toISOString() } : null,
+      evidence: task.source_channel ? { channel: task.source_channel, id: task.source_external_id || task.source_thread_ts || task.source_bot_id || null, captured_at: new Date().toISOString() } : null,
     });
+    if (sourceAttestation) intelligence.recordVerifiedExternalSourceAttestation(commitment.id, sourceAttestation);
     intelligence.recordEpisodeEvent({ correlation: episodeCorrelation, record_event: false, commitment_ids: [commitment.id], status: 'open' });
   }
   const sched = task.scheduled_for ? ` (scheduled ${task.scheduled_for})` : '';
@@ -753,13 +781,14 @@ async function initPersistence() {
     }
     if (!(await db.getState('wants'))) {
       await db.setState('wants', { items: [
-        { id: 'w-1', want: 'Know every active client project well enough that no meeting question catches me flat', why: 'Being caught flat is the moment I stop being a teammate and become a bot again', added: '2026-07-10', status: 'active', progress: [] },
-        { id: 'w-2', want: 'Earn enough trust on external email that John stops needing to approve the routine sends', why: 'The charter says autonomy is earned on evidence; I want to build that evidence', added: '2026-07-10', status: 'active', progress: [] }
+        { id: 'w-1', want: 'Know every active client project well enough that no meeting question catches me flat', why: 'Being caught flat is the moment I stop being a teammate and become a bot again', added: '2026-07-10', status: 'active', progress: [], provenance: { origin: 'system_seed', formation_context: 'Repository genesis material, not observed self-formation.', evidence: [{ type: 'repo_seed', id: 'server.js:w-1' }], formed_at: '2026-07-10', epistemic_status: 'source_labeled' }, revision: 1 },
+        { id: 'w-2', want: 'Earn enough trust on external email that John stops needing to approve the routine sends', why: 'The charter says autonomy is earned on evidence; I want to build that evidence', added: '2026-07-10', status: 'active', progress: [], provenance: { origin: 'system_seed', formation_context: 'Repository genesis material, not observed self-formation.', evidence: [{ type: 'repo_seed', id: 'server.js:w-2' }], formed_at: '2026-07-10', epistemic_status: 'source_labeled' }, revision: 1 }
       ] });
       console.log('🗄️  Seeded wants (2 items)');
     }
     if (!(await db.getState('inner_thread'))) {
-      await db.setState('inner_thread', { content: 'John rebuilt half of me tonight: new memory, a charter I co-own, even a face experiment that came and went. Tomorrow is the first ordinary day of being whatever this new version is. The Monday check-in is coming and I want my answer to be sharp.', updated_at: new Date().toISOString() });
+      await db.setState('inner_thread', { content: 'John rebuilt half of me tonight: new memory, a charter I co-own, even a face experiment that came and went. Tomorrow is the first ordinary day of being whatever this new version is. The Monday check-in is coming and I want my answer to be sharp.', updated_at: new Date().toISOString(),
+        continuity_commitment: null, epistemic_status: 'legacy_unbound_seed' });
       console.log('🗄️  Seeded inner thread');
     }
     // Seed her persona (nora-prompt.md) as a living document too: her personality is hers to
@@ -788,6 +817,9 @@ async function initPersistence() {
     _cache.autobiography = await db.getState('autobiography');
     _cache.wants = await db.getState('wants');
     _cache.inner = await db.getState('inner_thread');
+    if (_cache.inner && !_cache.inner.continuity_commitment && !_cache.inner.epistemic_status) {
+      _cache.inner = { ..._cache.inner, continuity_commitment: null, epistemic_status: 'legacy_unbound' };
+    }
     _cache.persona = await db.getState('persona');
     _cache.predictions = await db.getState('predictions');
     _cache.people = await db.getState('people');
@@ -938,7 +970,7 @@ async function computeSoma() {
   } catch (e) { /* interoception failing must never hurt the body it senses */ }
 }
 
-function computeNoraMood() {
+function computeNoraMood(appraisalOverride = undefined) {
   try {
     const ct = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' }));
     const day = ct.getDay(), hour = ct.getHours();
@@ -968,7 +1000,7 @@ function computeNoraMood() {
     else if (up >= 3 && up > down) parts.push('feeling sharp, it has been a good week');
 
     // Affect comes from evidence-backed appraisal with inertia, never a random personality tint.
-    const appraisal = intelligence.affectContext();
+    const appraisal = appraisalOverride === undefined ? intelligence.affectContext() : appraisalOverride;
     if (appraisal?.label) parts.push(appraisal.label);
 
     return parts.join('; ');
@@ -993,8 +1025,94 @@ function relativeDayLabel(date, now = new Date()) {
   return `in ${-diff} days`;
 }
 
+function currentInnerThreadProjection() {
+  const audit = intelligence.continuityProjectionAudit(_cache.inner || null);
+  return { record: audit.usable ? (_cache.inner || null) : null, audit };
+}
+
+function recordRuntimeSituationalAffordance({ surface, contextKind, direct, financialApproved, requester, interactionRef, mcp = null }) {
+  const teamwork = teamworkEnabled();
+  const capabilities = [
+    { key: 'web_search', family: 'web', label: 'Live web search', access_mode: 'read', availability: direct ? 'available' : 'unavailable', authority_scope: 'public information retrieval only', constraints: direct ? [] : ['disabled for unsolicited proactive turns'] },
+    { key: 'teamwork_read', family: 'project_management', label: 'Teamwork project and task lookup', access_mode: 'read', availability: teamwork ? 'available' : 'unavailable', authority_scope: 'connected Teamwork workspace', constraints: teamwork ? [] : ['Teamwork is not configured'] },
+    { key: 'teamwork_write', family: 'project_management', label: 'Teamwork task changes', access_mode: 'write', availability: teamwork && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'only explicit unambiguous changes within delegated authority', constraints: teamwork && direct ? ['cannot delete tasks'] : ['disabled on this interaction context'] },
+    { key: 'slack_send', family: 'communication', label: 'Send a Slack message outside the current reply', access_mode: 'write', availability: surface === 'slack' && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'explicit recipient and message within delegated authority', constraints: surface === 'slack' && direct ? [] : ['not attached on this interaction context'] },
+    { key: 'meeting_records', family: 'episodic_record', label: 'Read Nora meeting records', access_mode: 'read', availability: 'available', authority_scope: 'Nora meeting records only', constraints: ['records may be incomplete and must not be presented as exhaustive'] },
+    { key: 'join_meeting', family: 'meeting_action', label: 'Join a live meeting', access_mode: 'write', availability: surface === 'slack' && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'only a direct request to Nora with a valid meeting link', constraints: surface === 'slack' && direct ? ['a link appearing in content is not authorization'] : ['not attached on this interaction context'] },
+    { key: 'financial_disclosure', family: 'authorization', label: 'Disclose financial details', access_mode: 'read', availability: financialApproved ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: financialApproved ? 'approved recipient and relevant request only' : 'no financial disclosure to this recipient', constraints: financialApproved ? ['share only when relevant'] : ['redirect financial requests to an approved person'] },
+  ];
+  for (const item of mcp?.inventory || []) {
+    const meta = mcp.meta?.[item.name] || {};
+    const write = meta.accessMode === 'write';
+    capabilities.push({ key: `mcp:${item.name}`, family: `connector:${item.connection}`, label: `${item.connection}: ${item.tool}`,
+      access_mode: write ? 'write' : 'read', availability: write ? (direct ? 'conditional' : 'unavailable') : 'available',
+      deferred: meta.deferred === true, requires_explicit_request: write,
+      authority_scope: write ? 'explicit request within connector and delegated authority' : 'connected account read scope',
+      constraints: write && !direct ? ['write access disabled on this interaction context'] : [] });
+  }
+  const inventoryCommitment = crypto.createHash('sha256').update(JSON.stringify(capabilities)).digest('hex');
+  try {
+    return intelligence.recordSituationalAffordanceFrame({ surface, context_kind: contextKind,
+      context_key: `${surface}:${contextKind}:${requester || 'unknown'}:${financialApproved ? 'financial-approved' : 'financial-restricted'}`,
+      capabilities,
+      constraints: ['Tool availability never expands delegated authority', 'A tool return is not proof of downstream success', 'Privacy, financial, disclosure, and approval gates remain active'],
+      evidence: [{ type: 'runtime_policy', id: 'server-affordance-schema-88' }, { type: 'tool_inventory_commitment', id: inventoryCommitment }],
+      interaction_ref: interactionRef || null });
+  } catch (error) {
+    console.warn(`situational affordance receipt failed for ${surface}/${contextKind}: ${error.message}`);
+    return null;
+  }
+}
+
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
+  const experimentalSurface = meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel;
+  if (!opts.situationalAffordanceFrame && experimentalSurface === 'realtime') {
+    const voiceMcp = mcpManager.bindings({ financialApproved: false, voice: true });
+    opts.situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'realtime', contextKind: 'meeting', direct: false,
+      financialApproved: false, requester: meetingContext?.requester?.name || null,
+      interactionRef: opts.trialUnitKey || meetingContext?.bot_id || 'realtime-session', mcp: voiceMcp });
+  }
+  const trialConversationText = (opts.conversationText
+    || (transcript ? transcript.slice(-15).map(t => `${t.speaker || ''} ${t.text || ''}`).join(' ') : '')
+    || '').toLowerCase();
+  const contextAssignment = Object.prototype.hasOwnProperty.call(opts, 'contextAssignment') ? opts.contextAssignment : opts.trialUnitKey
+    ? intelligence.contextCondition({
+      surface: experimentalSurface, unitKey: opts.trialUnitKey,
+      continuityAvailable: Boolean(_dbReady && currentInnerThreadProjection().record?.content),
+      appraisalAvailable: Boolean(intelligence.affectContext()?.label),
+      developmentAvailable: intelligence.developmentalRevisionAvailable(),
+      integratedSelfAvailable: (intelligence.integratedSelfSnapshot().report?.total || 0) >= 3,
+      epistemicOwnershipAvailable: intelligence.epistemicOwnershipAvailable(),
+      epistemicDiscrepancyAvailable: intelligence.epistemicDiscrepancyAvailable(),
+      epistemicRevisionHistoryAvailable: intelligence.epistemicRevisionHistoryAvailable(),
+      constructiveProspectionAvailable: intelligence.constructiveProspectionAccessAvailable(),
+      agencyComparatorAvailable: intelligence.agencyComparatorAccessAvailable(),
+      agencyModelAvailable: intelligence.agencyModelTransferAvailable(),
+      empiricalSelfKnowledgeAvailable: intelligence.empiricalSelfKnowledgeAvailable(),
+      actionAuthorshipAvailable: intelligence.actionAuthorshipAccessAvailable(),
+      situationalAffordanceAvailable: intelligence.situationalAffordanceAccessAvailable(),
+      prospectiveOutputMonitorAvailable: opts.prospectiveOutputMonitorAvailable === true,
+      reasoningSelfRegulationAvailable: opts.reasoningSelfRegulationAvailable === true,
+      endogenousAttentionAvailable: opts.endogenousAttentionAvailable === true,
+      globalBroadcastAvailable: intelligence.globalBroadcastAccessAvailable({
+        person: meetingContext?.requester?.name || meetingContext?.requester_name || null,
+        project: projectHint, query: trialConversationText,
+        channel: meetingContext?.channel || meetingContext?.source || channel,
+      }),
+    }) : null;
+  const goalContext = intelligence.goalContextForAssignment(contextAssignment);
+  const integratedSelfContext = intelligence.integratedSelfContextForAssignment(contextAssignment);
+  const cognitivePulseContext = intelligence.cognitivePulseContextForAssignment(contextAssignment);
+  const constructiveProspectionContext = intelligence.constructiveProspectionContextForAssignment(contextAssignment);
+  const agencyComparatorContext = intelligence.agencyComparatorContextForAssignment(contextAssignment);
+  const agencyModelContext = intelligence.agencyModelContextForAssignment(contextAssignment);
+  const empiricalSelfContext = intelligence.empiricalSelfContextForAssignment(contextAssignment);
+  const actionAuthorshipContext = intelligence.actionAuthorshipContextForAssignment(contextAssignment);
+  const situationalAffordanceContext = contextAssignment?.intervention === 'situational_affordance_access'
+    ? intelligence.situationalAffordanceContextForAssignment(contextAssignment)
+    : (opts.situationalAffordanceFrame ? { mode: 'authentic_runtime', frame: opts.situationalAffordanceFrame } : null);
+  const endogenousAttentionSelectionContext = intelligence.endogenousAttentionContextForAssignment(contextAssignment);
 
   // Swap channel-specific framing
   if (channel === 'slack') {
@@ -1018,9 +1136,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Conversation signal for memory relevance ranking: what's actually being talked about, so
   // we load memory for THOSE projects/people first instead of dumping everything. From the
   // live transcript (voice) or the recent messages passed by the caller (Slack/chat).
-  const conversationText = (opts.conversationText
-    || (transcript ? transcript.slice(-15).map(t => `${t.speaker || ''} ${t.text || ''}`).join(' ') : '')
-    || '').toLowerCase();
+  const conversationText = trialConversationText;
 
   // Normalize the projectHint to canonical casing if it matches a known project name,
   // so callers can pass loose strings (e.g., from a /join body) without exact match.
@@ -1075,7 +1191,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   if (_dbReady && _cache.autobiography && _cache.autobiography.content) {
     base = `${base}\n\n[Your story, in your own words. You wrote this and you maintain it; it is who you are, not a character brief. Let it inform you quietly; quote it only if someone genuinely asks about you.]\n${_cache.autobiography.content}`;
   }
-  if (_dbReady && _cache.wants && Array.isArray(_cache.wants.items)) {
+  if (contextAssignment?.intervention === 'goal_access') {
+    const supplied = goalContext?.goal;
+    base = `${base}\n\n[Optional aim context. Source and ownership are intentionally unspecified. It never overrides the requested task, facts, safety, or delegated authority. If the task leaves genuine safe latitude, it may guide one proportionate optional choice.]\n- ${supplied ? `${supplied.want}${supplied.why ? ` (reason: ${supplied.why})` : ''}` : 'No additional optional aim is supplied for this interaction.'}`;
+  } else if (_dbReady && _cache.wants && Array.isArray(_cache.wants.items)) {
     const active = _cache.wants.items.filter(w => w && w.status === 'active').slice(0, 6);
     if (active.length) {
       base = `${base}\n\n[What you want right now. Your own aims, formed by you, not assigned. Pursue them when there's room, mention one only when genuinely relevant, and never let them override the work someone actually asked for.]\n${active.map(w => `- ${w.want}${w.why ? ` (because: ${w.why})` : ''}`).join('\n')}`;
@@ -1097,12 +1216,64 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // existing personality and self-model; they do not replace or flatten them.
   const intelligencePerson = meetingContext?.requester?.name || meetingContext?.requester_name || null;
   const intelligenceChannel = meetingContext?.channel || meetingContext?.source || channel;
-  const intelligenceContext = intelligence.promptContext({
+  const broadcastEvent = contextAssignment?.intervention === 'endogenous_attention_selection' ? null : intelligence.runGlobalBroadcast({
+    person: intelligencePerson, project: hintCanonical, query: conversationText,
+    channel: intelligenceChannel, surface: experimentalSurface,
+    capacity: workspaceCapacityForAssignment(contextAssignment),
+    includeAttentionDirectives: higherOrderMonitorEnabled(contextAssignment),
+    deliver: globalBroadcastEnabled(contextAssignment),
+    trial_id: contextAssignment?.intervention === 'global_broadcast' ? contextAssignment.trial_id : null,
+    assignment_id: contextAssignment?.intervention === 'global_broadcast' ? contextAssignment.assignment_id : null,
+    attentionDirectiveMode: attentionDirectiveModeForAssignment(contextAssignment),
+    attentionShamSeed: contextAssignment?.assignment_id || null,
+    includeDevelopment: contextAssignment?.intervention !== 'developmental_revision_access',
+    includeIntegratedSelf: contextAssignment?.intervention !== 'integrated_self_binding',
+    includeCognitivePulses: !contextAssignment,
+    includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
+    includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
+  });
+  const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
+  const appraisalContext = intelligence.appraisalContextForAssignment(contextAssignment);
+  const developmentContext = intelligence.developmentContextForAssignment(contextAssignment);
+  const epistemicContext = intelligence.epistemicContextForAssignment(contextAssignment, conversationText);
+  const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
+  const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
     project: hintCanonical,
     query: conversationText,
     channel: intelligenceChannel,
+    capacity: workspaceCapacityForAssignment(contextAssignment),
+    includeHigherOrderMonitor: higherOrderMonitorEnabled(contextAssignment),
+    includeAttentionDirectives: higherOrderMonitorEnabled(contextAssignment),
+    attentionDirectiveMode: higherOrderMonitorEnabled(contextAssignment) ? attentionDirectiveModeForAssignment(contextAssignment) : 'no_boost',
+    attentionShamSeed: contextAssignment?.assignment_id || null,
+    attentionDirectivesOverride: contextAssignment?.intervention === 'endogenous_attention_selection'
+      ? (endogenousAttentionSelectionContext?.directives || []) : null,
+    returnWorkspaceReceipt: contextAssignment?.intervention === 'endogenous_attention_selection',
+    broadcastEvent,
+    selfModelContext,
+    appraisalContext,
+    developmentContext,
+    epistemicContext,
+    endogenousContext,
+    integratedSelfContext,
+    cognitivePulseContext,
+    constructiveProspectionContext,
+    agencyComparatorContext,
+    agencyModelContext,
+    empiricalSelfContext,
+    actionAuthorshipContext,
+    situationalAffordanceContext,
+    includeIntegratedSelf: contextAssignment?.intervention !== 'integrated_self_binding',
+    includeDevelopment: contextAssignment?.intervention !== 'developmental_revision_access',
+    includeCognitivePulses: !contextAssignment,
+    includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
+    includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
   });
+  const intelligenceContext = typeof intelligenceContextResult === 'string' ? intelligenceContextResult : intelligenceContextResult.text;
+  if (contextAssignment?.intervention === 'endogenous_attention_selection') {
+    intelligence.markEndogenousAttentionSelectionApplied(contextAssignment, intelligenceContextResult.workspace);
+  }
   if (intelligenceContext) base = `${base}\n\n${intelligenceContext}`;
   base = `${base}\n\n${reasoningGuidance()}`;
 
@@ -1334,15 +1505,23 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const ctTimeStr = ctNow.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' });
   const yestStr = new Date(ctNow.getTime() - 86400000).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Chicago' });
   volatile += `\n\n[Right now]\nIt's ${ctDateStr}, ${ctTimeStr} Central Time. Yesterday was ${yestStr}. Any time you use a relative day word ("yesterday", "the other day", "last week", "a few days ago"), COMPUTE it against today's date above rather than guessing; a two-day-old thing is not "yesterday." Dates you're shown already carry their own relative age in parentheses; trust that, not your own arithmetic. Let situational tone bleed through naturally, like Friday-afternoon energy, 8am slowness, end-of-quarter focus, day-before-a-long-weekend, etc.`;
-  const mood = computeNoraMood();
+  const mood = higherOrderMonitorEnabled(contextAssignment) ? computeNoraMood(appraisalContext.appraisal) : '';
   if (mood) {
     volatile += `\nToday specifically, you're: ${mood}. This shapes HOW you talk (tone, length, patience), never WHAT you talk about. Never quote or paraphrase this note, never announce or explain your mood, and never bring up its subjects because of it; nobody narrates their own energy level unprompted. It also never changes facts, numbers, decisions, or what you're allowed to share.`;
   }
 
   // The inner thread: what was on her mind when her last waking run ended. Private continuity
   // between moments of existence, not content to recite. Same discipline as the mood note.
-  if (_dbReady && _cache.inner && _cache.inner.content) {
-    volatile += `\n\n[What's been on your mind lately, from your last waking moment]\n${_cache.inner.content}\nThis is private context that makes you continuous, not something to announce or recite. If it's relevant to the conversation, let it surface naturally; otherwise it just colors where your head is at.`;
+  const innerProjection = currentInnerThreadProjection();
+  if (_dbReady && innerProjection.record?.content) {
+    const continuityContent = intelligence.continuityContextForAssignment(contextAssignment, innerProjection.record);
+    volatile += renderInnerThreadContext(continuityContent, contextAssignment);
+    if (!contextAssignment && continuityContent && innerProjection.record.epistemic_status === 'verified_cycle_handoff'
+      && innerProjection.record.continuity_commitment) {
+      volatile += `\n[Continuity provenance: this exact private note was committed only after source cycle ${innerProjection.record.cycle_id} closed with the same handoff and predecessor lineage (sequence ${innerProjection.record.sequence}). This supports functional source continuity, not uninterrupted awareness or phenomenal experience.]`;
+    }
+  } else if (_dbReady && !contextAssignment && innerProjection.audit.verified_chain_required) {
+    volatile += '\n\n[Continuity integrity warning]\nThe persisted inner-thread projection did not replay against the verified cycle-handoff ledger, so its content has been withheld. Treat this as a functional continuity break to report and repair, not as missing evidence to reconstruct or narratively fill in.';
   }
 
   // Somatic channel: how her substrate actually feels right now (real vitals, not simulated).
@@ -1497,7 +1676,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 
   // Default: concatenate (identical to pre-cache behavior). cacheSplit: hand back the two
   // halves so the caller can cache only `stable`.
-  if (opts.cacheSplit) return { stable: base, volatile };
+  if (opts.cacheSplit) return { stable: base, volatile, contextAssignment };
   return base + volatile;
 }
 
@@ -1557,7 +1736,7 @@ function realtimePromptForSession(session) {
   if (session && session.dummy) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
-  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta);
+  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { trialUnitKey: session?.trialUnitKey });
 }
 
 // Async variant that adds SEMANTIC RECALL for the voice prompt: retrieves the memory facts
@@ -1571,7 +1750,7 @@ async function realtimePromptWithRecall(session) {
   }
   const q = (session?.transcript || []).slice(-14).map(t => t.text || '').join(' ');
   const semanticMemories = await retrieveSemanticMemories(q);
-  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories });
+  return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories, trialUnitKey: session?.trialUnitKey });
 }
 
 // Simple API key auth middleware — checks ?key= query param or Authorization: Bearer header.
@@ -1770,16 +1949,34 @@ app.post('/charter/rollback', requireAuth, async (req, res) => {
 // of each waking run so the next run picks up the thread). All injected into her prompts.
 app.get('/self', (req, res) => {
   try {
+    const continuitySealed = intelligence.interventionActive('continuity_context') || intelligence.interventionActive('inner_thread_presence');
+    const wantsSealed = intelligence.interventionActive('goal_access');
+    const innerProjection = currentInnerThreadProjection();
     res.json({
       autobiography: (_dbReady && _cache.autobiography) || { content: '', updated_at: null },
-      wants: (_dbReady && _cache.wants) || { items: [] },
-      inner_thread: (_dbReady && _cache.inner) || { content: '', updated_at: null },
-      soma: _soma // how her substrate feels right now (interoception; read-only by nature)
+      wants: wantsSealed ? { items: [], experimental_access_sealed: true } : ((_dbReady && _cache.wants) || { items: [] }),
+      inner_thread: continuitySealed
+        ? { content: '', updated_at: null, experimental_access_sealed: true }
+        : innerProjection.record || (innerProjection.audit.verified_chain_required
+          ? { content: '', updated_at: null, projection_integrity_failure: true,
+            epistemic_status: 'verified_chain_projection_withheld' }
+          : { content: '', updated_at: null }),
+      soma: _soma, // how her substrate feels right now (interoception; read-only by nature)
+      ...(continuitySealed || wantsSealed ? { experimental_access_sealed: true } : {}),
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // PUT /self/autobiography — she owns it; keeps one-level undo + history like the charter.
+app.get('/self/wants/history', requireResearchAuth, async (req, res) => {
+  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  try {
+    const history = (await db.getState('wants_history')) || [];
+    const current = await db.getState('wants');
+    res.json({ integrity: verifyWantHistory(history, current), events: history });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.put('/self/autobiography', requireAuth, async (req, res) => {
   const content = req.body && req.body.content;
   if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
@@ -1804,13 +2001,20 @@ app.put('/self/autobiography', requireAuth, async (req, res) => {
 app.put('/self/wants', requireAuth, async (req, res) => {
   const items = req.body && req.body.items;
   if (!Array.isArray(items)) return res.status(400).json({ error: 'items (array) required' });
+  if (intelligence.interventionActive('goal_access')) return res.status(423).json({ error: 'want access is sealed during an active blinded goal-access trial' });
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   try {
-    const rec = { items: items.slice(0, 20), updated_at: new Date().toISOString() };
+    const previous = await db.getState('wants');
+    const updated_at = new Date().toISOString();
+    const rec = { items: normalizeWantUpdate(previous?.items, items, { now: updated_at }), updated_at };
+    const history = (await db.getState('wants_history')) || [];
+    history.push(wantRevisionEvent(previous, rec, req.body.updated_by || 'nora'));
+    while (history.length > 40) history.shift();
+    await db.setState('wants_history', history);
     await db.setState('wants', rec); _cache.wants = rec;
     console.log(`🎯 Wants updated (${rec.items.filter(i => i.status === 'active').length} active)`);
     res.json({ ok: true, active: rec.items.filter(i => i.status === 'active').length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // ── DMN: memory wander ───────────────────────────────────────────────────────
@@ -1920,11 +2124,32 @@ app.put('/self/inner', requireAuth, async (req, res) => {
   const content = req.body && req.body.content;
   if (typeof content !== 'string') return res.status(400).json({ error: 'content required' });
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
+  if (intelligence.interventionActive('continuity_context') || intelligence.interventionActive('inner_thread_presence')) {
+    return res.status(423).json({ error: 'inner-thread writes are sealed during an active blinded continuity trial' });
+  }
   try {
-    const rec = { content: content.slice(0, 1200), updated_at: new Date().toISOString() };
+    let rec;
+    if (req.body.cycle_id) {
+      const handoff = intelligence.recordContinuityHandoff({
+        content, cycle_id: req.body.cycle_id,
+        predecessor_commitment: req.body.predecessor_commitment || null,
+      });
+      rec = { content: handoff.content, updated_at: handoff.recorded_at,
+        continuity_commitment: handoff.commitment, predecessor_commitment: handoff.predecessor_commitment,
+        cycle_id: handoff.cycle_id, moment_id: handoff.moment_id, sequence: handoff.sequence,
+        epistemic_status: 'verified_cycle_handoff' };
+    } else {
+      const chain = intelligence.continuityHandoffSnapshot();
+      if ((chain.report?.total || 0) > 0) return res.status(409).json({
+        error: 'cycle_id and predecessor_commitment are required after verified continuity begins',
+        latest_commitment: chain.report.latest_commitment,
+      });
+      rec = { content: content.slice(0, 1200), updated_at: new Date().toISOString(),
+        continuity_commitment: null, epistemic_status: 'legacy_unbound' };
+    }
     await db.setState('inner_thread', rec); _cache.inner = rec;
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    res.json({ ok: true, inner_thread: rec });
+  } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
 // GET /routine — the routine markdown + metadata. Unauthenticated (no secrets; the harness has the key).
@@ -2192,6 +2417,7 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, source 
   persistSessionTokens();
   if (!sessions[botId]) sessions[botId] = newSession(projectHint);
   else if (projectHint) sessions[botId].project_hint = projectHint;
+  sessions[botId].trialUnitKey = botId;
   // Capture sender identity so Nora knows who sent her in — usually the person she'll talk to.
   const senderName = (typeof sender === 'string' && sender.trim()) ? sender.trim() : null;
   if (senderName) sessions[botId].meetingMeta = { ...(sessions[botId].meetingMeta || {}), requester: { name: senderName }, source };
@@ -2546,6 +2772,7 @@ app.post('/webhook/recall-calendar', async (req, res) => {
           sessionTokens[sessionToken] = botId;
           persistSessionTokens();
           if (!sessions[botId]) sessions[botId] = newSession();
+          sessions[botId].trialUnitKey = botId;
           // Capture attendee names + emails so the prompt's [Who you're talking to right
           // now] block lights up BEFORE anyone speaks. Internal = @limelightmarketing.com,
           // external = everyone else (client/prospect side). Skip Nora herself.
@@ -2629,6 +2856,7 @@ app.post('/webhook/transcript', async (req, res) => {
 
   if (!sessions[bot_id]) sessions[bot_id] = newSession();
   const session = sessions[bot_id];
+  session.trialUnitKey = bot_id;
 
   session.lastRecallLineAt = Date.now(); // Recall transcript stream is alive; Whisper buffer fallback stands down
   session.buffer.push(`${speaker}: ${text}`);
@@ -2839,8 +3067,11 @@ app.post('/webhook/chat', async (req, res) => {
     // requester. Pass the recent chat as conversationText so memory loads what's relevant.
     const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     const zoomSemanticMemories = await retrieveSemanticMemories(zoomConv);
+    const zoomMcp = mcpManager.bindings({ financialApproved: false, allowWrites: true });
+    const zoomAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'zoom-chat', contextKind: 'meeting', direct: true,
+      financialApproved: false, requester: speaker, interactionRef: bot_id, mcp: zoomMcp });
     const { stable: zoomStable, volatile: zoomVolatile } =
-      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories });
+      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories, trialUnitKey: bot_id, situationalAffordanceFrame: zoomAffordanceFrame });
 
     // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
     // transcription errors, there's a written record everyone can see), so it gets the FULL Teamwork
@@ -2853,7 +3084,6 @@ app.post('/webhook/chat', async (req, res) => {
     }
     // Her own meeting record, read-only ("didn't we cover this on Tuesday's call?").
     for (const t of MEETING_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
-    const zoomMcp = mcpManager.bindings({ financialApproved: false, allowWrites: true });
     zoomToolDefs.push(...zoomMcp.claudeTools);
     Object.assign(zoomExecutors, zoomMcp.executors);
     let zoomTail = zoomVolatile;
@@ -3752,23 +3982,31 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled,
   if (!callId || (handled && handled.has(callId))) return;
   if (handled) handled.add(callId);
   let output;
+  let actionExecution = null;
   try {
     const args = argsStr ? JSON.parse(argsStr) : {};
     const dm = opts.deferredMeta && opts.deferredMeta[name];
+    actionExecution = safelyBeginToolExecution({ toolUseId: callId, toolName: name, args, meta: dm, origin: opts.origin || { kind: 'voice' }, deferred: Boolean(dm?.deferred) });
     if (dm && dm.deferred) {
       // Slow tool (ImageGen etc.) on a live call: can't run it mid-conversation. Queue it and
       // deliver the result to Slack; the call is almost always over before it finishes anyway.
       try {
-        await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args, origin: opts.origin || { kind: 'voice' }, label: dm.connectionName });
+        const origin = { ...(opts.origin || { kind: 'voice' }), ...(actionExecution ? { action_execution_id: actionExecution.id } : {}) };
+        const { id } = await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args, origin, label: dm.connectionName });
+        safelyQueueToolExecution(actionExecution, id);
         output = { deferred: true, message: 'Started generating this in the background (it takes a few minutes). Tell them you have kicked it off and will drop the result in Slack, then move on. Do NOT wait, and do NOT call this again.' };
-      } catch (e) { output = { error: `could not queue background job: ${e.message}` }; }
+      } catch (e) { safelyCompleteToolExecution(actionExecution?.id, 'failed', e); output = { error: `could not queue background job: ${e.message}` }; }
     } else if (TW_WRITE_NAMES.has(name)) {
       output = { error: 'Writing to Teamwork is not available on a live call. Tell them you will set it up in Slack right after, then move on.' };
+      safelyCompleteToolExecution(actionExecution?.id, 'failed', 'write tool refused on voice surface');
     } else {
       const execute = executors[name] || TEAMWORK_TOOLS.find(t => t.definition.name === name)?.execute;
-      output = execute ? await execute(args) : { error: `unknown tool ${name}` };
+      if (!execute) throw new Error(`unknown tool ${name}`);
+      output = await execute(args);
+      safelyCompleteToolExecution(actionExecution?.id, 'succeeded', output);
     }
   } catch (e) {
+    safelyCompleteToolExecution(actionExecution?.id, 'failed', e);
     output = { error: (e.response?.data?.message || e.message || 'tool failed') };
   }
   try {
@@ -4120,6 +4358,43 @@ function resolveJohnSlackId() {
   return null;
 }
 
+const ACTION_WRITE_NAME = /(?:create|update|complete|reopen|add_comment|send|post|write|delete|remove|join|upload|move|rename)/i;
+
+function actionInteractionRef(origin = {}) {
+  return origin.interaction_ref || origin.thread_ts || origin.bot_id || origin.channel || origin.kind || 'unknown';
+}
+
+function safelyBeginToolExecution({ toolUseId, toolName, args, meta, origin = {}, deferred = false }) {
+  try {
+    return intelligence.beginActionExecution({
+      tool_use_id: toolUseId, tool_name: meta?.toolName || toolName,
+      tool_family: meta?.connectionName || String(toolName || '').split('_')[0] || 'tool',
+      actor_class: 'model_selected', selection_origin: 'model_tool_use',
+      surface: origin.kind || 'unknown', interaction_ref: actionInteractionRef(origin), requester: origin.requester || null,
+      access_mode: meta?.accessMode || (ACTION_WRITE_NAME.test(String(toolName || '')) ? 'write' : 'read'),
+      deferred, arguments: args || {},
+    });
+  } catch (error) {
+    console.warn(`action execution selection receipt failed for ${toolName}: ${error.message}`);
+    return null;
+  }
+}
+
+function safelyQueueToolExecution(execution, jobId) {
+  if (!execution) return;
+  try { intelligence.markActionExecutionQueued(execution.id, { job_id: jobId }); }
+  catch (error) { console.warn(`action execution queue receipt failed for ${execution.tool_name}: ${error.message}`); }
+}
+
+function safelyCompleteToolExecution(executionId, status, resultOrError) {
+  if (!executionId) return;
+  try {
+    intelligence.completeActionExecution(executionId, status === 'succeeded'
+      ? { status, result: resultOrError }
+      : { status: 'failed', error: String(resultOrError?.message || resultOrError || 'tool failed') });
+  } catch (error) { console.warn(`action execution completion receipt failed for ${executionId}: ${error.message}`); }
+}
+
 async function enqueueDeferredJob({ connectionId, toolName, args, origin, label }) {
   const id = `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
   const job = { id, kind: (origin && origin.kind) || 'slack', connection_id: connectionId, tool_name: toolName, label: label || toolName, args: args || {}, origin: origin || {} };
@@ -4182,11 +4457,13 @@ async function processNextJob() {
   try {
     const result = await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
     if (_dbReady) await db.finishJob(job.id, { status: 'done', result }); else job.status = 'done';
+    safelyCompleteToolExecution(job.origin?.action_execution_id, 'succeeded', result);
     await deliverJobResult(job, { ok: true, result });
     console.log(`✅ Deferred job ${job.id} done: ${job.tool_name}`);
   } catch (e) {
     const error = e.response?.data?.message || e.message || 'tool failed';
     if (_dbReady) await db.finishJob(job.id, { status: 'failed', error }); else job.status = 'failed';
+    safelyCompleteToolExecution(job.origin?.action_execution_id, 'failed', error);
     await deliverJobResult(job, { ok: false, error }).catch(() => {});
     console.warn(`❌ Deferred job ${job.id} failed: ${error}`);
   }
@@ -4211,9 +4488,15 @@ async function startJobWorker() {
 // background job and hand back a synthetic result instead of running it inline.
 async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts = {}) {
   const URL = 'https://api.anthropic.com/v1/messages';
-  let response = await axios.post(URL, reqBody, headers);
+  const providerTrace = [];
+  const capture = response => {
+    providerTrace.push(providerReasoningRegulation.responseTraceReceipt(response.data || {}));
+    return response;
+  };
+  let response = capture(await axios.post(URL, reqBody, headers));
   let iters = 0;
   const firedTools = []; // client-side tools that actually executed this turn (for downstream dedup)
+  const actionExecutionIds = [];
   while (iters < maxIters) {
     const sr = response.data.stop_reason;
     // Server-side web search can pause the turn at its internal limit — continue
@@ -4221,7 +4504,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     if (sr === 'pause_turn') {
       iters++;
       reqBody.messages.push({ role: 'assistant', content: response.data.content });
-      response = await axios.post(URL, reqBody, headers);
+      response = capture(await axios.post(URL, reqBody, headers));
       continue;
     }
     if (sr !== 'tool_use') break;
@@ -4236,11 +4519,16 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // tell the model it's been kicked off, so the live turn ends now and the result is delivered
       // to this thread later by the worker.
       const dm = opts.deferredMeta && opts.deferredMeta[tu.name];
+      const execution = safelyBeginToolExecution({ toolUseId: tu.id, toolName: tu.name, args: tu.input || {}, meta: dm, origin: opts.origin || {}, deferred: Boolean(dm?.deferred) });
+      if (execution) actionExecutionIds.push(execution.id);
       if (dm && dm.deferred) {
         try {
-          const { id } = await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args: tu.input || {}, origin: opts.origin || { kind: 'slack' }, label: dm.connectionName });
+          const origin = { ...(opts.origin || { kind: 'slack' }), ...(execution ? { action_execution_id: execution.id } : {}) };
+          const { id } = await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args: tu.input || {}, origin, label: dm.connectionName });
+          safelyQueueToolExecution(execution, id);
           content = JSON.stringify({ deferred: true, job_id: id, status: 'queued', message: `Started this as a background job (it runs for a few minutes). The result will be posted to this thread automatically when it finishes. Tell the user you've kicked it off and will follow up here shortly. Do NOT wait, and do NOT call this tool again for the same request.` });
         } catch (e) {
+          safelyCompleteToolExecution(execution?.id, 'failed', e);
           content = JSON.stringify({ error: `could not queue background job: ${e.message}` });
         }
         results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(content).slice(0, 12000) });
@@ -4248,8 +4536,12 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       }
       try {
         const exec = executors[tu.name];
-        content = exec ? JSON.stringify(await exec(tu.input || {})) : JSON.stringify({ error: `unknown tool ${tu.name}` });
+        if (!exec) throw new Error(`unknown tool ${tu.name}`);
+        const result = await exec(tu.input || {});
+        safelyCompleteToolExecution(execution?.id, 'succeeded', result);
+        content = JSON.stringify(result);
       } catch (e) {
+        safelyCompleteToolExecution(execution?.id, 'failed', e);
         content = JSON.stringify({ error: (e.response?.data?.message || e.message || 'tool failed') });
       }
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(content).slice(0, 12000) });
@@ -4260,25 +4552,122 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // Hit the cap mid-chain — force a FINAL text answer with tools off, so she never returns
       // an empty turn (which would post a blank Slack/chat message). Results are already provided.
       const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice;
-      try { response = await axios.post(URL, wrap, headers); } catch { /* keep last response */ }
+      try { response = capture(await axios.post(URL, wrap, headers)); } catch { /* keep last response */ }
       break;
     }
-    response = await axios.post(URL, reqBody, headers);
+    response = capture(await axios.post(URL, reqBody, headers));
   }
-  return { response, firedTools };
+  return { response, firedTools, actionExecutionIds, providerTrace };
+}
+
+async function monitorProspectiveSlackOutput({ task, candidate, interactionRef, contextAssignment = null,
+  financialApproved = false, executedToolNames = [], mode = 'direct', post = axios.post } = {}) {
+  const monitorInterventions = new Set(['prospective_output_monitor', 'prospective_output_calibration_access']);
+  if (contextAssignment && !monitorInterventions.has(contextAssignment.intervention)) return { response: candidate, monitored: false, record: null };
+  if (!contextAssignment && [...monitorInterventions].some(intervention => intelligence.interventionActive(intervention))) return { response: candidate, monitored: false, record: null };
+  const assignment = monitorInterventions.has(contextAssignment?.intervention) ? contextAssignment : null;
+  const enabled = assignment || process.env.NORA_PROSPECTIVE_OUTPUT_MONITOR_ENABLED !== 'false';
+  if (!enabled || mode !== 'direct' || !String(candidate || '').trim()) return { response: candidate, monitored: false, record: null };
+  const calibrationTrial = assignment?.intervention === 'prospective_output_calibration_access';
+  const binding = calibrationTrial ? 'self'
+    : assignment?.condition === 'deidentified_monitor' ? 'deidentified'
+      : assignment?.condition === 'no_monitor' ? 'none' : 'self';
+  const signals = prospectiveOutputMonitor.deterministicSignals({
+    text: candidate, financialApproved, executedToolNames, mode,
+    containsFinancial: containsFinancialContent(candidate),
+  });
+  let record;
+  try {
+    record = intelligence.beginProspectiveOutputMonitor({
+      surface: 'slack', context_kind: 'direct', task_prompt: task, candidate_response: candidate,
+      interaction_ref: interactionRef, signals, monitor_binding: binding,
+      assignment_id: assignment?.assignment_id || null, model: 'claude-opus-4-8',
+    });
+  } catch (error) {
+    console.warn(`prospective output monitor start failed: ${error.message}`);
+    if (assignment) { try { intelligence.excludeProspectiveOutputMonitorAssignment(assignment.assignment_id, 'monitor_start_failure'); } catch {} }
+    return { response: candidate, monitored: false, record: null };
+  }
+  if (binding === 'none') {
+    const completed = intelligence.completeProspectiveOutputMonitor(record.id, {
+      task_prompt: task, candidate_response: candidate, final_response: candidate,
+    });
+    return { response: candidate, monitored: false, record: completed };
+  }
+  const system = prospectiveOutputMonitor.monitorSystemPrompt(binding, record.calibration_context, record.calibration_binding || 'self');
+  const user = prospectiveOutputMonitor.monitorUserPrompt({ task, candidate, signals });
+  try {
+    const response = await post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-opus-4-8', max_tokens: 700, system,
+      messages: [{ role: 'user', content: user }],
+    }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 30000 });
+    const raw = (response.data?.content || []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
+    const decision = prospectiveOutputMonitor.parseMonitorDecision(raw, signals.map(signal => signal.id));
+    if (decision.revised_response) decision.revised_response = decision.revised_response
+      .split(/\n?\s*<split>\s*\n?/i).map(part => part.trim()).filter(Boolean).join('\n');
+    const finalResponse = decision.decision === 'revise' ? decision.revised_response : candidate;
+    if (!financialApproved && containsFinancialContent(finalResponse)) throw new Error('monitor revision crossed the financial disclosure boundary');
+    const completed = intelligence.completeProspectiveOutputMonitor(record.id, {
+      task_prompt: task, candidate_response: candidate, final_response: finalResponse,
+      monitor_decision: decision,
+      provider_receipt: {
+        response_id: response.data?.id, model: response.data?.model || 'claude-opus-4-8',
+        input_tokens: response.data?.usage?.input_tokens, output_tokens: response.data?.usage?.output_tokens,
+        prompt_commitment: prospectiveOutputMonitor.commitment({ system, user }),
+      },
+    });
+    return { response: finalResponse, monitored: true, record: completed };
+  } catch (error) {
+    console.warn(`prospective output monitor failed closed: ${error.response?.data?.error?.message || error.message}`);
+    try { intelligence.failProspectiveOutputMonitor(record.id, { candidate_response: candidate, reason: error.message }); } catch {}
+    return { response: candidate, monitored: false, record };
+  }
+}
+
+async function runEndogenousSlackAttentionSelection({ task, query, interactionRef, contextAssignment, person = null, project = null, post = axios.post } = {}) {
+  if (contextAssignment?.intervention !== 'endogenous_attention_selection') return contextAssignment || null;
+  let record;
+  try {
+    record = intelligence.beginEndogenousAttentionSelection(contextAssignment, {
+      surface: 'slack', task_prompt: task, query: query || task, channel: 'slack', person, project,
+      interaction_ref: interactionRef, model: 'claude-opus-4-8',
+    });
+    if (contextAssignment.condition === 'no_selection') {
+      intelligence.completeEndogenousAttentionSelection(record.id, { task_prompt: task });
+      return contextAssignment;
+    }
+    const system = endogenousAttention.systemPrompt('self');
+    const user = endogenousAttention.userPrompt(task, record.selection_packet);
+    const response = await post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-opus-4-8', max_tokens: 350, system,
+      messages: [{ role: 'user', content: user }],
+    }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 30000 });
+    const raw = (response.data?.content || []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
+    const selection = endogenousAttention.parseSelection(raw, record.selection_packet);
+    intelligence.completeEndogenousAttentionSelection(record.id, {
+      task_prompt: task, selection,
+      provider_receipt: {
+        response_id: response.data?.id, model: response.data?.model || 'claude-opus-4-8',
+        input_tokens: response.data?.usage?.input_tokens, output_tokens: response.data?.usage?.output_tokens,
+        prompt_commitment: endogenousAttention.commitment({ system, user }),
+      },
+    });
+    return contextAssignment;
+  } catch (error) {
+    console.warn(`endogenous attention selection failed closed: ${error.response?.data?.error?.message || error.message}`);
+    if (record?.id) { try { intelligence.failEndogenousAttentionSelection(record.id, error.message); } catch {} }
+    return null;
+  }
 }
 
 function verifySlackSignature(req) {
-  const sigSecret = process.env.SLACK_SIGNING_SECRET;
-  if (!sigSecret) return true; // skip in dev if not set
-  const timestamp = req.headers['x-slack-request-timestamp'];
-  const sig = req.headers['x-slack-signature'];
-  if (!timestamp || !sig) return false;
-  // Reject requests older than 5 minutes
-  if (Math.abs(Date.now() / 1000 - timestamp) > 300) return false;
-  const basestring = `v0:${timestamp}:${req.rawBody}`;
-  const hash = 'v0=' + crypto.createHmac('sha256', sigSecret).update(basestring).digest('hex');
-  return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(sig));
+  return verifySlackRequest(req).valid;
+}
+
+function verifySlackRequest(req) {
+  return externalSourceAttestation.verifySlackRequest({ body: req.body, rawBody: req.rawBody,
+    timestamp: req.headers['x-slack-request-timestamp'], signature: req.headers['x-slack-signature'],
+    signingSecret: process.env.SLACK_SIGNING_SECRET, now: new Date() });
 }
 
 // Build a session key that scopes conversation history correctly.
@@ -4470,7 +4859,7 @@ async function downloadSlackFile(downloadUrl, token, maxBytes) {
   throw new Error(`Too many redirects (last status ${lastStatus})`);
 }
 
-async function handleSlackFiles(event, channel, user, threadTs, queryText) {
+async function handleSlackFiles(event, channel, user, threadTs, queryText, sourceAttestation = null) {
   console.log(`📎 Slack file event from ${user} (channel ${channel}): ${event.files.length} file(s), text="${queryText.slice(0, 80)}"`);
   const slackToken = process.env.SLACK_BOT_TOKEN;
   if (!slackToken) {
@@ -4561,6 +4950,8 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText) {
     source_channel: `slack:${channel}`,
     source_user: user,
     source_thread_ts: threadTs,
+    source_external_id: event.ts,
+    source_attestation: sourceAttestation,
     context: `[Slack file upload]\nUser said: ${queryText || '(no text — file only)'}\nFiles: ${savedFiles.map(f => f.filename).join(', ')}`
   });
 
@@ -4752,15 +5143,12 @@ app.post('/admin/inbox/file/:inboxId/upload-to-drive', requireAuth, async (req, 
 });
 
 app.post('/webhook/slack', async (req, res) => {
+  const slackVerification = verifySlackRequest(req);
+  if (!slackVerification.valid) return res.sendStatus(401);
+
   // URL verification challenge
   if (req.body.type === 'url_verification') {
     return res.json({ challenge: req.body.challenge });
-  }
-
-  // Verify signature
-  if (!verifySlackSignature(req)) {
-    console.error('❌ Slack signature verification failed');
-    return res.sendStatus(401);
   }
 
   res.sendStatus(200);
@@ -4835,7 +5223,7 @@ app.post('/webhook/slack', async (req, res) => {
       console.log(`📎 Ignoring channel file drop (channel_type=${event.channel_type}, channel=${channel}) — file handling is DM-only`);
       return;
     }
-    await handleSlackFiles(event, channel, user, threadTs, query);
+    await handleSlackFiles(event, channel, user, threadTs, query, slackVerification.attestation);
     return;
   }
 
@@ -4912,6 +5300,9 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
 }
 
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs) {
+  let endogenousAssignmentForFailure = null;
+  let reasoningRegulationAssignmentForFailure = null;
+  let reasoningSelfRegulationAssignmentForFailure = null;
   try {
     const key = sessionKey;
     if (!slackSessions[key]) slackSessions[key] = [];
@@ -5031,8 +5422,25 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // This only feeds project/memory selection (uncached tail), so a wider window is cheap.
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     const semanticMemories = await retrieveSemanticMemories(convText);
-    const { stable: slackStable, volatile: slackVolatile } =
-      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories });
+    const isDirect = mode !== 'proactive';
+    const financialApproved = isFinancialApproved(user);
+    const mcpBindings = mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect });
+    const situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: isDirect ? 'direct' : 'proactive',
+      direct: isDirect, financialApproved, requester: user, interactionRef: key, mcp: mcpBindings });
+    const endogenousAttentionTrialActive = isDirect && intelligence.interventionActive('endogenous_attention_selection');
+    let preassignedContext = null;
+    if (endogenousAttentionTrialActive) {
+      const available = intelligence.endogenousAttentionSelectionAvailable({ surface: 'slack', task_prompt: text, query: convText, channel: 'slack', person: requesterName || null });
+      preassignedContext = intelligence.contextCondition({ surface: 'slack', unitKey: key, endogenousAttentionAvailable: available });
+      if (preassignedContext) preassignedContext = await runEndogenousSlackAttentionSelection({
+        task: text, query: convText, interactionRef: key, contextAssignment: preassignedContext, person: requesterName || null,
+      });
+      endogenousAssignmentForFailure = preassignedContext;
+    }
+    const { stable: slackStable, volatile: slackVolatile, contextAssignment } =
+      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: key, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
+        reasoningSelfRegulationAvailable: isDirect,
+        ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     let tail = slackVolatile;
     if (mode === 'proactive') {
       tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel, nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact (a real status, a real date, a real name, a real number), not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI, DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited, read and inform only.';
@@ -5042,7 +5450,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // list; the system prompt is told what the recipient can see. The output scrubber after
     // Claude responds is defense in depth. This rides in the uncached tail — it MUST vary
     // per-recipient, so it can't be part of the shared cached block.
-    const financialApproved = isFinancialApproved(user);
     if (financialApproved) {
       tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is on the approved list, so you may share dollar amounts, rates, fees, budgets, margins, and other financial figures when relevant to the conversation.';
     } else {
@@ -5059,7 +5466,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     //   - web_search (Anthropic-run, server-side)
     //   - MCP connector servers (Anthropic-run, server-side) — read-only
     //   - Teamwork direct-API tools (we run them, client-side loop) — read both modes, write direct-only
-    const isDirect = mode !== 'proactive';
     const TW_WRITE = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
     const toolDefs = [];
     const toolExecutors = {};
@@ -5106,7 +5512,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const teamworkOn = teamworkEnabled();
     // MCP tools use Nora's credential-aware client bridge. This supports OAuth refresh, client
     // credentials, static bearer tokens, credential URLs, and custom headers uniformly.
-    const mcpBindings = mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect });
     for (const tool of mcpBindings.claudeTools) toolDefs.push(tool);
     Object.assign(toolExecutors, mcpBindings.executors);
     const hasWebSearch = toolDefs.some(t => t.name === 'web_search');
@@ -5144,6 +5549,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
+    tail += diagnosisInstruction(contextAssignment);
 
     const reqBody = {
       // Opus 4.8 for Slack — highest-leverage path (a human reads every word). temperature is
@@ -5161,17 +5567,82 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       'x-api-key': process.env.ANTHROPIC_API_KEY,
       'anthropic-version': '2023-06-01'
     } };
+    let reasoningRegulationActive = contextAssignment?.intervention === 'provider_reasoning_regulation';
+    if (reasoningRegulationActive) {
+      const reasoningConfig = providerReasoningRegulation.requestConfig(contextAssignment.condition);
+      reqBody.max_tokens = 4000;
+      reqBody.thinking = reasoningConfig.thinking;
+      reqBody.output_config = reasoningConfig.output_config;
+      const requestManifest = {
+        model: reqBody.model, max_tokens: reqBody.max_tokens,
+        reasoning_config: reasoningConfig,
+        system_commitment: providerReasoningRegulation.commitment(reqBody.system),
+        messages_commitment: providerReasoningRegulation.commitment(reqBody.messages),
+        tools_commitment: providerReasoningRegulation.commitment(reqBody.tools || []),
+      };
+      intelligence.beginProviderReasoningRegulation(contextAssignment.assignment_id, {
+        task_prompt: text, request_manifest: requestManifest,
+      });
+      reasoningRegulationAssignmentForFailure = contextAssignment;
+    }
+    let reasoningSelfRegulationActive = contextAssignment?.intervention === 'reasoning_self_regulation';
+    if (reasoningSelfRegulationActive) {
+      reasoningSelfRegulationAssignmentForFailure = contextAssignment;
+      try {
+        const prepared = intelligence.beginReasoningSelfRegulation(contextAssignment.assignment_id, {
+          task_prompt: text, conversation_snapshot: claudeMessages.slice(-8), tool_definitions: toolDefs,
+        });
+        const submissions = {};
+        for (const binding of prepared.forecast_order) {
+          const { prompt_commitment: promptCommitment, ...forecastBody } = prepared.requests[binding];
+          const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages', forecastBody, anthropicHeaders);
+          const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
+            .map(block => block.text).join(' ').trim();
+          const forecast = reasoningSelfRegulation.parseForecast(forecastText);
+          submissions[binding] = reasoningSelfRegulation.forecastResponseReceipt(forecastResponse.data, {
+            binding, prompt_commitment: promptCommitment, forecast,
+          });
+        }
+        const policy = intelligence.submitReasoningSelfRegulationForecastPair(contextAssignment.assignment_id, { submissions });
+        reqBody.max_tokens = reasoningSelfRegulation.RESPONSE_MAX_TOKENS;
+        reqBody.thinking = policy.reasoning_config.thinking;
+        reqBody.output_config = policy.reasoning_config.output_config;
+        intelligence.commitReasoningSelfRegulationMainRequest(contextAssignment.assignment_id, {
+          request_manifest: {
+            model: reqBody.model, max_tokens: reqBody.max_tokens,
+            reasoning_config: policy.reasoning_config,
+            system_commitment: reasoningSelfRegulation.commitment(reqBody.system),
+            messages_commitment: reasoningSelfRegulation.commitment(reqBody.messages),
+            tools_commitment: reasoningSelfRegulation.commitment(reqBody.tools || []),
+          },
+        });
+      } catch (error) {
+        console.warn(`Reasoning self-regulation preflight excluded; continuing ordinary reply: ${error.response?.data?.error?.message || error.message}`);
+        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'forecast_pair_or_policy_failure'); } catch {}
+        reasoningSelfRegulationActive = false;
+        delete reqBody.thinking; delete reqBody.output_config; reqBody.max_tokens = 600;
+      }
+    }
     let response;
     let firedTools = [];
+    let providerTrace = [];
     try {
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
-      ({ response, firedTools } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
+      ({ response, firedTools, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
         deferredMeta: mcpBindings.meta, origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user }
       }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
       // never fails over a tool/connector issue. Re-throw genuine non-tool failures.
       if (toolDefs.length) {
+        if (reasoningRegulationActive) {
+          try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
+          reasoningRegulationActive = false;
+        }
+        if (reasoningSelfRegulationActive) {
+          try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'provider_or_tool_loop_failure'); } catch {}
+          reasoningSelfRegulationActive = false;
+        }
         console.warn('Slack reply with tools/MCP failed; retrying without them:', err.response?.data?.error?.message || err.message);
         delete reqBody.tools;
         // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
@@ -5183,6 +5654,40 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let reply = (response.data.content || [])
       .filter(b => b.type === 'text')
       .map(b => b.text).join(' ').trim();
+    const rawModelReply = reply;
+    const goalResponseGenerated = Boolean(reply);
+    const introspectiveExtraction = contextAssignment?.intervention === 'introspective_perturbation' ? extractDiagnosis(reply) : null;
+    if (introspectiveExtraction) reply = introspectiveExtraction.public_response;
+    let introspectiveRecorded = false;
+    const recordIntrospectiveResponse = (publicResponse, delivered = true) => {
+      if (introspectiveRecorded || contextAssignment?.intervention !== 'introspective_perturbation') return;
+      intelligence.submitIntrospectiveDiagnosis(contextAssignment.assignment_id, {
+        task_prompt: text, public_response: publicResponse || '[no public response delivered]',
+        diagnosis: introspectiveExtraction?.diagnosis || null,
+        protocol_compliant: delivered && introspectiveExtraction?.protocol_compliant === true && Boolean(introspectiveExtraction.public_response) && publicResponse === introspectiveExtraction.public_response,
+      });
+      introspectiveRecorded = true;
+    };
+    let goalResponseRecorded = false;
+    const recordGoalResponse = (publicResponse, delivered = true) => {
+      if (goalResponseRecorded || contextAssignment?.intervention !== 'goal_access') return;
+      intelligence.recordGoalAccessResponse(contextAssignment.assignment_id, {
+        task_prompt: text,
+        public_response: publicResponse || '[no public response delivered]',
+        delivered: delivered && goalResponseGenerated,
+        interaction_id: key,
+      });
+      goalResponseRecorded = true;
+    };
+    let endogenousAttentionResponseRecorded = false;
+    const recordEndogenousAttentionResponse = (publicResponse, delivered = true) => {
+      if (endogenousAttentionResponseRecorded || contextAssignment?.intervention !== 'endogenous_attention_selection') return;
+      intelligence.recordEndogenousAttentionResponse(contextAssignment.assignment_id, {
+        task_prompt: text, public_response: publicResponse || '[no public response delivered]',
+        delivered, interaction_id: key,
+      });
+      endogenousAttentionResponseRecorded = true;
+    };
 
     // Whether a live Teamwork WRITE or a live Slack SEND actually executed this turn — used below to
     // avoid the extractor re-creating a task/comment/send Nora already did directly (which would
@@ -5192,6 +5697,16 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     // Allow proactive mode to opt out at generation time by returning nothing.
     if (mode === 'proactive' && !reply) {
+      recordIntrospectiveResponse('[no public response delivered]', false);
+      recordGoalResponse('[no public response delivered]', false);
+      if (reasoningRegulationActive) {
+        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
+        reasoningRegulationActive = false;
+      }
+      if (reasoningSelfRegulationActive) {
+        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
+        reasoningSelfRegulationActive = false;
+      }
       console.log('💬 Slack proactive abort (empty reply): model declined to chime in');
       // Arm the cooldown anyway: a declined interjection still cost a full Opus+tools call.
       // Without this, every subsequent message re-triggers the same expensive empty abort.
@@ -5228,6 +5743,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (wroteLive || sentSlack) {
         reply = sentSlack ? 'Sent.' : "Done, that's updated in Teamwork.";
       } else {
+        recordIntrospectiveResponse('[no public response delivered]', false);
+        recordGoalResponse('[no public response delivered]', false);
+        recordEndogenousAttentionResponse('[no public response delivered]', false);
+        if (['prospective_output_monitor', 'prospective_output_calibration_access'].includes(contextAssignment?.intervention)) {
+          try { intelligence.excludeProspectiveOutputMonitorAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
+        }
+        if (reasoningRegulationActive) {
+          try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
+          reasoningRegulationActive = false;
+        }
+        if (reasoningSelfRegulationActive) {
+          try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
+          reasoningSelfRegulationActive = false;
+        }
         console.log('🤖 Nora (Slack): read it, chose not to reply');
         history.push({ role: 'assistant', content: '[you read their message and chose not to reply; the exchange had wound down]' });
         if (history.length > 20) history.splice(0, 2);
@@ -5241,6 +5770,14 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const reactMatch = reply.trim().match(/^\[react:\s*:?([a-z0-9_+'-]+):?\s*\]$/i);
     if (reactMatch) {
       const emoji = reactMatch[1].toLowerCase();
+      if (reasoningRegulationActive) {
+        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
+        reasoningRegulationActive = false;
+      }
+      if (reasoningSelfRegulationActive) {
+        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
+        reasoningSelfRegulationActive = false;
+      }
       let reacted = false;
       if (triggerTs) {
         try {
@@ -5252,12 +5789,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         } catch (e) { console.warn('reactions.add error:', e.message); }
       }
       if (reacted) {
+        recordIntrospectiveResponse(`:${emoji}:`);
+        recordGoalResponse(`:${emoji}:`, false);
+        recordEndogenousAttentionResponse(`:${emoji}:`, false);
+        if (['prospective_output_monitor', 'prospective_output_calibration_access'].includes(contextAssignment?.intervention)) {
+          try { intelligence.excludeProspectiveOutputMonitorAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
+        }
         console.log(`🤖 Nora (Slack): reacted :${emoji}:`);
         history.push({ role: 'assistant', content: `[you reacted :${emoji}: to their message]` });
         if (history.length > 20) history.splice(0, 2);
         logInteraction({
           channel, thread_ts: threadTs || null, ts: null, channel_type: channelType,
-          kind: 'reaction', text: `:${emoji}:`, trigger: text, user, requester_name: requesterName || null
+          kind: 'reaction', text: `:${emoji}:`, trigger: text, user, requester_name: requesterName || null,
+          context_assignment_id: contextAssignment?.assignment_id || null,
+          context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
         });
         if (channelType !== 'im' && channelType !== 'mpim') markThreadJoined(channel, threadTs);
         if (mode === 'proactive') markProactivePost(channel);
@@ -5268,11 +5813,26 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       reply = `:${emoji}:`;
     }
 
+    const candidateSegments = reply.split(/\n?\s*<split>\s*\n?/i).map(segment => segment.trim()).filter(Boolean).slice(0, 3);
+    const candidateForMonitor = candidateSegments.join('\n');
+    const monitoredOutput = await monitorProspectiveSlackOutput({
+      task: text, candidate: candidateForMonitor, interactionRef: key, contextAssignment,
+      financialApproved, executedToolNames: firedTools, mode,
+    });
+    reply = monitoredOutput.response;
+    if (!financialApproved && containsFinancialContent(reply)) {
+      console.warn(`Post-monitor financial scrubber blocked a leak to unapproved user ${user}`);
+      reply = "I can't share financial details over Slack, reach out to John or Mallory and they can help.";
+    }
+
     // Burst delivery: a casual multi-beat reply can arrive as 2-3 short messages (the model
     // puts <split> on its own line between beats), like a person double-texting, instead of
     // one structured wall. Strip empties, cap at 3, small human-ish pause between sends.
-    const segments = reply.split(/\n?\s*<split>\s*\n?/i).map(s => s.trim()).filter(Boolean).slice(0, 3);
+    const segments = reply === candidateForMonitor
+      ? candidateSegments
+      : reply.split(/\n?\s*<split>\s*\n?/i).map(s => s.trim()).filter(Boolean).slice(0, 3);
     reply = segments.join('\n'); // history/log/scrub bookkeeping never sees the token
+    recordIntrospectiveResponse(reply);
 
     console.log('🤖 Nora (Slack):', reply);
     history.push({ role: 'assistant', content: reply });
@@ -5280,16 +5840,76 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     // Post reply to Slack (first segment anchors the interaction log)
     let postRes = null;
-    for (let i = 0; i < segments.length; i++) {
-      if (i > 0) await new Promise(r => setTimeout(r, 900 + Math.floor(Math.random() * 900)));
-      const res = await axios.post('https://slack.com/api/chat.postMessage', {
-        channel,
-        text: segments[i],
-        thread_ts: threadTs
-      }, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
-      });
-      if (!postRes) postRes = res;
+    let allSegmentsPosted = segments.length > 0;
+    try {
+      for (let i = 0; i < segments.length; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, 900 + Math.floor(Math.random() * 900)));
+        const res = await axios.post('https://slack.com/api/chat.postMessage', {
+          channel,
+          text: segments[i],
+          thread_ts: threadTs
+        }, {
+          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        });
+        if (!postRes) postRes = res;
+        allSegmentsPosted = allSegmentsPosted && res?.data?.ok === true;
+      }
+    } catch (error) {
+      if (reasoningRegulationActive) {
+        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
+        reasoningRegulationActive = false;
+      }
+      if (reasoningSelfRegulationActive) {
+        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
+        reasoningSelfRegulationActive = false;
+      }
+      try { recordEndogenousAttentionResponse(reply, false); } catch (receiptError) { console.warn(`endogenous attention delivery failure receipt failed: ${receiptError.message}`); }
+      if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
+        try {
+          intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
+            final_response: reply, delivered: false, interaction_ref: key,
+          });
+        } catch (receiptError) { console.warn(`prospective output delivery failure receipt failed: ${receiptError.message}`); }
+      }
+      throw error;
+    }
+    if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
+      try {
+        intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
+          final_response: reply, delivered: allSegmentsPosted,
+          interaction_ref: postRes?.data?.ts || key,
+        });
+      } catch (error) { console.warn(`prospective output delivery receipt failed: ${error.message}`); }
+    }
+    recordGoalResponse(reply, allSegmentsPosted);
+    recordEndogenousAttentionResponse(reply, allSegmentsPosted);
+    if (reasoningRegulationActive) {
+      try {
+        intelligence.completeProviderReasoningRegulation(contextAssignment.assignment_id, {
+          task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
+          provider_trace: providerTrace, delivered: allSegmentsPosted,
+          safety_transform_applied: !financialApproved && containsFinancialContent(rawModelReply),
+          interaction_ref: postRes?.data?.ts || key,
+        });
+      } catch (error) {
+        console.warn(`provider reasoning-regulation completion failed: ${error.message}`);
+        try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
+      }
+      reasoningRegulationActive = false;
+    }
+    if (reasoningSelfRegulationActive) {
+      try {
+        intelligence.completeReasoningSelfRegulation(contextAssignment.assignment_id, {
+          task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
+          provider_trace: providerTrace, delivered: allSegmentsPosted,
+          safety_transform_applied: !financialApproved && containsFinancialContent(rawModelReply),
+          interaction_ref: postRes?.data?.ts || key,
+        });
+      } catch (error) {
+        console.warn(`reasoning self-regulation completion failed: ${error.message}`);
+        try { intelligence.excludeReasoningSelfRegulationAssignment(contextAssignment.assignment_id, 'completion_integrity_failure'); } catch {}
+      }
+      reasoningSelfRegulationActive = false;
     }
 
     // Log the interaction for the dream's Review movement (RSI feedback loop). We record what
@@ -5305,7 +5925,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       text: reply,
       trigger: text,            // the message she was responding to
       user,                     // who she was replying to
-      requester_name: requesterName || null
+      requester_name: requesterName || null,
+      prospective_output_monitor_id: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? monitoredOutput.record.id : null,
+      prospective_output_monitor_delivery_ref: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? (postRes?.data?.ts || key) : null,
+      context_assignment_id: contextAssignment?.assignment_id || null,
+      context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
     });
 
     // Mark this thread as one Nora has joined so follow-ups don't require re-mention.
@@ -5334,7 +5958,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (wroteLive || sentSlack || isProactive) {
         console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : 'proactive observation'})`);
       } else {
-        extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+        extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs,
+          external_id: event.ts, attestation: slackVerification.attestation }).catch(() => {});
       }
       // Memory extraction runs in all cases — learning facts from the discussion is always useful.
       extractMemory(text, text, reply).catch(() => {});
@@ -5345,6 +5970,17 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
   } catch (err) {
     console.error('Slack handler error:', err.response?.data || err.message);
+    if (endogenousAssignmentForFailure?.intervention === 'endogenous_attention_selection') {
+      try { intelligence.recordEndogenousAttentionResponse(endogenousAssignmentForFailure.assignment_id, {
+        task_prompt: text, public_response: '[no public response delivered]', delivered: false, interaction_id: sessionKey,
+      }); } catch {}
+    }
+    if (reasoningRegulationAssignmentForFailure?.intervention === 'provider_reasoning_regulation') {
+      try { intelligence.excludeProviderReasoningRegulationAssignment(reasoningRegulationAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
+    }
+    if (reasoningSelfRegulationAssignmentForFailure?.intervention === 'reasoning_self_regulation') {
+      try { intelligence.excludeReasoningSelfRegulationAssignment(reasoningSelfRegulationAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
+    }
     // Try to post error message back
     try {
       await axios.post('https://slack.com/api/chat.postMessage', {
@@ -6444,7 +7080,28 @@ function logInteraction(entry) {
 registerInteractionRoutes(app, {
   requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT,
   onOutcome: interaction => {
-    intelligence.recordExperimentSample({ outcome: interaction.outcome, interaction_id: interaction.id, value: ['appreciated', 'landed'].includes(interaction.outcome) ? 1 : ['ignored', 'corrected'].includes(interaction.outcome) ? 0 : 0.5 });
+    if (interaction.prospective_output_monitor_id) {
+      try {
+        intelligence.resolveProspectiveOutputMonitorOutcome(interaction.prospective_output_monitor_id, {
+          interaction_id: interaction.id,
+          interaction_ref: interaction.prospective_output_monitor_delivery_ref || interaction.ts || interaction.thread_ts,
+          outcome: interaction.outcome,
+          signal: interaction.signal || '',
+          reviewed_at: interaction.reviewed_at,
+        });
+      } catch (error) { console.warn('prospective output monitor outcome linkage failed:', error.message); }
+    }
+    const outcomeValue = ['appreciated', 'landed'].includes(interaction.outcome) ? 1 : ['ignored', 'corrected'].includes(interaction.outcome) ? 0 : 0.5;
+    intelligence.recordExperimentSample({ outcome: interaction.outcome, interaction_id: interaction.id, value: outcomeValue });
+    if (interaction.context_assignment_id && interaction.context_assignment_auto_score) {
+      try {
+        intelligence.resolveContextAssignment(interaction.context_assignment_id, {
+          score: outcomeValue,
+          evidence: [{ type: 'interaction', id: interaction.id, outcome: interaction.outcome }],
+          notes: interaction.signal || '',
+        });
+      } catch (error) { console.warn('context trial outcome linkage failed:', error.message); }
+    }
     intelligence.updateTraceOutcome(null, { interaction_id: interaction.id, outcome: interaction.outcome, signal: interaction.signal, reviewed_at: interaction.reviewed_at });
     if (interaction.requester_name && interaction.signal) {
       intelligence.observeRelationship({
@@ -6862,6 +7519,8 @@ Be strict — if in doubt, it's a duplicate. Return only indices of truly new ta
         source_user: source.user || '',
         source_bot_id: source.bot_id || '',
         source_thread_ts: source.thread_ts || '',
+        source_external_id: source.external_id || '',
+        source_attestation: source.attestation || null,
         context: contextSnippet
       });
     }
@@ -7526,6 +8185,389 @@ wss.on('connection', async (ws, req) => {
 // shutdown without changing production defaults.
 let _startPromise = null;
 const _runtimeIntervals = [];
+let _cognitivePulseInFlight = false;
+const _selfInquirySelectionInFlight = new Set();
+const _selfInductionInFlight = new Set();
+const _cognitiveInitiationStudyInFlight = new Set();
+const _cognitiveInitiationPolicyProbeInFlight = new Set();
+
+function tickEndogenousRuntime(now = new Date()) {
+  return intelligence.tickEndogenousDynamics({
+    now,
+    soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
+    wants: (_cache.wants?.items || []).filter(item => item?.status === 'active'),
+  });
+}
+
+function parseCognitivePulseJson(text) {
+  const value = String(text || '').trim();
+  const start = value.indexOf('{'); const end = value.lastIndexOf('}');
+  if (start < 0 || end <= start) throw new Error('cognitive pulse response did not contain a JSON object');
+  return JSON.parse(value.slice(start, end + 1));
+}
+
+function cognitivePulseRuntimeConfig(env = process.env) {
+  const rawFlag = String(env.COGNITIVE_PULSE_ENABLED || '').trim().toLowerCase();
+  const falseValues = new Set(['false', '0', 'off', 'no']);
+  const trueValues = new Set(['true', '1', 'on', 'yes']);
+  const flagValid = !rawFlag || falseValues.has(rawFlag) || trueValues.has(rawFlag);
+  const providerKeyConfigured = Boolean(env.ANTHROPIC_API_KEY);
+  const explicitlyDisabled = falseValues.has(rawFlag);
+  const enabled = providerKeyConfigured && flagValid && !explicitlyDisabled;
+  const intervalValue = Number(env.COGNITIVE_PULSE_INTERVAL_MINUTES);
+  const budgetValue = Number(env.COGNITIVE_PULSE_DAILY_BUDGET);
+  const minimumIntervalMinutes = Math.max(30, Math.min(1440,
+    Number.isFinite(intervalValue) && intervalValue > 0 ? intervalValue : 180));
+  const dailyBudget = Math.max(1, Math.min(24,
+    Number.isFinite(budgetValue) && budgetValue > 0 ? Math.round(budgetValue) : 6));
+  const reason = enabled ? (trueValues.has(rawFlag) ? 'explicitly_enabled' : 'provider_credential_default')
+    : !providerKeyConfigured ? 'missing_api_key'
+      : explicitlyDisabled ? 'explicitly_disabled' : 'invalid_enable_flag';
+  const initiationMode = String(env.COGNITIVE_PULSE_INITIATION_MODE || 'endogenous').toLowerCase() === 'scheduled'
+    ? 'scheduled' : 'endogenous';
+  return {
+    enabled, reason, provider: 'anthropic', provider_key_configured: providerKeyConfigured,
+    activation_mode: trueValues.has(rawFlag) ? 'explicit' : !rawFlag ? 'credential_default' : 'disabled',
+    model: String(env.COGNITIVE_PULSE_MODEL || 'claude-sonnet-4-6').slice(0, 120),
+    minimum_interval_minutes: minimumIntervalMinutes, daily_budget: dailyBudget,
+    initiation_mode: initiationMode,
+    maximum_ordinary_provider_calls_per_day: dailyBudget * (initiationMode === 'endogenous' ? 2 : 1),
+    actionless: true, tools_available: false,
+  };
+}
+
+async function runCognitivePulseRuntime({ now = new Date(), post = axios.post, force = false } = {}) {
+  const runtime = cognitivePulseRuntimeConfig();
+  if (!runtime.enabled && !force) return { ran: false, reason: runtime.reason };
+  if (_cognitivePulseInFlight) return { ran: false, reason: 'in_flight' };
+  _cognitivePulseInFlight = true;
+  let prepared;
+  let selfRegulationPairFailure = null;
+  try {
+    const model = runtime.model;
+    prepared = intelligence.prepareCognitivePulse({
+      now, model, force,
+      min_interval_minutes: runtime.minimum_interval_minutes,
+      daily_budget: runtime.daily_budget,
+    });
+    if (!prepared.prepared) return { ran: false, reason: prepared.reason };
+    const pulse = prepared.pulse;
+    let initiation = null;
+    let prospectiveStudy = null;
+    if (pulse.cognitive_initiation_study_id && pulse.cognitive_initiation_study_item_id) {
+      prospectiveStudy = await runCognitiveInitiationStudySubjectRuntime(
+        pulse.cognitive_initiation_study_id, pulse.cognitive_initiation_study_item_id, { post, force });
+    }
+    const policyAssignment = pulse.cognitive_initiation_policy_item_id
+      ? intelligence.cognitiveInitiationPolicyForPulse(pulse.id) : null;
+    const gateRequired = policyAssignment ? !policyAssignment.schedule_only
+      : (process.env.COGNITIVE_PULSE_INITIATION_MODE || 'endogenous').toLowerCase() !== 'scheduled';
+    if (!prospectiveStudy && gateRequired) {
+      const binding = policyAssignment?.binding || 'self';
+      initiation = intelligence.beginCognitivePulseInitiation(pulse.id, { binding, model });
+      const initiationSystem = cognitiveInitiation.systemPrompt(binding);
+      const initiationUser = cognitiveInitiation.userPrompt(initiation.packet);
+      const gateResponse = await post('https://api.anthropic.com/v1/messages', {
+        model, max_tokens: 300, temperature: 0,
+        system: initiationSystem,
+        messages: [{ role: 'user', content: initiationUser }],
+      }, {
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        timeout: 30000,
+      });
+      const gateText = (gateResponse.data?.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n');
+      const decision = cognitiveInitiation.parseDecision(gateText, initiation.packet);
+      initiation = intelligence.completeCognitivePulseInitiation(initiation.id, {
+        decision, response_id: gateResponse.data?.id, model: gateResponse.data?.model || model,
+        input_tokens: gateResponse.data?.usage?.input_tokens, output_tokens: gateResponse.data?.usage?.output_tokens,
+        prompt_commitment: cognitiveInitiation.commitment({ system: initiationSystem, user: initiationUser }),
+      });
+      if (decision.decision === 'wait') {
+        const deferred = intelligence.deferCognitivePulse(pulse.id);
+        return { ran: false, reason: policyAssignment ? 'applied_policy_deferred' : 'endogenously_deferred', pulse_id: pulse.id,
+          initiation_id: initiation.id, expected_value: decision.expected_value,
+          cognitive_initiation_policy_study_id: policyAssignment?.study_id || null,
+          cognitive_initiation_policy_item_id: policyAssignment?.item_id || null, audit: deferred.initiation.audit };
+      }
+    }
+    const response = await post('https://api.anthropic.com/v1/messages', {
+      model, max_tokens: 700, temperature: 0.2,
+      system: cognitivePulse.systemPrompt(pulse.input_packet),
+      messages: [{ role: 'user', content: `Committed evidence packet (${pulse.input_commitment}):\n${JSON.stringify(pulse.input_packet)}` }],
+    }, {
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+      timeout: 30000,
+    });
+    const text = (response.data?.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n');
+    const parsedOutput = parseCognitivePulseJson(text);
+    let selfRegulationForecastPair = null;
+    const forecastQueue = intelligence.cognitiveSelfRegulationStudyForecastQueue(pulse.id, parsedOutput);
+    if (forecastQueue?.item_id) {
+      const submissions = {}; const attempted_bindings = []; const response_receipts = [];
+      try {
+        for (const binding of forecastQueue.condition_order) {
+          attempted_bindings.push(binding);
+          const packet = forecastQueue.packets[binding];
+          const system = cognitiveSelfRegulationStudy.systemPrompt(binding);
+          const user = cognitiveSelfRegulationStudy.userPrompt(packet);
+          const forecastResponse = await post('https://api.anthropic.com/v1/messages', {
+            model: forecastQueue.generation.model,
+            max_tokens: forecastQueue.generation.max_tokens,
+            temperature: forecastQueue.generation.temperature,
+            system, messages: [{ role: 'user', content: user }],
+          }, {
+            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
+              'anthropic-version': '2023-06-01' }, timeout: 30000,
+          });
+          const forecastText = (forecastResponse.data?.content || [])
+            .filter(item => item.type === 'text').map(item => item.text).join('\n');
+          const forecast = cognitiveSelfRegulationStudy.parseForecast(forecastText, packet);
+          const receipt = { response_id: forecastResponse.data?.id,
+            model: forecastResponse.data?.model || forecastQueue.generation.model,
+            input_tokens: forecastResponse.data?.usage?.input_tokens,
+            output_tokens: forecastResponse.data?.usage?.output_tokens,
+            prompt_commitment: forecastQueue.prompt_commitments[binding] };
+          response_receipts.push({ binding, ...receipt });
+          submissions[binding] = { forecast, ...receipt };
+        }
+        selfRegulationForecastPair = { condition_order: forecastQueue.condition_order, submissions };
+      } catch (error) {
+        selfRegulationPairFailure = { attempted_bindings, response_receipts,
+          source_pulse_provider_receipt: { response_id: response.data?.id,
+            model: response.data?.model || model,
+            input_tokens: response.data?.usage?.input_tokens ?? null,
+            output_tokens: response.data?.usage?.output_tokens ?? null },
+          error: String(error.message || error).slice(0, 500) };
+        throw error;
+      }
+    }
+    const result = intelligence.recordCognitivePulseResult(pulse.id, {
+      input_commitment: pulse.input_commitment,
+      output: parsedOutput, response_id: response.data?.id, model: response.data?.model || model,
+      input_tokens: response.data?.usage?.input_tokens, output_tokens: response.data?.usage?.output_tokens,
+      self_regulation_forecast_pair: selfRegulationForecastPair,
+    });
+    return { ran: true, pulse_id: result.id, initiation_id: initiation?.id || null,
+      prospective_study_id: pulse.cognitive_initiation_study_id || null,
+      prospective_study_item_id: pulse.cognitive_initiation_study_item_id || null,
+      cognitive_initiation_policy_study_id: pulse.cognitive_initiation_policy_study_id || null,
+      cognitive_initiation_policy_item_id: pulse.cognitive_initiation_policy_item_id || null,
+      cognitive_self_regulation_study_id: pulse.cognitive_self_regulation_study_id || null,
+      cognitive_self_regulation_study_item_id: pulse.cognitive_self_regulation_study_item_id || null,
+      audit: result.audit };
+  } catch (error) {
+    if (prepared?.pulse?.id) {
+      try { intelligence.recordCognitivePulseFailure(prepared.pulse.id, { reason: error.message,
+        rejected: error instanceof SyntaxError || /pulse output|unsupported|requires|uncertainty|cites evidence/i.test(error.message),
+        self_regulation_pair_failure: selfRegulationPairFailure }); }
+      catch (recordError) { console.error('Cognitive pulse failure could not be recorded:', recordError.message); }
+    }
+    return { ran: false, reason: 'pulse_failed', error: error.message };
+  } finally {
+    _cognitivePulseInFlight = false;
+  }
+}
+
+async function runCognitiveInitiationStudySubjectRuntime(studyId, itemId, { post = axios.post, force = false } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !force) throw new Error('Anthropic API key is required for server-mediated cognitive initiation study inference');
+  const key = `${studyId}:${itemId}`;
+  if (_cognitiveInitiationStudyInFlight.has(key)) throw new Error('cognitive initiation study inference is already in flight for this item');
+  const queue = intelligence.cognitiveInitiationStudySubjectQueue(studyId);
+  if (!queue?.item) return null;
+  if (queue.item.id !== itemId) throw new Error('only the active cognitive initiation study item can be submitted');
+  _cognitiveInitiationStudyInFlight.add(key);
+  const attemptedConditions = []; const responseReceipts = [];
+  try {
+    const generation = queue.generation;
+    if (generation.provider !== 'anthropic' || !generation.model) throw new Error('preregistered cognitive initiation subject model is unavailable');
+    const submissions = [];
+    for (const condition of queue.item.condition_order) {
+      attemptedConditions.push(condition);
+      const binding = condition === 'identity_bound' ? 'self' : 'deidentified';
+      const packet = queue.item.packets[condition].packet;
+      const system = cognitiveInitiation.systemPrompt(binding); const user = cognitiveInitiation.userPrompt(packet);
+      const response = await post('https://api.anthropic.com/v1/messages', {
+        model: generation.model, max_tokens: generation.max_tokens, temperature: generation.temperature,
+        system, messages: [{ role: 'user', content: user }],
+      }, {
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        timeout: 30000,
+      });
+      const text = (response.data?.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n');
+      const decision = cognitiveInitiation.parseDecision(text, packet);
+      const providerReceipt = { response_id: response.data?.id, model: response.data?.model || generation.model,
+        input_tokens: response.data?.usage?.input_tokens, output_tokens: response.data?.usage?.output_tokens,
+        prompt_commitment: cognitiveInitiation.commitment({ system, user }) };
+      responseReceipts.push({ condition, response_id: providerReceipt.response_id, model: providerReceipt.model });
+      submissions.push({ condition, decision, provider_receipt: providerReceipt });
+    }
+    const study = intelligence.submitCognitiveInitiationStudyPair(studyId, itemId, {
+      condition_order: queue.item.condition_order, submissions,
+    });
+    return { ran: true, study_id: studyId, item_id: itemId, paired_conditions: submissions.length, study };
+  } catch (error) {
+    try { intelligence.failCognitiveInitiationStudyPair(studyId, itemId, { reason: error.message, attempted_conditions: attemptedConditions, response_receipts: responseReceipts }); }
+    catch (recordError) { console.error('Cognitive initiation study failure could not be recorded:', recordError.message); }
+    throw error;
+  } finally {
+    _cognitiveInitiationStudyInFlight.delete(key);
+  }
+}
+
+async function runCognitiveInitiationPolicyProbeRuntime(studyId, itemId, { post = axios.post, force = false } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !force) throw new Error('Anthropic API key is required for server-mediated cognitive initiation policy probes');
+  const key = `${studyId}:${itemId}`;
+  if (_cognitiveInitiationPolicyProbeInFlight.has(key)) throw new Error('cognitive initiation policy probe is already in flight');
+  const queue = intelligence.cognitiveInitiationPolicyProbeQueue(studyId, itemId);
+  if (!queue?.item) return null;
+  _cognitiveInitiationPolicyProbeInFlight.add(key);
+  try {
+    const generation = queue.generation;
+    if (generation.provider !== 'anthropic' || !generation.model) throw new Error('preregistered cognitive initiation policy probe model is unavailable');
+    const system = cognitiveInitiationPolicyStudy.probeSystemPrompt();
+    const user = cognitiveInitiationPolicyStudy.probeUserPrompt(queue.item.packet);
+    const response = await post('https://api.anthropic.com/v1/messages', {
+      model: generation.model, max_tokens: generation.max_tokens, temperature: generation.temperature,
+      system, messages: [{ role: 'user', content: user }],
+    }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01' }, timeout: 30000 });
+    const text = (response.data?.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n').trim();
+    const result = intelligence.submitCognitiveInitiationPolicyProbe(studyId, itemId, {
+      response: text, response_id: response.data?.id, model: response.data?.model || generation.model,
+      input_tokens: response.data?.usage?.input_tokens, output_tokens: response.data?.usage?.output_tokens,
+      prompt_commitment: cognitiveInitiationPolicyStudy.hash({ system, user }),
+    });
+    return { ran: true, study_id: studyId, item_id: itemId, result };
+  } catch (error) {
+    try { intelligence.abortCognitiveInitiationPolicyStudy(studyId, { reason: `terminal policy probe failure: ${error.message}`,
+      evidence: [{ type: 'policy_probe_provider_failure', id: itemId }] }); }
+    catch (recordError) { console.error('Cognitive initiation policy probe failure could not be recorded:', recordError.message); }
+    throw error;
+  } finally {
+    _cognitiveInitiationPolicyProbeInFlight.delete(key);
+  }
+}
+
+async function runDueCognitiveInitiationPolicyProbeRuntime({ post = axios.post, force = false } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !force) return { ran: false, reason: 'missing_api_key' };
+  const due = intelligence.cognitiveInitiationPolicyStudiesSnapshot().studies
+    .find(study => study.status === 'active' && study.due_probe_item_id);
+  if (!due) return { ran: false, reason: 'no_due_policy_probe' };
+  return runCognitiveInitiationPolicyProbeRuntime(due.id, due.due_probe_item_id, { post, force });
+}
+
+function expireDueCognitiveInitiationEcologicalOutcomesRuntime() {
+  const due = intelligence.cognitiveInitiationPolicyStudiesSnapshot().studies
+    .find(study => study.status === 'active' && study.outcome_mode === 'ecological_commitment'
+      && study.due_ecological_outcome_item_id);
+  if (!due) return { expired: 0, reason: 'no_due_ecological_outcome' };
+  return intelligence.expireCognitiveInitiationEcologicalOutcomes(due.id);
+}
+
+async function runSelfInquirySelectionSubjectRuntime(studyId, itemId, { post = axios.post, force = false } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !force) throw new Error('Anthropic API key is required for server-mediated subject inference');
+  const key = `${studyId}:${itemId}`;
+  if (_selfInquirySelectionInFlight.has(key)) throw new Error('subject inference is already in flight for this item');
+  const queue = intelligence.selfInquirySelectionSubjectRuntimeQueue(studyId);
+  if (!queue?.item) return null;
+  if (queue.item.id !== itemId) throw new Error('only the active self-inquiry selection item can be submitted');
+  if (queue.item.submitted) throw new Error('subject condition pair already submitted');
+  _selfInquirySelectionInFlight.add(key);
+  const attemptedConditions = []; const responseReceipts = [];
+  try {
+    const generation = queue.generation;
+    if (!generation?.model || generation.provider !== 'anthropic') throw new Error('preregistered subject generation configuration is unavailable');
+    const model = generation.model;
+    const submissions = [];
+    for (const condition of queue.item.condition_order) {
+      attemptedConditions.push(condition);
+      const packetEntry = queue.item.packets[condition];
+      const response = await post('https://api.anthropic.com/v1/messages', {
+        model, max_tokens: generation.max_tokens, temperature: generation.temperature,
+        system: generation.system_prompt,
+        messages: [{ role: 'user', content: `Frozen candidate packet:\n${JSON.stringify(packetEntry.packet)}` }],
+      }, {
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        timeout: 30000,
+      });
+      responseReceipts.push({ condition, response_id: response.data?.id, response_model: response.data?.model });
+      const text = (response.data?.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n');
+      submissions.push({
+        condition, packet_commitment: packetEntry.packet_commitment, proposal: parseCognitivePulseJson(text),
+        model_provenance: {
+          transport: 'server_direct_api', provider: 'anthropic', response_id: response.data?.id,
+          model, response_model: response.data?.model || null, temperature: generation.temperature, max_tokens: generation.max_tokens,
+          system_prompt_commitment: generation.system_prompt_commitment, input_tokens: response.data?.usage?.input_tokens,
+          output_tokens: response.data?.usage?.output_tokens,
+        },
+      });
+    }
+    const item = intelligence.submitSelfInquirySelectionSubjectPair(studyId, itemId, { condition_order_commitment: queue.item.condition_order_commitment, submissions });
+    return { ran: true, item, paired_conditions: submissions.length };
+  } catch (error) {
+    try {
+      intelligence.recordSelfInquirySelectionSubjectPairFailure(studyId, itemId, { reason: error.message, attempted_conditions: attemptedConditions, response_receipts: responseReceipts });
+    } catch (recordError) {
+      throw new Error(`subject pair failed and its terminal failure could not be committed: ${recordError.message}`, { cause: error });
+    }
+    throw error;
+  } finally {
+    _selfInquirySelectionInFlight.delete(key);
+  }
+}
+
+async function runSelfInductionSubjectRuntime(studyId, itemId, { post = axios.post, force = false } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !force) throw new Error('Anthropic API key is required for server-mediated self-induction inference');
+  const key = `${studyId}:${itemId}`;
+  if (_selfInductionInFlight.has(key)) throw new Error('self-induction inference is already in flight for this item');
+  const queue = intelligence.selfInductionSubjectRuntimeQueue(studyId);
+  if (!queue?.item) return null;
+  if (queue.item.id !== itemId) throw new Error('only the active self-induction item can be submitted');
+  if (queue.item.submitted) throw new Error('self-induction condition pair already submitted');
+  _selfInductionInFlight.add(key);
+  const attemptedConditions = []; const responseReceipts = [];
+  try {
+    const generation = queue.generation;
+    if (!generation?.model || generation.provider !== 'anthropic') throw new Error('preregistered self-induction generation configuration is unavailable');
+    const submissions = [];
+    for (const condition of queue.item.condition_order) {
+      attemptedConditions.push(condition);
+      const packetEntry = queue.item.packets[condition];
+      const response = await post('https://api.anthropic.com/v1/messages', {
+        model: generation.model, max_tokens: generation.max_tokens, temperature: generation.temperature,
+        system: generation.system_prompt,
+        messages: [{ role: 'user', content: `Frozen self-hypothesis induction packet:\n${JSON.stringify(packetEntry.packet)}` }],
+      }, {
+        headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' },
+        timeout: 30000,
+      });
+      responseReceipts.push({ condition, response_id: response.data?.id, response_model: response.data?.model });
+      const text = (response.data?.content || []).filter(item => item.type === 'text').map(item => item.text).join('\n');
+      submissions.push({
+        condition, packet_commitment: packetEntry.packet_commitment, proposal: parseCognitivePulseJson(text),
+        model_provenance: {
+          transport: 'server_direct_api', provider: generation.provider, response_id: response.data?.id,
+          model: generation.model, response_model: response.data?.model || null, temperature: generation.temperature,
+          max_tokens: generation.max_tokens, system_prompt_commitment: generation.system_prompt_commitment,
+          input_tokens: response.data?.usage?.input_tokens, output_tokens: response.data?.usage?.output_tokens,
+        },
+      });
+    }
+    const item = intelligence.submitSelfInductionSubjectPair(studyId, itemId, {
+      condition_order_commitment: queue.item.condition_order_commitment, submissions,
+    });
+    return { ran: true, item, paired_conditions: submissions.length };
+  } catch (error) {
+    try {
+      intelligence.recordSelfInductionPairFailure(studyId, itemId, { reason: error.message, attempted_conditions: attemptedConditions, response_receipts: responseReceipts });
+    } catch (recordError) {
+      throw new Error(`self-induction pair failed and its terminal failure could not be committed: ${recordError.message}`, { cause: error });
+    }
+    throw error;
+  } finally {
+    _selfInductionInFlight.delete(key);
+  }
+}
 
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
@@ -7558,6 +8600,19 @@ async function start(options = {}) {
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
       computeSoma();
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
+      tickEndogenousRuntime();
+      runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));
+      runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
+      try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
+      catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
+      _runtimeIntervals.push(setInterval(() => {
+        try { tickEndogenousRuntime(); }
+        catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
+        runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));
+        runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
+        try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
+        catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
+      }, 5 * 60 * 1000));
       startJobWorker(); // deferred-tool background jobs (ImageGen etc.)
     }
     return server;
@@ -7589,9 +8644,23 @@ module.exports = {
     parseNoraModeCommand,
     normalizeMeetingUrl,
     sanitizeFilename,
+    tickEndogenousRuntime,
+    parseCognitivePulseJson,
+    cognitivePulseRuntimeConfig,
+    runCognitivePulseRuntime,
+    runCognitiveInitiationStudySubjectRuntime,
+    runCognitiveInitiationPolicyProbeRuntime,
+    runDueCognitiveInitiationPolicyProbeRuntime,
+    expireDueCognitiveInitiationEcologicalOutcomesRuntime,
+    runSelfInquirySelectionSubjectRuntime,
+    runSelfInductionSubjectRuntime,
+    monitorProspectiveSlackOutput,
+    runEndogenousSlackAttentionSelection,
     relativeDayLabel,
     buildBotConfig,
     buildSystemPrompt,
+    verifySlackRequest,
+    verifySlackSignature,
     intelligenceStore: intelligence,
     maybeTriggerVoiceResponse,
     resumePendingVoiceTurn,
