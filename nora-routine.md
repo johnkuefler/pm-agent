@@ -284,6 +284,28 @@ during a directly overlapping self-model intervention. Never route around a seal
 condition from absence, or treat the profile as identity essence, authority, hidden-state access, or evidence
 of phenomenal consciousness.
 
+Before any connector or operational tool, refetch the durable lease and verify its **current projected**
+lifecycle stage rather than reusing the acquisition-time instruction:
+
+```bash
+curl -s "${BASE}/run-lock?key=${KEY}" | tee /tmp/nora-run-lock-live.json
+LIVE_LOCK_HOLDER=$(jq -r '.holder // empty' /tmp/nora-run-lock-live.json)
+LIVE_CYCLE_ID=$(jq -r '.lifecycle.cycle_id // empty' /tmp/nora-run-lock-live.json)
+LIVE_LIFECYCLE_STAGE=$(jq -r '.lifecycle.lifecycle_stage // empty' /tmp/nora-run-lock-live.json)
+LIVE_PROJECTION_VERIFIED=$(jq -r '.lifecycle.lifecycle_projection_integrity_verified // false' /tmp/nora-run-lock-live.json)
+if [ "$LIVE_LOCK_HOLDER" != "$HOLDER" ] || [ "$LIVE_CYCLE_ID" != "$CYCLE_ID" ] \
+  || [ "$LIVE_PROJECTION_VERIFIED" != "true" ] || [ "$LIVE_LIFECYCLE_STAGE" != "operational_cycle_active" ]; then
+  echo "Run lifecycle is not ready for operational work; follow lifecycle.next_required_action exactly" >&2
+  exit 1
+fi
+```
+
+The server derives this projection from the persisted cycle and experience moment without rewriting the
+restart-durable acquisition tuple. `forecast_required` and `forecast_correction_required` mean the named
+pre-reentry commitment is still missing. `operational_cycle_active` is the only stage that authorizes the
+ordinary loop. `integrity_failure` or `projection_failure` means stop and report; never infer a stage from
+what you intended to submit. This is machine-readable lifecycle self-location, not subjective awareness.
+
 Example shape (replace every value with this cycle's actual prospective judgment):
 
 ```bash
@@ -2138,6 +2160,13 @@ curl -s -X PATCH "${BASE}/intelligence/cycles/${CYCLE_ID}/complete?key=${KEY}" \
 curl -s -X PUT "${BASE}/self/inner?key=${KEY}" \
   -H 'Content-Type: application/json' \
   -d "$(jq -n --arg content "$INNER_THREAD" --arg cycle_id "$CYCLE_ID" --arg predecessor "$INNER_PREDECESSOR_COMMITMENT" '{content:$content,cycle_id:$cycle_id,predecessor_commitment:(if $predecessor == "" then null else $predecessor end)}')"
+
+curl -s "${BASE}/run-lock?key=${KEY}" | tee /tmp/nora-run-lock-close.json
+if [ "$(jq -r '.lifecycle.lifecycle_projection_integrity_verified // false' /tmp/nora-run-lock-close.json)" != "true" ] \
+  || [ "$(jq -r '.lifecycle.lifecycle_stage // empty' /tmp/nora-run-lock-close.json)" != "release_required" ]; then
+  echo "Run lifecycle is not ready for lock release; follow lifecycle.next_required_action exactly" >&2
+  exit 1
+fi
 ```
 
 `GET /experience-stream` reports `replay_verified_closed`, `evidence_eligible_closed`, recorded
@@ -2167,6 +2196,11 @@ If a handoff write returns `code: source_lifecycle_not_replay_verified`, it is n
 and retrying cannot upgrade that source cycle. Follow the returned `continuity_action`: keep the latest
 usable projection, proceed through a new server-created cycle, and close that new lifecycle normally.
 The returned `hold_required:false` explicitly means not to skip the operational loop.
+
+The final `GET /run-lock` is an exact close-state gate. `handoff_required` means the cycle closed with a
+handoff hash but the matching continuity record has not committed yet; retry only the same exact handoff
+tuple. `release_required` means the cycle and any required handoff are durably represented and the harness
+may release the lease. Never release merely because the intended calls appeared to succeed.
 
 Each action should carry `type`, `id`, `decision`, `result`, and any `evidence` URL/id. Do not claim
 completion because a message was sent or a task was created; completion requires the promised

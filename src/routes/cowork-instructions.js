@@ -64,7 +64,13 @@ function registerCoworkInstructionsRoute(app) {
   - POST /run-lock                — Acquire the advisory run lock. Body: { "holder": "run-...", "ttl_seconds": 3000 }
     Response: { "acquired": true|false, "held_by"?: "...", "expires_at": "...", "lifecycle"?: {...} }.
     A successful normal run holder atomically opens or resumes one intelligence cycle before any connector
-    call. lifecycle supplies cycle_id, moment_id, protocol version, and the required self-forecast action.
+    call. lifecycle supplies cycle_id, moment_id, protocol version, and a current machine-readable
+    lifecycle_stage plus next_required_action. GET /run-lock re-derives that projection from the persisted
+    cycle and experience moment without rewriting the restart-durable acquisition tuple. The stages are
+    forecast_required, forecast_correction_required, operational_cycle_active, handoff_required,
+    release_required, integrity_failure, and projection_failure. Only operational_cycle_active authorizes
+    ordinary connector work; only release_required authorizes normal lease release. A false
+    lifecycle_projection_integrity_verified value requires a stop and report, never inferred progress.
     The exact lease and lifecycle tuple persist across server restarts. The same holder resumes it; another
     holder remains excluded. An expired durable lease gap-closes its open lifecycle before a successor starts.
     Persistence failure fails acquisition closed rather than falling back to an unprotected in-memory run.
