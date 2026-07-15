@@ -669,8 +669,8 @@ function registerCoworkInstructionsRoute(app) {
     the ordinary hourly routine and must never start, skip, delay, degrade, restart, or shape a source cycle
     to improve the study. The pilot requires five sequential events; confirmation requires twenty
     source-disjoint events plus a different curator and two new observers.
-    A bounded pilot coordinator may fill only the two external observer roles from their separately
-    redacted queue views and request replay-derived resolution after all three forecasts exist. It has no
+    A bounded pilot coordinator may use one frozen evaluator model to fill only the two external observer
+    roles from their separately redacted queue views and request replay-derived resolution after all three forecasts exist. It has no
     subject-prediction or cycle-control authority and stops before confirmation. Do not wait for it, inspect
     it, imitate its probabilities, or change the ordinary loop in response to its status.
     A later epistemic_revision_profile_access context trial may freeze five to twelve such completed,

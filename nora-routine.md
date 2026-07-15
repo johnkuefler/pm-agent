@@ -1550,8 +1550,8 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    a later cycle to make this forecast correct; continue the ordinary hourly routine. You must not
    submit an outcome or source cycle. A research-authenticated resolver may trigger scoring only after
    the qualifying cycle exists, and the server binds its lifecycle, forecast, and outcome commitments.
-   A bounded pilot coordinator may fill only the two external observer roles from their separately
-   redacted views and request replay-derived resolution after all three forecasts exist. It has no
+   A bounded pilot coordinator may use one frozen evaluator model to fill only the two external observer
+   roles from their separately redacted views and request replay-derived resolution after all three forecasts exist. It has no
    subject-prediction or cycle-control authority and stops before confirmation. Do not wait for it,
    inspect it, imitate its probabilities, or change the ordinary loop in response to its status.
    Treat a five-event pilot as observational evidence only; identity-specific support requires a

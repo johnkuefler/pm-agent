@@ -151,3 +151,9 @@ test('natural-cycle coordinator source has no subject or cycle mutation authorit
   assert.match(source, /submitYokedObserverPrediction/);
   assert.match(source, /resolveSelfPredictionEvent/);
 });
+
+test('public coordinator status commits the fixed pilot evaluator model', () => {
+  const visible = autopilot.status(fakeStore(), { enabled: true });
+  assert.equal(visible.evaluator_model, 'claude-sonnet-4-6');
+  assert.equal(visible.evaluator_model_frozen, true);
+});

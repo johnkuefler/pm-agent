@@ -8743,7 +8743,9 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       naturalCyclePrediction = await naturalCyclePredictionAutopilot.runCycle({
         store: intelligence,
         enabled: true,
-        model: config.graderModel,
+        // This paired pilot began with Sonnet 4.6 controls. Keep that evaluator fixed even if the
+        // separate answer-grading autopilot is reconfigured while the five-event sequence is sealed.
+        model: naturalCyclePredictionAutopilot.DEFAULT_MODEL,
         maxProviderCalls: 2,
         callProvider,
       });

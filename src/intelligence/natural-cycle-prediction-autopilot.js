@@ -159,6 +159,8 @@ function status(store, runtime = {}) {
     protocol_version: PROTOCOL_VERSION,
     enabled: runtime.enabled === true,
     mode: 'pilot_external_roles_and_replay_resolver_only',
+    evaluator_model: DEFAULT_MODEL,
+    evaluator_model_frozen: true,
     scientific_boundary: 'The coordinator cannot submit Nora\'s forecast, create or alter a source cycle, or satisfy evaluator-disjoint confirmation.',
     active_pilot: study ? {
       status: study.status,

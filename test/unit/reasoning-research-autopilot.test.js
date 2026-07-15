@@ -265,6 +265,7 @@ test('server schedules the bounded autopilot only outside test mode', () => {
   assert.match(server, /getResearchAutopilotStatus/);
   assert.match(server, /globalBroadcastResearchAutopilot\.runCycle/);
   assert.match(server, /naturalCyclePredictionAutopilot\.runCycle/);
+  assert.match(server, /model: naturalCyclePredictionAutopilot\.DEFAULT_MODEL/);
   assert.match(server, /maxProviderCalls: 2/);
   assert.match(server, /reasoningPilot && \['completed', 'aborted'\]\.includes\(reasoningPilot\.status\)/);
 });
