@@ -49,6 +49,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /first replay-verified eligible cycle/s);
   assert.match(store, /naturalCyclePredictionOutcome/);
   assert.match(store, /outcome_source: 'replay_verified_natural_cycle'/);
+  assert.match(store, /natural_cycle_prediction_environment_frozen/);
+  assert.match(store, /operational_environment_verified/);
+  assert.match(routine, /software or routine drift makes the study ineligible/);
+  assert.match(routine, /process restart remains an explicit confound/);
   assert.match(routes, /behavioralSelfCalibrationSnapshot/);
   assert.match(routes, /self-forecast'[\s\S]*await store\.persistStrict\(\)/);
   assert.match(routes, /self-forecast\/revision'[\s\S]*await store\.persistStrict\(\)/);

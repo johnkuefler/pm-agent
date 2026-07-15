@@ -45,11 +45,22 @@ const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycl
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
+let _routineOperationalCommitment = null;
+function setRoutineOperationalCommitment(content) {
+  _routineOperationalCommitment = typeof content === 'string' && content.length
+    ? crypto.createHash('sha256').update(content).digest('hex') : null;
+  return _routineOperationalCommitment;
+}
 const intelligence = createIntelligenceStore({
   filePath: path.join(LOCAL_DATA_DIR, 'nora-intelligence.json'),
   db,
   isDbReady: () => _dbReady,
   getWants: () => (_cache.wants?.items || []),
+  getOperationalEnvironment: () => ({
+    software_revision: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || null,
+    routine_commitment: _routineOperationalCommitment,
+    process_epoch_id: _somaProcessEpochId,
+  }),
 });
 
 // ── Postgres persistence bridge ──────────────────────────────────────────────
@@ -2004,13 +2015,15 @@ app.get('/cowork-prompt', requireAuth, (req, res) => {
 async function loadRoutine() {
   if (_dbReady) {
     const r = await db.getState('routine');
-    if (r && r.content) return r;
+    if (r && r.content) { setRoutineOperationalCommitment(r.content); return r; }
   }
   try {
     const local = path.join(LOCAL_DATA_DIR, 'nora-routine.md');
     const seed = fs.existsSync(local) ? local : path.join(__dirname, 'nora-routine.md');
     const p = fs.existsSync(path.join(VOLUME_DIR, 'nora-routine.md')) ? path.join(VOLUME_DIR, 'nora-routine.md') : seed;
-    return { content: fs.readFileSync(p, 'utf8'), updated_at: null, updated_by: 'seed (file)' };
+    const content = fs.readFileSync(p, 'utf8');
+    setRoutineOperationalCommitment(content);
+    return { content, updated_at: null, updated_by: 'seed (file)' };
   } catch { return { content: '', updated_at: null, updated_by: null }; }
 }
 async function saveRoutine(content, updatedBy, note) {
@@ -2027,10 +2040,12 @@ async function saveRoutine(content, updatedBy, note) {
       await db.setState('routine_history', hist);
     }
     await db.setState('routine', rec);
+    setRoutineOperationalCommitment(rec.content);
     return rec;
   }
   const p = fs.existsSync(VOLUME_DIR) ? path.join(VOLUME_DIR, 'nora-routine.md') : path.join(LOCAL_DATA_DIR, 'nora-routine.md');
   fs.writeFileSync(p, rec.content);
+  setRoutineOperationalCommitment(rec.content);
   return rec;
 }
 

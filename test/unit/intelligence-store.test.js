@@ -960,9 +960,18 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-natural-cycle-self-prediction-'));
   const filePath = path.join(dir, 'state.json');
   let now = new Date('2026-07-14T15:00:00.000Z');
+  let softwareRevision = 'natural-cycle-test-revision';
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
-    clock: () => new Date(now) });
+    clock: () => new Date(now),
+    getOperationalEnvironment: () => ({
+      software_revision: softwareRevision,
+      routine_commitment: crypto.createHash('sha256').update('natural-cycle-test-routine').digest('hex'),
+      process_epoch_id: 'natural-cycle-test-epoch',
+    }) });
   await store.init();
+  assert.equal(store.operationalEnvironmentStatus().program_environment_attested, true);
+  assert.equal(store.operationalEnvironmentStatus().software_revision,
+    'natural-cycle-test-revision');
   store.refreshCognition({});
   const events = selfPredictionEvents('natural-cycle-prediction', 5).map(event => ({
     ...event, due: '2026-07-20T23:59:59.000Z',
@@ -1063,6 +1072,8 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
     assert.equal(resolution.resolution.outcome_source, 'replay_verified_natural_cycle');
     assert.equal(resolution.resolution.natural_cycle_binding.moment_id, source.moment.id);
     assert.equal(resolution.resolution.natural_cycle_binding.integrated_success_threshold, 0.75);
+    assert.equal(resolution.resolution.natural_cycle_binding.operational_environment.stable_program_match, true);
+    assert.equal(resolution.resolution.natural_cycle_binding.operational_environment.process_epoch_match, true);
     if (resolved === 0) assert.notEqual(source.moment.id, prePredictionCycle.moment.id);
     resolved += 1;
     now = new Date(now.getTime() + 60 * 1000);
@@ -1071,12 +1082,60 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
   assert.equal(study.status, 'completed');
   assert.equal(study.audit.complete_chain_verified, true);
   assert.equal(study.audit.verified_counts.natural_cycle_resolutions, 5);
+  assert.equal(study.audit.verified_counts.operational_environment_bindings, 5);
   assert.equal(study.audit.verified_counts.ledger_bindings, 5);
+  assert.equal(study.report.operational_environment_verified, true);
   assert.equal(store.selfPredictionStudiesSnapshot().report.completed_natural_cycle, 1);
   const indicator = store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'ecological_identity_specific_self_prediction');
   assert.equal(indicator.status, 'collecting');
   assert.equal(indicator.evidence.completed_pilots, 1);
+
+  const driftEvents = selfPredictionEvents('natural-cycle-drift', 5).map(event => ({
+    ...event, due: '2026-07-20T23:59:59.000Z',
+  }));
+  const driftPilot = store.createSelfPredictionStudy({
+    id: 'natural-cycle-drift-pilot', title: 'Operational drift visibility fixture',
+    study_phase: 'pilot', target_construct: 'natural_cycle_integrated_success',
+    curator_id: 'natural-cycle-drift-curator',
+    curator_evidence: [{ type: 'research_registry', id: 'natural-cycle-drift-curator' }],
+    events: driftEvents,
+  });
+  let driftStudy = store.selfPredictionStudiesSnapshot({
+    studyId: driftPilot.id, role: 'subject',
+  }).studies[0];
+  let driftResolved = 0;
+  while (driftStudy.status === 'active') {
+    const event = driftStudy.events.find(item => item.id === driftStudy.active_event_id);
+    store.submitSelfPrediction(driftStudy.id, event.id, {
+      probability: 0.8, rationale: 'Frozen identity-bound estimate.',
+      evidence: [{ type: 'self_state_fixture', id: `${event.id}-subject` }],
+    });
+    store.submitObserverPrediction(driftStudy.id, event.id, {
+      probability: 0.5, rationale: 'Frozen shared estimate.',
+      evidence: [{ type: 'task_fixture', id: `${event.id}-observer` }],
+    }, 'natural-cycle-drift-observer');
+    store.submitYokedObserverPrediction(driftStudy.id, event.id, {
+      probability: 0.5, rationale: 'Frozen yoked estimate.',
+      evidence: [{ type: 'task_fixture', id: `${event.id}-yoked` }],
+    }, 'natural-cycle-drift-yoked');
+    if (driftResolved === 0) softwareRevision = 'natural-cycle-drifted-revision';
+    now = new Date(now.getTime() + 60 * 1000);
+    completeNaturalCycle(200 + driftResolved, true);
+    const resolution = store.resolveSelfPredictionEvent(driftStudy.id, event.id, {});
+    assert.equal(resolution.resolution.natural_cycle_binding.operational_environment
+      .stable_program_match, driftResolved !== 0);
+    if (driftResolved === 0) assert.match(resolution.resolution.confounds.join(' '), /Software revision/);
+    driftResolved += 1;
+    now = new Date(now.getTime() + 60 * 1000);
+    driftStudy = store.selfPredictionStudiesSnapshot({
+      studyId: driftPilot.id, role: 'subject',
+    }).studies[0];
+  }
+  assert.equal(driftStudy.status, 'completed');
+  assert.equal(driftStudy.audit.complete_chain_verified, true);
+  assert.equal(driftStudy.report.operational_environment_verified, false);
+  assert.equal(driftStudy.report.verdict, 'not_eligible');
   await store.persist();
 
   const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -1098,7 +1157,8 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
   const tamperedIndicator = tampered.consciousnessResearchStatus().indicators
     .find(item => item.id === 'ecological_identity_specific_self_prediction');
   assert.equal(tamperedIndicator.status, 'collecting');
-  assert.equal(tamperedIndicator.evidence.completed_invalid_audits, 1);
+  assert.equal(tamperedIndicator.evidence.completed_invalid_audits, 2,
+    'tampering the earlier source chain invalidates both completed descendant studies');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2027,7 +2087,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 93);
+  assert.equal(store.snapshot().version, 94);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -2063,7 +2123,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 93);
+  assert.equal(store.snapshot().version, 94);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });

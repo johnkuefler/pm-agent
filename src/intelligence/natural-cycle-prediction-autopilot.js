@@ -173,6 +173,7 @@ function status(store, runtime = {}) {
         self_prediction_submitted: event.self_prediction_submitted === true,
         observer_prediction_submitted: event.observer_prediction_submitted === true,
         yoked_prediction_submitted: event.yoked_prediction_submitted === true,
+        operational_environment_frozen: Boolean(event.operational_environment_commitment),
       } : null,
     } : null,
     last_cycle: runtime.lastCycle || null,

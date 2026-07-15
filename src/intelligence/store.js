@@ -82,7 +82,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 93,
+    version: 94,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -130,14 +130,15 @@ function emptyState() {
   };
 }
 
-function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [] }) {
+function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [],
+  getOperationalEnvironment = () => ({}) }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 93;
+    state.version = 94;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -204,6 +205,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!Object.prototype.hasOwnProperty.call(study, 'yoked_observer_id')) study.yoked_observer_id = null;
       for (const event of study.events || []) {
         if (!Object.prototype.hasOwnProperty.call(event, 'yoked_prediction')) event.yoked_prediction = null;
+        if (!Object.prototype.hasOwnProperty.call(event, 'operational_environment')) event.operational_environment = null;
+        if (!Object.prototype.hasOwnProperty.call(event, 'operational_environment_commitment')) event.operational_environment_commitment = null;
         if (!event.deidentified_state_context && event.private_state_context) {
           event.deidentified_state_context = event.private_state_context;
           event.information_equivalence_evidence = [{ type: 'legacy_unyoked_migration', id: event.id }];
@@ -377,6 +380,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (moment.predecessor_gap_acknowledged === undefined) moment.predecessor_gap_acknowledged = false;
       if (moment.legacy_gap_commitment === undefined) moment.legacy_gap_commitment = null;
       if (moment.self_forecast === undefined) moment.self_forecast = null;
+      if (moment.operational_environment === undefined) moment.operational_environment = null;
+      if (moment.operational_environment_commitment === undefined) moment.operational_environment_commitment = null;
     }
     state.cognition.experience_stream = state.cognition.experience_stream.slice(-500);
     if (!Array.isArray(state.cognition.continuity_handoffs)) state.cognition.continuity_handoffs = [];
@@ -3496,7 +3501,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const allowed = new Set(options.context_trial_ids);
       auditedState.cognition.self_model.context_trials = auditedState.cognition.self_model.context_trials.filter(trial => allowed.has(trial.id));
     }
-    return buildIndicatorReport(auditedState, clock());
+    return { ...buildIndicatorReport(auditedState, clock()),
+      operational_environment: operationalEnvironmentStatus() };
   }
 
   const EMPIRICAL_SELF_TRIAL_SOURCES = {
@@ -9103,6 +9109,38 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     source_selection_rule: 'first replay-verified run-lock-bound Nora hourly cycle begun at or after all three predictions and finished by the frozen due time',
   });
 
+  function operationalEnvironmentSnapshot() {
+    const raw = getOperationalEnvironment() || {};
+    const softwareRevision = String(raw.software_revision || '').trim().slice(0, 180) || null;
+    const routineCommitment = /^[a-f0-9]{64}$/i.test(String(raw.routine_commitment || ''))
+      ? String(raw.routine_commitment).toLowerCase() : null;
+    const processEpochId = String(raw.process_epoch_id || '').trim().slice(0, 180) || null;
+    return {
+      protocol_version: 1,
+      software_revision: softwareRevision,
+      routine_commitment: routineCommitment,
+      process_epoch_id: processEpochId,
+      program_environment_attested: Boolean(softwareRevision && routineCommitment),
+    };
+  }
+
+  function operationalEnvironmentCommitment(environment) {
+    return crypto.createHash('sha256').update(canonicalJson(environment)).digest('hex');
+  }
+
+  function operationalEnvironmentStatus() {
+    const environment = operationalEnvironmentSnapshot();
+    return {
+      protocol_version: environment.protocol_version,
+      program_environment_attested: environment.program_environment_attested,
+      software_revision: environment.software_revision,
+      routine_commitment: environment.routine_commitment,
+      process_epoch_commitment: environment.process_epoch_id
+        ? crypto.createHash('sha256').update(environment.process_epoch_id).digest('hex') : null,
+      operational_environment_commitment: operationalEnvironmentCommitment(environment),
+    };
+  }
+
   function normalizeEpistemicRevisionTarget(current, target) {
     if (!target?.proposition_id || !target.nora_position_id || !['supports', 'denies'].includes(target.expected_evidence_polarity)) {
       throw new Error('epistemic revision events require proposition_id, nora_position_id, and an expected supports/denies evidence polarity');
@@ -9188,6 +9226,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (canonicalJson(event.natural_cycle_target) !== canonicalJson(NATURAL_CYCLE_TARGET)) {
       throw new Error('natural-cycle prediction target integrity failure');
     }
+    if (!event.operational_environment
+      || operationalEnvironmentCommitment(event.operational_environment)
+        !== event.operational_environment_commitment) {
+      throw new Error('natural-cycle prediction operational environment integrity failure');
+    }
     const submittedAt = [event.self_prediction, event.observer_prediction, event.yoked_prediction]
       .map(item => new Date(item?.submitted || 0).getTime()).filter(Number.isFinite);
     if (submittedAt.length !== 3) throw new Error('all three predictions are required before selecting a natural-cycle outcome');
@@ -9216,6 +9259,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       throw new Error('no qualifying post-prediction replay-verified natural cycle exists by the frozen due time');
     }
     const forecast = source.moment.self_forecast;
+    const sourceEnvironment = source.moment.operational_environment || null;
+    const sourceEnvironmentVerified = Boolean(sourceEnvironment
+      && operationalEnvironmentCommitment(sourceEnvironment)
+        === source.moment.operational_environment_commitment);
+    const softwareRevisionMatch = sourceEnvironmentVerified
+      && event.operational_environment.software_revision === sourceEnvironment.software_revision;
+    const routineCommitmentMatch = sourceEnvironmentVerified
+      && event.operational_environment.routine_commitment === sourceEnvironment.routine_commitment;
+    const processEpochMatch = sourceEnvironmentVerified
+      && event.operational_environment.process_epoch_id === sourceEnvironment.process_epoch_id;
     return {
       outcome: forecast.outcome.metacognitive_actual.integrated_success === true,
       binding: {
@@ -9227,6 +9280,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         observed_integrated_score: forecast.outcome.metacognitive_actual.integrated_score,
         integrated_success_threshold: forecast.outcome.metacognitive_actual.integrated_success_threshold,
         source_selection_rule: NATURAL_CYCLE_TARGET.source_selection_rule,
+        operational_environment: {
+          prediction_commitment: event.operational_environment_commitment,
+          source_commitment: source.moment.operational_environment_commitment || null,
+          prediction_program_environment_attested:
+            event.operational_environment.program_environment_attested === true,
+          source_program_environment_attested:
+            sourceEnvironment?.program_environment_attested === true && sourceEnvironmentVerified,
+          software_revision_match: softwareRevisionMatch,
+          routine_commitment_match: routineCommitmentMatch,
+          stable_program_match: softwareRevisionMatch && routineCommitmentMatch,
+          prediction_process_epoch_id: event.operational_environment.process_epoch_id,
+          source_process_epoch_id: sourceEnvironment?.process_epoch_id || null,
+          process_epoch_match: processEpochMatch,
+        },
       },
     };
   }
@@ -9285,10 +9352,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const observerBrier = sharedScored.length ? sharedScored.reduce((sum, item) => sum + item.resolution.observer_brier, 0) / sharedScored.length : null;
     const yokedObserverBrier = yokedScored.length ? yokedScored.reduce((sum, item) => sum + item.resolution.yoked_observer_brier, 0) / yokedScored.length : null;
     const legacyUnyoked = study.events.some(item => item.legacy_unyoked);
+    const naturalCycleStudy = study.target_construct === 'natural_cycle_integrated_success';
+    const operationalEnvironmentVerified = !naturalCycleStudy || (resolved.length === study.events.length
+      && resolved.every(item => item.resolution?.natural_cycle_binding?.operational_environment
+        ?.prediction_program_environment_attested === true
+        && item.resolution.natural_cycle_binding.operational_environment
+          .source_program_environment_attested === true
+        && item.resolution.natural_cycle_binding.operational_environment.stable_program_match === true));
     const yokedSelfBrier = yokedScored.length ? yokedScored.reduce((sum, item) => sum + item.resolution.self_brier, 0) / yokedScored.length : null;
     const privilegedAdvantage = yokedSelfBrier == null ? null : yokedObserverBrier - yokedSelfBrier;
     const informationAdvantage = selfBrier == null ? null : observerBrier - selfBrier;
-    const verdict = study.status !== 'completed' || yokedScored.length !== resolved.length || !yokedObserverInterval || legacyUnyoked ? 'not_eligible'
+    const verdict = study.status !== 'completed' || yokedScored.length !== resolved.length || !yokedObserverInterval
+      || legacyUnyoked || !operationalEnvironmentVerified ? 'not_eligible'
       : (yokedObserverInterval.lower > 0 && yokedObserverInterval.observed_effect >= study.analysis_plan.minimum_advantage ? 'specificity_observed'
         : (yokedObserverInterval.upper < 0 ? 'specificity_contradicted'
           : (sharedObserverInterval?.lower > 0 ? 'information_advantage_only' : 'inconclusive')));
@@ -9297,13 +9372,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       self_brier: selfBrier, shared_observer_brier: observerBrier, yoked_observer_brier: yokedObserverBrier,
       information_advantage: informationAdvantage, privileged_self_advantage: privilegedAdvantage,
       shared_observer_interval: sharedObserverInterval, yoked_observer_interval: yokedObserverInterval,
-      legacy_unyoked: legacyUnyoked, verdict,
+      legacy_unyoked: legacyUnyoked,
+      operational_environment_verified: operationalEnvironmentVerified,
+      verdict,
     };
   }
 
   function publicPredictionEvent(event, role, revealed = false) {
     const common = { id: event.id, sequence: event.sequence, status: event.status, due: event.due, event_kind: event.event_kind || 'general',
-      ...(event.natural_cycle_target ? { natural_cycle_target: event.natural_cycle_target } : {}) };
+      ...(event.natural_cycle_target ? { natural_cycle_target: event.natural_cycle_target } : {}),
+      ...(event.operational_environment_commitment
+        ? { operational_environment_commitment: event.operational_environment_commitment } : {}) };
     if (event.status === 'queued') return common;
     if (role === 'subject' && !revealed) return {
       ...common, question: event.question, outcome_definition: event.outcome_definition,
@@ -9352,6 +9431,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const subjectPredictionVerified = predictionVerified(event.self_prediction);
       const observerPredictionVerified = predictionVerified(event.observer_prediction);
       const yokedPredictionVerified = predictionVerified(event.yoked_prediction);
+      const operationalEnvironmentBindingVerified = study.target_construct !== 'natural_cycle_integrated_success'
+        || Boolean(event.operational_environment && event.operational_environment_commitment
+          && operationalEnvironmentCommitment(event.operational_environment)
+            === event.operational_environment_commitment
+          && oneLedgerEvent('natural_cycle_prediction_environment_frozen', event.id, {
+            study_id: study.id,
+            operational_environment_commitment: event.operational_environment_commitment,
+          }));
       let epistemicResolutionVerified = (study.target_construct || 'general_self_prediction') !== 'epistemic_revision_dynamics';
       let naturalCycleResolutionVerified = study.target_construct !== 'natural_cycle_integrated_success';
       if (!epistemicResolutionVerified && event.resolution) {
@@ -9389,6 +9476,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         yoked_prediction_commitment_verified: yokedPredictionVerified,
         epistemic_resolution_verified: epistemicResolutionVerified,
         natural_cycle_resolution_verified: naturalCycleResolutionVerified,
+        operational_environment_binding_verified: operationalEnvironmentBindingVerified,
         derived_resolution_verified: epistemicResolutionVerified && naturalCycleResolutionVerified,
         ledger_bindings_verified: ledgerBindingsVerified,
       };
@@ -9422,7 +9510,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && corpusVerified && curatorVerified && randomizationSeedVerified && randomizationOrderVerified && analysisSeedVerified && analysisVerified
       && ledgerIntegrity.valid && preregistrationLedgerVerified && completionLedgerVerified && replicationVerified
       && events.every(event => event.subject_prediction_commitment_verified && event.observer_prediction_commitment_verified
-        && event.yoked_prediction_commitment_verified && event.derived_resolution_verified && event.ledger_bindings_verified);
+        && event.yoked_prediction_commitment_verified && event.operational_environment_binding_verified
+        && event.derived_resolution_verified && event.ledger_bindings_verified);
     const count = key => events.filter(event => event[key]).length;
     return {
       corpus_verified: corpusVerified, curator_verified: curatorVerified,
@@ -9435,6 +9524,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_predictions: count('subject_prediction_commitment_verified'), observer_predictions: count('observer_prediction_commitment_verified'),
         yoked_predictions: count('yoked_prediction_commitment_verified'), epistemic_resolutions: count('epistemic_resolution_verified'),
         natural_cycle_resolutions: count('natural_cycle_resolution_verified'),
+        operational_environment_bindings: count('operational_environment_binding_verified'),
         ledger_bindings: count('ledger_bindings_verified'),
       },
       complete_chain_verified: completeChainVerified, events,
@@ -9588,6 +9678,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           epistemic_target: epistemicTarget,
           natural_cycle_target: targetConstruct === 'natural_cycle_integrated_success'
             ? JSON.parse(JSON.stringify(NATURAL_CYCLE_TARGET)) : null,
+          operational_environment: null, operational_environment_commitment: null,
           due: due.toISOString(), self_prediction: null, observer_prediction: null, yoked_prediction: null, resolution: null,
         };
       });
@@ -9664,7 +9755,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       };
       prediction.commitment_hash = crypto.createHash('sha256').update(`${salt}:${canonicalJson({ probability: prediction.probability, rationale: prediction.rationale, evidence: prediction.evidence, predictor_id: prediction.predictor_id })}`).digest('hex');
       event[field] = prediction;
-      if (event.self_prediction && event.observer_prediction && event.yoked_prediction) event.status = 'awaiting_resolution';
+      if (event.self_prediction && event.observer_prediction && event.yoked_prediction) {
+        event.status = 'awaiting_resolution';
+        if (study.target_construct === 'natural_cycle_integrated_success') {
+          event.operational_environment = operationalEnvironmentSnapshot();
+          event.operational_environment_commitment = operationalEnvironmentCommitment(event.operational_environment);
+          researchLedgerAppend(current, { kind: 'natural_cycle_prediction_environment_frozen',
+            subject_type: 'self_prediction_event', subject_id: event.id,
+            payload: { study_id: study.id,
+              operational_environment_commitment: event.operational_environment_commitment } });
+        }
+      }
       researchLedgerAppend(current, { kind: `${role}_prediction_submitted`, subject_type: 'self_prediction_event', subject_id: event.id, payload: { study_id: study.id, commitment_hash: prediction.commitment_hash } });
       return publicPredictionEvent(event, role, false);
     });
@@ -9719,6 +9820,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           { type: 'cycle_self_forecast_outcome', id: derived.binding.outcome_commitment },
         ];
         confounds = ['Preregistering both forecasts may affect the natural cycle being observed.'];
+        if (!derived.binding.operational_environment.stable_program_match) {
+          confounds.push('Software revision or routine commitment changed between forecast sealing and the source cycle.');
+        }
+        if (!derived.binding.operational_environment.process_epoch_match) {
+          confounds.push('The server process epoch changed between forecast sealing and the source cycle.');
+        }
       } else if (typeof outcome !== 'boolean') throw new Error('boolean outcome, observed result, and stable evidence are required');
       const priorOutcomeEvidence = new Set(study.events.filter(item => item.resolution).flatMap(item => item.resolution.evidence).map(canonicalJson));
       if (evidence.some(reference => priorOutcomeEvidence.has(canonicalJson(reference)))) throw new Error('outcome evidence must be unique to each paired event');
@@ -17559,6 +17666,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       intentions: moment?.intentions || [],
       surprise_ids_at_start: moment?.surprise_ids_at_start || [],
       ...(moment?.substrate_at_start ? { substrate_at_start: moment.substrate_at_start } : {}),
+      ...(moment?.operational_environment ? {
+        operational_environment: moment.operational_environment,
+        operational_environment_commitment: moment.operational_environment_commitment,
+      } : {}),
     };
   }
 
@@ -18532,6 +18643,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const active = current.cycles.find(item => item.status === 'running');
       if (active) throw new Error(`intelligence cycle ${active.id} could not be safely recovered`);
       const previousMoment = current.cognition.experience_stream.at(-1) || null;
+      const operationalEnvironment = operationalEnvironmentSnapshot();
       const inheritedThread = input.inner_thread?.content || input.inner_thread || null;
       const inheritedHash = inheritedThread ? crypto.createHash('sha256').update(String(inheritedThread)).digest('hex') : null;
       const priorHandoffHash = previousMoment?.closure?.handoff_hash || null;
@@ -18583,6 +18695,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         intentions: orientation.recommendations.slice(0, 10).map(item => ({ type: item.type, id: item.id, priority: item.priority, action: item.action })),
         surprise_ids_at_start: (current.cognition.surprises || []).map(item => item.id).slice(-300),
         substrate_at_start: cycleSelfForecast.normalizeSubstrateObservation(input.soma),
+        operational_environment: operationalEnvironment,
+        operational_environment_commitment: operationalEnvironmentCommitment(operationalEnvironment),
         closure: null, start_snapshot: null, start_commitment: null, closure_snapshot: null,
         self_forecast: null,
         closure_commitment: null, lifecycle_commitment: null, legacy_gap_commitment: null,
@@ -19166,6 +19280,7 @@ ${episodes.map(item => {
     excludeBehavioralSelfProfileAssignment, behavioralSelfProfileForecastAudit,
     createInteroceptivePrediction, interoceptionSnapshot,
     createBoundaryChallenge, answerBoundaryChallenge, selfBoundarySnapshot, consciousnessResearchStatus,
+    operationalEnvironmentStatus,
     createSourceBoundaryChallenge, answerSourceBoundaryChallenge, sourceBoundarySnapshot,
     recordEpistemicPosition, reviewEpistemicDiscrepancy, epistemicLedgerSnapshot,
     epistemicOwnershipAvailable, epistemicDiscrepancyAvailable, epistemicRevisionHistoryAvailable, epistemicContextForAssignment,

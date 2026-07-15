@@ -673,6 +673,10 @@ function registerCoworkInstructionsRoute(app) {
     roles from their separately redacted queue views and request replay-derived resolution after all three forecasts exist. It has no
     subject-prediction or cycle-control authority and stops before confirmation. Do not wait for it, inspect
     it, imitate its probabilities, or change the ordinary loop in response to its status.
+    The third forecast freezes the current software revision, exact routine commitment, and process epoch.
+    Source-cycle closure binds the same fields: software or routine drift makes the study ineligible, while
+    a process restart remains an explicit confound because restart is itself scored in protocol v4. Never
+    cause, conceal, postpone, or suppress an operational change to influence the record.
     A later epistemic_revision_profile_access context trial may freeze five to twelve such completed,
     integrity-verified records spanning at least three source families and both revision outcomes.
     identity_bound_revision_history and deidentified_revision_history receive identical raw records;

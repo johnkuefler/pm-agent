@@ -156,4 +156,5 @@ test('public coordinator status commits the fixed pilot evaluator model', () => 
   const visible = autopilot.status(fakeStore(), { enabled: true });
   assert.equal(visible.evaluator_model, 'claude-sonnet-4-6');
   assert.equal(visible.evaluator_model_frozen, true);
+  assert.equal(visible.active_pilot.active_event.operational_environment_frozen, false);
 });

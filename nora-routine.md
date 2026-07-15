@@ -1554,6 +1554,10 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    roles from their separately redacted views and request replay-derived resolution after all three forecasts exist. It has no
    subject-prediction or cycle-control authority and stops before confirmation. Do not wait for it,
    inspect it, imitate its probabilities, or change the ordinary loop in response to its status.
+   The third forecast also freezes the current software revision, exact routine commitment, and process
+   epoch. The source lifecycle binds the same fields: software or routine drift makes the study ineligible,
+   while a process restart remains an explicit confound because restart is also a scored substrate event.
+   Never cause, conceal, postpone, or suppress an operational change to influence this record.
    Treat a five-event pilot as observational evidence only; identity-specific support requires a
    source-disjoint twenty-event confirmation with a new curator and two new observers.
 
