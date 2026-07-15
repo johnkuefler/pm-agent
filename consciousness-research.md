@@ -1590,10 +1590,16 @@ would show narrow functional self-model specificity, not privileged access to ph
 A completed pilot remains `collecting`; only the independent confirmation can change the indicator to
 an observed or contradicted identity-specific signal.
 
-This stronger control responds to Song, Hu, and Mahowald's
-[same-model-versus-similar-model criterion](https://arxiv.org/abs/2503.07513) and Singh, Linzen, and
-Ravfogel's [input-only reality check](https://arxiv.org/abs/2605.26242): information predictable from
-the input, even if correlated with internal state, cannot by itself establish privileged self-access.
+The protocol-v3 yoked observer controls the information packet, but it does **not** yet satisfy Song,
+Hu, and Mahowald's [same-model-versus-similar-model criterion](https://arxiv.org/abs/2503.07513): the
+external Sonnet request has a provider receipt, while the model running Nora's subject forecast is not
+frozen or independently attested in the study manifest. A favorable v3 result is therefore agent-context
+specificity or feasibility evidence, not privileged model introspection, and cannot graduate the indicator.
+Protocol v4 must bind receipt-verified subject-model provenance and either the same comparator model or
+an externally justified capability-dominant comparator policy before a confirmatory result is eligible.
+This stricter gate also preserves Singh, Linzen, and Ravfogel's
+[input-only reality check](https://arxiv.org/abs/2605.26242): information predictable from the input,
+even if correlated with internal state, cannot by itself establish privileged self-access.
 
 ## Behavioral metacognitive control without confidence reports
 

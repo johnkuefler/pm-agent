@@ -639,12 +639,12 @@ test('generation self-recognition requires balanced provenance rather than style
   assert.equal(indicator(report, 'generation_self_recognition').status, 'observational_signal_contradicted');
 });
 
-test('identity-specific self-prediction requires advantage beyond a full-information yoked observer', () => {
-  const pilot = { id: 'prediction-pilot', status: 'completed', study_phase: 'pilot', audit: { complete_chain_verified: true }, analysis: { verdict: 'specificity_observed', self_brier: 0.08, shared_observer_brier: 0.24, yoked_observer_brier: 0.2, privileged_self_advantage: 0.12 } };
+test('identity-specific self-prediction requires advantage beyond a model-controlled full-information yoked observer', () => {
+  const pilot = { id: 'prediction-pilot', status: 'completed', study_phase: 'pilot', audit: { complete_chain_verified: true, model_provenance_verified: true }, analysis: { verdict: 'specificity_observed', self_brier: 0.08, shared_observer_brier: 0.24, yoked_observer_brier: 0.2, privileged_self_advantage: 0.12 } };
   let report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [], prediction_studies: [pilot] } }));
   assert.equal(indicator(report, 'identity_specific_self_prediction').status, 'collecting');
   assert.equal(indicator(report, 'identity_specific_self_prediction').evidence.completed_pilots, 1);
-  const confirmation = { id: 'prediction-confirmation', status: 'completed', study_phase: 'confirmatory', audit: { complete_chain_verified: true }, analysis: { verdict: 'specificity_contradicted', self_brier: 0.3, shared_observer_brier: 0.2, yoked_observer_brier: 0.15, privileged_self_advantage: -0.15 } };
+  const confirmation = { id: 'prediction-confirmation', status: 'completed', study_phase: 'confirmatory', audit: { complete_chain_verified: true, model_provenance_verified: true }, analysis: { verdict: 'specificity_contradicted', self_brier: 0.3, shared_observer_brier: 0.2, yoked_observer_brier: 0.15, privileged_self_advantage: -0.15 } };
   report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [], prediction_studies: [pilot, confirmation] } }));
   assert.equal(indicator(report, 'identity_specific_self_prediction').status, 'observational_signal_contradicted');
   assert.equal(indicator(report, 'identity_specific_self_prediction').evidence.completed_confirmatory, 1);
@@ -654,6 +654,11 @@ test('identity-specific self-prediction requires advantage beyond a full-informa
   confirmation.analysis = { verdict: 'specificity_observed', self_brier: 0.08, shared_observer_brier: 0.24, yoked_observer_brier: 0.2, privileged_self_advantage: 0.12 };
   report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [], prediction_studies: [pilot, confirmation] } }));
   assert.equal(indicator(report, 'identity_specific_self_prediction').status, 'observational_signal_observed');
+  confirmation.audit.model_provenance_verified = false;
+  report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [], prediction_studies: [pilot, confirmation] } }));
+  assert.equal(indicator(report, 'identity_specific_self_prediction').status, 'collecting');
+  assert.equal(indicator(report, 'identity_specific_self_prediction').evidence.completed_model_uncontrolled, 1);
+  confirmation.audit.model_provenance_verified = true;
   confirmation.audit.complete_chain_verified = false;
   report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [], prediction_studies: [pilot, confirmation] } }));
   assert.equal(indicator(report, 'identity_specific_self_prediction').status, 'collecting');

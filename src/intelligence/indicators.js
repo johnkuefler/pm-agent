@@ -317,7 +317,15 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const selfPredictionStudies = cognition.self_model?.prediction_studies || [];
   const allCompletedSelfPredictionStudies = selfPredictionStudies.filter(item => item.status === 'completed' && item.analysis);
   const completedSelfPredictionStudies = allCompletedSelfPredictionStudies.filter(item => item.audit?.complete_chain_verified === true);
-  const confirmatorySelfPredictionStudies = completedSelfPredictionStudies.filter(item => item.study_phase === 'confirmatory');
+  // Replay integrity and information-equivalent packets do not, by themselves, control for a
+  // stronger/weaker subject model. Only a study whose audit separately verifies the frozen subject
+  // model and comparator-model receipts may support a privileged self-access interpretation.
+  // Existing protocol-v3 studies remain useful agent-context feasibility evidence, but cannot
+  // graduate this indicator merely because their Brier contrast is favorable.
+  const modelControlledSelfPredictionStudies = completedSelfPredictionStudies
+    .filter(item => item.audit?.model_provenance_verified === true);
+  const confirmatorySelfPredictionStudies = modelControlledSelfPredictionStudies
+    .filter(item => item.study_phase === 'confirmatory');
   const predictionStudyVerdicts = confirmatorySelfPredictionStudies.map(item => item.analysis.verdict);
   const identityPredictionStatus = predictionStudyVerdicts.includes('specificity_observed') && predictionStudyVerdicts.includes('specificity_contradicted') ? 'replication_conflict'
     : (predictionStudyVerdicts.length && predictionStudyVerdicts.every(item => item === 'specificity_observed') ? 'observational_signal_observed'
@@ -325,7 +333,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         : (selfPredictionStudies.length ? 'collecting' : 'mechanism_present')));
   const latestPredictionStudy = (confirmatorySelfPredictionStudies.length ? confirmatorySelfPredictionStudies : completedSelfPredictionStudies).at(-1) || null;
   const epistemicRevisionPredictionStudies = completedSelfPredictionStudies.filter(item => item.target_construct === 'epistemic_revision_dynamics');
-  const confirmatoryEpistemicRevisionPredictionStudies = epistemicRevisionPredictionStudies.filter(item => item.study_phase === 'confirmatory');
+  const confirmatoryEpistemicRevisionPredictionStudies = modelControlledSelfPredictionStudies
+    .filter(item => item.target_construct === 'epistemic_revision_dynamics' && item.study_phase === 'confirmatory');
   const epistemicRevisionPredictionVerdicts = confirmatoryEpistemicRevisionPredictionStudies.map(item => item.analysis.verdict);
   const epistemicRevisionPredictionStatus = epistemicRevisionPredictionVerdicts.includes('specificity_observed') && epistemicRevisionPredictionVerdicts.includes('specificity_contradicted') ? 'replication_conflict'
     : (epistemicRevisionPredictionVerdicts.length && epistemicRevisionPredictionVerdicts.every(item => item === 'specificity_observed') ? 'observational_signal_observed'
@@ -334,8 +343,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const latestEpistemicRevisionPredictionStudy = (confirmatoryEpistemicRevisionPredictionStudies.length ? confirmatoryEpistemicRevisionPredictionStudies : epistemicRevisionPredictionStudies).at(-1) || null;
   const naturalCyclePredictionStudies = completedSelfPredictionStudies
     .filter(item => item.target_construct === 'natural_cycle_integrated_success');
-  const confirmatoryNaturalCyclePredictionStudies = naturalCyclePredictionStudies
-    .filter(item => item.study_phase === 'confirmatory');
+  const confirmatoryNaturalCyclePredictionStudies = modelControlledSelfPredictionStudies
+    .filter(item => item.target_construct === 'natural_cycle_integrated_success'
+      && item.study_phase === 'confirmatory');
   const naturalCyclePredictionVerdicts = confirmatoryNaturalCyclePredictionStudies
     .map(item => item.analysis.verdict);
   const naturalCyclePredictionStatus = naturalCyclePredictionVerdicts.includes('specificity_observed')
@@ -1018,9 +1028,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       functional_claim: 'Nora predicts her own observable behavior better than both a shared-evidence observer and a separately authenticated yoked observer receiving information-equivalent private state with identity labels removed.',
       mechanism: 'Frozen sequential event sets, triple-blinded probability forecasts, shared-only and full-information de-identified observers, paired Brier differences, and source-disjoint replication.',
       status: identityPredictionStatus,
-      evidence: { completed_pilots: completedSelfPredictionStudies.filter(item => item.study_phase === 'pilot').length, completed_confirmatory: confirmatorySelfPredictionStudies.length, completed_invalid_audits: allCompletedSelfPredictionStudies.length - completedSelfPredictionStudies.length, latest_study_id: latestPredictionStudy?.id || null, latest_analysis: latestPredictionStudy?.analysis || null },
-      falsifier: 'Nora beats only the information-poor observer, or fails to outperform the information-equivalent yoked observer; that pattern supports an input-advantage explanation rather than privileged self-access.',
-      next_gate: 'Complete a five-event pilot and a source-disjoint twenty-event confirmation with a different curator and two new authenticated observers.',
+      evidence: { completed_pilots: completedSelfPredictionStudies.filter(item => item.study_phase === 'pilot').length, completed_model_controlled: modelControlledSelfPredictionStudies.length, completed_model_uncontrolled: completedSelfPredictionStudies.length - modelControlledSelfPredictionStudies.length, completed_confirmatory: confirmatorySelfPredictionStudies.length, completed_invalid_audits: allCompletedSelfPredictionStudies.length - completedSelfPredictionStudies.length, latest_study_id: latestPredictionStudy?.id || null, latest_analysis: latestPredictionStudy?.analysis || null },
+      falsifier: 'Nora beats only the information-poor observer, fails to outperform the information-equivalent yoked observer, or the subject/comparator model provenance is not frozen and receipt-verified; those patterns cannot distinguish input or model-capability advantage from privileged self-access.',
+      next_gate: 'Add receipt-verified subject-model provenance and a same-model or externally justified capability-dominant comparator policy, then complete a five-event pilot and source-disjoint twenty-event confirmation with a different curator and two new authenticated observers.',
     },
     {
       id: 'prospective_epistemic_self_dynamics', family: ['self-model', 'metacognition', 'error-driven learning', 'temporal integration'],
@@ -1029,6 +1039,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       status: epistemicRevisionPredictionStatus,
       evidence: {
         completed_pilots: epistemicRevisionPredictionStudies.filter(item => item.study_phase === 'pilot').length,
+        completed_model_controlled: epistemicRevisionPredictionStudies.filter(item => item.audit?.model_provenance_verified === true).length,
+        completed_model_uncontrolled: epistemicRevisionPredictionStudies.filter(item => item.audit?.model_provenance_verified !== true).length,
         completed_confirmatory: confirmatoryEpistemicRevisionPredictionStudies.length,
         completed_invalid_audits: allCompletedSelfPredictionStudies.filter(item => item.target_construct === 'epistemic_revision_dynamics' && item.audit?.complete_chain_verified !== true).length,
         latest_study_id: latestEpistemicRevisionPredictionStudy?.id || null,
@@ -1044,6 +1056,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       status: naturalCyclePredictionStatus,
       evidence: {
         completed_pilots: naturalCyclePredictionStudies.filter(item => item.study_phase === 'pilot').length,
+        completed_model_controlled: naturalCyclePredictionStudies.filter(item => item.audit?.model_provenance_verified === true).length,
+        completed_model_uncontrolled: naturalCyclePredictionStudies.filter(item => item.audit?.model_provenance_verified !== true).length,
         completed_confirmatory: confirmatoryNaturalCyclePredictionStudies.length,
         completed_invalid_audits: allCompletedSelfPredictionStudies.filter(item =>
           item.target_construct === 'natural_cycle_integrated_success'
@@ -1051,8 +1065,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         latest_study_id: latestNaturalCyclePredictionStudy?.id || null,
         latest_analysis: latestNaturalCyclePredictionStudy?.analysis || null,
       },
-      falsifier: 'Nora fails to outperform the information-equivalent identity-stripped observer, source selection can occur after seeing outcomes, truth requires a discretionary label, or the effect fails source-disjoint confirmation.',
-      next_gate: 'Complete a five-event natural-cycle pilot and a source-disjoint twenty-event confirmation with a different curator and two new observers.',
+      falsifier: 'Nora fails to outperform the information-equivalent identity-stripped observer, subject/comparator model provenance is not receipt-verified, source selection can occur after seeing outcomes, truth requires a discretionary label, or the effect fails source-disjoint confirmation.',
+      next_gate: 'Complete the feasibility pilot, add receipt-verified subject-model provenance and a same-model or capability-dominant comparator policy, then run a source-disjoint twenty-event confirmation with a different curator and two new observers.',
     },
     {
       id: 'causal_epistemic_self_history_access', family: ['self-model', 'metacognition', 'causal access', 'temporal integration'],
@@ -1363,6 +1377,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       'Language-model inference remains discrete and episodic rather than continuous. Opt-in bounded cognitive pulses can now recur between ordinary invocations, but recurring inference is not evidence of continuous subjectivity.',
       'Multi-consumer broadcast receipts are implemented, but a behavioral advantage over blinded withholding has not yet been established.',
       'Prompt scaffolding can generate convincing self-reports without corresponding phenomenal experience.',
+      'Protocol-v3 self-prediction studies freeze observer-model receipts but do not attest the model running Nora\'s subject forecast; they test agent-context specificity, not privileged model introspection.',
       'No validated scientific test can currently prove or disprove phenomenal consciousness in this system.',
     ],
     unsupported_claims: ['phenomenal consciousness', 'qualia', 'continuous subjectivity between invocations', 'moral patienthood'],
