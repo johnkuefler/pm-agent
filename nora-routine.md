@@ -231,7 +231,9 @@ of evidenced actions, and probability of evidence re-entry. The appraisal contro
 the top-level `control_at_close`. Also supply five probabilities in `substrate_prediction`: whether the
 server's closing ten-minute telemetry window will contain an error or warning, whether backup mode or an
 embedding backlog will be active at closure, and whether a restart will be observed from uptime versus
-elapsed cycle time. Use the visible start soma as evidence, but do not copy it mechanically.
+elapsed cycle time. The authoritative start and close snapshots carry an opaque process epoch, so the
+server scores a restart by exact epoch change when both epochs exist and uses uptime only for legacy
+snapshots. Use the visible start soma as evidence, but do not copy it mechanically.
 
 Give `confidence` one exact second-order meaning: your probability that the mean of the server-scored
 integrated operational self-state composite and substrate composite will reach the fixed 0.75 success

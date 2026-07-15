@@ -219,11 +219,13 @@ test('protocol-v4 forecasts observable substrate state against start-state persi
   const start = cycleSelfForecast.normalizeSubstrateObservation({
     updated_at: '2026-07-14T12:00:00.000Z',
     vitals: { errors10: 0, warns10: 0, loopLag: 10, uptimeMin: 120,
+      processEpochId: 'process-before-restart',
       onBackup: false, memCount: 100, embedBacklog: 0 },
   });
   const close = cycleSelfForecast.normalizeSubstrateObservation({
     updated_at: '2026-07-14T12:05:00.000Z',
     vitals: { errors10: 2, warns10: 1, loopLag: 25, uptimeMin: 2,
+      processEpochId: 'process-after-restart',
       onBackup: false, memCount: 101, embedBacklog: 3 },
   });
   const record = cycleSelfForecast.createRecord({ input,
@@ -245,6 +247,8 @@ test('protocol-v4 forecasts observable substrate state against start-state persi
     scoredAt: '2026-07-14T12:05:00.000Z',
   });
   assert.equal(outcome.substrate_actual.restart_observed, true);
+  assert.notEqual(outcome.substrate_actual.start_observation.process_epoch_id,
+    outcome.substrate_actual.close_observation.process_epoch_id);
   assert.equal(outcome.substrate_score.composite, 1);
   assert.equal(outcome.baseline_substrate_score.composite, 0.2);
   assert.equal(outcome.substrate_self_minus_baseline, 0.8);
@@ -281,6 +285,26 @@ test('protocol-v4 substrate scoring requires complete authoritative telemetry fo
   }, { includeSubstrate: true });
   assert.equal(profile.complete_domain_observation, true);
   assert.equal(profile.largest_error_domain, 'substrate');
+});
+
+test('process epoch identity makes restart scoring exact with an uptime fallback for legacy soma', () => {
+  const common = { startedAt: '2026-07-14T12:00:00.000Z',
+    finishedAt: '2026-07-14T12:05:00.000Z' };
+  const exact = cycleSelfForecast.substrateActual({ ...common,
+    start: { process_epoch_id: 'epoch-a', uptime_minutes: 120 },
+    close: { process_epoch_id: 'epoch-b', uptime_minutes: 125 },
+  });
+  assert.equal(exact.restart_observed, true,
+    'epoch transition detects a restart even when rounded uptime alone appears continuous');
+  assert.notEqual(exact.start_observation.process_epoch_id,
+    exact.close_observation.process_epoch_id);
+  const legacy = cycleSelfForecast.substrateActual({ ...common,
+    start: { uptime_minutes: 120 }, close: { uptime_minutes: 2 },
+  });
+  assert.equal(legacy.restart_observed, true);
+  assert.equal(legacy.start_observation.process_epoch_id, undefined);
+  assert.equal('restart_detection_method' in legacy, false,
+    'the committed protocol-v4 outcome shape remains replay-compatible');
 });
 
 test('forecast-error feedback can produce one committed self-correction scored against the initial forecast', () => {

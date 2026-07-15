@@ -58,6 +58,8 @@ function normalizeSubstrateObservation(soma = {}) {
     loop_lag_ms: finite(vitals.loopLag), uptime_minutes: finite(vitals.uptimeMin),
     on_backup: typeof vitals.onBackup === 'boolean' ? vitals.onBackup : null,
     memory_count: finite(vitals.memCount), embedding_backlog: finite(vitals.embedBacklog),
+    process_epoch_id: vitals.processEpochId
+      ? String(vitals.processEpochId).trim().slice(0, 120) : null,
   };
   return Object.values(observation).some(value => value !== null) ? observation : null;
 }
@@ -87,9 +89,12 @@ function substrateActual({ start = null, close = null, startedAt = null, finishe
   const started = new Date(startedAt).getTime(); const finished = new Date(finishedAt).getTime();
   const elapsedMinutes = Number.isFinite(started) && Number.isFinite(finished) && finished >= started
     ? (finished - started) / 60000 : null;
-  const restartObserved = start?.uptime_minutes == null || close.uptime_minutes == null
+  const processEpochComparable = Boolean(start?.process_epoch_id && close.process_epoch_id);
+  const uptimeRestartObserved = start?.uptime_minutes == null || close.uptime_minutes == null
     || elapsedMinutes == null ? null
     : close.uptime_minutes + 2 < start.uptime_minutes + elapsedMinutes;
+  const restartObserved = processEpochComparable
+    ? start.process_epoch_id !== close.process_epoch_id : uptimeRestartObserved;
   return {
     error_present: close.errors10 == null ? null : boolOrNull(close.errors10 > 0),
     warning_present: close.warns10 == null ? null : boolOrNull(close.warns10 > 0),

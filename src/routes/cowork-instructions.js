@@ -490,7 +490,8 @@ function registerCoworkInstructionsRoute(app) {
     evidence, plus five closing substrate probabilities for recent errors, recent warnings, backup mode,
     embedding backlog, and restart. Confidence is the predicted probability that the mean integrated
     operational self-state and substrate score reaches 0.75; the same preregistration names the expected
-    largest error domain, including substrate. The server captures start and close soma authoritatively and freezes behavioral,
+    largest error domain, including substrate. The server captures start and close soma authoritatively,
+    binds an opaque process epoch so restart is exact rather than inferred when current telemetry exists, and freezes behavioral,
     integrated-self, historical-success, and modal-error baselines at the same time and scores them
     automatically at closure, while substrate predictions are scored against exact start-state persistence.
     Reliability scoring requires all six observable error domains and all five substrate outcomes; incomplete

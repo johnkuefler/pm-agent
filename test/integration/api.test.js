@@ -317,7 +317,8 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.ok((await request('/decision-traces')).body.length >= 0);
   const cycle = await request('/intelligence/cycles', { method: 'POST', body: {
     holder: 'integration', inner_thread: { content: 'Continue the integration story.' },
-    soma: { updated_at: 'forged-start', vitals: { errors10: 999, uptimeMin: 999 } },
+    soma: { updated_at: 'forged-start', vitals: { errors10: 999, uptimeMin: 999,
+      processEpochId: 'forged-process-epoch' } },
   } });
   assert.equal(cycle.body.cycle.status, 'running');
   assert.equal(cycle.body.moment.start_snapshot, undefined);
@@ -325,6 +326,7 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(cycle.body.moment.inherited_context.inner_thread_hash, null, 'request bodies cannot forge authoritative inner-thread inheritance');
   assert.notEqual(cycle.body.moment.substrate_at_start?.source_updated_at, 'forged-start',
     'request bodies cannot forge authoritative substrate telemetry');
+  assert.notEqual(cycle.body.moment.substrate_at_start?.process_epoch_id, 'forged-process-epoch');
   assert.ok(Array.isArray(cycle.body.orientation.recommendations));
   assert.equal(cycle.body.moment.cycle_id, cycle.body.cycle.id);
   const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
@@ -373,7 +375,7 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(experience.moments[0].self_forecast.protocol_version, 4);
   assert.notEqual(experience.moments[0].closure.substrate_at_end?.source_updated_at, 'forged-close');
   assert.equal(experience.moments[0].self_forecast.outcome.substrate_baseline_comparison_eligible,
-    false, 'missing server telemetry remains missing rather than accepting forged complete telemetry');
+    true, 'the server supplies complete authoritative telemetry without accepting forged telemetry');
   assert.equal(experience.prospective_self_forecast.replay_verified_scored, 1);
   const behavioralSelfModel = (await request('/self-model')).body.behavioral_self_model;
   assert.equal(behavioralSelfModel.report.total_revisions, 1);
@@ -902,9 +904,8 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   const completed = (await request('/experience-stream?limit=10')).body.moments
     .find(item => item.id === nextMomentId);
   assert.equal(completed.self_forecast.protocol_version, 4);
-  assert.equal(completed.self_forecast.outcome.substrate_baseline_comparison_eligible, false);
-  assert.equal(completed.self_forecast.outcome.metacognitive_score, null,
-    'v4 reliability evidence is withheld when authoritative substrate fields are incomplete');
+  assert.equal(completed.self_forecast.outcome.substrate_baseline_comparison_eligible, true);
+  assert.ok(Number.isFinite(completed.self_forecast.outcome.metacognitive_score.composite));
   assert.equal(completed.audit.self_forecast.complete_chain_verified, true);
   assert.equal(completed.audit.evidence_eligible, true);
   const calibration = (await request('/self-model/cycle-calibration')).body;
@@ -914,9 +915,8 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
     completed.self_forecast.outcome_commitment);
   assert.match(calibration.latest_forecast_error.feedback_commitment, /^[a-f0-9]{64}$/);
   assert.equal(calibration.latest_forecast_error.source_forecast_protocol_version, 4);
-  assert.equal(calibration.latest_forecast_error.substrate, undefined,
-    'no substrate feedback is fabricated when the server has no telemetry observation');
-  assert.equal(calibration.latest_forecast_error.metacognitive_reliability, undefined);
+  assert.ok(calibration.latest_forecast_error.substrate);
+  assert.ok(calibration.latest_forecast_error.metacognitive_reliability);
   assert.equal(calibration.report.integrated_feedback_samples, 2);
-  assert.equal(calibration.report.metacognitive_reliability_feedback_samples, 0);
+  assert.equal(calibration.report.metacognitive_reliability_feedback_samples, 2);
 });

@@ -172,9 +172,14 @@ qualia, or evidence of phenomenal consciousness.
 Protocol-v4 natural cycles add a prospective model of Nora's observable runtime substrate without adding
 local-model inference or privileged hidden-state access. At cycle start, Nora assigns probabilities to five
 closure outcomes: an error or warning in the server's rolling ten-minute telemetry, backup mode, an embedding
-backlog, and a restart inferred from uptime relative to elapsed cycle time. The server captures both the
+backlog, and a restart identified by process-epoch transition with a legacy uptime fallback. The server captures both the
 start and close soma itself, normalizes the bounded telemetry, and binds each snapshot into the experience
 lifecycle. Request bodies cannot substitute a more convenient observation.
+
+Each process boot has an opaque random epoch identifier included in authoritative soma. When both start and
+close epochs exist, restart truth is their exact equality or inequality; uptime-versus-elapsed inference is
+retained only so legacy observations remain scoreable. The epoch is not a persistent identity claim—it is a
+bounded process-continuity marker that changes on every deployment or crash restart.
 
 Each probability receives a Brier score. The frozen control is exact start-state persistence for errors,
 warnings, backup mode, and backlog, plus no-restart persistence. A comparison is eligible only when all five

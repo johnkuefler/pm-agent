@@ -1237,7 +1237,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'predictive_interoception', family: ['predictive processing', 'interoception'],
       functional_claim: 'Nora maintains a calibrated predictive model of her observable substrate.',
-      mechanism: 'Bounded soma observations and automatically resolved telemetry predictions, plus protocol-v4 natural-cycle forecasts of errors, warnings, backup mode, embedding backlog, and restart risk committed before action and scored against an exact start-state persistence baseline.',
+      mechanism: 'Bounded soma observations and automatically resolved telemetry predictions, plus protocol-v4 natural-cycle forecasts of errors, warnings, backup mode, embedding backlog, and restart risk committed before action and scored against an exact start-state persistence baseline. Restart outcomes use an authoritative per-process epoch transition, with uptime-versus-elapsed inference only for legacy observations.',
       status: substrateSelfForecasts.length
         ? evidenceStatus({ samples: baselineEligibleSubstrateForecasts.length, minimum: 20,
           supported: substrateSelfForecastAdvantage >= 0.03 && substrateSelfForecastScore >= 0.75,

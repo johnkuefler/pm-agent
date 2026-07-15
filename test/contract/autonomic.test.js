@@ -15,6 +15,8 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /run lock has already opened this exact lifecycle/i);
   assert.match(server, /run_bound_intelligence_cycle/);
   assert.match(server, /forecast_protocol_version: 4/);
+  assert.match(server, /processEpochId: _somaProcessEpochId/);
+  assert.match(server, /await computeSoma\(\);[\s\S]*server\.listen\(port\)/);
   assert.match(server, /run_lock_released_before_cycle_close/);
   assert.match(server, /loadDurableRunLock/);
   assert.match(server, /saveDurableRunLock/);

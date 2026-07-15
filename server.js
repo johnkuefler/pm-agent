@@ -114,6 +114,7 @@ function autobiographyRecordFromLedger(revisions) {
   };
 }
 
+const _somaProcessEpochId = crypto.randomUUID();
 const _somaNerves = { errors: [], warns: [], loopLagMax: 0 };
 {
   const origErr = console.error.bind(console), origWarn = console.warn.bind(console);
@@ -1007,7 +1008,7 @@ function _dailySeed(str) {
 // readout. Pure code, no LLM (it belongs to her unconscious). Computed every 60s into
 // _soma; injected into the volatile prompt tail next to the mood; surfaced in GET /self.
 // The mood engine owns her PSYCHOLOGICAL state (clock, outcomes); this owns the PHYSICAL.
-let _soma = { feel: '', score: 0, vitals: {}, updated_at: null };
+let _soma = { feel: '', score: 0, vitals: { processEpochId: _somaProcessEpochId }, updated_at: null };
 async function computeSoma() {
   try {
     const now = Date.now();
@@ -1043,7 +1044,8 @@ async function computeSoma() {
     else if (score <= 3) feel = 'somewhat off today: ' + feels.slice(0, 2).join('; ');
     else feel = 'in genuinely rough shape: ' + feels.slice(0, 3).join('; ');
 
-    _soma = { feel, score, vitals: { errors10, warns10, loopLag, uptimeMin, onBackup, memCount, embedBacklog }, updated_at: new Date().toISOString() };
+    _soma = { feel, score, vitals: { errors10, warns10, loopLag, uptimeMin, onBackup,
+      memCount, embedBacklog, processEpochId: _somaProcessEpochId }, updated_at: new Date().toISOString() };
   } catch (e) { /* interoception failing must never hurt the body it senses */ }
 }
 
@@ -9098,6 +9100,10 @@ async function start(options = {}) {
     await reconcileInnerThreadProjection();
     try { await mcpManager.migrate(); }
     catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
+    // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
+    // authoritative substrate observation before listening so that restart and persistence scoring
+    // never depend on a startup race.
+    await computeSoma();
     await new Promise((resolve, reject) => {
       const onError = (err) => { server.off('listening', onListening); reject(err); };
       const onListening = () => { server.off('error', onError); resolve(); };
@@ -9111,7 +9117,6 @@ async function start(options = {}) {
       backfillTranscriptDates();
       refreshRecentMeetingsCache();
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
-      computeSoma();
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
       tickEndogenousRuntime();
       runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));

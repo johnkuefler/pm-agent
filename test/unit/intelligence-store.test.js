@@ -2091,6 +2091,7 @@ test('protocol-v4 cycle forecasts bind substrate telemetry into the replay-verif
   await store.init();
   const startSoma = { updated_at: now.toISOString(), vitals: {
     errors10: 0, warns10: 0, loopLag: 10, uptimeMin: 120,
+    processEpochId: 'substrate-process-before',
     onBackup: false, memCount: 100, embedBacklog: 0,
   } };
   const started = store.startCycle({ id: 'substrate-forecast-cycle', holder: 'nora-cowork',
@@ -2124,6 +2125,7 @@ test('protocol-v4 cycle forecasts bind substrate telemetry into the replay-verif
     actions: [{ type: 'review', id: 'substrate-review' }],
     substrate_at_close: { updated_at: now.toISOString(), vitals: {
       errors10: 2, warns10: 1, loopLag: 30, uptimeMin: 2,
+      processEpochId: 'substrate-process-after',
       onBackup: false, memCount: 102, embedBacklog: 2,
     } },
   });
@@ -2131,6 +2133,8 @@ test('protocol-v4 cycle forecasts bind substrate telemetry into the replay-verif
   assert.equal(moment.audit.complete_chain_verified, true);
   assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
   assert.equal(moment.self_forecast.outcome.substrate_actual.restart_observed, true);
+  assert.notEqual(moment.self_forecast.outcome.substrate_actual.start_observation.process_epoch_id,
+    moment.self_forecast.outcome.substrate_actual.close_observation.process_epoch_id);
   assert.equal(moment.self_forecast.outcome.substrate_score.composite, 1);
   assert.equal(moment.self_forecast.outcome.baseline_substrate_score.composite, 0.2);
   assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.substrate_forecasts, 1);
