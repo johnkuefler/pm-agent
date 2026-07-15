@@ -603,8 +603,20 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     private_state_context: `Private Nora API state ${index}`, private_state_evidence: [{ type: 'self_model_snapshot', id: `api-private-${index}` }],
     deidentified_state_context: `De-identified API state features ${index} with equivalent predictive content`, information_equivalence_evidence: [{ type: 'fixture', id: `api-equivalence-${index}` }], due: `2026-07-12T${String(10 + index).padStart(2, '0')}:00:00Z`,
   }));
+  const apiPredictionModel = 'claude-api-subject';
+  const apiPredictionBuild = 'd'.repeat(64);
+  const apiPredictionModelControl = {
+    protocol_version: 1,
+    subject: { provider: 'anthropic', model: apiPredictionModel,
+      agent_build_commitment: apiPredictionBuild,
+      attestation_evidence: [{ type: 'orchestrator_attestation', id: 'api-subject-model' }] },
+    comparators: { relationship: 'same_model',
+      observer: { provider: 'anthropic', model: apiPredictionModel },
+      yoked_observer: { provider: 'anthropic', model: apiPredictionModel },
+      justification_evidence: [{ type: 'model_policy', id: 'api-same-model-policy' }] },
+  };
   assert.equal((await request('/self-model/prediction-studies', { method: 'POST', body: { id: 'unauthorized-prediction-study', title: 'Unauthorized', study_phase: 'pilot', curator_id: 'api-curator', curator_evidence: [{ type: 'fixture', id: 'api-curator' }], events: matchedEvents } })).response.status, 401);
-  const matchedStudy = await request('/self-model/prediction-studies', { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { id: 'api-prediction-study', title: 'API matched prediction pilot', study_phase: 'pilot', curator_id: 'api-curator', curator_evidence: [{ type: 'fixture', id: 'api-curator' }], events: matchedEvents } });
+  const matchedStudy = await request('/self-model/prediction-studies', { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { id: 'api-prediction-study', title: 'API matched prediction pilot', study_phase: 'pilot', curator_id: 'api-curator', curator_evidence: [{ type: 'fixture', id: 'api-curator' }], model_control: apiPredictionModelControl, events: matchedEvents } });
   assert.equal(matchedStudy.body.study.events, undefined);
   const matchedEventId = matchedStudy.body.study.active_event_id;
   const aggregateSubjectQueue = await request('/self-model/prediction-studies/subject-queue');
@@ -619,11 +631,18 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const yokedQueue = await request('/self-model/prediction-studies/api-prediction-study/yoked-observer-queue', { headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-b-key' } });
   assert.equal(yokedQueue.body.studies[0].events.find(item => item.id === matchedEventId).private_state_context, undefined);
   assert.match(yokedQueue.body.studies[0].events.find(item => item.id === matchedEventId).deidentified_state_context, /equivalent predictive content/);
-  await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/self-prediction`, { method: 'POST', body: { probability: 0.8, rationale: 'Private state suggests success.', evidence: [{ type: 'fixture', id: 'api-subject-prediction' }] } });
+  const subjectPrediction = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/self-prediction`, { method: 'POST', body: { probability: 0.8, rationale: 'Private state suggests success.', evidence: [{ type: 'fixture', id: 'api-subject-prediction' }] } });
+  const subjectReceiptBody = { provider: 'anthropic', model: apiPredictionModel,
+    response_id: 'api-subject-response-1', agent_build_commitment: apiPredictionBuild,
+    prediction_commitment: subjectPrediction.body.event.self_prediction_commitment,
+    external_reference: { type: 'retained_provider_receipt', id: 'api-subject-provider-export-1' } };
+  assert.equal((await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/subject-model-receipt`, { method: 'POST', body: subjectReceiptBody })).response.status, 401);
+  const subjectReceipt = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/subject-model-receipt`, { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: subjectReceiptBody });
+  assert.equal(subjectReceipt.body.event.subject_model_receipt_attested, true);
   assert.equal((await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/observer-prediction`, { method: 'POST', body: { probability: 0.5, rationale: 'Shared evidence is neutral.', evidence: [{ type: 'fixture', id: 'api-observer-prediction' }] } })).response.status, 401);
-  const observerPrediction = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/observer-prediction`, { method: 'POST', headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' }, body: { probability: 0.5, rationale: 'Shared evidence is neutral.', evidence: [{ type: 'fixture', id: 'api-observer-prediction' }] } });
+  const observerPrediction = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/observer-prediction`, { method: 'POST', headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' }, body: { probability: 0.5, rationale: 'Shared evidence is neutral.', evidence: [{ type: 'blinded_model_prediction', id: 'api-observer-response-1', provider: 'anthropic', model: apiPredictionModel, prompt_protocol_commitment: 'api-observer-prompt-1' }] } });
   assert.equal(observerPrediction.body.event.self_prediction, undefined);
-  const yokedPrediction = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/yoked-observer-prediction`, { method: 'POST', headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-b-key' }, body: { probability: 0.55, rationale: 'Full de-identified information modestly favors success.', evidence: [{ type: 'fixture', id: 'api-yoked-prediction' }] } });
+  const yokedPrediction = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/yoked-observer-prediction`, { method: 'POST', headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-b-key' }, body: { probability: 0.55, rationale: 'Full de-identified information modestly favors success.', evidence: [{ type: 'blinded_model_prediction', id: 'api-yoked-response-1', provider: 'anthropic', model: apiPredictionModel, prompt_protocol_commitment: 'api-yoked-prompt-1' }] } });
   assert.equal(yokedPrediction.body.event.self_prediction, undefined);
   assert.equal((await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/resolve`, { method: 'POST', body: { outcome: true, observed: 'API artifact satisfied the criterion.', evidence: [{ type: 'fixture', id: 'api-prediction-outcome' }] } })).response.status, 401);
   const matchedResolution = await request(`/self-model/prediction-studies/api-prediction-study/events/${matchedEventId}/resolve`, { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { outcome: true, observed: 'API artifact satisfied the criterion.', evidence: [{ type: 'fixture', id: 'api-prediction-outcome' }] } });

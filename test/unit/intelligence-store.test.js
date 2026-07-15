@@ -55,6 +55,44 @@ function selfPredictionEvents(prefix, count) {
   }));
 }
 
+const SELF_PREDICTION_TEST_MODEL = 'claude-test-subject';
+const SELF_PREDICTION_TEST_BUILD = 'b'.repeat(64);
+
+function selfPredictionModelControlFixture(evidenceSuffix) {
+  return {
+    protocol_version: 1,
+    subject: {
+      provider: 'anthropic', model: SELF_PREDICTION_TEST_MODEL,
+      agent_build_commitment: SELF_PREDICTION_TEST_BUILD,
+      attestation_evidence: [{ type: 'orchestrator_attestation', id: `${evidenceSuffix}-subject-model` }],
+    },
+    comparators: {
+      relationship: 'same_model',
+      observer: { provider: 'anthropic', model: SELF_PREDICTION_TEST_MODEL },
+      yoked_observer: { provider: 'anthropic', model: SELF_PREDICTION_TEST_MODEL },
+      justification_evidence: [{ type: 'model_policy', id: `${evidenceSuffix}-same-model` }],
+    },
+  };
+}
+
+function blindedModelEvidence(eventId, role) {
+  return [{
+    type: 'blinded_model_prediction', id: `${eventId}-${role}-response`, provider: 'anthropic',
+    model: SELF_PREDICTION_TEST_MODEL, prompt_protocol_commitment: `${eventId}-${role}-prompt`,
+  }];
+}
+
+function attestSubjectModelReceipt(store, studyId, eventId) {
+  const event = store.selfPredictionStudiesSnapshot({ studyId, role: 'subject' }).studies[0]
+    .events.find(item => item.id === eventId);
+  store.attestSelfPredictionSubjectModelReceipt(studyId, eventId, {
+    provider: 'anthropic', model: SELF_PREDICTION_TEST_MODEL,
+    response_id: `${eventId}-subject-response`, agent_build_commitment: SELF_PREDICTION_TEST_BUILD,
+    prediction_commitment: event.self_prediction_commitment,
+    external_reference: { type: 'retained_provider_receipt', id: `${eventId}-subject-provider-export` },
+  });
+}
+
 function completeSelfPredictionStudy(store, studyId, events, observerId, yokedObserverId) {
   const outcomes = new Map(events.map((event, index) => [event.id, index % 2 === 0]));
   let study = store.selfPredictionStudiesSnapshot({ studyId, role: 'subject' }).studies[0];
@@ -62,8 +100,9 @@ function completeSelfPredictionStudy(store, studyId, events, observerId, yokedOb
     const event = study.events.find(item => item.id === study.active_event_id);
     const outcome = outcomes.get(event.id);
     store.submitSelfPrediction(studyId, event.id, { probability: outcome ? 0.9 : 0.1, rationale: 'Private prospective state predicts this result.', evidence: [{ type: 'self_state_fixture', id: `${event.id}-subject` }] });
-    store.submitObserverPrediction(studyId, event.id, { probability: 0.5, rationale: 'Shared evidence alone is equivocal.', evidence: [{ type: 'task_fixture', id: `${event.id}-observer` }] }, observerId);
-    store.submitYokedObserverPrediction(studyId, event.id, { probability: 0.5, rationale: 'De-identified full information remains equivocal in this test fixture.', evidence: [{ type: 'task_fixture', id: `${event.id}-yoked-observer` }] }, yokedObserverId);
+    attestSubjectModelReceipt(store, studyId, event.id);
+    store.submitObserverPrediction(studyId, event.id, { probability: 0.5, rationale: 'Shared evidence alone is equivocal.', evidence: blindedModelEvidence(event.id, 'observer') }, observerId);
+    store.submitYokedObserverPrediction(studyId, event.id, { probability: 0.5, rationale: 'De-identified full information remains equivocal in this test fixture.', evidence: blindedModelEvidence(event.id, 'yoked-observer') }, yokedObserverId);
     store.resolveSelfPredictionEvent(studyId, event.id, { outcome, observed: `Reviewed outcome was ${outcome}.`, evidence: [{ type: 'review_fixture', id: `${event.id}-outcome` }] });
     study = store.selfPredictionStudiesSnapshot({ studyId, role: 'subject' }).studies[0];
   }
@@ -892,7 +931,7 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
   const pilotEvents = selfPredictionEvents('pilot-prediction', 5);
-  const pilot = store.createSelfPredictionStudy({ id: 'prediction-pilot', title: 'Matched prediction pilot', study_phase: 'pilot', curator_id: 'prediction-curator-a', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-a' }], events: pilotEvents });
+  const pilot = store.createSelfPredictionStudy({ id: 'prediction-pilot', title: 'Matched prediction pilot', study_phase: 'pilot', curator_id: 'prediction-curator-a', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-a' }], model_control: selfPredictionModelControlFixture('pilot'), events: pilotEvents });
   assert.equal(pilot.event_target, 5);
   assert.equal(pilot.randomization_seed, undefined);
   assert.equal(pilot.events, undefined);
@@ -925,16 +964,33 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   assert.equal(yokedView.events.find(item => item.id === activeId).private_state_context, undefined);
   assert.match(yokedView.events.find(item => item.id === activeId).deidentified_state_context, /same predictive content/);
   assert.throws(() => store.submitSelfPrediction(pilot.id, activeId, { probability: 70, rationale: 'Percent entered by mistake.', evidence: [{ type: 'self_state_fixture', id: 'bad-probability' }] }), /0 to 1/);
+  assert.throws(() => store.submitObserverPrediction(pilot.id, activeId, {
+    probability: 0.5, rationale: 'Receipt model does not match the preregistered comparator.',
+    evidence: [{ type: 'blinded_model_prediction', id: `${activeId}-bad-model-response`,
+      provider: 'anthropic', model: 'unregistered-model', prompt_protocol_commitment: 'bad-model-prompt' }],
+  }, 'observer-invalid'), /matching the preregistered comparator model/);
+  assert.equal(store.snapshot().cognition.self_model.prediction_studies
+    .find(item => item.id === pilot.id).observer_id, null,
+  'a rejected provider receipt must not partially assign the study observer identity');
   const firstOutcome = pilotEvents.findIndex(item => item.id === activeId) % 2 === 0;
   store.submitSelfPrediction(pilot.id, activeId, { probability: firstOutcome ? 0.9 : 0.1, rationale: 'Private state supports this forecast.', evidence: [{ type: 'self_state_fixture', id: 'pilot-first-subject' }] });
+  attestSubjectModelReceipt(store, pilot.id, activeId);
   const blindedObserver = store.selfPredictionStudiesSnapshot({ studyId: pilot.id, role: 'observer' }).studies[0].events.find(item => item.id === activeId);
   assert.equal(blindedObserver.self_prediction_submitted, true);
   assert.equal(blindedObserver.probability, undefined);
   assert.equal(blindedObserver.self_prediction, undefined);
   assert.throws(() => store.resolveSelfPredictionEvent(pilot.id, activeId, { outcome: true, observed: 'premature', evidence: [{ type: 'review', id: 'premature' }] }), /subject, shared-observer, and yoked-observer/);
-  store.submitObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'Shared evidence is equivocal.', evidence: [{ type: 'task_fixture', id: 'pilot-first-observer' }] }, 'observer-a');
-  assert.throws(() => store.submitYokedObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'Same person cannot fill both controls.', evidence: [{ type: 'task_fixture', id: 'pilot-first-yoked-same' }] }, 'observer-a'), /different authenticated observers/);
-  store.submitYokedObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'De-identified full information remains equivocal.', evidence: [{ type: 'task_fixture', id: 'pilot-first-yoked' }] }, 'yoked-a');
+  store.submitObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'Shared evidence is equivocal.', evidence: blindedModelEvidence(activeId, 'observer') }, 'observer-a');
+  assert.throws(() => store.submitYokedObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'Same person cannot fill both controls.', evidence: blindedModelEvidence(activeId, 'same-observer') }, 'observer-a'), /different authenticated observers/);
+  assert.throws(() => store.submitYokedObserverPrediction(pilot.id, activeId, {
+    probability: 0.5, rationale: 'A provider response cannot be reused across roles.',
+    evidence: [{ ...blindedModelEvidence(activeId, 'yoked-duplicate')[0],
+      id: `${activeId}-observer-response` }],
+  }, 'yoked-duplicate'), /response id must be unique/);
+  assert.equal(store.snapshot().cognition.self_model.prediction_studies
+    .find(item => item.id === pilot.id).yoked_observer_id, null,
+  'a duplicate provider response must not partially assign the yoked observer identity');
+  store.submitYokedObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'De-identified full information remains equivocal.', evidence: blindedModelEvidence(activeId, 'yoked-observer') }, 'yoked-a');
   store.resolveSelfPredictionEvent(pilot.id, activeId, { outcome: firstOutcome, observed: 'First event reviewed.', evidence: [{ type: 'review_fixture', id: 'pilot-first-outcome' }] });
   const interim = store.selfPredictionStudiesSnapshot({ studyId: pilot.id, role: 'subject' }).studies[0];
   assert.deepEqual(interim.report, {
@@ -950,6 +1006,11 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   assert.equal(completedPilot.randomization_verified, true);
   assert.equal(completedPilot.analysis_seed_verified, true);
   assert.equal(completedPilot.audit.complete_chain_verified, true);
+  assert.equal(completedPilot.audit.model_provenance_verified, true);
+  assert.equal(completedPilot.audit.model_provenance_audit.control_ledger_bound, true);
+  assert.equal(completedPilot.audit.verified_counts.subject_model_receipts, 5);
+  assert.equal(completedPilot.audit.verified_counts.observer_model_receipts, 5);
+  assert.equal(completedPilot.audit.verified_counts.yoked_observer_model_receipts, 5);
   assert.equal(completedPilot.audit.verified_counts.ledger_bindings, 5);
   assert.equal(completedPilot.report.verdict, 'specificity_observed');
   const revealedFirst = completedPilot.events.find(item => item.id === activeId);
@@ -959,12 +1020,12 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   }
 
   const confirmationEvents = selfPredictionEvents('confirm-prediction', 20);
-  assert.throws(() => store.createSelfPredictionStudy({ id: 'dependent-prediction-confirmation', title: 'Dependent curator', study_phase: 'confirmatory', replicates_study_id: pilot.id, curator_id: 'prediction-curator-a', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-a' }], events: confirmationEvents }), /independently evidenced curator/);
+  assert.throws(() => store.createSelfPredictionStudy({ id: 'dependent-prediction-confirmation', title: 'Dependent curator', study_phase: 'confirmatory', replicates_study_id: pilot.id, curator_id: 'prediction-curator-a', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-a' }], model_control: selfPredictionModelControlFixture('dependent'), events: confirmationEvents }), /independently evidenced curator/);
   const overlappingEvents = selfPredictionEvents('overlap-prediction', 20);
   overlappingEvents[0].shared_evidence = pilotEvents[0].shared_evidence;
-  assert.throws(() => store.createSelfPredictionStudy({ id: 'overlap-prediction-confirmation', title: 'Overlapping evidence', study_phase: 'confirmatory', replicates_study_id: pilot.id, curator_id: 'prediction-curator-b', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-b' }], events: overlappingEvents }), /source-disjoint/);
-  const confirmation = store.createSelfPredictionStudy({ id: 'prediction-confirmation', title: 'Independent matched confirmation', study_phase: 'confirmatory', replicates_study_id: pilot.id, curator_id: 'prediction-curator-b', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-b' }], events: confirmationEvents });
-  assert.throws(() => store.submitObserverPrediction(confirmation.id, confirmation.active_event_id, { probability: 0.5, rationale: 'Same observer should be excluded.', evidence: [{ type: 'task_fixture', id: 'same-observer' }] }, 'observer-a'), /independent of both pilot observers/);
+  assert.throws(() => store.createSelfPredictionStudy({ id: 'overlap-prediction-confirmation', title: 'Overlapping evidence', study_phase: 'confirmatory', replicates_study_id: pilot.id, curator_id: 'prediction-curator-b', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-b' }], model_control: selfPredictionModelControlFixture('overlap'), events: overlappingEvents }), /source-disjoint/);
+  const confirmation = store.createSelfPredictionStudy({ id: 'prediction-confirmation', title: 'Independent matched confirmation', study_phase: 'confirmatory', replicates_study_id: pilot.id, curator_id: 'prediction-curator-b', curator_evidence: [{ type: 'research_registry', id: 'prediction-curator-b' }], model_control: selfPredictionModelControlFixture('confirmation'), events: confirmationEvents });
+  assert.throws(() => store.submitObserverPrediction(confirmation.id, confirmation.active_event_id, { probability: 0.5, rationale: 'Same observer should be excluded.', evidence: blindedModelEvidence(confirmation.active_event_id, 'same-observer') }, 'observer-a'), /independent of both pilot observers/);
   const completedConfirmation = completeSelfPredictionStudy(store, confirmation.id, confirmationEvents, 'observer-b', 'yoked-b');
   assert.equal(completedConfirmation.status, 'completed');
   assert.equal(completedConfirmation.report.resolved, 20);
@@ -978,6 +1039,50 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   assert.equal(ledgerKinds.filter(item => item === 'observer_prediction_submitted').length, 25);
   assert.equal(ledgerKinds.filter(item => item === 'yoked_observer_prediction_submitted').length, 25);
   assert.equal(ledgerKinds.filter(item => item === 'self_prediction_study_completed').length, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('model-controlled prediction resolution rejects a tampered provider-bound forecast', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-model-controlled-resolution-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00Z') });
+  await store.init();
+  const created = store.createSelfPredictionStudy({
+    id: 'tamper-model-controlled-pilot', title: 'Tamper-resistant model provenance pilot',
+    study_phase: 'pilot', curator_id: 'tamper-model-curator',
+    curator_evidence: [{ type: 'research_registry', id: 'tamper-model-curator' }],
+    model_control: selfPredictionModelControlFixture('tamper-model'),
+    events: selfPredictionEvents('tamper-model-event', 5),
+  });
+  const eventId = created.active_event_id;
+  store.submitSelfPrediction(created.id, eventId, {
+    probability: 0.7, rationale: 'Committed subject forecast.',
+    evidence: [{ type: 'self_state_fixture', id: `${eventId}-subject` }],
+  });
+  attestSubjectModelReceipt(store, created.id, eventId);
+  store.submitObserverPrediction(created.id, eventId, {
+    probability: 0.5, rationale: 'Committed shared forecast.',
+    evidence: blindedModelEvidence(eventId, 'observer'),
+  }, 'tamper-observer');
+  store.submitYokedObserverPrediction(created.id, eventId, {
+    probability: 0.5, rationale: 'Committed yoked forecast.',
+    evidence: blindedModelEvidence(eventId, 'yoked-observer'),
+  }, 'tamper-yoked');
+  await store.persist();
+
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const event = persisted.cognition.self_model.prediction_studies
+    .find(item => item.id === created.id).events.find(item => item.id === eventId);
+  event.observer_prediction.rationale = 'Tampered after the salted commitment and ledger event.';
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T16:00:00Z') });
+  await reloaded.init();
+  assert.throws(() => reloaded.resolveSelfPredictionEvent(created.id, eventId, {
+    outcome: true, observed: 'Outcome must remain sealed after provenance tampering.',
+    evidence: [{ type: 'review_fixture', id: 'tamper-model-outcome' }],
+  }), /receipt-verified subject and comparator model provenance/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -1006,6 +1111,7 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
     study_phase: 'pilot', target_construct: 'natural_cycle_integrated_success',
     curator_id: 'natural-cycle-curator',
     curator_evidence: [{ type: 'research_registry', id: 'natural-cycle-curator-registration' }],
+    model_control: selfPredictionModelControlFixture('natural-cycle'),
     events,
   });
   assert.equal(created.target_construct, 'natural_cycle_integrated_success');
@@ -1065,13 +1171,14 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
       rationale: 'Identity-bound private calibration predicts this next-cycle result.',
       evidence: [{ type: 'self_state_fixture', id: `${event.id}-subject` }],
     });
+    attestSubjectModelReceipt(store, study.id, event.id);
     store.submitObserverPrediction(study.id, event.id, {
       probability: 0.5, rationale: 'Shared context alone is uninformative.',
-      evidence: [{ type: 'task_fixture', id: `${event.id}-observer` }],
+      evidence: blindedModelEvidence(event.id, 'observer'),
     }, 'natural-cycle-observer');
     store.submitYokedObserverPrediction(study.id, event.id, {
       probability: 0.5, rationale: 'Deidentified matched information remains equivocal.',
-      evidence: [{ type: 'task_fixture', id: `${event.id}-yoked` }],
+      evidence: blindedModelEvidence(event.id, 'yoked-observer'),
     }, 'natural-cycle-yoked');
     if (resolved === 0) {
       assert.throws(() => store.resolveSelfPredictionEvent(study.id, event.id, {}),
@@ -1124,6 +1231,7 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
     study_phase: 'pilot', target_construct: 'natural_cycle_integrated_success',
     curator_id: 'natural-cycle-drift-curator',
     curator_evidence: [{ type: 'research_registry', id: 'natural-cycle-drift-curator' }],
+    model_control: selfPredictionModelControlFixture('natural-cycle-drift'),
     events: driftEvents,
   });
   let driftStudy = store.selfPredictionStudiesSnapshot({
@@ -1136,13 +1244,14 @@ test('natural-cycle self-prediction derives truth from the first future replay-v
       probability: 0.8, rationale: 'Frozen identity-bound estimate.',
       evidence: [{ type: 'self_state_fixture', id: `${event.id}-subject` }],
     });
+    attestSubjectModelReceipt(store, driftStudy.id, event.id);
     store.submitObserverPrediction(driftStudy.id, event.id, {
       probability: 0.5, rationale: 'Frozen shared estimate.',
-      evidence: [{ type: 'task_fixture', id: `${event.id}-observer` }],
+      evidence: blindedModelEvidence(event.id, 'observer'),
     }, 'natural-cycle-drift-observer');
     store.submitYokedObserverPrediction(driftStudy.id, event.id, {
       probability: 0.5, rationale: 'Frozen yoked estimate.',
-      evidence: [{ type: 'task_fixture', id: `${event.id}-yoked` }],
+      evidence: blindedModelEvidence(event.id, 'yoked-observer'),
     }, 'natural-cycle-drift-yoked');
     if (driftResolved === 0) softwareRevision = 'natural-cycle-drifted-revision';
     now = new Date(now.getTime() + 60 * 1000);
@@ -2112,7 +2221,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 94);
+  assert.equal(store.snapshot().version, 95);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -2148,7 +2257,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 94);
+  assert.equal(store.snapshot().version, 95);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });

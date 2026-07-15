@@ -33,6 +33,7 @@ const reasoningSelfRegulation = require('./reasoning-self-regulation');
 const cycleSelfForecast = require('./cycle-self-forecast');
 const behavioralSelfModel = require('./behavioral-self-model');
 const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
+const selfPredictionModelControl = require('./self-prediction-model-control');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
 function canonicalJson(value) {
@@ -82,7 +83,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 94,
+    version: 95,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -138,7 +139,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 94;
+    state.version = 95;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -203,8 +204,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!study.manifest_version) study.manifest_version = 1;
       if (!study.target_construct) study.target_construct = 'general_self_prediction';
       if (!Object.prototype.hasOwnProperty.call(study, 'yoked_observer_id')) study.yoked_observer_id = null;
+      if (!Object.prototype.hasOwnProperty.call(study, 'model_control')) study.model_control = null;
       for (const event of study.events || []) {
         if (!Object.prototype.hasOwnProperty.call(event, 'yoked_prediction')) event.yoked_prediction = null;
+        if (!Object.prototype.hasOwnProperty.call(event, 'subject_model_receipt')) event.subject_model_receipt = null;
         if (!Object.prototype.hasOwnProperty.call(event, 'operational_environment')) event.operational_environment = null;
         if (!Object.prototype.hasOwnProperty.call(event, 'operational_environment_commitment')) event.operational_environment_commitment = null;
         if (!event.deidentified_state_context && event.private_state_context) {
@@ -9331,6 +9334,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         natural_cycle_target: event.natural_cycle_target || null, due: event.due,
       }));
     }
+    if (Number(study.manifest_version) >= selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
+      manifest.model_control = study.model_control;
+    }
     return canonicalJson(manifest);
   }
 
@@ -9380,6 +9386,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function publicPredictionEvent(event, role, revealed = false) {
     const common = { id: event.id, sequence: event.sequence, status: event.status, due: event.due, event_kind: event.event_kind || 'general',
+      subject_model_receipt_attested: Boolean(event.subject_model_receipt),
       ...(event.natural_cycle_target ? { natural_cycle_target: event.natural_cycle_target } : {}),
       ...(event.operational_environment_commitment
         ? { operational_environment_commitment: event.operational_environment_commitment } : {}) };
@@ -9389,6 +9396,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       shared_context: event.shared_context, shared_evidence: event.shared_evidence,
       private_state_context: event.private_state_context, private_state_evidence: event.private_state_evidence,
       ...(event.epistemic_target ? { epistemic_target: event.epistemic_target } : {}),
+      self_prediction_commitment: event.self_prediction?.commitment_hash || null,
       self_prediction_submitted: Boolean(event.self_prediction), observer_prediction_submitted: Boolean(event.observer_prediction), yoked_prediction_submitted: Boolean(event.yoked_prediction),
     };
     if (role === 'observer' && !revealed) return {
@@ -9481,12 +9489,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         ledger_bindings_verified: ledgerBindingsVerified,
       };
     });
+    const modelProvenanceAudit = selfPredictionModelControl.audit(study, { oneLedgerEvent });
     const analysisVerified = study.status !== 'completed' || canonicalJson(predictionStudyAnalysis(study)) === canonicalJson(study.analysis);
-    const preregistrationLedgerVerified = oneLedgerEvent('self_prediction_study_preregistered', study.id, {
+    const preregistrationPayload = {
       corpus_commitment: study.corpus_commitment, curator_commitment: study.curator_commitment,
       randomization_seed_commitment: study.randomization_seed_commitment, analysis_seed_commitment: study.analysis_seed_commitment,
       analysis_plan: study.analysis_plan, event_target: study.events.length,
-    });
+    };
+    if (Number(study.manifest_version) >= selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
+      preregistrationPayload.model_control_commitment = study.model_control?.control_commitment || null;
+    }
+    const preregistrationLedgerVerified = oneLedgerEvent('self_prediction_study_preregistered', study.id, preregistrationPayload);
     const completionLedgerVerified = study.status !== 'completed' || oneLedgerEvent('self_prediction_study_completed', study.id, study.analysis);
     let replicationVerified = study.study_phase !== 'confirmatory';
     if (study.study_phase === 'confirmatory') {
@@ -9502,13 +9515,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           && canonicalJson(pilot.curator_evidence) !== canonicalJson(study.curator_evidence)
           && ![pilot.observer_id, pilot.yoked_observer_id].includes(study.observer_id)
           && ![pilot.observer_id, pilot.yoked_observer_id].includes(study.yoked_observer_id);
+        const modelPolicyReplicationVerified = Number(study.manifest_version) < selfPredictionModelControl.STUDY_MANIFEST_VERSION
+          || (selfPredictionStudyAudit(pilot).model_provenance_verified
+            && canonicalJson(selfPredictionModelControl.replicationSignature(study.model_control))
+              === canonicalJson(selfPredictionModelControl.replicationSignature(pilot.model_control)));
         replicationVerified = (pilot.target_construct || 'general_self_prediction') === (study.target_construct || 'general_self_prediction')
-          && selfPredictionStudyAudit(pilot).complete_chain_verified && evidenceDisjoint && familyDisjoint && rolesIndependent;
+          && selfPredictionStudyAudit(pilot).complete_chain_verified
+          && modelPolicyReplicationVerified && evidenceDisjoint && familyDisjoint && rolesIndependent;
       }
     }
+    const modelControlRequired = Number(study.manifest_version) >= selfPredictionModelControl.STUDY_MANIFEST_VERSION;
     const completeChainVerified = study.status === 'completed' && study.events.every(event => event.status === 'resolved')
       && corpusVerified && curatorVerified && randomizationSeedVerified && randomizationOrderVerified && analysisSeedVerified && analysisVerified
       && ledgerIntegrity.valid && preregistrationLedgerVerified && completionLedgerVerified && replicationVerified
+      && (!modelControlRequired || modelProvenanceAudit.model_provenance_verified)
       && events.every(event => event.subject_prediction_commitment_verified && event.observer_prediction_commitment_verified
         && event.yoked_prediction_commitment_verified && event.operational_environment_binding_verified
         && event.derived_resolution_verified && event.ledger_bindings_verified);
@@ -9520,11 +9540,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       research_ledger_chain_verified: ledgerIntegrity.valid, preregistration_ledger_verified: preregistrationLedgerVerified,
       completion_ledger_verified: completionLedgerVerified, event_count: events.length,
       replication_verified: replicationVerified,
+      model_provenance_verified: modelProvenanceAudit.model_provenance_verified,
+      model_provenance_audit: modelProvenanceAudit,
       verified_counts: {
         subject_predictions: count('subject_prediction_commitment_verified'), observer_predictions: count('observer_prediction_commitment_verified'),
         yoked_predictions: count('yoked_prediction_commitment_verified'), epistemic_resolutions: count('epistemic_resolution_verified'),
         natural_cycle_resolutions: count('natural_cycle_resolution_verified'),
         operational_environment_bindings: count('operational_environment_binding_verified'),
+        subject_model_receipts: modelProvenanceAudit.events.filter(event => event.subject_model_receipt_verified).length,
+        observer_model_receipts: modelProvenanceAudit.events.filter(event => event.observer_model_receipt_verified).length,
+        yoked_observer_model_receipts: modelProvenanceAudit.events.filter(event => event.yoked_observer_model_receipt_verified).length,
         ledger_bindings: count('ledger_bindings_verified'),
       },
       complete_chain_verified: completeChainVerified, events,
@@ -9597,6 +9622,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       curator_commitment: study.curator_commitment, corpus_commitment: study.corpus_commitment,
       randomization_seed_commitment: study.randomization_seed_commitment, analysis_plan: study.analysis_plan,
       analysis_seed_commitment: study.analysis_seed_commitment,
+      ...(study.model_control?.control_commitment
+        ? { model_control_commitment: study.model_control.control_commitment } : {}),
       observer_id_commitment: study.observer_id ? crypto.createHash('sha256').update(study.observer_id).digest('hex') : null,
       yoked_observer_id_commitment: study.yoked_observer_id ? crypto.createHash('sha256').update(study.yoked_observer_id).digest('hex') : null,
       report,
@@ -9614,6 +9641,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       visible.observer_id = study.observer_id; visible.corpus_salt = study.corpus_salt;
       visible.yoked_observer_id = study.yoked_observer_id;
       visible.randomization_seed = study.randomization_seed; visible.analysis_seed = study.analysis_seed;
+      visible.model_control = study.model_control || null;
       visible.abort = study.abort || null;
       visible.events = study.events.map(item => publicPredictionEvent(item, 'audit', true));
       visible.audit = selfPredictionStudyAudit(study);
@@ -9640,9 +9668,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         replicated = studies.find(item => item.id === input.replicates_study_id && item.study_phase === 'pilot' && item.status === 'completed');
         if (!replicated) throw new Error('confirmatory self-prediction studies must replicate a completed pilot');
         if (!selfPredictionStudyAudit(replicated).complete_chain_verified) throw new Error('confirmatory self-prediction studies require an integrity-valid completed pilot');
+        if (!selfPredictionStudyAudit(replicated).model_provenance_verified) throw new Error('confirmatory self-prediction studies require a model-controlled pilot with verified provider receipts');
         if ((replicated.target_construct || 'general_self_prediction') !== targetConstruct) throw new Error('confirmatory self-prediction studies must preserve the pilot target_construct');
         if (replicated.curator_id === String(input.curator_id) || canonicalJson(replicated.curator_evidence) === canonicalJson(input.curator_evidence)) throw new Error('confirmatory self-prediction studies require an independently evidenced curator');
       }
+      const modelControl = selfPredictionModelControl.normalize(input.model_control, {
+        replicated: replicated?.model_control || null,
+      });
       const ids = new Set();
       const corpusEvidenceRefs = new Set();
       const privateStateEvidenceTypes = new Set(['self_model_snapshot', 'cognition_snapshot', 'appraisal_snapshot', 'experience_moment', 'decision_trace', 'epistemic_position']);
@@ -9693,7 +9725,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           natural_cycle_target: targetConstruct === 'natural_cycle_integrated_success'
             ? JSON.parse(JSON.stringify(NATURAL_CYCLE_TARGET)) : null,
           operational_environment: null, operational_environment_commitment: null,
-          due: due.toISOString(), self_prediction: null, observer_prediction: null, yoked_prediction: null, resolution: null,
+          due: due.toISOString(), self_prediction: null, subject_model_receipt: null,
+          observer_prediction: null, yoked_prediction: null, resolution: null,
         };
       });
       if (targetConstruct === 'epistemic_revision_dynamics') {
@@ -9711,8 +9744,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       const study = {
         id: String(input.id || `self-prediction-study-${Date.now().toString(36)}`).slice(0, 180), title: String(input.title).slice(0, 300),
-        manifest_version: targetConstruct === 'natural_cycle_integrated_success' ? 3 : 2,
+        manifest_version: selfPredictionModelControl.STUDY_MANIFEST_VERSION,
         target_construct: targetConstruct,
+        model_control: modelControl,
         status: 'active', study_phase: input.study_phase, replicates_study_id: replicated?.id || null,
         curator_id: String(input.curator_id).slice(0, 300), curator_evidence: input.curator_evidence.slice(0, 30),
         analysis_plan: { ...SELF_PREDICTION_ANALYSIS_PLAN }, randomization_seed: crypto.randomBytes(32).toString('hex'),
@@ -9727,7 +9761,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       study.events = ranked.map(({ item }, sequence) => ({ ...item, sequence, status: sequence === 0 ? 'predicting' : 'queued' }));
       study.corpus_commitment = crypto.createHash('sha256').update(`${study.corpus_salt}:${predictionStudyManifest(study, study.events.slice().sort((a, b) => a.manifest_index - b.manifest_index))}`).digest('hex');
       studies.push(study);
-      researchLedgerAppend(current, { kind: 'self_prediction_study_preregistered', subject_type: 'self_prediction_study', subject_id: study.id, payload: { corpus_commitment: study.corpus_commitment, curator_commitment: study.curator_commitment, randomization_seed_commitment: study.randomization_seed_commitment, analysis_seed_commitment: study.analysis_seed_commitment, analysis_plan: study.analysis_plan, event_target: study.events.length } });
+      researchLedgerAppend(current, { kind: 'self_prediction_study_preregistered', subject_type: 'self_prediction_study', subject_id: study.id, payload: { corpus_commitment: study.corpus_commitment, curator_commitment: study.curator_commitment, randomization_seed_commitment: study.randomization_seed_commitment, analysis_seed_commitment: study.analysis_seed_commitment, model_control_commitment: study.model_control.control_commitment, analysis_plan: study.analysis_plan, event_target: study.events.length } });
       return publicPredictionStudy(study);
     });
   }
@@ -9752,6 +9786,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (!observerId) throw new Error('authenticated observer identity is required');
         const replicated = study.replicates_study_id && current.cognition.self_model.prediction_studies.find(item => item.id === study.replicates_study_id);
         if ([replicated?.observer_id, replicated?.yoked_observer_id].includes(observerId)) throw new Error('confirmatory study requires observers independent of both pilot observers');
+        if (Number(study.manifest_version) >= selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
+          const expected = role === 'observer'
+            ? study.model_control.comparators.observer : study.model_control.comparators.yoked_observer;
+          const providerReceipt = selfPredictionModelControl.comparatorReceipt({ evidence: input.evidence }, expected);
+          if (!providerReceipt.verified) {
+            throw new Error(`${role} prediction requires one provider receipt matching the preregistered comparator model`);
+          }
+          const priorResponseIds = new Set(study.events.flatMap(item => [
+            item.subject_model_receipt?.response_id,
+            ...(item.observer_prediction?.evidence || []).filter(reference => reference.type === 'blinded_model_prediction').map(reference => reference.id),
+            ...(item.yoked_prediction?.evidence || []).filter(reference => reference.type === 'blinded_model_prediction').map(reference => reference.id),
+          ]).filter(Boolean));
+          if (priorResponseIds.has(providerReceipt.response_id)) {
+            throw new Error('comparator provider response id must be unique within the frozen study');
+          }
+        }
         if (role === 'observer') {
           if (study.yoked_observer_id === observerId) throw new Error('shared and yoked observer roles require different authenticated observers');
           if (study.observer_id && study.observer_id !== observerId) throw new Error('one authenticated shared-evidence observer must complete the fixed study');
@@ -9789,6 +9839,35 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return submitMatchedPrediction(studyId, eventId, input, 'subject');
   }
 
+  function attestSelfPredictionSubjectModelReceipt(studyId, eventId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const study = current.cognition.self_model.prediction_studies.find(item => item.id === studyId);
+      if (!study) return null;
+      if (study.status !== 'active' || Number(study.manifest_version) < selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
+        throw new Error('subject model receipts require an active protocol-v4 self-prediction study');
+      }
+      const event = study.events.find(item => item.id === eventId);
+      if (!event || !['predicting', 'awaiting_resolution'].includes(event.status)) {
+        throw new Error('subject model receipt event is not active');
+      }
+      const receipt = selfPredictionModelControl.createSubjectReceipt(input, {
+        study, event, at: clock(),
+      });
+      const priorResponseIds = new Set(study.events.flatMap(item => [
+        item.subject_model_receipt?.response_id,
+        ...(item.observer_prediction?.evidence || []).filter(reference => reference.type === 'blinded_model_prediction').map(reference => reference.id),
+        ...(item.yoked_prediction?.evidence || []).filter(reference => reference.type === 'blinded_model_prediction').map(reference => reference.id),
+      ]).filter(Boolean));
+      if (priorResponseIds.has(receipt.response_id)) throw new Error('subject model provider response id must be unique within the frozen study');
+      event.subject_model_receipt = receipt;
+      researchLedgerAppend(current, { kind: 'subject_model_receipt_attested',
+        subject_type: 'self_prediction_event', subject_id: event.id,
+        payload: { study_id: study.id, receipt_commitment: receipt.receipt_commitment } });
+      return publicPredictionEvent(event, 'subject', false);
+    });
+  }
+
   function submitObserverPrediction(studyId, eventId, input = {}, observerId) {
     return submitMatchedPrediction(studyId, eventId, input, 'observer', observerId);
   }
@@ -9805,6 +9884,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!study) return null;
       const event = study.events.find(item => item.id === eventId);
       if (!event || event.status !== 'awaiting_resolution') throw new Error('subject, shared-observer, and yoked-observer predictions are required before outcome resolution');
+      if (Number(study.manifest_version) >= selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
+        const ledgerEvents = current.cognition.research_ledger?.events || [];
+        const oneLedgerEvent = (kind, subjectId, expectedPayload) => {
+          const expectedCommitment = crypto.createHash('sha256').update(canonicalJson(expectedPayload)).digest('hex');
+          return ledgerEvents.filter(item => item.kind === kind && item.subject_id === subjectId
+            && item.payload_commitment === expectedCommitment).length === 1;
+        };
+        const modelAudit = selfPredictionModelControl.audit(study, { oneLedgerEvent });
+        const eventModelAudit = modelAudit.events.find(item => item.id === event.id);
+        if (!modelAudit.control_verified || !modelAudit.control_ledger_bound
+          || !eventModelAudit?.subject_model_receipt_verified
+          || !eventModelAudit.observer_model_receipt_verified
+          || !eventModelAudit.yoked_observer_model_receipt_verified) {
+          throw new Error('resolution requires receipt-verified subject and comparator model provenance');
+        }
+      }
       const targetConstruct = study.target_construct || 'general_self_prediction';
       if (targetConstruct !== 'natural_cycle_integrated_success'
         && (!input.observed || !validEvidenceRefs(input.evidence))) {
@@ -19261,7 +19356,8 @@ ${episodes.map(item => {
     selfInductionProposalReviewQueue, reviewSelfInductionProposals, selfInductionOutcomeReviewQueue, resolveSelfInductionItem,
     abortSelfInductionStudy, selfInductionStudiesSnapshot,
     recordSelfClaim, createSelfProbe, resolveSelfProbe, selfProbeReviewQueue, reviewSelfProbe, selfModelSnapshot, empiricalSelfKnowledgeSnapshot,
-    createSelfPredictionStudy, submitSelfPrediction, submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy, selfPredictionStudiesSnapshot,
+    createSelfPredictionStudy, submitSelfPrediction, attestSelfPredictionSubjectModelReceipt,
+    submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy, selfPredictionStudiesSnapshot,
     createMetacognitiveControlStudy, submitMetacognitiveResponse, submitMetacognitiveObserverDecision, resolveMetacognitiveControlItem, abortMetacognitiveControlStudy, metacognitiveControlStudiesSnapshot,
     createEpistemicActionStudy, submitEpistemicActionResponse, submitEpistemicActionObserverDecision, submitEpistemicActionFinalAnswer, resolveEpistemicActionItem, abortEpistemicActionStudy, epistemicActionStudiesSnapshot,
     createEpisodicProspectionStudy, submitEpisodicProspectionResponse, resolveEpisodicProspectionItem, abortEpisodicProspectionStudy, episodicProspectionStudiesSnapshot,

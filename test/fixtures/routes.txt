@@ -152,6 +152,7 @@ GET /self-model/prediction-studies/:id/subject-queue
 GET /self-model/prediction-studies/:id/observer-queue
 GET /self-model/prediction-studies/:id/yoked-observer-queue
 POST /self-model/prediction-studies/:id/events/:eventId/self-prediction
+POST /self-model/prediction-studies/:id/events/:eventId/subject-model-receipt
 POST /self-model/prediction-studies/:id/events/:eventId/observer-prediction
 POST /self-model/prediction-studies/:id/events/:eventId/yoked-observer-prediction
 POST /self-model/prediction-studies/:id/events/:eventId/resolve

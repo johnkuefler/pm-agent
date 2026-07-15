@@ -151,7 +151,7 @@ function forecastSubmission(event, response, { role, model = DEFAULT_MODEL } = {
     rationale,
     evidence: [{
       type: 'blinded_model_prediction', id: responseId,
-      model: responseModel, evaluator_id: EVALUATOR_IDS[role], role,
+      provider: 'anthropic', model: responseModel, evaluator_id: EVALUATOR_IDS[role], role,
       protocol_version: PROTOCOL_VERSION,
       prompt_protocol_commitment: built.manifest.prompt_protocol_commitment,
       packet_commitment: built.manifest.packet_commitment,

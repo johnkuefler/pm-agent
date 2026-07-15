@@ -146,7 +146,7 @@ test('tampered future simulations fail audit and cannot enter attention', async 
 
 test('selected future-self simulation causally improves planning beyond exact source records and absence', async () => {
   const { store, dir, filePath, simulations, advanceMinutes } = await causalSetup();
-  assert.equal(store.snapshot().version, 94);
+  assert.equal(store.snapshot().version, 95);
   assert.equal(store.constructiveProspectionAccessAvailable(), true);
   const design = {
     hypothesis: 'Access to an episode-grounded constructed future-self simulation improves prospective planning and later prediction beyond exact source records and absence.',

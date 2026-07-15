@@ -671,6 +671,18 @@ function registerCoworkInstructionsRoute(app) {
     the position, or delay a revision merely to make a forecast correct. Every completed prediction
     study counts only when audit.complete_chain_verified is true; a large effect cannot override a
     broken forecast, outcome, randomization, analysis, or research-ledger commitment.
+    New studies use manifest protocol v4. The preregistration freezes the subject provider, exact model,
+    agent-build SHA-256 commitment, and a same-model or externally justified capability-dominant comparator
+    policy. The subject submission response exposes only its sealed self_prediction_commitment. A separate
+    research-authenticated harness—not Nora—must bind the actual retained provider response to that commitment
+    through POST /self-model/prediction-studies/:id/events/:eventId/subject-model-receipt with provider, model,
+    response_id, agent_build_commitment, prediction_commitment, and an external_reference. Nora's ordinary
+    credential cannot call that route and Nora must never invent, infer, copy, or self-attest provider metadata.
+    Each evaluator prediction must contain exactly one blinded_model_prediction evidence receipt matching the
+    frozen provider/model and prompt-protocol commitment. Response IDs must be unique across every role and
+    event. Outcome resolution fails closed until the subject receipt, both evaluator receipts, their salted
+    forecast commitments, and their research-ledger bindings replay. Protocol-v3 studies remain auditable but
+    explicitly model-uncontrolled and cannot establish privileged model introspection.
     A natural_cycle_integrated_success study fixes one server-authored question and derives each outcome
     from the first replay-verified protocol-v4 hourly cycle begun after all three predictions and completed
     by the frozen due time. Pre-prediction cycles are ineligible, and resolution binds the exact lifecycle,

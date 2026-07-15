@@ -60,7 +60,7 @@ test('production runtime applies the current Claude adaptive-thinking API contra
 
 test('production reasoning regulation varies only provider reasoning controls and remains replay-auditable', async () => {
   const { store, dir, filePath } = await setup();
-  assert.equal(store.snapshot().version, 94);
+  assert.equal(store.snapshot().version, 95);
   assert.deepEqual(protocol.requestConfig('adaptive_high'), {
     thinking: { type: 'adaptive', display: 'omitted' }, output_config: { effort: 'high' },
   });

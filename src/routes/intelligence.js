@@ -782,6 +782,13 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, event });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
+  app.post('/self-model/prediction-studies/:id/events/:eventId/subject-model-receipt', requireResearchAuth, (req, res) => {
+    try {
+      const event = store.attestSelfPredictionSubjectModelReceipt(req.params.id, req.params.eventId, req.body || {});
+      if (!event) return res.status(404).json({ error: 'self-prediction study not found' });
+      res.json({ ok: true, event });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.post('/self-model/prediction-studies/:id/events/:eventId/observer-prediction', requireEvaluatorAuth, (req, res) => {
     try {
       const event = store.submitObserverPrediction(req.params.id, req.params.eventId, req.body || {}, req.evaluatorId);

@@ -8,6 +8,7 @@ const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
 const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
 const store = fs.readFileSync(path.join(root, 'src/intelligence/store.js'), 'utf8');
 const routes = fs.readFileSync(path.join(root, 'src/routes/intelligence.js'), 'utf8');
+const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
 
 test('autonomic loop spans orientation, continuity, judgment, evidence, and closure', () => {
   assert.match(routine, /Step 0\.5: Start the Intelligence Cycle/);
@@ -85,6 +86,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Bayesian belief update/);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);
+  assert.match(routes, /prediction-studies\/:id\/events\/:eventId\/subject-model-receipt'[\s\S]*requireResearchAuth/);
+  assert.match(cowork, /manifest protocol v4[\s\S]*agent-build SHA-256 commitment/);
+  assert.match(cowork, /separate\s+research-authenticated harness.not Nora[\s\S]*subject-model-receipt/);
+  assert.match(cowork, /Nora must never invent, infer, copy, or self-attest provider metadata/);
   assert.match(routes, /awaiting_subject_prediction/);
   assert.match(routine, /Step 0\.75: Consume the Subject Research Inbox/);
   assert.match(routine, /mandatory checkpoint on every ordinary run/);

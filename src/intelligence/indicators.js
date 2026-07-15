@@ -1030,7 +1030,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       status: identityPredictionStatus,
       evidence: { completed_pilots: completedSelfPredictionStudies.filter(item => item.study_phase === 'pilot').length, completed_model_controlled: modelControlledSelfPredictionStudies.length, completed_model_uncontrolled: completedSelfPredictionStudies.length - modelControlledSelfPredictionStudies.length, completed_confirmatory: confirmatorySelfPredictionStudies.length, completed_invalid_audits: allCompletedSelfPredictionStudies.length - completedSelfPredictionStudies.length, latest_study_id: latestPredictionStudy?.id || null, latest_analysis: latestPredictionStudy?.analysis || null },
       falsifier: 'Nora beats only the information-poor observer, fails to outperform the information-equivalent yoked observer, or the subject/comparator model provenance is not frozen and receipt-verified; those patterns cannot distinguish input or model-capability advantage from privileged self-access.',
-      next_gate: 'Add receipt-verified subject-model provenance and a same-model or externally justified capability-dominant comparator policy, then complete a five-event pilot and source-disjoint twenty-event confirmation with a different curator and two new authenticated observers.',
+      next_gate: 'Run a manifest-v4 five-event pilot with receipt-verified subject provenance and a preregistered same-model or externally justified capability-dominant comparator policy, then complete a source-disjoint twenty-event confirmation with a different curator, two new authenticated observers, and new provider receipts.',
     },
     {
       id: 'prospective_epistemic_self_dynamics', family: ['self-model', 'metacognition', 'error-driven learning', 'temporal integration'],
@@ -1066,7 +1066,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         latest_analysis: latestNaturalCyclePredictionStudy?.analysis || null,
       },
       falsifier: 'Nora fails to outperform the information-equivalent identity-stripped observer, subject/comparator model provenance is not receipt-verified, source selection can occur after seeing outcomes, truth requires a discretionary label, or the effect fails source-disjoint confirmation.',
-      next_gate: 'Complete the feasibility pilot, add receipt-verified subject-model provenance and a same-model or capability-dominant comparator policy, then run a source-disjoint twenty-event confirmation with a different curator and two new observers.',
+      next_gate: 'Preserve the protocol-v3 feasibility result, then run a new manifest-v4 five-event natural-cycle pilot with receipt-verified subject provenance and a preregistered same-model or capability-dominant comparator policy before a source-disjoint twenty-event confirmation with a different curator, two new observers, and new provider receipts.',
     },
     {
       id: 'causal_epistemic_self_history_access', family: ['self-model', 'metacognition', 'causal access', 'temporal integration'],

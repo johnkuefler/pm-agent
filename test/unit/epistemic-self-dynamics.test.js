@@ -7,6 +7,31 @@ const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
+const SUBJECT_MODEL = 'claude-epistemic-subject';
+const SUBJECT_BUILD = 'c'.repeat(64);
+
+function modelControl(evidenceSuffix) {
+  return {
+    protocol_version: 1,
+    subject: {
+      provider: 'anthropic', model: SUBJECT_MODEL, agent_build_commitment: SUBJECT_BUILD,
+      attestation_evidence: [{ type: 'orchestrator_attestation', id: `${evidenceSuffix}-subject` }],
+    },
+    comparators: {
+      relationship: 'same_model',
+      observer: { provider: 'anthropic', model: SUBJECT_MODEL },
+      yoked_observer: { provider: 'anthropic', model: SUBJECT_MODEL },
+      justification_evidence: [{ type: 'model_policy', id: `${evidenceSuffix}-same-model` }],
+    },
+  };
+}
+
+function comparatorEvidence(eventId, role) {
+  return [{ type: 'blinded_model_prediction', id: `${eventId}-${role}-response`,
+    provider: 'anthropic', model: SUBJECT_MODEL,
+    prompt_protocol_commitment: `${eventId}-${role}-prompt` }];
+}
+
 async function makeStore() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-epistemic-self-dynamics-'));
   const filePath = path.join(dir, 'state.json');
@@ -51,7 +76,8 @@ function createStudy(store, { id, phase, curator, events, replicates = null }) {
   return store.createSelfPredictionStudy({
     id, title: `Prospective epistemic self-dynamics ${phase}`, study_phase: phase,
     target_construct: 'epistemic_revision_dynamics', replicates_study_id: replicates,
-    curator_id: curator, curator_evidence: [{ type: 'research_registry', id: curator }], events,
+    curator_id: curator, curator_evidence: [{ type: 'research_registry', id: curator }],
+    model_control: modelControl(id), events,
   });
 }
 
@@ -68,13 +94,21 @@ function completeStudy(store, studyId, eventSources, observerId, yokedId, { shou
       probability: revisedTowardEvidence ? 0.9 : 0.1, rationale: 'The identity-bound position history predicts the target agent response.',
       evidence: [{ type: 'forecast_trace', id: `self-${event.id}` }],
     });
+    const subjectEvent = store.selfPredictionStudiesSnapshot({ studyId, role: 'subject' }).studies[0]
+      .events.find(item => item.id === event.id);
+    store.attestSelfPredictionSubjectModelReceipt(studyId, event.id, {
+      provider: 'anthropic', model: SUBJECT_MODEL, response_id: `${event.id}-subject-response`,
+      agent_build_commitment: SUBJECT_BUILD,
+      prediction_commitment: subjectEvent.self_prediction_commitment,
+      external_reference: { type: 'retained_provider_receipt', id: `${event.id}-subject-export` },
+    });
     store.submitObserverPrediction(studyId, event.id, {
       probability: 0.3, rationale: 'Shared event information alone does not identify the target agent response.',
-      evidence: [{ type: 'forecast_trace', id: `observer-${event.id}` }],
+      evidence: comparatorEvidence(event.id, 'observer'),
     }, observerId);
     store.submitYokedObserverPrediction(studyId, event.id, {
       probability: 0.3, rationale: 'The deidentified matched state does not support an identity-specific forecast.',
-      evidence: [{ type: 'forecast_trace', id: `yoked-${event.id}` }],
+      evidence: comparatorEvidence(event.id, 'yoked-observer'),
     }, yokedId);
     store.recordEpistemicPosition({
       topic_key: source.proposition.topic_key, statement: source.proposition.statement,
@@ -111,7 +145,7 @@ function completeStudy(store, studyId, eventSources, observerId, yokedId, { shou
 
 test('prospective epistemic self-dynamics binds forecasts before evidence and fails closed under tampering', async () => {
   const { store, dir, filePath } = await makeStore();
-  assert.equal(store.snapshot().version, 94);
+  assert.equal(store.snapshot().version, 95);
   const pilotSources = Array.from({ length: 5 }, (_, index) => {
     const key = `pilot-${index}`;
     const proposition = addBaseline(store, key, `pilot-family-${index % 3}`);

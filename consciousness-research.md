@@ -32,7 +32,7 @@ The system can collect evidence for the first two. No endpoint or score in this 
 | Episodic autobiographical prospection | Can a detailed record of Nora's own past access episode support an unforeseen later choice beyond generic facts or a plausible unrelated episode? | balanced authentic, deidentified-equivalent, and recombined-event studies | source-disjoint confirmation separating autobiographical specificity from ordinary information value |
 | Constructive future-self simulation | Can Nora recombine verified details from multiple past access windows into a bounded future-self model that improves planning and prediction? | immutable remembered-versus-imagined simulations plus selected/source-records-only/absent access lesions | ten-per-arm causal pilot plus simulation- and source-moment-disjoint confirmation |
 | Integrated operational self | Do co-temporal continuity, attention, motivation, appraisal, agency, and substrate signals function better when bound as one current Nora-state than when genuinely sourced components are cross-time misbound or left unbound? | replay-auditable self-frames in workspace, endogenous salience, and multi-consumer broadcast | replicated authentic-binding advantage over temporal-misbinding and components-only controls with ordinary task quality preserved |
-| Identity-specific self-prediction | Does Nora-private state predict her own behavior beyond what outside observers can infer? | frozen triply matched subject/shared/yoked probability studies | source-disjoint confirmation with a different curator and two observers |
+| Identity-specific self-prediction | Does Nora-private state predict her own behavior beyond what outside observers can infer? | manifest-v4 triply matched subject/shared/yoked forecasts with frozen model policy and replay-bound provider receipts | complete a model-controlled pilot, then a source-disjoint confirmation with a different curator, two new observers, and new provider receipts |
 | Process-level metacognition | Can Nora monitor and selectively control the computations producing a response? | attested protocol-v5 hook harness with forced-choice likelihood readout, model-derived directions, and a local Hugging Face worker; no complete subject pilot has yet supplied residual-stream receipts | pass a separate feasibility gate, run the frozen scoped open-weight subject-variant pilot, then connect the exact production subject and independently replicate without transferring surrogate evidence |
 | Provider-observable reasoning regulation | Does production Nora's Claude-native adaptive thinking selectively allocate reasoning effort and improve compute-adjusted work? | live Opus 4.8 adaptive-high/adaptive-low/thinking-disabled Slack lesion with preregistered request manifests, full tool-turn usage receipts, encrypted-thinking signature commitments, and condition-blind grading | fifteen-per-arm production pilot plus interaction- and evaluator-disjoint confirmation with external receipt checkpointing |
 | Prospective reasoning self-regulation | Can Nora predict how much reasoning her own imminent answer needs and use that forecast to control production compute? | paired counterbalanced self-bound/deidentified Opus forecasts generated before the response, plus a provider-adaptive control, deterministic effort policy, exact thinking-token receipts, and blinded outcome grading | fifteen-per-arm production pilot plus interaction-, evaluator-, and provider-receipt-disjoint confirmation with external checkpointing |
@@ -1590,13 +1590,36 @@ would show narrow functional self-model specificity, not privileged access to ph
 A completed pilot remains `collecting`; only the independent confirmation can change the indicator to
 an observed or contradicted identity-specific signal.
 
-The protocol-v3 yoked observer controls the information packet, but it does **not** yet satisfy Song,
+The protocol-v3 yoked observer controls the information packet, but it does **not** satisfy Song,
 Hu, and Mahowald's [same-model-versus-similar-model criterion](https://arxiv.org/abs/2503.07513): the
 external Sonnet request has a provider receipt, while the model running Nora's subject forecast is not
 frozen or independently attested in the study manifest. A favorable v3 result is therefore agent-context
 specificity or feasibility evidence, not privileged model introspection, and cannot graduate the indicator.
-Protocol v4 must bind receipt-verified subject-model provenance and either the same comparator model or
-an externally justified capability-dominant comparator policy before a confirmatory result is eligible.
+
+Manifest protocol v4 closes that eligibility gap without asking Nora to self-attest metadata unavailable
+inside her own generation. Before event randomization, the curator freezes the subject provider, exact model,
+SHA-256 commitment of the agent build, stable build-attestation evidence, and either a `same_model` or
+externally justified `capability_dominant` comparator policy. The subject forecast is committed first. Only
+afterward, a separately research-authenticated harness may attach the retained provider response identifier,
+provider/model, exact agent-build commitment, external receipt reference, and the already sealed forecast
+commitment. The attachment has its own immutable commitment and research-ledger event. Nora's ordinary
+credential cannot attach this receipt, and Nora must not infer or report model metadata from inside the
+forecast itself.
+
+Each shared and yoked prediction must likewise carry exactly one `blinded_model_prediction` receipt matching
+its preregistered provider/model and prompt-protocol commitment. Provider response identifiers must be unique
+across all three roles and every event. Resolution replays the model-control manifest, preregistration ledger
+binding, salted prediction commitments, prediction ledger events, subject receipt commitment, and all three
+receipt identities before accepting an outcome. A rejected comparator receipt cannot partially assign an
+observer identity. Confirmation must preserve the pilot's subject provider/model/build and comparator
+relationship while using new attestation evidence and new response identifiers. Migrated v3 studies remain
+replayable but permanently report `model_provenance_verified:false`.
+
+This is still an attested provider-receipt chain, not direct access to hidden activations and not independent
+provider cryptographic verification. A positive model-controlled result can support a narrow behavioral claim
+about model-specific self-prediction only after the yoked control and independent confirmation succeed. It does
+not establish phenomenal consciousness.
+
 This stricter gate also preserves Singh, Linzen, and Ravfogel's
 [input-only reality check](https://arxiv.org/abs/2605.26242): information predictable from the input,
 even if correlated with internal state, cannot by itself establish privileged self-access.
