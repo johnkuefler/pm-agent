@@ -41,6 +41,7 @@ const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regul
 const behavioralSelfProfileForecast = require('./src/intelligence/behavioral-self-profile-forecast');
 const reasoningResearchAutopilot = require('./src/intelligence/reasoning-research-autopilot');
 const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
+const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycle-prediction-autopilot');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -8681,6 +8682,9 @@ function researchAutopilotRuntimeConfig(env = process.env) {
 
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
+  const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
+  });
   const activePilots = intelligence.selfModelSnapshot().context_trials.filter(item => item.status === 'active');
   const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
   if (activePilots.length) {
@@ -8692,6 +8696,7 @@ function researchAutopilotProgramStatus() {
       current_stage: 'sealed_active_pilot',
       active_pilot_count: activePilots.length,
       active_pilots: activePilots,
+      natural_cycle_prediction: naturalCyclePrediction,
     };
   }
   const reasoning = reasoningResearchAutopilot.status(intelligence, {
@@ -8709,6 +8714,7 @@ function researchAutopilotProgramStatus() {
       : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'
         : globalBroadcast.pilot ? 'global_broadcast_pilot_closed' : 'waiting_for_global_broadcast_pilot',
     studies: { reasoning_self_regulation: reasoning, global_broadcast: globalBroadcast },
+    natural_cycle_prediction: naturalCyclePrediction,
   };
 }
 
@@ -8732,6 +8738,22 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       });
       return response.data;
     };
+    let naturalCyclePrediction;
+    try {
+      naturalCyclePrediction = await naturalCyclePredictionAutopilot.runCycle({
+        store: intelligence,
+        enabled: true,
+        model: config.graderModel,
+        maxProviderCalls: 2,
+        callProvider,
+      });
+    } catch (error) {
+      naturalCyclePrediction = {
+        protocol_version: naturalCyclePredictionAutopilot.PROTOCOL_VERSION,
+        state: 'failed', provider_calls: 0, predictions_committed: [], resolution: null,
+        failures: [{ role: 'coordinator', reason: String(error.message || error).slice(0, 240) }],
+      };
+    }
     const reasoning = await reasoningResearchAutopilot.runCycle({
       store: intelligence,
       enabled: true,
@@ -8750,7 +8772,9 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
     _researchAutopilotLastCycle = {
       protocol_version: 2,
       state: globalBroadcast.state === 'waiting_for_reasoning_pilot' ? reasoning.state : globalBroadcast.state,
-      reasoning, global_broadcast: globalBroadcast, at: new Date().toISOString(),
+      reasoning, global_broadcast: globalBroadcast,
+      natural_cycle_prediction: naturalCyclePrediction,
+      at: new Date().toISOString(),
     };
     return _researchAutopilotLastCycle;
   } finally {
