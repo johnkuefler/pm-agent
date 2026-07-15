@@ -7078,6 +7078,86 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function cognitivePulseFailureCode(pulse) {
+    if (!pulse) return null;
+    if (pulse.status === 'deferred') return 'endogenously_deferred';
+    if (!['failed', 'rejected'].includes(pulse.status)) return null;
+    const reason = String(pulse.failure?.reason || '').toLowerCase();
+    if (/timed?\s*out|timeout|aborted|econn|socket|network|fetch failed/.test(reason)) {
+      return 'provider_transport_failure';
+    }
+    if (/unauthorized|forbidden|authentication|api key|status code 40[13]/.test(reason)) {
+      return 'provider_authentication_failure';
+    }
+    if (pulse.status === 'rejected'
+      || /pulse output|json|unsupported|requires|uncertainty|cites evidence|outside.*packet/.test(reason)) {
+      return 'output_validation_failure';
+    }
+    return 'provider_or_runtime_failure';
+  }
+
+  function cognitivePulseRuntimeDiagnostics() {
+    const inference = state.cognition.background_inference;
+    const pulses = inference.pulses || [];
+    const statusCounts = { accepted: 0, deferred: 0, rejected: 0, failed: 0 };
+    const protocolCounts = {};
+    const auditCache = new Map();
+    let replayVerifiedAccepted = 0;
+    for (const pulse of pulses) {
+      if (Object.hasOwn(statusCounts, pulse.status)) statusCounts[pulse.status]++;
+      const protocolVersion = Number(pulse.input_packet?.constraints?.protocol_version) || 1;
+      protocolCounts[String(protocolVersion)] = (protocolCounts[String(protocolVersion)] || 0) + 1;
+      if (pulse.status === 'accepted'
+        && cognitivePulseAudit(pulse, new Set(), auditCache).complete_chain_verified) {
+        replayVerifiedAccepted++;
+      }
+    }
+    const initiations = inference.initiation_records || [];
+    const verifiedInitiations = initiations.filter(record => cognitiveInitiationAudit(record).complete_chain_verified);
+    const latest = pulses.at(-1) || null;
+    const latestAudit = latest ? cognitivePulseAudit(latest, new Set(), auditCache) : null;
+    const pending = inference.pending || null;
+    return {
+      protocol_version: 1,
+      content_and_experimental_conditions_sealed: true,
+      attempts_total: pulses.length,
+      status_counts: statusCounts,
+      protocol_counts: protocolCounts,
+      replay_verified_accepted: replayVerifiedAccepted,
+      initiation: {
+        records_total: initiations.length,
+        replay_verified_applied: verifiedInitiations.length,
+      },
+      latest_attempt: latest ? {
+        status: latest.status,
+        protocol_version: Number(latest.input_packet?.constraints?.protocol_version) || 1,
+        requested_at: latest.requested_at || null,
+        completed_at: latest.completed_at || null,
+        failure_code: cognitivePulseFailureCode(latest),
+        audit: {
+          input_commitment_verified: latestAudit.input_commitment_verified === true,
+          output_commitment_verified: latestAudit.output_commitment_verified === true,
+          references_verified: latestAudit.references_verified === true,
+          predecessor_verified: latestAudit.predecessor_verified !== false,
+          chain_commitment_verified: latestAudit.chain_commitment_verified !== false,
+          complete_chain_verified: latestAudit.complete_chain_verified === true,
+        },
+      } : null,
+      pending: {
+        present: Boolean(pending),
+        protocol_version: pending
+          ? Number(pending.input_packet?.constraints?.protocol_version) || 1 : null,
+        requested_at: pending?.requested_at || null,
+      },
+      scheduler: {
+        last_attempt_at: inference.last_attempt || null,
+        last_accepted_at: inference.last_accepted || null,
+        suppressed_until: inference.suppressed_until || null,
+      },
+      interpretation: 'Condition-agnostic runtime metadata only. No semantic pulse content, identity binding, provider payload, or experimental assignment is exposed.',
+    };
+  }
+
   function cognitivePulseSnapshot({ includePending = false } = {}) {
     if (selfInquirySelectionActive() || state.cognition.cognitive_initiation_studies.some(item => item.status === 'active') || state.cognition.self_model.context_trials.some(item => item.status === 'active')) return {
       epistemic_status: 'Cognitive-pulse records are sealed while a blinded intervention could be unblinded through pulse-derived self-model content.',
@@ -19485,7 +19565,8 @@ ${episodes.map(item => {
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,
-    recordCognitivePulseResult, recordCognitivePulseFailure, resolveCognitivePulse, cognitivePulseSnapshot,
+    recordCognitivePulseResult, recordCognitivePulseFailure, resolveCognitivePulse,
+    cognitivePulseSnapshot, cognitivePulseRuntimeDiagnostics,
     cognitiveSelfRegulationSnapshot, cognitiveSelfRegulationAudit,
     createCognitiveSelfRegulationStudy, cognitiveSelfRegulationStudyForecastQueue,
     cognitiveSelfRegulationStudyEvaluatorQueue, gradeCognitiveSelfRegulationStudyItem,

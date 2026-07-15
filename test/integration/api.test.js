@@ -513,6 +513,11 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(researchStatus.body.no_composite_score, true);
   assert.ok(['mechanism_present', 'collecting'].includes(researchStatus.body.indicators.find(item => item.id === 'multi_consumer_global_broadcast').status));
   assert.equal(Object.hasOwn(researchStatus.body, 'score'), false);
+  const pulseRuntime = await request('/cognitive-pulses/runtime');
+  assert.equal(pulseRuntime.body.diagnostics.content_and_experimental_conditions_sealed, true);
+  assert.equal(typeof pulseRuntime.body.diagnostics.status_counts.accepted, 'number');
+  assert.doesNotMatch(JSON.stringify(pulseRuntime.body.diagnostics),
+    /focus_refs|private_state_context|provider_response_id|experimental_assignment/);
   const regulationStudies = await request('/cognitive-self-regulation-studies');
   assert.deepEqual(regulationStudies.body.studies, []);
   assert.equal((await request('/cognitive-self-regulation-studies', { method: 'POST', body: {

@@ -175,7 +175,10 @@ registerIntelligenceRoutes(app, {
     runSelfInductionSubject: runSelfInductionSubjectRuntime,
     runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,
     runCognitiveInitiationPolicyProbe: runCognitiveInitiationPolicyProbeRuntime,
-    getCognitivePulseRuntimeStatus: () => cognitivePulseRuntimeConfig(),
+    getCognitivePulseRuntimeStatus: () => ({
+      ...cognitivePulseRuntimeConfig(),
+      diagnostics: intelligence.cognitivePulseRuntimeDiagnostics(),
+    }),
     getResearchAutopilotStatus: () => researchAutopilotProgramStatus(),
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: currentCognitiveInputs,

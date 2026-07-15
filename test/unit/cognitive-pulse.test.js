@@ -90,6 +90,41 @@ test('pulse scheduling enforces interval, daily budget, active-study isolation, 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('runtime diagnostics expose replay and failure metadata without sealed pulse content', async () => {
+  const acceptedFixture = await setup();
+  const prepared = acceptedFixture.store.prepareCognitivePulse({ model: 'test-model', force: true });
+  acceptedFixture.store.recordCognitivePulseResult(prepared.pulse.id, {
+    input_commitment: prepared.pulse.input_commitment,
+    output: validOutput(prepared.pulse.input_packet),
+    response_id: 'diagnostic-provider-response', model: 'test-model',
+  });
+  const accepted = acceptedFixture.store.cognitivePulseRuntimeDiagnostics();
+  assert.equal(accepted.attempts_total, 1);
+  assert.equal(accepted.status_counts.accepted, 1);
+  assert.equal(accepted.protocol_counts['5'], 1);
+  assert.equal(accepted.replay_verified_accepted, 1);
+  assert.equal(accepted.latest_attempt.audit.complete_chain_verified, true);
+  assert.equal(accepted.latest_attempt.failure_code, null);
+  const acceptedJson = JSON.stringify(accepted);
+  assert.doesNotMatch(acceptedJson, /accessibility result|diagnostic-provider-response|hypothesis|focus_refs/);
+  fs.rmSync(acceptedFixture.dir, { recursive: true, force: true });
+
+  const failedFixture = await setup();
+  const failedPrepared = failedFixture.store.prepareCognitivePulse({ model: 'test-model', force: true });
+  failedFixture.store.recordCognitivePulseFailure(failedPrepared.pulse.id, {
+    rejected: true,
+    reason: 'pulse output requires a cited evidence reference from its committed packet',
+  });
+  const failed = failedFixture.store.cognitivePulseRuntimeDiagnostics();
+  assert.equal(failed.status_counts.rejected, 1);
+  assert.equal(failed.replay_verified_accepted, 0);
+  assert.equal(failed.latest_attempt.failure_code, 'output_validation_failure');
+  assert.equal(failed.pending.present, false);
+  assert.doesNotMatch(JSON.stringify(failed), /cited evidence reference|committed packet/,
+    'raw validation errors remain sealed');
+  fs.rmSync(failedFixture.dir, { recursive: true, force: true });
+});
+
 test('linked pulses commit evidence-sensitive predecessor transitions into a replayable chain', async () => {
   const { dir, store, setNow } = await setup();
   const accepted = [];
