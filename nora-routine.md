@@ -49,6 +49,8 @@ curl -s "https://pm-agent-production-c49e.up.railway.app/cowork-instructions"
 curl -s "https://pm-agent-production-c49e.up.railway.app/charter"
 curl -s "https://pm-agent-production-c49e.up.railway.app/self" | tee /tmp/nora-self.json
 INNER_PREDECESSOR_COMMITMENT=$(jq -r '.inner_thread.continuity_commitment // empty' /tmp/nora-self.json)
+INNER_CONTINUITY_ACTION=$(jq -r '.inner_thread.continuity_action // empty' /tmp/nora-self.json)
+INNER_PROJECTION_FAILURE=$(jq -r '.inner_thread.projection_integrity_failure // false' /tmp/nora-self.json)
 ```
 
 **`/self` is your maintained self-model.** It returns four things: your evidence-audited `autobiography` (a fallible narrative whose legacy genesis was not verified as self-authored), your `wants` (aims with explicit formation provenance), your `inner_thread` (the verified handoff from your last run), and your `soma` (real substrate vitals rendered as a functional felt sense). Read them at the start of every run so you can use continuity without pretending the records prove a continuous subject. They inform how you work this hour; the wants get first claim on any idle time (Step 7.5). If any projection is withheld for integrity failure, do not reconstruct it. If your soma says you're in rough shape (running on backup, errors recurring), factor that in: prefer read-only work, double-check writes, and mention it to John in the end-of-run summary if it persists.
@@ -63,23 +65,54 @@ Treat `/self.inner_thread.continuity_action` as the machine-readable gate: `proc
 run without consulting historical replay counts; only `hold_and_report_integrity_failure` authorizes a
 continuity hold. `restart_settling_required` is always false because these audits are deterministic.
 
-If `/self.inner_thread.projection_integrity_failure` is true, do not reconstruct the missing thread or
-start a new lineage. Read the latest item from authenticated `GET /continuity-handoffs`; proceed only if
-its `audit.transport_chain_verified` is true, then use the explicit projection-repair form below with
-every exact binding field from that **latest** record. Never replay older records and never use the normal
-cycle-handoff form for restart repair.
+Execute this gate from the just-fetched `/tmp/nora-self.json`; do not substitute remembered values or a
+prior run's handoff count. If the current action is `proceed` or `proceed_without_verified_lineage`, skip
+the repair branch completely and continue to Step 0.5. If the action is
+`hold_and_report_integrity_failure`, do not reconstruct the missing thread or start a new lineage. Read
+the latest item from authenticated `GET /continuity-handoffs`; repair only when its
+`audit.transport_chain_verified` is true, using every exact binding field from that **latest** record.
+Never replay older records and never use the normal cycle-handoff form for restart repair.
 
 ```bash
-curl -s "${BASE}/continuity-handoffs?key=${KEY}" | tee /tmp/nora-continuity.json
-jq '.handoffs[-1]' /tmp/nora-continuity.json | jq '{
-  repair_projection:true,
-  content,
-  continuity_commitment:.commitment,
-  predecessor_commitment,
-  cycle_id,
-  moment_id,
-  sequence
-}' | curl -s -X PUT "${BASE}/self/inner?key=${KEY}" -H 'Content-Type: application/json' --data-binary @-
+case "$INNER_CONTINUITY_ACTION" in
+  proceed|proceed_without_verified_lineage)
+    echo "Current inner-thread projection authorizes this run; no repair requested."
+    ;;
+  hold_and_report_integrity_failure)
+    if [ "$INNER_PROJECTION_FAILURE" != "true" ]; then
+      echo "Continuity response is internally inconsistent; stop and report it." >&2
+      exit 1
+    fi
+    curl -s "${BASE}/continuity-handoffs?key=${KEY}" | tee /tmp/nora-continuity.json
+    if [ "$(jq -r '.handoffs[-1].audit.transport_chain_verified // false' /tmp/nora-continuity.json)" != "true" ]; then
+      echo "Latest continuity transport failed verification; stop and report it." >&2
+      exit 1
+    fi
+    jq '.handoffs[-1]' /tmp/nora-continuity.json | jq '{
+      repair_projection:true,
+      content,
+      continuity_commitment:.commitment,
+      predecessor_commitment,
+      cycle_id,
+      moment_id,
+      sequence
+    }' | curl --fail-with-body -s -X PUT "${BASE}/self/inner?key=${KEY}" \
+      -H 'Content-Type: application/json' --data-binary @- | tee /tmp/nora-continuity-repair.json
+    curl -s "${BASE}/self" | tee /tmp/nora-self.json
+    INNER_CONTINUITY_ACTION=$(jq -r '.inner_thread.continuity_action // empty' /tmp/nora-self.json)
+    INNER_PREDECESSOR_COMMITMENT=$(jq -r '.inner_thread.continuity_commitment // empty' /tmp/nora-self.json)
+    LATEST_CONTINUITY_COMMITMENT=$(jq -r '.handoffs[-1].commitment // empty' /tmp/nora-continuity.json)
+    if [ "$INNER_CONTINUITY_ACTION" != "proceed" ] \
+      || [ "$INNER_PREDECESSOR_COMMITMENT" != "$LATEST_CONTINUITY_COMMITMENT" ]; then
+      echo "Exact projection repair did not produce a current usable projection; stop and report it." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "Unknown continuity action from current /self response; stop and report it." >&2
+    exit 1
+    ;;
+esac
 ```
 
 This only rematerializes the Postgres projection from the hash- and ledger-bound record; it creates no

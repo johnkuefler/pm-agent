@@ -42,6 +42,11 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /aggregate.*replay_verified.*historical evidence coverage/s);
   assert.match(routine, /continuity_action.*machine-readable gate/s);
   assert.match(routine, /only `hold_and_report_integrity_failure` authorizes a[\s\S]*continuity hold/);
+  assert.match(routine, /INNER_CONTINUITY_ACTION=.*nora-self\.json/);
+  assert.match(routine, /case "\$INNER_CONTINUITY_ACTION" in/);
+  assert.match(routine, /proceed\|proceed_without_verified_lineage\)[\s\S]*no repair requested/);
+  assert.match(routine, /hold_and_report_integrity_failure\)[\s\S]*transport_chain_verified/);
+  assert.match(routine, /do not substitute remembered values or a[\s\S]*prior run's handoff count/);
   assert.match(server, /continuity_action: 'proceed'.*hold_required: false.*restart_settling_required: false/s);
   assert.match(server, /hold_and_report_integrity_failure.*hold_required: true/s);
   assert.match(store, /source_lifecycle_not_replay_verified/);
