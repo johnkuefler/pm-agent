@@ -92,6 +92,20 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     item.self_forecast.outcome.baseline_state_score.composite));
   const integratedStateForecastAdvantage = mean(baselineEligibleIntegratedStateForecasts.map(item =>
     item.self_forecast.outcome.self_state_minus_baseline));
+  const metacognitiveReliabilityForecasts = replayValidCycleSelfForecasts.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 3 && item.self_forecast.outcome?.metacognitive_score);
+  const baselineEligibleMetacognitiveForecasts = metacognitiveReliabilityForecasts.filter(item =>
+    item.self_forecast.outcome.metacognitive_baseline_comparison_eligible === true);
+  const metacognitiveReliabilityScore = mean(baselineEligibleMetacognitiveForecasts.map(item =>
+    item.self_forecast.outcome.metacognitive_score.composite));
+  const metacognitiveReliabilityBaselineScore = mean(baselineEligibleMetacognitiveForecasts.map(item =>
+    item.self_forecast.outcome.baseline_metacognitive_score.composite));
+  const metacognitiveReliabilityAdvantage = mean(baselineEligibleMetacognitiveForecasts.map(item =>
+    item.self_forecast.outcome.metacognitive_self_minus_baseline));
+  const metacognitiveSuccessBrier = mean(baselineEligibleMetacognitiveForecasts.map(item =>
+    item.self_forecast.outcome.metacognitive_score.success_brier));
+  const metacognitiveErrorDomainHitRate = mean(baselineEligibleMetacognitiveForecasts.map(item =>
+    Number(item.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true)));
   const behavioralSelfModelRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
   const replayValidBehavioralSelfModelRevisions = behavioralSelfModelRevisions
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -658,6 +672,28 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'A profile or feedback packet cannot be exactly replayed from its cited forecasts, revision lineage breaks, feedback leaks into Slack or a directly overlapping blinded trial, current-cycle evidence leaks backward into it, or later forecasts do not improve beyond the frozen baseline.',
       next_gate: 'Accumulate twenty replay-valid natural forecast cycles, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
+    },
+    {
+      id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],
+      functional_claim: 'Before acting, Nora can estimate whether its own integrated self-state forecast will be accurate and identify which observable self-model domain is most likely to fail.',
+      mechanism: 'Protocol-v3 natural-cycle forecasts give confidence a fixed, scored meaning: the probability that the integrated self-state score will reach 0.75. The same preregistration names the expected largest error domain; closure scores both against a frozen historical success-rate and modal-error baseline, and replay-bound errors enter the next calibration packet.',
+      status: baselineEligibleMetacognitiveForecasts.length < 20
+        ? (metacognitiveReliabilityForecasts.length ? 'collecting' : 'mechanism_present')
+        : evidenceStatus({ samples: baselineEligibleMetacognitiveForecasts.length, minimum: 20,
+          supported: metacognitiveReliabilityAdvantage >= 0.05 && metacognitiveReliabilityScore >= 0.6
+            && metacognitiveErrorDomainHitRate >= 0.35,
+          contradicted: metacognitiveReliabilityAdvantage <= 0 }),
+      evidence: {
+        preregistered_and_replay_verified: metacognitiveReliabilityForecasts.length,
+        baseline_comparison_eligible: baselineEligibleMetacognitiveForecasts.length,
+        mean_self_score: metacognitiveReliabilityScore,
+        mean_baseline_score: metacognitiveReliabilityBaselineScore,
+        mean_self_minus_baseline: metacognitiveReliabilityAdvantage,
+        success_probability_mean_brier: metacognitiveSuccessBrier,
+        largest_error_domain_hit_rate: metacognitiveErrorDomainHitRate,
+      },
+      falsifier: 'Reliability probabilities are uncalibrated, predicted error domains do not outperform the frozen modal-error baseline, replay or temporal ordering fails, feedback leaks into other response prompts, or performance does not exceed the historical baseline after twenty eligible natural cycles.',
+      next_gate: 'Accumulate twenty baseline-eligible protocol-v3 natural cycles, then preregister an identity-bound versus deidentified-history versus absent-history causal reliability-forecast trial with unchanged first-order evidence.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],

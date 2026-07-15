@@ -103,6 +103,45 @@ function profileEstimates(moments = [], protocolVersion = 1) {
       mean_self_minus_baseline: mean(stateComparisonRows.map(moment => moment.self_forecast.outcome.self_state_minus_baseline)),
     };
   }
+  if (Number(protocolVersion) >= 3) {
+    const metacognitiveRows = retained.filter(moment => Number(moment.self_forecast?.protocol_version) >= 3
+      && moment.self_forecast?.outcome?.metacognitive_score
+      && moment.self_forecast?.forecast?.metacognitive_prediction);
+    const metacognitiveComparisonRows = metacognitiveRows.filter(moment =>
+      moment.self_forecast.outcome.metacognitive_baseline_comparison_eligible === true);
+    const observedSuccess = metacognitiveRows.map(moment =>
+      Number(moment.self_forecast.outcome.metacognitive_actual?.integrated_success === true));
+    const predictedSuccess = metacognitiveRows.map(moment =>
+      Number(moment.self_forecast.forecast.metacognitive_prediction.predicted_success_probability));
+    const errorDomainCounts = new Map();
+    for (const moment of metacognitiveRows) {
+      const domain = moment.self_forecast.outcome.metacognitive_actual?.largest_error_domain;
+      if (domain) errorDomainCounts.set(domain, (errorDomainCounts.get(domain) || 0) + 1);
+    }
+    const observedSuccessRate = mean(observedSuccess);
+    const predictedSuccessRate = mean(predictedSuccess);
+    estimates.metacognitive_self_awareness = {
+      samples: metacognitiveRows.length,
+      observed_integrated_success_rate: observedSuccessRate,
+      mean_predicted_success_probability: predictedSuccessRate,
+      success_probability_signed_bias: predictedSuccessRate == null || observedSuccessRate == null
+        ? null : predictedSuccessRate - observedSuccessRate,
+      success_probability_mean_brier: mean(metacognitiveRows.map(moment =>
+        moment.self_forecast.outcome.metacognitive_score.success_brier)),
+      largest_error_domain_hit_rate: mean(metacognitiveRows.map(moment =>
+        Number(moment.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true))),
+      observed_largest_error_domains: [...errorDomainCounts.entries()]
+        .map(([domain, count]) => ({ domain, count, rate: count / metacognitiveRows.length }))
+        .sort((a, b) => b.rate - a.rate || a.domain.localeCompare(b.domain)),
+      comparison_eligible_samples: metacognitiveComparisonRows.length,
+      mean_self_score: mean(metacognitiveComparisonRows.map(moment =>
+        moment.self_forecast.outcome.metacognitive_score.composite)),
+      mean_baseline_score: mean(metacognitiveComparisonRows.map(moment =>
+        moment.self_forecast.outcome.baseline_metacognitive_score.composite)),
+      mean_self_minus_baseline: mean(metacognitiveComparisonRows.map(moment =>
+        moment.self_forecast.outcome.metacognitive_self_minus_baseline)),
+    };
+  }
   return estimates;
 }
 
@@ -126,7 +165,8 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
   const retained = moments.slice(-MAX_SOURCE_MOMENTS);
   if (!retained.length) throw new Error('behavioral self-model revision requires a scored forecast moment');
   const throughMoment = retained.at(-1);
-  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 2) ? 2 : 1;
+  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 3) ? 3
+    : retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 2) ? 2 : 1;
   const revision = {
     protocol_version: protocolVersion,
     id: `behavioral-self-revision-${revisionIndex}-${throughMoment.id}`.slice(0, 300),
@@ -138,8 +178,10 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
     estimates: profileEstimates(retained, protocolVersion),
     evidence_status: retained.length >= 5 ? 'observational_profile' : 'provisional_profile',
     created_at: createdAt,
-    epistemic_limit: protocolVersion >= 2
-      ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'
+    epistemic_limit: protocolVersion >= 3
+      ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, and second-order reliability forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'
+      : protocolVersion >= 2
+        ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'
       : 'A deterministic summary of replay-valid observed cycle behavior and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.',
     revision_commitment: null,
   };

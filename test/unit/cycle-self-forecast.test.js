@@ -99,3 +99,60 @@ test('protocol-v2 forecasts score the next integrated self-state against a froze
   assert.ok(outcome.self_state_minus_baseline > 0.5);
   assert.equal(outcome.self_state_baseline_comparison_eligible, true);
 });
+
+test('protocol-v3 forecasts score awareness of self-model reliability and likely error domain', () => {
+  const historical = Array.from({ length: 5 }, (_, index) => ({
+    id: `metacognitive-history-${index}`,
+    attention: { slots: [{ type: 'drive', id: `drive-${index}` }] },
+    attention_rounds: [{ index: 0 }],
+    closure: {
+      actions: [{ type: 'review', id: `review-${index}` }], new_surprise_ids: [],
+      appraisal_at_end: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.8, coherence: 0.9 },
+    },
+    self_forecast: { outcome: {
+      self_score: { action_f1: 1 },
+      self_state_score: { composite: 0.9, attention_f1: 1, action_count_accuracy: 0.5,
+        appraisal_mean_absolute_error: 0.05, reentry_brier: 0.01 },
+    } },
+  }));
+  const input = {
+    protocol_version: 3, predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.7, confidence: 0.2,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['drive'],
+      appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.8, coherence: 0.9 },
+      expected_action_count: 2, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.2,
+      predicted_largest_error_domain: 'attention',
+    },
+    rationale: 'The action plan is stable, but the closing workspace remains difficult to predict.',
+    evidence: [{ type: 'intelligence_cycle', id: 'metacognitive-cycle' }],
+  };
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    metacognitive_prediction: { ...input.metacognitive_prediction, predicted_success_probability: 0.8 } }),
+  /must match confidence/);
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    metacognitive_prediction: { ...input.metacognitive_prediction, predicted_largest_error_domain: 'intuition' } }),
+  /must be one of/);
+  const record = cycleSelfForecast.createRecord({ input,
+    cycle: { id: 'metacognitive-cycle', holder: 'nora' }, moment: { id: 'metacognitive-moment' },
+    baselineMoments: historical, committedAt: '2026-07-14T12:00:00.000Z' });
+  assert.equal(record.forecast.metacognitive_prediction.integrated_success_threshold, 0.75);
+  assert.equal(record.baseline.metacognitive_prediction.predicted_success_probability, 1);
+  assert.equal(record.baseline.metacognitive_prediction.predicted_largest_error_domain, 'action_count');
+  const outcome = cycleSelfForecast.scoreRecord(record, {
+    actions: [{ type: 'review', id: 'review' }, { type: 'triage', id: 'triage' }],
+    newSurpriseIds: [],
+    appraisalAtClose: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.8, coherence: 0.9 },
+    attentionAtClose: { slots: [{ type: 'commitment', id: 'commitment' }] },
+    reentryOccurred: false, scoredAt: '2026-07-14T13:00:00.000Z',
+  });
+  assert.equal(outcome.metacognitive_actual.integrated_success, false);
+  assert.equal(outcome.metacognitive_actual.largest_error_domain, 'attention');
+  assert.equal(outcome.metacognitive_score.largest_error_domain_hit, true);
+  assert.equal(outcome.baseline_metacognitive_score.largest_error_domain_hit, false);
+  assert.ok(outcome.metacognitive_self_minus_baseline > 0.9);
+  assert.equal(outcome.metacognitive_baseline_comparison_eligible, true);
+});

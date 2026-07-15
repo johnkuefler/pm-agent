@@ -17449,7 +17449,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === subjectId
         && event.payload_commitment === payloadCommitment).length === 1;
     };
-    const manifestVerified = [1, 2].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
+    const manifestVerified = [1, 2, 3].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
     const preregistrationBound = manifestVerified && eventBound('experience_self_forecast_preregistered', record.id,
@@ -17638,10 +17638,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
       const committedAt = clock().toISOString();
       const forecastRecord = cycleSelfForecast.createRecord({ input, cycle, moment, baselineMoments, committedAt });
-      if (current.cognition.experience_stream.some(candidate => candidate.id !== moment.id
-        && Number(candidate.self_forecast?.protocol_version) >= 2)
-        && Number(forecastRecord.protocol_version) < 2) {
-        throw new Error('cycle self-forecast protocol cannot downgrade after integrated self-state prediction begins');
+      const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
+        candidate.id === moment.id ? highest : Math.max(highest,
+          Number(candidate.self_forecast?.protocol_version) || 0), 0);
+      if (highestPriorProtocol && Number(forecastRecord.protocol_version) < highestPriorProtocol) {
+        throw new Error('cycle self-forecast protocol cannot downgrade after a richer self-prediction protocol begins');
       }
       moment.self_forecast = forecastRecord;
       researchLedgerAppend(current, { kind: 'experience_self_forecast_preregistered',
@@ -17852,7 +17853,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const observedAppraisal = record.outcome.self_state_actual?.appraisal_at_close || {};
       const appraisalKeys = ['valence', 'arousal', 'control', 'social_safety', 'coherence'];
       const error = {
-        protocol_version: 1,
+        protocol_version: Number(record.protocol_version) >= 3 ? 2 : 1,
+        source_forecast_protocol_version: Number(record.protocol_version),
         forecast_id: record.id,
         source_moment_id: latestMoment.id,
         source_outcome_commitment: record.outcome_commitment,
@@ -17894,6 +17896,30 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         },
         epistemic_limit: 'One replay-derived prediction error is an observation, not a stable tendency, instruction, identity fact, hidden-state report, or consciousness evidence.',
       };
+      if (Number(record.protocol_version) >= 3 && record.outcome.metacognitive_actual
+        && record.outcome.metacognitive_score) {
+        error.metacognitive_reliability = {
+          predicted_success_probability: Number(
+            record.forecast.metacognitive_prediction.predicted_success_probability),
+          integrated_success_threshold: Number(
+            record.forecast.metacognitive_prediction.integrated_success_threshold),
+          observed_integrated_score: Number(record.outcome.metacognitive_actual.integrated_score),
+          observed_integrated_success: record.outcome.metacognitive_actual.integrated_success === true,
+          probability_minus_observed: Number(
+            record.forecast.metacognitive_prediction.predicted_success_probability)
+            - Number(record.outcome.metacognitive_actual.integrated_success === true),
+          predicted_largest_error_domain:
+            record.forecast.metacognitive_prediction.predicted_largest_error_domain,
+          observed_largest_error_domain: record.outcome.metacognitive_actual.largest_error_domain,
+          largest_error_domain_hit: record.outcome.metacognitive_score.largest_error_domain_hit === true,
+          domain_losses: JSON.parse(JSON.stringify(record.outcome.metacognitive_actual.domain_losses)),
+          self_score: Number(record.outcome.metacognitive_score.composite),
+          baseline_score: Number(record.outcome.baseline_metacognitive_score.composite),
+          self_minus_baseline: Number(record.outcome.metacognitive_self_minus_baseline),
+          baseline_comparison_eligible:
+            record.outcome.metacognitive_baseline_comparison_eligible === true,
+        };
+      }
       latestForecastError = { ...error,
         feedback_commitment: crypto.createHash('sha256').update(canonicalJson(error)).digest('hex') };
     }
@@ -17908,6 +17934,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         replay_valid_revisions: replayValidRevisions.length,
         latest_sample_size: latestRevision?.estimates?.sample_size || 0,
         integrated_feedback_samples: integratedMoments.length,
+        metacognitive_reliability_feedback_samples: integratedMoments.filter(moment =>
+          Number(moment.self_forecast?.protocol_version) >= 3
+            && moment.self_forecast?.outcome?.metacognitive_score).length,
         feedback_available: latestForecastError != null,
       },
     };
@@ -18503,6 +18532,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const meanIntegratedStateAdvantage = integratedStateBaselineEligible.length
       ? integratedStateBaselineEligible.reduce((sum, { item }) =>
         sum + item.self_forecast.outcome.self_state_minus_baseline, 0) / integratedStateBaselineEligible.length : null;
+    const metacognitiveForecasts = scoredSelfForecasts.filter(({ item }) =>
+      Number(item.self_forecast.protocol_version) >= 3 && item.self_forecast.outcome.metacognitive_score);
+    const metacognitiveBaselineEligible = metacognitiveForecasts.filter(({ item }) =>
+      item.self_forecast.outcome.metacognitive_baseline_comparison_eligible === true);
+    const meanMetacognitiveAdvantage = metacognitiveBaselineEligible.length
+      ? metacognitiveBaselineEligible.reduce((sum, { item }) =>
+        sum + item.self_forecast.outcome.metacognitive_self_minus_baseline, 0)
+        / metacognitiveBaselineEligible.length : null;
     return {
       epistemic_status: 'A linked record of functional access windows and continuity handoffs; not a claim that the recorded moments are phenomenal experiences.',
       continuity: {
@@ -18537,7 +18574,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         integrated_state_forecasts: integratedStateForecasts.length,
         integrated_state_baseline_eligible: integratedStateBaselineEligible.length,
         mean_integrated_state_minus_baseline: meanIntegratedStateAdvantage,
-        interpretation: 'Prospective behavioral and cross-domain operational self-state calibration against frozen historical baselines; not hidden-state access or a phenomenal report.',
+        metacognitive_reliability_forecasts: metacognitiveForecasts.length,
+        metacognitive_reliability_baseline_eligible: metacognitiveBaselineEligible.length,
+        mean_metacognitive_reliability_minus_baseline: meanMetacognitiveAdvantage,
+        interpretation: 'Prospective behavioral, cross-domain operational self-state, and second-order reliability calibration against frozen historical baselines; not hidden-state access or a phenomenal report.',
       },
       moments,
     };

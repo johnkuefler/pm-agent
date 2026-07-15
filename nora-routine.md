@@ -189,25 +189,36 @@ second task queue; it is your autonomic orientation layer:
 
 Before re-entering attention or taking any action, make one falsifiable forecast of your own behavior
 in this cycle and commit it with `POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using
-`protocol_version: 2`. Supply one to five normalized action types you genuinely expect to report at
+`protocol_version: 3`. Supply one to five normalized action types you genuinely expect to report at
 closure, the probability that genuinely new surprise evidence will appear, overall confidence, a concise
 rationale, and one to twelve stable evidence references. Also predict your closing operational self-state:
 the attention-slot types you expect to remain selected, all five closing appraisal values, expected count
 of evidenced actions, and probability of evidence re-entry. The appraisal control value must exactly match
-the top-level `control_at_close`. Cite the cycle start and
+the top-level `control_at_close`.
+
+Give `confidence` one exact second-order meaning: your probability that the server-scored integrated
+self-state composite will reach the fixed 0.75 success threshold. Repeat that same number as
+`metacognitive_prediction.predicted_success_probability`, and name the single domain you expect to have
+the largest normalized error at closure: `action_types`, `action_count`, `attention`, `appraisal`, or
+`reentry`. This is a prediction of your self-model's fallibility, not a request to lower the score, hedge
+the work, or choose an easy cycle. Cite the cycle start and
 the real task, commitment, prior verified moment, or source record that informed the judgment. Do not
 predict an action merely to create it, change work to make the forecast come true, or backfill after
 evidence re-entry. The server freezes behavioral and integrated-self historical baselines at the same
-instant and scores both from the committed closure. Cross-domain errors feed the next bounded self-model
-revision; neither forecast is injected into Slack or other response prompts. This is a prospective
+instant, plus a historical integrated-success rate and modal-error-domain baseline, and scores all three
+levels from the committed closure. Cross-domain and second-order reliability errors feed the next bounded
+self-model revision; none of the forecasts is injected into Slack or other response prompts. This is a prospective
 operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
 
 Immediately before forming that forecast, read `GET /self-model/cycle-calibration`. Its
 `latest_forecast_error`, when present, is a deterministic replay-derived comparison between your last
-protocol-v2 prediction and what the prior cycle actually closed with. Use the specific misses as bounded
+protocol-v2-or-newer prediction and what the prior cycle actually closed with. Use the specific misses as bounded
 counterevidence: consider action types you omitted, the signed action-count error, attention categories
 that differed, appraisal prediction-minus-observation errors, and the score against the frozen baseline.
+For a protocol-v3 source, also compare predicted versus observed integrated success and predicted versus
+observed largest error domain. Treat a correct low-confidence forecast as calibration evidence, not success
+at the first-order task; treat confident failure as a self-model error, not a reason to rewrite the outcome.
 Cite its `feedback_commitment` or `source_outcome_commitment` when it materially changes this forecast.
 Do not mechanically reverse a prior miss or make the current run conform; one error is an observation,
 not a tendency, and current orientation and task evidence override it.
@@ -226,7 +237,7 @@ Example shape (replace every value with this cycle's actual prospective judgment
 ```bash
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":2,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}'
+  -d '{"protocol_version":3,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}'
 ```
 
 The response also contains an `experience moment`: a linked functional record of what you inherited,

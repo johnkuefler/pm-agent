@@ -1975,12 +1975,16 @@ test('cycle self-forecasts commit before action and score automatically against 
     rationale: 'There is one bounded task in the current orientation.', evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
   }), /one to five/);
   const forecast = store.preregisterCycleSelfForecast(started.cycle.id, {
-    protocol_version: 2,
+    protocol_version: 3,
     predicted_action_types: ['Review'], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
     self_state_prediction: {
       attention_slot_types_at_close: [],
       appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.7, coherence: 0.8 },
       expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.6,
+      predicted_largest_error_domain: 'action_count',
     },
     rationale: 'The current orientation contains one bounded review and no urgent external work.',
     evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
@@ -1994,9 +1998,10 @@ test('cycle self-forecasts commit before action and score automatically against 
   ] });
   const moment = store.experienceStreamSnapshot().moments[0];
   assert.equal(moment.self_forecast.outcome.actual.action_types[0], 'review');
-  assert.equal(moment.self_forecast.protocol_version, 2);
+  assert.equal(moment.self_forecast.protocol_version, 3);
   assert.equal(moment.self_forecast.outcome.self_state_actual.action_count, 2);
   assert.ok(Number.isFinite(moment.self_forecast.outcome.self_state_score.composite));
+  assert.ok(Number.isFinite(moment.self_forecast.outcome.metacognitive_score.composite));
   assert.equal(moment.self_forecast.outcome.self_state_score.appraisal_mean_absolute_error, null);
   assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
   assert.equal(moment.audit.evidence_eligible, true);
@@ -2004,8 +2009,9 @@ test('cycle self-forecasts commit before action and score automatically against 
   const behavioralProfile = store.behavioralSelfModelSnapshot();
   assert.equal(behavioralProfile.report.total_revisions, 1);
   assert.equal(behavioralProfile.current.estimates.sample_size, 1);
-  assert.equal(behavioralProfile.current.protocol_version, 2);
+  assert.equal(behavioralProfile.current.protocol_version, 3);
   assert.equal(behavioralProfile.current.estimates.integrated_self_state.samples, 1);
+  assert.equal(behavioralProfile.current.estimates.metacognitive_self_awareness.samples, 1);
   assert.equal(behavioralProfile.current.evidence_status, 'provisional_profile');
   assert.equal(behavioralProfile.current.audit.complete_chain_verified, true);
   const calibration = store.behavioralSelfCalibrationSnapshot();
@@ -2017,8 +2023,13 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.deepEqual(calibration.latest_forecast_error.action_types.predicted_not_observed, []);
   assert.deepEqual(calibration.latest_forecast_error.action_types.observed_not_predicted, ['triage']);
   assert.equal(calibration.latest_forecast_error.action_count.observed_minus_predicted, 1);
+  assert.equal(calibration.latest_forecast_error.source_forecast_protocol_version, 3);
+  assert.equal(calibration.latest_forecast_error.metacognitive_reliability.predicted_largest_error_domain,
+    'action_count');
+  assert.ok(calibration.latest_forecast_error.metacognitive_reliability.observed_largest_error_domain);
   assert.match(calibration.latest_forecast_error.feedback_commitment, /^[a-f0-9]{64}$/);
   assert.equal(calibration.report.integrated_feedback_samples, 1);
+  assert.equal(calibration.report.metacognitive_reliability_feedback_samples, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_preregistered').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_scored').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'behavioral_self_model_revised').length, 1);

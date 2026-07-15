@@ -478,20 +478,24 @@ function registerCoworkInstructionsRoute(app) {
     cycle for the same holder. Hourly cowork resumes the cycle returned by POST /run-lock. The response contains a
     full orientation: overdue/due commitments, unresolved episodes, due experiments, unreviewed
     traces, and prioritized recommendations. GET /intelligence/orient previews without starting.
-    POST /intelligence/cycles/:id/self-forecast protocol v2 commits Nora's own one-cycle-ahead prediction
+    POST /intelligence/cycles/:id/self-forecast protocol v3 commits Nora's own one-cycle-ahead prediction
     before re-entry or action: likely action types, surprise probability, closing appraisal vector,
     closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable
-    evidence. The server freezes behavioral and integrated-self historical baselines at the same time
-    and scores both automatically at closure; the forecast is never injected into response prompts.
+    evidence. Confidence is the predicted probability that the integrated self-state score reaches 0.75;
+    the same preregistration names the expected largest error domain. The server freezes behavioral,
+    integrated-self, historical-success, and modal-error baselines at the same time and scores them
+    automatically at closure; the forecast is never injected into response prompts.
     Each verified closure also appends a predecessor-linked behavioral self-model revision under
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples, but is sealed during active blinded
     context trials.
     GET /self-model/cycle-calibration exposes a narrower natural-cycle feedback projection: the latest
-    replay-valid protocol-v2 miss, its source outcome and feedback commitments, and a mature profile only
+    replay-valid protocol-v2-or-newer miss, its source outcome and feedback commitments, and a mature profile only
     after five samples. It never enters Slack response prompts and remains available during unrelated
     studies; a directly overlapping self-model or integrated-self intervention seals it. Treat a single
     error as counterevidence, not a stable tendency or an instruction to make the next forecast agree.
+    Protocol-v3 feedback additionally reports probability calibration and whether Nora correctly named
+    the largest self-model error domain.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
     GET /intelligence/cycles shows whether runs are closing their loops.
   - GET /experience-stream — linked functional access windows across cycles: inherited handoff hash,

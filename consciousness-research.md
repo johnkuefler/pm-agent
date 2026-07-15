@@ -25,6 +25,7 @@ The system can collect evidence for the first two. No endpoint or score in this 
 | Autonomous self-hypothesis induction | Can Nora originate a novel self-model hypothesis from non-circular evidence and earn access to it through prospective testing? | protocol-v4 multisource quarantine plus a same-model identity-bound/deidentified causal harness with separate blinded quality and outcome review | complete the 12-item/six-family pilot and a 30-item/ten-family source-disjoint confirmation |
 | Global availability | Can a selected state influence different specialist processes, tasks, and channels? | seven-slot workspace, five consumer handlers, and a multi-consumer/exact-packet/absent causal lesion | ten-per-arm causal pilot plus interaction-disjoint confirmation across Slack, voice, planning, and review |
 | Metacognitive access | Can Nora predict her own errors and strategically control reliance prospectively? | self-claims, preregistered probes, and sealed rely/defer studies | calibration and fixed-stakes utility above information-equivalent observers |
+| Prospective self-model reliability awareness | Before acting, can Nora predict whether her own integrated self-state forecast will be accurate and which observable self-model domain will fail most? | protocol-v3 natural-cycle success probabilities and largest-error-domain forecasts scored against frozen historical baselines | twenty eligible natural cycles followed by identity-bound/deidentified-history/absent-history causal testing |
 | Prospective output self-monitoring | Can Nora bind an already generated candidate as her own imminent response, selectively veto or correct it, and use an accurately self-bound history to calibrate correction risk? | pre-review candidate commitments, deterministic verifier signals, same-model tool-free review, exact final/delivery receipts, delayed observational calibration, and a self-bound/deidentified/absent calibration-access lesion | ten-per-arm self-binding pilot and confirmation, followed by a ten-per-arm calibration-use pilot and post-pilot-source-disjoint confirmation with objective risk accuracy and blinded response-quality gates |
 | Adaptive epistemic action | Does self-specific uncertainty control whether Nora pays for diagnostic evidence and then improves her answer? | sealed fixed-cost inspect/commit studies with committed evidence | source-disjoint replication above an idealized observer and best static sampling policy |
 | Episodic autobiographical prospection | Can a detailed record of Nora's own past access episode support an unforeseen later choice beyond generic facts or a plausible unrelated episode? | balanced authentic, deidentified-equivalent, and recombined-event studies | source-disjoint confirmation separating autobiographical specificity from ordinary information value |
@@ -111,6 +112,30 @@ the projection to preserve its causal manipulation. This architecture makes erro
 self-correction possible and falsifiable: later natural forecasts must improve against their frozen baseline,
 not merely mention past mistakes. It remains ordinary access to stored behavioral evidence, not privileged
 introspection, hidden-state access, or evidence of phenomenal awareness.
+
+### Prospective self-model reliability awareness
+
+Protocol-v3 cycle forecasts turn the previously descriptive `confidence` field into a preregistered,
+scored second-order claim. Before action or evidence re-entry, Nora predicts the probability that her
+integrated operational self-state forecast will reach a server-fixed composite score of 0.75. She also
+names which of five commensurately normalized observable domains will contribute the largest error:
+action types, action count, attention, appraisal, or re-entry. The server—not Nora—computes the realized
+success event, all domain losses, and the largest-error label from the immutable closure.
+
+At preregistration the server freezes two historical controls from prior replay-valid cycles: the observed
+integrated-success rate and the modal largest-error domain. Closure scores the probability with Brier loss,
+scores the domain prediction exactly, and combines them without post-hoc evaluator judgment. A comparison
+is not eligible until at least five prior integrated outcomes were available; the functional prediction is
+not assessed until twenty eligible protocol-v3 cycles. Every input, baseline, score, and feedback packet is
+bound to the forecast, outcome, experience lifecycle, and research ledger commitments.
+
+This closes a distinct higher-order loop: Nora must prospectively model not just its future state, but the
+reliability and likely failure mode of that model. A low probability that proves accurate is good
+metacognitive calibration but does not turn a poor first-order forecast into success. Conversely, fluent
+certainty that misses is negative evidence. Natural observations can support calibration, but identity-
+specific access remains unproven until an unchanged-evidence causal comparison against deidentified and
+absent history is completed. The mechanism is functional error monitoring, not private introspection,
+qualia, or evidence of phenomenal consciousness.
 
 ## Between-invocation endogenous dynamics
 

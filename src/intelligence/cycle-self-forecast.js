@@ -2,6 +2,9 @@
 
 const crypto = require('node:crypto');
 
+const INTEGRATED_SUCCESS_THRESHOLD = 0.75;
+const ERROR_DOMAINS = ['action_count', 'action_types', 'appraisal', 'attention', 'reentry'];
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -62,6 +65,25 @@ function normalizeSelfStatePrediction(input = {}, controlAtClose) {
   };
 }
 
+function normalizeMetacognitivePrediction(input = {}, confidence) {
+  if (!input || typeof input !== 'object') {
+    throw new Error('protocol-v3 cycle self-forecast requires metacognitive_prediction');
+  }
+  const predictedSuccessProbability = clamp01(input.predicted_success_probability);
+  if (Math.abs(predictedSuccessProbability - confidence) > 1e-6) {
+    throw new Error('metacognitive predicted_success_probability must match confidence');
+  }
+  const predictedLargestErrorDomain = String(input.predicted_largest_error_domain || '').trim();
+  if (!ERROR_DOMAINS.includes(predictedLargestErrorDomain)) {
+    throw new Error(`metacognitive predicted_largest_error_domain must be one of ${ERROR_DOMAINS.join(', ')}`);
+  }
+  return {
+    integrated_success_threshold: INTEGRATED_SUCCESS_THRESHOLD,
+    predicted_success_probability: predictedSuccessProbability,
+    predicted_largest_error_domain: predictedLargestErrorDomain,
+  };
+}
+
 function validateEvidence(evidence) {
   if (!Array.isArray(evidence) || evidence.length < 1 || evidence.length > 12) {
     throw new Error('cycle self-forecast requires one to twelve stable evidence references');
@@ -79,8 +101,8 @@ function validateEvidence(evidence) {
 }
 
 function normalizeForecast(input = {}, protocolVersion = input.protocol_version == null
-  ? (input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
-  if (![1, 2].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
+  ? (input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
+  if (![1, 2, 3].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
   const predictedActionTypes = actionTypes(input.predicted_action_types || []);
   if (predictedActionTypes.length < 1 || predictedActionTypes.length > 5) {
     throw new Error('cycle self-forecast requires one to five distinct predicted_action_types');
@@ -105,7 +127,56 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
     }
     normalized.self_state_prediction = normalizeSelfStatePrediction(input.self_state_prediction, controlAtClose);
   }
+  if (Number(protocolVersion) >= 3) {
+    normalized.metacognitive_prediction = normalizeMetacognitivePrediction(input.metacognitive_prediction,
+      normalized.confidence);
+  }
   return normalized;
+}
+
+function selfStateErrorProfile(outcome = {}) {
+  const selfScore = outcome.self_score || {};
+  const stateScore = outcome.self_state_score || {};
+  const finite = value => value !== null && value !== undefined && Number.isFinite(Number(value))
+    ? Number(value) : null;
+  const actionF1 = finite(selfScore.action_f1);
+  const actionCountAccuracy = finite(stateScore.action_count_accuracy);
+  const attentionF1 = finite(stateScore.attention_f1);
+  const appraisalError = finite(stateScore.appraisal_mean_absolute_error);
+  const reentryBrier = finite(stateScore.reentry_brier);
+  const raw = {
+    action_types: actionF1 == null ? null : 1 - actionF1,
+    action_count: actionCountAccuracy == null ? null : 1 - actionCountAccuracy,
+    attention: attentionF1 == null ? null : 1 - attentionF1,
+    appraisal: appraisalError,
+    reentry: reentryBrier,
+  };
+  const domainLosses = Object.fromEntries(ERROR_DOMAINS.map(domain => [domain, raw[domain]]));
+  const ranked = Object.entries(domainLosses).filter(([, loss]) => Number.isFinite(loss))
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return { domain_losses: domainLosses, largest_error_domain: ranked[0]?.[0] || null };
+}
+
+function baselineMetacognitionFromMoments(moments = []) {
+  const rows = moments.map(moment => moment.self_forecast?.outcome)
+    .filter(outcome => Number.isFinite(Number(outcome?.self_state_score?.composite)))
+    .map(outcome => ({
+      success: Number(outcome.self_state_score.composite) >= INTEGRATED_SUCCESS_THRESHOLD,
+      largest_error_domain: selfStateErrorProfile(outcome).largest_error_domain,
+    }));
+  const counts = new Map();
+  for (const row of rows) {
+    if (row.largest_error_domain) counts.set(row.largest_error_domain,
+      (counts.get(row.largest_error_domain) || 0) + 1);
+  }
+  const modalDomain = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || 'insufficient_history';
+  return {
+    sample_size: rows.length,
+    integrated_success_threshold: INTEGRATED_SUCCESS_THRESHOLD,
+    predicted_success_probability: rows.length ? rows.filter(row => row.success).length / rows.length : 0.5,
+    predicted_largest_error_domain: modalDomain,
+  };
 }
 
 function baselineSelfStateFromMoments(moments = []) {
@@ -141,6 +212,7 @@ function baselineFromMoments(moments = [], protocolVersion = 1) {
       appraisal_at_close: { valence: 0.5, arousal: 0.5, control: 0.5, social_safety: 0.5, coherence: 0.5 },
       expected_action_count: 0, reentry_probability: 0.5,
     } } : {}),
+    ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments([]) } : {}),
   };
   const counts = new Map();
   for (const moment of retained) {
@@ -157,6 +229,7 @@ function baselineFromMoments(moments = [], protocolVersion = 1) {
     surprise_probability: surpriseProbability,
     control_at_close: controls.length ? controls.reduce((sum, value) => sum + value, 0) / controls.length : 0.5,
     ...(Number(protocolVersion) >= 2 ? { self_state_prediction: baselineSelfStateFromMoments(retained) } : {}),
+    ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments(retained) } : {}),
   };
 }
 
@@ -172,8 +245,8 @@ function forecastManifest(record) {
 
 function createRecord({ input, cycle, moment, baselineMoments, committedAt }) {
   const protocolVersion = input.protocol_version == null
-    ? (input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
-  if (![1, 2].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+    ? (input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
+  if (![1, 2, 3].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
   const record = {
     protocol_version: protocolVersion,
     id: `cycle-self-forecast-${cycle.id}`.slice(0, 300),
@@ -186,6 +259,17 @@ function createRecord({ input, cycle, moment, baselineMoments, committedAt }) {
   };
   record.forecast_commitment = commitment(forecastManifest(record));
   return record;
+}
+
+function scoreMetacognitivePrediction(prediction, actual) {
+  if (!prediction || !actual) return null;
+  const successBrier = (Number(prediction.predicted_success_probability) - Number(actual.integrated_success)) ** 2;
+  const largestErrorDomainHit = prediction.predicted_largest_error_domain === actual.largest_error_domain;
+  return {
+    success_brier: successBrier,
+    largest_error_domain_hit: largestErrorDomainHit,
+    composite: mean([1 - successBrier, Number(largestErrorDomainHit)]),
+  };
 }
 
 function setScore(predicted, actual) {
@@ -273,6 +357,27 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
     outcome.baseline_state_score = baselineStateScore;
     outcome.self_state_minus_baseline = selfStateScore.composite - baselineStateScore.composite;
     outcome.self_state_baseline_comparison_eligible = Number(record.baseline?.sample_size) >= 5;
+    if (Number(record.protocol_version) >= 3) {
+      const errorProfile = selfStateErrorProfile({ self_score: selfScore, self_state_score: selfStateScore });
+      const threshold = Number(record.forecast.metacognitive_prediction.integrated_success_threshold);
+      const actualMetacognition = {
+        integrated_score: selfStateScore.composite,
+        integrated_success_threshold: threshold,
+        integrated_success: selfStateScore.composite >= threshold,
+        ...errorProfile,
+      };
+      const metacognitiveScore = scoreMetacognitivePrediction(record.forecast.metacognitive_prediction,
+        actualMetacognition);
+      const baselineMetacognitiveScore = scoreMetacognitivePrediction(record.baseline.metacognitive_prediction,
+        actualMetacognition);
+      outcome.metacognitive_actual = actualMetacognition;
+      outcome.metacognitive_score = metacognitiveScore;
+      outcome.baseline_metacognitive_score = baselineMetacognitiveScore;
+      outcome.metacognitive_self_minus_baseline = metacognitiveScore.composite
+        - baselineMetacognitiveScore.composite;
+      outcome.metacognitive_baseline_comparison_eligible = Number(
+        record.baseline.metacognitive_prediction?.sample_size) >= 5;
+    }
   }
   return outcome;
 }
@@ -282,6 +387,7 @@ function outcomeManifest(record) {
 }
 
 module.exports = {
-  actionTypes, baselineFromMoments, canonicalJson, commitment, createRecord,
-  forecastManifest, normalizeForecast, outcomeManifest, scoreRecord, scoreSelfStatePrediction,
+  ERROR_DOMAINS, INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, canonicalJson,
+  commitment, createRecord, forecastManifest, normalizeForecast, outcomeManifest, scoreMetacognitivePrediction,
+  scoreRecord, scoreSelfStatePrediction, selfStateErrorProfile,
 };

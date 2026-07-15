@@ -815,7 +815,7 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   } });
   assert.equal(acquired.body.acquired, true);
   assert.equal(acquired.body.lifecycle.kind, 'run_bound_intelligence_cycle');
-  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 2);
+  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 3);
   assert.match(acquired.body.lifecycle.next_required_action, /self-forecast before operational tools/);
 
   const lock = await request('/run-lock');
@@ -848,7 +848,7 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
     kind: 'hourly', holder: 'nora-cowork',
   } })).body.cycle.id, nextCycleId);
   const forecast = await request(`/intelligence/cycles/${nextCycleId}/self-forecast`, { method: 'POST', body: {
-    protocol_version: 2,
+    protocol_version: 3,
     predicted_action_types: ['observe'],
     surprise_probability: 0.2,
     control_at_close: 0.7,
@@ -858,6 +858,10 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
       appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.8, coherence: 0.8 },
       expected_action_count: 0,
       reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.6,
+      predicted_largest_error_domain: 'attention',
     },
     rationale: 'The run-bound integration cycle is expected to close after one bounded observation.',
     evidence: [{ type: 'intelligence_cycle', id: nextCycleId }],
@@ -870,7 +874,8 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(cleanRelease.body.lifecycle.closure_status, 'completed');
   const completed = (await request('/experience-stream?limit=10')).body.moments
     .find(item => item.id === nextMomentId);
-  assert.equal(completed.self_forecast.protocol_version, 2);
+  assert.equal(completed.self_forecast.protocol_version, 3);
+  assert.ok(Number.isFinite(completed.self_forecast.outcome.metacognitive_score.composite));
   assert.equal(completed.audit.self_forecast.complete_chain_verified, true);
   assert.equal(completed.audit.evidence_eligible, true);
   const calibration = (await request('/self-model/cycle-calibration')).body;
@@ -879,5 +884,8 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(calibration.latest_forecast_error.source_outcome_commitment,
     completed.self_forecast.outcome_commitment);
   assert.match(calibration.latest_forecast_error.feedback_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(calibration.latest_forecast_error.source_forecast_protocol_version, 3);
+  assert.ok(calibration.latest_forecast_error.metacognitive_reliability);
   assert.equal(calibration.report.integrated_feedback_samples, 1);
+  assert.equal(calibration.report.metacognitive_reliability_feedback_samples, 1);
 });

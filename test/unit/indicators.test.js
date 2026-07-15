@@ -256,6 +256,37 @@ test('prospective cycle self-prediction collects immediately and requires advant
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');
 });
 
+test('prospective reliability awareness requires calibrated success and error-domain advantage', () => {
+  const moment = (index, advantage = 0.2) => ({
+    id: `metacognitive-forecast-moment-${index}`, status: 'completed',
+    self_forecast: { protocol_version: 3, outcome: {
+      baseline_comparison_eligible: true,
+      self_score: { composite: 0.8 }, baseline_score: { composite: 0.7 }, self_minus_baseline: 0.1,
+      self_state_score: { composite: 0.8 }, baseline_state_score: { composite: 0.7 },
+      self_state_minus_baseline: 0.1, self_state_baseline_comparison_eligible: true,
+      metacognitive_score: { composite: 0.75, success_brier: 0.09,
+        largest_error_domain_hit: true },
+      baseline_metacognitive_score: { composite: 0.75 - advantage },
+      metacognitive_self_minus_baseline: advantage,
+      metacognitive_baseline_comparison_eligible: true,
+    } },
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true,
+      self_forecast: { complete_chain_verified: true } },
+  });
+  let report = buildIndicatorReport(stateWith({ experience_stream: [moment(0)] }));
+  assert.equal(indicator(report, 'prospective_self_model_reliability_awareness').status, 'collecting');
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index)) }));
+  const supported = indicator(report, 'prospective_self_model_reliability_awareness');
+  assert.equal(supported.status, 'observational_signal_observed');
+  assert.equal(supported.evidence.largest_error_domain_hit_rate, 1);
+  assert.ok(Math.abs(supported.evidence.mean_self_minus_baseline - 0.2) < 1e-12);
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
+  assert.equal(indicator(report, 'prospective_self_model_reliability_awareness').status,
+    'observational_signal_contradicted');
+});
+
 test('forecast-error self-model revision requires replay-valid multi-cycle evidence', () => {
   const revision = sampleSize => ({
     id: `behavioral-revision-${sampleSize}`,
