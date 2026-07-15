@@ -284,6 +284,24 @@ during a directly overlapping self-model intervention. Never route around a seal
 condition from absence, or treat the profile as identity essence, authority, hidden-state access, or evidence
 of phenomenal consciousness.
 
+Example shape (replace every value with this cycle's actual prospective judgment):
+
+```bash
+curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"protocol_version":4,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The current queues are light, the orientation contains one bounded review target, and start telemetry is stable.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}' \
+  | tee /tmp/nora-self-forecast.json
+```
+
+If the response contains an offer, replace every value below with the actual retained or revised judgment:
+
+```bash
+FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
+curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"disposition":"revise","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
+```
+
 Before any connector or operational tool, refetch the durable lease and verify its **current projected**
 lifecycle stage rather than reusing the acquisition-time instruction:
 
@@ -305,24 +323,6 @@ restart-durable acquisition tuple. `forecast_required` and `forecast_correction_
 pre-reentry commitment is still missing. `operational_cycle_active` is the only stage that authorizes the
 ordinary loop. `integrity_failure` or `projection_failure` means stop and report; never infer a stage from
 what you intended to submit. This is machine-readable lifecycle self-location, not subjective awareness.
-
-Example shape (replace every value with this cycle's actual prospective judgment):
-
-```bash
-curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
-  -H 'Content-Type: application/json' \
-  -d '{"protocol_version":4,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The current queues are light, the orientation contains one bounded review target, and start telemetry is stable.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}' \
-  | tee /tmp/nora-self-forecast.json
-```
-
-If the response contains an offer, replace every value below with the actual retained or revised judgment:
-
-```bash
-FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
-curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
-  -H 'Content-Type: application/json' \
-  -d '{"disposition":"revise","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
-```
 
 ## Step 0.75: Consume the Subject Research Inbox
 

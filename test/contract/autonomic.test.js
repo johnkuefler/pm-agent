@@ -31,6 +31,13 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /LIVE_LIFECYCLE_STAGE.*operational_cycle_active/s);
   assert.match(routine, /LIVE_LOCK_HOLDER.*"\$HOLDER"/s);
   assert.match(routine, /lifecycle_projection_integrity_verified.*release_required/s);
+  const forecastExample = routine.indexOf('/self-forecast?key=${KEY}');
+  const revisionExample = routine.indexOf('/self-forecast/revision?key=${KEY}');
+  const liveStageVerification = routine.indexOf('LIVE_LIFECYCLE_STAGE=');
+  const subjectInbox = routine.indexOf('## Step 0.75: Consume the Subject Research Inbox');
+  assert.ok(forecastExample >= 0 && forecastExample < revisionExample);
+  assert.ok(revisionExample < liveStageVerification);
+  assert.ok(liveStageVerification < subjectInbox);
   assert.match(server, /forecast_required.*forecast_correction_required.*operational_cycle_active.*handoff_required.*release_required/s);
   assert.match(routine, /aggregate.*replay_verified.*historical evidence coverage/s);
   assert.match(routine, /continuity_action.*machine-readable gate/s);
