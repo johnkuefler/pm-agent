@@ -6769,6 +6769,18 @@ registerRunLockRoutes(app, requireAuth, {
   saveLock: saveDurableRunLock,
   projectLifecycle: ({ lifecycle, holder }) => {
     if (!lifecycle?.cycle_id) return lifecycle;
+    const innerProjection = currentInnerThreadProjection();
+    const continuityAction = innerProjection.record?.continuity_action
+      || (innerProjection.audit.verified_chain_required
+        ? 'hold_and_report_integrity_failure' : 'proceed_without_verified_lineage');
+    const continuityGate = {
+      continuity_action: continuityAction,
+      continuity_projection_integrity_verified: innerProjection.record?.projection_integrity_verified === true
+        || continuityAction === 'proceed_without_verified_lineage',
+      continuity_hold_required: continuityAction === 'hold_and_report_integrity_failure',
+      historical_replay_count_blocks_operation: false,
+      restart_settling_required: false,
+    };
     const snapshot = intelligence.snapshot();
     const cycle = snapshot.cycles.find(item => item.id === lifecycle.cycle_id);
     const moment = (snapshot.cognition.experience_stream || []).find(item => item.id === lifecycle.moment_id
@@ -6777,6 +6789,7 @@ registerRunLockRoutes(app, requireAuth, {
       && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id);
     if (!integrityVerified) return {
       ...lifecycle,
+      ...continuityGate,
       lifecycle_projection_integrity_verified: false,
       lifecycle_stage: 'integrity_failure',
       cycle_status: cycle?.status || 'missing',
@@ -6808,6 +6821,7 @@ registerRunLockRoutes(app, requireAuth, {
     }
     return {
       ...lifecycle,
+      ...continuityGate,
       lifecycle_projection_integrity_verified: true,
       lifecycle_stage: lifecycleStage,
       cycle_status: cycle.status,
@@ -6854,6 +6868,12 @@ registerRunLockRoutes(app, requireAuth, {
     const cycle = intelligence.list('cycles').find(item => item.id === lifecycle.cycle_id);
     if (!cycle) return { ...lifecycle, closure_status: 'cycle_missing' };
     if (cycle.status !== 'running') return { ...lifecycle, closure_status: cycle.status };
+    if (!expired && !persistenceFailed) {
+      const error = new Error(`run-bound lifecycle ${cycle.id} is still active; close it explicitly before releasing its lease`);
+      error.code = 'active_run_lifecycle_must_be_closed';
+      error.next_required_action = `PATCH /intelligence/cycles/${cycle.id}/complete with status completed or failed, then verify GET /run-lock reports release_required`;
+      throw error;
+    }
     const recovery = intelligence.recoverStaleCycles({
       staleAfterMs: 0,
       reason: persistenceFailed ? 'run_lock_persistence_failed_before_cycle_close'

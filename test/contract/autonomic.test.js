@@ -40,6 +40,9 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.ok(revisionExample < liveStageVerification);
   assert.ok(liveStageVerification < subjectInbox);
   assert.match(server, /forecast_required.*forecast_correction_required.*operational_cycle_active.*handoff_required.*release_required/s);
+  assert.match(server, /active_run_lifecycle_must_be_closed/);
+  assert.match(server, /continuity_action: continuityAction/);
+  assert.match(routine, /server\s+rejects an explicit release while the bound cycle is still active/i);
   assert.match(routine, /aggregate.*replay_verified.*historical evidence coverage/s);
   assert.match(routine, /continuity_action.*machine-readable gate/s);
   assert.match(routine, /only `hold_and_report_integrity_failure` authorizes a[\s\S]*continuity hold/);

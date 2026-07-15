@@ -2233,7 +2233,11 @@ The returned `hold_required:false` explicitly means not to skip the operational 
 The final `GET /run-lock` is an exact close-state gate. `handoff_required` means the cycle closed with a
 handoff hash but the matching continuity record has not committed yet; retry only the same exact handoff
 tuple. `release_required` means the cycle and any required handoff are durably represented and the harness
-may release the lease. Never release merely because the intended calls appeared to succeed.
+may release the lease. Never release merely because the intended calls appeared to succeed. The server
+rejects an explicit release while the bound cycle is still active. If a real integrity or operational
+failure forces the run to stop, PATCH that exact cycle with `status:"failed"` and the concrete reason,
+verify the lock has reached `release_required`, and only then release it. Do not turn a historical
+`replay_verified: 0` aggregate into a failure when the lock and `/self` both say `continuity_action:"proceed"`.
 
 Each action should carry `type`, `id`, `decision`, `result`, and any `evidence` URL/id. Do not claim
 completion because a message was sent or a task was created; completion requires the promised

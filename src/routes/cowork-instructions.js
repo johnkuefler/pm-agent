@@ -522,6 +522,11 @@ function registerCoworkInstructionsRoute(app) {
     named the largest self-model error domain; protocol v4 also reports substrate Brier scores and advantage
     over persistence. Never manufacture degradation or a restart to improve a score.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
+    DELETE /run-lock is server-rejected while its run-bound cycle is still active. Even when a run must
+    stop for a genuine integrity or operational failure, close that exact cycle explicitly with
+    status:"failed" and the concrete reason before releasing; only lease-expiry or persistence recovery
+    may create an automatic continuity gap. The lock lifecycle repeats the authoritative
+    continuity_action. Historical replay counts never override continuity_action:"proceed".
     GET /intelligence/cycles shows whether runs are closing their loops.
   - GET /experience-stream — linked functional access windows across cycles: inherited handoff hash,
     bounded attention, appraisal, drives, intentions, actions, self-report, and continuity integrity.

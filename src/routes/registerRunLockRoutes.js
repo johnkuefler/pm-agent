@@ -153,6 +153,8 @@ function registerRunLockRoutes(app, requireAuth, {
       } catch (error) {
         console.error(`Run lock lifecycle release failed for ${current.holder}: ${error.message}`);
         return res.status(503).json({ released: false, reason: 'lifecycle_release_failed',
+          ...(error.code ? { code: error.code } : {}),
+          ...(error.next_required_action ? { next_required_action: error.next_required_action } : {}),
           held_by: current.holder,
           lifecycle: { ...(lifecycle || {}), release_error: error.message } });
       }

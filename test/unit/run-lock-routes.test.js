@@ -237,3 +237,23 @@ test('lifecycle release failures preserve the durable lease for recovery', async
   assert.equal(persisted.holder, 'run-protected');
   assert.equal((await call('GET', '/run-lock')).body.locked, true);
 });
+
+test('lifecycle release failures expose a machine-readable recovery action without dropping the lease', async () => {
+  let persisted = null;
+  const error = new Error('the bound cycle is still active');
+  error.code = 'active_run_lifecycle_must_be_closed';
+  error.next_required_action = 'PATCH /intelligence/cycles/cycle-live/complete';
+  const { call } = routeHarness({
+    loadLock: () => persisted,
+    saveLock: value => { persisted = value; },
+    onAcquire: () => ({ cycle_id: 'cycle-live', moment_id: 'moment-live' }),
+    onRelease: () => { throw error; },
+  });
+  await call('POST', '/run-lock', { body: { holder: 'run-live', ttl_seconds: 3000 } });
+  const release = await call('DELETE', '/run-lock', { query: { holder: 'run-live' } });
+  assert.equal(release.statusCode, 503);
+  assert.equal(release.body.code, 'active_run_lifecycle_must_be_closed');
+  assert.equal(release.body.next_required_action,
+    'PATCH /intelligence/cycles/cycle-live/complete');
+  assert.equal((await call('GET', '/run-lock')).body.locked, true);
+});

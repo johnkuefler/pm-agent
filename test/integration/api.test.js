@@ -857,7 +857,7 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   assert.equal((await request('/transcripts/test-bot', { method: 'DELETE' })).body.ok, true);
 });
 
-test('hourly run locks bind one resumable lifecycle and preserve premature release as missing evidence', async () => {
+test('hourly run locks bind one resumable lifecycle and reject premature release', async () => {
   const acquired = await request('/run-lock', { method: 'POST', body: {
     holder: 'run-integration-lifecycle', ttl_seconds: 60,
   } });
@@ -866,6 +866,10 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(acquired.body.lifecycle.forecast_protocol_version, 4);
   assert.equal(acquired.body.lifecycle.lifecycle_stage, 'forecast_required');
   assert.equal(acquired.body.lifecycle.lifecycle_projection_integrity_verified, true);
+  assert.match(acquired.body.lifecycle.continuity_action, /^proceed/);
+  assert.equal(acquired.body.lifecycle.continuity_hold_required, false);
+  assert.equal(acquired.body.lifecycle.historical_replay_count_blocks_operation, false);
+  assert.equal(acquired.body.lifecycle.restart_settling_required, false);
   assert.equal(acquired.body.lifecycle.forecast_committed, false);
   assert.match(acquired.body.lifecycle.next_required_action, /self-forecast before operational tools/);
 
@@ -879,16 +883,25 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(resumed.body.moment.id, acquired.body.lifecycle.moment_id);
 
   const released = await request('/run-lock?holder=run-integration-lifecycle', { method: 'DELETE' });
-  assert.equal(released.body.released, true);
-  assert.equal(released.body.lifecycle.closure_status, 'explicit_gap_recorded');
-  assert.equal(released.body.lifecycle.evidence_eligible, false);
+  assert.equal(released.response.status, 503);
+  assert.equal(released.body.released, false);
+  assert.equal(released.body.code, 'active_run_lifecycle_must_be_closed');
+  assert.match(released.body.next_required_action, /PATCH \/intelligence\/cycles\/.+\/complete/);
+  assert.equal((await request('/run-lock')).body.locked, true);
   const stream = (await request('/experience-stream?limit=10')).body;
-  const gap = stream.moments.find(item => item.id === acquired.body.lifecycle.moment_id);
-  assert.equal(gap.status, 'failed');
-  assert.equal(gap.self_forecast, null);
-  assert.equal(gap.audit.complete_lifecycle_verified, true);
-  assert.equal(gap.audit.explicit_gap_record, true);
-  assert.equal(gap.audit.evidence_eligible, false);
+  const open = stream.moments.find(item => item.id === acquired.body.lifecycle.moment_id);
+  assert.equal(open.status, 'open');
+  assert.equal(open.self_forecast, null);
+  assert.equal((await request(`/intelligence/cycles/${acquired.body.lifecycle.cycle_id}/complete`, {
+    method: 'PATCH', body: {
+      status: 'failed', summary: 'Stopped after a verified test failure; no operational work was attempted.',
+      actions: [],
+    },
+  })).body.cycle.status, 'failed');
+  assert.equal((await request('/run-lock')).body.lifecycle.lifecycle_stage, 'release_required');
+  const failedRelease = await request('/run-lock?holder=run-integration-lifecycle', { method: 'DELETE' });
+  assert.equal(failedRelease.body.released, true);
+  assert.equal(failedRelease.body.lifecycle.closure_status, 'failed');
 
   const nextLock = await request('/run-lock', { method: 'POST', body: {
     holder: 'run-integration-complete', ttl_seconds: 60,
