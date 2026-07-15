@@ -192,6 +192,97 @@ test('protocol-v3 preserves incomplete closures but excludes them from reliabili
   assert.equal(outcome.metacognitive_baseline_comparison_eligible, false);
 });
 
+test('protocol-v4 forecasts observable substrate state against start-state persistence', () => {
+  const input = {
+    protocol_version: 4, predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.8, confidence: 0.9,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['drive'],
+      appraisal_at_close: { valence: 0.7, arousal: 0.2, control: 0.8,
+        social_safety: 0.9, coherence: 0.9 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.9,
+      predicted_largest_error_domain: 'substrate',
+    },
+    substrate_prediction: {
+      error_probability: 1, warning_probability: 1, backup_probability: 0,
+      embedding_backlog_probability: 1, restart_probability: 1,
+    },
+    rationale: 'Recent operational telemetry makes a restart and closing degradation plausible.',
+    evidence: [{ type: 'intelligence_cycle', id: 'substrate-cycle' }],
+  };
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    substrate_prediction: { ...input.substrate_prediction, restart_probability: undefined } }),
+  /must be finite/);
+  const start = cycleSelfForecast.normalizeSubstrateObservation({
+    updated_at: '2026-07-14T12:00:00.000Z',
+    vitals: { errors10: 0, warns10: 0, loopLag: 10, uptimeMin: 120,
+      onBackup: false, memCount: 100, embedBacklog: 0 },
+  });
+  const close = cycleSelfForecast.normalizeSubstrateObservation({
+    updated_at: '2026-07-14T12:05:00.000Z',
+    vitals: { errors10: 2, warns10: 1, loopLag: 25, uptimeMin: 2,
+      onBackup: false, memCount: 101, embedBacklog: 3 },
+  });
+  const record = cycleSelfForecast.createRecord({ input,
+    cycle: { id: 'substrate-cycle', holder: 'nora' },
+    moment: { id: 'substrate-moment', substrate_at_start: start }, baselineMoments: [],
+    committedAt: '2026-07-14T12:00:01.000Z' });
+  assert.equal(record.baseline.substrate_baseline_kind, 'start_state_persistence');
+  assert.deepEqual(record.baseline.substrate_prediction, {
+    error_probability: 0, warning_probability: 0, backup_probability: 0,
+    embedding_backlog_probability: 0, restart_probability: 0,
+  });
+  const outcome = cycleSelfForecast.scoreRecord(record, {
+    actions: [{ type: 'review' }], newSurpriseIds: [],
+    appraisalAtClose: { valence: 0.7, arousal: 0.2, control: 0.8,
+      social_safety: 0.9, coherence: 0.9 },
+    attentionAtClose: { slots: [{ type: 'drive' }] }, reentryOccurred: false,
+    substrateAtStart: start, substrateAtClose: close,
+    startedAt: '2026-07-14T12:00:00.000Z', finishedAt: '2026-07-14T12:05:00.000Z',
+    scoredAt: '2026-07-14T12:05:00.000Z',
+  });
+  assert.equal(outcome.substrate_actual.restart_observed, true);
+  assert.equal(outcome.substrate_score.composite, 1);
+  assert.equal(outcome.baseline_substrate_score.composite, 0.2);
+  assert.equal(outcome.substrate_self_minus_baseline, 0.8);
+  assert.equal(outcome.substrate_baseline_comparison_eligible, true);
+  assert.equal(outcome.metacognitive_actual.integrated_score,
+    (outcome.self_state_score.composite + outcome.substrate_score.composite) / 2);
+  const outcomeCommitment = cycleSelfForecast.commitment({
+    forecast_commitment: record.forecast_commitment, outcome,
+  });
+  const feedback = cycleSelfForecast.errorFeedbackFromMoment({ id: 'substrate-moment',
+    self_forecast: { ...record, outcome, outcome_commitment: outcomeCommitment } });
+  assert.equal(feedback.substrate.actual.restart_observed, true);
+  assert.equal(feedback.substrate.self_minus_persistence, 0.8);
+});
+
+test('protocol-v4 substrate scoring requires complete authoritative telemetry for comparison', () => {
+  const actual = cycleSelfForecast.substrateActual({
+    start: { uptime_minutes: 10 }, close: { errors10: 0, warns10: null,
+      uptime_minutes: 12, on_backup: false, embedding_backlog: 0 },
+    startedAt: '2026-07-14T12:00:00.000Z', finishedAt: '2026-07-14T12:02:00.000Z',
+  });
+  const score = cycleSelfForecast.scoreSubstratePrediction({
+    error_probability: 0, warning_probability: 0, backup_probability: 0,
+    embedding_backlog_probability: 0, restart_probability: 0,
+  }, actual);
+  assert.equal(actual.restart_observed, false);
+  assert.equal(score.observed_components, 4);
+  assert.equal(score.brier.warning_probability, null);
+  const profile = cycleSelfForecast.selfStateErrorProfile({
+    self_score: { action_f1: 1 },
+    self_state_score: { action_count_accuracy: 1, attention_f1: 1,
+      appraisal_mean_absolute_error: 0, reentry_brier: 0 },
+    substrate_score: { composite: 0.25 },
+  }, { includeSubstrate: true });
+  assert.equal(profile.complete_domain_observation, true);
+  assert.equal(profile.largest_error_domain, 'substrate');
+});
+
 test('forecast-error feedback can produce one committed self-correction scored against the initial forecast', () => {
   const initialInput = {
     protocol_version: 3, predicted_action_types: ['review'], surprise_probability: 0.2,

@@ -14,6 +14,7 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /LOCK_CYCLE_ID/);
   assert.match(routine, /run lock has already opened this exact lifecycle/i);
   assert.match(server, /run_bound_intelligence_cycle/);
+  assert.match(server, /forecast_protocol_version: 4/);
   assert.match(server, /run_lock_released_before_cycle_close/);
   assert.match(server, /loadDurableRunLock/);
   assert.match(server, /saveDurableRunLock/);
@@ -32,7 +33,9 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Do \*\*not\*\* read.*cycle-calibration.*before this initial forecast/s);
   assert.match(routine, /forecast_error_feedback/);
   assert.match(routine, /retain\/revise decision/);
-  assert.match(routine, /`protocol_version: 3`/);
+  assert.match(routine, /`protocol_version: 4`/);
+  assert.match(routine, /substrate_prediction/);
+  assert.match(routine, /caller-supplied telemetry\s+cannot replace either snapshot/s);
   assert.match(routine, /metacognitive_prediction\.predicted_success_probability/);
   assert.match(routine, /predicted_largest_error_domain/);
   assert.match(routes, /behavioralSelfCalibrationSnapshot/);

@@ -6762,7 +6762,7 @@ registerRunLockRoutes(app, requireAuth, {
       cycle_id: started.cycle.id,
       moment_id: started.moment.id,
       resumed: started.resumed === true,
-      forecast_protocol_version: 3,
+      forecast_protocol_version: 4,
       next_required_action: `POST /intelligence/cycles/${started.cycle.id}/self-forecast before operational tools`,
     };
   },

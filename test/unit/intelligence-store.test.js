@@ -2082,6 +2082,94 @@ test('cycle self-forecasts commit before action and score automatically against 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('protocol-v4 cycle forecasts bind substrate telemetry into the replay-verified lifecycle', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-substrate-forecast-'));
+  const filePath = path.join(dir, 'state.json');
+  let now = new Date('2026-07-14T12:00:00.000Z');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await store.init();
+  const startSoma = { updated_at: now.toISOString(), vitals: {
+    errors10: 0, warns10: 0, loopLag: 10, uptimeMin: 120,
+    onBackup: false, memCount: 100, embedBacklog: 0,
+  } };
+  const started = store.startCycle({ id: 'substrate-forecast-cycle', holder: 'nora-cowork',
+    soma: startSoma });
+  assert.equal(started.moment.substrate_at_start.uptime_minutes, 120);
+  const forecast = store.preregisterCycleSelfForecast(started.cycle.id, {
+    protocol_version: 4,
+    predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.8, confidence: 0.8,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.8,
+        social_safety: 0.8, coherence: 0.8 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.8, predicted_largest_error_domain: 'substrate',
+    },
+    substrate_prediction: {
+      error_probability: 1, warning_probability: 1, backup_probability: 0,
+      embedding_backlog_probability: 1, restart_probability: 1,
+    },
+    rationale: 'The recently restarted service may restart again and end with degraded telemetry.',
+    evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+  });
+  assert.equal(forecast.protocol_version, 4);
+  assert.equal(forecast.baseline.substrate_baseline_kind, 'start_state_persistence');
+  now = new Date('2026-07-14T12:05:00.000Z');
+  store.completeCycle(started.cycle.id, {
+    summary: 'Reviewed the bounded item across an observed restart.',
+    actions: [{ type: 'review', id: 'substrate-review' }],
+    substrate_at_close: { updated_at: now.toISOString(), vitals: {
+      errors10: 2, warns10: 1, loopLag: 30, uptimeMin: 2,
+      onBackup: false, memCount: 102, embedBacklog: 2,
+    } },
+  });
+  const moment = store.experienceStreamSnapshot().moments[0];
+  assert.equal(moment.audit.complete_chain_verified, true);
+  assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
+  assert.equal(moment.self_forecast.outcome.substrate_actual.restart_observed, true);
+  assert.equal(moment.self_forecast.outcome.substrate_score.composite, 1);
+  assert.equal(moment.self_forecast.outcome.baseline_substrate_score.composite, 0.2);
+  assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.substrate_forecasts, 1);
+  assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.substrate_baseline_eligible, 1);
+  const calibration = store.behavioralSelfCalibrationSnapshot();
+  assert.equal(calibration.latest_forecast_error.substrate.actual.restart_observed, true);
+  assert.equal(calibration.latest_forecast_error.substrate.self_minus_persistence, 0.8);
+  const behavioralProfile = store.behavioralSelfModelSnapshot();
+  assert.equal(behavioralProfile.current.protocol_version, 4);
+  assert.equal(behavioralProfile.current.estimates.substrate_self_model.samples, 1);
+  assert.equal(behavioralProfile.current.estimates.substrate_self_model.comparison_eligible_samples, 1);
+  const predictiveInteroception = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'predictive_interoception');
+  assert.equal(predictiveInteroception.status, 'collecting');
+  assert.equal(predictiveInteroception.evidence.natural_cycle_baseline_eligible, 1);
+  await store.persist();
+
+  for (const [field, value] of [
+    ['substrate_at_start', { ...moment.substrate_at_start, uptime_minutes: 999 }],
+    ['substrate_at_end', { ...moment.closure.substrate_at_end, errors10: 999 }],
+  ]) {
+    const tamperedPath = path.join(dir, `tampered-${field}.json`);
+    const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (field === 'substrate_at_start') {
+      persisted.cognition.experience_stream[0].substrate_at_start = value;
+    } else {
+      persisted.cognition.experience_stream[0].closure.substrate_at_end = value;
+    }
+    fs.writeFileSync(tamperedPath, JSON.stringify(persisted));
+    const tampered = createIntelligenceStore({ filePath: tamperedPath, db: {}, isDbReady: () => false,
+      clock: () => new Date(now) });
+    await tampered.init();
+    const invalid = tampered.experienceStreamSnapshot().moments[0];
+    assert.equal(invalid.audit.complete_chain_verified, false);
+    assert.equal(invalid.audit.evidence_eligible, false);
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('cycle self-forecasts cannot be backfilled after evidence re-entry', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-self-forecast-order-'));
   const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {}, isDbReady: () => false,

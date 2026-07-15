@@ -104,7 +104,8 @@ function profileEstimates(moments = [], protocolVersion = 1) {
     };
   }
   if (Number(protocolVersion) >= 3) {
-    const metacognitiveRows = retained.filter(moment => Number(moment.self_forecast?.protocol_version) >= 3
+    const protocolFloor = Number(protocolVersion) >= 4 ? 4 : 3;
+    const metacognitiveRows = retained.filter(moment => Number(moment.self_forecast?.protocol_version) >= protocolFloor
       && moment.self_forecast?.outcome?.metacognitive_score
       && moment.self_forecast?.forecast?.metacognitive_prediction);
     const metacognitiveComparisonRows = metacognitiveRows.filter(moment =>
@@ -142,6 +143,25 @@ function profileEstimates(moments = [], protocolVersion = 1) {
         moment.self_forecast.outcome.metacognitive_self_minus_baseline)),
     };
   }
+  if (Number(protocolVersion) >= 4) {
+    const substrateRows = retained.filter(moment => Number(moment.self_forecast?.protocol_version) >= 4
+      && moment.self_forecast?.outcome?.substrate_score
+      && moment.self_forecast?.forecast?.substrate_prediction);
+    const comparisonRows = substrateRows.filter(moment =>
+      moment.self_forecast.outcome.substrate_baseline_comparison_eligible === true);
+    estimates.substrate_self_model = {
+      samples: substrateRows.length,
+      comparison_eligible_samples: comparisonRows.length,
+      mean_self_score: mean(comparisonRows.map(moment =>
+        moment.self_forecast.outcome.substrate_score.composite)),
+      mean_persistence_score: mean(comparisonRows.map(moment =>
+        moment.self_forecast.outcome.baseline_substrate_score.composite)),
+      mean_self_minus_persistence: mean(comparisonRows.map(moment =>
+        moment.self_forecast.outcome.substrate_self_minus_baseline)),
+      observed_restarts: comparisonRows.filter(moment =>
+        moment.self_forecast.outcome.substrate_actual?.restart_observed === true).length,
+    };
+  }
   return estimates;
 }
 
@@ -165,7 +185,8 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
   const retained = moments.slice(-MAX_SOURCE_MOMENTS);
   if (!retained.length) throw new Error('behavioral self-model revision requires a scored forecast moment');
   const throughMoment = retained.at(-1);
-  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 3) ? 3
+  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 4) ? 4
+    : retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 3) ? 3
     : retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 2) ? 2 : 1;
   const revision = {
     protocol_version: protocolVersion,
@@ -178,7 +199,9 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
     estimates: profileEstimates(retained, protocolVersion),
     evidence_status: retained.length >= 5 ? 'observational_profile' : 'provisional_profile',
     created_at: createdAt,
-    epistemic_limit: protocolVersion >= 3
+    epistemic_limit: protocolVersion >= 4
+      ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, second-order reliability errors, and observable runtime substrate forecast errors. It is a bounded, revisable prior, not identity essence, biological interoception, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'
+      : protocolVersion >= 3
       ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, and second-order reliability forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'
       : protocolVersion >= 2
         ? 'A deterministic summary of replay-valid observed cycle behavior, operational self-state outcomes, and forecast errors. It is a bounded, revisable prior, not identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.'

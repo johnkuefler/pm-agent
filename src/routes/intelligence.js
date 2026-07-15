@@ -161,7 +161,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try {
       const authoritativeInputs = getCognitiveInputs();
       const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
-        inner_thread: authoritativeInputs.inner_thread || null, predictions: getPredictions(),
+        inner_thread: authoritativeInputs.inner_thread || null,
+        soma: authoritativeInputs.soma || null, predictions: getPredictions(),
         resume_active: true };
       store.refreshCognition(cognitiveInput);
       const started = store.startCycle(cognitiveInput);
@@ -216,7 +217,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
     try {
-      const cycle = store.completeCycle(req.params.id, req.body || {});
+      const authoritativeInputs = getCognitiveInputs();
+      const cycle = store.completeCycle(req.params.id, {
+        ...(req.body || {}), substrate_at_close: authoritativeInputs.soma || null,
+      });
       if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
       if (store.interventionActive('integrated_self_binding')) return res.json({ ok: true, cycle: { id: cycle.id, status: cycle.status, experimental_access_sealed: true } });
       res.json({ ok: true, cycle });

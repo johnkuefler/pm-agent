@@ -17426,6 +17426,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       drives_at_start: moment?.drives_at_start || null,
       intentions: moment?.intentions || [],
       surprise_ids_at_start: moment?.surprise_ids_at_start || [],
+      ...(moment?.substrate_at_start ? { substrate_at_start: moment.substrate_at_start } : {}),
     };
   }
 
@@ -17435,6 +17436,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       finished: moment?.finished, attention: moment?.attention || null,
       attention_rounds: moment?.attention_rounds || [], closure: moment?.closure || null,
       self_forecast: moment?.self_forecast || null,
+      ...(moment?.closure?.substrate_at_end ? { substrate_at_end: moment.closure.substrate_at_end } : {}),
       cycle: cycle ? {
         id: cycle.id, holder: cycle.holder, started: cycle.started, status: cycle.status,
         finished: cycle.finished, summary: cycle.summary, actions: cycle.actions,
@@ -17468,7 +17470,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return matches.length === 1 ? matches[0].index : -1;
     };
     const eventBound = (kind, subjectId, payload) => eventIndex(kind, subjectId, payload) >= 0;
-    const manifestVerified = [1, 2, 3].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
+    const manifestVerified = [1, 2, 3, 4].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
     const preregistrationEventIndex = manifestVerified
@@ -17495,7 +17497,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && new Date(candidate.finished).getTime() <= committedAt
       && experienceMomentAudit(candidate, cognition, cycles, cache, nextVisited).evidence_eligible);
     const baselineVerified = sourcesVerified && canonicalJson(cycleSelfForecast.baselineFromMoments(
-      eligibleHistoricalMoments, record.protocol_version))
+      eligibleHistoricalMoments, record.protocol_version, {
+        substrateAtStart: moment.substrate_at_start || null,
+      }))
       === canonicalJson(record.baseline);
     const correctionOffer = record.self_correction || null;
     const correctionRevision = correctionOffer?.revision || null;
@@ -17579,6 +17583,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         appraisalAtClose: moment.closure.appraisal_at_end,
         attentionAtClose: moment.attention,
         reentryOccurred: (moment.attention_rounds || []).length > 1,
+        substrateAtStart: moment.substrate_at_start || null,
+        substrateAtClose: moment.closure.substrate_at_end || null,
+        startedAt: moment.started, finishedAt: moment.finished,
         scoredAt: record.outcome.scored_at,
       });
       const expectedCommitment = cycleSelfForecast.commitment({ forecast_commitment: record.forecast_commitment, outcome: expected });
@@ -17787,7 +17794,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && item.status === 'open');
       if (!moment?.self_forecast) throw new Error('initial cycle self-forecast must be committed first');
       if (Number(moment.self_forecast.protocol_version) < 3) {
-        throw new Error('self-correction revision requires a protocol-v3 forecast');
+        throw new Error('self-correction revision requires a protocol-v3-or-newer forecast');
       }
       if (!moment.self_forecast.self_correction) {
         throw new Error('no replay-valid prior forecast error was available for self-correction');
@@ -17832,6 +17839,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       appraisalAtClose: moment.closure?.appraisal_at_end,
       attentionAtClose: moment.attention,
       reentryOccurred: (moment.attention_rounds || []).length > 1,
+      substrateAtStart: moment.substrate_at_start || null,
+      substrateAtClose: moment.closure?.substrate_at_end || null,
+      startedAt: moment.started, finishedAt: moment.finished,
       scoredAt: moment.finished,
     });
     record.outcome_commitment = cycleSelfForecast.commitment({
@@ -18428,6 +18438,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         drives_at_start: JSON.parse(JSON.stringify(current.cognition.drives || {})),
         intentions: orientation.recommendations.slice(0, 10).map(item => ({ type: item.type, id: item.id, priority: item.priority, action: item.action })),
         surprise_ids_at_start: (current.cognition.surprises || []).map(item => item.id).slice(-300),
+        substrate_at_start: cycleSelfForecast.normalizeSubstrateObservation(input.soma),
         closure: null, start_snapshot: null, start_commitment: null, closure_snapshot: null,
         self_forecast: null,
         closure_commitment: null, lifecycle_commitment: null, legacy_gap_commitment: null,
@@ -18583,6 +18594,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           handoff_hash: handoff ? crypto.createHash('sha256').update(handoff).digest('hex') : null,
           handoff_preview: handoff ? handoff.slice(0, 240) : null,
           appraisal_at_end: JSON.parse(JSON.stringify(current.cognition.appraisal || {})),
+          substrate_at_end: cycleSelfForecast.normalizeSubstrateObservation(input.substrate_at_close),
           new_surprise_ids: (current.cognition.surprises || []).filter(item => !priorSurprises.has(item.id)).map(item => item.id),
         };
         if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
@@ -18678,6 +18690,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ? metacognitiveBaselineEligible.reduce((sum, { item }) =>
         sum + item.self_forecast.outcome.metacognitive_self_minus_baseline, 0)
         / metacognitiveBaselineEligible.length : null;
+    const substrateForecasts = scoredSelfForecasts.filter(({ item }) =>
+      Number(item.self_forecast.protocol_version) >= 4 && item.self_forecast.outcome.substrate_score);
+    const substrateBaselineEligible = substrateForecasts.filter(({ item }) =>
+      item.self_forecast.outcome.substrate_baseline_comparison_eligible === true);
+    const meanSubstrateAdvantage = substrateBaselineEligible.length
+      ? substrateBaselineEligible.reduce((sum, { item }) =>
+        sum + item.self_forecast.outcome.substrate_self_minus_baseline, 0)
+        / substrateBaselineEligible.length : null;
     const selfCorrectionOffers = selfForecasts.filter(({ item, audit }) =>
       item.self_forecast.self_correction && audit.self_forecast?.self_correction_offer_verified === true);
     const selfCorrectionDecisions = scoredSelfForecasts.filter(({ item, audit }) =>
@@ -18720,13 +18740,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         metacognitive_reliability_forecasts: metacognitiveForecasts.length,
         metacognitive_reliability_baseline_eligible: metacognitiveBaselineEligible.length,
         mean_metacognitive_reliability_minus_baseline: meanMetacognitiveAdvantage,
+        substrate_forecasts: substrateForecasts.length,
+        substrate_baseline_eligible: substrateBaselineEligible.length,
+        mean_substrate_minus_persistence: meanSubstrateAdvantage,
         self_correction_offers: selfCorrectionOffers.length,
         replay_verified_self_correction_decisions: selfCorrectionDecisions.length,
         revised_self_correction_decisions: selfCorrectionDecisions.filter(({ item }) =>
           item.self_forecast.outcome.self_correction.disposition === 'revise').length,
         retained_self_correction_decisions: selfCorrectionDecisions.filter(({ item }) =>
           item.self_forecast.outcome.self_correction.disposition === 'retain').length,
-        interpretation: 'Prospective behavioral, cross-domain operational self-state, and second-order reliability calibration against frozen historical baselines; not hidden-state access or a phenomenal report.',
+        interpretation: 'Prospective behavioral, cross-domain operational self-state, observable substrate, and second-order reliability calibration against frozen historical and start-state persistence baselines; not hidden-state access or a phenomenal report.',
       },
       moments,
     };

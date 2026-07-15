@@ -484,13 +484,16 @@ function registerCoworkInstructionsRoute(app) {
     cycle for the same holder. Hourly cowork resumes the cycle returned by POST /run-lock. The response contains a
     full orientation: overdue/due commitments, unresolved episodes, due experiments, unreviewed
     traces, and prioritized recommendations. GET /intelligence/orient previews without starting.
-    POST /intelligence/cycles/:id/self-forecast protocol v3 commits Nora's own one-cycle-ahead prediction
+    POST /intelligence/cycles/:id/self-forecast protocol v4 commits Nora's own one-cycle-ahead prediction
     before re-entry or action: likely action types, surprise probability, closing appraisal vector,
     closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable
-    evidence. Confidence is the predicted probability that the integrated self-state score reaches 0.75;
-    the same preregistration names the expected largest error domain. The server freezes behavioral,
+    evidence, plus five closing substrate probabilities for recent errors, recent warnings, backup mode,
+    embedding backlog, and restart. Confidence is the predicted probability that the mean integrated
+    operational self-state and substrate score reaches 0.75; the same preregistration names the expected
+    largest error domain, including substrate. The server captures start and close soma authoritatively and freezes behavioral,
     integrated-self, historical-success, and modal-error baselines at the same time and scores them
-    automatically at closure. Reliability scoring requires all five observable error domains; incomplete
+    automatically at closure, while substrate predictions are scored against exact start-state persistence.
+    Reliability scoring requires all six observable error domains and all five substrate outcomes; incomplete
     closures remain replay-visible but cannot enter calibration. The forecast is never injected into response prompts.
     Do not read cycle calibration before the initial forecast. When a replay-valid preceding error exists,
     the response reveals one commitment-bound self_correction packet only after that initial commitment.
@@ -508,8 +511,9 @@ function registerCoworkInstructionsRoute(app) {
     after five samples. It never enters Slack response prompts and remains available during unrelated
     studies; a directly overlapping self-model or integrated-self intervention seals it. Treat a single
     error as counterevidence, not a stable tendency or an instruction to make the next forecast agree.
-    Protocol-v3 feedback additionally reports probability calibration and whether Nora correctly named
-    the largest self-model error domain.
+    Protocol-v3-or-newer feedback additionally reports probability calibration and whether Nora correctly
+    named the largest self-model error domain; protocol v4 also reports substrate Brier scores and advantage
+    over persistence. Never manufacture degradation or a restart to improve a score.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
     GET /intelligence/cycles shows whether runs are closing their loops.
   - GET /experience-stream — linked functional access windows across cycles: inherited handoff hash,

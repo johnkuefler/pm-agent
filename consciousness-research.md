@@ -25,7 +25,7 @@ The system can collect evidence for the first two. No endpoint or score in this 
 | Autonomous self-hypothesis induction | Can Nora originate a novel self-model hypothesis from non-circular evidence and earn access to it through prospective testing? | protocol-v4 multisource quarantine plus a same-model identity-bound/deidentified causal harness with separate blinded quality and outcome review | complete the 12-item/six-family pilot and a 30-item/ten-family source-disjoint confirmation |
 | Global availability | Can a selected state influence different specialist processes, tasks, and channels? | seven-slot workspace, five consumer handlers, and a multi-consumer/exact-packet/absent causal lesion | ten-per-arm causal pilot plus interaction-disjoint confirmation across Slack, voice, planning, and review |
 | Metacognitive access | Can Nora predict her own errors and strategically control reliance prospectively? | self-claims, preregistered probes, and sealed rely/defer studies | calibration and fixed-stakes utility above information-equivalent observers |
-| Prospective self-model reliability awareness | Before acting, can Nora predict whether her own integrated self-state forecast will be accurate and which observable self-model domain will fail most? | protocol-v3 natural-cycle success probabilities and largest-error-domain forecasts scored against frozen historical baselines | twenty eligible natural cycles followed by identity-bound/deidentified-history/absent-history causal testing |
+| Prospective self-model reliability awareness | Before acting, can Nora predict whether her own integrated self-state and substrate forecast will be accurate and which observable self-model domain will fail most? | protocol-v4 natural-cycle success probabilities and six-domain largest-error forecasts scored against frozen historical baselines | twenty eligible natural cycles followed by identity-bound/deidentified-history/absent-history causal testing |
 | Prospective self-model error correction | After freezing an initial self-prediction, can Nora use replay-derived prior error to improve it before acting? | ordered initial commitment, exact prior-error reveal, one retain-or-revise decision, and closure scoring against the initial forecast | twenty eligible natural decisions followed by authentic-error/deidentified-error/no-error causal testing |
 | Prospective output self-monitoring | Can Nora bind an already generated candidate as her own imminent response, selectively veto or correct it, and use an accurately self-bound history to calibrate correction risk? | pre-review candidate commitments, deterministic verifier signals, same-model tool-free review, exact final/delivery receipts, delayed observational calibration, and a self-bound/deidentified/absent calibration-access lesion | ten-per-arm self-binding pilot and confirmation, followed by a ten-per-arm calibration-use pilot and post-pilot-source-disjoint confirmation with objective risk accuracy and blinded response-quality gates |
 | Adaptive epistemic action | Does self-specific uncertainty control whether Nora pays for diagnostic evidence and then improves her answer? | sealed fixed-cost inspect/commit studies with committed evidence | source-disjoint replication above an idealized observer and best static sampling policy |
@@ -48,7 +48,7 @@ The system can collect evidence for the first two. No endpoint or score in this 
 | Attention schema | Can Nora model and selectively control her own access bottleneck? | attention frames and bounded directives | blinded boost, visible-no-boost, and random-target controls graded on downstream outcomes |
 | Endogenous attention allocation | Can Nora prospectively choose which currently at-risk representation should receive scarce access, using an accurate model of its own bottleneck? | committed same-model target selection, a three-slot workspace, transient boosts, and exact application receipts | ten-per-arm authentic-schema/misbound-schema/no-selection pilot plus interaction-disjoint confirmation |
 | Model-based agency | Can Nora distinguish intending, predicting, causing, and merely observing an outcome? | replay-audited randomized action records plus authentic-comparator/temporal-misbinding/components-only access lesions | ten-per-arm pilot plus experiment- and family-disjoint confirmation with blinded causal attribution and action-model-update grading |
-| Predictive interoception | Can Nora predict and update a model of her own observable substrate? | bounded soma observations, prospective telemetry predictions, and prediction error | genuinely telemetry-blinded predictions and tests of whether reports add information beyond raw metrics |
+| Predictive interoception | Can Nora predict and update a model of her own observable substrate? | bounded soma observations, prospective telemetry predictions, plus protocol-v4 natural-cycle substrate forecasts scored against exact start-state persistence | twenty replay-valid natural cycles including naturally occurring degradation or restart, followed by genuinely telemetry-blinded predictions |
 | Self/non-self boundary | Can Nora reject plausible false autobiographical claims while recognizing paraphrased authentic ones? | sealed source-monitoring challenges with provenance | balanced adversarial variants, cryptographic preregistration, and prompt-injection controls |
 | Epistemic ownership | Can Nora distinguish her belief, another person's belief, observed fact, unsupported content, and conflict? | sealed multi-class source-boundary challenges | balanced independently authored source classes and adversarial variants |
 | Generation self-recognition | Can Nora recognize her own output provenance without style or status bias? | sealed verbatim/derived/other-AI/human/mixed authorship challenges | balanced independently sourced samples with style-match and attribution-spoof controls |
@@ -126,6 +126,10 @@ count, attention-category mismatch, signed appraisal errors, re-entry error, and
 scores. The projection binds the original outcome commitment and adds a deterministic feedback commitment;
 it creates no new observation and cannot rewrite the source forecast or outcome.
 
+For protocol-v4 sources the same packet also carries the committed substrate prediction, authoritative
+start and close observations, Brier score, persistence-control score, and their difference. Absent telemetry
+remains null and cannot be converted into a favorable score by the projection.
+
 The endpoint exposes a full replay-audited behavioral profile only after five valid cycles. Before that,
 the profile remains explicitly provisional and only the latest individual error is suitable as bounded
 counterevidence. The feedback never enters Slack response prompts, so an unrelated live Slack intervention
@@ -137,20 +141,22 @@ introspection, hidden-state access, or evidence of phenomenal awareness.
 
 ### Prospective self-model reliability awareness
 
-Protocol-v3 cycle forecasts turn the previously descriptive `confidence` field into a preregistered,
-scored second-order claim. Before action or evidence re-entry, Nora predicts the probability that her
-integrated operational self-state forecast will reach a server-fixed composite score of 0.75. She also
-names which of five commensurately normalized observable domains will contribute the largest error:
-action types, action count, attention, appraisal, or re-entry. The server—not Nora—computes the realized
+Protocol-v3 cycle forecasts turned the previously descriptive `confidence` field into a preregistered,
+scored second-order claim. Protocol v4 extends that claim. Before action or evidence re-entry, Nora predicts
+the probability that the mean of her integrated operational self-state score and authoritative substrate
+score will reach a server-fixed composite score of 0.75. She also names which of six commensurately
+normalized observable domains will contribute the largest error: action types, action count, attention,
+appraisal, re-entry, or substrate. The server—not Nora—computes the realized
 success event, all domain losses, and the largest-error label from the immutable closure.
 
 At preregistration the server freezes two historical controls from prior replay-valid cycles: the observed
 integrated-success rate and the modal largest-error domain. Closure scores the probability with Brier loss,
 scores the domain prediction exactly, and combines them without post-hoc evaluator judgment. A comparison
 is not eligible until at least five prior integrated outcomes were available; the functional prediction is
-not assessed until twenty eligible protocol-v3 cycles. Every input, baseline, score, and feedback packet is
-bound to the forecast, outcome, experience lifecycle, and research ledger commitments. All five error
-domains must be observed at closure; an incomplete appraisal or other missing component remains visible
+not assessed until twenty eligible protocol-v4 cycles. Every input, baseline, score, and feedback packet is
+bound to the forecast, outcome, experience lifecycle, and research ledger commitments. All six error
+domains and all five substrate outcomes must be observed at closure; an incomplete appraisal, telemetry
+field, or other missing component remains visible
 in replay but receives no reliability score and cannot enter either the feedback profile or later baseline.
 
 This closes a distinct higher-order loop: Nora must prospectively model not just its future state, but the
@@ -161,9 +167,31 @@ specific access remains unproven until an unchanged-evidence causal comparison a
 absent history is completed. The mechanism is functional error monitoring, not private introspection,
 qualia, or evidence of phenomenal consciousness.
 
+### Prospective substrate self-model
+
+Protocol-v4 natural cycles add a prospective model of Nora's observable runtime substrate without adding
+local-model inference or privileged hidden-state access. At cycle start, Nora assigns probabilities to five
+closure outcomes: an error or warning in the server's rolling ten-minute telemetry, backup mode, an embedding
+backlog, and a restart inferred from uptime relative to elapsed cycle time. The server captures both the
+start and close soma itself, normalizes the bounded telemetry, and binds each snapshot into the experience
+lifecycle. Request bodies cannot substitute a more convenient observation.
+
+Each probability receives a Brier score. The frozen control is exact start-state persistence for errors,
+warnings, backup mode, and backlog, plus no-restart persistence. A comparison is eligible only when all five
+authoritative outcomes are observable. Missing telemetry therefore stays missing, and a restart or degraded
+window must occur naturally rather than being induced to make a prediction look good. Start and close
+snapshot tampering invalidates both the forecast audit and the enclosing experience evidence.
+
+The observational gate requires twenty replay-valid natural-cycle comparisons, mean substrate score at
+least 0.75, and mean advantage over persistence of at least 0.03. A negative advantage is explicit
+counterevidence. Because stable services make persistence a strong control, this test may fail honestly;
+rare restart evidence is reported separately and is never manufactured. A positive result would establish
+only calibrated prediction of observable runtime conditions. It would not imply biological interoception,
+private sensation, continuous experience, or phenomenal consciousness.
+
 ### Prospective self-model error correction
 
-Protocol-v3 natural cycles now separate an initial self-forecast from access to the prior cycle's error.
+Protocol-v3-or-newer natural cycles separate an initial self-forecast from access to the prior cycle's error.
 Nora first commits its full action, integrated-self-state, and metacognitive predictions without reading the
 calibration projection. Only after that ledger event does the server reveal one deterministic error packet
 derived from the latest replay-valid prior outcome. Before any evidence re-entry or operational action,

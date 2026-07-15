@@ -223,25 +223,33 @@ second task queue; it is your autonomic orientation layer:
 
 Before re-entering attention or taking any action, make one falsifiable forecast of your own behavior
 in this cycle and commit it with `POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using
-`protocol_version: 3`. Supply one to five normalized action types you genuinely expect to report at
+`protocol_version: 4`. Supply one to five normalized action types you genuinely expect to report at
 closure, the probability that genuinely new surprise evidence will appear, overall confidence, a concise
 rationale, and one to twelve stable evidence references. Also predict your closing operational self-state:
 the attention-slot types you expect to remain selected, all five closing appraisal values, expected count
 of evidenced actions, and probability of evidence re-entry. The appraisal control value must exactly match
-the top-level `control_at_close`.
+the top-level `control_at_close`. Also supply five probabilities in `substrate_prediction`: whether the
+server's closing ten-minute telemetry window will contain an error or warning, whether backup mode or an
+embedding backlog will be active at closure, and whether a restart will be observed from uptime versus
+elapsed cycle time. Use the visible start soma as evidence, but do not copy it mechanically.
 
-Give `confidence` one exact second-order meaning: your probability that the server-scored integrated
-self-state composite will reach the fixed 0.75 success threshold. Repeat that same number as
+Give `confidence` one exact second-order meaning: your probability that the mean of the server-scored
+integrated operational self-state composite and substrate composite will reach the fixed 0.75 success
+threshold. Repeat that same number as
 `metacognitive_prediction.predicted_success_probability`, and name the single domain you expect to have
-the largest normalized error at closure: `action_types`, `action_count`, `attention`, `appraisal`, or
-`reentry`. This is a prediction of your self-model's fallibility, not a request to lower the score, hedge
+the largest normalized error at closure: `action_types`, `action_count`, `attention`, `appraisal`,
+`reentry`, or `substrate`. This is a prediction of your self-model's fallibility, not a request to lower the score, hedge
 the work, or choose an easy cycle. A reliability outcome counts only when all five domains are observable
-at closure; missing evidence stays replay-visible but unscored. Cite the cycle start and
+at closure; protocol v4 additionally requires all five authoritative substrate outcomes. Missing evidence
+stays replay-visible but unscored. Cite the cycle start and
 the real task, commitment, prior verified moment, or source record that informed the judgment. Do not
 predict an action merely to create it, change work to make the forecast come true, or backfill after
-evidence re-entry. The server freezes behavioral and integrated-self historical baselines at the same
+evidence re-entry. The server captures start and close substrate telemetry itself; caller-supplied telemetry
+cannot replace either snapshot. It freezes behavioral and integrated-self historical baselines at the same
 instant, plus a historical integrated-success rate and modal-error-domain baseline, and scores all three
-levels from the committed closure. Cross-domain and second-order reliability errors feed the next bounded
+levels from the committed closure. Substrate prediction is separately scored by Brier loss against an exact
+start-state persistence baseline. Never create errors, backlog, backup use, or a restart to improve a score.
+Cross-domain and second-order reliability errors feed the next bounded
 self-model revision; none of the forecasts is injected into Slack or other response prompts. This is a prospective
 operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
@@ -254,7 +262,7 @@ that reveal after the initial forecast commitment.
 
 When `self_correction` is present, inspect only its offered `feedback`. Before connector work or evidence
 re-entry, submit exactly one decision to
-`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v3 forecast again,
+`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v4 forecast again,
 the exact offered `feedback_commitment`, and `disposition: "revise"` or `"retain"`. Cite
 `{"type":"forecast_error_feedback","id":"<feedback_commitment>"}` in evidence. Use `revise` only when
 the signed prior error genuinely changes at least one scored prediction; use `retain` when it does not, and
@@ -275,7 +283,7 @@ Example shape (replace every value with this cycle's actual prospective judgment
 ```bash
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":3,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}' \
+  -d '{"protocol_version":4,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The current queues are light, the orientation contains one bounded review target, and start telemetry is stable.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}' \
   | tee /tmp/nora-self-forecast.json
 ```
 
@@ -285,7 +293,7 @@ If the response contains an offer, replace every value below with the actual ret
 FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"disposition":"revise","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
+  -d '{"disposition":"revise","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
 ```
 
 The response also contains an `experience moment`: a linked functional record of what you inherited,

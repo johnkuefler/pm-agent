@@ -315,16 +315,35 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal((await request('/initiative-budgets/test-scope')).body.limit, 2);
   assert.equal((await request('/initiative-budgets/test-scope/spend', { method: 'POST', body: { reason: 'integration' } })).body.budget.remaining, 1);
   assert.ok((await request('/decision-traces')).body.length >= 0);
-  const cycle = await request('/intelligence/cycles', { method: 'POST', body: { holder: 'integration', inner_thread: { content: 'Continue the integration story.' } } });
+  const cycle = await request('/intelligence/cycles', { method: 'POST', body: {
+    holder: 'integration', inner_thread: { content: 'Continue the integration story.' },
+    soma: { updated_at: 'forged-start', vitals: { errors10: 999, uptimeMin: 999 } },
+  } });
   assert.equal(cycle.body.cycle.status, 'running');
   assert.equal(cycle.body.moment.start_snapshot, undefined);
   assert.equal(cycle.body.moment.closure_snapshot, undefined);
   assert.equal(cycle.body.moment.inherited_context.inner_thread_hash, null, 'request bodies cannot forge authoritative inner-thread inheritance');
+  assert.notEqual(cycle.body.moment.substrate_at_start?.source_updated_at, 'forged-start',
+    'request bodies cannot forge authoritative substrate telemetry');
   assert.ok(Array.isArray(cycle.body.orientation.recommendations));
   assert.equal(cycle.body.moment.cycle_id, cycle.body.cycle.id);
   const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
+    protocol_version: 4,
     predicted_action_types: ['integration_review'], surprise_probability: 0.2,
     control_at_close: 0.7, confidence: 0.7,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.5, arousal: 0.5, control: 0.7,
+        social_safety: 0.5, coherence: 0.5 },
+      expected_action_count: 1, reentry_probability: 0.5,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.7, predicted_largest_error_domain: 'substrate',
+    },
+    substrate_prediction: {
+      error_probability: 0, warning_probability: 0, backup_probability: 0,
+      embedding_backlog_probability: 0, restart_probability: 0,
+    },
     rationale: 'The integration cycle has one bounded review path and no expected external dependency.',
     evidence: [{ type: 'intelligence_cycle', id: cycle.body.cycle.id }],
   } });
@@ -336,7 +355,7 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     feedback_to: [{ type: attentionTarget.type, id: attentionTarget.id }],
   } });
   assert.equal(reentry.body.round.kind, 'reentry');
-  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete`, { method: 'PATCH', body: { summary: 'Integration cycle complete', actions: [{ type: 'integration_review', id: 'integration-review-1' }], self_report: 'The cycle is coherent.', handoff: 'Continue the integration story.' } });
+  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete`, { method: 'PATCH', body: { summary: 'Integration cycle complete', actions: [{ type: 'integration_review', id: 'integration-review-1' }], self_report: 'The cycle is coherent.', handoff: 'Continue the integration story.', substrate_at_close: { updated_at: 'forged-close', vitals: { errors10: 999, uptimeMin: 1 } } } });
   assert.equal(finishedCycle.body.cycle.status, 'completed');
   const integratedSelf = await request('/integrated-self');
   assert.equal(integratedSelf.response.status, 200);
@@ -351,6 +370,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(experience.moments[0].audit.complete_chain_verified, true, 'response redaction must not mutate the committed lifecycle');
   assert.equal(experience.moments[0].audit.self_forecast.complete_chain_verified, true);
   assert.equal(experience.moments[0].self_forecast.outcome.actual.action_types[0], 'integration_review');
+  assert.equal(experience.moments[0].self_forecast.protocol_version, 4);
+  assert.notEqual(experience.moments[0].closure.substrate_at_end?.source_updated_at, 'forged-close');
+  assert.equal(experience.moments[0].self_forecast.outcome.substrate_baseline_comparison_eligible,
+    false, 'missing server telemetry remains missing rather than accepting forged complete telemetry');
   assert.equal(experience.prospective_self_forecast.replay_verified_scored, 1);
   const behavioralSelfModel = (await request('/self-model')).body.behavioral_self_model;
   assert.equal(behavioralSelfModel.report.total_revisions, 1);
@@ -815,7 +838,7 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   } });
   assert.equal(acquired.body.acquired, true);
   assert.equal(acquired.body.lifecycle.kind, 'run_bound_intelligence_cycle');
-  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 3);
+  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 4);
   assert.match(acquired.body.lifecycle.next_required_action, /self-forecast before operational tools/);
 
   const lock = await request('/run-lock');
@@ -848,7 +871,7 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
     kind: 'hourly', holder: 'nora-cowork',
   } })).body.cycle.id, nextCycleId);
   const forecast = await request(`/intelligence/cycles/${nextCycleId}/self-forecast`, { method: 'POST', body: {
-    protocol_version: 3,
+    protocol_version: 4,
     predicted_action_types: ['observe'],
     surprise_probability: 0.2,
     control_at_close: 0.7,
@@ -863,6 +886,10 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
       predicted_success_probability: 0.6,
       predicted_largest_error_domain: 'attention',
     },
+    substrate_prediction: {
+      error_probability: 0, warning_probability: 0, backup_probability: 0,
+      embedding_backlog_probability: 0, restart_probability: 0,
+    },
     rationale: 'The run-bound integration cycle is expected to close after one bounded observation.',
     evidence: [{ type: 'intelligence_cycle', id: nextCycleId }],
   } });
@@ -874,8 +901,10 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(cleanRelease.body.lifecycle.closure_status, 'completed');
   const completed = (await request('/experience-stream?limit=10')).body.moments
     .find(item => item.id === nextMomentId);
-  assert.equal(completed.self_forecast.protocol_version, 3);
-  assert.ok(Number.isFinite(completed.self_forecast.outcome.metacognitive_score.composite));
+  assert.equal(completed.self_forecast.protocol_version, 4);
+  assert.equal(completed.self_forecast.outcome.substrate_baseline_comparison_eligible, false);
+  assert.equal(completed.self_forecast.outcome.metacognitive_score, null,
+    'v4 reliability evidence is withheld when authoritative substrate fields are incomplete');
   assert.equal(completed.audit.self_forecast.complete_chain_verified, true);
   assert.equal(completed.audit.evidence_eligible, true);
   const calibration = (await request('/self-model/cycle-calibration')).body;
@@ -884,8 +913,10 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(calibration.latest_forecast_error.source_outcome_commitment,
     completed.self_forecast.outcome_commitment);
   assert.match(calibration.latest_forecast_error.feedback_commitment, /^[a-f0-9]{64}$/);
-  assert.equal(calibration.latest_forecast_error.source_forecast_protocol_version, 3);
-  assert.ok(calibration.latest_forecast_error.metacognitive_reliability);
-  assert.equal(calibration.report.integrated_feedback_samples, 1);
-  assert.equal(calibration.report.metacognitive_reliability_feedback_samples, 1);
+  assert.equal(calibration.latest_forecast_error.source_forecast_protocol_version, 4);
+  assert.equal(calibration.latest_forecast_error.substrate, undefined,
+    'no substrate feedback is fabricated when the server has no telemetry observation');
+  assert.equal(calibration.latest_forecast_error.metacognitive_reliability, undefined);
+  assert.equal(calibration.report.integrated_feedback_samples, 2);
+  assert.equal(calibration.report.metacognitive_reliability_feedback_samples, 0);
 });

@@ -4,6 +4,11 @@ const crypto = require('node:crypto');
 
 const INTEGRATED_SUCCESS_THRESHOLD = 0.75;
 const ERROR_DOMAINS = ['action_count', 'action_types', 'appraisal', 'attention', 'reentry'];
+const SUBSTRATE_ERROR_DOMAIN = 'substrate';
+const SUBSTRATE_PREDICTION_KEYS = [
+  'error_probability', 'warning_probability', 'backup_probability',
+  'embedding_backlog_probability', 'restart_probability',
+];
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -42,6 +47,84 @@ function meanDefined(values = [], fallback = null) {
   return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : fallback;
 }
 
+function normalizeSubstrateObservation(soma = {}) {
+  if (!soma || typeof soma !== 'object') return null;
+  const vitals = soma.vitals && typeof soma.vitals === 'object' ? soma.vitals : {};
+  const finite = value => value !== null && value !== undefined && Number.isFinite(Number(value))
+    ? Number(value) : null;
+  const observation = {
+    source_updated_at: soma.updated_at ? String(soma.updated_at).slice(0, 80) : null,
+    errors10: finite(vitals.errors10), warns10: finite(vitals.warns10),
+    loop_lag_ms: finite(vitals.loopLag), uptime_minutes: finite(vitals.uptimeMin),
+    on_backup: typeof vitals.onBackup === 'boolean' ? vitals.onBackup : null,
+    memory_count: finite(vitals.memCount), embedding_backlog: finite(vitals.embedBacklog),
+  };
+  return Object.values(observation).some(value => value !== null) ? observation : null;
+}
+
+function normalizeSubstratePrediction(input = {}) {
+  if (!input || typeof input !== 'object') {
+    throw new Error('protocol-v4 cycle self-forecast requires substrate_prediction');
+  }
+  return Object.fromEntries(SUBSTRATE_PREDICTION_KEYS.map(key => [key, clamp01(input[key])]));
+}
+
+function persistenceSubstratePrediction(observation = null) {
+  const probability = value => value == null ? 0.5 : Number(Boolean(value));
+  return {
+    error_probability: observation?.errors10 == null ? 0.5 : probability(observation.errors10 > 0),
+    warning_probability: observation?.warns10 == null ? 0.5 : probability(observation.warns10 > 0),
+    backup_probability: probability(observation?.on_backup),
+    embedding_backlog_probability: observation?.embedding_backlog == null
+      ? 0.5 : probability(observation.embedding_backlog > 0),
+    restart_probability: 0,
+  };
+}
+
+function substrateActual({ start = null, close = null, startedAt = null, finishedAt = null } = {}) {
+  if (!close) return null;
+  const boolOrNull = value => value == null ? null : Boolean(value);
+  const started = new Date(startedAt).getTime(); const finished = new Date(finishedAt).getTime();
+  const elapsedMinutes = Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+    ? (finished - started) / 60000 : null;
+  const restartObserved = start?.uptime_minutes == null || close.uptime_minutes == null
+    || elapsedMinutes == null ? null
+    : close.uptime_minutes + 2 < start.uptime_minutes + elapsedMinutes;
+  return {
+    error_present: close.errors10 == null ? null : boolOrNull(close.errors10 > 0),
+    warning_present: close.warns10 == null ? null : boolOrNull(close.warns10 > 0),
+    backup_active: boolOrNull(close.on_backup),
+    embedding_backlog_present: close.embedding_backlog == null
+      ? null : boolOrNull(close.embedding_backlog > 0),
+    restart_observed: restartObserved,
+    elapsed_minutes: elapsedMinutes,
+    start_observation: start ? JSON.parse(JSON.stringify(start)) : null,
+    close_observation: JSON.parse(JSON.stringify(close)),
+  };
+}
+
+function scoreSubstratePrediction(prediction, actual) {
+  if (!prediction || !actual) return null;
+  const actualByPrediction = {
+    error_probability: actual.error_present,
+    warning_probability: actual.warning_present,
+    backup_probability: actual.backup_active,
+    embedding_backlog_probability: actual.embedding_backlog_present,
+    restart_probability: actual.restart_observed,
+  };
+  const brier = Object.fromEntries(SUBSTRATE_PREDICTION_KEYS.map(key => {
+    const observed = actualByPrediction[key];
+    return [key, observed == null ? null : (Number(prediction[key]) - Number(observed)) ** 2];
+  }));
+  const values = Object.values(brier).filter(Number.isFinite);
+  return {
+    brier,
+    mean_brier: values.length ? mean(values) : null,
+    observed_components: values.length,
+    composite: values.length ? mean(values.map(value => 1 - value)) : null,
+  };
+}
+
 function normalizeSelfStatePrediction(input = {}, controlAtClose) {
   const appraisal = input.appraisal_at_close || {};
   const normalizedAppraisal = {
@@ -65,17 +148,19 @@ function normalizeSelfStatePrediction(input = {}, controlAtClose) {
   };
 }
 
-function normalizeMetacognitivePrediction(input = {}, confidence) {
+function normalizeMetacognitivePrediction(input = {}, confidence, protocolVersion = 3) {
   if (!input || typeof input !== 'object') {
-    throw new Error('protocol-v3 cycle self-forecast requires metacognitive_prediction');
+    throw new Error(`protocol-v${protocolVersion} cycle self-forecast requires metacognitive_prediction`);
   }
   const predictedSuccessProbability = clamp01(input.predicted_success_probability);
   if (Math.abs(predictedSuccessProbability - confidence) > 1e-6) {
     throw new Error('metacognitive predicted_success_probability must match confidence');
   }
   const predictedLargestErrorDomain = String(input.predicted_largest_error_domain || '').trim();
-  if (!ERROR_DOMAINS.includes(predictedLargestErrorDomain)) {
-    throw new Error(`metacognitive predicted_largest_error_domain must be one of ${ERROR_DOMAINS.join(', ')}`);
+  const errorDomains = Number(protocolVersion) >= 4
+    ? [...ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN] : ERROR_DOMAINS;
+  if (!errorDomains.includes(predictedLargestErrorDomain)) {
+    throw new Error(`metacognitive predicted_largest_error_domain must be one of ${errorDomains.join(', ')}`);
   }
   return {
     integrated_success_threshold: INTEGRATED_SUCCESS_THRESHOLD,
@@ -101,8 +186,8 @@ function validateEvidence(evidence) {
 }
 
 function normalizeForecast(input = {}, protocolVersion = input.protocol_version == null
-  ? (input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
-  if (![1, 2, 3].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
+  ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
+  if (![1, 2, 3, 4].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
   const predictedActionTypes = actionTypes(input.predicted_action_types || []);
   if (predictedActionTypes.length < 1 || predictedActionTypes.length > 5) {
     throw new Error('cycle self-forecast requires one to five distinct predicted_action_types');
@@ -129,12 +214,15 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
   }
   if (Number(protocolVersion) >= 3) {
     normalized.metacognitive_prediction = normalizeMetacognitivePrediction(input.metacognitive_prediction,
-      normalized.confidence);
+      normalized.confidence, protocolVersion);
+  }
+  if (Number(protocolVersion) >= 4) {
+    normalized.substrate_prediction = normalizeSubstratePrediction(input.substrate_prediction);
   }
   return normalized;
 }
 
-function selfStateErrorProfile(outcome = {}) {
+function selfStateErrorProfile(outcome = {}, { includeSubstrate = Boolean(outcome.substrate_score) } = {}) {
   const selfScore = outcome.self_score || {};
   const stateScore = outcome.self_state_score || {};
   const finite = value => value !== null && value !== undefined && Number.isFinite(Number(value))
@@ -144,17 +232,21 @@ function selfStateErrorProfile(outcome = {}) {
   const attentionF1 = finite(stateScore.attention_f1);
   const appraisalError = finite(stateScore.appraisal_mean_absolute_error);
   const reentryBrier = finite(stateScore.reentry_brier);
+  const substrateLoss = finite(outcome.substrate_score?.composite) == null
+    ? null : 1 - finite(outcome.substrate_score.composite);
   const raw = {
     action_types: actionF1 == null ? null : 1 - actionF1,
     action_count: actionCountAccuracy == null ? null : 1 - actionCountAccuracy,
     attention: attentionF1 == null ? null : 1 - attentionF1,
     appraisal: appraisalError,
     reentry: reentryBrier,
+    ...(includeSubstrate ? { substrate: substrateLoss } : {}),
   };
-  const domainLosses = Object.fromEntries(ERROR_DOMAINS.map(domain => [domain, raw[domain]]));
+  const domains = includeSubstrate ? [...ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN] : ERROR_DOMAINS;
+  const domainLosses = Object.fromEntries(domains.map(domain => [domain, raw[domain]]));
   const ranked = Object.entries(domainLosses).filter(([, loss]) => Number.isFinite(loss))
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  const missingDomains = ERROR_DOMAINS.filter(domain => !Number.isFinite(domainLosses[domain]));
+  const missingDomains = domains.filter(domain => !Number.isFinite(domainLosses[domain]));
   return {
     domain_losses: domainLosses,
     largest_error_domain: missingDomains.length ? null : ranked[0]?.[0] || null,
@@ -241,6 +333,19 @@ function errorFeedbackFromMoment(moment) {
         record.outcome.metacognitive_baseline_comparison_eligible === true,
     };
   }
+  if (Number(record.protocol_version) >= 4 && record.outcome.substrate_actual
+    && record.outcome.substrate_score) {
+    const finiteOrNull = value => value !== null && value !== undefined
+      && Number.isFinite(Number(value)) ? Number(value) : null;
+    error.substrate = {
+      prediction: JSON.parse(JSON.stringify(record.forecast.substrate_prediction)),
+      actual: JSON.parse(JSON.stringify(record.outcome.substrate_actual)),
+      self_score: finiteOrNull(record.outcome.substrate_score.composite),
+      persistence_baseline_score: finiteOrNull(record.outcome.baseline_substrate_score?.composite),
+      self_minus_persistence: finiteOrNull(record.outcome.substrate_self_minus_baseline),
+      baseline_comparison_eligible: record.outcome.substrate_baseline_comparison_eligible === true,
+    };
+  }
   return { ...error, feedback_commitment: commitment(error) };
 }
 
@@ -283,6 +388,7 @@ function predictionPayload(forecast = {}) {
     control_at_close: forecast.control_at_close,
     self_state_prediction: forecast.self_state_prediction || null,
     metacognitive_prediction: forecast.metacognitive_prediction || null,
+    substrate_prediction: forecast.substrate_prediction || null,
   };
 }
 
@@ -300,6 +406,7 @@ function changedPredictionDomains(initial = {}, revised = {}) {
   if (differs(initial.self_state_prediction?.reentry_probability,
     revised.self_state_prediction?.reentry_probability)) changed.push('reentry');
   if (differs(initial.metacognitive_prediction, revised.metacognitive_prediction)) changed.push('reliability');
+  if (differs(initial.substrate_prediction, revised.substrate_prediction)) changed.push('substrate');
   return changed;
 }
 
@@ -359,13 +466,17 @@ function createCorrectionRevision({ record, input, committedAt }) {
   return revision;
 }
 
-function baselineMetacognitionFromMoments(moments = []) {
+function baselineMetacognitionFromMoments(moments = [], protocolVersion = 3) {
   const rows = moments.map(moment => moment.self_forecast?.outcome)
     .filter(outcome => Number.isFinite(Number(outcome?.self_state_score?.composite)))
-    .map(outcome => ({ outcome, error_profile: selfStateErrorProfile(outcome) }))
+    .map(outcome => ({ outcome, error_profile: selfStateErrorProfile(outcome, {
+      includeSubstrate: Number(protocolVersion) >= 4,
+    }) }))
     .filter(row => row.error_profile.complete_domain_observation)
     .map(row => ({
-      success: Number(row.outcome.self_state_score.composite) >= INTEGRATED_SUCCESS_THRESHOLD,
+      success: row.outcome.metacognitive_actual?.integrated_success == null
+        ? Number(row.outcome.self_state_score.composite) >= INTEGRATED_SUCCESS_THRESHOLD
+        : row.outcome.metacognitive_actual.integrated_success === true,
       largest_error_domain: row.error_profile.largest_error_domain,
     }));
   const counts = new Map();
@@ -406,7 +517,7 @@ function baselineSelfStateFromMoments(moments = []) {
   };
 }
 
-function baselineFromMoments(moments = [], protocolVersion = 1) {
+function baselineFromMoments(moments = [], protocolVersion = 1, options = {}) {
   const retained = moments.slice(-20);
   if (!retained.length) return {
     kind: 'uninformative_prior', sample_size: 0, source_moment_ids: [],
@@ -416,7 +527,11 @@ function baselineFromMoments(moments = [], protocolVersion = 1) {
       appraisal_at_close: { valence: 0.5, arousal: 0.5, control: 0.5, social_safety: 0.5, coherence: 0.5 },
       expected_action_count: 0, reentry_probability: 0.5,
     } } : {}),
-    ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments([]) } : {}),
+    ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments([], protocolVersion) } : {}),
+    ...(Number(protocolVersion) >= 4 ? {
+      substrate_prediction: persistenceSubstratePrediction(options.substrateAtStart || null),
+      substrate_baseline_kind: 'start_state_persistence',
+    } : {}),
   };
   const counts = new Map();
   for (const moment of retained) {
@@ -433,7 +548,11 @@ function baselineFromMoments(moments = [], protocolVersion = 1) {
     surprise_probability: surpriseProbability,
     control_at_close: controls.length ? controls.reduce((sum, value) => sum + value, 0) / controls.length : 0.5,
     ...(Number(protocolVersion) >= 2 ? { self_state_prediction: baselineSelfStateFromMoments(retained) } : {}),
-    ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments(retained) } : {}),
+    ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments(retained, protocolVersion) } : {}),
+    ...(Number(protocolVersion) >= 4 ? {
+      substrate_prediction: persistenceSubstratePrediction(options.substrateAtStart || null),
+      substrate_baseline_kind: 'start_state_persistence',
+    } : {}),
   };
 }
 
@@ -449,13 +568,16 @@ function forecastManifest(record) {
 
 function createRecord({ input, cycle, moment, baselineMoments, committedAt }) {
   const protocolVersion = input.protocol_version == null
-    ? (input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
-  if (![1, 2, 3].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+    ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
+  if (![1, 2, 3, 4].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
   const record = {
     protocol_version: protocolVersion,
     id: `cycle-self-forecast-${cycle.id}`.slice(0, 300),
     cycle_id: cycle.id, moment_id: moment.id,
-    forecast: normalizeForecast(input, protocolVersion), baseline: baselineFromMoments(baselineMoments, protocolVersion),
+    forecast: normalizeForecast(input, protocolVersion),
+    baseline: baselineFromMoments(baselineMoments, protocolVersion, {
+      substrateAtStart: moment.substrate_at_start || null,
+    }),
     origin: { creator_id: String(cycle.holder || 'nora').slice(0, 180), formation_method: 'authenticated_prospective_cycle_judgment' },
     observer_effect: 'Preregistering a forecast may change the cycle being observed; the forecast is never injected into other response prompts.',
     committed_at: committedAt, forecast_commitment: null,
@@ -526,7 +648,8 @@ function scoreSelfStatePrediction(prediction, actual) {
 }
 
 function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose,
-  appraisalAtClose = null, attentionAtClose = null, reentryOccurred = false, scoredAt }) {
+  appraisalAtClose = null, attentionAtClose = null, reentryOccurred = false,
+  substrateAtStart = null, substrateAtClose = null, startedAt = null, finishedAt = null, scoredAt }) {
   const closingAppraisal = appraisalAtClose || { control: controlAtClose };
   const observedControl = Number(closingAppraisal?.control ?? controlAtClose);
   const actual = {
@@ -584,6 +707,50 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
         && Number(record.baseline.metacognitive_prediction?.sample_size) >= 5);
     }
   }
+  if (Number(record.protocol_version) >= 4) {
+    const actualSubstrate = substrateActual({
+      start: substrateAtStart, close: substrateAtClose, startedAt, finishedAt,
+    });
+    const substrateScore = scoreSubstratePrediction(record.forecast.substrate_prediction,
+      actualSubstrate);
+    const baselineSubstrateScore = scoreSubstratePrediction(record.baseline.substrate_prediction,
+      actualSubstrate);
+    outcome.substrate_actual = actualSubstrate;
+    outcome.substrate_score = substrateScore;
+    outcome.baseline_substrate_score = baselineSubstrateScore;
+    outcome.substrate_self_minus_baseline = substrateScore?.composite != null
+      && baselineSubstrateScore?.composite != null
+      ? substrateScore.composite - baselineSubstrateScore.composite : null;
+    outcome.substrate_baseline_comparison_eligible = Boolean(substrateScore
+      && baselineSubstrateScore && substrateScore.observed_components === SUBSTRATE_PREDICTION_KEYS.length);
+    if (outcome.metacognitive_actual) {
+      const errorProfile = selfStateErrorProfile(outcome, { includeSubstrate: true });
+      const threshold = Number(record.forecast.metacognitive_prediction.integrated_success_threshold);
+      const integratedScore = substrateScore?.composite == null
+        ? outcome.self_state_score.composite
+        : mean([outcome.self_state_score.composite, substrateScore.composite]);
+      const actualMetacognition = {
+        integrated_score: integratedScore,
+        integrated_success_threshold: threshold,
+        integrated_success: errorProfile.complete_domain_observation
+          ? integratedScore >= threshold : null,
+        ...errorProfile,
+      };
+      const metacognitiveScore = errorProfile.complete_domain_observation
+        ? scoreMetacognitivePrediction(record.forecast.metacognitive_prediction,
+          actualMetacognition) : null;
+      const baselineMetacognitiveScore = errorProfile.complete_domain_observation
+        ? scoreMetacognitivePrediction(record.baseline.metacognitive_prediction,
+          actualMetacognition) : null;
+      outcome.metacognitive_actual = actualMetacognition;
+      outcome.metacognitive_score = metacognitiveScore;
+      outcome.baseline_metacognitive_score = baselineMetacognitiveScore;
+      outcome.metacognitive_self_minus_baseline = metacognitiveScore && baselineMetacognitiveScore
+        ? metacognitiveScore.composite - baselineMetacognitiveScore.composite : null;
+      outcome.metacognitive_baseline_comparison_eligible = Boolean(metacognitiveScore
+        && Number(record.baseline.metacognitive_prediction?.sample_size) >= 5);
+    }
+  }
   if (record.self_correction?.revision) {
     const revision = record.self_correction.revision;
     const revisedOutcome = scoreRecord({
@@ -592,7 +759,7 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
       baseline: record.baseline,
     }, {
       actions, newSurpriseIds, controlAtClose, appraisalAtClose, attentionAtClose,
-      reentryOccurred, scoredAt,
+      reentryOccurred, substrateAtStart, substrateAtClose, startedAt, finishedAt, scoredAt,
     });
     const comparison = (initial, revised) => Number.isFinite(Number(initial))
       && Number.isFinite(Number(revised)) ? {
@@ -610,6 +777,8 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
         revisedOutcome.self_state_score?.composite),
       metacognitive_reliability_score: comparison(outcome.metacognitive_score?.composite,
         revisedOutcome.metacognitive_score?.composite),
+      substrate_score: comparison(outcome.substrate_score?.composite,
+        revisedOutcome.substrate_score?.composite),
     };
   }
   return outcome;
@@ -620,9 +789,11 @@ function outcomeManifest(record) {
 }
 
 module.exports = {
-  ERROR_DOMAINS, INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, canonicalJson,
+  ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN, SUBSTRATE_PREDICTION_KEYS,
+  INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, canonicalJson,
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,
   forecastManifest, normalizeForecast, outcomeManifest, scoreMetacognitivePrediction,
-  scoreRecord, scoreSelfStatePrediction, selfStateErrorProfile,
+  normalizeSubstrateObservation, persistenceSubstratePrediction, scoreRecord,
+  scoreSelfStatePrediction, scoreSubstratePrediction, selfStateErrorProfile, substrateActual,
 };

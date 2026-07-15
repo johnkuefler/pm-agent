@@ -281,9 +281,51 @@ test('prospective reliability awareness requires calibrated success and error-do
   assert.equal(supported.status, 'observational_signal_observed');
   assert.equal(supported.evidence.largest_error_domain_hit_rate, 1);
   assert.ok(Math.abs(supported.evidence.mean_self_minus_baseline - 0.2) < 1e-12);
+  const v4 = moment(20);
+  v4.self_forecast.protocol_version = 4;
+  report = buildIndicatorReport(stateWith({ experience_stream: [
+    ...Array.from({ length: 20 }, (_, index) => moment(index)), v4,
+  ] }));
+  assert.equal(indicator(report, 'prospective_self_model_reliability_awareness').status, 'collecting');
+  assert.equal(indicator(report, 'prospective_self_model_reliability_awareness')
+    .evidence.baseline_comparison_eligible, 1,
+  'protocol-v3 and protocol-v4 reliability targets are not pooled');
   report = buildIndicatorReport(stateWith({ experience_stream:
     Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
   assert.equal(indicator(report, 'prospective_self_model_reliability_awareness').status,
+    'observational_signal_contradicted');
+});
+
+test('natural-cycle substrate self-prediction requires advantage over exact persistence', () => {
+  const moment = (index, advantage = 0.1) => ({
+    id: `substrate-forecast-moment-${index}`, status: 'completed',
+    self_forecast: {
+      protocol_version: 4,
+      forecast: { substrate_prediction: { restart_probability: 0.1 } },
+      outcome: {
+        substrate_score: { composite: 0.8 },
+        baseline_substrate_score: { composite: 0.8 - advantage },
+        substrate_self_minus_baseline: advantage,
+        substrate_baseline_comparison_eligible: true,
+        substrate_actual: { restart_observed: index === 0 },
+      },
+    },
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true,
+      self_forecast: { complete_chain_verified: true } },
+  });
+  let report = buildIndicatorReport(stateWith({ experience_stream: [moment(0)] }));
+  let substrate = indicator(report, 'predictive_interoception');
+  assert.equal(substrate.status, 'collecting');
+  assert.equal(substrate.evidence.natural_cycle_baseline_eligible, 1);
+  assert.equal(substrate.evidence.observed_restarts, 1);
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index)) }));
+  substrate = indicator(report, 'predictive_interoception');
+  assert.equal(substrate.status, 'observational_signal_observed');
+  assert.ok(Math.abs(substrate.evidence.natural_cycle_advantage - 0.1) < 1e-12);
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
+  assert.equal(indicator(report, 'predictive_interoception').status,
     'observational_signal_contradicted');
 });
 

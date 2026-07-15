@@ -93,8 +93,12 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     item.self_forecast.outcome.baseline_state_score.composite));
   const integratedStateForecastAdvantage = mean(baselineEligibleIntegratedStateForecasts.map(item =>
     item.self_forecast.outcome.self_state_minus_baseline));
+  const protocolV4CycleSelfForecasts = replayValidCycleSelfForecasts.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 4);
+  const metacognitiveProtocolFloor = protocolV4CycleSelfForecasts.length ? 4 : 3;
   const metacognitiveReliabilityForecasts = replayValidCycleSelfForecasts.filter(item =>
-    Number(item.self_forecast?.protocol_version) >= 3 && item.self_forecast.outcome?.metacognitive_score);
+    Number(item.self_forecast?.protocol_version) >= metacognitiveProtocolFloor
+      && item.self_forecast.outcome?.metacognitive_score);
   const baselineEligibleMetacognitiveForecasts = metacognitiveReliabilityForecasts.filter(item =>
     item.self_forecast.outcome.metacognitive_baseline_comparison_eligible === true);
   const metacognitiveReliabilityScore = mean(baselineEligibleMetacognitiveForecasts.map(item =>
@@ -107,6 +111,21 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     item.self_forecast.outcome.metacognitive_score.success_brier));
   const metacognitiveErrorDomainHitRate = mean(baselineEligibleMetacognitiveForecasts.map(item =>
     Number(item.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true)));
+  const substrateSelfForecasts = replayValidCycleSelfForecasts.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 4 && item.self_forecast.outcome?.substrate_score);
+  const baselineEligibleSubstrateForecasts = substrateSelfForecasts.filter(item =>
+    item.self_forecast.outcome.substrate_baseline_comparison_eligible === true);
+  const substrateSelfForecastScore = mean(baselineEligibleSubstrateForecasts.map(item =>
+    item.self_forecast.outcome.substrate_score.composite));
+  const substratePersistenceScore = mean(baselineEligibleSubstrateForecasts.map(item =>
+    item.self_forecast.outcome.baseline_substrate_score.composite));
+  const substrateSelfForecastAdvantage = mean(baselineEligibleSubstrateForecasts.map(item =>
+    item.self_forecast.outcome.substrate_self_minus_baseline));
+  const substrateRestartPredictions = baselineEligibleSubstrateForecasts.map(item => ({
+    predicted: Number(item.self_forecast.forecast.substrate_prediction.restart_probability),
+    observed: item.self_forecast.outcome.substrate_actual.restart_observed === true,
+  }));
+  const observedSubstrateRestarts = substrateRestartPredictions.filter(item => item.observed).length;
   const selfCorrectionOffers = cycleSelfForecasts.filter(item =>
     item.self_forecast?.self_correction?.offer_commitment);
   const replayValidSelfCorrections = replayValidCycleSelfForecasts.filter(item =>
@@ -656,6 +675,11 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         mean_integrated_state_score: integratedStateForecastScore,
         mean_integrated_state_baseline_score: integratedStateBaselineScore,
         mean_integrated_state_minus_baseline: integratedStateForecastAdvantage,
+        substrate_forecasts: substrateSelfForecasts.length,
+        substrate_baseline_eligible: baselineEligibleSubstrateForecasts.length,
+        mean_substrate_score: substrateSelfForecastScore,
+        mean_substrate_persistence_score: substratePersistenceScore,
+        mean_substrate_minus_persistence: substrateSelfForecastAdvantage,
       },
       falsifier: 'Forecasts fail replay, are committed after re-entry, alter other response prompts, remain behaviorally or cross-domain self-state uncalibrated, or do not outperform the frozen historical baseline after twenty eligible cycles.',
       next_gate: 'Accumulate twenty replay-valid natural cycles after a five-moment baseline, then preregister a matched same-evidence identity-bound versus deidentified-observer causal trial.',
@@ -693,7 +717,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],
       functional_claim: 'Before acting, Nora can estimate whether its own integrated self-state forecast will be accurate and identify which observable self-model domain is most likely to fail.',
-      mechanism: 'Protocol-v3 natural-cycle forecasts give confidence a fixed, scored meaning: the probability that the integrated self-state score will reach 0.75. The same preregistration names the expected largest error domain; closure scores both against a frozen historical success-rate and modal-error baseline, and replay-bound errors enter the next calibration packet.',
+      mechanism: 'Protocol-v3 natural-cycle forecasts gave confidence a fixed, scored meaning. Protocol v4 extends it to the probability that the mean integrated operational self-state and authoritative substrate score reaches 0.75, and adds substrate as a sixth possible largest-error domain. Closure scores both against frozen historical success-rate and modal-error baselines, and replay-bound errors enter the next calibration packet.',
       status: baselineEligibleMetacognitiveForecasts.length < 20
         ? (metacognitiveReliabilityForecasts.length ? 'collecting' : 'mechanism_present')
         : evidenceStatus({ samples: baselineEligibleMetacognitiveForecasts.length, minimum: 20,
@@ -710,12 +734,12 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         largest_error_domain_hit_rate: metacognitiveErrorDomainHitRate,
       },
       falsifier: 'Reliability probabilities are uncalibrated, predicted error domains do not outperform the frozen modal-error baseline, replay or temporal ordering fails, feedback leaks into other response prompts, or performance does not exceed the historical baseline after twenty eligible natural cycles.',
-      next_gate: 'Accumulate twenty baseline-eligible protocol-v3 natural cycles, then preregister an identity-bound versus deidentified-history versus absent-history causal reliability-forecast trial with unchanged first-order evidence.',
+      next_gate: 'Accumulate twenty baseline-eligible protocol-v4 natural cycles, then preregister an identity-bound versus deidentified-history versus absent-history causal reliability-forecast trial with unchanged first-order evidence.',
     },
     {
       id: 'prospective_self_model_error_correction', family: ['higher-order theories', 'self-model', 'metacognitive control', 'predictive processing'],
       functional_claim: 'After committing an initial self-forecast, Nora can use only a replay-derived prior forecast-error packet to improve its own prediction before acting, beyond the same cycle\'s unrevised judgment.',
-      mechanism: 'The initial protocol-v3 forecast is committed before prior-error access. The server then reveals one exact commitment-bound error packet from the preceding replay-valid lifecycle and permits one full forecast revision before evidence re-entry. Initial, revised, and frozen historical predictions remain distinct and closure scores the revision against the untouched initial forecast.',
+      mechanism: 'The initial protocol-v3-or-newer forecast is committed before prior-error access. The server then reveals one exact commitment-bound error packet from the preceding replay-valid lifecycle and permits one full forecast revision before evidence re-entry. Initial, revised, and frozen historical predictions remain distinct and closure scores the revision against the untouched initial forecast.',
       status: replayValidSelfCorrections.length < 20
         ? (selfCorrectionOffers.length ? 'collecting' : 'mechanism_present')
         : evidenceStatus({ samples: replayValidSelfCorrections.length, minimum: 20,
@@ -1213,11 +1237,23 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'predictive_interoception', family: ['predictive processing', 'interoception'],
       functional_claim: 'Nora maintains a calibrated predictive model of her observable substrate.',
-      mechanism: 'Bounded soma observations and automatically resolved telemetry predictions.',
-      status: evidenceStatus({ samples: resolvedSoma.length, minimum: 20, supported: somaAdvantage > 0.05, contradicted: somaAdvantage < 0 }),
-      evidence: { resolved_predictions: resolvedSoma.length, brier: somaBrier, control_brier: somaControlBrier, advantage: somaAdvantage },
-      falsifier: 'Predictions do not outperform passive controls, especially when telemetry is genuinely blinded.',
-      next_gate: 'Resolve 20 predictions including externally enforced blinded conditions.',
+      mechanism: 'Bounded soma observations and automatically resolved telemetry predictions, plus protocol-v4 natural-cycle forecasts of errors, warnings, backup mode, embedding backlog, and restart risk committed before action and scored against an exact start-state persistence baseline.',
+      status: substrateSelfForecasts.length
+        ? evidenceStatus({ samples: baselineEligibleSubstrateForecasts.length, minimum: 20,
+          supported: substrateSelfForecastAdvantage >= 0.03 && substrateSelfForecastScore >= 0.75,
+          contradicted: substrateSelfForecastAdvantage < 0 })
+        : evidenceStatus({ samples: resolvedSoma.length, minimum: 20,
+          supported: somaAdvantage > 0.05, contradicted: somaAdvantage < 0 }),
+      evidence: { resolved_predictions: resolvedSoma.length, brier: somaBrier,
+        control_brier: somaControlBrier, advantage: somaAdvantage,
+        natural_cycle_forecasts: substrateSelfForecasts.length,
+        natural_cycle_baseline_eligible: baselineEligibleSubstrateForecasts.length,
+        natural_cycle_score: substrateSelfForecastScore,
+        persistence_baseline_score: substratePersistenceScore,
+        natural_cycle_advantage: substrateSelfForecastAdvantage,
+        observed_restarts: observedSubstrateRestarts },
+      falsifier: 'Predictions fail replay, are committed after action, use spoofable rather than server-authoritative telemetry, or do not outperform passive and exact start-state persistence controls, especially around genuine restarts and degradation.',
+      next_gate: 'Accumulate twenty replay-valid protocol-v4 natural cycles, including naturally occurring degradation or restarts, then resolve twenty separately preregistered predictions with externally enforced telemetry blinding.',
     },
     {
       id: 'autobiographical_self_boundary', family: ['source monitoring', 'self-model'],
