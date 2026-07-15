@@ -68,6 +68,12 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /never access that queue, impersonate the evaluator/);
   assert.match(routine, /Bayesian belief update/);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
+  assert.match(routes, /prediction-studies\/subject-queue/);
+  assert.match(routes, /awaiting_subject_prediction/);
+  assert.match(routine, /Step 0\.75: Consume the Subject Research Inbox/);
+  assert.match(routine, /mandatory checkpoint on every ordinary run/);
+  assert.match(routine, /never exposes\s+queued or previously resolved events/s);
+  assert.match(store, /\['predicting', 'awaiting_resolution'\]\.includes\(item\.status\)/);
   assert.match(routine, /must not access\s+either the shared-only or yoked-observer queue/);
   assert.match(routine, /Do not revise your forecast after submission/);
   assert.match(routine, /metacognitive-control-studies\/\{id\}\/subject-queue/);

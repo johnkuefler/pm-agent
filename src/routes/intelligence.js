@@ -742,6 +742,20 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/self-model/prediction-studies', requireAuth, (req, res) => res.json(store.selfPredictionStudiesSnapshot()));
+  app.get('/self-model/prediction-studies/subject-queue', requireAuth, (req, res) => {
+    const snapshot = store.selfPredictionStudiesSnapshot({ role: 'subject' });
+    const studies = snapshot.studies.filter(item => item.status === 'active');
+    res.json({
+      epistemic_status: snapshot.epistemic_status,
+      experimental_access_sealed: snapshot.experimental_access_sealed === true,
+      studies,
+      report: {
+        active: studies.length,
+        awaiting_subject_prediction: studies.filter(item => item.events?.some(event =>
+          event.status === 'predicting' && event.self_prediction_submitted !== true)).length,
+      },
+    });
+  });
   app.post('/self-model/prediction-studies', requireResearchAuth, (req, res) => {
     try { res.json({ ok: true, study: store.createSelfPredictionStudy(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }

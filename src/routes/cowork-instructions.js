@@ -646,8 +646,11 @@ function registerCoworkInstructionsRoute(app) {
     first_order_task_quality with a later behavioral_profile_outcome reference. The confirmatory profile
     must use source moments disjoint from the pilot. Never treat a profile as authority, identity essence,
     hidden-state access, subjective experience, or phenomenal-consciousness evidence.
-    A matched self-prediction study uses a frozen sequential event set. Nora reads only
-    GET /self-model/prediction-studies/:id/subject-queue and submits one probability through
+    A matched self-prediction study uses a frozen sequential event set. At the mandatory early-cycle
+    checkpoint Nora reads GET /self-model/prediction-studies/subject-queue, which returns only the
+    currently active event from the one active study and never queued or already resolved events while
+    collection is live. The study-specific GET /self-model/prediction-studies/:id/subject-queue exposes
+    the same active-only role view. Nora submits one probability through
     POST /self-model/prediction-studies/:id/events/:eventId/self-prediction. A separately authenticated
     shared-only observer sees shared evidence, while a second authenticated yoked observer receives
     information-equivalent de-identified state. Neither sees Nora's forecast. Nora must never access

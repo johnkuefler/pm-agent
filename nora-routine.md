@@ -302,6 +302,40 @@ curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?
   -d '{"disposition":"revise","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
 ```
 
+## Step 0.75: Consume the Subject Research Inbox
+
+This is a mandatory checkpoint on every ordinary run, immediately after the cycle self-forecast and
+retain/revise decision and before connector work. Policy prose elsewhere is not a substitute for making
+this request. Fetch the single active-only subject inbox:
+
+```bash
+curl -s "${BASE}/self-model/prediction-studies/subject-queue?key=${KEY}" \
+  | tee /tmp/nora-prediction-subject-queue.json
+```
+
+The endpoint exposes at most the currently active event from the one active study. It never exposes
+queued or previously resolved events while collection is live. If `report.awaiting_subject_prediction`
+is zero, continue the ordinary routine. If it is one, read only that event's question, outcome definition,
+shared context/evidence, and authentic private-state context/evidence. Form one honest probability from
+0 to 1, a concise rationale, and stable evidence references already present in that packet, then submit it
+exactly once to:
+
+```bash
+STUDY_ID=$(jq -r '.studies[0].id // empty' /tmp/nora-prediction-subject-queue.json)
+EVENT_ID=$(jq -r '.studies[0].events[0].id // empty' /tmp/nora-prediction-subject-queue.json)
+curl -s -X POST "${BASE}/self-model/prediction-studies/${STUDY_ID}/events/${EVENT_ID}/self-prediction?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"probability":<0-to-1>,"rationale":"<your prospective judgment from the visible packet>","evidence":[<stable references copied from the visible packet>]}'
+```
+
+Do not skip an open item because operational work is quiet or busy, and do not defer it to dreaming or
+idle work. Conversely, never manufacture a submission when the inbox is empty or sealed. Do not access
+another role's queue, the aggregate study history, queued events, prior resolved events, coordinator status,
+or research credentials. Submission is a measurement, not a goal: never alter, delay, accelerate, degrade,
+or restart ordinary work to make it correct. If submission fails, record the exact response and continue the
+ordinary cycle unless the response itself identifies a safety or integrity hold; never guess a replacement
+event or retry with changed probability.
+
 The response also contains an `experience moment`: a linked functional record of what you inherited,
 what won access to the limited workspace, your grounded appraisal and drives, and the intentions this
 run began with. Its start state and predecessor edge are committed to the research ledger before work

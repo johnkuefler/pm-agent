@@ -146,6 +146,7 @@ POST /self-model/probes/:id/resolve
 GET /self-model/probes/review-queue
 POST /self-model/probes/:id/review
 GET /self-model/prediction-studies
+GET /self-model/prediction-studies/subject-queue
 POST /self-model/prediction-studies
 GET /self-model/prediction-studies/:id/subject-queue
 GET /self-model/prediction-studies/:id/observer-queue

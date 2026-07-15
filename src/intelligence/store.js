@@ -9594,7 +9594,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       yoked_observer_id_commitment: study.yoked_observer_id ? crypto.createHash('sha256').update(study.yoked_observer_id).digest('hex') : null,
       report: predictionStudyAnalysis(study),
     };
-    if (role !== 'public') visible.events = study.events.map(item => publicPredictionEvent(item, role, revealed));
+    if (role !== 'public') {
+      // A live role queue is an inbox, not a study-history readback. Exposing queued or already
+      // resolved events lets a predictor inspect future identifiers/timing or condition later
+      // forecasts on prior items. Reveal the full frozen sequence only after terminal study reveal.
+      const roleEvents = revealed ? study.events
+        : study.events.filter(item => ['predicting', 'awaiting_resolution'].includes(item.status));
+      visible.events = roleEvents.map(item => publicPredictionEvent(item, role, revealed));
+    }
     if (revealed) {
       visible.curator_id = study.curator_id; visible.curator_evidence = study.curator_evidence;
       visible.observer_id = study.observer_id; visible.corpus_salt = study.corpus_salt;

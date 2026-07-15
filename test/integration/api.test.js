@@ -607,6 +607,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const matchedStudy = await request('/self-model/prediction-studies', { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { id: 'api-prediction-study', title: 'API matched prediction pilot', study_phase: 'pilot', curator_id: 'api-curator', curator_evidence: [{ type: 'fixture', id: 'api-curator' }], events: matchedEvents } });
   assert.equal(matchedStudy.body.study.events, undefined);
   const matchedEventId = matchedStudy.body.study.active_event_id;
+  const aggregateSubjectQueue = await request('/self-model/prediction-studies/subject-queue');
+  assert.equal(aggregateSubjectQueue.response.status, 200);
+  assert.equal(aggregateSubjectQueue.body.report.awaiting_subject_prediction, 1);
+  assert.deepEqual(aggregateSubjectQueue.body.studies[0].events.map(item => item.id), [matchedEventId]);
   const subjectQueue = await request('/self-model/prediction-studies/api-prediction-study/subject-queue');
   assert.match(subjectQueue.body.studies[0].events.find(item => item.id === matchedEventId).private_state_context, /Private Nora API state/);
   assert.equal((await request('/self-model/prediction-studies/api-prediction-study/observer-queue')).response.status, 401);

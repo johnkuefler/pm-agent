@@ -902,6 +902,11 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   const observerView = store.selfPredictionStudiesSnapshot({ studyId: pilot.id, role: 'observer' }).studies[0];
   const yokedView = store.selfPredictionStudiesSnapshot({ studyId: pilot.id, role: 'yoked_observer' }).studies[0];
   const activeId = pilot.active_event_id;
+  assert.deepEqual(subjectView.events.map(item => item.id), [activeId]);
+  assert.deepEqual(observerView.events.map(item => item.id), [activeId]);
+  assert.deepEqual(yokedView.events.map(item => item.id), [activeId]);
+  assert.equal(subjectView.events.some(item => item.status === 'queued'), false,
+    'a blinded role inbox must not expose queued-event identifiers or timing');
   assert.match(subjectView.events.find(item => item.id === activeId).private_state_context, /private prospective state/);
   assert.equal(observerView.events.find(item => item.id === activeId).private_state_context, undefined);
   assert.equal(yokedView.events.find(item => item.id === activeId).private_state_context, undefined);
