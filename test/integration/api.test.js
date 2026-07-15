@@ -845,6 +845,9 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(acquired.body.acquired, true);
   assert.equal(acquired.body.lifecycle.kind, 'run_bound_intelligence_cycle');
   assert.equal(acquired.body.lifecycle.forecast_protocol_version, 4);
+  assert.equal(acquired.body.lifecycle.lifecycle_stage, 'forecast_required');
+  assert.equal(acquired.body.lifecycle.lifecycle_projection_integrity_verified, true);
+  assert.equal(acquired.body.lifecycle.forecast_committed, false);
   assert.match(acquired.body.lifecycle.next_required_action, /self-forecast before operational tools/);
 
   const lock = await request('/run-lock');
@@ -900,9 +903,17 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
     evidence: [{ type: 'intelligence_cycle', id: nextCycleId }],
   } });
   assert.equal(forecast.body.forecast.audit.preregistration_verified, true);
+  const forecastedLock = await request('/run-lock');
+  assert.equal(forecastedLock.body.lifecycle.forecast_committed, true);
+  assert.notEqual(forecastedLock.body.lifecycle.lifecycle_stage, 'forecast_required');
+  assert.doesNotMatch(forecastedLock.body.lifecycle.next_required_action,
+    /\/self-forecast before operational tools$/);
   assert.equal((await request(`/intelligence/cycles/${nextCycleId}/complete`, { method: 'PATCH', body: {
     summary: 'Observed the lifecycle integration path.', actions: [],
   } })).body.cycle.status, 'completed');
+  const completedLock = await request('/run-lock');
+  assert.equal(completedLock.body.lifecycle.lifecycle_stage, 'release_required');
+  assert.equal(completedLock.body.lifecycle.cycle_status, 'completed');
   const cleanRelease = await request('/run-lock?holder=run-integration-complete', { method: 'DELETE' });
   assert.equal(cleanRelease.body.lifecycle.closure_status, 'completed');
   const completed = (await request('/experience-stream?limit=10')).body.moments

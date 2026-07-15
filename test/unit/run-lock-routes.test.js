@@ -63,6 +63,57 @@ test('run lock carries one lifecycle from acquisition through holder-owned relea
   assert.equal((await call('GET', '/run-lock')).body.locked, false);
 });
 
+test('run lock projects current lifecycle guidance without rewriting the durable lease', async () => {
+  let persisted = null;
+  let stage = 'forecast_required';
+  const { call } = routeHarness({
+    loadLock: () => persisted,
+    saveLock: value => { persisted = value == null ? null : JSON.parse(JSON.stringify(value)); },
+    onAcquire: () => ({
+      kind: 'run_bound_intelligence_cycle', cycle_id: 'cycle-live', moment_id: 'moment-live',
+      next_required_action: 'initial acquisition guidance',
+    }),
+    projectLifecycle: ({ lifecycle }) => ({
+      ...lifecycle,
+      lifecycle_stage: stage,
+      next_required_action: stage === 'forecast_required' ? 'submit forecast' : 'continue operations',
+    }),
+  });
+  const acquired = await call('POST', '/run-lock', {
+    body: { holder: 'run-live', ttl_seconds: 3000 },
+  });
+  assert.equal(acquired.body.lifecycle.lifecycle_stage, 'forecast_required');
+  assert.equal(persisted.lifecycle.lifecycle_stage, undefined,
+    'derived guidance must not mutate the restart-durable acquisition tuple');
+  stage = 'operational_cycle_active';
+  const inspected = await call('GET', '/run-lock');
+  assert.equal(inspected.body.lifecycle.lifecycle_stage, 'operational_cycle_active');
+  assert.equal(inspected.body.lifecycle.next_required_action, 'continue operations');
+  assert.equal(persisted.lifecycle.next_required_action, 'initial acquisition guidance');
+});
+
+test('run lock reports a projection failure without lying about lease ownership', async () => {
+  let persisted = null;
+  const { call } = routeHarness({
+    loadLock: () => persisted,
+    saveLock: value => { persisted = value; },
+    onAcquire: () => ({ cycle_id: 'cycle-projection-failure', moment_id: 'moment-projection-failure' }),
+    projectLifecycle: () => { throw new Error('cycle projection unavailable'); },
+  });
+  const acquired = await call('POST', '/run-lock', {
+    body: { holder: 'run-projection-failure', ttl_seconds: 3000 },
+  });
+  assert.equal(acquired.statusCode, 200);
+  assert.equal(acquired.body.acquired, true);
+  assert.equal(acquired.body.lifecycle.lifecycle_stage, 'projection_failure');
+  assert.equal(acquired.body.lifecycle.lifecycle_projection_integrity_verified, false);
+  assert.equal(persisted.holder, 'run-projection-failure');
+  const inspected = await call('GET', '/run-lock');
+  assert.equal(inspected.body.locked, true);
+  assert.equal(inspected.body.holder, 'run-projection-failure');
+  assert.equal(inspected.body.lifecycle.lifecycle_stage, 'projection_failure');
+});
+
 test('run lock fails closed when its lifecycle cannot start', async () => {
   const { call } = routeHarness({ onAcquire: () => { throw new Error('ledger unavailable'); } });
   const result = await call('POST', '/run-lock', { body: { holder: 'run-failed' } });

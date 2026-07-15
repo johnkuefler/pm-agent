@@ -6767,6 +6767,56 @@ function recoverRunBoundLifecycleWithoutLease() {
 registerRunLockRoutes(app, requireAuth, {
   loadLock: loadDurableRunLock,
   saveLock: saveDurableRunLock,
+  projectLifecycle: ({ lifecycle, holder }) => {
+    if (!lifecycle?.cycle_id) return lifecycle;
+    const snapshot = intelligence.snapshot();
+    const cycle = snapshot.cycles.find(item => item.id === lifecycle.cycle_id);
+    const moment = (snapshot.cognition.experience_stream || []).find(item => item.id === lifecycle.moment_id
+      && item.cycle_id === lifecycle.cycle_id);
+    const integrityVerified = Boolean(cycle && moment
+      && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id);
+    if (!integrityVerified) return {
+      ...lifecycle,
+      lifecycle_projection_integrity_verified: false,
+      lifecycle_stage: 'integrity_failure',
+      cycle_status: cycle?.status || 'missing',
+      forecast_committed: Boolean(moment?.self_forecast),
+      forecast_correction_committed: Boolean(moment?.self_forecast?.self_correction?.revision),
+      handoff_committed: false,
+      next_required_action: 'Stop and report the run-bound lifecycle integrity failure; do not reconstruct it.',
+    };
+    const forecast = moment.self_forecast || null;
+    const correctionRequired = Boolean(forecast?.self_correction && !forecast.self_correction.revision);
+    const handoffCommitted = (snapshot.cognition.continuity_handoffs || [])
+      .some(item => item.cycle_id === cycle.id);
+    let lifecycleStage; let nextRequiredAction;
+    if (cycle.status === 'running' && !forecast) {
+      lifecycleStage = 'forecast_required';
+      nextRequiredAction = `POST /intelligence/cycles/${cycle.id}/self-forecast before operational tools`;
+    } else if (cycle.status === 'running' && correctionRequired) {
+      lifecycleStage = 'forecast_correction_required';
+      nextRequiredAction = `POST /intelligence/cycles/${cycle.id}/self-forecast/revision before operational tools`;
+    } else if (cycle.status === 'running') {
+      lifecycleStage = 'operational_cycle_active';
+      nextRequiredAction = `Continue the ordinary operational loop, then PATCH /intelligence/cycles/${cycle.id}/complete before releasing the lock`;
+    } else if (cycle.status === 'completed' && moment.closure?.handoff_hash && !handoffCommitted) {
+      lifecycleStage = 'handoff_required';
+      nextRequiredAction = `PUT /self/inner with the exact completed cycle ${cycle.id} handoff before releasing the lock`;
+    } else {
+      lifecycleStage = 'release_required';
+      nextRequiredAction = `DELETE /run-lock?holder=${encodeURIComponent(holder || '')}`;
+    }
+    return {
+      ...lifecycle,
+      lifecycle_projection_integrity_verified: true,
+      lifecycle_stage: lifecycleStage,
+      cycle_status: cycle.status,
+      forecast_committed: Boolean(forecast),
+      forecast_correction_committed: Boolean(forecast?.self_correction?.revision),
+      handoff_committed: handoffCommitted,
+      next_required_action: nextRequiredAction,
+    };
+  },
   onAcquire: async ({ holder }) => {
     if (!/^run-/.test(holder)) return null;
     const cognitiveInput = {

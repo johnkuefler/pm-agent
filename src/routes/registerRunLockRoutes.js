@@ -13,7 +13,8 @@ function normalizeLock(value) {
 }
 
 function registerRunLockRoutes(app, requireAuth, {
-  onAcquire = null, onRelease = null, loadLock = null, saveLock = null, clock = () => Date.now(),
+  onAcquire = null, onRelease = null, projectLifecycle = null,
+  loadLock = null, saveLock = null, clock = () => Date.now(),
 } = {}) {
   let _runLock = null; // Default in-memory store when persistence is not injected.
   const readLock = async () => {
@@ -32,6 +33,22 @@ function registerRunLockRoutes(app, requireAuth, {
     return res.status(503).json({ acquired: false, released: false,
       reason: `lock_persistence_${operation}_failed`, error: error.message });
   };
+  const visibleLifecycle = async (lifecycle, context = {}) => {
+    if (!lifecycle || typeof projectLifecycle !== 'function') return lifecycle || null;
+    try {
+      const projected = await projectLifecycle({ lifecycle, ...context });
+      return projected && typeof projected === 'object' ? projected : lifecycle;
+    } catch (error) {
+      console.error(`Run lock lifecycle projection failed: ${error.message}`);
+      return {
+        ...lifecycle,
+        lifecycle_projection_integrity_verified: false,
+        lifecycle_stage: 'projection_failure',
+        projection_error: String(error.message || error).slice(0, 240),
+        next_required_action: 'Stop and report the lifecycle projection failure; do not infer the current stage.',
+      };
+    }
+  };
 
   app.post('/run-lock', requireAuth, async (req, res) => {
     const now = Number(clock());
@@ -42,8 +59,10 @@ function registerRunLockRoutes(app, requireAuth, {
     catch (error) { return persistenceFailure(res, 'read', error); }
     const active = current && current.expires_at > now;
     if (active && current.holder !== holder) {
+      let visible;
+      visible = await visibleLifecycle(current.lifecycle, { holder: current.holder });
       return res.json({ acquired: false, held_by: current.holder,
-        expires_at: new Date(current.expires_at).toISOString(), lifecycle: current.lifecycle || null });
+        expires_at: new Date(current.expires_at).toISOString(), lifecycle: visible });
     }
 
     // Expiry is a lifecycle boundary, not permission to forget an open run. Close the expired
@@ -89,7 +108,9 @@ function registerRunLockRoutes(app, requireAuth, {
       return persistenceFailure(res, 'write', error);
     }
     console.log(`Run lock ${active ? 'refreshed' : 'acquired'} by ${holder} (ttl ${ttl}s)`);
-    return res.json({ acquired: true, holder, expires_at: new Date(next.expires_at).toISOString(), lifecycle });
+    let visible;
+    visible = await visibleLifecycle(lifecycle, { holder });
+    return res.json({ acquired: true, holder, expires_at: new Date(next.expires_at).toISOString(), lifecycle: visible });
   });
 
   app.get('/run-lock', requireAuth, async (_req, res) => {
@@ -98,11 +119,15 @@ function registerRunLockRoutes(app, requireAuth, {
     catch (error) { return persistenceFailure(res, 'read', error); }
     const now = Number(clock());
     const active = current && current.expires_at > now;
+    let lifecycle = null;
+    if (active) {
+      lifecycle = await visibleLifecycle(current.lifecycle, { holder: current.holder });
+    }
     return res.json({
       locked: !!active,
       holder: active ? current.holder : null,
       expires_at: active ? new Date(current.expires_at).toISOString() : null,
-      lifecycle: active ? current.lifecycle || null : null,
+      lifecycle,
       expired_lease_pending_recovery: Boolean(current && !active),
     });
   });
