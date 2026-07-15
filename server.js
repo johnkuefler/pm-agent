@@ -43,6 +43,7 @@ const reasoningResearchAutopilot = require('./src/intelligence/reasoning-researc
 const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
 const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycle-prediction-autopilot');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
+const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -8774,6 +8775,9 @@ function researchAutopilotProgramStatus() {
   const selfPredictionSubject = selfPredictionSubjectRuntime.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_subject || null,
   });
+  const selfPredictionSequence = selfPredictionStudySequencer.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_sequence || null,
+  });
   const activePilots = intelligence.selfModelSnapshot().context_trials.filter(item => item.status === 'active');
   const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
   if (activePilots.length) {
@@ -8785,6 +8789,7 @@ function researchAutopilotProgramStatus() {
       current_stage: 'sealed_active_pilot',
       active_pilot_count: activePilots.length,
       active_pilots: activePilots,
+      self_prediction_sequence: selfPredictionSequence,
       self_prediction_subject: selfPredictionSubject,
       natural_cycle_prediction: naturalCyclePrediction,
     };
@@ -8804,6 +8809,7 @@ function researchAutopilotProgramStatus() {
       : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'
         : globalBroadcast.pilot ? 'global_broadcast_pilot_closed' : 'waiting_for_global_broadcast_pilot',
     studies: { reasoning_self_regulation: reasoning, global_broadcast: globalBroadcast },
+    self_prediction_sequence: selfPredictionSequence,
     self_prediction_subject: selfPredictionSubject,
     natural_cycle_prediction: naturalCyclePrediction,
   };
@@ -8829,6 +8835,18 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       });
       return response.data;
     };
+    let selfPredictionSequence;
+    try {
+      selfPredictionSequence = selfPredictionStudySequencer.ensurePilot({
+        store: intelligence, enabled: true, now: new Date(),
+      });
+    } catch (error) {
+      selfPredictionSequence = {
+        protocol_version: selfPredictionStudySequencer.PROTOCOL_VERSION,
+        state: 'failed', created: false,
+        failure: { reason: String(error.message || error).slice(0, 240) },
+      };
+    }
     let selfPredictionSubject;
     try {
       selfPredictionSubject = await selfPredictionSubjectRuntime.runCycle({
@@ -8878,6 +8896,7 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       protocol_version: 2,
       state: globalBroadcast.state === 'waiting_for_reasoning_pilot' ? reasoning.state : globalBroadcast.state,
       reasoning, global_broadcast: globalBroadcast,
+      self_prediction_sequence: selfPredictionSequence,
       self_prediction_subject: selfPredictionSubject,
       natural_cycle_prediction: naturalCyclePrediction,
       at: new Date().toISOString(),

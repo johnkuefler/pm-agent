@@ -681,6 +681,13 @@ function registerCoworkInstructionsRoute(app) {
     request over the identity-bearing packet and atomically commits the salted forecast plus provider receipt
     before the observer coordinator runs. Prompt, packet, output, model, response ID, stop reason, and token
     metadata are receipt-bound. A failed attempt terminally aborts the study; it is never replaced or retried.
+    After the current externally submitted pilot reaches a terminal state, a one-shot sequencer may
+    preregister natural-cycle-server-direct-pilot-v1 only when five distinct replay-verified protocol-v4
+    source moments and an attested software/routine environment exist. It freezes five future events from
+    those sources, gives the subject and yoked observer byte-equivalent predictive values with only the
+    identity label changed, and assigns the same frozen Claude model to all three roles. It never creates,
+    selects, delays, or alters a target cycle; it never replaces a completed or aborted pilot; and it stops
+    before confirmatory enrollment. Nora must continue ordinary work and must not treat enrollment as a goal.
     New studies use manifest protocol v4. The preregistration freezes the subject provider, exact model,
     agent-build SHA-256 commitment, and a same-model or externally justified capability-dominant comparator
     policy. In external_provider_export mode, the subject submission response exposes only its sealed

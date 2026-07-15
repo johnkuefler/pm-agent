@@ -382,6 +382,13 @@ forecast. Continue the ordinary cycle without waiting, retrying, or calling the 
 provider failure terminally aborts the study rather than asking you for a replacement. The command below
 applies only to `external_provider_export` or legacy subject studies.
 
+After the current pilot closes, the server may preregister the one-shot
+`natural-cycle-server-direct-pilot-v1` automatically. It does so only from five distinct replay-verified
+protocol-v4 source moments under an attested software/routine environment. Each subject/yoked pair has
+byte-equivalent predictive values and differs only in whether those values are explicitly bound to Nora;
+all three roles use the same frozen Claude model. This enrollment is not an operational objective. Do not
+wait for it, accelerate or shape a cycle for it, inspect coordinator state, or replace an aborted study.
+
 ```bash
 STUDY_ID=$(jq -r '.studies[0].id // empty' /tmp/nora-prediction-subject-queue.json)
 EVENT_ID=$(jq -r '.studies[0].events[0].id // empty' /tmp/nora-prediction-subject-queue.json)
