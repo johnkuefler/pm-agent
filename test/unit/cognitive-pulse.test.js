@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const pulseProtocol = require('../../src/intelligence/cognitive-pulse');
+const cognitiveInitiation = require('../../src/intelligence/cognitive-initiation');
 
 async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cognitive-pulse-'));
@@ -119,10 +120,40 @@ test('runtime diagnostics expose replay and failure metadata without sealed puls
   assert.equal(failed.status_counts.rejected, 1);
   assert.equal(failed.replay_verified_accepted, 0);
   assert.equal(failed.latest_attempt.failure_code, 'output_validation_failure');
+  assert.equal(failed.initiation.latest, null);
   assert.equal(failed.pending.present, false);
   assert.doesNotMatch(JSON.stringify(failed), /cited evidence reference|committed packet/,
     'raw validation errors remain sealed');
   fs.rmSync(failedFixture.dir, { recursive: true, force: true });
+
+  const deferredFixture = await setup();
+  const deferredPrepared = deferredFixture.store.prepareCognitivePulse({ model: 'test-model', force: true });
+  const gate = deferredFixture.store.beginCognitivePulseInitiation(deferredPrepared.pulse.id, {
+    binding: 'self', model: 'test-model',
+  });
+  const decision = {
+    decision: 'wait', expected_value: 0.2,
+    focus_refs: [gate.packet.evidence[0].ref],
+    predicted_gain: 'A later pulse can test whether genuinely new evidence arrives.',
+    reconsider_after_minutes: 180,
+    rationale: 'The current evidence does not justify another inference call.',
+  };
+  deferredFixture.store.completeCognitivePulseInitiation(gate.id, {
+    decision, response_id: 'diagnostic-gate-response', model: 'test-model',
+    input_tokens: 50, output_tokens: 20,
+    prompt_commitment: cognitiveInitiation.commitment({
+      system: cognitiveInitiation.systemPrompt('self'),
+      user: cognitiveInitiation.userPrompt(gate.packet),
+    }),
+  });
+  deferredFixture.store.deferCognitivePulse(deferredPrepared.pulse.id);
+  const deferred = deferredFixture.store.cognitivePulseRuntimeDiagnostics();
+  assert.equal(deferred.status_counts.deferred, 1);
+  assert.equal(deferred.latest_attempt.failure_code, 'endogenously_deferred');
+  assert.equal(deferred.initiation.replay_verified_applied, 1);
+  assert.equal(deferred.initiation.latest.audit.complete_chain_verified, true);
+  assert.doesNotMatch(JSON.stringify(deferred), /diagnostic-gate-response|later pulse can test/);
+  fs.rmSync(deferredFixture.dir, { recursive: true, force: true });
 });
 
 test('linked pulses commit evidence-sensitive predecessor transitions into a replayable chain', async () => {

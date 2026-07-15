@@ -7114,6 +7114,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     const initiations = inference.initiation_records || [];
     const verifiedInitiations = initiations.filter(record => cognitiveInitiationAudit(record).complete_chain_verified);
+    const latestInitiation = initiations.at(-1) || null;
+    const latestInitiationAudit = latestInitiation
+      ? cognitiveInitiationAudit(latestInitiation) : null;
     const latest = pulses.at(-1) || null;
     const latestAudit = latest ? cognitivePulseAudit(latest, new Set(), auditCache) : null;
     const pending = inference.pending || null;
@@ -7127,6 +7130,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       initiation: {
         records_total: initiations.length,
         replay_verified_applied: verifiedInitiations.length,
+        latest: latestInitiation ? {
+          status: latestInitiation.status,
+          outcome_present: Boolean(latestInitiation.outcome),
+          audit: {
+            packet_verified: latestInitiationAudit.packet_verified === true,
+            decision_verified: latestInitiationAudit.decision_verified === true,
+            provider_verified: latestInitiationAudit.provider_verified === true,
+            began_event_verified: latestInitiationAudit.began_event_verified === true,
+            completion_event_verified: latestInitiationAudit.completion_event_verified === true,
+            outcome_event_verified: latestInitiationAudit.outcome_event_verified === true,
+            research_ledger_chain_verified:
+              latestInitiationAudit.research_ledger_chain_verified === true,
+            complete_chain_verified: latestInitiationAudit.complete_chain_verified === true,
+          },
+        } : null,
       },
       latest_attempt: latest ? {
         status: latest.status,
