@@ -18273,6 +18273,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const cycle = {
         id: input.id || `cycle-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         kind: input.kind || 'hourly', holder: input.holder || 'nora', started: orientation.at,
+        run_lock_holder: input.run_lock_holder || null,
         status: 'running', orientation: {
           overdue_commitments: orientation.commitments.overdue.map(item => item.id),
           due_soon_commitments: orientation.commitments.due_soon.map(item => item.id),

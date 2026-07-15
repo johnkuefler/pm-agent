@@ -109,6 +109,13 @@ test('named and one-on-one barge-ins preempt stale voice work while group cross-
   assert.equal(oneOnOne.pendingVoiceTurn.text, 'wait, one more thing');
 });
 
+test('run-bound cycle detection covers durable and pre-durability holder forms', () => {
+  assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'nora-cowork', run_lock_holder: 'run-123' }), true);
+  assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'nora-cowork' }), true);
+  assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'manual-review' }), false);
+  assert.equal(helpers.isRunBoundCycle({ kind: 'nightly', holder: 'nora-cowork' }), false);
+});
+
 test('lightweight Slack thanks skip semantic recall without suppressing substantive questions', () => {
   assert.equal(helpers.isLightweightSocialSlackMessage('Thanks for your work today'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('good night!'), true);

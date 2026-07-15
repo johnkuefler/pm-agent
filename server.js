@@ -6709,10 +6709,15 @@ async function saveDurableRunLock(value) {
   _cache.runLock = value;
 }
 
+function isRunBoundCycle(cycle) {
+  return Boolean(cycle && (/^run-/.test(String(cycle.run_lock_holder || ''))
+    || (cycle.kind === 'hourly' && cycle.holder === 'nora-cowork')));
+}
+
 function recoverRunBoundLifecycleWithoutLease() {
   if (loadDurableRunLock()) return { recovered: 0, records: [] };
   const orphan = intelligence.list('cycles').find(item => item.status === 'running'
-    && /^run-/.test(String(item.holder || '')));
+    && isRunBoundCycle(item));
   if (!orphan) return { recovered: 0, records: [] };
   return intelligence.recoverStaleCycles({
     staleAfterMs: 0,
@@ -6730,6 +6735,7 @@ registerRunLockRoutes(app, requireAuth, {
       predictions: _cache.predictions?.items || [],
       kind: 'hourly',
       holder: 'nora-cowork',
+      run_lock_holder: holder,
       resume_active: true,
     };
     intelligence.refreshCognition(cognitiveInput);
@@ -9151,6 +9157,7 @@ module.exports = {
     parseNoraModeCommand,
     normalizeMeetingUrl,
     sanitizeFilename,
+    isRunBoundCycle,
     tickEndogenousRuntime,
     parseCognitivePulseJson,
     cognitivePulseRuntimeConfig,
