@@ -73,7 +73,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const moments = allMoments.filter(item => item.audit?.evidence_eligible === true);
   const invalidClosedMoments = allMoments.filter(item => item.status !== 'open' && item.audit?.complete_lifecycle_verified !== true);
   const runLockLifecycleGaps = allMoments.filter(item =>
-    item.closure?.recovery?.reason === 'run_lock_released_before_cycle_close');
+    /^run_lock_(?:released|expired|persistence_failed)_before_cycle_close$|^run_lock_missing_after_restart$/.test(
+      item.closure?.recovery?.reason || ''));
   const cycleSelfForecasts = allMoments.filter(item => item.self_forecast);
   const replayValidCycleSelfForecasts = cycleSelfForecasts.filter(item => item.self_forecast?.outcome
     && item.audit?.self_forecast?.complete_chain_verified === true);
@@ -603,7 +604,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'temporal_continuity', family: ['recurrent processing', 'self-model'],
       functional_claim: 'A prior access state is inherited by and constrains a later access state.',
-      mechanism: 'The run lock opens a lifecycle before connector access and records premature release as an explicit non-evidence gap. Linked experience moments plus cycle-bound, predecessor-committed inner-thread handoffs then provide exact inherited-content, closure, and research-ledger replay; protocol-v2 lesions hold handoff text byte-identical while varying only verified self/lineage binding.',
+      mechanism: 'A restart-durable run lease opens a lifecycle before connector access, preserves its exact binding across deployment, and records release, expiry, or persistence failure as an explicit non-evidence gap. Linked experience moments plus cycle-bound, predecessor-committed inner-thread handoffs then provide exact inherited-content, closure, and research-ledger replay; protocol-v2 lesions hold handoff text byte-identical while varying only verified self/lineage binding.',
       status: continuityTrial ? replicatedStatus(continuityTrials, continuityVerdict) : evidenceStatus({ samples: handoffs.length, minimum: 20, supported: handoffRate >= 0.8, contradicted: handoffRate < 0.5 }),
       evidence: { tested_handoffs: handoffs.length, match_rate: handoffRate,
         recorded_moments: allMoments.length, replay_verified_moments: moments.length,

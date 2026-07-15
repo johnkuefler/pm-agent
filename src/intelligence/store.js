@@ -551,17 +551,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return state;
   }
 
-  function persist() {
+  function enqueuePersistence({ strict = false } = {}) {
     const snapshot = JSON.parse(JSON.stringify(state));
-    writeQueue = writeQueue.then(async () => {
+    const operation = writeQueue.then(async () => {
       if (isDbReady()) return db.setState('intelligence_v1', snapshot);
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       const temp = `${filePath}.tmp`;
       fs.writeFileSync(temp, JSON.stringify(snapshot, null, 2));
       fs.renameSync(temp, filePath);
-    }).catch(error => console.error('intelligence persistence failed:', error.message));
-    return writeQueue;
+    });
+    writeQueue = operation.catch(error => console.error('intelligence persistence failed:', error.message));
+    return strict ? operation : writeQueue;
   }
+
+  function persist() { return enqueuePersistence(); }
+  function persistStrict() { return enqueuePersistence({ strict: true }); }
 
   function mutate(fn) {
     const result = fn(state);
@@ -18214,6 +18218,28 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  // The Postgres inner-thread row is a materialized projection, not the source of evidence.
+  // If it is missing or stale, a transport-verified ledger record can restore that exact view
+  // without creating a handoff, changing a lineage, or upgrading historical lifecycle evidence.
+  function continuityProjectionRecovery(projection = null) {
+    const projectionAudit = continuityProjectionAudit(projection);
+    if (projectionAudit.usable) return {
+      required: false, repairable: false, projection_audit: projectionAudit, handoff: null,
+    };
+    const latest = state.cognition.continuity_handoffs?.at(-1) || null;
+    if (!latest) return {
+      required: false, repairable: false, projection_audit: projectionAudit, handoff: null,
+    };
+    const handoffAudit = continuityHandoffAudit(latest);
+    return {
+      required: true,
+      repairable: handoffAudit.transport_chain_verified === true,
+      projection_audit: projectionAudit,
+      handoff: handoffAudit.transport_chain_verified === true
+        ? { ...JSON.parse(JSON.stringify(latest)), audit: handoffAudit } : null,
+    };
+  }
+
   function startCycle(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -18771,7 +18797,7 @@ ${episodes.map(item => {
   }
 
   return {
-    init, snapshot: () => JSON.parse(JSON.stringify(state)), persist, interventionActive,
+    init, snapshot: () => JSON.parse(JSON.stringify(state)), persist, persistStrict, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship, observePerspective, updatePerspective,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
@@ -18779,6 +18805,7 @@ ${episodes.map(item => {
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
+    continuityProjectionRecovery,
     relevantEpisodes, promptContext,
     refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,

@@ -15,6 +15,13 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /run lock has already opened this exact lifecycle/i);
   assert.match(server, /run_bound_intelligence_cycle/);
   assert.match(server, /run_lock_released_before_cycle_close/);
+  assert.match(server, /loadDurableRunLock/);
+  assert.match(server, /saveDurableRunLock/);
+  assert.match(server, /run_lock_missing_after_restart/);
+  assert.match(server, /reconcileInnerThreadProjection/);
+  assert.match(store, /continuityProjectionRecovery/);
+  assert.match(routine, /projection_integrity_verified.*authoritative readiness signal/s);
+  assert.match(routine, /aggregate.*replay_verified.*historical evidence coverage/s);
   assert.match(routes, /resume_active: true/);
   assert.match(store, /recentActive && input\.resume_active === true/);
   assert.match(routine, /GET \/self-model\/cycle-calibration/);

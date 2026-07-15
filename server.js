@@ -899,6 +899,7 @@ async function initPersistence() {
     _cache.persona = await db.getState('persona');
     _cache.predictions = await db.getState('predictions');
     _cache.people = await db.getState('people');
+    _cache.runLock = await db.getState('run_lock');
     slackJoinedThreads = await db.loadAllSlackThreads();
     slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
@@ -1104,15 +1105,49 @@ function relativeDayLabel(date, now = new Date()) {
 function currentInnerThreadProjection() {
   const audit = intelligence.continuityProjectionAudit(_cache.inner || null);
   const record = !audit.usable ? null : audit.legacy_unbound
-    ? { ...(_cache.inner || {}), epistemic_status: 'legacy_unbound' }
+    ? { ...(_cache.inner || {}), epistemic_status: 'legacy_unbound',
+      projection_integrity_verified: true, projection_integrity_failure: false,
+      projection_audit: audit }
     : {
       ...(_cache.inner || {}),
       epistemic_status: audit.complete_chain_verified
         ? 'verified_cycle_handoff' : 'transport_verified_legacy_lifecycle_gap',
       transport_chain_verified: audit.transport_chain_verified === true,
       experience_replay_verified: audit.complete_chain_verified === true,
+      projection_integrity_verified: true,
+      projection_integrity_failure: false,
+      projection_audit: audit,
     };
   return { record, audit };
+}
+
+function innerThreadProjectionRecord(handoff) {
+  const audit = handoff.audit || intelligence.continuityHandoffAudit(handoff);
+  return {
+    content: handoff.content, updated_at: handoff.recorded_at,
+    continuity_commitment: handoff.commitment,
+    predecessor_commitment: handoff.predecessor_commitment || null,
+    cycle_id: handoff.cycle_id, moment_id: handoff.moment_id, sequence: handoff.sequence,
+    epistemic_status: audit.complete_chain_verified
+      ? 'verified_cycle_handoff' : 'transport_verified_legacy_lifecycle_gap',
+    transport_chain_verified: audit.transport_chain_verified === true,
+    experience_replay_verified: audit.complete_chain_verified === true,
+  };
+}
+
+async function reconcileInnerThreadProjection() {
+  if (!_dbReady) return { repaired: false, reason: 'postgres_not_active' };
+  const recovery = intelligence.continuityProjectionRecovery(_cache.inner || null);
+  if (!recovery.required) return { repaired: false, reason: 'projection_current' };
+  if (!recovery.repairable || !recovery.handoff) {
+    console.error('Inner-thread projection cannot be restored because the latest handoff failed transport audit');
+    return { repaired: false, reason: 'latest_handoff_transport_invalid' };
+  }
+  const rec = innerThreadProjectionRecord(recovery.handoff);
+  await db.setState('inner_thread', rec);
+  _cache.inner = rec;
+  console.warn(`Restored exact inner-thread materialized projection from ${recovery.handoff.id}; no lineage or evidence was created`);
+  return { repaired: true, cycle_id: rec.cycle_id, continuity_commitment: rec.continuity_commitment };
 }
 
 function runtimeSituationalCapabilities({ surface, direct, financialApproved, mcp = null }) {
@@ -2087,7 +2122,8 @@ app.get('/self', (req, res) => {
         ? { content: '', updated_at: null, experimental_access_sealed: true }
         : innerProjection.record || (innerProjection.audit.verified_chain_required
           ? { content: '', updated_at: null, projection_integrity_failure: true,
-            epistemic_status: 'verified_chain_projection_withheld' }
+            projection_integrity_verified: false,
+            epistemic_status: 'verified_chain_projection_withheld', audit: innerProjection.audit }
           : { content: '', updated_at: null }),
       soma: _soma, // how her substrate feels right now (interoception; read-only by nature)
       ...(continuitySealed || wantsSealed ? { experimental_access_sealed: true } : {}),
@@ -6643,11 +6679,51 @@ registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject
 // ── Cowork run lock ─────────────────────────────────────────────────────────
 // Defense against overlapping hourly cowork runs (the scheduler double-firing or a run
 // outlasting the hour). A run acquires the lock at the top; if another run already holds
-// a non-expired lock, the new run SKIPS its memory-mutating work and exits. Advisory and
-// in-memory (a deploy clears it — fine, deploys are rare). TTL auto-expires so a crashed
-// run can't wedge the lock forever.
+// a non-expired lock, the new run SKIPS its memory-mutating work and exits. The exact lease
+// and lifecycle binding are persisted so a deploy cannot admit a second lineage. TTL expiry
+// remains recoverable, but the lifecycle must be gap-closed before a successor can start.
+const RUN_LOCK_STATE_PATH = fs.existsSync(VOLUME_DIR)
+  ? path.join(VOLUME_DIR, 'nora-run-lock.json') : path.join(LOCAL_DATA_DIR, 'nora-run-lock.json');
+
+function loadDurableRunLock() {
+  if (_dbReady) return _cache.runLock || null;
+  try { return JSON.parse(fs.readFileSync(RUN_LOCK_STATE_PATH, 'utf8')); }
+  catch (_) { return null; }
+}
+
+async function saveDurableRunLock(value) {
+  if (_dbReady) {
+    await db.setState('run_lock', value);
+    _cache.runLock = value;
+    try {
+      const temp = `${RUN_LOCK_STATE_PATH}.tmp-${process.pid}`;
+      fs.writeFileSync(temp, JSON.stringify(value));
+      fs.renameSync(temp, RUN_LOCK_STATE_PATH);
+    } catch (error) { console.warn(`Run lock volume mirror failed: ${error.message}`); }
+    return;
+  }
+  fs.mkdirSync(path.dirname(RUN_LOCK_STATE_PATH), { recursive: true });
+  const temp = `${RUN_LOCK_STATE_PATH}.tmp-${process.pid}`;
+  fs.writeFileSync(temp, JSON.stringify(value));
+  fs.renameSync(temp, RUN_LOCK_STATE_PATH);
+  _cache.runLock = value;
+}
+
+function recoverRunBoundLifecycleWithoutLease() {
+  if (loadDurableRunLock()) return { recovered: 0, records: [] };
+  const orphan = intelligence.list('cycles').find(item => item.status === 'running'
+    && /^run-/.test(String(item.holder || '')));
+  if (!orphan) return { recovered: 0, records: [] };
+  return intelligence.recoverStaleCycles({
+    staleAfterMs: 0,
+    reason: 'run_lock_missing_after_restart',
+  });
+}
+
 registerRunLockRoutes(app, requireAuth, {
-  onAcquire: ({ holder }) => {
+  loadLock: loadDurableRunLock,
+  saveLock: saveDurableRunLock,
+  onAcquire: async ({ holder }) => {
     if (!/^run-/.test(holder)) return null;
     const cognitiveInput = {
       ...currentCognitiveInputs(),
@@ -6658,6 +6734,17 @@ registerRunLockRoutes(app, requireAuth, {
     };
     intelligence.refreshCognition(cognitiveInput);
     const started = intelligence.startCycle(cognitiveInput);
+    try {
+      // Commit the lifecycle before committing the durable lease that points to it.
+      await intelligence.persistStrict();
+    } catch (error) {
+      intelligence.recoverStaleCycles({
+        staleAfterMs: 0,
+        reason: 'run_lock_persistence_failed_before_cycle_close',
+      });
+      await intelligence.persistStrict().catch(() => {});
+      throw new Error(`run-bound lifecycle persistence failed: ${error.message}`);
+    }
     return {
       kind: 'run_bound_intelligence_cycle',
       cycle_id: started.cycle.id,
@@ -6667,15 +6754,18 @@ registerRunLockRoutes(app, requireAuth, {
       next_required_action: `POST /intelligence/cycles/${started.cycle.id}/self-forecast before operational tools`,
     };
   },
-  onRelease: ({ lifecycle }) => {
+  onRelease: async ({ lifecycle, expired = false, persistence_failed: persistenceFailed = false }) => {
     if (!lifecycle?.cycle_id) return lifecycle;
     const cycle = intelligence.list('cycles').find(item => item.id === lifecycle.cycle_id);
     if (!cycle) return { ...lifecycle, closure_status: 'cycle_missing' };
     if (cycle.status !== 'running') return { ...lifecycle, closure_status: cycle.status };
     const recovery = intelligence.recoverStaleCycles({
       staleAfterMs: 0,
-      reason: 'run_lock_released_before_cycle_close',
+      reason: persistenceFailed ? 'run_lock_persistence_failed_before_cycle_close'
+        : expired ? 'run_lock_expired_before_cycle_close'
+          : 'run_lock_released_before_cycle_close',
     });
+    await intelligence.persistStrict();
     const recovered = recovery.records.find(item => item.cycle_id === lifecycle.cycle_id);
     return {
       ...lifecycle,
@@ -8986,11 +9076,14 @@ async function start(options = {}) {
     // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
     await backfillMemoryIds();
     await intelligence.init();
-    const staleCycleRecovery = intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
-    await intelligence.persist();
+    const unleasedRunRecovery = recoverRunBoundLifecycleWithoutLease();
+    const staleCycleRecovery = unleasedRunRecovery.recovered
+      ? unleasedRunRecovery : intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
+    await intelligence.persistStrict();
     if (staleCycleRecovery.recovered) {
-      console.warn(`Recorded ${staleCycleRecovery.recovered} legacy or stale intelligence cycle(s) as explicit continuity gaps`);
+      console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale intelligence cycle(s) as explicit continuity gaps`);
     }
+    await reconcileInnerThreadProjection();
     try { await mcpManager.migrate(); }
     catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
     await new Promise((resolve, reject) => {

@@ -76,6 +76,13 @@ an invalid projection is withheld and surfaced as a continuity-integrity failure
 the exact latest verified tuple, so tamper detection changes actual cognitive access rather than remaining
 a passive dashboard warning.
 
+The Postgres inner-thread row is explicitly treated as a materialized view rather than evidence. At server
+startup, a missing or stale view is restored only when the latest handoff's content, predecessor chain,
+closure binding, and research-ledger transport audit all verify. This deterministic replay creates no new
+handoff and does not upgrade a legacy source lifecycle to replay-verified evidence. The `/self` response
+reports projection integrity separately from aggregate historical replay coverage so the subject cannot
+mistake `replay_verified: 0` for a current continuity failure.
+
 This stream operationalizes temporal integration and recurrent self-access. It does not establish
 that the functional windows correspond to phenomenal moments.
 
@@ -87,6 +94,18 @@ the routine's ordinary cycle-start call is an idempotent resume for the same hol
 selection artifact in which Gmail, Drive, Slack, or another dependency could fail before the experience
 stream began, making a difficult hour disappear from the evidence merely because the operational loop
 returned early.
+
+The lease itself is restart-durable in Postgres with a volume mirror rather than process-memory state.
+After a deployment or crash, the same holder recovers the exact holder, expiry, cycle, moment, and
+protocol tuple; a different holder remains excluded. An expired durable lease is not silently discarded:
+the server first closes its still-open lifecycle as an explicit non-evidence gap, clears the persisted
+lease, and only then may open a successor. A persistence read or write failure fails acquisition closed;
+the lifecycle source-of-truth write is strictly awaited before its lease is committed. If lifecycle creation
+succeeded before a lease write failed, that lifecycle is immediately gap-closed. A lifecycle-release write
+failure preserves the lease for retry rather than exposing an unprotected open cycle.
+During the one-time transition from the former process-local lock, a restarted `run-*` lifecycle with no
+persisted lease is likewise sealed as an explicit non-evidence gap before requests are accepted. This
+records the observed interruption and unblocks a successor without reconstructing the missing interval.
 
 Lock release is also an evidence boundary. If the bound cycle already closed, release reports that
 status. If it remains open, the server closes it as a replay-audited explicit continuity gap with no

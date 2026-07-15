@@ -77,6 +77,12 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
   assert.equal(store.continuityProjectionAudit(validProjection).usable, true);
   assert.equal(store.continuityProjectionAudit({ ...validProjection, content: 'Tampered database projection.' }).usable, false);
   assert.equal(store.continuityProjectionAudit({ content: 'Legacy overwrite after chain start.' }).verified_chain_required, true);
+  const recovery = store.continuityProjectionRecovery({ ...validProjection, content: 'Stale materialized view.' });
+  assert.equal(recovery.required, true);
+  assert.equal(recovery.repairable, true);
+  assert.equal(recovery.handoff.id, second.id);
+  assert.equal(recovery.handoff.audit.transport_chain_verified, true);
+  assert.equal(store.continuityProjectionRecovery(validProjection).required, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -143,6 +149,10 @@ test('tampering with a retained continuity record invalidates it and its descend
   assert.equal(handoffs[0].audit.complete_chain_verified, false);
   assert.equal(handoffs[1].audit.complete_chain_verified, false);
   assert.equal(reloaded.continuityHandoffSnapshot().report.replay_verified, 0);
+  const recovery = reloaded.continuityProjectionRecovery({ content: 'Stale materialized view.' });
+  assert.equal(recovery.required, true);
+  assert.equal(recovery.repairable, false, 'invalid transport must never be projected as continuity');
+  assert.equal(recovery.handoff, null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

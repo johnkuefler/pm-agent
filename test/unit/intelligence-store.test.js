@@ -130,6 +130,28 @@ function completePreferenceStudy(store, studyId, families, advanceClock) {
   return study;
 }
 
+test('strict intelligence persistence exposes source-of-truth write failures', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-strict-persistence-'));
+  let ready = false;
+  let failing = true;
+  const db = {
+    setState: async () => {
+      if (failing) throw new Error('postgres unavailable');
+    },
+  };
+  const store = createIntelligenceStore({
+    filePath: path.join(dir, 'state.json'), db, isDbReady: () => ready,
+    clock: () => new Date('2026-07-11T15:00:00Z'),
+  });
+  await store.init();
+  ready = true;
+  store.addCommitment({ what: 'Persist this lifecycle boundary.' });
+  await assert.rejects(store.persistStrict(), /postgres unavailable/);
+  failing = false;
+  await store.persistStrict();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('intelligence store connects commitments, episodes, relationships, traces, learning, and budgets', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-intelligence-'));
   const filePath = path.join(dir, 'state.json');

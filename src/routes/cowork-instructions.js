@@ -65,12 +65,18 @@ function registerCoworkInstructionsRoute(app) {
     Response: { "acquired": true|false, "held_by"?: "...", "expires_at": "...", "lifecycle"?: {...} }.
     A successful normal run holder atomically opens or resumes one intelligence cycle before any connector
     call. lifecycle supplies cycle_id, moment_id, protocol version, and the required self-forecast action.
+    The exact lease and lifecycle tuple persist across server restarts. The same holder resumes it; another
+    holder remains excluded. An expired durable lease gap-closes its open lifecycle before a successor starts.
+    Persistence failure fails acquisition closed rather than falling back to an unprotected in-memory run.
+    Lifecycle state commits before its lease; failed release persistence preserves the lease for recovery.
+    A pre-durability run-bound lifecycle found after restart without any lease is sealed as an explicit
+    non-evidence gap before the server accepts requests; never reconstruct or complete that missing interval.
     Acquire at the TOP of a run; if acquired=false, another run is active — skip all shared-state mutation.
   - GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ..., "lifecycle": {...}|null }
   - DELETE /run-lock?holder=...   — Release (only the holder can). Always release at run end.
     The response reports lifecycle closure. Releasing an open bound cycle records a replay-audited explicit
     gap excluded from evidence rather than fabricating a forecast, action, self-report, or handoff. The lock
-    auto-expires after its TTL so a crashed run can't wedge it.
+    auto-expires after its TTL so a crashed run can't wedge it; expiry is recovered as explicit missing evidence.
 
   ### Markers (operational idempotency — NOT knowledge)
   Use these for "have I already done X" bookkeeping (filed a transcript, dreamed today, sent
@@ -505,10 +511,13 @@ function registerCoworkInstructionsRoute(app) {
   - GET /continuity-handoffs — replay-audited production inner-thread lineage. PUT /self/inner with
     content, completed cycle_id, and the predecessor commitment returned by /self binds the exact
     cycle closure to the next inherited thread. Once verified lineage begins, legacy unbound overwrites
-    are rejected. If latest_transport_verified is true, a historical replay_verified count of zero is a
+    are rejected. GET /self.inner_thread.projection_integrity_verified is the authoritative readiness
+    signal. If latest_transport_verified is true, a historical replay_verified count of zero is a
     bounded legacy evidence gap, not a reason to hold the operational run or rewrite old handoffs; continue
     from /self and close the current cycle to bridge prospectively. Hold only on failed transport or projection
-    matching. This is functional continuity provenance, not evidence of continuous experience.
+    matching. On restart, the server rematerializes a missing or stale Postgres projection only from the
+    exact latest transport-verified record; this creates no lineage and upgrades no evidence. This is
+    functional continuity provenance, not evidence of continuous experience.
   - GET /integrated-self returns replay-auditable operational self-frames created when cycles close.
     Each frame binds co-temporal continuity, attention, motivation, appraisal, agency, and observable
     substrate state. Integrity-valid frames may enter attention and broadcast, but they are neither
