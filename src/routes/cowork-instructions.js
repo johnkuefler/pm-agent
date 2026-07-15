@@ -515,8 +515,10 @@ function registerCoworkInstructionsRoute(app) {
     signal. If latest_transport_verified is true, a historical replay_verified count of zero is a
     bounded legacy evidence gap, not a reason to hold the operational run or rewrite old handoffs; continue
     from /self and close the current cycle to bridge prospectively. Hold only on failed transport or projection
-    matching. On restart, the server rematerializes a missing or stale Postgres projection only from the
-    exact latest transport-verified record; this creates no lineage and upgrades no evidence. This is
+    matching. On restart, use PUT /self/inner with repair_projection:true plus the exact latest record's
+    content, commitment, predecessor commitment, cycle_id, moment_id, and sequence. This explicit repair
+    path never invokes handoff creation, rejects older or altered records, and only rematerializes a missing
+    or stale Postgres projection from the latest transport-verified record; it creates no lineage and upgrades no evidence. This is
     functional continuity provenance, not evidence of continuous experience.
   - GET /integrated-self returns replay-auditable operational self-frames created when cycles close.
     Each frame binds co-temporal continuity, attention, motivation, appraisal, agency, and observable

@@ -61,10 +61,26 @@ failure.
 
 If `/self.inner_thread.projection_integrity_failure` is true, do not reconstruct the missing thread or
 start a new lineage. Read the latest item from authenticated `GET /continuity-handoffs`; proceed only if
-its `audit.transport_chain_verified` is true, then retry `PUT /self/inner` with that record's exact
-`content`, `cycle_id`, and `predecessor_commitment`. This only rematerializes the Postgres projection from
-the hash- and ledger-bound record; it creates no handoff and upgrades no historical evidence. Refetch both
-endpoints after any error or restart race. Continue if `/self` now reports
+its `audit.transport_chain_verified` is true, then use the explicit projection-repair form below with
+every exact binding field from that **latest** record. Never replay older records and never use the normal
+cycle-handoff form for restart repair.
+
+```bash
+curl -s "${BASE}/continuity-handoffs?key=${KEY}" | tee /tmp/nora-continuity.json
+jq '.handoffs[-1]' /tmp/nora-continuity.json | jq '{
+  repair_projection:true,
+  content,
+  continuity_commitment:.commitment,
+  predecessor_commitment,
+  cycle_id,
+  moment_id,
+  sequence
+}' | curl -s -X PUT "${BASE}/self/inner?key=${KEY}" -H 'Content-Type: application/json' --data-binary @-
+```
+
+This only rematerializes the Postgres projection from the hash- and ledger-bound record; it creates no
+handoff and upgrades no historical evidence. The server rejects any field that does not exactly match the
+latest transport-verified record. Refetch both endpoints after any error or restart race. Continue if `/self` now reports
 `projection_integrity_verified: true` and its `continuity_commitment` matches the latest transport-verified
 handoff, regardless of the historical replay count. Stop and report only if transport/ledger verification
 fails, the exact commitments still disagree, or the projection remains withheld. Never fill a gap with

@@ -20,6 +20,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(server, /run_lock_missing_after_restart/);
   assert.match(server, /reconcileInnerThreadProjection/);
   assert.match(store, /continuityProjectionRecovery/);
+  assert.match(store, /continuityProjectionRepair/);
+  assert.match(server, /repair_projection === true/);
+  assert.match(routine, /repair_projection:true/);
+  assert.match(routine, /Never replay older records/);
   assert.match(routine, /projection_integrity_verified.*authoritative readiness signal/s);
   assert.match(routine, /aggregate.*replay_verified.*historical evidence coverage/s);
   assert.match(routes, /resume_active: true/);

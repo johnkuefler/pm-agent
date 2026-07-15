@@ -18187,7 +18187,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       report: { total: visible.length, replay_verified: visible.filter(item => item.audit.complete_chain_verified).length,
         transport_verified: visible.filter(item => item.audit.transport_chain_verified).length,
         legacy_source_lifecycle_gaps: visible.filter(item => item.audit.legacy_source_lifecycle_gap).length,
+        latest_replay_verified: visible.at(-1)?.audit.complete_chain_verified === true,
         latest_transport_verified: visible.at(-1)?.audit.transport_chain_verified === true,
+        latest_handoff_usable_for_projection: visible.at(-1)?.audit.transport_chain_verified === true,
         latest_commitment: visible.at(-1)?.commitment || null, latest_cycle_id: visible.at(-1)?.cycle_id || null },
       handoffs: visible,
     };
@@ -18238,6 +18240,28 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       handoff: handoffAudit.transport_chain_verified === true
         ? { ...JSON.parse(JSON.stringify(latest)), audit: handoffAudit } : null,
     };
+  }
+
+  // Projection repair is deliberately separate from handoff creation. It can only return the
+  // exact latest transport-verified record, so rematerializing Postgres cannot create a lineage,
+  // rewrite historical lifecycle evidence, or be confused with an idempotent handoff commit.
+  function continuityProjectionRepair(input = {}) {
+    const latest = state.cognition.continuity_handoffs?.at(-1) || null;
+    if (!latest) throw new Error('no committed continuity handoff is available for projection repair');
+    const audit = continuityHandoffAudit(latest);
+    if (!audit.transport_chain_verified) {
+      throw new Error('latest continuity handoff failed transport audit');
+    }
+    const exactLatest = input.content === latest.content
+      && input.continuity_commitment === latest.commitment
+      && input.cycle_id === latest.cycle_id
+      && input.moment_id === latest.moment_id
+      && Number(input.sequence) === Number(latest.sequence)
+      && (input.predecessor_commitment || null) === (latest.predecessor_commitment || null);
+    if (!exactLatest) {
+      throw new Error('projection repair must exactly match the latest transport-verified handoff');
+    }
+    return { ...JSON.parse(JSON.stringify(latest)), audit };
   }
 
   function startCycle(input = {}) {
@@ -18806,7 +18830,7 @@ ${episodes.map(item => {
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
-    continuityProjectionRecovery,
+    continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,
     refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,

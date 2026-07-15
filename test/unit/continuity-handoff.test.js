@@ -63,6 +63,8 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
   const snapshot = store.continuityHandoffSnapshot();
   assert.equal(snapshot.report.total, 2);
   assert.equal(snapshot.report.replay_verified, 2);
+  assert.equal(snapshot.report.latest_replay_verified, true);
+  assert.equal(snapshot.report.latest_handoff_usable_for_projection, true);
   assert.equal(snapshot.report.latest_commitment, second.commitment);
   assert.match(snapshot.epistemic_status, /not evidence of continuous subjective experience/i);
   const indicator = store.consciousnessResearchStatus().indicators.find(item => item.id === 'temporal_continuity');
@@ -83,6 +85,13 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
   assert.equal(recovery.handoff.id, second.id);
   assert.equal(recovery.handoff.audit.transport_chain_verified, true);
   assert.equal(store.continuityProjectionRecovery(validProjection).required, false);
+  const explicitRepair = store.continuityProjectionRepair(validProjection);
+  assert.equal(explicitRepair.id, second.id);
+  assert.equal(explicitRepair.audit.transport_chain_verified, true);
+  assert.throws(() => store.continuityProjectionRepair({ ...validProjection, content: 'Plausible reconstruction.' }),
+    /exactly match the latest/);
+  assert.throws(() => store.continuityProjectionRepair({ ...validProjection, continuity_commitment: first.commitment }),
+    /exactly match the latest/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -153,6 +162,7 @@ test('tampering with a retained continuity record invalidates it and its descend
   assert.equal(recovery.required, true);
   assert.equal(recovery.repairable, false, 'invalid transport must never be projected as continuity');
   assert.equal(recovery.handoff, null);
+  assert.throws(() => reloaded.continuityProjectionRepair({}), /failed transport audit/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -183,6 +193,8 @@ test('restart preserves exact legacy handoff transport and anchors the next repl
   const legacySnapshot = reloaded.continuityHandoffSnapshot();
   assert.equal(legacySnapshot.report.replay_verified, 0);
   assert.equal(legacySnapshot.report.transport_verified, 1);
+  assert.equal(legacySnapshot.report.latest_replay_verified, false);
+  assert.equal(legacySnapshot.report.latest_handoff_usable_for_projection, true);
   assert.equal(legacySnapshot.report.legacy_source_lifecycle_gaps, 1);
   assert.equal(legacySnapshot.handoffs[0].audit.transport_chain_verified, true);
   assert.equal(legacySnapshot.handoffs[0].audit.research_ledger_chain_verified, true);
@@ -196,6 +208,11 @@ test('restart preserves exact legacy handoff transport and anchors the next repl
   assert.equal(projectionAudit.usable, true);
   assert.equal(projectionAudit.transport_chain_verified, true);
   assert.equal(projectionAudit.experience_replay_verified, false);
+  const legacyRepair = reloaded.continuityProjectionRepair(legacyProjection);
+  assert.equal(legacyRepair.id, legacyHandoff.id);
+  assert.equal(legacyRepair.audit.transport_chain_verified, true);
+  assert.equal(legacyRepair.audit.complete_chain_verified, false,
+    'projection repair must not upgrade historical lifecycle evidence');
 
   const retry = reloaded.recordContinuityHandoff({
     cycle_id: legacyCycle.cycle.id, content: legacyText, predecessor_commitment: null,

@@ -2314,18 +2314,24 @@ app.put('/self/inner', requireAuth, async (req, res) => {
   }
   try {
     let rec;
-    if (req.body.cycle_id) {
+    let projectionRepaired = false;
+    if (req.body.repair_projection === true) {
+      const handoff = intelligence.continuityProjectionRepair({
+        content,
+        continuity_commitment: req.body.continuity_commitment,
+        predecessor_commitment: req.body.predecessor_commitment || null,
+        cycle_id: req.body.cycle_id,
+        moment_id: req.body.moment_id,
+        sequence: req.body.sequence,
+      });
+      rec = innerThreadProjectionRecord(handoff);
+      projectionRepaired = true;
+    } else if (req.body.cycle_id) {
       const handoff = intelligence.recordContinuityHandoff({
         content, cycle_id: req.body.cycle_id,
         predecessor_commitment: req.body.predecessor_commitment || null,
       });
-      rec = { content: handoff.content, updated_at: handoff.recorded_at,
-        continuity_commitment: handoff.commitment, predecessor_commitment: handoff.predecessor_commitment,
-        cycle_id: handoff.cycle_id, moment_id: handoff.moment_id, sequence: handoff.sequence,
-        epistemic_status: handoff.audit.complete_chain_verified
-          ? 'verified_cycle_handoff' : 'transport_verified_legacy_lifecycle_gap',
-        transport_chain_verified: handoff.audit.transport_chain_verified === true,
-        experience_replay_verified: handoff.audit.complete_chain_verified === true };
+      rec = innerThreadProjectionRecord(handoff);
     } else {
       const chain = intelligence.continuityHandoffSnapshot();
       if ((chain.report?.total || 0) > 0) return res.status(409).json({
@@ -2336,7 +2342,7 @@ app.put('/self/inner', requireAuth, async (req, res) => {
         continuity_commitment: null, epistemic_status: 'legacy_unbound' };
     }
     await db.setState('inner_thread', rec); _cache.inner = rec;
-    res.json({ ok: true, inner_thread: rec });
+    res.json({ ok: true, projection_repaired: projectionRepaired, inner_thread: rec });
   } catch (e) { res.status(400).json({ error: e.message }); }
 });
 
