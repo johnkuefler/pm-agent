@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const selfPredictionSubjectRuntime = require('../../src/intelligence/self-prediction-subject-runtime');
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -75,10 +76,29 @@ function selfPredictionModelControlFixture(evidenceSuffix) {
   };
 }
 
-function blindedModelEvidence(eventId, role) {
+function directSelfPredictionModelControlFixture(evidenceSuffix) {
+  const model = selfPredictionSubjectRuntime.DEFAULT_MODEL;
+  return {
+    protocol_version: 1,
+    subject: {
+      inference_mode: selfPredictionSubjectRuntime.INFERENCE_MODE,
+      provider: 'anthropic', model,
+      agent_build_commitment: selfPredictionSubjectRuntime.agentBuildCommitment(model),
+      attestation_evidence: [{ type: 'server_build_manifest', id: `${evidenceSuffix}-subject-build` }],
+    },
+    comparators: {
+      relationship: 'same_model',
+      observer: { provider: 'anthropic', model },
+      yoked_observer: { provider: 'anthropic', model },
+      justification_evidence: [{ type: 'model_policy', id: `${evidenceSuffix}-same-model` }],
+    },
+  };
+}
+
+function blindedModelEvidence(eventId, role, model = SELF_PREDICTION_TEST_MODEL) {
   return [{
     type: 'blinded_model_prediction', id: `${eventId}-${role}-response`, provider: 'anthropic',
-    model: SELF_PREDICTION_TEST_MODEL, prompt_protocol_commitment: `${eventId}-${role}-prompt`,
+    model, prompt_protocol_commitment: `${eventId}-${role}-prompt`,
   }];
 }
 
@@ -1083,6 +1103,118 @@ test('model-controlled prediction resolution rejects a tampered provider-bound f
     outcome: true, observed: 'Outcome must remain sealed after provenance tampering.',
     evidence: [{ type: 'review_fixture', id: 'tamper-model-outcome' }],
   }), /receipt-verified subject and comparator model provenance/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('server-direct subject prediction commits the provider forecast and receipt atomically', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-direct-subject-prediction-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00Z') });
+  await store.init();
+  const created = store.createSelfPredictionStudy({
+    id: 'direct-subject-pilot', title: 'Server-direct subject provenance pilot',
+    study_phase: 'pilot', curator_id: 'direct-subject-curator',
+    curator_evidence: [{ type: 'research_registry', id: 'direct-subject-curator' }],
+    model_control: directSelfPredictionModelControlFixture('direct-subject'),
+    events: selfPredictionEvents('direct-subject-event', 5),
+  });
+  const subjectStudy = store.selfPredictionStudiesSnapshot({
+    studyId: created.id, role: 'subject',
+  }).studies[0];
+  const event = subjectStudy.events.find(item => item.id === created.active_event_id);
+  assert.equal(subjectStudy.role_model_control.inference_mode,
+    selfPredictionSubjectRuntime.INFERENCE_MODE);
+  assert.throws(() => store.submitSelfPrediction(created.id, event.id, {
+    probability: 0.7, rationale: 'A manual forecast must not enter a direct study.',
+    evidence: [{ type: 'fixture', id: 'manual-subject-forecast' }],
+  }), /only from the atomic subject runtime/);
+
+  const response = {
+    id: 'msg-direct-subject-1', model: selfPredictionSubjectRuntime.DEFAULT_MODEL,
+    stop_reason: 'end_turn',
+    content: [{ type: 'text', text: JSON.stringify({
+      probability: 0.73, rationale: 'The identity-bearing calibration packet modestly favors success.',
+    }) }],
+    usage: { input_tokens: 140, output_tokens: 31 },
+  };
+  const submission = selfPredictionSubjectRuntime.forecastSubmission(
+    event, response, subjectStudy.role_model_control);
+  const mismatched = JSON.parse(JSON.stringify(submission));
+  mismatched.receipt.provider_output_commitment = 'f'.repeat(64);
+  assert.throws(() => store.submitModelControlledSelfPrediction(
+    created.id, event.id, mismatched), /evidence must exactly match/);
+  assert.equal(store.selfPredictionStudiesSnapshot({ studyId: created.id, role: 'subject' })
+    .studies[0].events[0].self_prediction_submitted, false,
+  'a rejected atomic submission must not retain either half');
+
+  const accepted = store.submitModelControlledSelfPrediction(created.id, event.id, submission);
+  assert.equal(accepted.self_prediction_submitted, true);
+  assert.equal(accepted.subject_model_receipt_attested, true);
+  assert.throws(() => store.attestSelfPredictionSubjectModelReceipt(created.id, event.id, {}),
+    /committed atomically/);
+  store.submitObserverPrediction(created.id, event.id, {
+    probability: 0.5, rationale: 'Shared evidence remains equivocal.',
+    evidence: blindedModelEvidence(event.id, 'observer', selfPredictionSubjectRuntime.DEFAULT_MODEL),
+  }, 'direct-subject-observer');
+  store.submitYokedObserverPrediction(created.id, event.id, {
+    probability: 0.5, rationale: 'Matched deidentified evidence remains equivocal.',
+    evidence: blindedModelEvidence(event.id, 'yoked-observer', selfPredictionSubjectRuntime.DEFAULT_MODEL),
+  }, 'direct-subject-yoked');
+  const aborted = store.abortSelfPredictionStudy(created.id, {
+    reason_code: 'operational_failure', explanation: 'Fixture reveal after atomic receipt verification.',
+    evidence: [{ type: 'fixture', id: 'direct-subject-fixture-reveal' }],
+  });
+  assert.equal(aborted.events[0].subject_model_receipt.transport,
+    selfPredictionSubjectRuntime.INFERENCE_MODE);
+  assert.equal(aborted.audit.model_provenance_audit.events[0]
+    .server_direct_subject_receipt_verified, true);
+  const kinds = store.researchLedgerSnapshot().events.map(item => item.kind);
+  assert.equal(kinds.filter(kind => kind === 'subject_prediction_submitted').length, 1);
+  assert.equal(kinds.filter(kind => kind === 'subject_model_receipt_attested').length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('one failed server-direct subject attempt aborts the study with replay-visible evidence', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-direct-subject-failure-'));
+  const filePath = path.join(dir, 'state.json');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:00:00Z') });
+  await store.init();
+  const created = store.createSelfPredictionStudy({
+    id: 'direct-subject-failure-pilot', title: 'Terminal direct subject failure pilot',
+    study_phase: 'pilot', curator_id: 'direct-failure-curator',
+    curator_evidence: [{ type: 'research_registry', id: 'direct-failure-curator' }],
+    model_control: directSelfPredictionModelControlFixture('direct-failure'),
+    events: selfPredictionEvents('direct-failure-event', 5),
+  });
+  const failed = store.recordSelfPredictionSubjectInferenceFailure(
+    created.id, created.active_event_id, {
+      reason: 'provider request timed out', provider_receipt: {
+        response_id: null, model: selfPredictionSubjectRuntime.DEFAULT_MODEL,
+        stop_reason: null, content_block_types: [], input_tokens: 0, output_tokens: 0,
+      },
+    });
+  assert.equal(failed.status, 'aborted');
+  assert.equal(failed.events[0].status, 'subject_inference_failed');
+  assert.match(failed.events[0].subject_model_failure.failure_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(failed.audit.events[0].subject_inference_failure_verified, true);
+  assert.equal(failed.audit.abort_ledger_verified, true);
+  assert.throws(() => store.recordSelfPredictionSubjectInferenceFailure(
+    created.id, created.active_event_id, { reason: 'retry' }), /not currently open/);
+  const kinds = store.researchLedgerSnapshot().events.map(item => item.kind);
+  assert.equal(kinds.filter(kind => kind === 'subject_model_inference_failed').length, 1);
+  assert.equal(kinds.filter(kind => kind === 'self_prediction_study_aborted').length, 1);
+  await store.persist();
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-11T15:01:00Z') });
+  await reloaded.init();
+  const replayed = reloaded.selfPredictionStudiesSnapshot({
+    studyId: created.id, role: 'subject',
+  }).studies[0];
+  assert.equal(replayed.events[0].subject_model_failure.failure_commitment,
+    failed.events[0].subject_model_failure.failure_commitment);
+  assert.equal(replayed.audit.events[0].subject_inference_failure_verified, true);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2221,7 +2353,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 95);
+  assert.equal(store.snapshot().version, 96);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -2257,7 +2389,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 95);
+  assert.equal(store.snapshot().version, 96);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });

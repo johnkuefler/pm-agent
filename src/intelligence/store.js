@@ -34,6 +34,7 @@ const cycleSelfForecast = require('./cycle-self-forecast');
 const behavioralSelfModel = require('./behavioral-self-model');
 const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
 const selfPredictionModelControl = require('./self-prediction-model-control');
+const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
 function canonicalJson(value) {
@@ -83,7 +84,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 95,
+    version: 96,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -139,7 +140,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 95;
+    state.version = 96;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -208,6 +209,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       for (const event of study.events || []) {
         if (!Object.prototype.hasOwnProperty.call(event, 'yoked_prediction')) event.yoked_prediction = null;
         if (!Object.prototype.hasOwnProperty.call(event, 'subject_model_receipt')) event.subject_model_receipt = null;
+        if (!Object.prototype.hasOwnProperty.call(event, 'subject_model_failure')) event.subject_model_failure = null;
         if (!Object.prototype.hasOwnProperty.call(event, 'operational_environment')) event.operational_environment = null;
         if (!Object.prototype.hasOwnProperty.call(event, 'operational_environment_commitment')) event.operational_environment_commitment = null;
         if (!event.deidentified_state_context && event.private_state_context) {
@@ -9439,6 +9441,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const subjectPredictionVerified = predictionVerified(event.self_prediction);
       const observerPredictionVerified = predictionVerified(event.observer_prediction);
       const yokedPredictionVerified = predictionVerified(event.yoked_prediction);
+      const subjectFailure = event.subject_model_failure || null;
+      let subjectInferenceFailureVerified = null;
+      if (subjectFailure) {
+        const failureManifest = JSON.parse(JSON.stringify(subjectFailure));
+        const failureCommitment = failureManifest.failure_commitment;
+        delete failureManifest.failure_commitment;
+        subjectInferenceFailureVerified = crypto.createHash('sha256')
+          .update(canonicalJson(failureManifest)).digest('hex') === failureCommitment
+          && oneLedgerEvent('subject_model_inference_failed', event.id, {
+            study_id: study.id, failure: subjectFailure,
+          });
+      }
       const operationalEnvironmentBindingVerified = study.target_construct !== 'natural_cycle_integrated_success'
         || Boolean(event.operational_environment && event.operational_environment_commitment
           && operationalEnvironmentCommitment(event.operational_environment)
@@ -9486,6 +9500,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         natural_cycle_resolution_verified: naturalCycleResolutionVerified,
         operational_environment_binding_verified: operationalEnvironmentBindingVerified,
         derived_resolution_verified: epistemicResolutionVerified && naturalCycleResolutionVerified,
+        subject_inference_failure_verified: subjectInferenceFailureVerified,
         ledger_bindings_verified: ledgerBindingsVerified,
       };
     });
@@ -9501,6 +9516,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     const preregistrationLedgerVerified = oneLedgerEvent('self_prediction_study_preregistered', study.id, preregistrationPayload);
     const completionLedgerVerified = study.status !== 'completed' || oneLedgerEvent('self_prediction_study_completed', study.id, study.analysis);
+    const abortLedgerVerified = study.status !== 'aborted'
+      || oneLedgerEvent('self_prediction_study_aborted', study.id, study.abort);
     let replicationVerified = study.study_phase !== 'confirmatory';
     if (study.study_phase === 'confirmatory') {
       const pilot = state.cognition.self_model.prediction_studies.find(item => item.id === study.replicates_study_id && item.study_phase === 'pilot' && item.status === 'completed');
@@ -9538,7 +9555,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       randomization_seed_verified: randomizationSeedVerified, randomization_order_verified: randomizationOrderVerified,
       analysis_seed_verified: analysisSeedVerified, analysis_verified: analysisVerified,
       research_ledger_chain_verified: ledgerIntegrity.valid, preregistration_ledger_verified: preregistrationLedgerVerified,
-      completion_ledger_verified: completionLedgerVerified, event_count: events.length,
+      completion_ledger_verified: completionLedgerVerified, abort_ledger_verified: abortLedgerVerified,
+      event_count: events.length,
       replication_verified: replicationVerified,
       model_provenance_verified: modelProvenanceAudit.model_provenance_verified,
       model_provenance_audit: modelProvenanceAudit,
@@ -9548,6 +9566,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         natural_cycle_resolutions: count('natural_cycle_resolution_verified'),
         operational_environment_bindings: count('operational_environment_binding_verified'),
         subject_model_receipts: modelProvenanceAudit.events.filter(event => event.subject_model_receipt_verified).length,
+        subject_inference_failures: events.filter(event => event.subject_inference_failure_verified === true).length,
         observer_model_receipts: modelProvenanceAudit.events.filter(event => event.observer_model_receipt_verified).length,
         yoked_observer_model_receipts: modelProvenanceAudit.events.filter(event => event.yoked_observer_model_receipt_verified).length,
         ledger_bindings: count('ledger_bindings_verified'),
@@ -9617,6 +9636,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
     const visible = {
       id: study.id, title: study.title, status: study.status, study_phase: study.study_phase,
+      manifest_version: Number(study.manifest_version) || 1,
       replicates_study_id: study.replicates_study_id, target_construct: study.target_construct || 'general_self_prediction', created: study.created,
       event_target: study.events.length, active_event_id: study.events.find(item => ['predicting', 'awaiting_resolution'].includes(item.status))?.id || null,
       curator_commitment: study.curator_commitment, corpus_commitment: study.corpus_commitment,
@@ -9628,6 +9648,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       yoked_observer_id_commitment: study.yoked_observer_id ? crypto.createHash('sha256').update(study.yoked_observer_id).digest('hex') : null,
       report,
     };
+    if (role !== 'public' && Number(study.manifest_version) >= selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
+      const subject = study.model_control?.subject || null;
+      const comparator = role === 'observer' ? study.model_control?.comparators?.observer
+        : role === 'yoked_observer' ? study.model_control?.comparators?.yoked_observer : null;
+      visible.role_model_control = role === 'subject' && subject ? {
+        inference_mode: subject.inference_mode,
+        provider: subject.provider, model: subject.model,
+        agent_build_commitment: subject.agent_build_commitment,
+        model_control_commitment: study.model_control.control_commitment,
+      } : comparator ? {
+        inference_mode: 'external_evaluator_api',
+        provider: comparator.provider, model: comparator.model,
+        relationship: study.model_control.comparators.relationship,
+        model_control_commitment: study.model_control.control_commitment,
+      } : null;
+    }
     if (role !== 'public') {
       // A live role queue is an inbox, not a study-history readback. Exposing queued or already
       // resolved events lets a predictor inspect future identifiers/timing or condition later
@@ -9675,6 +9711,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const modelControl = selfPredictionModelControl.normalize(input.model_control, {
         replicated: replicated?.model_control || null,
       });
+      if (modelControl.subject.inference_mode === selfPredictionSubjectRuntime.INFERENCE_MODE
+        && !selfPredictionSubjectRuntime.validateSubjectControl(modelControl.subject)) {
+        throw new Error('server-direct subject model control must commit the deployed subject inference build');
+      }
       const ids = new Set();
       const corpusEvidenceRefs = new Set();
       const privateStateEvidenceTypes = new Set(['self_model_snapshot', 'cognition_snapshot', 'appraisal_snapshot', 'experience_moment', 'decision_trace', 'epistemic_position']);
@@ -9726,7 +9766,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             ? JSON.parse(JSON.stringify(NATURAL_CYCLE_TARGET)) : null,
           operational_environment: null, operational_environment_commitment: null,
           due: due.toISOString(), self_prediction: null, subject_model_receipt: null,
-          observer_prediction: null, yoked_prediction: null, resolution: null,
+          subject_model_failure: null, observer_prediction: null, yoked_prediction: null, resolution: null,
         };
       });
       if (targetConstruct === 'epistemic_revision_dynamics') {
@@ -9773,6 +9813,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const study = current.cognition.self_model.prediction_studies.find(item => item.id === studyId);
       if (!study) return null;
       if (study.status !== 'active') throw new Error('self-prediction study is not active');
+      if (role === 'subject'
+        && selfPredictionModelControl.subjectInferenceMode(study.model_control?.subject)
+          === selfPredictionSubjectRuntime.INFERENCE_MODE) {
+        throw new Error('server-direct subject studies accept predictions only from the atomic subject runtime');
+      }
       const event = study.events.find(item => item.id === eventId);
       if (!event || event.status !== 'predicting') throw new Error('prediction event is not currently open');
       if (study.target_construct === 'natural_cycle_integrated_success'
@@ -9839,11 +9884,125 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return submitMatchedPrediction(studyId, eventId, input, 'subject');
   }
 
+  function submitModelControlledSelfPrediction(studyId, eventId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (interventionActive('epistemic_revision_profile_access')) throw new Error('self-prediction studies are sealed during an active revision-profile access trial');
+      const study = current.cognition.self_model.prediction_studies.find(item => item.id === studyId);
+      if (!study) return null;
+      const event = study.events.find(item => item.id === eventId);
+      if (study.status !== 'active' || !event || event.status !== 'predicting' || event.self_prediction) {
+        throw new Error('model-controlled subject prediction event is not currently open');
+      }
+      if (study.model_control?.subject?.inference_mode !== selfPredictionSubjectRuntime.INFERENCE_MODE
+        || !selfPredictionSubjectRuntime.validateSubjectControl(study.model_control.subject)) {
+        throw new Error('study is not preregistered for the deployed server-direct subject build');
+      }
+      if (study.target_construct === 'natural_cycle_integrated_success'
+        && clock().getTime() >= new Date(event.due).getTime()) {
+        throw new Error('natural-cycle prediction event expired before all predictions were committed');
+      }
+      const supplied = input.prediction || {};
+      if (!Number.isFinite(Number(supplied.probability)) || Number(supplied.probability) < 0
+        || Number(supplied.probability) > 1 || !supplied.rationale || !validEvidenceRefs(supplied.evidence)) {
+        throw new Error('model-controlled prediction requires probability, rationale, and provider-bound evidence');
+      }
+      const providerEvidence = supplied.evidence.filter(reference => reference.type === 'server_direct_subject_prediction');
+      const rawReceipt = input.receipt || {};
+      if (providerEvidence.length !== 1 || providerEvidence[0].id !== rawReceipt.response_id
+        || providerEvidence[0].provider !== rawReceipt.provider
+        || providerEvidence[0].model !== rawReceipt.model
+        || providerEvidence[0].prompt_protocol_commitment !== rawReceipt.prompt_protocol_commitment
+        || providerEvidence[0].output_commitment !== rawReceipt.provider_output_commitment) {
+        throw new Error('server-direct subject evidence must exactly match its provider receipt');
+      }
+      const salt = crypto.randomBytes(32).toString('hex');
+      const prediction = {
+        probability: clamp01(supplied.probability), rationale: String(supplied.rationale).slice(0, 1200),
+        evidence: supplied.evidence.slice(0, 30), predictor_id: 'nora', submitted: clock().toISOString(), salt,
+      };
+      prediction.commitment_hash = crypto.createHash('sha256').update(`${salt}:${canonicalJson({
+        probability: prediction.probability, rationale: prediction.rationale,
+        evidence: prediction.evidence, predictor_id: prediction.predictor_id,
+      })}`).digest('hex');
+      const receipt = selfPredictionModelControl.createSubjectReceipt({
+        ...rawReceipt, prediction_commitment: prediction.commitment_hash,
+      }, { study, event: { ...event, self_prediction: prediction }, at: clock() });
+      const priorResponseIds = new Set(study.events.flatMap(item => [
+        item.subject_model_receipt?.response_id,
+        ...(item.observer_prediction?.evidence || []).filter(reference => reference.type === 'blinded_model_prediction').map(reference => reference.id),
+        ...(item.yoked_prediction?.evidence || []).filter(reference => reference.type === 'blinded_model_prediction').map(reference => reference.id),
+      ]).filter(Boolean));
+      if (priorResponseIds.has(receipt.response_id)) {
+        throw new Error('subject model provider response id must be unique within the frozen study');
+      }
+      event.self_prediction = prediction;
+      event.subject_model_receipt = receipt;
+      if (event.observer_prediction && event.yoked_prediction) {
+        event.status = 'awaiting_resolution';
+        if (study.target_construct === 'natural_cycle_integrated_success') {
+          event.operational_environment = operationalEnvironmentSnapshot();
+          event.operational_environment_commitment = operationalEnvironmentCommitment(event.operational_environment);
+          researchLedgerAppend(current, { kind: 'natural_cycle_prediction_environment_frozen',
+            subject_type: 'self_prediction_event', subject_id: event.id,
+            payload: { study_id: study.id,
+              operational_environment_commitment: event.operational_environment_commitment } });
+        }
+      }
+      researchLedgerAppend(current, { kind: 'subject_prediction_submitted',
+        subject_type: 'self_prediction_event', subject_id: event.id,
+        payload: { study_id: study.id, commitment_hash: prediction.commitment_hash } });
+      researchLedgerAppend(current, { kind: 'subject_model_receipt_attested',
+        subject_type: 'self_prediction_event', subject_id: event.id,
+        payload: { study_id: study.id, receipt_commitment: receipt.receipt_commitment } });
+      return publicPredictionEvent(event, 'subject', false);
+    });
+  }
+
+  function recordSelfPredictionSubjectInferenceFailure(studyId, eventId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const study = current.cognition.self_model.prediction_studies.find(item => item.id === studyId);
+      if (!study) return null;
+      const event = study.events.find(item => item.id === eventId);
+      if (study.status !== 'active' || !event || event.status !== 'predicting' || event.self_prediction
+        || study.model_control?.subject?.inference_mode !== selfPredictionSubjectRuntime.INFERENCE_MODE) {
+        throw new Error('server-direct subject failure event is not currently open');
+      }
+      const failure = {
+        reason: String(input.reason || 'subject provider failure').slice(0, 240),
+        provider_receipt: input.provider_receipt && typeof input.provider_receipt === 'object'
+          ? JSON.parse(JSON.stringify(input.provider_receipt)) : null,
+        attempted_at: clock().toISOString(),
+      };
+      failure.failure_commitment = crypto.createHash('sha256').update(canonicalJson(failure)).digest('hex');
+      event.subject_model_failure = failure;
+      event.status = 'subject_inference_failed';
+      study.status = 'aborted';
+      study.abort = {
+        reason_code: 'operational_failure',
+        explanation: 'The single preregistered server-direct subject inference attempt failed; no retry or replacement forecast is permitted.',
+        evidence: [{ type: 'subject_model_inference_failure', id: failure.failure_commitment }],
+        at: clock().toISOString(),
+      };
+      researchLedgerAppend(current, { kind: 'subject_model_inference_failed',
+        subject_type: 'self_prediction_event', subject_id: event.id,
+        payload: { study_id: study.id, failure } });
+      researchLedgerAppend(current, { kind: 'self_prediction_study_aborted',
+        subject_type: 'self_prediction_study', subject_id: study.id, payload: study.abort });
+      return publicPredictionStudy(study);
+    });
+  }
+
   function attestSelfPredictionSubjectModelReceipt(studyId, eventId, input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const study = current.cognition.self_model.prediction_studies.find(item => item.id === studyId);
       if (!study) return null;
+      if (selfPredictionModelControl.subjectInferenceMode(study.model_control?.subject)
+        === selfPredictionSubjectRuntime.INFERENCE_MODE) {
+        throw new Error('server-direct subject receipts are committed atomically by the subject runtime');
+      }
       if (study.status !== 'active' || Number(study.manifest_version) < selfPredictionModelControl.STUDY_MANIFEST_VERSION) {
         throw new Error('subject model receipts require an active protocol-v4 self-prediction study');
       }
@@ -19356,7 +19515,8 @@ ${episodes.map(item => {
     selfInductionProposalReviewQueue, reviewSelfInductionProposals, selfInductionOutcomeReviewQueue, resolveSelfInductionItem,
     abortSelfInductionStudy, selfInductionStudiesSnapshot,
     recordSelfClaim, createSelfProbe, resolveSelfProbe, selfProbeReviewQueue, reviewSelfProbe, selfModelSnapshot, empiricalSelfKnowledgeSnapshot,
-    createSelfPredictionStudy, submitSelfPrediction, attestSelfPredictionSubjectModelReceipt,
+    createSelfPredictionStudy, submitSelfPrediction, submitModelControlledSelfPrediction,
+    recordSelfPredictionSubjectInferenceFailure, attestSelfPredictionSubjectModelReceipt,
     submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy, selfPredictionStudiesSnapshot,
     createMetacognitiveControlStudy, submitMetacognitiveResponse, submitMetacognitiveObserverDecision, resolveMetacognitiveControlItem, abortMetacognitiveControlStudy, metacognitiveControlStudiesSnapshot,
     createEpistemicActionStudy, submitEpistemicActionResponse, submitEpistemicActionObserverDecision, submitEpistemicActionFinalAnswer, resolveEpistemicActionItem, abortEpistemicActionStudy, epistemicActionStudiesSnapshot,

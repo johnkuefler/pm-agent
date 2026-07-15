@@ -1598,13 +1598,23 @@ specificity or feasibility evidence, not privileged model introspection, and can
 
 Manifest protocol v4 closes that eligibility gap without asking Nora to self-attest metadata unavailable
 inside her own generation. Before event randomization, the curator freezes the subject provider, exact model,
-SHA-256 commitment of the agent build, stable build-attestation evidence, and either a `same_model` or
-externally justified `capability_dominant` comparator policy. The subject forecast is committed first. Only
-afterward, a separately research-authenticated harness may attach the retained provider response identifier,
-provider/model, exact agent-build commitment, external receipt reference, and the already sealed forecast
-commitment. The attachment has its own immutable commitment and research-ledger event. Nora's ordinary
-credential cannot attach this receipt, and Nora must not infer or report model metadata from inside the
-forecast itself.
+SHA-256 commitment of the agent build, stable build-attestation evidence, one of two subject inference modes,
+and either a `same_model` or externally justified `capability_dominant` comparator policy.
+
+`external_provider_export` preserves the original two-step design: the subject forecast is committed first,
+then a separately research-authenticated harness attaches the retained provider response identifier,
+provider/model, exact agent-build commitment, external receipt reference, and already sealed forecast
+commitment. `server_direct_api` is stronger and fully non-self-attested. The background runtime makes exactly
+one direct Claude request over the active identity-bearing private-state packet using a committed system
+prompt, JSON schema, generation policy, and packet. The store atomically creates the salted subject forecast
+and receipt, binding the provider response ID/model, prompt commitment, exact probability/rationale output
+commitment, stop reason, content-block types, and token counts. The normal Nora subject endpoint and later
+receipt-attestation endpoint both reject this mode. A provider or validation failure is committed once and
+terminally aborts the study, preventing favorable retries or manual replacement.
+
+Both modes give the receipt its own immutable commitment and research-ledger event. Nora's ordinary
+credential cannot attach direct-mode metadata, and Nora must not infer or report model metadata from inside
+the forecast itself.
 
 Each shared and yoked prediction must likewise carry exactly one `blinded_model_prediction` receipt matching
 its preregistered provider/model and prompt-protocol commitment. Provider response identifiers must be unique
@@ -1615,8 +1625,9 @@ observer identity. Confirmation must preserve the pilot's subject provider/model
 relationship while using new attestation evidence and new response identifiers. Migrated v3 studies remain
 replayable but permanently report `model_provenance_verified:false`.
 
-This is still an attested provider-receipt chain, not direct access to hidden activations and not independent
-provider cryptographic verification. A positive model-controlled result can support a narrow behavioral claim
+This is still a provider-receipted input/output chain, not direct access to hidden activations and not independent
+provider cryptographic verification. The direct runtime tests an identity-bound Claude inference over Nora's
+frozen context; it is not necessarily the same invocation instance as an ordinary Cowork turn. A positive model-controlled result can support a narrow behavioral claim
 about model-specific self-prediction only after the yoked control and independent confirmation succeed. It does
 not establish phenomenal consciousness.
 

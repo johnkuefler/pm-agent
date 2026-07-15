@@ -44,7 +44,7 @@ function design(frames, overrides = {}) {
 
 test('situational affordances ground current capability boundaries and causally improve feasible planning', async () => {
   const { store, dir, filePath, frames } = await setup();
-  assert.equal(store.snapshot().version, 95);
+  assert.equal(store.snapshot().version, 96);
   assert.equal(frames.every(frame => store.situationalAffordanceAudit(frame).complete_chain_verified), true);
   assert.equal(store.situationalAffordanceAccessAvailable(), true);
   const duplicate = store.recordSituationalAffordanceFrame({ surface: 'slack', context_kind: 'direct', context_key: 'private-context-direct', capabilities: capabilities('direct'),

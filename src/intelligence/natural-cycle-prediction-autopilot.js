@@ -236,13 +236,19 @@ async function runCycle({ store, enabled = true, model = DEFAULT_MODEL,
     if (typeof callProvider !== 'function') throw new Error('natural-cycle prediction autopilot requires a forecaster provider');
     let response = null;
     try {
-      const built = forecastRequest(views[role], { role, model });
+      const roleStudy = role === 'observer' ? observerStudy : yokedStudy;
+      const roleModel = roleStudy.role_model_control?.model || model;
+      if (roleStudy.role_model_control
+        && (roleStudy.role_model_control.provider !== 'anthropic' || !roleModel)) {
+        throw new Error('preregistered evaluator model control is unavailable');
+      }
+      const built = forecastRequest(views[role], { role, model: roleModel });
       result.provider_calls += 1;
       response = await callProvider(built.request, {
         role, evaluatorId: EVALUATOR_IDS[role],
         promptProtocolCommitment: built.manifest.prompt_protocol_commitment,
       });
-      const submission = forecastSubmission(views[role], response, { role, model });
+      const submission = forecastSubmission(views[role], response, { role, model: roleModel });
       if (role === 'observer') {
         store.submitObserverPrediction(observerStudy.id, views[role].id, submission, EVALUATOR_IDS[role]);
       } else {

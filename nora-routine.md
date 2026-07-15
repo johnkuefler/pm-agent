@@ -375,6 +375,13 @@ shared context/evidence, and authentic private-state context/evidence. Form one 
 0 to 1, a concise rationale, and stable evidence references already present in that packet, then submit it
 exactly once to:
 
+Before doing that, read `.studies[0].role_model_control.inference_mode`. If it is
+`server_direct_api`, do **not** form or submit a manual forecast: the preregistered background subject
+runtime owns one direct Claude call and atomically binds its provider response, prompt, output, and salted
+forecast. Continue the ordinary cycle without waiting, retrying, or calling the receipt route. A direct
+provider failure terminally aborts the study rather than asking you for a replacement. The command below
+applies only to `external_provider_export` or legacy subject studies.
+
 ```bash
 STUDY_ID=$(jq -r '.studies[0].id // empty' /tmp/nora-prediction-subject-queue.json)
 EVENT_ID=$(jq -r '.studies[0].events[0].id // empty' /tmp/nora-prediction-subject-queue.json)

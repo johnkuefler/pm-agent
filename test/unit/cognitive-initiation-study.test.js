@@ -68,7 +68,7 @@ function completeAppliedGate(store, begun, binding, action, responseId) {
 
 test('matched cognitive-initiation allocation isolates self-binding, charges compute, and fails closed under tampering', async () => {
   const { dir, filePath, store, advance } = await setup();
-  assert.equal(store.snapshot().version, 95);
+  assert.equal(store.snapshot().version, 96);
   const pulseIds = [];
   const outcomeTypes = ['release_review', 'audit_review', 'customer_review'];
   for (let index = 0; index < 32; index++) {

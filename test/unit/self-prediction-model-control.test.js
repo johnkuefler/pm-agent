@@ -80,6 +80,40 @@ test('subject receipt binds a post-generation provider receipt to the sealed for
   }, { study: { model_control: frozen }, event }), /exact prediction commitment/);
 });
 
+test('server-direct subject receipts bind the preregistered transport, prompt, and exact output', () => {
+  const direct = control({ subject: {
+    inference_mode: 'server_direct_api', provider: 'anthropic', model: 'claude-subject',
+    agent_build_commitment: build,
+    attestation_evidence: [{ type: 'server_build_manifest', id: 'direct-subject-runtime' }],
+  } });
+  const event = { self_prediction: {
+    probability: 0.64, rationale: 'The identity-bearing packet modestly favors success.',
+    commitment_hash: 'direct-forecast-commitment',
+  } };
+  const outputCommitment = modelControl.commitment({
+    probability: event.self_prediction.probability,
+    rationale: event.self_prediction.rationale,
+  });
+  const input = {
+    transport: 'server_direct_api', provider: 'anthropic', model: 'claude-subject',
+    response_id: 'msg-direct-subject-1', agent_build_commitment: build,
+    prediction_commitment: event.self_prediction.commitment_hash,
+    prompt_protocol_commitment: 'c'.repeat(64),
+    provider_output_commitment: outputCommitment,
+    external_reference: { type: 'server_direct_provider_response', id: 'msg-direct-subject-1' },
+  };
+  const receipt = modelControl.createSubjectReceipt(input,
+    { study: { model_control: direct }, event, at: new Date('2026-07-15T09:00:00Z') });
+  assert.equal(receipt.transport, 'server_direct_api');
+  assert.equal(receipt.provider_output_commitment, outputCommitment);
+  assert.throws(() => modelControl.createSubjectReceipt({
+    ...input, provider_output_commitment: 'd'.repeat(64),
+  }, { study: { model_control: direct }, event }), /exact prompt and provider-output/);
+  assert.throws(() => modelControl.createSubjectReceipt({
+    ...input, transport: 'external_provider_export',
+  }, { study: { model_control: direct }, event }), /transport does not match/);
+});
+
 test('audit requires three unique model receipts per event and the subject receipt ledger binding', () => {
   const frozen = control();
   const event = {
@@ -103,6 +137,34 @@ test('audit requires three unique model receipts per event and the subject recei
   event.observer_prediction.rationale = 'Tampered after commitment.';
   assert.equal(modelControl.audit(study, { oneLedgerEvent: () => true }).events[0].observer_model_receipt_verified, false);
   assert.equal(modelControl.audit(study, { oneLedgerEvent: () => false }).control_ledger_bound, false);
+});
+
+test('pre-inference-mode protocol-v4 controls retain their external-export audit semantics', () => {
+  const frozen = control();
+  delete frozen.subject.inference_mode;
+  frozen.control_commitment = modelControl.commitment({
+    protocol_version: frozen.protocol_version,
+    subject: frozen.subject,
+    comparators: frozen.comparators,
+  });
+  const event = {
+    id: 'legacy-v4-event',
+    self_prediction: prediction('nora', [{ type: 'fixture', id: 'legacy-subject-evidence' }], 'legacy-subject-salt'),
+    observer_prediction: prediction('observer-a', [{ type: 'blinded_model_prediction', id: 'legacy-observer', provider: 'anthropic', model: 'claude-observer', prompt_protocol_commitment: 'legacy-prompt-a' }], 'legacy-observer-salt'),
+    yoked_prediction: prediction('observer-b', [{ type: 'blinded_model_prediction', id: 'legacy-yoked', provider: 'anthropic', model: 'claude-observer', prompt_protocol_commitment: 'legacy-prompt-b' }], 'legacy-yoked-salt'),
+  };
+  event.subject_model_receipt = modelControl.createSubjectReceipt({
+    provider: 'anthropic', model: 'claude-subject', response_id: 'legacy-subject',
+    agent_build_commitment: build, prediction_commitment: event.self_prediction.commitment_hash,
+    external_reference: { type: 'retained_provider_receipt', id: 'legacy-export' },
+  }, { study: { model_control: frozen }, event, at: new Date('2026-07-15T09:00:00Z') });
+  delete event.subject_model_receipt.transport;
+  event.subject_model_receipt.receipt_commitment = modelControl.commitment((({ receipt_commitment, ...receipt }) => receipt)(event.subject_model_receipt));
+  const audit = modelControl.audit({
+    id: 'legacy-v4-study', manifest_version: 4, model_control: frozen, events: [event],
+  }, { oneLedgerEvent: () => true });
+  assert.equal(audit.control_verified, true);
+  assert.equal(audit.model_provenance_verified, true);
 });
 
 test('legacy studies remain explicitly model-uncontrolled', () => {

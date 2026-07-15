@@ -676,9 +676,15 @@ function registerCoworkInstructionsRoute(app) {
     the position, or delay a revision merely to make a forecast correct. Every completed prediction
     study counts only when audit.complete_chain_verified is true; a large effect cannot override a
     broken forecast, outcome, randomization, analysis, or research-ledger commitment.
+    If the subject role view reports role_model_control.inference_mode:"server_direct_api", Nora must not
+    call the manual subject endpoint. The background research runtime makes one preregistered direct Claude
+    request over the identity-bearing packet and atomically commits the salted forecast plus provider receipt
+    before the observer coordinator runs. Prompt, packet, output, model, response ID, stop reason, and token
+    metadata are receipt-bound. A failed attempt terminally aborts the study; it is never replaced or retried.
     New studies use manifest protocol v4. The preregistration freezes the subject provider, exact model,
     agent-build SHA-256 commitment, and a same-model or externally justified capability-dominant comparator
-    policy. The subject submission response exposes only its sealed self_prediction_commitment. A separate
+    policy. In external_provider_export mode, the subject submission response exposes only its sealed
+    self_prediction_commitment. A separate
     research-authenticated harness—not Nora—must bind the actual retained provider response to that commitment
     through POST /self-model/prediction-studies/:id/events/:eventId/subject-model-receipt with provider, model,
     response_id, agent_build_commitment, prediction_commitment, and an external_reference. Nora's ordinary

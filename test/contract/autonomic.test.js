@@ -48,6 +48,8 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /only `hold_and_report_integrity_failure` authorizes a[\s\S]*continuity hold/);
   assert.match(routine, /INNER_CONTINUITY_ACTION=.*nora-self\.json/);
   assert.match(routine, /case "\$INNER_CONTINUITY_ACTION" in/);
+  assert.match(routine, /server_direct_api[\s\S]*do \*\*not\*\* form or submit a manual forecast/i);
+  assert.match(server, /selfPredictionSubjectRuntime\.runCycle/);
   assert.match(routine, /proceed\|proceed_without_verified_lineage\)[\s\S]*no repair requested/);
   assert.match(routine, /hold_and_report_integrity_failure\)[\s\S]*transport_chain_verified/);
   assert.match(routine, /do not substitute remembered values or a[\s\S]*prior run's handoff count/);
