@@ -9583,6 +9583,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function publicPredictionStudy(study, role = 'public') {
     const revealed = ['completed', 'aborted'].includes(study.status);
+    const report = revealed ? predictionStudyAnalysis(study) : {
+      target: study.events.length,
+      resolved: study.events.filter(item => item.status === 'resolved').length,
+      outcomes_sealed: true,
+      analysis_available: false,
+      verdict: 'sealed_until_terminal_reveal',
+    };
     const visible = {
       id: study.id, title: study.title, status: study.status, study_phase: study.study_phase,
       replicates_study_id: study.replicates_study_id, target_construct: study.target_construct || 'general_self_prediction', created: study.created,
@@ -9592,7 +9599,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       analysis_seed_commitment: study.analysis_seed_commitment,
       observer_id_commitment: study.observer_id ? crypto.createHash('sha256').update(study.observer_id).digest('hex') : null,
       yoked_observer_id_commitment: study.yoked_observer_id ? crypto.createHash('sha256').update(study.yoked_observer_id).digest('hex') : null,
-      report: predictionStudyAnalysis(study),
+      report,
     };
     if (role !== 'public') {
       // A live role queue is an inbox, not a study-history readback. Exposing queued or already

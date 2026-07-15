@@ -905,6 +905,19 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   assert.deepEqual(subjectView.events.map(item => item.id), [activeId]);
   assert.deepEqual(observerView.events.map(item => item.id), [activeId]);
   assert.deepEqual(yokedView.events.map(item => item.id), [activeId]);
+  for (const view of [
+    store.selfPredictionStudiesSnapshot({ studyId: pilot.id }).studies[0],
+    subjectView, observerView, yokedView,
+  ]) {
+    assert.deepEqual(view.report, {
+      target: 5, resolved: 0, outcomes_sealed: true,
+      analysis_available: false, verdict: 'sealed_until_terminal_reveal',
+    });
+    assert.equal(view.report.self_brier, undefined);
+    assert.equal(view.report.privileged_self_advantage, undefined);
+    assert.equal(view.report.yoked_observer_interval, undefined);
+    assert.equal(view.report.operational_environment_verified, undefined);
+  }
   assert.equal(subjectView.events.some(item => item.status === 'queued'), false,
     'a blinded role inbox must not expose queued-event identifiers or timing');
   assert.match(subjectView.events.find(item => item.id === activeId).private_state_context, /private prospective state/);
@@ -923,6 +936,13 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   assert.throws(() => store.submitYokedObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'Same person cannot fill both controls.', evidence: [{ type: 'task_fixture', id: 'pilot-first-yoked-same' }] }, 'observer-a'), /different authenticated observers/);
   store.submitYokedObserverPrediction(pilot.id, activeId, { probability: 0.5, rationale: 'De-identified full information remains equivocal.', evidence: [{ type: 'task_fixture', id: 'pilot-first-yoked' }] }, 'yoked-a');
   store.resolveSelfPredictionEvent(pilot.id, activeId, { outcome: firstOutcome, observed: 'First event reviewed.', evidence: [{ type: 'review_fixture', id: 'pilot-first-outcome' }] });
+  const interim = store.selfPredictionStudiesSnapshot({ studyId: pilot.id, role: 'subject' }).studies[0];
+  assert.deepEqual(interim.report, {
+    target: 5, resolved: 1, outcomes_sealed: true,
+    analysis_available: false, verdict: 'sealed_until_terminal_reveal',
+  });
+  assert.equal(interim.report.self_brier, undefined,
+    'a resolved event must not reveal calibration before the frozen stopping rule');
   const remainingPilotEvents = pilotEvents.filter(item => item.id !== activeId);
   const completedPilot = completeSelfPredictionStudy(store, pilot.id, remainingPilotEvents, 'observer-a', 'yoked-a');
   assert.equal(completedPilot.status, 'completed');

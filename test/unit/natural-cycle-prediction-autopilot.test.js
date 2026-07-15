@@ -70,6 +70,8 @@ function providerResponse(request, metadata, calls) {
   const marker = 'Forecast this frozen event.\n';
   const packet = JSON.parse(request.messages[0].content.slice(marker.length));
   calls.push({ role: metadata.role, packet, system: request.system });
+  assert.equal(request.max_tokens, 1024);
+  assert.deepEqual(request.thinking, { type: 'disabled' });
   return {
     id: `provider-${metadata.role}-1`, model: autopilot.DEFAULT_MODEL,
     stop_reason: 'end_turn', usage: { input_tokens: 100, output_tokens: 20 },
@@ -141,6 +143,35 @@ test('natural-cycle evaluator receipts and redacted views fail closed', () => {
     id: 'wrong-model-receipt', model: 'different-model', stop_reason: 'end_turn',
     content: [{ type: 'text', text: '{"probability":0.5,"rationale":"Bounded."}' }],
   }, { role: 'yoked_observer' }), /wrong model/);
+  assert.throws(() => autopilot.forecastSubmission(yoked, {
+    id: 'truncated-receipt', model: autopilot.DEFAULT_MODEL, stop_reason: 'max_tokens',
+    usage: { input_tokens: 200, output_tokens: 240 },
+    content: [{ type: 'text', text: '' }],
+  }, { role: 'yoked_observer' }), /reached max_tokens/);
+});
+
+test('natural-cycle provider failures preserve metadata-only diagnostics and count attempts', async () => {
+  const store = fakeStore();
+  const result = await autopilot.runCycle({
+    store,
+    maxProviderCalls: 1,
+    callProvider: async () => ({
+      id: 'truncated-provider-response', model: autopilot.DEFAULT_MODEL,
+      stop_reason: 'max_tokens',
+      usage: { input_tokens: 350, output_tokens: 1024,
+        output_tokens_details: { thinking_tokens: 0 } },
+      content: [{ type: 'text', text: '' }],
+    }),
+  });
+  assert.equal(result.provider_calls, 1);
+  assert.equal(result.predictions_committed.length, 0);
+  assert.match(result.failures[0].reason, /reached max_tokens/);
+  assert.deepEqual(result.failures[0].provider_receipt, {
+    response_id: 'truncated-provider-response', model: autopilot.DEFAULT_MODEL,
+    stop_reason: 'max_tokens', content_block_types: ['text'],
+    input_tokens: 350, output_tokens: 1024, thinking_tokens: 0,
+  });
+  assert.equal(result.failures[0].provider_receipt.text, undefined);
 });
 
 test('natural-cycle coordinator source has no subject or cycle mutation authority', () => {

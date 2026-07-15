@@ -5,6 +5,7 @@ const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const FORECAST_MAX_TOKENS = 1024;
 const DEFAULT_MAX_PROVIDER_CALLS = 2;
 const ROLES = ['observer', 'yoked_observer'];
 const EVALUATOR_IDS = {
@@ -78,7 +79,7 @@ function forecastRequest(event, { role, model = DEFAULT_MODEL } = {}) {
     protocol_version: PROTOCOL_VERSION,
     role,
     model,
-    max_tokens: 240,
+    max_tokens: FORECAST_MAX_TOKENS,
     system_prompt_commitment: commitment(systemPrompt(role)),
     output_schema_commitment: commitment(forecastSchema()),
     packet_commitment: commitment(packet),
@@ -90,6 +91,7 @@ function forecastRequest(event, { role, model = DEFAULT_MODEL } = {}) {
     request: {
       model,
       max_tokens: manifest.max_tokens,
+      thinking: { type: 'disabled' },
       temperature: 0,
       system: systemPrompt(role),
       messages: [{ role: 'user', content: `Forecast this frozen event.\n${JSON.stringify(packet)}` }],
@@ -111,18 +113,37 @@ function responseText(response = {}) {
     .filter(item => item?.type === 'text').map(item => item.text).join('\n').trim();
 }
 
+function providerReceipt(response = {}) {
+  return {
+    response_id: String(response.id || '').slice(0, 240) || null,
+    model: String(response.model || '').slice(0, 160) || null,
+    stop_reason: String(response.stop_reason || '').slice(0, 80) || null,
+    content_block_types: (Array.isArray(response.content) ? response.content : [])
+      .map(item => String(item?.type || 'unknown').slice(0, 80)),
+    input_tokens: Number(response.usage?.input_tokens) || 0,
+    output_tokens: Number(response.usage?.output_tokens) || 0,
+    thinking_tokens: Number(response.usage?.output_tokens_details?.thinking_tokens) || 0,
+  };
+}
+
 function forecastSubmission(event, response, { role, model = DEFAULT_MODEL } = {}) {
   const built = forecastRequest(event, { role, model });
+  const responseId = String(response.id || '').slice(0, 240);
+  const responseModel = String(response.model || '').slice(0, 160);
+  if (!responseId || responseModel !== model) {
+    throw new Error('forecaster provider receipt is incomplete or uses the wrong model');
+  }
+  if (response.stop_reason === 'max_tokens') {
+    throw new Error('forecaster response reached max_tokens before a complete structured output');
+  }
+  if (!['end_turn', 'stop_sequence'].includes(response.stop_reason)) {
+    throw new Error(`forecaster provider stopped without a usable output: ${response.stop_reason || 'unknown'}`);
+  }
   const parsed = parseJsonObject(responseText(response));
   const probability = Number(parsed.probability);
   const rationale = String(parsed.rationale || '').trim().slice(0, 800);
   if (!Number.isFinite(probability) || probability < 0 || probability > 1 || !rationale) {
     throw new Error('forecaster response requires a probability from 0 to 1 and a rationale');
-  }
-  const responseId = String(response.id || '').slice(0, 240);
-  const responseModel = String(response.model || '').slice(0, 160);
-  if (!responseId || responseModel !== model || !['end_turn', 'stop_sequence'].includes(response.stop_reason)) {
-    throw new Error('forecaster provider receipt is incomplete or uses the wrong model');
   }
   const output = { probability, rationale };
   return {
@@ -135,6 +156,8 @@ function forecastSubmission(event, response, { role, model = DEFAULT_MODEL } = {
       prompt_protocol_commitment: built.manifest.prompt_protocol_commitment,
       packet_commitment: built.manifest.packet_commitment,
       output_commitment: commitment(output),
+      stop_reason: response.stop_reason,
+      content_block_types: providerReceipt(response).content_block_types,
       input_tokens: Number(response.usage?.input_tokens) || 0,
       output_tokens: Number(response.usage?.output_tokens) || 0,
     }],
@@ -211,13 +234,14 @@ async function runCycle({ store, enabled = true, model = DEFAULT_MODEL,
     if (views[role][field] === true) continue;
     if (result.provider_calls >= budget) break;
     if (typeof callProvider !== 'function') throw new Error('natural-cycle prediction autopilot requires a forecaster provider');
+    let response = null;
     try {
       const built = forecastRequest(views[role], { role, model });
-      const response = await callProvider(built.request, {
+      result.provider_calls += 1;
+      response = await callProvider(built.request, {
         role, evaluatorId: EVALUATOR_IDS[role],
         promptProtocolCommitment: built.manifest.prompt_protocol_commitment,
       });
-      result.provider_calls += 1;
       const submission = forecastSubmission(views[role], response, { role, model });
       if (role === 'observer') {
         store.submitObserverPrediction(observerStudy.id, views[role].id, submission, EVALUATOR_IDS[role]);
@@ -226,7 +250,11 @@ async function runCycle({ store, enabled = true, model = DEFAULT_MODEL,
       }
       result.predictions_committed.push(role);
     } catch (error) {
-      result.failures.push({ role, reason: String(error.message || error).slice(0, 240) });
+      result.failures.push({
+        role,
+        reason: String(error.message || error).slice(0, 240),
+        ...(response ? { provider_receipt: providerReceipt(response) } : {}),
+      });
     }
   }
   const refreshed = activeNaturalStudy(store.selfPredictionStudiesSnapshot({ role: 'observer' }));
@@ -251,7 +279,7 @@ async function runCycle({ store, enabled = true, model = DEFAULT_MODEL,
 }
 
 module.exports = {
-  PROTOCOL_VERSION, DEFAULT_MODEL, DEFAULT_MAX_PROVIDER_CALLS, ROLES, EVALUATOR_IDS,
+  PROTOCOL_VERSION, DEFAULT_MODEL, FORECAST_MAX_TOKENS, DEFAULT_MAX_PROVIDER_CALLS, ROLES, EVALUATOR_IDS,
   commitment, forecastSchema, systemPrompt, rolePacket, forecastRequest, forecastSubmission,
   activeNaturalStudy, activeEvent, status, runCycle,
 };
