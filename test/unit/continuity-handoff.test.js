@@ -195,6 +195,10 @@ test('restart preserves exact legacy handoff transport and anchors the next repl
   assert.equal(legacySnapshot.report.transport_verified, 1);
   assert.equal(legacySnapshot.report.latest_replay_verified, false);
   assert.equal(legacySnapshot.report.latest_handoff_usable_for_projection, true);
+  assert.equal(legacySnapshot.report.lineage_action, 'use_latest_projection_and_proceed');
+  assert.equal(legacySnapshot.report.hold_required_for_lineage, false);
+  assert.equal(legacySnapshot.report.historical_replay_count_blocks_operation, false);
+  assert.equal(legacySnapshot.report.restart_settling_required, false);
   assert.equal(legacySnapshot.report.legacy_source_lifecycle_gaps, 1);
   assert.equal(legacySnapshot.handoffs[0].audit.transport_chain_verified, true);
   assert.equal(legacySnapshot.handoffs[0].audit.research_ledger_chain_verified, true);
@@ -237,6 +241,42 @@ test('restart preserves exact legacy handoff transport and anchors the next repl
   assert.equal(anchoredSnapshot.report.transport_verified, 2);
   assert.equal(anchoredSnapshot.report.replay_verified, 1);
   assert.equal(anchoredSnapshot.report.legacy_source_lifecycle_gaps, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('an unverified source lifecycle returns a machine-readable proceed decision instead of a restart wait', async () => {
+  const { dir, filePath, store } = await setup();
+  const source = closeWithHandoff(store, {
+    id: 'unverified-source-cycle', inherited: { content: 'Usable prior projection.' },
+    handoff: 'This source was closed before replay-verifiable lifecycle capture.',
+  });
+  await store.persist();
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const moment = persisted.cognition.experience_stream.find(item => item.id === source.moment.id);
+  moment.lifecycle_protocol_version = 1;
+  moment.start_snapshot = null;
+  moment.start_commitment = null;
+  moment.closure_snapshot = null;
+  moment.closure_commitment = null;
+  moment.lifecycle_commitment = null;
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+
+  const reloaded = createIntelligenceStore({
+    filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-13T16:00:00.000Z'),
+  });
+  await reloaded.init();
+  assert.throws(() => reloaded.recordContinuityHandoff({
+    cycle_id: source.cycle.id,
+    content: 'This source was closed before replay-verifiable lifecycle capture.',
+    predecessor_commitment: null,
+  }), error => {
+    assert.equal(error.code, 'source_lifecycle_not_replay_verified');
+    assert.equal(error.continuity_action,
+      'proceed_from_the_latest_usable_projection_and_close_a_new_replay_verified_cycle');
+    assert.equal(error.hold_required, false);
+    assert.equal(error.restart_settling_required, false);
+    return true;
+  });
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

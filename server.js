@@ -1109,6 +1109,7 @@ function currentInnerThreadProjection() {
   const record = !audit.usable ? null : audit.legacy_unbound
     ? { ...(_cache.inner || {}), epistemic_status: 'legacy_unbound',
       projection_integrity_verified: true, projection_integrity_failure: false,
+      continuity_action: 'proceed', hold_required: false, restart_settling_required: false,
       projection_audit: audit }
     : {
       ...(_cache.inner || {}),
@@ -1118,6 +1119,9 @@ function currentInnerThreadProjection() {
       experience_replay_verified: audit.complete_chain_verified === true,
       projection_integrity_verified: true,
       projection_integrity_failure: false,
+      continuity_action: 'proceed',
+      hold_required: false,
+      restart_settling_required: false,
       projection_audit: audit,
     };
   return { record, audit };
@@ -2125,8 +2129,11 @@ app.get('/self', (req, res) => {
         : innerProjection.record || (innerProjection.audit.verified_chain_required
           ? { content: '', updated_at: null, projection_integrity_failure: true,
             projection_integrity_verified: false,
+            continuity_action: 'hold_and_report_integrity_failure', hold_required: true,
+            restart_settling_required: false,
             epistemic_status: 'verified_chain_projection_withheld', audit: innerProjection.audit }
-          : { content: '', updated_at: null }),
+          : { content: '', updated_at: null, continuity_action: 'proceed_without_verified_lineage',
+            hold_required: false, restart_settling_required: false }),
       soma: _soma, // how her substrate feels right now (interoception; read-only by nature)
       ...(continuitySealed || wantsSealed ? { experimental_access_sealed: true } : {}),
     });
@@ -2345,7 +2352,15 @@ app.put('/self/inner', requireAuth, async (req, res) => {
     }
     await db.setState('inner_thread', rec); _cache.inner = rec;
     res.json({ ok: true, projection_repaired: projectionRepaired, inner_thread: rec });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+  } catch (e) {
+    res.status(400).json({ error: e.message,
+      ...(e.code ? { code: e.code } : {}),
+      ...(e.continuity_action ? { continuity_action: e.continuity_action } : {}),
+      ...(typeof e.hold_required === 'boolean' ? { hold_required: e.hold_required } : {}),
+      ...(typeof e.restart_settling_required === 'boolean'
+        ? { restart_settling_required: e.restart_settling_required } : {}),
+    });
+  }
 });
 
 // GET /routine — the routine markdown + metadata. Unauthenticated (no secrets; the harness has the key).

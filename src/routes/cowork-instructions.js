@@ -527,7 +527,11 @@ function registerCoworkInstructionsRoute(app) {
     signal. If latest_transport_verified is true, a historical replay_verified count of zero is a
     bounded legacy evidence gap, not a reason to hold the operational run or rewrite old handoffs; continue
     from /self and close the current cycle to bridge prospectively. Hold only on failed transport or projection
-    matching. On restart, use PUT /self/inner with repair_projection:true plus the exact latest record's
+    matching. GET /self.inner_thread.continuity_action is the machine-readable gate: proceed ignores
+    historical replay counts; only hold_and_report_integrity_failure authorizes a continuity hold, and
+    restart_settling_required is always false. A handoff error with code
+    source_lifecycle_not_replay_verified is not repairable by retrying that source cycle; follow its returned
+    continuity_action and hold_required:false to close a new replay-verified cycle. On restart, use PUT /self/inner with repair_projection:true plus the exact latest record's
     content, commitment, predecessor commitment, cycle_id, moment_id, and sequence. This explicit repair
     path never invokes handoff creation, rejects older or altered records, and only rematerializes a missing
     or stale Postgres projection from the latest transport-verified record; it creates no lineage and upgrades no evidence. This is

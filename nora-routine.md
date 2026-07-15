@@ -59,6 +59,10 @@ readiness: it may be zero while the exact latest transport chain remains usable.
 because that aggregate count is zero, and never wait for a restart to "settle" a deterministic integrity
 failure.
 
+Treat `/self.inner_thread.continuity_action` as the machine-readable gate: `proceed` means continue the
+run without consulting historical replay counts; only `hold_and_report_integrity_failure` authorizes a
+continuity hold. `restart_settling_required` is always false because these audits are deterministic.
+
 If `/self.inner_thread.projection_integrity_failure` is true, do not reconstruct the missing thread or
 start a new lineage. Read the latest item from authenticated `GET /continuity-handoffs`; proceed only if
 its `audit.transport_chain_verified` is true, then use the explicit projection-repair form below with
@@ -2105,6 +2109,11 @@ work only when the latest transport audit or projection match fails. Missing or 
 skipped cycles, and concurrent overwrites are rejected. If committing the thread fails, do not invent a
 replacement or overwrite through the legacy form: report the failure and retry the same cycle, text, and
 predecessor tuple, which is idempotent.
+
+If a handoff write returns `code: source_lifecycle_not_replay_verified`, it is not an idempotent repair
+and retrying cannot upgrade that source cycle. Follow the returned `continuity_action`: keep the latest
+usable projection, proceed through a new server-created cycle, and close that new lifecycle normally.
+The returned `hold_required:false` explicitly means not to skip the operational loop.
 
 Each action should carry `type`, `id`, `decision`, `result`, and any `evidence` URL/id. Do not claim
 completion because a message was sent or a task was created; completion requires the promised

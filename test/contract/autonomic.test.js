@@ -29,6 +29,11 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Never replay older records/);
   assert.match(routine, /projection_integrity_verified.*authoritative readiness signal/s);
   assert.match(routine, /aggregate.*replay_verified.*historical evidence coverage/s);
+  assert.match(routine, /continuity_action.*machine-readable gate/s);
+  assert.match(routine, /only `hold_and_report_integrity_failure` authorizes a[\s\S]*continuity hold/);
+  assert.match(server, /continuity_action: 'proceed'.*hold_required: false.*restart_settling_required: false/s);
+  assert.match(server, /hold_and_report_integrity_failure.*hold_required: true/s);
+  assert.match(store, /source_lifecycle_not_replay_verified/);
   assert.match(routes, /resume_active: true/);
   assert.match(store, /recentActive && input\.resume_active === true/);
   assert.match(routine, /GET \/self-model\/cycle-calibration/);

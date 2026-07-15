@@ -18233,7 +18233,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         return { ...JSON.parse(JSON.stringify(existing)), audit: continuityHandoffAudit(existing, current.cognition) };
       }
       if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) {
-        throw new Error('continuity handoff requires a replay-verified experience lifecycle');
+        const error = new Error('continuity handoff requires a replay-verified experience lifecycle; this source cycle cannot be repaired or upgraded by retrying the handoff write');
+        error.code = 'source_lifecycle_not_replay_verified';
+        error.continuity_action = 'proceed_from_the_latest_usable_projection_and_close_a_new_replay_verified_cycle';
+        error.hold_required = false;
+        error.restart_settling_required = false;
+        throw error;
       }
       const predecessor = current.cognition.continuity_handoffs.at(-1) || null;
       if ((input.predecessor_commitment || null) !== (predecessor?.commitment || null)) {
@@ -18279,14 +18284,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const auditCache = new Map();
     const visible = handoffs.map(item => ({ ...JSON.parse(JSON.stringify(item)),
       audit: continuityHandoffAudit(item, state.cognition, new Set(), auditCache) }));
+    const latestAudit = visible.at(-1)?.audit || null;
     return {
       epistemic_status: 'Cycle-bound, hash-chained functional handoffs. Transport verification preserves exact content lineage across declared legacy experience gaps; replay verification additionally requires auditable source lifecycles. This is not evidence of continuous subjective experience.',
       report: { total: visible.length, replay_verified: visible.filter(item => item.audit.complete_chain_verified).length,
         transport_verified: visible.filter(item => item.audit.transport_chain_verified).length,
         legacy_source_lifecycle_gaps: visible.filter(item => item.audit.legacy_source_lifecycle_gap).length,
-        latest_replay_verified: visible.at(-1)?.audit.complete_chain_verified === true,
-        latest_transport_verified: visible.at(-1)?.audit.transport_chain_verified === true,
-        latest_handoff_usable_for_projection: visible.at(-1)?.audit.transport_chain_verified === true,
+        latest_replay_verified: latestAudit?.complete_chain_verified === true,
+        latest_transport_verified: latestAudit?.transport_chain_verified === true,
+        latest_handoff_usable_for_projection: latestAudit?.transport_chain_verified === true,
+        lineage_action: !latestAudit ? 'bootstrap_without_verified_lineage'
+          : latestAudit.transport_chain_verified
+            ? 'use_latest_projection_and_proceed' : 'hold_and_report_transport_integrity_failure',
+        hold_required_for_lineage: Boolean(latestAudit && !latestAudit.transport_chain_verified),
+        historical_replay_count_blocks_operation: false,
+        restart_settling_required: false,
         latest_commitment: visible.at(-1)?.commitment || null, latest_cycle_id: visible.at(-1)?.cycle_id || null },
       handoffs: visible,
     };
