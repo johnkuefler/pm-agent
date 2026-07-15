@@ -492,11 +492,18 @@ function registerCoworkInstructionsRoute(app) {
     integrated-self, historical-success, and modal-error baselines at the same time and scores them
     automatically at closure. Reliability scoring requires all five observable error domains; incomplete
     closures remain replay-visible but cannot enter calibration. The forecast is never injected into response prompts.
+    Do not read cycle calibration before the initial forecast. When a replay-valid preceding error exists,
+    the response reveals one commitment-bound self_correction packet only after that initial commitment.
+    POST /intelligence/cycles/:id/self-forecast/revision then commits exactly one pre-reentry decision with
+    disposition revise or retain, the full forecast, the offered feedback_commitment, and a
+    forecast_error_feedback evidence reference. Revise must change a scored prediction; retain must preserve
+    every scored value. Closure scores the decision against the untouched initial and historical baseline.
     Each verified closure also appends a predecessor-linked behavioral self-model revision under
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples, but is sealed during active blinded
     context trials.
-    GET /self-model/cycle-calibration exposes a narrower natural-cycle feedback projection: the latest
+    GET /self-model/cycle-calibration exposes a narrower natural-cycle feedback projection for audit after
+    the retain/revise decision: the latest
     replay-valid protocol-v2-or-newer miss, its source outcome and feedback commitments, and a mature profile only
     after five samples. It never enters Slack response prompts and remains available during unrelated
     studies; a directly overlapping self-model or integrated-self intervention seals it. Treat a single

@@ -17448,16 +17448,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     cache = new Map(), visited = new Set()) {
     if (!record || !moment) return { complete_chain_verified: false, reason: 'missing_forecast_or_moment' };
     const ledger = cognition.research_ledger || { events: [] };
-    const eventBound = (kind, subjectId, payload) => {
+    const eventIndex = (kind, subjectId, payload) => {
       const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
-      return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === subjectId
-        && event.payload_commitment === payloadCommitment).length === 1;
+      const matches = (ledger.events || []).map((event, index) => ({ event, index }))
+        .filter(item => item.event.kind === kind && item.event.subject_id === subjectId
+          && item.event.payload_commitment === payloadCommitment);
+      return matches.length === 1 ? matches[0].index : -1;
     };
+    const eventBound = (kind, subjectId, payload) => eventIndex(kind, subjectId, payload) >= 0;
     const manifestVerified = [1, 2, 3].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
-    const preregistrationBound = manifestVerified && eventBound('experience_self_forecast_preregistered', record.id,
-      { forecast_commitment: record.forecast_commitment });
+    const preregistrationEventIndex = manifestVerified
+      ? eventIndex('experience_self_forecast_preregistered', record.id,
+        { forecast_commitment: record.forecast_commitment }) : -1;
+    const preregistrationBound = preregistrationEventIndex >= 0;
     const committedAt = new Date(record.committed_at).getTime();
     const temporalOrderVerified = Number.isFinite(committedAt) && committedAt >= new Date(moment.started).getTime()
       && (!moment.finished || committedAt <= new Date(moment.finished).getTime());
@@ -17480,6 +17485,79 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const baselineVerified = sourcesVerified && canonicalJson(cycleSelfForecast.baselineFromMoments(
       eligibleHistoricalMoments, record.protocol_version))
       === canonicalJson(record.baseline);
+    const correctionOffer = record.self_correction || null;
+    const correctionRevision = correctionOffer?.revision || null;
+    let correctionOfferVerified = correctionOffer == null;
+    let correctionFeedbackReplayVerified = correctionOffer == null;
+    let correctionOfferLedgerBound = correctionOffer == null;
+    let correctionRevealAfterInitial = correctionOffer == null;
+    let correctionRevisionVerified = correctionRevision == null;
+    let correctionRevisionLedgerBound = correctionRevision == null;
+    let correctionRevisionBeforeEvidenceReentry = correctionRevision == null;
+    let correctionRevisionAfterFeedback = correctionRevision == null;
+    if (correctionOffer) {
+      const sourceMoment = cognition.experience_stream.find(item =>
+        item.id === correctionOffer.feedback?.source_moment_id);
+      const expectedFeedback = sourceMoment
+        ? cycleSelfForecast.errorFeedbackFromMoment(sourceMoment) : null;
+      const sourceIndex = sourceMoment ? cognition.experience_stream.findIndex(item => item.id === sourceMoment.id) : -1;
+      const revealAt = new Date(correctionOffer.revealed_at).getTime();
+      const offerEventIndex = eventIndex('experience_self_forecast_feedback_revealed', record.id,
+        { offer_commitment: correctionOffer.offer_commitment });
+      correctionOfferVerified = correctionOffer.initial_forecast_commitment === record.forecast_commitment
+        && correctionOffer.forecast_id === record.id
+        && correctionOffer.feedback_commitment === correctionOffer.feedback?.feedback_commitment
+        && cycleSelfForecast.commitment(cycleSelfForecast.correctionOfferManifest(correctionOffer))
+          === correctionOffer.offer_commitment;
+      correctionFeedbackReplayVerified = Boolean(sourceMoment && expectedFeedback
+        && sourceIndex >= 0 && sourceIndex < momentIndex
+        && sourceMoment.self_forecast?.outcome_commitment === correctionOffer.feedback?.source_outcome_commitment
+        && canonicalJson(expectedFeedback) === canonicalJson(correctionOffer.feedback)
+        && experienceMomentAudit(sourceMoment, cognition, cycles, cache, nextVisited).evidence_eligible);
+      correctionOfferLedgerBound = offerEventIndex >= 0;
+      correctionRevealAfterInitial = Number.isFinite(revealAt) && revealAt >= committedAt
+        && preregistrationEventIndex >= 0 && offerEventIndex > preregistrationEventIndex;
+      if (correctionRevision) {
+        let normalizedRevision = null;
+        try {
+          normalizedRevision = cycleSelfForecast.normalizeForecast(correctionRevision.forecast,
+            record.protocol_version);
+        } catch (_) { normalizedRevision = null; }
+        const revisionAt = new Date(correctionRevision.committed_at).getTime();
+        const revisionEventIndex = eventIndex('experience_self_forecast_corrected', record.id,
+          { revision_commitment: correctionRevision.revision_commitment });
+        const expectedChangedDomains = normalizedRevision
+          ? cycleSelfForecast.changedPredictionDomains(record.forecast, normalizedRevision) : [];
+        const correctionDispositionValid = correctionRevision.disposition === 'revise'
+          ? expectedChangedDomains.length > 0
+          : correctionRevision.disposition === 'retain'
+            ? expectedChangedDomains.length === 0 : false;
+        correctionRevisionVerified = Boolean(normalizedRevision
+          && correctionRevision.initial_forecast_commitment === record.forecast_commitment
+          && correctionRevision.offer_commitment === correctionOffer.offer_commitment
+          && correctionRevision.feedback_commitment === correctionOffer.feedback_commitment
+          && canonicalJson(normalizedRevision) === canonicalJson(correctionRevision.forecast)
+          && canonicalJson(expectedChangedDomains) === canonicalJson(correctionRevision.changed_domains)
+          && correctionDispositionValid
+          && correctionRevision.forecast.evidence?.some(item => item.type === 'forecast_error_feedback'
+            && item.id === correctionOffer.feedback_commitment)
+          && cycleSelfForecast.commitment(cycleSelfForecast.correctionRevisionManifest(correctionRevision))
+            === correctionRevision.revision_commitment);
+        correctionRevisionLedgerBound = revisionEventIndex >= 0;
+        correctionRevisionAfterFeedback = Number.isFinite(revisionAt) && revisionAt >= revealAt
+          && revisionEventIndex > offerEventIndex;
+        correctionRevisionBeforeEvidenceReentry = reentryTimes.every(time =>
+          Number.isFinite(time) && revisionAt <= time)
+          && (!moment.finished || revisionAt <= new Date(moment.finished).getTime());
+      }
+    }
+    const correctionOfferChainVerified = correctionOfferVerified && correctionFeedbackReplayVerified
+      && correctionOfferLedgerBound && correctionRevealAfterInitial;
+    const correctionCompleteChainVerified = Boolean(correctionOffer && correctionRevision
+      && correctionOfferChainVerified && correctionRevisionVerified && correctionRevisionLedgerBound
+      && correctionRevisionAfterFeedback && correctionRevisionBeforeEvidenceReentry);
+    const correctionAttachmentVerified = !correctionOffer || (correctionOfferChainVerified
+      && (!correctionRevision || correctionCompleteChainVerified));
     let outcomeVerified = record.outcome == null && record.outcome_commitment == null;
     let scoringBound = false;
     if (record.outcome && moment.closure) {
@@ -17509,8 +17587,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       baseline_replay_verified: baselineVerified,
       outcome_verified: outcomeVerified, scoring_ledger_bound: scoringBound,
       research_ledger_chain_verified: ledgerVerified,
+      self_correction_offered: correctionOffer != null,
+      self_correction_offer_verified: correctionOffer != null && correctionOfferChainVerified,
+      self_correction_revision_committed: correctionRevision != null,
+      self_correction_revision_verified: correctionRevision != null && correctionRevisionVerified,
+      self_correction_revision_ledger_bound: correctionRevision != null && correctionRevisionLedgerBound,
+      self_correction_revision_after_feedback_verified: correctionRevision != null && correctionRevisionAfterFeedback,
+      self_correction_before_evidence_reentry_verified: correctionRevision != null
+        && correctionRevisionBeforeEvidenceReentry,
+      self_correction_complete_chain_verified: correctionCompleteChainVerified && ledgerVerified,
       preregistration_verified: preregistrationVerified,
-      complete_chain_verified: preregistrationVerified && (!closed || (outcomeVerified && scoringBound)),
+      complete_chain_verified: preregistrationVerified && correctionAttachmentVerified
+        && (!closed || (outcomeVerified && scoringBound)),
     };
   }
 
@@ -17632,7 +17720,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (cycle.status !== 'running') throw new Error('cycle self-forecast requires an active cycle');
       const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id && item.status === 'open');
       if (!moment) throw new Error('open experience moment not found');
-      if (moment.self_forecast) throw new Error('cycle self-forecast is already committed');
+      if (moment.self_forecast) {
+        const normalizedRetry = cycleSelfForecast.normalizeForecast(input,
+          moment.self_forecast.protocol_version);
+        if (canonicalJson(normalizedRetry) !== canonicalJson(moment.self_forecast.forecast)) {
+          throw new Error('cycle self-forecast is already committed with different content');
+        }
+        return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
+          audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+      }
       if ((moment.attention_rounds || []).length !== 1
         || current.cognition.recurrent_signals.some(item => item.cycle_id === cycle.id)) {
         throw new Error('cycle self-forecast must be committed before evidence re-entry');
@@ -17642,6 +17738,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
       const committedAt = clock().toISOString();
       const forecastRecord = cycleSelfForecast.createRecord({ input, cycle, moment, baselineMoments, committedAt });
+      const correctionFeedback = Number(forecastRecord.protocol_version) >= 3
+        ? behavioralSelfCalibrationSnapshot().latest_forecast_error : null;
       const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
         candidate.id === moment.id ? highest : Math.max(highest,
           Number(candidate.self_forecast?.protocol_version) || 0), 0);
@@ -17652,6 +17750,62 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       researchLedgerAppend(current, { kind: 'experience_self_forecast_preregistered',
         subject_type: 'experience_self_forecast', subject_id: moment.self_forecast.id,
         payload: { forecast_commitment: moment.self_forecast.forecast_commitment } });
+      if (correctionFeedback) {
+        moment.self_forecast.self_correction = cycleSelfForecast.createCorrectionOffer({
+          record: moment.self_forecast,
+          feedback: correctionFeedback,
+          revealedAt: clock().toISOString(),
+        });
+        researchLedgerAppend(current, { kind: 'experience_self_forecast_feedback_revealed',
+          subject_type: 'experience_self_forecast', subject_id: moment.self_forecast.id,
+          payload: { offer_commitment: moment.self_forecast.self_correction.offer_commitment } });
+      }
+      return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
+        audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+    });
+  }
+
+  function reviseCycleSelfForecast(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const cycle = current.cycles.find(item => item.id === id);
+      if (!cycle) return null;
+      if (cycle.status !== 'running') throw new Error('self-correction revision requires an active cycle');
+      const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id
+        && item.status === 'open');
+      if (!moment?.self_forecast) throw new Error('initial cycle self-forecast must be committed first');
+      if (Number(moment.self_forecast.protocol_version) < 3) {
+        throw new Error('self-correction revision requires a protocol-v3 forecast');
+      }
+      if (!moment.self_forecast.self_correction) {
+        throw new Error('no replay-valid prior forecast error was available for self-correction');
+      }
+      if (moment.self_forecast.self_correction.revision) {
+        const existing = moment.self_forecast.self_correction.revision;
+        const retry = cycleSelfForecast.createCorrectionRevision({
+          record: moment.self_forecast,
+          input,
+          committedAt: existing.committed_at,
+        });
+        if (canonicalJson(retry) !== canonicalJson(existing)) {
+          throw new Error('cycle self-forecast correction is already committed with different content');
+        }
+        return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
+          audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+      }
+      if ((moment.attention_rounds || []).length !== 1
+        || current.cognition.recurrent_signals.some(item => item.cycle_id === cycle.id)) {
+        throw new Error('cycle self-forecast correction must be committed before evidence re-entry');
+      }
+      const revision = cycleSelfForecast.createCorrectionRevision({
+        record: moment.self_forecast,
+        input,
+        committedAt: clock().toISOString(),
+      });
+      moment.self_forecast.self_correction.revision = revision;
+      researchLedgerAppend(current, { kind: 'experience_self_forecast_corrected',
+        subject_type: 'experience_self_forecast', subject_id: moment.self_forecast.id,
+        payload: { revision_commitment: revision.revision_commitment } });
       return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
         audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
     });
@@ -17846,87 +18000,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && moment.self_forecast?.outcome?.self_state_score
       && experienceMomentAudit(moment, state.cognition, state.cycles, auditCache).evidence_eligible === true);
     const latestMoment = integratedMoments.at(-1) || null;
-    let latestForecastError = null;
-    if (latestMoment) {
-      const record = latestMoment.self_forecast;
-      const predictedActions = cycleSelfForecast.actionTypes(record.forecast.predicted_action_types || []);
-      const observedActions = cycleSelfForecast.actionTypes(record.outcome.actual?.action_types || []);
-      const predictedAttention = cycleSelfForecast.actionTypes(record.forecast.self_state_prediction?.attention_slot_types_at_close || []);
-      const observedAttention = cycleSelfForecast.actionTypes(record.outcome.self_state_actual?.attention_slot_types_at_close || []);
-      const predictedAppraisal = record.forecast.self_state_prediction?.appraisal_at_close || {};
-      const observedAppraisal = record.outcome.self_state_actual?.appraisal_at_close || {};
-      const appraisalKeys = ['valence', 'arousal', 'control', 'social_safety', 'coherence'];
-      const error = {
-        protocol_version: Number(record.protocol_version) >= 3 ? 2 : 1,
-        source_forecast_protocol_version: Number(record.protocol_version),
-        forecast_id: record.id,
-        source_moment_id: latestMoment.id,
-        source_outcome_commitment: record.outcome_commitment,
-        source_replay_verified: true,
-        scored_at: record.outcome.scored_at,
-        action_types: {
-          predicted_not_observed: predictedActions.filter(type => !observedActions.includes(type)),
-          observed_not_predicted: observedActions.filter(type => !predictedActions.includes(type)),
-        },
-        action_count: {
-          predicted: Number(record.forecast.self_state_prediction.expected_action_count),
-          observed: Number(record.outcome.self_state_actual.action_count),
-          observed_minus_predicted: Number(record.outcome.self_state_actual.action_count)
-            - Number(record.forecast.self_state_prediction.expected_action_count),
-        },
-        attention_slot_types: {
-          predicted_not_observed: predictedAttention.filter(type => !observedAttention.includes(type)),
-          observed_not_predicted: observedAttention.filter(type => !predictedAttention.includes(type)),
-        },
-        appraisal_prediction_minus_observed: Object.fromEntries(appraisalKeys.map(key => {
-          const predicted = predictedAppraisal[key] == null ? NaN : Number(predictedAppraisal[key]);
-          const observed = observedAppraisal[key] == null ? NaN : Number(observedAppraisal[key]);
-          return [key, Number.isFinite(predicted) && Number.isFinite(observed) ? predicted - observed : null];
-        })),
-        reentry: {
-          predicted_probability: Number(record.forecast.self_state_prediction.reentry_probability),
-          observed: record.outcome.self_state_actual.reentered === true,
-          probability_minus_observed: Number(record.forecast.self_state_prediction.reentry_probability)
-            - Number(record.outcome.self_state_actual.reentered === true),
-        },
-        scores: {
-          behavioral_self: record.outcome.self_score.composite,
-          behavioral_baseline: record.outcome.baseline_score.composite,
-          behavioral_self_minus_baseline: record.outcome.self_minus_baseline,
-          integrated_self: record.outcome.self_state_score.composite,
-          integrated_baseline: record.outcome.baseline_state_score.composite,
-          integrated_self_minus_baseline: record.outcome.self_state_minus_baseline,
-          baseline_comparison_eligible: record.outcome.self_state_baseline_comparison_eligible === true,
-        },
-        epistemic_limit: 'One replay-derived prediction error is an observation, not a stable tendency, instruction, identity fact, hidden-state report, or consciousness evidence.',
-      };
-      if (Number(record.protocol_version) >= 3 && record.outcome.metacognitive_actual
-        && record.outcome.metacognitive_score) {
-        error.metacognitive_reliability = {
-          predicted_success_probability: Number(
-            record.forecast.metacognitive_prediction.predicted_success_probability),
-          integrated_success_threshold: Number(
-            record.forecast.metacognitive_prediction.integrated_success_threshold),
-          observed_integrated_score: Number(record.outcome.metacognitive_actual.integrated_score),
-          observed_integrated_success: record.outcome.metacognitive_actual.integrated_success === true,
-          probability_minus_observed: Number(
-            record.forecast.metacognitive_prediction.predicted_success_probability)
-            - Number(record.outcome.metacognitive_actual.integrated_success === true),
-          predicted_largest_error_domain:
-            record.forecast.metacognitive_prediction.predicted_largest_error_domain,
-          observed_largest_error_domain: record.outcome.metacognitive_actual.largest_error_domain,
-          largest_error_domain_hit: record.outcome.metacognitive_score.largest_error_domain_hit === true,
-          domain_losses: JSON.parse(JSON.stringify(record.outcome.metacognitive_actual.domain_losses)),
-          self_score: Number(record.outcome.metacognitive_score.composite),
-          baseline_score: Number(record.outcome.baseline_metacognitive_score.composite),
-          self_minus_baseline: Number(record.outcome.metacognitive_self_minus_baseline),
-          baseline_comparison_eligible:
-            record.outcome.metacognitive_baseline_comparison_eligible === true,
-        };
-      }
-      latestForecastError = { ...error,
-        feedback_commitment: crypto.createHash('sha256').update(canonicalJson(error)).digest('hex') };
-    }
+    const latestForecastError = latestMoment
+      ? cycleSelfForecast.errorFeedbackFromMoment(latestMoment) : null;
     const mature = Number(latestRevision?.estimates?.sample_size || 0) >= 5;
     return {
       epistemic_status: 'Replay-derived natural-cycle forecast errors available to the next hourly forecast without entering Slack response prompts. Current evidence overrides every prior.',
@@ -18591,6 +18666,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ? metacognitiveBaselineEligible.reduce((sum, { item }) =>
         sum + item.self_forecast.outcome.metacognitive_self_minus_baseline, 0)
         / metacognitiveBaselineEligible.length : null;
+    const selfCorrectionOffers = selfForecasts.filter(({ item, audit }) =>
+      item.self_forecast.self_correction && audit.self_forecast?.self_correction_offer_verified === true);
+    const selfCorrectionDecisions = scoredSelfForecasts.filter(({ item, audit }) =>
+      item.self_forecast.outcome?.self_correction
+        && audit.self_forecast?.self_correction_complete_chain_verified === true);
     return {
       epistemic_status: 'A linked record of functional access windows and continuity handoffs; not a claim that the recorded moments are phenomenal experiences.',
       continuity: {
@@ -18628,6 +18708,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         metacognitive_reliability_forecasts: metacognitiveForecasts.length,
         metacognitive_reliability_baseline_eligible: metacognitiveBaselineEligible.length,
         mean_metacognitive_reliability_minus_baseline: meanMetacognitiveAdvantage,
+        self_correction_offers: selfCorrectionOffers.length,
+        replay_verified_self_correction_decisions: selfCorrectionDecisions.length,
+        revised_self_correction_decisions: selfCorrectionDecisions.filter(({ item }) =>
+          item.self_forecast.outcome.self_correction.disposition === 'revise').length,
+        retained_self_correction_decisions: selfCorrectionDecisions.filter(({ item }) =>
+          item.self_forecast.outcome.self_correction.disposition === 'retain').length,
         interpretation: 'Prospective behavioral, cross-domain operational self-state, and second-order reliability calibration against frozen historical baselines; not hidden-state access or a phenomenal report.',
       },
       moments,
@@ -18826,7 +18912,7 @@ ${episodes.map(item => {
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship, observePerspective, updatePerspective,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
-    recoverStaleCycles, preregisterCycleSelfForecast, cycleSelfForecastAudit,
+    recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,

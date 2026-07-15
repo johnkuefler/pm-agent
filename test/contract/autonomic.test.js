@@ -29,11 +29,15 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routes, /resume_active: true/);
   assert.match(store, /recentActive && input\.resume_active === true/);
   assert.match(routine, /GET \/self-model\/cycle-calibration/);
-  assert.match(routine, /latest_forecast_error/);
+  assert.match(routine, /Do \*\*not\*\* read.*cycle-calibration.*before this initial forecast/s);
+  assert.match(routine, /forecast_error_feedback/);
+  assert.match(routine, /retain\/revise decision/);
   assert.match(routine, /`protocol_version: 3`/);
   assert.match(routine, /metacognitive_prediction\.predicted_success_probability/);
   assert.match(routine, /predicted_largest_error_domain/);
   assert.match(routes, /behavioralSelfCalibrationSnapshot/);
+  assert.match(routes, /self-forecast'[\s\S]*await store\.persistStrict\(\)/);
+  assert.match(routes, /self-forecast\/revision'[\s\S]*await store\.persistStrict\(\)/);
   assert.match(routine, /Overdue commitments are first-class failures/);
   assert.match(routine, /decision-traces\?reviewed=false/);
   assert.match(routine, /initiative-budgets\/cowork:proactive\/spend/);

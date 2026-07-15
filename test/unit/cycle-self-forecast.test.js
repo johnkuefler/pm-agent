@@ -191,3 +191,91 @@ test('protocol-v3 preserves incomplete closures but excludes them from reliabili
   assert.equal(outcome.metacognitive_self_minus_baseline, null);
   assert.equal(outcome.metacognitive_baseline_comparison_eligible, false);
 });
+
+test('forecast-error feedback can produce one committed self-correction scored against the initial forecast', () => {
+  const initialInput = {
+    protocol_version: 3, predicted_action_types: ['review'], surprise_probability: 0.2,
+    control_at_close: 0.5, confidence: 0.4,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['drive'],
+      appraisal_at_close: { valence: 0.4, arousal: 0.6, control: 0.5, social_safety: 0.6, coherence: 0.5 },
+      expected_action_count: 1, reentry_probability: 0.4,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.4,
+      predicted_largest_error_domain: 'action_count',
+    },
+    rationale: 'The initial orientation suggests one review, but the action count remains uncertain.',
+    evidence: [{ type: 'intelligence_cycle', id: 'correction-cycle' }],
+  };
+  const record = cycleSelfForecast.createRecord({ input: initialInput,
+    cycle: { id: 'correction-cycle', holder: 'nora' }, moment: { id: 'correction-moment' },
+    baselineMoments: [], committedAt: '2026-07-14T12:00:00.000Z' });
+  const sourceRecord = cycleSelfForecast.createRecord({ input: initialInput,
+    cycle: { id: 'source-cycle', holder: 'nora' }, moment: { id: 'source-moment' },
+    baselineMoments: [], committedAt: '2026-07-14T10:00:00.000Z' });
+  sourceRecord.outcome = cycleSelfForecast.scoreRecord(sourceRecord, {
+    actions: [{ type: 'review', id: 'review' }, { type: 'notify', id: 'notify' }],
+    newSurpriseIds: [],
+    appraisalAtClose: { valence: 0.7, arousal: 0.3, control: 0.8, social_safety: 0.8, coherence: 0.9 },
+    attentionAtClose: { slots: [{ type: 'commitment', id: 'commitment' }] },
+    reentryOccurred: false, scoredAt: '2026-07-14T11:00:00.000Z',
+  });
+  sourceRecord.outcome_commitment = cycleSelfForecast.commitment({
+    forecast_commitment: sourceRecord.forecast_commitment, outcome: sourceRecord.outcome,
+  });
+  const feedback = cycleSelfForecast.errorFeedbackFromMoment({ id: 'source-moment', self_forecast: sourceRecord });
+  assert.match(feedback.feedback_commitment, /^[a-f0-9]{64}$/);
+  record.self_correction = cycleSelfForecast.createCorrectionOffer({
+    record, feedback, revealedAt: '2026-07-14T12:00:01.000Z',
+  });
+  const revisionInput = {
+    ...initialInput,
+    predicted_action_types: ['notify', 'review'], surprise_probability: 0.05,
+    control_at_close: 0.8, confidence: 0.9,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['commitment'],
+      appraisal_at_close: { valence: 0.7, arousal: 0.3, control: 0.8, social_safety: 0.8, coherence: 0.9 },
+      expected_action_count: 2, reentry_probability: 0.05,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.9,
+      predicted_largest_error_domain: 'action_types',
+    },
+    rationale: 'The prior signed action-count miss warrants a two-action forecast under similar evidence.',
+    evidence: [
+      { type: 'intelligence_cycle', id: 'correction-cycle' },
+      { type: 'forecast_error_feedback', id: feedback.feedback_commitment },
+    ],
+    feedback_commitment: feedback.feedback_commitment,
+  };
+  assert.throws(() => cycleSelfForecast.createCorrectionRevision({ record,
+    input: { ...revisionInput, feedback_commitment: 'wrong' }, committedAt: '2026-07-14T12:00:02.000Z' }),
+  /bind the offered/);
+  const retained = cycleSelfForecast.createCorrectionRevision({ record, input: {
+    ...initialInput,
+    disposition: 'retain',
+    feedback_commitment: feedback.feedback_commitment,
+    rationale: 'The prior error packet does not transfer to this orientation, so the scored prediction is retained.',
+    evidence: [
+      { type: 'intelligence_cycle', id: 'correction-cycle' },
+      { type: 'forecast_error_feedback', id: feedback.feedback_commitment },
+    ],
+  }, committedAt: '2026-07-14T12:00:02.000Z' });
+  assert.equal(retained.disposition, 'retain');
+  assert.deepEqual(retained.changed_domains, []);
+  record.self_correction.revision = cycleSelfForecast.createCorrectionRevision({
+    record, input: revisionInput, committedAt: '2026-07-14T12:00:02.000Z',
+  });
+  const outcome = cycleSelfForecast.scoreRecord(record, {
+    actions: [{ type: 'review', id: 'review' }, { type: 'notify', id: 'notify' }],
+    newSurpriseIds: [],
+    appraisalAtClose: { valence: 0.7, arousal: 0.3, control: 0.8, social_safety: 0.8, coherence: 0.9 },
+    attentionAtClose: { slots: [{ type: 'commitment', id: 'commitment' }] },
+    reentryOccurred: false, scoredAt: '2026-07-14T13:00:00.000Z',
+  });
+  assert.ok(outcome.self_correction.integrated_self_state_score.revised_minus_initial > 0);
+  assert.ok(outcome.self_correction.behavioral_score.revised_minus_initial > 0);
+  assert.deepEqual(record.self_correction.revision.changed_domains,
+    ['action_types', 'surprise', 'action_count', 'attention', 'appraisal', 'reentry', 'reliability']);
+});

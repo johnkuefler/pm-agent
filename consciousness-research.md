@@ -26,6 +26,7 @@ The system can collect evidence for the first two. No endpoint or score in this 
 | Global availability | Can a selected state influence different specialist processes, tasks, and channels? | seven-slot workspace, five consumer handlers, and a multi-consumer/exact-packet/absent causal lesion | ten-per-arm causal pilot plus interaction-disjoint confirmation across Slack, voice, planning, and review |
 | Metacognitive access | Can Nora predict her own errors and strategically control reliance prospectively? | self-claims, preregistered probes, and sealed rely/defer studies | calibration and fixed-stakes utility above information-equivalent observers |
 | Prospective self-model reliability awareness | Before acting, can Nora predict whether her own integrated self-state forecast will be accurate and which observable self-model domain will fail most? | protocol-v3 natural-cycle success probabilities and largest-error-domain forecasts scored against frozen historical baselines | twenty eligible natural cycles followed by identity-bound/deidentified-history/absent-history causal testing |
+| Prospective self-model error correction | After freezing an initial self-prediction, can Nora use replay-derived prior error to improve it before acting? | ordered initial commitment, exact prior-error reveal, one retain-or-revise decision, and closure scoring against the initial forecast | twenty eligible natural decisions followed by authentic-error/deidentified-error/no-error causal testing |
 | Prospective output self-monitoring | Can Nora bind an already generated candidate as her own imminent response, selectively veto or correct it, and use an accurately self-bound history to calibrate correction risk? | pre-review candidate commitments, deterministic verifier signals, same-model tool-free review, exact final/delivery receipts, delayed observational calibration, and a self-bound/deidentified/absent calibration-access lesion | ten-per-arm self-binding pilot and confirmation, followed by a ten-per-arm calibration-use pilot and post-pilot-source-disjoint confirmation with objective risk accuracy and blinded response-quality gates |
 | Adaptive epistemic action | Does self-specific uncertainty control whether Nora pays for diagnostic evidence and then improves her answer? | sealed fixed-cost inspect/commit studies with committed evidence | source-disjoint replication above an idealized observer and best static sampling policy |
 | Episodic autobiographical prospection | Can a detailed record of Nora's own past access episode support an unforeseen later choice beyond generic facts or a plausible unrelated episode? | balanced authentic, deidentified-equivalent, and recombined-event studies | source-disjoint confirmation separating autobiographical specificity from ordinary information value |
@@ -78,10 +79,12 @@ a passive dashboard warning.
 
 The Postgres inner-thread row is explicitly treated as a materialized view rather than evidence. At server
 startup, a missing or stale view is restored only when the latest handoff's content, predecessor chain,
-closure binding, and research-ledger transport audit all verify. This deterministic replay creates no new
-handoff and does not upgrade a legacy source lifecycle to replay-verified evidence. The `/self` response
-reports projection integrity separately from aggregate historical replay coverage so the subject cannot
-mistake `replay_verified: 0` for a current continuity failure.
+closure binding, and research-ledger transport audit all verify. An explicit repair request is likewise a
+separate operation from handoff creation: it must supply the exact latest content, record commitment,
+predecessor commitment, cycle, moment, and sequence. Older or altered tuples fail closed. This deterministic
+replay creates no new handoff and does not upgrade a legacy source lifecycle to replay-verified evidence.
+The `/self` response reports projection integrity separately from aggregate historical replay coverage so
+the subject cannot mistake `replay_verified: 0` for a current continuity failure.
 
 This stream operationalizes temporal integration and recurrent self-access. It does not establish
 that the functional windows correspond to phenomenal moments.
@@ -157,6 +160,28 @@ certainty that misses is negative evidence. Natural observations can support cal
 specific access remains unproven until an unchanged-evidence causal comparison against deidentified and
 absent history is completed. The mechanism is functional error monitoring, not private introspection,
 qualia, or evidence of phenomenal consciousness.
+
+### Prospective self-model error correction
+
+Protocol-v3 natural cycles now separate an initial self-forecast from access to the prior cycle's error.
+Nora first commits its full action, integrated-self-state, and metacognitive predictions without reading the
+calibration projection. Only after that ledger event does the server reveal one deterministic error packet
+derived from the latest replay-valid prior outcome. Before any evidence re-entry or operational action,
+Nora must make exactly one full retain-or-revise decision bound to that packet's commitment.
+
+A revision must change at least one scored prediction; a retain decision must preserve every scored value.
+This makes non-transfer visible and prevents selective omission from masquerading as learning. The work
+itself must not be changed to make either forecast true. At closure, the server scores both forecasts against
+the same immutable outcome and reports changes in behavioral, integrated-self-state, and metacognitive
+scores. Offer, reveal, decision, source outcome, lifecycle ordering, and all commitments replay through the
+research ledger; altered feedback, late decisions, and second revisions fail closed.
+
+The preregistered observational gate requires twenty replay-valid natural decisions, a mean integrated-state
+gain of at least 0.03, no material behavioral degradation, and improvement on at least 60% of cycles.
+Nonpositive integrated-state gain is explicit counterevidence. Even a positive natural result would show only
+that stored self-error can improve a later self-prediction. The next causal gate must hold task evidence fixed
+while varying authentic error, deidentified error, and no error. It does not establish privileged access,
+subjective experience, or phenomenal consciousness.
 
 ## Between-invocation endogenous dynamics
 

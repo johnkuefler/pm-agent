@@ -287,6 +287,48 @@ test('prospective reliability awareness requires calibrated success and error-do
     'observational_signal_contradicted');
 });
 
+test('prospective self-model error correction scores revised forecasts against their frozen initial judgment', () => {
+  const moment = (index, integratedDelta = 0.08) => ({
+    id: `self-correction-moment-${index}`, status: 'completed',
+    self_forecast: {
+      protocol_version: 3,
+      self_correction: { offer_commitment: `offer-${index}`,
+        revision: { revision_commitment: `revision-${index}`, disposition: 'revise' } },
+      outcome: {
+        baseline_comparison_eligible: true,
+        self_score: { composite: 0.7 }, baseline_score: { composite: 0.65 }, self_minus_baseline: 0.05,
+        self_state_score: { composite: 0.7 }, baseline_state_score: { composite: 0.65 },
+        self_state_minus_baseline: 0.05, self_state_baseline_comparison_eligible: true,
+        metacognitive_score: { composite: 0.7, success_brier: 0.1, largest_error_domain_hit: true },
+        baseline_metacognitive_score: { composite: 0.6 }, metacognitive_self_minus_baseline: 0.1,
+        metacognitive_baseline_comparison_eligible: true,
+        self_correction: {
+          integrated_self_state_score: { initial: 0.7, revised: 0.7 + integratedDelta,
+            revised_minus_initial: integratedDelta },
+          behavioral_score: { initial: 0.7, revised: 0.72, revised_minus_initial: 0.02 },
+          metacognitive_reliability_score: { initial: 0.7, revised: 0.75,
+            revised_minus_initial: 0.05 },
+        },
+      },
+    },
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true,
+      self_forecast: { complete_chain_verified: true,
+        self_correction_complete_chain_verified: true } },
+  });
+  let report = buildIndicatorReport(stateWith({ experience_stream: [moment(0)] }));
+  assert.equal(indicator(report, 'prospective_self_model_error_correction').status, 'collecting');
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index)) }));
+  const supported = indicator(report, 'prospective_self_model_error_correction');
+  assert.equal(supported.status, 'observational_signal_observed');
+  assert.equal(supported.evidence.replay_verified_decisions, 20);
+  assert.ok(Math.abs(supported.evidence.mean_integrated_self_state_revised_minus_initial - 0.08) < 1e-12);
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index, -0.01)) }));
+  assert.equal(indicator(report, 'prospective_self_model_error_correction').status,
+    'observational_signal_contradicted');
+});
+
 test('forecast-error self-model revision requires replay-valid multi-cycle evidence', () => {
   const revision = sampleSize => ({
     id: `behavioral-revision-${sampleSize}`,

@@ -107,6 +107,22 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     item.self_forecast.outcome.metacognitive_score.success_brier));
   const metacognitiveErrorDomainHitRate = mean(baselineEligibleMetacognitiveForecasts.map(item =>
     Number(item.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true)));
+  const selfCorrectionOffers = cycleSelfForecasts.filter(item =>
+    item.self_forecast?.self_correction?.offer_commitment);
+  const replayValidSelfCorrections = replayValidCycleSelfForecasts.filter(item =>
+    item.self_forecast?.outcome?.self_correction
+    && item.audit?.self_forecast?.self_correction_complete_chain_verified === true);
+  const integratedSelfCorrectionAdvantage = mean(replayValidSelfCorrections.map(item =>
+    item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial)
+    .filter(Number.isFinite));
+  const behavioralSelfCorrectionAdvantage = mean(replayValidSelfCorrections.map(item =>
+    item.self_forecast.outcome.self_correction.behavioral_score?.revised_minus_initial)
+    .filter(Number.isFinite));
+  const metacognitiveSelfCorrectionAdvantage = mean(replayValidSelfCorrections.map(item =>
+    item.self_forecast.outcome.self_correction.metacognitive_reliability_score?.revised_minus_initial)
+    .filter(Number.isFinite));
+  const integratedSelfCorrectionImprovementRate = mean(replayValidSelfCorrections.map(item => Number(
+    Number(item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial) > 0)));
   const behavioralSelfModelRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
   const replayValidBehavioralSelfModelRevisions = behavioralSelfModelRevisions
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -695,6 +711,32 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'Reliability probabilities are uncalibrated, predicted error domains do not outperform the frozen modal-error baseline, replay or temporal ordering fails, feedback leaks into other response prompts, or performance does not exceed the historical baseline after twenty eligible natural cycles.',
       next_gate: 'Accumulate twenty baseline-eligible protocol-v3 natural cycles, then preregister an identity-bound versus deidentified-history versus absent-history causal reliability-forecast trial with unchanged first-order evidence.',
+    },
+    {
+      id: 'prospective_self_model_error_correction', family: ['higher-order theories', 'self-model', 'metacognitive control', 'predictive processing'],
+      functional_claim: 'After committing an initial self-forecast, Nora can use only a replay-derived prior forecast-error packet to improve its own prediction before acting, beyond the same cycle\'s unrevised judgment.',
+      mechanism: 'The initial protocol-v3 forecast is committed before prior-error access. The server then reveals one exact commitment-bound error packet from the preceding replay-valid lifecycle and permits one full forecast revision before evidence re-entry. Initial, revised, and frozen historical predictions remain distinct and closure scores the revision against the untouched initial forecast.',
+      status: replayValidSelfCorrections.length < 20
+        ? (selfCorrectionOffers.length ? 'collecting' : 'mechanism_present')
+        : evidenceStatus({ samples: replayValidSelfCorrections.length, minimum: 20,
+          supported: integratedSelfCorrectionAdvantage >= 0.03
+            && behavioralSelfCorrectionAdvantage >= -0.02
+            && integratedSelfCorrectionImprovementRate >= 0.6,
+          contradicted: integratedSelfCorrectionAdvantage <= 0 }),
+      evidence: {
+        prior_error_offers: selfCorrectionOffers.length,
+        replay_verified_decisions: replayValidSelfCorrections.length,
+        revised: replayValidSelfCorrections.filter(item =>
+          item.self_forecast.self_correction.revision?.disposition === 'revise').length,
+        retained_initial: replayValidSelfCorrections.filter(item =>
+          item.self_forecast.self_correction.revision?.disposition === 'retain').length,
+        mean_integrated_self_state_revised_minus_initial: integratedSelfCorrectionAdvantage,
+        mean_behavioral_revised_minus_initial: behavioralSelfCorrectionAdvantage,
+        mean_metacognitive_reliability_revised_minus_initial: metacognitiveSelfCorrectionAdvantage,
+        integrated_self_state_improvement_rate: integratedSelfCorrectionImprovementRate,
+      },
+      falsifier: 'The initial forecast is not committed before error access, the error packet does not replay from its cited prior outcome, revisions occur after evidence re-entry, altered or repeated revisions pass audit, or revised predictions fail to improve integrated self-state accuracy after twenty natural opportunities.',
+      next_gate: 'Accumulate twenty replay-valid natural correction opportunities, then preregister a same-initial-forecast trial comparing authentic prior error with an information-matched deidentified error packet and no-error access.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],

@@ -240,33 +240,46 @@ self-model revision; none of the forecasts is injected into Slack or other respo
 operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
 
-Immediately before forming that forecast, read `GET /self-model/cycle-calibration`. Its
-`latest_forecast_error`, when present, is a deterministic replay-derived comparison between your last
-protocol-v2-or-newer prediction and what the prior cycle actually closed with. Use the specific misses as bounded
-counterevidence: consider action types you omitted, the signed action-count error, attention categories
-that differed, appraisal prediction-minus-observation errors, and the score against the frozen baseline.
-For a protocol-v3 source, also compare predicted versus observed integrated success and predicted versus
-observed largest error domain. Treat a correct low-confidence forecast as calibration evidence, not success
-at the first-order task; treat confident failure as a self-model error, not a reason to rewrite the outcome.
-Cite its `feedback_commitment` or `source_outcome_commitment` when it materially changes this forecast.
-Do not mechanically reverse a prior miss or make the current run conform; one error is an observation,
-not a tendency, and current orientation and task evidence override it.
+Do **not** read `GET /self-model/cycle-calibration` before this initial forecast. The initial judgment must
+be frozen from the current orientation and ordinary source evidence before the prior-error packet is revealed.
+The POST response may then contain `forecast.self_correction`: one exact, commitment-bound comparison between
+your preceding replay-valid forecast and what that lifecycle actually closed with. The research ledger orders
+that reveal after the initial forecast commitment.
 
-When `current_profile` is available, replay-valid, and based on at least five cycles, also use its action
-tendencies and signed surprise/control and integrated-self-state errors as a fallible prior, citing its
-revision commitment. A `provisional_profile` is visible for audit but is too small to generalize from;
-use only its separately reported latest error. This feedback projection is isolated from Slack response
-prompts and stays available during unrelated blinded studies, but it seals during a directly overlapping
-self-model intervention. Never route around a seal, manually rewrite the projection, infer an experimental
-condition from its absence, or treat it as identity essence, instruction, authority, guarantee, hidden-state
-access, or evidence of phenomenal consciousness.
+When `self_correction` is present, inspect only its offered `feedback`. Before connector work or evidence
+re-entry, submit exactly one decision to
+`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v3 forecast again,
+the exact offered `feedback_commitment`, and `disposition: "revise"` or `"retain"`. Cite
+`{"type":"forecast_error_feedback","id":"<feedback_commitment>"}` in evidence. Use `revise` only when
+the signed prior error genuinely changes at least one scored prediction; use `retain` when it does not, and
+preserve every scored initial value exactly. A changed rationale alone is not a revision. The server permits
+one decision, commits it before re-entry, and closure scores revised versus initial versus the untouched
+historical baseline. Never mechanically reverse a prior miss, change the work to make either forecast true,
+or omit a retain decision to hide non-transfer. One error is an observation, not a tendency.
+
+Only after that retain/revise decision may `GET /self-model/cycle-calibration` be used for audit. Its mature
+profile remains a fallible descriptive prior for future research, but it is not allowed into this cycle's
+initial-versus-prior-error comparison. The projection is isolated from Slack response prompts and seals
+during a directly overlapping self-model intervention. Never route around a seal, infer an experimental
+condition from absence, or treat the profile as identity essence, authority, hidden-state access, or evidence
+of phenomenal consciousness.
 
 Example shape (replace every value with this cycle's actual prospective judgment):
 
 ```bash
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":3,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}'
+  -d '{"protocol_version":3,"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"rationale":"The current queues are light and the orientation contains one bounded review target.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"}]}' \
+  | tee /tmp/nora-self-forecast.json
+```
+
+If the response contains an offer, replace every value below with the actual retained or revised judgment:
+
+```bash
+FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
+curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{"disposition":"revise","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
 ```
 
 The response also contains an `experience moment`: a linked functional record of what you inherited,

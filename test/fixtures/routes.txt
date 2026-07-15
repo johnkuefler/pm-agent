@@ -28,6 +28,7 @@ GET /continuity-handoffs
 POST /intelligence/cycles
 POST /intelligence/cycles/:id/reenter
 POST /intelligence/cycles/:id/self-forecast
+POST /intelligence/cycles/:id/self-forecast/revision
 PATCH /intelligence/cycles/:id/complete
 GET /cognition
 GET /endogenous-dynamics

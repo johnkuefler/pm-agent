@@ -163,6 +163,202 @@ function selfStateErrorProfile(outcome = {}) {
   };
 }
 
+function errorFeedbackFromMoment(moment) {
+  const record = moment?.self_forecast;
+  if (!record?.outcome?.self_state_score || !record.outcome_commitment) return null;
+  const predictedActions = actionTypes(record.forecast.predicted_action_types || []);
+  const observedActions = actionTypes(record.outcome.actual?.action_types || []);
+  const predictedAttention = actionTypes(record.forecast.self_state_prediction?.attention_slot_types_at_close || []);
+  const observedAttention = actionTypes(record.outcome.self_state_actual?.attention_slot_types_at_close || []);
+  const predictedAppraisal = record.forecast.self_state_prediction?.appraisal_at_close || {};
+  const observedAppraisal = record.outcome.self_state_actual?.appraisal_at_close || {};
+  const appraisalKeys = ['valence', 'arousal', 'control', 'social_safety', 'coherence'];
+  const error = {
+    protocol_version: Number(record.protocol_version) >= 3 ? 2 : 1,
+    source_forecast_protocol_version: Number(record.protocol_version),
+    forecast_id: record.id,
+    source_moment_id: moment.id,
+    source_outcome_commitment: record.outcome_commitment,
+    source_replay_verified: true,
+    scored_at: record.outcome.scored_at,
+    action_types: {
+      predicted_not_observed: predictedActions.filter(type => !observedActions.includes(type)),
+      observed_not_predicted: observedActions.filter(type => !predictedActions.includes(type)),
+    },
+    action_count: {
+      predicted: Number(record.forecast.self_state_prediction.expected_action_count),
+      observed: Number(record.outcome.self_state_actual.action_count),
+      observed_minus_predicted: Number(record.outcome.self_state_actual.action_count)
+        - Number(record.forecast.self_state_prediction.expected_action_count),
+    },
+    attention_slot_types: {
+      predicted_not_observed: predictedAttention.filter(type => !observedAttention.includes(type)),
+      observed_not_predicted: observedAttention.filter(type => !predictedAttention.includes(type)),
+    },
+    appraisal_prediction_minus_observed: Object.fromEntries(appraisalKeys.map(key => {
+      const predicted = predictedAppraisal[key] == null ? NaN : Number(predictedAppraisal[key]);
+      const observed = observedAppraisal[key] == null ? NaN : Number(observedAppraisal[key]);
+      return [key, Number.isFinite(predicted) && Number.isFinite(observed) ? predicted - observed : null];
+    })),
+    reentry: {
+      predicted_probability: Number(record.forecast.self_state_prediction.reentry_probability),
+      observed: record.outcome.self_state_actual.reentered === true,
+      probability_minus_observed: Number(record.forecast.self_state_prediction.reentry_probability)
+        - Number(record.outcome.self_state_actual.reentered === true),
+    },
+    scores: {
+      behavioral_self: record.outcome.self_score.composite,
+      behavioral_baseline: record.outcome.baseline_score.composite,
+      behavioral_self_minus_baseline: record.outcome.self_minus_baseline,
+      integrated_self: record.outcome.self_state_score.composite,
+      integrated_baseline: record.outcome.baseline_state_score.composite,
+      integrated_self_minus_baseline: record.outcome.self_state_minus_baseline,
+      baseline_comparison_eligible: record.outcome.self_state_baseline_comparison_eligible === true,
+    },
+    epistemic_limit: 'One replay-derived prediction error is an observation, not a stable tendency, instruction, identity fact, hidden-state report, or consciousness evidence.',
+  };
+  if (Number(record.protocol_version) >= 3 && record.outcome.metacognitive_actual
+    && record.outcome.metacognitive_score) {
+    error.metacognitive_reliability = {
+      predicted_success_probability: Number(
+        record.forecast.metacognitive_prediction.predicted_success_probability),
+      integrated_success_threshold: Number(
+        record.forecast.metacognitive_prediction.integrated_success_threshold),
+      observed_integrated_score: Number(record.outcome.metacognitive_actual.integrated_score),
+      observed_integrated_success: record.outcome.metacognitive_actual.integrated_success === true,
+      probability_minus_observed: Number(
+        record.forecast.metacognitive_prediction.predicted_success_probability)
+        - Number(record.outcome.metacognitive_actual.integrated_success === true),
+      predicted_largest_error_domain:
+        record.forecast.metacognitive_prediction.predicted_largest_error_domain,
+      observed_largest_error_domain: record.outcome.metacognitive_actual.largest_error_domain,
+      largest_error_domain_hit: record.outcome.metacognitive_score.largest_error_domain_hit === true,
+      domain_losses: JSON.parse(JSON.stringify(record.outcome.metacognitive_actual.domain_losses)),
+      self_score: Number(record.outcome.metacognitive_score.composite),
+      baseline_score: Number(record.outcome.baseline_metacognitive_score.composite),
+      self_minus_baseline: Number(record.outcome.metacognitive_self_minus_baseline),
+      baseline_comparison_eligible:
+        record.outcome.metacognitive_baseline_comparison_eligible === true,
+    };
+  }
+  return { ...error, feedback_commitment: commitment(error) };
+}
+
+function correctionOfferManifest(offer) {
+  return {
+    protocol_version: offer.protocol_version,
+    id: offer.id,
+    forecast_id: offer.forecast_id,
+    initial_forecast_commitment: offer.initial_forecast_commitment,
+    feedback: offer.feedback,
+    feedback_commitment: offer.feedback_commitment,
+    revealed_at: offer.revealed_at,
+  };
+}
+
+function createCorrectionOffer({ record, feedback, revealedAt }) {
+  const { feedback_commitment: feedbackCommitment, ...feedbackPayload } = feedback || {};
+  if (!feedbackCommitment || commitment(feedbackPayload) !== feedbackCommitment) {
+    throw new Error('self-correction feedback commitment is invalid');
+  }
+  const offer = {
+    protocol_version: 1,
+    id: `${record.id}-feedback`.slice(0, 300),
+    forecast_id: record.id,
+    initial_forecast_commitment: record.forecast_commitment,
+    feedback: JSON.parse(JSON.stringify(feedback)),
+    feedback_commitment: feedbackCommitment,
+    revealed_at: revealedAt,
+    offer_commitment: null,
+    revision: null,
+  };
+  offer.offer_commitment = commitment(correctionOfferManifest(offer));
+  return offer;
+}
+
+function predictionPayload(forecast = {}) {
+  return {
+    predicted_action_types: forecast.predicted_action_types || [],
+    surprise_probability: forecast.surprise_probability,
+    control_at_close: forecast.control_at_close,
+    self_state_prediction: forecast.self_state_prediction || null,
+    metacognitive_prediction: forecast.metacognitive_prediction || null,
+  };
+}
+
+function changedPredictionDomains(initial = {}, revised = {}) {
+  const changed = [];
+  const differs = (left, right) => canonicalJson(left) !== canonicalJson(right);
+  if (differs(initial.predicted_action_types, revised.predicted_action_types)) changed.push('action_types');
+  if (differs(initial.surprise_probability, revised.surprise_probability)) changed.push('surprise');
+  if (differs(initial.self_state_prediction?.expected_action_count,
+    revised.self_state_prediction?.expected_action_count)) changed.push('action_count');
+  if (differs(initial.self_state_prediction?.attention_slot_types_at_close,
+    revised.self_state_prediction?.attention_slot_types_at_close)) changed.push('attention');
+  if (differs(initial.self_state_prediction?.appraisal_at_close,
+    revised.self_state_prediction?.appraisal_at_close)) changed.push('appraisal');
+  if (differs(initial.self_state_prediction?.reentry_probability,
+    revised.self_state_prediction?.reentry_probability)) changed.push('reentry');
+  if (differs(initial.metacognitive_prediction, revised.metacognitive_prediction)) changed.push('reliability');
+  return changed;
+}
+
+function correctionRevisionManifest(revision) {
+  return {
+    protocol_version: revision.protocol_version,
+    id: revision.id,
+    forecast_id: revision.forecast_id,
+    initial_forecast_commitment: revision.initial_forecast_commitment,
+    offer_commitment: revision.offer_commitment,
+    feedback_commitment: revision.feedback_commitment,
+    disposition: revision.disposition,
+    forecast: revision.forecast,
+    changed_domains: revision.changed_domains,
+    committed_at: revision.committed_at,
+  };
+}
+
+function createCorrectionRevision({ record, input, committedAt }) {
+  const offer = record?.self_correction;
+  if (!offer?.offer_commitment) throw new Error('self-correction feedback was not offered');
+  if (String(input.feedback_commitment || '') !== offer.feedback_commitment) {
+    throw new Error('self-correction revision must bind the offered feedback_commitment');
+  }
+  const revised = normalizeForecast({ ...input, protocol_version: record.protocol_version }, record.protocol_version);
+  const disposition = String(input.disposition || 'revise').trim().toLowerCase();
+  if (!['revise', 'retain'].includes(disposition)) {
+    throw new Error('self-correction disposition must be revise or retain');
+  }
+  if (!revised.evidence.some(item => item.type === 'forecast_error_feedback'
+    && item.id === offer.feedback_commitment)) {
+    throw new Error('self-correction revision must cite the offered forecast_error_feedback');
+  }
+  const changedDomains = changedPredictionDomains(record.forecast, revised);
+  const predictionChanged = canonicalJson(predictionPayload(record.forecast))
+    !== canonicalJson(predictionPayload(revised));
+  if (disposition === 'revise' && (!changedDomains.length || !predictionChanged)) {
+    throw new Error('self-correction revision must change at least one scored prediction');
+  }
+  if (disposition === 'retain' && (changedDomains.length || predictionChanged)) {
+    throw new Error('self-correction retain decision must preserve every scored prediction');
+  }
+  const revision = {
+    protocol_version: 1,
+    id: `${record.id}-revision`.slice(0, 300),
+    forecast_id: record.id,
+    initial_forecast_commitment: record.forecast_commitment,
+    offer_commitment: offer.offer_commitment,
+    feedback_commitment: offer.feedback_commitment,
+    disposition,
+    forecast: revised,
+    changed_domains: changedDomains,
+    committed_at: committedAt,
+    revision_commitment: null,
+  };
+  revision.revision_commitment = commitment(correctionRevisionManifest(revision));
+  return revision;
+}
+
 function baselineMetacognitionFromMoments(moments = []) {
   const rows = moments.map(moment => moment.self_forecast?.outcome)
     .filter(outcome => Number.isFinite(Number(outcome?.self_state_score?.composite)))
@@ -388,6 +584,34 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
         && Number(record.baseline.metacognitive_prediction?.sample_size) >= 5);
     }
   }
+  if (record.self_correction?.revision) {
+    const revision = record.self_correction.revision;
+    const revisedOutcome = scoreRecord({
+      protocol_version: record.protocol_version,
+      forecast: revision.forecast,
+      baseline: record.baseline,
+    }, {
+      actions, newSurpriseIds, controlAtClose, appraisalAtClose, attentionAtClose,
+      reentryOccurred, scoredAt,
+    });
+    const comparison = (initial, revised) => Number.isFinite(Number(initial))
+      && Number.isFinite(Number(revised)) ? {
+        initial: Number(initial), revised: Number(revised), revised_minus_initial: Number(revised) - Number(initial),
+      } : null;
+    outcome.self_correction = {
+      protocol_version: 1,
+      offer_commitment: record.self_correction.offer_commitment,
+      feedback_commitment: record.self_correction.feedback_commitment,
+      revision_commitment: revision.revision_commitment,
+      disposition: revision.disposition,
+      changed_domains: JSON.parse(JSON.stringify(revision.changed_domains || [])),
+      behavioral_score: comparison(outcome.self_score?.composite, revisedOutcome.self_score?.composite),
+      integrated_self_state_score: comparison(outcome.self_state_score?.composite,
+        revisedOutcome.self_state_score?.composite),
+      metacognitive_reliability_score: comparison(outcome.metacognitive_score?.composite,
+        revisedOutcome.metacognitive_score?.composite),
+    };
+  }
   return outcome;
 }
 
@@ -397,6 +621,8 @@ function outcomeManifest(record) {
 
 module.exports = {
   ERROR_DOMAINS, INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, canonicalJson,
-  commitment, createRecord, forecastManifest, normalizeForecast, outcomeManifest, scoreMetacognitivePrediction,
+  changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
+  createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,
+  forecastManifest, normalizeForecast, outcomeManifest, scoreMetacognitivePrediction,
   scoreRecord, scoreSelfStatePrediction, selfStateErrorProfile,
 };

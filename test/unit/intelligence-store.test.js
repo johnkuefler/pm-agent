@@ -2015,7 +2015,11 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(forecast.audit.preregistration_verified, true);
   assert.equal(forecast.baseline.kind, 'uninformative_prior');
   assert.equal(forecast.baseline.sample_size, 0);
-  assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, forecast.forecast), /already committed/);
+  const retry = store.preregisterCycleSelfForecast(started.cycle.id, forecast.forecast);
+  assert.equal(retry.forecast_commitment, forecast.forecast_commitment);
+  assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, {
+    ...forecast.forecast, surprise_probability: 0.9,
+  }), /already committed with different content/);
   store.completeCycle(started.cycle.id, { summary: 'Reviewed and triaged the bounded item.', actions: [
     { type: 'review', id: 'review-1' }, { type: 'triage', id: 'triage-1' },
   ] });
@@ -2097,6 +2101,94 @@ test('cycle self-forecasts cannot be backfilled after evidence re-entry', async 
     rationale: 'This judgment is now contaminated by evidence already observed in the active cycle.',
     evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
   }), /before evidence re-entry/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('natural self-correction reveals prior error only after the initial forecast and commits one revision', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-cycle-self-correction-'));
+  const filePath = path.join(dir, 'state.json');
+  let now = new Date('2026-07-11T15:00:00.000Z');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await store.init();
+  const forecastInput = (cycleId, expectedActionCount = 1) => ({
+    protocol_version: 3,
+    predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.7,
+    confidence: 0.6,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.7, coherence: 0.8 },
+      expected_action_count: expectedActionCount, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.6, predicted_largest_error_domain: 'action_count',
+    },
+    rationale: 'The current orientation contains one bounded review with a measurable closing state.',
+    evidence: [{ type: 'intelligence_cycle', id: cycleId }],
+  });
+  store.refreshCognition({});
+  const source = store.startCycle({ id: 'self-correction-source', holder: 'nora-cowork' });
+  const sourceForecast = store.preregisterCycleSelfForecast(source.cycle.id,
+    forecastInput(source.cycle.id));
+  assert.equal(sourceForecast.self_correction, undefined, 'no prior error exists before the first forecast');
+  store.completeCycle(source.cycle.id, { summary: 'Closed the source cycle with two observed actions.',
+    actions: [{ type: 'review', id: 'source-review' }, { type: 'notify', id: 'source-notify' }] });
+
+  now = new Date('2026-07-11T16:00:00.000Z');
+  const target = store.startCycle({ id: 'self-correction-target', holder: 'nora-cowork' });
+  const initial = store.preregisterCycleSelfForecast(target.cycle.id,
+    forecastInput(target.cycle.id, 1));
+  assert.equal(initial.audit.self_correction_offered, true);
+  assert.equal(initial.audit.self_correction_offer_verified, true);
+  assert.equal(initial.audit.self_correction_revision_committed, false);
+  assert.equal(initial.self_correction.feedback.source_moment_id, source.moment.id);
+  const feedbackCommitment = initial.self_correction.feedback_commitment;
+  const revisionInput = forecastInput(target.cycle.id, 2);
+  revisionInput.predicted_action_types = ['notify', 'review'];
+  revisionInput.confidence = 0.75;
+  revisionInput.metacognitive_prediction.predicted_success_probability = 0.75;
+  revisionInput.rationale = 'The replay-derived signed action-count miss supports two actions without changing the work plan.';
+  revisionInput.feedback_commitment = feedbackCommitment;
+  revisionInput.evidence.push({ type: 'forecast_error_feedback', id: feedbackCommitment });
+  assert.throws(() => store.reviseCycleSelfForecast(target.cycle.id, {
+    ...revisionInput, feedback_commitment: 'wrong',
+  }), /bind the offered/);
+  const revised = store.reviseCycleSelfForecast(target.cycle.id, revisionInput);
+  assert.equal(revised.audit.self_correction_complete_chain_verified, true);
+  assert.deepEqual(revised.self_correction.revision.changed_domains,
+    ['action_types', 'action_count', 'reliability']);
+  const revisionRetry = store.reviseCycleSelfForecast(target.cycle.id, revisionInput);
+  assert.equal(revisionRetry.self_correction.revision.revision_commitment,
+    revised.self_correction.revision.revision_commitment);
+  assert.throws(() => store.reviseCycleSelfForecast(target.cycle.id, {
+    ...revisionInput, surprise_probability: 0.9,
+  }), /already committed with different content/);
+  store.completeCycle(target.cycle.id, { summary: 'Closed after the one allowed prospective correction.',
+    actions: [{ type: 'review', id: 'target-review' }, { type: 'notify', id: 'target-notify' }] });
+  const stream = store.experienceStreamSnapshot();
+  const closed = stream.moments.find(item => item.id === target.moment.id);
+  assert.equal(closed.audit.self_forecast.self_correction_complete_chain_verified, true);
+  assert.ok(closed.self_forecast.outcome.self_correction);
+  assert.ok(Number.isFinite(closed.self_forecast.outcome.self_correction.integrated_self_state_score.revised));
+  assert.equal(stream.prospective_self_forecast.self_correction_offers, 1);
+  assert.equal(stream.prospective_self_forecast.replay_verified_self_correction_decisions, 1);
+  assert.equal(stream.prospective_self_forecast.revised_self_correction_decisions, 1);
+  assert.equal(stream.prospective_self_forecast.retained_self_correction_decisions, 0);
+  assert.equal(store.researchLedgerSnapshot().events.filter(event =>
+    event.kind === 'experience_self_forecast_feedback_revealed').length, 1);
+  assert.equal(store.researchLedgerSnapshot().events.filter(event =>
+    event.kind === 'experience_self_forecast_corrected').length, 1);
+
+  await store.persist();
+  const tampered = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  tampered.cognition.experience_stream[1].self_forecast.self_correction.feedback.action_count.observed = 99;
+  fs.writeFileSync(filePath, JSON.stringify(tampered));
+  const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await reloaded.init();
+  const invalid = reloaded.experienceStreamSnapshot().moments.find(item => item.id === target.moment.id);
+  assert.equal(invalid.audit.self_forecast.self_correction_complete_chain_verified, false);
+  assert.equal(invalid.audit.evidence_eligible, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
