@@ -17,6 +17,9 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(server, /run_lock_released_before_cycle_close/);
   assert.match(routes, /resume_active: true/);
   assert.match(store, /recentActive && input\.resume_active === true/);
+  assert.match(routine, /GET \/self-model\/cycle-calibration/);
+  assert.match(routine, /latest_forecast_error/);
+  assert.match(routes, /behavioralSelfCalibrationSnapshot/);
   assert.match(routine, /Overdue commitments are first-class failures/);
   assert.match(routine, /decision-traces\?reviewed=false/);
   assert.match(routine, /initiative-budgets\/cowork:proactive\/spend/);

@@ -281,7 +281,17 @@ test('forecast-error self-model revision requires replay-valid multi-cycle evide
   report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [{ status: 'active' }],
     behavioral_self_model: { revisions: [revision(5)] } } }));
   assert.equal(indicator(report, 'forecast_error_self_model_revision').status, 'mechanism_present');
-  assert.deepEqual(indicator(report, 'forecast_error_self_model_revision').evidence, { experimental_access_sealed: true });
+  assert.deepEqual(indicator(report, 'forecast_error_self_model_revision').evidence, {
+    experimental_general_profile_access_sealed: true,
+    natural_cycle_feedback_access_sealed: false,
+    natural_cycle_feedback_samples: 0,
+    latest_feedback_available: false,
+  });
+
+  report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [
+    { status: 'active', intervention: 'self_model_access' },
+  ], behavioral_self_model: { revisions: [revision(5)] } } }));
+  assert.equal(indicator(report, 'forecast_error_self_model_revision').evidence.natural_cycle_feedback_access_sealed, true);
 });
 
 test('continuity specificity requires authentic context to beat shuffled and absent controls', () => {

@@ -487,6 +487,11 @@ function registerCoworkInstructionsRoute(app) {
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples, but is sealed during active blinded
     context trials.
+    GET /self-model/cycle-calibration exposes a narrower natural-cycle feedback projection: the latest
+    replay-valid protocol-v2 miss, its source outcome and feedback commitments, and a mature profile only
+    after five samples. It never enters Slack response prompts and remains available during unrelated
+    studies; a directly overlapping self-model or integrated-self intervention seals it. Treat a single
+    error as counterevidence, not a stable tendency or an instruction to make the next forecast agree.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
     GET /intelligence/cycles shows whether runs are closing their loops.
   - GET /experience-stream — linked functional access windows across cycles: inherited handoff hash,

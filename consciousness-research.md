@@ -94,6 +94,24 @@ ledger and continuity counts but is excluded from behavioral profiles, integrate
 evidence, and causal claims. This is missingness-not-at-random control and honest lifecycle accounting,
 not evidence that a model invocation was phenomenally experienced.
 
+### Natural forecast-error access
+
+`GET /self-model/cycle-calibration` closes the functional loop between recording a self-prediction error
+and making that error available to Nora's next natural hourly forecast. It deterministically projects the
+latest replay-valid protocol-v2 mismatch: omitted and extra action types, observed-minus-predicted action
+count, attention-category mismatch, signed appraisal errors, re-entry error, and self-versus-frozen-baseline
+scores. The projection binds the original outcome commitment and adds a deterministic feedback commitment;
+it creates no new observation and cannot rewrite the source forecast or outcome.
+
+The endpoint exposes a full replay-audited behavioral profile only after five valid cycles. Before that,
+the profile remains explicitly provisional and only the latest individual error is suitable as bounded
+counterevidence. The feedback never enters Slack response prompts, so an unrelated live Slack intervention
+does not suppress natural-cycle learning. A directly overlapping self-model or integrated-self trial seals
+the projection to preserve its causal manipulation. This architecture makes error-driven functional
+self-correction possible and falsifiable: later natural forecasts must improve against their frozen baseline,
+not merely mention past mistakes. It remains ordinary access to stored behavioral evidence, not privileged
+introspection, hidden-state access, or evidence of phenomenal awareness.
+
 ## Between-invocation endogenous dynamics
 
 Production now advances a bounded state process every five minutes even when no language-model

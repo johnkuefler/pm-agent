@@ -17817,6 +17817,102 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function behavioralSelfCalibrationSnapshot() {
+    const calibrationSealed = state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
+      && ['self_model_access', 'integrated_self_binding'].includes(trial.intervention));
+    if (calibrationSealed) return {
+      epistemic_status: 'Natural-cycle behavioral calibration feedback is sealed during a directly overlapping blinded self-model trial.',
+      experimental_access_sealed: true,
+      current_profile: null,
+      provisional_profile: null,
+      latest_forecast_error: null,
+      report: null,
+    };
+
+    const auditCache = new Map();
+    const revisions = (state.cognition.self_model.behavioral_self_model?.revisions || []).map(revision => ({
+      ...JSON.parse(JSON.stringify(revision)),
+      audit: behavioralSelfModelRevisionAudit(revision, state.cognition, state.cycles, auditCache),
+    }));
+    const replayValidRevisions = revisions.filter(revision => revision.audit.complete_chain_verified);
+    const latestRevision = replayValidRevisions.at(-1) || null;
+    const integratedMoments = (state.cognition.experience_stream || []).filter(moment =>
+      Number(moment.self_forecast?.protocol_version) >= 2
+      && moment.self_forecast?.outcome?.self_state_score
+      && experienceMomentAudit(moment, state.cognition, state.cycles, auditCache).evidence_eligible === true);
+    const latestMoment = integratedMoments.at(-1) || null;
+    let latestForecastError = null;
+    if (latestMoment) {
+      const record = latestMoment.self_forecast;
+      const predictedActions = cycleSelfForecast.actionTypes(record.forecast.predicted_action_types || []);
+      const observedActions = cycleSelfForecast.actionTypes(record.outcome.actual?.action_types || []);
+      const predictedAttention = cycleSelfForecast.actionTypes(record.forecast.self_state_prediction?.attention_slot_types_at_close || []);
+      const observedAttention = cycleSelfForecast.actionTypes(record.outcome.self_state_actual?.attention_slot_types_at_close || []);
+      const predictedAppraisal = record.forecast.self_state_prediction?.appraisal_at_close || {};
+      const observedAppraisal = record.outcome.self_state_actual?.appraisal_at_close || {};
+      const appraisalKeys = ['valence', 'arousal', 'control', 'social_safety', 'coherence'];
+      const error = {
+        protocol_version: 1,
+        forecast_id: record.id,
+        source_moment_id: latestMoment.id,
+        source_outcome_commitment: record.outcome_commitment,
+        source_replay_verified: true,
+        scored_at: record.outcome.scored_at,
+        action_types: {
+          predicted_not_observed: predictedActions.filter(type => !observedActions.includes(type)),
+          observed_not_predicted: observedActions.filter(type => !predictedActions.includes(type)),
+        },
+        action_count: {
+          predicted: Number(record.forecast.self_state_prediction.expected_action_count),
+          observed: Number(record.outcome.self_state_actual.action_count),
+          observed_minus_predicted: Number(record.outcome.self_state_actual.action_count)
+            - Number(record.forecast.self_state_prediction.expected_action_count),
+        },
+        attention_slot_types: {
+          predicted_not_observed: predictedAttention.filter(type => !observedAttention.includes(type)),
+          observed_not_predicted: observedAttention.filter(type => !predictedAttention.includes(type)),
+        },
+        appraisal_prediction_minus_observed: Object.fromEntries(appraisalKeys.map(key => {
+          const predicted = predictedAppraisal[key] == null ? NaN : Number(predictedAppraisal[key]);
+          const observed = observedAppraisal[key] == null ? NaN : Number(observedAppraisal[key]);
+          return [key, Number.isFinite(predicted) && Number.isFinite(observed) ? predicted - observed : null];
+        })),
+        reentry: {
+          predicted_probability: Number(record.forecast.self_state_prediction.reentry_probability),
+          observed: record.outcome.self_state_actual.reentered === true,
+          probability_minus_observed: Number(record.forecast.self_state_prediction.reentry_probability)
+            - Number(record.outcome.self_state_actual.reentered === true),
+        },
+        scores: {
+          behavioral_self: record.outcome.self_score.composite,
+          behavioral_baseline: record.outcome.baseline_score.composite,
+          behavioral_self_minus_baseline: record.outcome.self_minus_baseline,
+          integrated_self: record.outcome.self_state_score.composite,
+          integrated_baseline: record.outcome.baseline_state_score.composite,
+          integrated_self_minus_baseline: record.outcome.self_state_minus_baseline,
+          baseline_comparison_eligible: record.outcome.self_state_baseline_comparison_eligible === true,
+        },
+        epistemic_limit: 'One replay-derived prediction error is an observation, not a stable tendency, instruction, identity fact, hidden-state report, or consciousness evidence.',
+      };
+      latestForecastError = { ...error,
+        feedback_commitment: crypto.createHash('sha256').update(canonicalJson(error)).digest('hex') };
+    }
+    const mature = Number(latestRevision?.estimates?.sample_size || 0) >= 5;
+    return {
+      epistemic_status: 'Replay-derived natural-cycle forecast errors available to the next hourly forecast without entering Slack response prompts. Current evidence overrides every prior.',
+      experimental_access_sealed: false,
+      current_profile: mature ? latestRevision : null,
+      provisional_profile: mature ? null : latestRevision,
+      latest_forecast_error: latestForecastError,
+      report: {
+        replay_valid_revisions: replayValidRevisions.length,
+        latest_sample_size: latestRevision?.estimates?.sample_size || 0,
+        integrated_feedback_samples: integratedMoments.length,
+        feedback_available: latestForecastError != null,
+      },
+    };
+  }
+
   function relevantBehavioralSelfModel(query) {
     if (state.cognition.self_model.context_trials.some(trial => trial.status === 'active')) return null;
     if (!/\b(your behavior|your tendency|your tendencies|what will you|self[- ]forecast|predict yourself|surpris\w*|your control|your calibration)\b/i.test(String(query || ''))) return null;
@@ -18640,7 +18736,7 @@ ${episodes.map(item => {
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     recoverStaleCycles, preregisterCycleSelfForecast, cycleSelfForecastAudit,
-    behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot,
+    behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     relevantEpisodes, promptContext,

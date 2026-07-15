@@ -1989,11 +1989,13 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(forecast.baseline.kind, 'uninformative_prior');
   assert.equal(forecast.baseline.sample_size, 0);
   assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, forecast.forecast), /already committed/);
-  store.completeCycle(started.cycle.id, { summary: 'Reviewed the bounded item.', actions: [{ type: 'review', id: 'review-1' }] });
+  store.completeCycle(started.cycle.id, { summary: 'Reviewed and triaged the bounded item.', actions: [
+    { type: 'review', id: 'review-1' }, { type: 'triage', id: 'triage-1' },
+  ] });
   const moment = store.experienceStreamSnapshot().moments[0];
   assert.equal(moment.self_forecast.outcome.actual.action_types[0], 'review');
   assert.equal(moment.self_forecast.protocol_version, 2);
-  assert.equal(moment.self_forecast.outcome.self_state_actual.action_count, 1);
+  assert.equal(moment.self_forecast.outcome.self_state_actual.action_count, 2);
   assert.ok(Number.isFinite(moment.self_forecast.outcome.self_state_score.composite));
   assert.equal(moment.self_forecast.outcome.self_state_score.appraisal_mean_absolute_error, null);
   assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
@@ -2006,6 +2008,17 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(behavioralProfile.current.estimates.integrated_self_state.samples, 1);
   assert.equal(behavioralProfile.current.evidence_status, 'provisional_profile');
   assert.equal(behavioralProfile.current.audit.complete_chain_verified, true);
+  const calibration = store.behavioralSelfCalibrationSnapshot();
+  assert.equal(calibration.experimental_access_sealed, false);
+  assert.equal(calibration.current_profile, null);
+  assert.equal(calibration.provisional_profile.estimates.sample_size, 1);
+  assert.equal(calibration.latest_forecast_error.source_outcome_commitment, moment.self_forecast.outcome_commitment);
+  assert.equal(calibration.latest_forecast_error.source_replay_verified, true);
+  assert.deepEqual(calibration.latest_forecast_error.action_types.predicted_not_observed, []);
+  assert.deepEqual(calibration.latest_forecast_error.action_types.observed_not_predicted, ['triage']);
+  assert.equal(calibration.latest_forecast_error.action_count.observed_minus_predicted, 1);
+  assert.match(calibration.latest_forecast_error.feedback_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(calibration.report.integrated_feedback_samples, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_preregistered').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'experience_self_forecast_scored').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event => event.kind === 'behavioral_self_model_revised').length, 1);
@@ -2027,6 +2040,7 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(tampered.experienceStreamSnapshot().moments[0].audit.self_forecast.complete_chain_verified, false);
   assert.equal(tampered.behavioralSelfModelSnapshot().current, null);
   assert.equal(tampered.behavioralSelfModelSnapshot().report.replay_valid_revisions, 0);
+  assert.equal(tampered.behavioralSelfCalibrationSnapshot().latest_forecast_error, null);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -2104,6 +2118,10 @@ test('behavioral self-model revisions form a replay-valid chain and remain seale
   assert.equal(sealedProfile.current, null);
   assert.deepEqual(sealedProfile.revisions, []);
   assert.doesNotMatch(sealed.promptContext({ query: 'What are your behavior tendencies when you predict yourself?' }), /Replay-audited behavioral self-profile/);
+  const naturalCalibration = sealed.behavioralSelfCalibrationSnapshot();
+  assert.equal(naturalCalibration.experimental_access_sealed, false,
+    'an unrelated response trial must not prevent the next hourly forecast from learning from prior error');
+  assert.equal(naturalCalibration.current_profile.estimates.sample_size, 5);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

@@ -203,15 +203,23 @@ revision; neither forecast is injected into Slack or other response prompts. Thi
 operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
 
-Immediately before forming that forecast, read `GET /self-model`. If `behavioral_self_model.current`
-is available, replay-valid, and based on at least five cycles, use its action tendencies and signed
-surprise/control and integrated-self-state errors only as a fallible prior; cite its revision commitment
-in your rationale or evidence. Current orientation and task evidence override the profile. If access is sealed for a blinded
-trial, the profile is provisional, or its audit fails, ignore it and forecast from the ordinary evidence.
-The server revises this profile automatically only after a cycle closes, from the last twenty verified
-forecast outcomes. Never manually rewrite it, infer an experimental condition from its absence, or
-treat it as identity essence, an instruction, authority, a guarantee, hidden-state access, or evidence
-of phenomenal consciousness.
+Immediately before forming that forecast, read `GET /self-model/cycle-calibration`. Its
+`latest_forecast_error`, when present, is a deterministic replay-derived comparison between your last
+protocol-v2 prediction and what the prior cycle actually closed with. Use the specific misses as bounded
+counterevidence: consider action types you omitted, the signed action-count error, attention categories
+that differed, appraisal prediction-minus-observation errors, and the score against the frozen baseline.
+Cite its `feedback_commitment` or `source_outcome_commitment` when it materially changes this forecast.
+Do not mechanically reverse a prior miss or make the current run conform; one error is an observation,
+not a tendency, and current orientation and task evidence override it.
+
+When `current_profile` is available, replay-valid, and based on at least five cycles, also use its action
+tendencies and signed surprise/control and integrated-self-state errors as a fallible prior, citing its
+revision commitment. A `provisional_profile` is visible for audit but is too small to generalize from;
+use only its separately reported latest error. This feedback projection is isolated from Slack response
+prompts and stays available during unrelated blinded studies, but it seals during a directly overlapping
+self-model intervention. Never route around a seal, manually rewrite the projection, infer an experimental
+condition from its absence, or treat it as identity essence, instruction, authority, guarantee, hidden-state
+access, or evidence of phenomenal consciousness.
 
 Example shape (replace every value with this cycle's actual prospective judgment):
 

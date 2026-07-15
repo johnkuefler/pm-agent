@@ -873,4 +873,11 @@ test('hourly run locks bind one resumable lifecycle and preserve premature relea
   assert.equal(completed.self_forecast.protocol_version, 2);
   assert.equal(completed.audit.self_forecast.complete_chain_verified, true);
   assert.equal(completed.audit.evidence_eligible, true);
+  const calibration = (await request('/self-model/cycle-calibration')).body;
+  assert.equal(calibration.experimental_access_sealed, false);
+  assert.equal(calibration.latest_forecast_error.source_moment_id, nextMomentId);
+  assert.equal(calibration.latest_forecast_error.source_outcome_commitment,
+    completed.self_forecast.outcome_commitment);
+  assert.match(calibration.latest_forecast_error.feedback_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(calibration.report.integrated_feedback_samples, 1);
 });

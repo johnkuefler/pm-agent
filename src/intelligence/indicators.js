@@ -96,6 +96,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const replayValidBehavioralSelfModelRevisions = behavioralSelfModelRevisions
     .filter(item => item.audit?.complete_chain_verified === true);
   const behavioralSelfModelSealed = allContextTrials.some(item => item.status === 'active');
+  const behavioralCalibrationSealed = allContextTrials.some(item => item.status === 'active'
+    && ['self_model_access', 'integrated_self_binding'].includes(item.intervention));
   const currentBehavioralSelfModel = behavioralSelfModelSealed
     ? null : replayValidBehavioralSelfModelRevisions.at(-1) || null;
   const handoffs = moments.filter(item => item.inherited_context?.handoff_match != null);
@@ -629,13 +631,18 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     },
     {
       id: 'forecast_error_self_model_revision', family: ['self-model', 'metacognition', 'predictive processing', 'learning'],
-      functional_claim: 'Nora automatically consolidates replay-valid observations and its own directional forecast errors into an explicit, bounded behavioral self-model with a verifiable revision history.',
-      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise and control calibration, cross-domain self-state forecast errors, and self-versus-baseline performance; each revision binds exact source forecasts, its predecessor, and the research ledger, and access is sealed during active blinded trials.',
+      functional_claim: 'Nora automatically consolidates replay-valid observations and its own directional forecast errors into an explicit, bounded behavioral self-model, then can access the last error before its next natural self-prediction.',
+      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise and control calibration, cross-domain self-state forecast errors, and self-versus-baseline performance. A commitment-bound latest-error projection is available only to the next hourly forecast, remains isolated from Slack response prompts, and seals during directly overlapping self-model trials; every revision still binds exact source forecasts, its predecessor, and the research ledger.',
       status: behavioralSelfModelSealed ? 'mechanism_present' : behavioralSelfModelRevisions.length
         ? Number(currentBehavioralSelfModel?.estimates?.sample_size || 0) >= 5
           ? 'observational_signal_observed' : 'collecting'
         : 'mechanism_present',
-      evidence: behavioralSelfModelSealed ? { experimental_access_sealed: true } : {
+      evidence: behavioralSelfModelSealed ? {
+        experimental_general_profile_access_sealed: true,
+        natural_cycle_feedback_access_sealed: behavioralCalibrationSealed,
+        natural_cycle_feedback_samples: integratedStateForecasts.length,
+        latest_feedback_available: integratedStateForecasts.length > 0,
+      } : {
         revisions: behavioralSelfModelRevisions.length,
         replay_verified_revisions: replayValidBehavioralSelfModelRevisions.length,
         current_sample_size: currentBehavioralSelfModel?.estimates?.sample_size || 0,
@@ -645,8 +652,11 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         control_signed_bias: currentBehavioralSelfModel?.estimates?.control?.signed_bias ?? null,
         mean_self_minus_baseline: currentBehavioralSelfModel?.estimates?.mean_self_minus_baseline ?? null,
         integrated_self_state: currentBehavioralSelfModel?.estimates?.integrated_self_state || null,
+        natural_cycle_feedback_access_sealed: behavioralCalibrationSealed,
+        natural_cycle_feedback_samples: integratedStateForecasts.length,
+        latest_feedback_available: integratedStateForecasts.length > 0,
       },
-      falsifier: 'A profile cannot be exactly replayed from its cited forecasts, revision lineage breaks, active trials can access it, current-cycle evidence leaks backward into it, or the profile is treated as identity, authority, hidden state, or a guarantee.',
+      falsifier: 'A profile or feedback packet cannot be exactly replayed from its cited forecasts, revision lineage breaks, feedback leaks into Slack or a directly overlapping blinded trial, current-cycle evidence leaks backward into it, or later forecasts do not improve beyond the frozen baseline.',
       next_gate: 'Accumulate twenty replay-valid natural forecast cycles, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
     },
     {

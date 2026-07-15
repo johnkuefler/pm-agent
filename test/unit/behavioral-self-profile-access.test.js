@@ -75,6 +75,8 @@ test('protocol-v2 behavioral self-profile access varies identity binding while p
   assert.deepEqual(trial.conditions, ['self_bound_profile', 'deidentified_same_profile', 'profile_absent']);
   assert.equal(trial.behavioral_self_profile_frame, undefined);
   assert.equal(store.behavioralSelfModelSnapshot().experimental_access_sealed, true);
+  assert.equal(store.behavioralSelfCalibrationSnapshot().experimental_access_sealed, true,
+    'natural-cycle feedback must seal while the same behavioral profile is directly manipulated');
 
   const selected = [];
   for (let index = 0; index < 3000
