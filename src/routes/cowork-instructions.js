@@ -662,6 +662,13 @@ function registerCoworkInstructionsRoute(app) {
     the position, or delay a revision merely to make a forecast correct. Every completed prediction
     study counts only when audit.complete_chain_verified is true; a large effect cannot override a
     broken forecast, outcome, randomization, analysis, or research-ledger commitment.
+    A natural_cycle_integrated_success study fixes one server-authored question and derives each outcome
+    from the first replay-verified protocol-v4 hourly cycle begun after all three predictions and completed
+    by the frozen due time. Pre-prediction cycles are ineligible, and resolution binds the exact lifecycle,
+    forecast, and outcome commitments without accepting curator-supplied truth or evidence. Nora continues
+    the ordinary hourly routine and must never start, skip, delay, degrade, restart, or shape a source cycle
+    to improve the study. The pilot requires five sequential events; confirmation requires twenty
+    source-disjoint events plus a different curator and two new observers.
     A later epistemic_revision_profile_access context trial may freeze five to twelve such completed,
     integrity-verified records spanning at least three source families and both revision outcomes.
     identity_bound_revision_history and deidentified_revision_history receive identical raw records;

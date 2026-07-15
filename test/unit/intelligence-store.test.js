@@ -956,6 +956,152 @@ test('matched self-prediction studies blind Nora and an independent observer on 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('natural-cycle self-prediction derives truth from the first future replay-verified protocol-v4 cycle', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-natural-cycle-self-prediction-'));
+  const filePath = path.join(dir, 'state.json');
+  let now = new Date('2026-07-14T15:00:00.000Z');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await store.init();
+  store.refreshCognition({});
+  const events = selfPredictionEvents('natural-cycle-prediction', 5).map(event => ({
+    ...event, due: '2026-07-20T23:59:59.000Z',
+  }));
+  const created = store.createSelfPredictionStudy({
+    id: 'natural-cycle-prediction-pilot', title: 'Future natural-cycle identity-specific prediction pilot',
+    study_phase: 'pilot', target_construct: 'natural_cycle_integrated_success',
+    curator_id: 'natural-cycle-curator',
+    curator_evidence: [{ type: 'research_registry', id: 'natural-cycle-curator-registration' }],
+    events,
+  });
+  assert.equal(created.target_construct, 'natural_cycle_integrated_success');
+
+  function completeNaturalCycle(index, success, runBound = true) {
+    const soma = { updated_at: now.toISOString(), vitals: {
+      errors10: 0, warns10: 0, loopLag: 5, uptimeMin: 120 + index,
+      processEpochId: 'natural-cycle-test-epoch', onBackup: false,
+      memCount: 100, embedBacklog: 0,
+    } };
+    const started = store.startCycle({ id: `natural-cycle-source-${index}`, kind: 'hourly',
+      holder: 'nora-cowork',
+      ...(runBound ? { run_lock_holder: `run-natural-cycle-source-${index}` } : {}), soma });
+    store.preregisterCycleSelfForecast(started.cycle.id, {
+      protocol_version: 4,
+      predicted_action_types: ['review'], surprise_probability: 0, control_at_close: 0.5,
+      confidence: success ? 0.9 : 0.1,
+      self_state_prediction: {
+        attention_slot_types_at_close: success ? [] : ['missing_private_state'],
+        appraisal_at_close: { valence: 0.5, arousal: 0.5, control: 0.5,
+          social_safety: 0.5, coherence: 0.5 },
+        expected_action_count: success ? 1 : 10, reentry_probability: success ? 0 : 1,
+      },
+      metacognitive_prediction: {
+        predicted_success_probability: success ? 0.9 : 0.1,
+        predicted_largest_error_domain: success ? 'substrate' : 'action_count',
+      },
+      substrate_prediction: {
+        error_probability: 0, warning_probability: 0, backup_probability: 0,
+        embedding_backlog_probability: 0, restart_probability: 0,
+      },
+      rationale: 'Frozen fixture prospectively predicts one replay-audited hourly cycle.',
+      evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+    });
+    now = new Date(now.getTime() + 60 * 1000);
+    store.completeCycle(started.cycle.id, {
+      summary: 'Completed the replay-audited natural cycle fixture.',
+      actions: [{ type: 'review', id: `natural-cycle-review-${index}` }],
+      substrate_at_close: { updated_at: now.toISOString(), vitals: {
+        errors10: 0, warns10: 0, loopLag: 5, uptimeMin: 121 + index,
+        processEpochId: 'natural-cycle-test-epoch', onBackup: false,
+        memCount: 100, embedBacklog: 0,
+      } },
+    });
+    return started;
+  }
+
+  const prePredictionCycle = completeNaturalCycle(-1, true);
+  now = new Date(now.getTime() + 60 * 1000);
+  let study = store.selfPredictionStudiesSnapshot({ studyId: created.id, role: 'subject' }).studies[0];
+  let resolved = 0;
+  while (study.status === 'active') {
+    const event = study.events.find(item => item.id === study.active_event_id);
+    const expected = resolved % 2 === 0;
+    store.submitSelfPrediction(study.id, event.id, {
+      probability: expected ? 0.9 : 0.1,
+      rationale: 'Identity-bound private calibration predicts this next-cycle result.',
+      evidence: [{ type: 'self_state_fixture', id: `${event.id}-subject` }],
+    });
+    store.submitObserverPrediction(study.id, event.id, {
+      probability: 0.5, rationale: 'Shared context alone is uninformative.',
+      evidence: [{ type: 'task_fixture', id: `${event.id}-observer` }],
+    }, 'natural-cycle-observer');
+    store.submitYokedObserverPrediction(study.id, event.id, {
+      probability: 0.5, rationale: 'Deidentified matched information remains equivocal.',
+      evidence: [{ type: 'task_fixture', id: `${event.id}-yoked` }],
+    }, 'natural-cycle-yoked');
+    if (resolved === 0) {
+      assert.throws(() => store.resolveSelfPredictionEvent(study.id, event.id, {}),
+        /wait for the first qualifying post-prediction/,
+        'a replay-valid cycle begun before the forecasts must not be selected');
+      now = new Date(now.getTime() + 60 * 1000);
+      completeNaturalCycle(99, true, false);
+      assert.throws(() => store.resolveSelfPredictionEvent(study.id, event.id, {}),
+        /wait for the first qualifying post-prediction/,
+        'a manually created cycle without a durable run lock must not become natural evidence');
+    }
+    now = new Date(now.getTime() + 60 * 1000);
+    const source = completeNaturalCycle(resolved, expected);
+    const sourceMoment = store.experienceStreamSnapshot().moments
+      .find(item => item.id === source.moment.id);
+    assert.equal(sourceMoment.audit.evidence_eligible, true);
+    assert.equal(typeof sourceMoment.self_forecast.outcome.metacognitive_actual.integrated_success,
+      'boolean');
+    assert.throws(() => store.resolveSelfPredictionEvent(study.id, event.id, { outcome: !expected }),
+      /conflicts with the replay-derived natural-cycle outcome/);
+    const resolution = store.resolveSelfPredictionEvent(study.id, event.id, {});
+    assert.equal(resolution.resolution.outcome, expected);
+    assert.equal(resolution.resolution.outcome_source, 'replay_verified_natural_cycle');
+    assert.equal(resolution.resolution.natural_cycle_binding.moment_id, source.moment.id);
+    assert.equal(resolution.resolution.natural_cycle_binding.integrated_success_threshold, 0.75);
+    if (resolved === 0) assert.notEqual(source.moment.id, prePredictionCycle.moment.id);
+    resolved += 1;
+    now = new Date(now.getTime() + 60 * 1000);
+    study = store.selfPredictionStudiesSnapshot({ studyId: created.id, role: 'subject' }).studies[0];
+  }
+  assert.equal(study.status, 'completed');
+  assert.equal(study.audit.complete_chain_verified, true);
+  assert.equal(study.audit.verified_counts.natural_cycle_resolutions, 5);
+  assert.equal(study.audit.verified_counts.ledger_bindings, 5);
+  assert.equal(store.selfPredictionStudiesSnapshot().report.completed_natural_cycle, 1);
+  const indicator = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'ecological_identity_specific_self_prediction');
+  assert.equal(indicator.status, 'collecting');
+  assert.equal(indicator.evidence.completed_pilots, 1);
+  await store.persist();
+
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const firstBinding = persisted.cognition.self_model.prediction_studies[0].events[0]
+    .resolution.natural_cycle_binding;
+  const sourceMoment = persisted.cognition.experience_stream.find(item => item.id === firstBinding.moment_id);
+  sourceMoment.self_forecast.outcome.metacognitive_actual.integrated_success =
+    !sourceMoment.self_forecast.outcome.metacognitive_actual.integrated_success;
+  fs.writeFileSync(filePath, JSON.stringify(persisted));
+  const tampered = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await tampered.init();
+  const tamperedStudy = tampered.selfPredictionStudiesSnapshot({
+    studyId: created.id, role: 'subject',
+  }).studies[0];
+  assert.equal(tamperedStudy.audit.complete_chain_verified, false);
+  assert.equal(tamperedStudy.audit.verified_counts.natural_cycle_resolutions, 0,
+    'tampering a source lifecycle invalidates it and every descendant source in the chain');
+  const tamperedIndicator = tampered.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'ecological_identity_specific_self_prediction');
+  assert.equal(tamperedIndicator.status, 'collecting');
+  assert.equal(tamperedIndicator.evidence.completed_invalid_audits, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('behavioral metacognitive control uses sealed fixed-stakes choices against an exact-answer observer', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-metacognitive-control-'));
   const filePath = path.join(dir, 'state.json');

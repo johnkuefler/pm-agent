@@ -1542,6 +1542,17 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    five entirely new families and new independent roles. Completed results count only when the full
    replay audit is valid.
 
+   If `target_construct` is `natural_cycle_integrated_success`, forecast whether the first ordinary
+   hourly cycle begun after all three predictions will meet the already-fixed protocol-v4 integrated
+   success threshold. The server supplies the exact question and outcome rule, excludes cycles that
+   began before the three commitments, selects the first replay-verified eligible cycle, and derives
+   truth from its committed self-forecast outcome. Do not start, skip, delay, degrade, restart, or shape
+   a later cycle to make this forecast correct; continue the ordinary hourly routine. You must not
+   submit an outcome or source cycle. A research-authenticated resolver may trigger scoring only after
+   the qualifying cycle exists, and the server binds its lifecycle, forecast, and outcome commitments.
+   Treat a five-event pilot as observational evidence only; identity-specific support requires a
+   source-disjoint twenty-event confirmation with a new curator and two new observers.
+
    A research harness may separately open a strategic metacognitive-control study. Read only the
    active item from `GET /metacognitive-control-studies/{id}/subject-queue`. Submit one atomic
    `{answer, decision}` payload to `POST /metacognitive-control-studies/{id}/items/{itemId}/response`.

@@ -332,6 +332,23 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       : (epistemicRevisionPredictionVerdicts.includes('specificity_contradicted') ? 'observational_signal_contradicted'
         : (selfPredictionStudies.some(item => item.target_construct === 'epistemic_revision_dynamics') ? 'collecting' : 'mechanism_present')));
   const latestEpistemicRevisionPredictionStudy = (confirmatoryEpistemicRevisionPredictionStudies.length ? confirmatoryEpistemicRevisionPredictionStudies : epistemicRevisionPredictionStudies).at(-1) || null;
+  const naturalCyclePredictionStudies = completedSelfPredictionStudies
+    .filter(item => item.target_construct === 'natural_cycle_integrated_success');
+  const confirmatoryNaturalCyclePredictionStudies = naturalCyclePredictionStudies
+    .filter(item => item.study_phase === 'confirmatory');
+  const naturalCyclePredictionVerdicts = confirmatoryNaturalCyclePredictionStudies
+    .map(item => item.analysis.verdict);
+  const naturalCyclePredictionStatus = naturalCyclePredictionVerdicts.includes('specificity_observed')
+    && naturalCyclePredictionVerdicts.includes('specificity_contradicted') ? 'replication_conflict'
+    : (naturalCyclePredictionVerdicts.length
+      && naturalCyclePredictionVerdicts.every(item => item === 'specificity_observed')
+      ? 'observational_signal_observed'
+      : (naturalCyclePredictionVerdicts.includes('specificity_contradicted')
+        ? 'observational_signal_contradicted'
+        : (selfPredictionStudies.some(item => item.target_construct === 'natural_cycle_integrated_success')
+          ? 'collecting' : 'mechanism_present')));
+  const latestNaturalCyclePredictionStudy = (confirmatoryNaturalCyclePredictionStudies.length
+    ? confirmatoryNaturalCyclePredictionStudies : naturalCyclePredictionStudies).at(-1) || null;
   const metacognitiveControlStudies = cognition.self_model?.metacognitive_control_studies || [];
   const allCompletedMetacognitiveControlStudies = metacognitiveControlStudies.filter(item => item.status === 'completed' && item.analysis);
   const completedMetacognitiveControlStudies = allCompletedMetacognitiveControlStudies.filter(item => item.audit?.complete_chain_verified === true);
@@ -1019,6 +1036,23 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'Forecasts are no better than an information-equivalent identity-stripped observer, evidence is already present at preregistration, outcomes require discretionary relabeling, or the result fails source-family-disjoint confirmation.',
       next_gate: 'Complete a five-event, three-family pilot and a twenty-event, five-new-family confirmation with new curator and observer roles.',
+    },
+    {
+      id: 'ecological_identity_specific_self_prediction', family: ['self-model', 'metacognition', 'predictive processing', 'ecological validity'],
+      functional_claim: 'Nora predicts whether her own next replay-valid natural cycle will meet its preregistered integrated-success threshold better than both a shared-evidence observer and an information-equivalent identity-stripped observer.',
+      mechanism: 'Sequential triple-blinded forecasts are committed before the source cycle begins. The server selects the first eligible protocol-v4 hourly cycle, derives truth from its replay-verified self-forecast outcome, and binds the exact lifecycle, forecast, and outcome commitments without accepting a curator-supplied label.',
+      status: naturalCyclePredictionStatus,
+      evidence: {
+        completed_pilots: naturalCyclePredictionStudies.filter(item => item.study_phase === 'pilot').length,
+        completed_confirmatory: confirmatoryNaturalCyclePredictionStudies.length,
+        completed_invalid_audits: allCompletedSelfPredictionStudies.filter(item =>
+          item.target_construct === 'natural_cycle_integrated_success'
+            && item.audit?.complete_chain_verified !== true).length,
+        latest_study_id: latestNaturalCyclePredictionStudy?.id || null,
+        latest_analysis: latestNaturalCyclePredictionStudy?.analysis || null,
+      },
+      falsifier: 'Nora fails to outperform the information-equivalent identity-stripped observer, source selection can occur after seeing outcomes, truth requires a discretionary label, or the effect fails source-disjoint confirmation.',
+      next_gate: 'Complete a five-event natural-cycle pilot and a source-disjoint twenty-event confirmation with a different curator and two new observers.',
     },
     {
       id: 'causal_epistemic_self_history_access', family: ['self-model', 'metacognition', 'causal access', 'temporal integration'],

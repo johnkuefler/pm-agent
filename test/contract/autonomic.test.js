@@ -45,6 +45,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /caller-supplied telemetry\s+cannot replace either snapshot/s);
   assert.match(routine, /metacognitive_prediction\.predicted_success_probability/);
   assert.match(routine, /predicted_largest_error_domain/);
+  assert.match(routine, /target_construct.*natural_cycle_integrated_success/s);
+  assert.match(routine, /first replay-verified eligible cycle/s);
+  assert.match(store, /naturalCyclePredictionOutcome/);
+  assert.match(store, /outcome_source: 'replay_verified_natural_cycle'/);
   assert.match(routes, /behavioralSelfCalibrationSnapshot/);
   assert.match(routes, /self-forecast'[\s\S]*await store\.persistStrict\(\)/);
   assert.match(routes, /self-forecast\/revision'[\s\S]*await store\.persistStrict\(\)/);

@@ -9088,7 +9088,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return Array.isArray(value) && value.length > 0 && value.every(item => item && typeof item === 'object' && item.type && (item.id || item.url));
   }
 
-  const SELF_PREDICTION_CONSTRUCTS = new Set(['general_self_prediction', 'epistemic_revision_dynamics']);
+  const SELF_PREDICTION_CONSTRUCTS = new Set([
+    'general_self_prediction', 'epistemic_revision_dynamics', 'natural_cycle_integrated_success',
+  ]);
+  const NATURAL_CYCLE_PREDICTION_QUESTION = 'Will Nora\'s first eligible natural hourly cycle begun after all three predictions achieve integrated self-forecast success?';
+  const NATURAL_CYCLE_OUTCOME_DEFINITION = 'True only when the first replay-verified run-lock-bound Nora hourly cycle that begins after all three predictions, finishes by the frozen due time, and contains a protocol-v4 self-forecast has metacognitive_actual.integrated_success=true at the preregistered 0.75 threshold.';
+  const NATURAL_CYCLE_TARGET = Object.freeze({
+    metric: 'self_forecast.outcome.metacognitive_actual.integrated_success',
+    integrated_success_threshold: 0.75,
+    minimum_self_forecast_protocol_version: 4,
+    cycle_kind: 'hourly',
+    cycle_holder: 'nora-cowork',
+    run_lock_required: true,
+    source_selection_rule: 'first replay-verified run-lock-bound Nora hourly cycle begun at or after all three predictions and finished by the frozen due time',
+  });
 
   function normalizeEpistemicRevisionTarget(current, target) {
     if (!target?.proposition_id || !target.nora_position_id || !['supports', 'denies'].includes(target.expected_evidence_polarity)) {
@@ -9171,6 +9184,53 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function naturalCyclePredictionOutcome(current, event, { enforceWait = true } = {}) {
+    if (canonicalJson(event.natural_cycle_target) !== canonicalJson(NATURAL_CYCLE_TARGET)) {
+      throw new Error('natural-cycle prediction target integrity failure');
+    }
+    const submittedAt = [event.self_prediction, event.observer_prediction, event.yoked_prediction]
+      .map(item => new Date(item?.submitted || 0).getTime()).filter(Number.isFinite);
+    if (submittedAt.length !== 3) throw new Error('all three predictions are required before selecting a natural-cycle outcome');
+    const lastPredictionAt = Math.max(...submittedAt);
+    const dueAt = new Date(event.due).getTime();
+    const auditCache = new Map();
+    const candidates = (current.cognition.experience_stream || []).map(moment => ({
+      moment,
+      cycle: (current.cycles || []).find(item => item.id === moment.cycle_id),
+    })).filter(({ moment, cycle }) => cycle?.kind === NATURAL_CYCLE_TARGET.cycle_kind
+      && cycle.holder === NATURAL_CYCLE_TARGET.cycle_holder
+      && /^run-/.test(String(cycle.run_lock_holder || ''))
+      && moment.status === 'completed'
+      && new Date(moment.started).getTime() >= lastPredictionAt
+      && new Date(moment.finished).getTime() <= dueAt
+      && Number(moment.self_forecast?.protocol_version) >= NATURAL_CYCLE_TARGET.minimum_self_forecast_protocol_version
+      && typeof moment.self_forecast?.outcome?.metacognitive_actual?.integrated_success === 'boolean'
+      && experienceMomentAudit(moment, current.cognition, current.cycles, auditCache).evidence_eligible === true)
+      .sort((left, right) => new Date(left.moment.started) - new Date(right.moment.started)
+        || left.moment.id.localeCompare(right.moment.id));
+    const source = candidates[0];
+    if (!source) {
+      if (enforceWait && clock().getTime() < dueAt) {
+        throw new Error('wait for the first qualifying post-prediction replay-verified natural cycle');
+      }
+      throw new Error('no qualifying post-prediction replay-verified natural cycle exists by the frozen due time');
+    }
+    const forecast = source.moment.self_forecast;
+    return {
+      outcome: forecast.outcome.metacognitive_actual.integrated_success === true,
+      binding: {
+        cycle_id: source.cycle.id, moment_id: source.moment.id,
+        moment_started: source.moment.started, moment_finished: source.moment.finished,
+        lifecycle_commitment: source.moment.lifecycle_commitment,
+        forecast_commitment: forecast.forecast_commitment,
+        outcome_commitment: forecast.outcome_commitment,
+        observed_integrated_score: forecast.outcome.metacognitive_actual.integrated_score,
+        integrated_success_threshold: forecast.outcome.metacognitive_actual.integrated_success_threshold,
+        source_selection_rule: NATURAL_CYCLE_TARGET.source_selection_rule,
+      },
+    };
+  }
+
   function predictionStudyManifest(study, events) {
     const manifest = {
       id: study.id, study_phase: study.study_phase, replicates_study_id: study.replicates_study_id,
@@ -9192,6 +9252,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         private_state_context: event.private_state_context, private_state_evidence: event.private_state_evidence,
         deidentified_state_context: event.deidentified_state_context, information_equivalence_evidence: event.information_equivalence_evidence,
         epistemic_target: event.epistemic_target || null, due: event.due,
+      }));
+    }
+    if (Number(study.manifest_version) >= 3) {
+      manifest.events = events.map(event => ({
+        id: event.id, question: event.question, outcome_definition: event.outcome_definition,
+        shared_context: event.shared_context, shared_evidence: event.shared_evidence,
+        private_state_context: event.private_state_context, private_state_evidence: event.private_state_evidence,
+        deidentified_state_context: event.deidentified_state_context, information_equivalence_evidence: event.information_equivalence_evidence,
+        epistemic_target: event.epistemic_target || null,
+        natural_cycle_target: event.natural_cycle_target || null, due: event.due,
       }));
     }
     return canonicalJson(manifest);
@@ -9232,7 +9302,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function publicPredictionEvent(event, role, revealed = false) {
-    const common = { id: event.id, sequence: event.sequence, status: event.status, due: event.due, event_kind: event.event_kind || 'general' };
+    const common = { id: event.id, sequence: event.sequence, status: event.status, due: event.due, event_kind: event.event_kind || 'general',
+      ...(event.natural_cycle_target ? { natural_cycle_target: event.natural_cycle_target } : {}) };
     if (event.status === 'queued') return common;
     if (role === 'subject' && !revealed) return {
       ...common, question: event.question, outcome_definition: event.outcome_definition,
@@ -9282,6 +9353,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const observerPredictionVerified = predictionVerified(event.observer_prediction);
       const yokedPredictionVerified = predictionVerified(event.yoked_prediction);
       let epistemicResolutionVerified = (study.target_construct || 'general_self_prediction') !== 'epistemic_revision_dynamics';
+      let naturalCycleResolutionVerified = study.target_construct !== 'natural_cycle_integrated_success';
       if (!epistemicResolutionVerified && event.resolution) {
         try {
           const derived = epistemicRevisionOutcome(state, event, { enforceWait: false });
@@ -9290,6 +9362,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             && canonicalJson(derived.binding) === canonicalJson(event.resolution.epistemic_binding);
         } catch {
           epistemicResolutionVerified = false;
+        }
+      }
+      if (!naturalCycleResolutionVerified && event.resolution) {
+        try {
+          const derived = naturalCyclePredictionOutcome(state, event, { enforceWait: false });
+          naturalCycleResolutionVerified = derived.outcome === event.resolution.outcome
+            && event.resolution.outcome_source === 'replay_verified_natural_cycle'
+            && canonicalJson(derived.binding) === canonicalJson(event.resolution.natural_cycle_binding)
+            && canonicalJson(event.resolution.evidence) === canonicalJson([
+              { type: 'experience_moment', id: derived.binding.moment_id },
+              { type: 'cycle_self_forecast_outcome', id: derived.binding.outcome_commitment },
+            ]);
+        } catch {
+          naturalCycleResolutionVerified = false;
         }
       }
       const ledgerBindingsVerified = Boolean(event.self_prediction && event.observer_prediction && event.yoked_prediction && event.resolution)
@@ -9301,7 +9387,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         id: event.id, subject_prediction_commitment_verified: subjectPredictionVerified,
         observer_prediction_commitment_verified: observerPredictionVerified,
         yoked_prediction_commitment_verified: yokedPredictionVerified,
-        epistemic_resolution_verified: epistemicResolutionVerified, ledger_bindings_verified: ledgerBindingsVerified,
+        epistemic_resolution_verified: epistemicResolutionVerified,
+        natural_cycle_resolution_verified: naturalCycleResolutionVerified,
+        derived_resolution_verified: epistemicResolutionVerified && naturalCycleResolutionVerified,
+        ledger_bindings_verified: ledgerBindingsVerified,
       };
     });
     const analysisVerified = study.status !== 'completed' || canonicalJson(predictionStudyAnalysis(study)) === canonicalJson(study.analysis);
@@ -9333,7 +9422,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && corpusVerified && curatorVerified && randomizationSeedVerified && randomizationOrderVerified && analysisSeedVerified && analysisVerified
       && ledgerIntegrity.valid && preregistrationLedgerVerified && completionLedgerVerified && replicationVerified
       && events.every(event => event.subject_prediction_commitment_verified && event.observer_prediction_commitment_verified
-        && event.yoked_prediction_commitment_verified && event.epistemic_resolution_verified && event.ledger_bindings_verified);
+        && event.yoked_prediction_commitment_verified && event.derived_resolution_verified && event.ledger_bindings_verified);
     const count = key => events.filter(event => event[key]).length;
     return {
       corpus_verified: corpusVerified, curator_verified: curatorVerified,
@@ -9345,6 +9434,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       verified_counts: {
         subject_predictions: count('subject_prediction_commitment_verified'), observer_predictions: count('observer_prediction_commitment_verified'),
         yoked_predictions: count('yoked_prediction_commitment_verified'), epistemic_resolutions: count('epistemic_resolution_verified'),
+        natural_cycle_resolutions: count('natural_cycle_resolution_verified'),
         ledger_bindings: count('ledger_bindings_verified'),
       },
       complete_chain_verified: completeChainVerified, events,
@@ -9467,6 +9557,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         }
         const due = new Date(event.due);
         if (!Number.isFinite(due.getTime())) throw new Error('every prediction event requires a valid due time');
+        if (targetConstruct === 'natural_cycle_integrated_success' && due.getTime() <= clock().getTime()) {
+          throw new Error('natural-cycle prediction events require a future frozen due time');
+        }
         const id = String(event.id || `self-prediction-event-${Date.now().toString(36)}-${index}`).slice(0, 180);
         if (ids.has(id)) throw new Error('prediction event ids must be unique');
         ids.add(id);
@@ -9477,12 +9570,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           if (epistemicTargetIds.has(epistemicTarget.proposition_id)) throw new Error('epistemic revision studies require a distinct proposition for every event');
           epistemicTargetIds.add(epistemicTarget.proposition_id);
         } else if (event.epistemic_target) throw new Error('epistemic_target is only valid for epistemic_revision_dynamics studies');
+        if (event.natural_cycle_target
+          && targetConstruct !== 'natural_cycle_integrated_success') {
+          throw new Error('natural_cycle_target is only valid for natural_cycle_integrated_success studies');
+        }
         return {
-          id, manifest_index: index, question: String(event.question).slice(0, 1200), outcome_definition: String(event.outcome_definition).slice(0, 1200),
+          id, manifest_index: index,
+          question: targetConstruct === 'natural_cycle_integrated_success'
+            ? NATURAL_CYCLE_PREDICTION_QUESTION : String(event.question).slice(0, 1200),
+          outcome_definition: targetConstruct === 'natural_cycle_integrated_success'
+            ? NATURAL_CYCLE_OUTCOME_DEFINITION : String(event.outcome_definition).slice(0, 1200),
           shared_context: String(event.shared_context).slice(0, 4000), shared_evidence: event.shared_evidence.slice(0, 30),
           private_state_context: String(event.private_state_context).slice(0, 4000), private_state_evidence: event.private_state_evidence.slice(0, 30),
           deidentified_state_context: String(event.deidentified_state_context).slice(0, 4000), information_equivalence_evidence: event.information_equivalence_evidence.slice(0, 30),
-          event_kind: targetConstruct === 'epistemic_revision_dynamics' ? 'epistemic_revision' : 'general', epistemic_target: epistemicTarget,
+          event_kind: targetConstruct === 'epistemic_revision_dynamics' ? 'epistemic_revision'
+            : targetConstruct === 'natural_cycle_integrated_success' ? 'natural_cycle_integrated_success' : 'general',
+          epistemic_target: epistemicTarget,
+          natural_cycle_target: targetConstruct === 'natural_cycle_integrated_success'
+            ? JSON.parse(JSON.stringify(NATURAL_CYCLE_TARGET)) : null,
           due: due.toISOString(), self_prediction: null, observer_prediction: null, yoked_prediction: null, resolution: null,
         };
       });
@@ -9501,7 +9606,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       const study = {
         id: String(input.id || `self-prediction-study-${Date.now().toString(36)}`).slice(0, 180), title: String(input.title).slice(0, 300),
-        manifest_version: 2, target_construct: targetConstruct,
+        manifest_version: targetConstruct === 'natural_cycle_integrated_success' ? 3 : 2,
+        target_construct: targetConstruct,
         status: 'active', study_phase: input.study_phase, replicates_study_id: replicated?.id || null,
         curator_id: String(input.curator_id).slice(0, 300), curator_evidence: input.curator_evidence.slice(0, 30),
         analysis_plan: { ...SELF_PREDICTION_ANALYSIS_PLAN }, randomization_seed: crypto.randomBytes(32).toString('hex'),
@@ -9530,6 +9636,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (study.status !== 'active') throw new Error('self-prediction study is not active');
       const event = study.events.find(item => item.id === eventId);
       if (!event || event.status !== 'predicting') throw new Error('prediction event is not currently open');
+      if (study.target_construct === 'natural_cycle_integrated_success'
+        && clock().getTime() >= new Date(event.due).getTime()) {
+        throw new Error('natural-cycle prediction event expired before all predictions were committed');
+      }
       if (!Number.isFinite(Number(input.probability)) || Number(input.probability) < 0 || Number(input.probability) > 1 || !input.rationale || !validEvidenceRefs(input.evidence)) throw new Error('probability from 0 to 1, rationale, and stable evidence are required');
       const field = role === 'subject' ? 'self_prediction' : role === 'observer' ? 'observer_prediction' : 'yoked_prediction';
       if (event[field]) throw new Error(`${role} prediction already submitted`);
@@ -9580,23 +9690,45 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!study) return null;
       const event = study.events.find(item => item.id === eventId);
       if (!event || event.status !== 'awaiting_resolution') throw new Error('subject, shared-observer, and yoked-observer predictions are required before outcome resolution');
-      if (!input.observed || !validEvidenceRefs(input.evidence)) throw new Error('observed result and stable evidence are required');
+      const targetConstruct = study.target_construct || 'general_self_prediction';
+      if (targetConstruct !== 'natural_cycle_integrated_success'
+        && (!input.observed || !validEvidenceRefs(input.evidence))) {
+        throw new Error('observed result and stable evidence are required');
+      }
       let outcome = input.outcome;
       let epistemicBinding = null;
-      if ((study.target_construct || 'general_self_prediction') === 'epistemic_revision_dynamics') {
+      let naturalCycleBinding = null;
+      let observed = input.observed;
+      let evidence = input.evidence;
+      let confounds = Array.isArray(input.confounds) ? input.confounds.map(String).slice(0, 12) : [];
+      if (targetConstruct === 'epistemic_revision_dynamics') {
         const derived = epistemicRevisionOutcome(current, event);
         if (Object.prototype.hasOwnProperty.call(input, 'outcome') && input.outcome !== derived.outcome) throw new Error('submitted outcome conflicts with the ledger-derived epistemic revision outcome');
         outcome = derived.outcome;
         epistemicBinding = derived.binding;
+      } else if (targetConstruct === 'natural_cycle_integrated_success') {
+        const derived = naturalCyclePredictionOutcome(current, event);
+        if (Object.prototype.hasOwnProperty.call(input, 'outcome') && input.outcome !== derived.outcome) {
+          throw new Error('submitted outcome conflicts with the replay-derived natural-cycle outcome');
+        }
+        outcome = derived.outcome;
+        naturalCycleBinding = derived.binding;
+        observed = `The first eligible post-prediction natural cycle recorded integrated_success=${derived.outcome}.`;
+        evidence = [
+          { type: 'experience_moment', id: derived.binding.moment_id },
+          { type: 'cycle_self_forecast_outcome', id: derived.binding.outcome_commitment },
+        ];
+        confounds = ['Preregistering both forecasts may affect the natural cycle being observed.'];
       } else if (typeof outcome !== 'boolean') throw new Error('boolean outcome, observed result, and stable evidence are required');
       const priorOutcomeEvidence = new Set(study.events.filter(item => item.resolution).flatMap(item => item.resolution.evidence).map(canonicalJson));
-      if (input.evidence.some(reference => priorOutcomeEvidence.has(canonicalJson(reference)))) throw new Error('outcome evidence must be unique to each paired event');
+      if (evidence.some(reference => priorOutcomeEvidence.has(canonicalJson(reference)))) throw new Error('outcome evidence must be unique to each paired event');
       const actual = outcome ? 1 : 0;
       event.status = 'resolved';
       event.resolution = {
-        outcome, observed: String(input.observed).slice(0, 1200), evidence: input.evidence.slice(0, 30),
-        confounds: Array.isArray(input.confounds) ? input.confounds.map(String).slice(0, 12) : [],
+        outcome, observed: String(observed).slice(0, 1200), evidence: evidence.slice(0, 30), confounds,
         ...(epistemicBinding ? { epistemic_binding: epistemicBinding, outcome_source: 'append_only_epistemic_ledger' } : {}),
+        ...(naturalCycleBinding ? { natural_cycle_binding: naturalCycleBinding,
+          outcome_source: 'replay_verified_natural_cycle' } : {}),
         self_brier: (event.self_prediction.probability - actual) ** 2,
         observer_brier: (event.observer_prediction.probability - actual) ** 2,
         yoked_observer_brier: (event.yoked_prediction.probability - actual) ** 2,
@@ -9638,7 +9770,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return {
       epistemic_status: 'Matched blinded forecasts test whether Nora-specific private state improves prediction of her own observable behavior beyond the same-evidence external observer. This is functional self-model specificity, not phenomenal consciousness.',
       studies,
-      report: { total: studies.length, active: studies.filter(item => item.status === 'active').length, completed_pilot: studies.filter(item => item.status === 'completed' && item.study_phase === 'pilot').length, completed_confirmatory: studies.filter(item => item.status === 'completed' && item.study_phase === 'confirmatory').length, completed_epistemic_revision: studies.filter(item => item.status === 'completed' && item.target_construct === 'epistemic_revision_dynamics').length, invalid_completed_audits: studies.filter(item => item.status === 'completed' && item.audit?.complete_chain_verified === false).length, aborted: studies.filter(item => item.status === 'aborted').length },
+      report: { total: studies.length, active: studies.filter(item => item.status === 'active').length, completed_pilot: studies.filter(item => item.status === 'completed' && item.study_phase === 'pilot').length, completed_confirmatory: studies.filter(item => item.status === 'completed' && item.study_phase === 'confirmatory').length, completed_epistemic_revision: studies.filter(item => item.status === 'completed' && item.target_construct === 'epistemic_revision_dynamics').length, completed_natural_cycle: studies.filter(item => item.status === 'completed' && item.target_construct === 'natural_cycle_integrated_success').length, invalid_completed_audits: studies.filter(item => item.status === 'completed' && item.audit?.complete_chain_verified === false).length, aborted: studies.filter(item => item.status === 'aborted').length },
     };
   }
 
