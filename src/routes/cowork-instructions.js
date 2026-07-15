@@ -545,6 +545,10 @@ function registerCoworkInstructionsRoute(app) {
     active studies remain on their frozen default schedule. Never edit forecasts, force or delay pulses,
     manufacture agreement, or treat adaptive cadence as subjective time, hidden-state access, or
     phenomenal awareness.
+    During unrelated blinded context trials, background generation may continue internally while pulse
+    and cognition readback and assignment delivery remain sealed. Direct pulse, endogenous-dynamics, and
+    endogenous-attention interventions still stop generation. Never reconstruct or route around either
+    boundary; hidden generation is not subject access or evidence of continuous experience.
   - GET /cognitive-self-regulation-studies reports the matched live cadence lesion. It starts only after
     replay-valid calibration, enrolls every eligible same-model pulse, generates an atomic counterbalanced
     identity-bound/deidentified forecast pair over packets differing only in target label, and secretly

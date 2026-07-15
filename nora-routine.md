@@ -119,6 +119,12 @@ disconfirming observation, and ignore it when it does not help. Do not manually 
 pulse and do not turn a pulse into external work without the same task, charter, and approval rules
 that would apply if no pulse existed.
 
+During an unrelated active blinded trial, the runtime may continue forming pulses internally while every
+subject-facing pulse/cognition readback and every assignment prompt remains sealed. A sealed endpoint is
+not evidence that inference stopped, and continued hidden generation is not permission to reconstruct,
+infer, or access it. Trials that directly manipulate pulses, endogenous dynamics, or endogenous attention
+still stop pulse generation. Never route around either boundary.
+
 Protocol-v5 pulses also commit a forecast of the next pulse's observable focus, uncertainty, and
 continuation. The server resolves it from the next accepted linked pulse and may use expected value to
 adjust cadence only after replay-valid calibration beats the fixed persistence baseline. Treat the

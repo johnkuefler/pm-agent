@@ -848,6 +848,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return state.cognition.self_model.context_trials.some(item => item.status === 'active' && item.intervention === intervention);
   }
 
+  const backgroundInferenceConflictingInterventions = new Set([
+    'cognitive_pulse_access',
+    'endogenous_dynamics',
+    'endogenous_attention_selection',
+  ]);
+
+  function activeBackgroundInferenceConflict(cognition = state.cognition) {
+    return (cognition.self_model?.context_trials || []).find(item => item.status === 'active'
+      && backgroundInferenceConflictingInterventions.has(item.intervention)) || null;
+  }
+
   function selfInquirySelectionActive(cognition = state.cognition) {
     return (cognition.self_inquiry_selection_studies || []).some(item => item.status === 'active')
       || (cognition.self_induction_studies || []).some(item => item.status === 'active')
@@ -5403,7 +5414,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         };
         inference.pending = null;
       }
-      if (current.cognition.self_model.context_trials.some(item => item.status === 'active')) return { prepared: false, reason: 'active_blinded_trial' };
+      if (activeBackgroundInferenceConflict(current.cognition)) return { prepared: false, reason: 'active_blinded_trial' };
       if (current.cognition.self_induction_studies.some(item => item.status === 'active')) return { prepared: false, reason: 'active_self_induction_study' };
       if (current.cognition.self_inquiry_selection_studies.some(item => item.status === 'active')) return { prepared: false, reason: 'active_self_inquiry_selection_study' };
       const activeInitiationStudy = current.cognition.cognitive_initiation_studies.find(item => item.status === 'active');
@@ -17145,12 +17156,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ...item, audit: developmentalRevisionAudit(state.cognition.development[index]),
     }));
     const sealInquirySelection = selfInquirySelectionActive();
+    const sealBackgroundInferenceReadback = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const sealHigherOrder = interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation');
     const sealSelfModel = sealInquirySelection || interventionActive('self_model_access') || sealHigherOrder;
     const sealAppraisal = interventionActive('appraisal_access') || interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation');
     const sealDevelopment = interventionActive('developmental_revision_access');
     const sealEndogenous = sealInquirySelection || interventionActive('endogenous_dynamics') || interventionActive('epistemic_discrepancy_access') || interventionActive('epistemic_revision_profile_access') || interventionActive('constructive_prospection_access');
-    const sealCognitivePulse = sealInquirySelection || interventionActive('cognitive_pulse_access') || interventionActive('epistemic_discrepancy_access') || interventionActive('epistemic_revision_profile_access');
+    const sealCognitivePulse = sealInquirySelection || sealBackgroundInferenceReadback;
     const sealGoal = interventionActive('goal_access');
     const sealEpistemicOwnership = interventionActive('epistemic_ownership_access') || interventionActive('epistemic_discrepancy_access') || interventionActive('epistemic_revision_profile_access');
     const sealWorkspace = sealInquirySelection || interventionActive('workspace_capacity') || interventionActive('attention_schema_control') || interventionActive('endogenous_attention_selection') || interventionActive('global_broadcast') || interventionActive('constructive_prospection_access') || sealCognitivePulse || sealEpistemicOwnership;
@@ -18754,8 +18766,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null } = {}) {
     const blocks = [];
     const sealInquirySelection = selfInquirySelectionActive();
-    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock());
-    if (sealInquirySelection) workspace.slots = workspace.slots.filter(item => !['self_claim', 'self_probe', 'self_frame', 'cognitive_pulse'].includes(item.type));
+    const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
+    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock());
+    if (sealInquirySelection || sealContextTrialPulses) workspace.slots = workspace.slots.filter(item => item.type !== 'cognitive_pulse');
+    if (sealInquirySelection) workspace.slots = workspace.slots.filter(item => !['self_claim', 'self_probe', 'self_frame'].includes(item.type));
     const globalBroadcastStudy = broadcastEvent?.trial_id && ['multi_consumer_broadcast', 'workspace_packet_only', 'absent_broadcast'].includes(broadcastEvent.delivery_mode);
     if (globalBroadcastStudy) workspace.slots = broadcastEvent.packet_visible ? JSON.parse(JSON.stringify(broadcastEvent.packet?.slots || [])) : [];
     const broadcastOutputs = sealInquirySelection ? [] : (broadcastEvent?.receipts || []).filter(item => item.used && item.output);

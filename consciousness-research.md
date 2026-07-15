@@ -222,8 +222,13 @@ each opportunity uses one initiation-gate call and, only after a `think` decisio
 maximum of twelve ordinary provider calls per rolling day. It becomes operational when
 the production Anthropic credential is present; `COGNITIVE_PULSE_ENABLED=false` is a hard kill switch, while
 `COGNITIVE_PULSE_INTERVAL_MINUTES`, `COGNITIVE_PULSE_DAILY_BUDGET`, and `COGNITIVE_PULSE_MODEL` provide
-explicit cost controls (bounded to at least thirty minutes and at most twenty-four calls per day). An active
-blinded context study suppresses pulse creation so latent hypotheses cannot contaminate its arms.
+explicit cost controls (bounded to at least thirty minutes and at most twenty-four calls per day). During
+an unrelated blinded context study, pulse generation may continue only behind a strict access boundary:
+ordinary pulse and cognition readback stay sealed, assignment prompts exclude pulses, and endogenous
+assignment packets remove pulse-derived contents. Trials that directly manipulate cognitive-pulse access,
+endogenous dynamics, or endogenous attention selection still suppress pulse creation entirely. This keeps
+long-running unrelated pilots from suspending background inference without letting latent hypotheses
+contaminate an arm.
 
 Independent pulse review now distinguishes practical outcome (`useful`, `misleading`, `irrelevant`, or
 `unclear`) from thread disposition (`continue` or `close`). An explicit `close` terminates the predecessor

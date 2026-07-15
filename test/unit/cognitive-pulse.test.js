@@ -597,6 +597,42 @@ test('a blinded pulse-access trial isolates model inference from identical packe
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('an unrelated blinded trial permits hidden pulse generation without exposing it to the subject or assignment', async () => {
+  const { dir, store, setNow } = await setup();
+  store.createContextTrial({
+    id: 'unrelated-workspace-trial', intervention: 'workspace_capacity',
+    hypothesis: 'Workspace capacity affects first-order task quality.',
+    outcome_metric: 'first_order_task_quality', surfaces: ['slack'], sample_target_per_group: 2,
+  });
+
+  const prepared = store.prepareCognitivePulse({ id: 'hidden-during-workspace-trial', model: 'test-model', force: true });
+  assert.equal(prepared.prepared, true);
+  const output = validOutput(prepared.pulse.input_packet);
+  output.hypothesis = 'SEALED_NONOVERLAPPING_PULSE must remain unavailable to every active-trial prompt.';
+  const accepted = store.recordCognitivePulseResult(prepared.pulse.id, {
+    input_commitment: prepared.pulse.input_commitment, output,
+  });
+  assert.equal(accepted.audit.complete_chain_verified, true);
+
+  setNow('2026-07-13T17:00:00.000Z');
+  store.tickEndogenousDynamics({ now: '2026-07-13T17:00:00.000Z' });
+  const assignment = store.contextCondition({ surface: 'slack', unitKey: 'unrelated-workspace-unit' });
+  assert.equal(assignment.intervention, 'workspace_capacity');
+  const endogenousContext = store.endogenousContextForAssignment(assignment);
+  assert.equal(endogenousContext.contents.some(item => item.type === 'cognitive_pulse'), false);
+  assert.doesNotMatch(store.promptContext({
+    query: 'SEALED_NONOVERLAPPING_PULSE', endogenousContext,
+  }), /SEALED_NONOVERLAPPING_PULSE/);
+  assert.equal(store.cognitivePulseSnapshot().experimental_access_sealed, true);
+  assert.equal(store.cognitionSnapshot().background_inference.experimental_access_sealed, true);
+  assert.equal(store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'model_mediated_cognitive_pulses')
+    .evidence.nonoverlapping_blinded_generation_isolated, true);
+  assert.equal(store.snapshot().cognition.background_inference.pulses.at(-1).id, accepted.id,
+    'the pulse remains internally committed while subject-facing readback is sealed');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('matched self-induction conditions use atomic direct model calls with unique receipts', async () => {
   const { __test } = require('../../server'); const store = __test.intelligenceStore;
   const originals = { queue: store.selfInductionSubjectRuntimeQueue, submit: store.submitSelfInductionSubjectPair, fail: store.recordSelfInductionPairFailure };
