@@ -484,7 +484,8 @@ function registerCoworkInstructionsRoute(app) {
     evidence. Confidence is the predicted probability that the integrated self-state score reaches 0.75;
     the same preregistration names the expected largest error domain. The server freezes behavioral,
     integrated-self, historical-success, and modal-error baselines at the same time and scores them
-    automatically at closure; the forecast is never injected into response prompts.
+    automatically at closure. Reliability scoring requires all five observable error domains; incomplete
+    closures remain replay-visible but cannot enter calibration. The forecast is never injected into response prompts.
     Each verified closure also appends a predecessor-linked behavioral self-model revision under
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples, but is sealed during active blinded

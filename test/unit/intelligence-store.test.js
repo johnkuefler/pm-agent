@@ -1969,6 +1969,7 @@ test('cycle self-forecasts commit before action and score automatically against 
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
     clock: () => new Date('2026-07-11T15:00:00.000Z') });
   await store.init();
+  store.refreshCognition({});
   const started = store.startCycle({ id: 'self-forecast-cycle', holder: 'nora-cowork' });
   assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, {
     predicted_action_types: [], surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.6,
@@ -2002,7 +2003,7 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(moment.self_forecast.outcome.self_state_actual.action_count, 2);
   assert.ok(Number.isFinite(moment.self_forecast.outcome.self_state_score.composite));
   assert.ok(Number.isFinite(moment.self_forecast.outcome.metacognitive_score.composite));
-  assert.equal(moment.self_forecast.outcome.self_state_score.appraisal_mean_absolute_error, null);
+  assert.ok(Number.isFinite(moment.self_forecast.outcome.self_state_score.appraisal_mean_absolute_error));
   assert.equal(moment.audit.self_forecast.complete_chain_verified, true);
   assert.equal(moment.audit.evidence_eligible, true);
   assert.equal(store.experienceStreamSnapshot().prospective_self_forecast.replay_verified_scored, 1);

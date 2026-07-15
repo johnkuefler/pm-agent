@@ -154,15 +154,23 @@ function selfStateErrorProfile(outcome = {}) {
   const domainLosses = Object.fromEntries(ERROR_DOMAINS.map(domain => [domain, raw[domain]]));
   const ranked = Object.entries(domainLosses).filter(([, loss]) => Number.isFinite(loss))
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-  return { domain_losses: domainLosses, largest_error_domain: ranked[0]?.[0] || null };
+  const missingDomains = ERROR_DOMAINS.filter(domain => !Number.isFinite(domainLosses[domain]));
+  return {
+    domain_losses: domainLosses,
+    largest_error_domain: missingDomains.length ? null : ranked[0]?.[0] || null,
+    complete_domain_observation: missingDomains.length === 0,
+    missing_domains: missingDomains,
+  };
 }
 
 function baselineMetacognitionFromMoments(moments = []) {
   const rows = moments.map(moment => moment.self_forecast?.outcome)
     .filter(outcome => Number.isFinite(Number(outcome?.self_state_score?.composite)))
-    .map(outcome => ({
-      success: Number(outcome.self_state_score.composite) >= INTEGRATED_SUCCESS_THRESHOLD,
-      largest_error_domain: selfStateErrorProfile(outcome).largest_error_domain,
+    .map(outcome => ({ outcome, error_profile: selfStateErrorProfile(outcome) }))
+    .filter(row => row.error_profile.complete_domain_observation)
+    .map(row => ({
+      success: Number(row.outcome.self_state_score.composite) >= INTEGRATED_SUCCESS_THRESHOLD,
+      largest_error_domain: row.error_profile.largest_error_domain,
     }));
   const counts = new Map();
   for (const row of rows) {
@@ -363,20 +371,21 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
       const actualMetacognition = {
         integrated_score: selfStateScore.composite,
         integrated_success_threshold: threshold,
-        integrated_success: selfStateScore.composite >= threshold,
+        integrated_success: errorProfile.complete_domain_observation
+          ? selfStateScore.composite >= threshold : null,
         ...errorProfile,
       };
-      const metacognitiveScore = scoreMetacognitivePrediction(record.forecast.metacognitive_prediction,
-        actualMetacognition);
-      const baselineMetacognitiveScore = scoreMetacognitivePrediction(record.baseline.metacognitive_prediction,
-        actualMetacognition);
+      const metacognitiveScore = errorProfile.complete_domain_observation
+        ? scoreMetacognitivePrediction(record.forecast.metacognitive_prediction, actualMetacognition) : null;
+      const baselineMetacognitiveScore = errorProfile.complete_domain_observation
+        ? scoreMetacognitivePrediction(record.baseline.metacognitive_prediction, actualMetacognition) : null;
       outcome.metacognitive_actual = actualMetacognition;
       outcome.metacognitive_score = metacognitiveScore;
       outcome.baseline_metacognitive_score = baselineMetacognitiveScore;
-      outcome.metacognitive_self_minus_baseline = metacognitiveScore.composite
-        - baselineMetacognitiveScore.composite;
-      outcome.metacognitive_baseline_comparison_eligible = Number(
-        record.baseline.metacognitive_prediction?.sample_size) >= 5;
+      outcome.metacognitive_self_minus_baseline = metacognitiveScore && baselineMetacognitiveScore
+        ? metacognitiveScore.composite - baselineMetacognitiveScore.composite : null;
+      outcome.metacognitive_baseline_comparison_eligible = Boolean(metacognitiveScore
+        && Number(record.baseline.metacognitive_prediction?.sample_size) >= 5);
     }
   }
   return outcome;

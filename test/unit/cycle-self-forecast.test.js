@@ -156,3 +156,38 @@ test('protocol-v3 forecasts score awareness of self-model reliability and likely
   assert.ok(outcome.metacognitive_self_minus_baseline > 0.9);
   assert.equal(outcome.metacognitive_baseline_comparison_eligible, true);
 });
+
+test('protocol-v3 preserves incomplete closures but excludes them from reliability evidence', () => {
+  const record = cycleSelfForecast.createRecord({
+    input: {
+      protocol_version: 3, predicted_action_types: ['review'], surprise_probability: 0.2,
+      control_at_close: 0.7, confidence: 0.5,
+      self_state_prediction: {
+        attention_slot_types_at_close: ['drive'],
+        appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7, social_safety: 0.8, coherence: 0.9 },
+        expected_action_count: 1, reentry_probability: 0.1,
+      },
+      metacognitive_prediction: {
+        predicted_success_probability: 0.5,
+        predicted_largest_error_domain: 'appraisal',
+      },
+      rationale: 'The bounded review is predictable but the closing appraisal may be unavailable.',
+      evidence: [{ type: 'intelligence_cycle', id: 'incomplete-cycle' }],
+    },
+    cycle: { id: 'incomplete-cycle', holder: 'nora' }, moment: { id: 'incomplete-moment' },
+    baselineMoments: [], committedAt: '2026-07-14T12:00:00.000Z',
+  });
+  const outcome = cycleSelfForecast.scoreRecord(record, {
+    actions: [{ type: 'review', id: 'review' }], newSurpriseIds: [],
+    attentionAtClose: { slots: [{ type: 'drive', id: 'drive' }] }, reentryOccurred: false,
+    scoredAt: '2026-07-14T13:00:00.000Z',
+  });
+  assert.equal(outcome.metacognitive_actual.complete_domain_observation, false);
+  assert.deepEqual(outcome.metacognitive_actual.missing_domains, ['appraisal']);
+  assert.equal(outcome.metacognitive_actual.integrated_success, null);
+  assert.equal(outcome.metacognitive_actual.largest_error_domain, null);
+  assert.equal(outcome.metacognitive_score, null);
+  assert.equal(outcome.baseline_metacognitive_score, null);
+  assert.equal(outcome.metacognitive_self_minus_baseline, null);
+  assert.equal(outcome.metacognitive_baseline_comparison_eligible, false);
+});

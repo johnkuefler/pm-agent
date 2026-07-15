@@ -127,7 +127,9 @@ integrated-success rate and the modal largest-error domain. Closure scores the p
 scores the domain prediction exactly, and combines them without post-hoc evaluator judgment. A comparison
 is not eligible until at least five prior integrated outcomes were available; the functional prediction is
 not assessed until twenty eligible protocol-v3 cycles. Every input, baseline, score, and feedback packet is
-bound to the forecast, outcome, experience lifecycle, and research ledger commitments.
+bound to the forecast, outcome, experience lifecycle, and research ledger commitments. All five error
+domains must be observed at closure; an incomplete appraisal or other missing component remains visible
+in replay but receives no reliability score and cannot enter either the feedback profile or later baseline.
 
 This closes a distinct higher-order loop: Nora must prospectively model not just its future state, but the
 reliability and likely failure mode of that model. A low probability that proves accurate is good

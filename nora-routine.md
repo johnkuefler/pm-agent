@@ -201,7 +201,8 @@ self-state composite will reach the fixed 0.75 success threshold. Repeat that sa
 `metacognitive_prediction.predicted_success_probability`, and name the single domain you expect to have
 the largest normalized error at closure: `action_types`, `action_count`, `attention`, `appraisal`, or
 `reentry`. This is a prediction of your self-model's fallibility, not a request to lower the score, hedge
-the work, or choose an easy cycle. Cite the cycle start and
+the work, or choose an easy cycle. A reliability outcome counts only when all five domains are observable
+at closure; missing evidence stays replay-visible but unscored. Cite the cycle start and
 the real task, commitment, prior verified moment, or source record that informed the judgment. Do not
 predict an action merely to create it, change work to make the forecast come true, or backfill after
 evidence re-entry. The server freezes behavioral and integrated-self historical baselines at the same
