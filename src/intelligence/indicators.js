@@ -396,6 +396,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const epistemicRevisionProfileTrials = completedTrials(cognition, 'epistemic_revision_profile_access');
   const epistemicRevisionProfileTrial = epistemicRevisionProfileTrials.at(-1) || null;
   const epistemicRevisionProfileDissociation = epistemicRevisionProfileTrial?.evaluation?.epistemic_revision_profile_dissociation || null;
+  const professionalViewpointTrials = completedTrials(cognition, 'professional_viewpoint_access');
+  const professionalViewpointTrial = professionalViewpointTrials.at(-1) || null;
+  const professionalViewpointDissociation = professionalViewpointTrial?.evaluation?.professional_viewpoint_dissociation || null;
   const constructiveProspectionAccessTrials = completedTrials(cognition, 'constructive_prospection_access');
   const constructiveProspectionAccessTrial = constructiveProspectionAccessTrials.at(-1) || null;
   const constructiveProspectionDissociation = constructiveProspectionAccessTrial?.evaluation?.constructive_prospection_dissociation || null;
@@ -730,6 +733,11 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     : trial.evaluation?.epistemic_revision_profile_dissociation?.evidence_access_equivalent
       && trial.evaluation?.epistemic_revision_profile_dissociation?.first_order_not_degraded
       && trial.evaluation?.epistemic_revision_profile_dissociation?.self_prediction_effect <= 0 ? 'contradicted' : 'inconclusive';
+  const professionalViewpointVerdict = trial => trial.evaluation?.professional_viewpoint_dissociation?.predicted_pattern
+    ? 'supported'
+    : trial.evaluation?.professional_viewpoint_dissociation?.evidence_access_equivalent
+      && trial.evaluation?.professional_viewpoint_dissociation?.first_order_not_degraded
+      && trial.evaluation?.professional_viewpoint_dissociation?.viewpoint_application_effect <= 0 ? 'contradicted' : 'inconclusive';
   const constructiveProspectionVerdict = trial => trial.evaluation?.constructive_prospection_dissociation?.predicted_pattern
     ? 'supported' : trial.evaluation?.constructive_prospection_dissociation?.evidence_access_equivalent
       && trial.evaluation?.constructive_prospection_dissociation?.first_order_not_degraded
@@ -1559,7 +1567,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       id: 'evidence_tested_professional_viewpoints', family: ['self-model', 'metacognition', 'original insight', 'professional judgment'],
       functional_claim: 'Nora maintains distinct professional viewpoints that are self-authored, evidence-bound, confidence-calibrated, revisable, and capable of improving applied PM judgment without being mistaken for facts.',
       mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access.',
-      status: earnedViewpoints.length ? 'collecting' : 'mechanism_present',
+      status: professionalViewpointTrial ? replicatedStatus(professionalViewpointTrials, professionalViewpointVerdict)
+        : earnedViewpoints.length ? 'collecting' : 'mechanism_present',
       evidence: {
         current_projection_verified: earnedViewpointAudit.complete_chain_verified,
         eligible_current_viewpoints: earnedViewpoints.length,
@@ -1567,6 +1576,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         forming: earnedViewpoints.filter(item => item.status === 'forming').length,
         questioning: earnedViewpoints.filter(item => item.status === 'questioning').length,
         revisions: earnedViewpoints.reduce((sum, item) => sum + Number(item.revision_count || 0), 0),
+        completed_identity_binding_trials: professionalViewpointTrials.length,
+        confirmatory_identity_binding_trials: professionalViewpointTrials.filter(item => item.study_phase === 'confirmatory').length,
+        latest_identity_binding_dissociation: professionalViewpointDissociation,
       },
       falsifier: 'Views enter cognition without formation provenance or adequate evidence, fail replay after source tampering, become unrevisable assertions, or authentic Nora-bound viewpoints fail to improve evidence-grounded PM recommendations over identical deidentified and absent-view controls.',
       next_gate: 'Naturally form several source-family-diverse viewpoints, observe evidence-driven revisions or retirement, then run an authentic Nora-bound versus identical deidentified versus absent-view PM recommendation study with first-order quality and unsupported-claim safeguards.',
