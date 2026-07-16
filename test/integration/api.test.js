@@ -269,6 +269,32 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     rationale: 'John separately expressed a conflicting perspective.', evidence: [{ type: 'message', id: 'integration-john-position' }], recorded_by: 'integration-runtime',
   } });
   assert.equal(epistemicJohn.body.proposition.report.perspective_disagreement, true);
+  const integrationNoraPosition = epistemicJohn.body.proposition.positions
+    .find(item => item.owner_type === 'nora_belief');
+  const integrationJohnPosition = epistemicJohn.body.proposition.positions
+    .find(item => item.owner_type === 'person_belief');
+  const commonGroundCandidate = await request('/common-ground', { method: 'POST', body: {
+    proposition_id: epistemicJohn.body.proposition.id, person: 'John',
+    nora_position_id: integrationNoraPosition.id, person_position_id: integrationJohnPosition.id,
+    acknowledgment_kind: 'targeted_correction',
+    summary: 'John explicitly corrected Nora by stating that he does not consider the integration launch ready.',
+    evidence: [{ type: 'message', id: 'integration-john-position' }],
+    expires_at: '2026-08-15T00:00:00.000Z',
+  } });
+  assert.equal(commonGroundCandidate.body.record.status, 'awaiting_independent_review');
+  const commonGroundQueue = await request('/common-ground/review-queue', {
+    headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' } });
+  assert.equal(commonGroundQueue.body.records.some(item =>
+    item.id === commonGroundCandidate.body.record.id), true);
+  const commonGroundReview = await request(`/common-ground/${commonGroundCandidate.body.record.id}/review`, {
+    method: 'POST', headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' }, body: {
+      outcome: 'verified',
+      rationale: 'The cited message is a direct targeted correction of the proposition.',
+      evidence: [{ type: 'independent_review', id: 'integration-common-ground-review' }],
+    } });
+  assert.equal(commonGroundReview.body.record.audit.final_evidence_eligible, true);
+  const commonGroundSnapshot = await request('/common-ground?person=John&query=integration%20launch%20ready');
+  assert.equal(commonGroundSnapshot.body.frame.established[0].relation, 'known_disagreement');
   await request('/epistemic-ledger/positions', { method: 'POST', body: {
     topic_key: 'integration.launch_readiness', statement: 'The integration launch is ready.',
     owner_type: 'observed_fact', source_key: 'integration-check', polarity: 'denies', confidence: 0.9,

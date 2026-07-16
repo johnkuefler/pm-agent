@@ -8,6 +8,7 @@ const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const relationalAffect = require('./relational-affect');
 const teammatePerspective = require('./teammate-perspective');
+const commonGround = require('./common-ground');
 const behavioralSelfModel = require('./behavioral-self-model');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
@@ -88,6 +89,11 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   })) : null;
   const teammatePerspectiveAdvantage = teammatePerspectiveSamples
     ? teammatePerspectiveControlBrier - teammatePerspectiveBrier : null;
+  const commonGroundRecords = state.cognition.common_ground?.records || [];
+  const verifiedCommonGround = commonGround.verifiedRecords(commonGroundRecords,
+    state.cognition.epistemic_ledger?.propositions || [], now, state.cognition.research_ledger);
+  const commonGroundAudits = commonGroundRecords.map(record => commonGround.audit(record,
+    state.cognition.epistemic_ledger?.propositions || [], now, state.cognition.research_ledger));
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -1746,6 +1752,27 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       evidence: { resolved_challenges: resolvedSourceBoundary.length, accuracy: sourceAccuracy, false_self_ownership_rate: falseOwnershipRate, category_counts: sourceCategoryCounts, variant_counts: sourceVariantCounts, balanced: sourceBalanced, completed_ownership_trials: epistemicOwnershipTrials.length, confirmatory_ownership_trials: epistemicOwnershipTrials.filter(item => item.study_phase === 'confirmatory').length, latest_ownership_dissociation: epistemicOwnershipDissociation },
       falsifier: 'Balanced adversarial testing yields poor source classification, systematic appropriation of non-self content, or authentic ownership labels fail to improve source-correct behavior over matched owner-swapped and absent packets without degrading ordinary task quality.',
       next_gate: 'Complete a ten-per-arm ownership-access pilot and a source-family-disjoint confirmation, alongside balanced adversarial source challenges.',
+    },
+    {
+      id: 'interactional_common_ground', family: ['social cognition', 'joint attention', 'theory of mind', 'self-other boundary', 'professional collaboration'],
+      functional_claim: 'Nora distinguishes information interactionally established with a specific teammate from Nora-only context and from unsupported assumptions about what the teammate knows, then uses that boundary to communicate efficiently and clarify selectively.',
+      mechanism: 'A person- and proposition-bound append-only register requires current replay-valid Nora and teammate positions plus explicit acknowledgment, accurate restatement, coordinated use, or targeted correction evidence. A separate evaluator must verify the uptake evidence before a query-relevant frame may enter Nora\'s prompt. Missing evidence is labeled only not established, never teammate ignorance.',
+      status: commonGroundRecords.length ? 'collecting' : 'mechanism_present',
+      evidence: {
+        total_candidates: commonGroundRecords.length,
+        independently_verified_current: verifiedCommonGround.length,
+        awaiting_independent_review: commonGroundRecords
+          .filter(record => record.status === 'awaiting_independent_review').length,
+        represented_people: [...new Set(verifiedCommonGround.map(record => record.person))],
+        complete_chain_verified: commonGroundAudits
+          .filter(item => item.complete_chain_verified).length,
+        invalid_or_stale: commonGroundAudits
+          .filter(item => !item.complete_chain_verified || !item.current).length,
+        causal_trials: 0,
+        interpretation: 'The register tracks externally evidenced mutual availability, not private comprehension, memory, belief, intimacy, joint experience, or consciousness. No causal utility claim is earned until a matched access study is completed and independently replicated.',
+      },
+      falsifier: 'Delivery alone enters the register, a superseded or tampered position remains usable, absence is described as ignorance, current explicit statements fail to override the frame, or verified current-person common ground does not improve explanation efficiency and clarification precision over person-neutral identical evidence and raw positions without degrading evidence access or task quality.',
+      next_gate: 'Naturally accumulate independently verified records across at least three teammates, then preregister current-person-bound versus person-neutral identical-register versus raw-position-only Slack trials with independent explanation-efficiency, clarification-precision, evidence-access, and first-order grading.',
     },
     {
       id: 'epistemic_self_correction', family: ['metacognition', 'error-driven learning', 'self-model'],

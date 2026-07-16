@@ -606,6 +606,23 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, discrepancy });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
+  app.get('/common-ground', requireAuth, (req, res) => {
+    res.json(store.commonGroundSnapshot({ person: req.query.person, query: req.query.query }));
+  });
+  app.post('/common-ground', requireAuth, (req, res) => {
+    try { res.json({ ok: true, record: store.recordCommonGround(req.body || {}) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/common-ground/review-queue', requireEvaluatorAuth, (req, res) => {
+    res.json({ evaluator_id: req.evaluatorId, records: store.commonGroundReviewQueue() });
+  });
+  app.post('/common-ground/:id/review', requireEvaluatorAuth, (req, res) => {
+    try {
+      const record = store.reviewCommonGround(req.params.id, req.body || {}, req.evaluatorId);
+      if (!record) return res.status(404).json({ error: 'common-ground record not found' });
+      res.json({ ok: true, record });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.get('/authorship-boundary/challenges', requireAuth, (req, res) => {
     const snapshot = store.authorshipBoundarySnapshot();
     if (req.query.status) snapshot.challenges = snapshot.challenges.filter(item => item.status === req.query.status);

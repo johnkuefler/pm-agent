@@ -118,6 +118,10 @@ GET /earned-viewpoints
 POST /earned-viewpoints/:id/retire
 GET /epistemic-ledger/discrepancies
 POST /epistemic-ledger/discrepancies/:id/review
+GET /common-ground
+POST /common-ground
+GET /common-ground/review-queue
+POST /common-ground/:id/review
 GET /authorship-boundary/challenges
 POST /authorship-boundary/challenges
 POST /authorship-boundary/challenges/:id/answer
