@@ -300,7 +300,6 @@ POST /tasks
 PATCH /tasks/:id/complete
 DELETE /tasks/:id
 PUT /tasks/:id
-GET /admin/github-token
 GET /admin/mcp
 POST /admin/mcp
 PUT /admin/mcp/:id

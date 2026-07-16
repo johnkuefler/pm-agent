@@ -10,6 +10,13 @@ const store = fs.readFileSync(path.join(root, 'src/intelligence/store.js'), 'utf
 const routes = fs.readFileSync(path.join(root, 'src/routes/intelligence.js'), 'utf8');
 const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
 
+test('Nora has no development-dispatch capability', () => {
+  assert.doesNotMatch(routine, /dev[ -]dispatch|dev-task dispatcher|development@limelightmarketing\.com/i);
+  assert.doesNotMatch(server, /\/admin\/github-token|process\.env\.(?:GH_TOKEN|GITHUB_TOKEN)/);
+  assert.equal(fs.existsSync(path.join(root, '.claude/agents/dev-dispatch.md')), false);
+  assert.equal(fs.existsSync(path.join(root, 'dev-agent/CLAUDE.md')), false);
+});
+
 test('autonomic loop spans orientation, continuity, judgment, evidence, and closure', () => {
   assert.match(routine, /Step 0\.5: Start the Intelligence Cycle/);
   assert.match(routine, /LOCK_CYCLE_ID/);
