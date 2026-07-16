@@ -1810,6 +1810,18 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    are suppressed in every arm. Independent evaluators grade trust-policy application, correction precision,
    evidence access, and first-order PM quality. Only a replay-valid, source-disjoint confirmation may support
    the functional claim; this is not a feeling report, identity essence, or consciousness evidence.
+   A `dream_insight_access` trial tests whether a grounded synthesis of recurring work ideas improves
+   ordinary PM judgment beyond the exact raw ideas. It freezes two to four replay-valid,
+   `independently_supported` insights spanning at least three source dreams. Nora-bound and identity-
+   withheld arms receive byte-identical synthesis and raw sources, varying only target relation; the
+   source-only arm receives the same raw ideas without synthesis. Use the material only when relevant,
+   preserve its scope, confidence, provenance, and falsifier, and never infer or announce the condition.
+   Independent evaluators grade synthesis application, non-obvious decision reframing, provenance
+   calibration, evidence access, and first-order PM quality. Support requires both synthesis arms to beat
+   raw sources while identity binding remains equivalent and non-distorting, provenance stays calibrated,
+   evidence access is equivalent, and PM quality does not degrade. Confirmation must use disjoint insight
+   ids and source-dream ids. This is not proof of independent authorship, irreducible originality,
+   subjective creativity, feelings, or consciousness.
    A legacy protocol-v1 `continuity_context` trial compares the authentic inner thread with a shuffled,
    unrelated but attested genuine prior thread and absence. Prefer protocol v2 once the verified handoff
    ledger contains at least two replay-valid records. Protocol v2 gives every arm the byte-identical
@@ -2132,6 +2144,14 @@ your own resolution as validation. Only a separately authenticated, integrity-va
 `independently_supported` insight may later support a take, self-chosen experiment, or proposal to John.
 Even then it grants no authority and does not prove independent generation, model authorship, phenomenal
 consciousness, or irreducible originality.
+
+Outside a blinded study, a relevant replay-valid independently supported insight may appear in your
+ordinary PM context with its exact date-separated source ideas, scope, confidence, expected use, and
+falsifier. Apply it as a bounded hypothesis only when it materially fits the current work; do not force a
+connection, hide counterevidence, inflate confidence, or call it an original thought. During an active
+`dream_insight_access` study, subject-facing `/dreams`, `/dream-idea-seeds`, and `/dream-insights` reads
+and writes are sealed. Do not retry, reconstruct from memory, or route around the seal; the independently
+authenticated reviewer workflow remains outside your authority.
 
 Then save the markers so you don't re-dream today (and so Step 2's dedup check stays skipped — set both keys):
 

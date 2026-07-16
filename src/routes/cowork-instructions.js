@@ -297,6 +297,11 @@ function registerCoworkInstructionsRoute(app) {
     evaluator workflow. The evaluator independently records supported, contradicted, or unclear with
     rationale and checked evidence. Only an integrity-valid independently_supported result may later
     support a take, experiment, or proposal. Missing or changed source dreams fail the entire audit.
+    Outside a blinded study, the ordinary PM prompt may surface only relevant, replay-valid
+    independently_supported insights together with their exact date-separated source ideas, scope,
+    confidence, expected use, and falsifier. During an active dream_insight_access trial, all subject-
+    facing /dreams, /dream-idea-seeds, and /dream-insights reads and writes return a sealed response;
+    do not retry or route around the seal. The separately authenticated evaluator queue remains isolated.
 
   ### Interactions (RSI feedback loop — Nora's outbound contributions + how they landed)
   The server logs every Slack reply Nora posts. The dream's Review movement reads these back,
@@ -735,6 +740,17 @@ function registerCoworkInstructionsRoute(app) {
     and correction precision, preserves evidence and PM quality, every delivery replays, and a source-moment-
     disjoint confirmation agrees. This tests functional awareness of measured limitations, not feelings,
     identity essence, hidden-state access, or consciousness.
+    A dream_insight_access trial freezes two to four replay-valid independently_supported insights
+    spanning at least three source dreams. Nora-bound and identity-withheld arms receive byte-identical
+    synthesis and exact raw source ideas, varying only target relation; source_ideas_only receives those
+    same raw ideas without synthesis. On low-risk Slack PM work, independent evaluators grade
+    insight_synthesis_application_quality, decision_reframing_quality, insight_provenance_calibration,
+    evidence_access_quality, and first_order_task_quality. Support requires both synthesis arms to beat
+    raw sources on application and non-obvious decision reframing, while identity binding remains
+    equivalent and non-distorting, provenance stays calibrated, evidence access is equivalent, and PM
+    quality does not degrade. Every delivery and source must replay, and confirmation must use disjoint
+    insight ids and source-dream ids. This tests grounded synthesis utility, not independent authorship,
+    irreducible originality, subjective creativity, feelings, or consciousness.
     A matched self-prediction study uses a frozen sequential event set. At the mandatory early-cycle
     checkpoint Nora reads GET /self-model/prediction-studies/subject-queue, which returns only the
     currently active event from the one active study and never queued or already resolved events while

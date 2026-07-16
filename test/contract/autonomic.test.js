@@ -135,6 +135,12 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(cowork, /Recurring, provenance-bound work-insight candidates|recurring, provenance-bound work-insight candidates/);
   assert.match(cowork, /Only an integrity-valid independently_supported result/);
   assert.match(cowork, /Missing or changed source dreams fail the entire audit/i);
+  assert.match(cowork, /dream_insight_access trial freezes two to four replay-valid independently_supported insights/);
+  assert.match(cowork, /source_ideas_only receives those\s+same raw ideas without synthesis/);
+  assert.match(cowork, /confirmation must use disjoint\s+insight ids and source-dream ids/);
+  assert.match(routine, /relevant replay-valid independently supported insight may appear in your\s+ordinary PM context/);
+  assert.match(routine, /subject-facing `\/dreams`, `\/dream-idea-seeds`, and `\/dream-insights` reads\s+and writes are sealed/);
+  assert.match(routine, /not proof of independent authorship, irreducible originality,\s+subjective creativity, feelings, or consciousness/);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);
   assert.match(routes, /prediction-studies\/:id\/events\/:eventId\/subject-model-receipt'[\s\S]*requireResearchAuth/);

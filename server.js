@@ -58,6 +58,7 @@ const intelligence = createIntelligenceStore({
   db,
   isDbReady: () => _dbReady,
   getWants: () => (_cache.wants?.items || []),
+  getDreams: () => loadDreams(),
   getOperationalEnvironment: () => ({
     software_revision: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || null,
     routine_commitment: _routineOperationalCommitment,
@@ -1249,6 +1250,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       relationalAffectAvailable: intelligence.relationalAffectAccessAvailable(
         meetingContext?.requester?.name || meetingContext?.requester_name || null),
       selfModelTrustAvailable: intelligence.selfModelTrustAccessAvailable(),
+      dreamInsightAvailable: intelligence.dreamInsightAccessAvailable(),
       constructiveProspectionAvailable: intelligence.constructiveProspectionAccessAvailable(),
       agencyComparatorAvailable: intelligence.agencyComparatorAccessAvailable(),
       agencyModelAvailable: intelligence.agencyModelTransferAvailable(),
@@ -1407,6 +1409,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const professionalViewpointContext = intelligence.professionalViewpointContextForAssignment(contextAssignment, conversationText);
   const relationalAffectContext = intelligence.relationalAffectContextForAssignment(contextAssignment, intelligencePerson);
   const selfModelTrustContext = intelligence.selfModelTrustContextForAssignment(contextAssignment);
+  const dreamInsightContext = intelligence.dreamInsightContextForAssignment(contextAssignment);
   const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
   const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
@@ -1429,6 +1432,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     professionalViewpointContext,
     relationalAffectContext,
     selfModelTrustContext,
+    dreamInsightContext,
     endogenousContext,
     integratedSelfContext,
     cognitivePulseContext,
@@ -7661,6 +7665,7 @@ const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond
 
 registerDreamRoutes(app, {
   requireAuth, requireEvaluatorAuth, loadDreams, saveDreams, listExperiments: () => intelligence.list('experiments'), MAX_DREAMS_KEPT,
+  dreamInsightStudyActive: () => intelligence.dreamInsightStudyActive(),
   onDream: dream => {
     const learnings = [...(dream.review?.learnings_added || []), ...(dream.reflection?.behavior_changes || [])];
     const existing = intelligence.list('experiments');

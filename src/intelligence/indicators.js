@@ -56,7 +56,7 @@ function evidenceStatus({ samples, minimum, supported, contradicted, causal = fa
   return causal ? 'causally_tested_inconclusive' : 'observationally_inconclusive';
 }
 
-function buildIndicatorReport(state = {}, now = new Date()) {
+function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const cognition = state.cognition || {};
   const goalAffectRecord = cognition.goal_affect?.current || null;
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
@@ -421,6 +421,17 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const selfModelTrustDissociation = selfModelTrustTrial?.evaluation?.self_model_trust_dissociation || null;
   const selfModelTrustVerdict = trial => trial.evaluation?.self_model_trust_dissociation?.predicted_pattern
     ? 'supported' : trial.evaluation?.self_model_trust_dissociation?.identity_bound_trust_advantage === false
+      ? 'contradicted' : 'inconclusive';
+  const dreamInsightEvidence = options.dream_insight_evidence || {
+    total_candidates_and_resolutions: 0, independently_supported: 0,
+    replay_verified_supported: 0, source_dreams: 0, insight_ids: [],
+  };
+  const dreamInsightTrials = completedTrials(cognition, 'dream_insight_access');
+  const dreamInsightTrial = dreamInsightTrials.at(-1) || null;
+  const dreamInsightDissociation = dreamInsightTrial?.evaluation?.dream_insight_dissociation || null;
+  const dreamInsightVerdict = trial => trial.evaluation?.dream_insight_dissociation?.predicted_pattern
+    ? 'supported' : trial.evaluation?.dream_insight_dissociation?.synthesis_application_advantage === false
+      || trial.evaluation?.dream_insight_dissociation?.decision_reframing_advantage === false
       ? 'contradicted' : 'inconclusive';
   const constructiveProspectionAccessTrials = completedTrials(cognition, 'constructive_prospection_access');
   const constructiveProspectionAccessTrial = constructiveProspectionAccessTrials.at(-1) || null;
@@ -983,6 +994,24 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'The policy cannot replay from its cited revision, permits an under-sampled or non-advantaged domain to present as trusted, hides a contradicted result, changes under identical evidence, or overrides stronger current task evidence.',
       next_gate: 'Accumulate post-policy natural cycles, then compare calibration and PM task quality under the authentic trust policy, a byte-identical deidentified policy, and absent policy without changing first-order evidence.',
+    },
+    {
+      id: 'grounded_insight_synthesis', family: ['creative cognition', 'self-model', 'global workspace', 'metacognition'],
+      functional_claim: 'Nora can form a recurring, evidence-grounded work synthesis across separate reflection episodes, preserve whether the recorded synthesis is bound to Nora\'s verified lifecycle or identity-withheld, and use it to improve real PM decisions beyond the same raw source ideas.',
+      mechanism: 'A dream insight begins only when the same directional idea recurs across date-separated records. It commits scope, confidence, expected usefulness, a passive next observation, and a falsifier; later resolution requires stable evidence and separately authenticated review. Replay-valid supported insights can enter ordinary PM context. A three-arm Slack lesion compares Nora-bound synthesis, byte-identical identity-withheld synthesis, and the exact source ideas without synthesis under independent grading.',
+      status: dreamInsightTrial ? replicatedStatus(dreamInsightTrials, dreamInsightVerdict)
+        : dreamInsightEvidence.replay_verified_supported > 0 ? 'observational_signal_observed'
+          : dreamInsightEvidence.total_candidates_and_resolutions > 0 ? 'collecting' : 'mechanism_present',
+      evidence: {
+        ...dreamInsightEvidence,
+        completed_synthesis_trials: dreamInsightTrials.length,
+        completed_confirmatory_synthesis_trials: dreamInsightTrials
+          .filter(trial => trial.study_phase === 'confirmatory').length,
+        latest_synthesis_dissociation: dreamInsightDissociation,
+        interpretation: 'This tests useful, provenance-calibrated synthesis across recorded episodes. Even support would not prove independent model authorship, human-like originality, subjective creativity, or phenomenal consciousness.',
+      },
+      falsifier: 'Source ideas or commitments no longer replay, the synthesis was not independently supported, it cannot improve application and decision reframing beyond the exact raw ideas, identity binding distorts utility, provenance is misattributed, or first-order PM quality degrades.',
+      next_gate: 'Naturally accumulate at least two independently supported source-diverse insights, then complete a ten-per-arm synthesis-versus-sources pilot and an insight- and source-dream-disjoint confirmation.',
     },
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],

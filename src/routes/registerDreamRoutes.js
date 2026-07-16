@@ -2,72 +2,22 @@
 
 const crypto = require('crypto');
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
-
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
-  return JSON.stringify(value);
-}
-
-function commitment(value) {
-  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
-}
-
-function validEvidenceRefs(refs) {
-  return Array.isArray(refs) && refs.length > 0 && refs.every(ref => ref && typeof ref === 'object'
-    && String(ref.type || '').trim() && String(ref.id || ref.url || '').trim());
-}
-
-function dreamInsights(dreams) {
-  return dreams.flatMap(dream => (Array.isArray(dream.reflection?.insight_candidates)
-    ? dream.reflection.insight_candidates : [])
-    .map(insight => ({ dream, insight })));
-}
-
-function insightAudit(insight, dreams) {
-  const formation = insight?.formation_record;
-  const sources = Array.isArray(formation?.source_ideas) ? formation.source_ideas : [];
-  const sourceDreams = sources.map(source => dreams.find(dream => dream.id === source.dream_id));
-  const sourceIdeasVerified = sources.length >= 2 && sourceDreams.every((dream, index) => dream
-    && dream.date === sources[index].dream_date
-    && dream.reflection?.ideas?.[sources[index].idea_index] === sources[index].idea);
-  const sourceDateSeparationVerified = new Set(sources.map(source => source.dream_id)).size === sources.length
-    && new Set(sources.map(source => source.dream_date)).size === sources.length;
-  const formationCommitmentVerified = Boolean(formation && insight.formation_commitment
-    && commitment(formation) === insight.formation_commitment);
-  const resolutionPresent = Boolean(insight.resolution_record || insight.resolution_commitment);
-  const resolutionVerified = !resolutionPresent || Boolean(insight.resolution_record
-    && insight.resolution_commitment
-    && insight.resolution_record.formation_commitment === insight.formation_commitment
-    && commitment(insight.resolution_record) === insight.resolution_commitment);
-  const independentReviewPresent = Boolean(insight.independent_review || insight.independent_review_commitment);
-  const independentReviewVerified = !independentReviewPresent || Boolean(insight.independent_review
-    && insight.independent_review_commitment
-    && insight.independent_review.formation_commitment === insight.formation_commitment
-    && insight.independent_review.resolution_commitment === insight.resolution_commitment
-    && commitment(insight.independent_review) === insight.independent_review_commitment);
-  return {
-    formation_commitment_verified: formationCommitmentVerified,
-    source_ideas_verified: sourceIdeasVerified,
-    source_date_separation_verified: sourceDateSeparationVerified,
-    resolution_present: resolutionPresent,
-    resolution_verified: resolutionVerified,
-    independent_review_present: independentReviewPresent,
-    independent_review_verified: independentReviewVerified,
-    final_evidence_eligible: ['independently_supported', 'independently_contradicted', 'inconclusive'].includes(insight.status)
-      && formationCommitmentVerified && sourceIdeasVerified && sourceDateSeparationVerified
-      && resolutionVerified && independentReviewVerified,
-    complete_chain_verified: formationCommitmentVerified && sourceIdeasVerified
-      && sourceDateSeparationVerified && resolutionVerified && independentReviewVerified,
-  };
-}
+const dreamInsight = require('../intelligence/dream-insight');
+const { commitment, dreamInsights, insightAudit, validEvidenceRefs } = dreamInsight;
 
 function registerDreamRoutes(app, deps) {
-  const { requireAuth, requireEvaluatorAuth = requireAuth, loadDreams, saveDreams, listExperiments = () => [], MAX_DREAMS_KEPT, onDream } = deps;
+  const { requireAuth, requireEvaluatorAuth = requireAuth, loadDreams, saveDreams,
+    listExperiments = () => [], dreamInsightStudyActive = () => false,
+    MAX_DREAMS_KEPT, onDream } = deps;
+  const sealed = res => res.status(423).json({
+    error: 'dream insight access is sealed during an active blinded synthesis study',
+    experimental_access_sealed: true,
+  });
 
   // GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
   // dashboard can render without a second round-trip per dream.
   app.get('/dreams', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     const dreams = loadDreams().slice(); // copy before sorting: in DB mode loadDreams() returns the live cache ref
     dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
     res.json(dreams);
@@ -75,6 +25,7 @@ function registerDreamRoutes(app, deps) {
 
   // GET /dreams/:id — a single dream's full detail.
   app.get('/dreams/:id', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     const dream = loadDreams().find(d => d.id === req.params.id);
     if (!dream) return res.status(404).json({ error: 'dream not found' });
     res.json(dream);
@@ -83,6 +34,7 @@ function registerDreamRoutes(app, deps) {
   // Dream ideas are hypotheses, not established insights. This projection gives each exact stored
   // spark a stable, content-committed reference so Nora may test it without rewriting its origin.
   app.get('/dream-idea-seeds', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     const allSeeds = dreamIdeaSeed.list(loadDreams(), listExperiments())
       .sort((a, b) => String(b.dream_date || '').localeCompare(String(a.dream_date || '')) || a.idea_index - b.idea_index);
     const status = req.query.status;
@@ -101,6 +53,7 @@ function registerDreamRoutes(app, deps) {
   // source ideas, a usefulness prediction, and a falsifier into one candidate. This records a
   // functional insight lifecycle; it does not certify originality, consciousness, or authorship.
   app.get('/dream-insights', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     const dreams = loadDreams();
     const status = String(req.query.status || '').trim();
     const allInsights = dreamInsights(dreams)
@@ -126,6 +79,7 @@ function registerDreamRoutes(app, deps) {
   });
 
   app.post('/dream-insights', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     try {
       const body = req.body || {};
       const dreams = loadDreams();
@@ -195,6 +149,7 @@ function registerDreamRoutes(app, deps) {
   });
 
   app.post('/dream-insights/:id/resolve', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     try {
       const dreams = loadDreams();
       const found = dreamInsights(dreams).find(({ insight }) => insight.id === req.params.id);
@@ -282,6 +237,7 @@ function registerDreamRoutes(app, deps) {
   // Dreaming Round with the consolidation stats, reflection results, and a first-person
   // narrative ("what I dreamed about"). Server stamps id + finished if absent.
   app.post('/dreams', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     const body = req.body || {};
     const now = new Date().toISOString();
     const dream = {
@@ -313,6 +269,7 @@ function registerDreamRoutes(app, deps) {
 
   // DELETE /dreams/:id — admin cleanup of a single dream entry.
   app.delete('/dreams/:id', requireAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
     const dreams = loadDreams();
     const idx = dreams.findIndex(d => d.id === req.params.id);
     if (idx === -1) return res.status(404).json({ error: 'dream not found' });
