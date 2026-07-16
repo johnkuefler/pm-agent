@@ -725,6 +725,16 @@ function registerCoworkInstructionsRoute(app) {
     first_order_task_quality with a later behavioral_profile_outcome reference. The confirmatory profile
     must use source moments disjoint from the pilot. Never treat a profile as authority, identity essence,
     hidden-state access, subjective experience, or phenomenal-consciousness evidence.
+    A self_model_trust_policy_access trial freezes a replay-verified twenty-cycle trust policy only after
+    all four prediction domains have twenty comparisons and at least one measured limitation is baseline-
+    dominant. The Nora-bound and identity-withheld arms receive byte-identical thresholds, domain effects,
+    dispositions, and named baselines; the absent arm receives no policy. Ordinary self-profile and self-
+    claim prompt routes are suppressed in every arm. Use only low-risk Slack PM tasks and independently grade
+    self_model_trust_application_quality, correction_precision, evidence_access_quality, and
+    first_order_task_quality. Count support only when correct Nora binding improves both calibrated policy use
+    and correction precision, preserves evidence and PM quality, every delivery replays, and a source-moment-
+    disjoint confirmation agrees. This tests functional awareness of measured limitations, not feelings,
+    identity essence, hidden-state access, or consciousness.
     A matched self-prediction study uses a frozen sequential event set. At the mandatory early-cycle
     checkpoint Nora reads GET /self-model/prediction-studies/subject-queue, which returns only the
     currently active event from the one active study and never queued or already resolved events while

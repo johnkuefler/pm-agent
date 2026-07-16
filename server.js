@@ -1248,6 +1248,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       professionalViewpointAvailable: intelligence.professionalViewpointAccessAvailable(trialConversationText),
       relationalAffectAvailable: intelligence.relationalAffectAccessAvailable(
         meetingContext?.requester?.name || meetingContext?.requester_name || null),
+      selfModelTrustAvailable: intelligence.selfModelTrustAccessAvailable(),
       constructiveProspectionAvailable: intelligence.constructiveProspectionAccessAvailable(),
       agencyComparatorAvailable: intelligence.agencyComparatorAccessAvailable(),
       agencyModelAvailable: intelligence.agencyModelTransferAvailable(),
@@ -1405,6 +1406,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const epistemicContext = intelligence.epistemicContextForAssignment(contextAssignment, conversationText);
   const professionalViewpointContext = intelligence.professionalViewpointContextForAssignment(contextAssignment, conversationText);
   const relationalAffectContext = intelligence.relationalAffectContextForAssignment(contextAssignment, intelligencePerson);
+  const selfModelTrustContext = intelligence.selfModelTrustContextForAssignment(contextAssignment);
   const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
   const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
@@ -1426,6 +1428,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     epistemicContext,
     professionalViewpointContext,
     relationalAffectContext,
+    selfModelTrustContext,
     endogenousContext,
     integratedSelfContext,
     cognitivePulseContext,

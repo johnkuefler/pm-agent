@@ -416,6 +416,12 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const relationalAffectTrials = completedTrials(cognition, 'relational_affect_access');
   const relationalAffectTrial = relationalAffectTrials.at(-1) || null;
   const relationalAffectDissociation = relationalAffectTrial?.evaluation?.relational_affect_dissociation || null;
+  const selfModelTrustTrials = completedTrials(cognition, 'self_model_trust_policy_access');
+  const selfModelTrustTrial = selfModelTrustTrials.at(-1) || null;
+  const selfModelTrustDissociation = selfModelTrustTrial?.evaluation?.self_model_trust_dissociation || null;
+  const selfModelTrustVerdict = trial => trial.evaluation?.self_model_trust_dissociation?.predicted_pattern
+    ? 'supported' : trial.evaluation?.self_model_trust_dissociation?.identity_bound_trust_advantage === false
+      ? 'contradicted' : 'inconclusive';
   const constructiveProspectionAccessTrials = completedTrials(cognition, 'constructive_prospection_access');
   const constructiveProspectionAccessTrial = constructiveProspectionAccessTrials.at(-1) || null;
   const constructiveProspectionDissociation = constructiveProspectionAccessTrial?.evaluation?.constructive_prospection_dissociation || null;
@@ -954,8 +960,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'calibrated_self_model_trust', family: ['self-model', 'metacognition', 'predictive processing', 'cognitive control'],
       functional_claim: 'Nora can represent measured limits in her own predictive self-model and defer unreliable domains to stronger empirical baselines instead of treating a coherent self-profile as inherently trustworthy.',
-      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are explicitly baseline-dominant in both cycle-forecast and teammate-facing self-reflection context.',
-      status: 'mechanism_present',
+      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are baseline-dominant. A preregistered Slack lesion freezes all four domains and compares correct Nora binding with byte-identical deidentified policy and absence under independent PM-quality grading.',
+      status: selfModelTrustTrial ? replicatedStatus(selfModelTrustTrials, selfModelTrustVerdict)
+        : 'mechanism_present',
       evidence: behavioralSelfTrustPolicy ? {
         policy_commitment: behavioralSelfTrustPolicy.policy_commitment,
         policy_commitment_verified: behavioralSelfModel.verifyTrustPolicy(behavioralSelfTrustPolicy),
@@ -963,10 +970,16 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         domains: behavioralSelfTrustPolicy.domains,
         self_model_eligible_domains: behavioralSelfTrustPolicy.self_model_eligible_domains,
         baseline_dominant_domains: behavioralSelfTrustPolicy.baseline_dominant_domains,
+        completed_policy_trials: selfModelTrustTrials.length,
+        completed_confirmatory_policy_trials: selfModelTrustTrials
+          .filter(trial => trial.study_phase === 'confirmatory').length,
+        latest_policy_dissociation: selfModelTrustDissociation,
       } : {
         experimental_general_profile_access_sealed: behavioralSelfModelSealed,
         mature_replay_valid_profile_available: replayValidBehavioralSelfModelRevisions
           .some(item => Number(item.estimates?.sample_size) >= 20),
+        completed_policy_trials: selfModelTrustTrials.length,
+        latest_policy_dissociation: selfModelTrustDissociation,
       },
       falsifier: 'The policy cannot replay from its cited revision, permits an under-sampled or non-advantaged domain to present as trusted, hides a contradicted result, changes under identical evidence, or overrides stronger current task evidence.',
       next_gate: 'Accumulate post-policy natural cycles, then compare calibration and PM task quality under the authentic trust policy, a byte-identical deidentified policy, and absent policy without changing first-order evidence.',
