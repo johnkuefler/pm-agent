@@ -1,7 +1,25 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveSelfRegulation = require('./cognitive-self-regulation');
+
+const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
+  protocol_version: 1,
+  subject_forecast_protocol_version: 6,
+  minimum_replay_verified_integrated_outcomes: 20,
+  primary_endpoint: 'mean_integrated_self_minus_frozen_baseline',
+  support_gate: 'primary endpoint >= 0.05 and mean behavioral self-minus-baseline >= 0',
+  contradiction_gate: 'primary endpoint <= 0 or mean behavioral self-minus-baseline < 0',
+  secondary_endpoints: Object.freeze([
+    'mean_behavioral_self_minus_frozen_baseline',
+    'mean_metacognitive_self_minus_frozen_baseline',
+    'mean_correction_integrated_revised_minus_initial',
+  ]),
+  disposition_strata_role: 'descriptive and exploratory; self-reported strata do not identify a causal effect of applying versus overriding the prior',
+});
+const DELIBERATE_PRIOR_USE_ANALYSIS_COMMITMENT = crypto.createHash('sha256')
+  .update(JSON.stringify(DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL)).digest('hex');
 
 function mean(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
@@ -133,6 +151,56 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const explicitPriorUseForecasts = laggedPriorForecasts.filter(item =>
     Number(item.self_forecast?.protocol_version) >= 6
     && item.audit?.self_forecast?.behavioral_self_prior_use_verified === true);
+  const explicitPriorUseBehavioralEligible = explicitPriorUseForecasts.filter(item =>
+    item.self_forecast.outcome?.baseline_comparison_eligible === true);
+  const explicitPriorUseBehavioralAdvantage = mean(explicitPriorUseBehavioralEligible.map(item =>
+    item.self_forecast.outcome.self_minus_baseline));
+  const explicitPriorUseIntegratedEligible = explicitPriorUseForecasts.filter(item =>
+    item.self_forecast.outcome?.self_state_baseline_comparison_eligible === true);
+  const explicitPriorUseIntegratedAdvantage = mean(explicitPriorUseIntegratedEligible.map(item =>
+    item.self_forecast.outcome.self_state_minus_baseline));
+  const explicitPriorUseMetacognitiveEligible = explicitPriorUseForecasts.filter(item =>
+    item.self_forecast.outcome?.metacognitive_baseline_comparison_eligible === true);
+  const explicitPriorUseMetacognitiveAdvantage = mean(explicitPriorUseMetacognitiveEligible.map(item =>
+    item.self_forecast.outcome.metacognitive_self_minus_baseline));
+  const explicitPriorUseStratum = disposition => {
+    const rows = explicitPriorUseForecasts.filter(item =>
+      item.self_forecast.forecast.behavioral_self_prior_use?.disposition === disposition);
+    const behavioral = rows.filter(item =>
+      item.self_forecast.outcome?.baseline_comparison_eligible === true);
+    const integrated = rows.filter(item =>
+      item.self_forecast.outcome?.self_state_baseline_comparison_eligible === true);
+    const metacognitive = rows.filter(item =>
+      item.self_forecast.outcome?.metacognitive_baseline_comparison_eligible === true);
+    const corrections = rows.filter(item => item.self_forecast.outcome?.self_correction
+      && item.audit?.self_forecast?.self_correction_complete_chain_verified === true);
+    const estimateRefCounts = new Map();
+    for (const item of rows) {
+      for (const ref of item.self_forecast.forecast.behavioral_self_prior_use?.estimate_refs || []) {
+        estimateRefCounts.set(ref, (estimateRefCounts.get(ref) || 0) + 1);
+      }
+    }
+    return {
+      replay_verified_scored: rows.length,
+      estimate_ref_counts: Object.fromEntries([...estimateRefCounts.entries()]
+        .sort((a, b) => a[0].localeCompare(b[0]))),
+      behavioral_baseline_eligible: behavioral.length,
+      mean_behavioral_self_minus_baseline: mean(behavioral.map(item =>
+        item.self_forecast.outcome.self_minus_baseline)),
+      integrated_baseline_eligible: integrated.length,
+      mean_integrated_self_minus_baseline: mean(integrated.map(item =>
+        item.self_forecast.outcome.self_state_minus_baseline)),
+      metacognitive_baseline_eligible: metacognitive.length,
+      mean_metacognitive_self_minus_baseline: mean(metacognitive.map(item =>
+        item.self_forecast.outcome.metacognitive_self_minus_baseline)),
+      replay_verified_correction_decisions: corrections.length,
+      mean_correction_integrated_revised_minus_initial: mean(corrections.map(item =>
+        item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial)
+        .filter(Number.isFinite)),
+    };
+  };
+  const explicitPriorUseStrata = Object.fromEntries(['applied', 'overridden', 'not_relevant']
+    .map(disposition => [disposition, explicitPriorUseStratum(disposition)]));
   const laggedPriorBaselineEligible = laggedPriorForecasts.filter(item =>
     item.self_forecast.outcome?.baseline_comparison_eligible === true);
   const laggedPriorBehavioralAdvantage = mean(laggedPriorBaselineEligible.map(item =>
@@ -814,6 +882,32 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'A profile or feedback packet cannot be exactly replayed from its cited forecasts, revision lineage breaks, feedback leaks into Slack or a directly overlapping blinded trial, current-cycle evidence leaks backward into it, or later forecasts do not improve beyond the frozen baseline.',
       next_gate: 'Accumulate twenty replay-valid protocol-v5 lagged-prior forecasts, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
+    },
+    {
+      id: 'deliberate_behavioral_prior_use', family: ['self-model', 'metacognition', 'predictive processing', 'ecological validity'],
+      functional_claim: 'Before acting, Nora can explicitly identify which replay-valid behavioral self-model estimates she is applying or overriding, while forecasts made under that commitment retain an advantage over their simultaneously frozen historical baselines.',
+      mechanism: 'Protocol v6 binds an applied, overridden, or not-relevant judgment, exact allowlisted estimate references, rationale, and the lagged prior commitment into the initial forecast before action. The newest predecessor error remains held out, later correction cannot rewrite the declaration, and only complete replay-valid outcomes enter this analysis.',
+      status: evidenceStatus({ samples: explicitPriorUseIntegratedEligible.length, minimum: 20,
+        supported: explicitPriorUseIntegratedAdvantage >= 0.05
+          && explicitPriorUseBehavioralAdvantage >= 0,
+        contradicted: explicitPriorUseIntegratedAdvantage <= 0
+          || explicitPriorUseBehavioralAdvantage < 0 }),
+      evidence: {
+        analysis_protocol: DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL,
+        analysis_protocol_commitment: DELIBERATE_PRIOR_USE_ANALYSIS_COMMITMENT,
+        analysis_protocol_commitment_scheme: 'sha256(JSON.stringify(analysis_protocol))',
+        replay_verified_scored: explicitPriorUseForecasts.length,
+        behavioral_baseline_eligible: explicitPriorUseBehavioralEligible.length,
+        mean_behavioral_self_minus_baseline: explicitPriorUseBehavioralAdvantage,
+        integrated_baseline_eligible: explicitPriorUseIntegratedEligible.length,
+        mean_integrated_self_minus_baseline: explicitPriorUseIntegratedAdvantage,
+        metacognitive_baseline_eligible: explicitPriorUseMetacognitiveEligible.length,
+        mean_metacognitive_self_minus_baseline: explicitPriorUseMetacognitiveAdvantage,
+        disposition_strata: explicitPriorUseStrata,
+        interpretation: 'This is a preregistered observational performance test of commitment-bound self-model use. It can support calibrated functional self-knowledge, but cannot establish phenomenal awareness or a causal benefit of one self-reported disposition.',
+      },
+      falsifier: 'Protocol-v6 declarations fail replay or temporal binding, later correction can rewrite them, cited estimates are absent from the exact prior, or twenty eligible natural forecasts fail to outperform the frozen integrated or behavioral baseline.',
+      next_gate: 'Collect twenty natural replay-valid protocol-v6 outcomes without seeding cycles, then freeze an information-matched applied-prior versus deidentified-prior versus absent-prior causal study if the observational gate is not contradicted.',
     },
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],

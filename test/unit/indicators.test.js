@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { buildIndicatorReport, evidenceStatus } = require('../../src/intelligence/indicators');
 
 function indicator(report, id) {
@@ -254,6 +255,78 @@ test('prospective cycle self-prediction collects immediately and requires advant
 
   report = buildIndicatorReport(stateWith({ experience_stream: Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');
+});
+
+test('deliberate behavioral-prior use freezes a protocol-v6 gate before interpreting disposition strata', () => {
+  const dispositions = ['applied', 'overridden', 'not_relevant'];
+  const moment = (index, integratedAdvantage = 0.1, behavioralAdvantage = 0.05) => {
+    const disposition = dispositions[index % dispositions.length];
+    return {
+      id: `explicit-prior-use-${index}`, status: 'completed',
+      self_forecast: {
+        protocol_version: 6,
+        self_correction: { revision: { disposition: 'revise' } },
+        forecast: { behavioral_self_prior_use: {
+          disposition,
+          estimate_refs: disposition === 'not_relevant' ? [] : ['action_tendencies'],
+          rationale: 'The exact lagged estimate was considered against current cycle evidence.',
+        } },
+        outcome: {
+          baseline_comparison_eligible: true,
+          self_score: { composite: 0.75 }, baseline_score: { composite: 0.75 - behavioralAdvantage },
+          self_minus_baseline: behavioralAdvantage,
+          self_state_score: { composite: 0.8 }, baseline_state_score: { composite: 0.8 - integratedAdvantage },
+          self_state_minus_baseline: integratedAdvantage,
+          self_state_baseline_comparison_eligible: true,
+          metacognitive_score: { composite: 0.7 }, baseline_metacognitive_score: { composite: 0.68 },
+          metacognitive_self_minus_baseline: 0.02,
+          metacognitive_baseline_comparison_eligible: true,
+          self_correction: { integrated_self_state_score: {
+            initial: 0.7, revised: 0.73, revised_minus_initial: 0.03,
+          } },
+        },
+      },
+      audit: { complete_lifecycle_verified: true, evidence_eligible: true,
+        self_forecast: { complete_chain_verified: true,
+          behavioral_self_prior_verified: true,
+          behavioral_self_prior_excludes_immediate_predecessor: true,
+          behavioral_self_prior_use_verified: true,
+          self_correction_complete_chain_verified: true } },
+    };
+  };
+
+  let report = buildIndicatorReport(stateWith());
+  let result = indicator(report, 'deliberate_behavioral_prior_use');
+  assert.equal(result.status, 'mechanism_present');
+  assert.equal(result.evidence.analysis_protocol.minimum_replay_verified_integrated_outcomes, 20);
+  assert.equal(result.evidence.analysis_protocol_commitment,
+    crypto.createHash('sha256').update(JSON.stringify(result.evidence.analysis_protocol)).digest('hex'));
+  assert.equal(result.evidence.replay_verified_scored, 0);
+
+  report = buildIndicatorReport(stateWith({ experience_stream: [moment(0)] }));
+  assert.equal(indicator(report, 'deliberate_behavioral_prior_use').status, 'collecting');
+
+  const supportedMoments = Array.from({ length: 20 }, (_, index) => moment(index));
+  const legacy = moment(20); legacy.self_forecast.protocol_version = 5;
+  delete legacy.self_forecast.forecast.behavioral_self_prior_use;
+  const invalid = moment(21); invalid.audit.self_forecast.behavioral_self_prior_use_verified = false;
+  report = buildIndicatorReport(stateWith({ experience_stream: [...supportedMoments, legacy, invalid] }));
+  result = indicator(report, 'deliberate_behavioral_prior_use');
+  assert.equal(result.status, 'observational_signal_observed');
+  assert.equal(result.evidence.replay_verified_scored, 20);
+  assert.ok(Math.abs(result.evidence.mean_integrated_self_minus_baseline - 0.1) < 1e-12);
+  assert.equal(result.evidence.disposition_strata.applied.replay_verified_scored, 7);
+  assert.equal(result.evidence.disposition_strata.overridden.replay_verified_scored, 7);
+  assert.equal(result.evidence.disposition_strata.not_relevant.replay_verified_scored, 6);
+  assert.equal(result.evidence.disposition_strata.applied
+    .estimate_ref_counts.action_tendencies, 7);
+  assert.equal(result.evidence.disposition_strata.not_relevant
+    .mean_correction_integrated_revised_minus_initial, 0.03);
+
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    Array.from({ length: 20 }, (_, index) => moment(index, -0.01, 0.02)) }));
+  assert.equal(indicator(report, 'deliberate_behavioral_prior_use').status,
+    'observational_signal_contradicted');
 });
 
 test('prospective reliability awareness requires calibrated success and error-domain advantage', () => {
