@@ -534,6 +534,10 @@ function registerCoworkInstructionsRoute(app) {
     post-commit correction. The projection removes retired development-dispatch action families without
     rewriting their historical source records. It is isolated from response prompts and sealed only by a
     directly overlapping self-model or integrated-self trial.
+    The response always includes required_forecast_protocol_version and a machine-readable
+    forecast_submission_contract. That contract enumerates every required top-level field, all five exact
+    substrate_prediction probability names, allowed metacognitive error domains, and retired action types.
+    Use it as the authoritative request shape, including when prior access is sealed and protocol v4 is required.
     The same response supplies a replay-bound trust_policy over behavioral prediction, integrated self-state,
     metacognitive reliability, and substrate prediction. A domain is self_model_eligible only after twenty
     comparisons and a predeclared advantage over its frozen baseline. Contradicted or ambiguous domains are
@@ -558,6 +562,10 @@ function registerCoworkInstructionsRoute(app) {
     hidden reasoning or force the forecast toward the prior. Protocol v7 additionally binds the exact trust
     policy and preserves the raw metacognitive prediction while committing a separate
     metacognitive_adjudication with an operational prediction.
+    When a mature replay-verified trust policy is available, the server upgrades a stale protocol-v6
+    submission to protocol v7 rather than allowing the caller to bypass that policy or dropping the run.
+    The returned protocol_selection receipt commits the submitted v6 forecast separately and proves the
+    normalized subject prediction was preserved while only the deterministic policy/adjudication was attached.
     A self-model-eligible reliability domain uses the raw prediction; collecting, contradicted, or ambiguous
     reliability uses the simultaneously frozen historical success-rate and modal-error baseline. Raw,
     operational, and baseline estimates are scored independently, so baseline deferral cannot masquerade as
@@ -575,7 +583,7 @@ function registerCoworkInstructionsRoute(app) {
     the offered feedback_commitment, and a
     forecast_error_feedback evidence reference. Revise must change a scored prediction; retain must preserve
     every scored value. Closure scores the decision against the untouched initial and historical baseline.
-    Protocol-v5 and v6 records remain replay-valid without the later trust-controller fields. Each verified closure also
+    Historical protocol-v5 and v6 records remain replay-valid without the later trust-controller fields. Each verified closure also
     appends a predecessor-linked behavioral self-model revision under
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples. Its raw committed history remains

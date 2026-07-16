@@ -20443,6 +20443,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const manifestVerified = [1, 2, 3, 4, 5, 6, 7].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
+    const expectedProtocolSelection = record.protocol_selection ? {
+      protocol_version: 1,
+      submitted_protocol_version: 6,
+      effective_protocol_version: 7,
+      mode: 'server_required_mature_trust_policy',
+      submitted_forecast_commitment: cycleSelfForecast.commitment(record.forecast),
+      epistemic_limit: 'The authenticated subject forecast is preserved byte-for-byte after normalization; only the replay-derived trust policy and its operational adjudication are attached by the server.',
+    } : null;
+    const protocolSelectionVerified = !record.protocol_selection
+      || (Number(record.protocol_version) === 7
+        && canonicalJson(record.protocol_selection) === canonicalJson(expectedProtocolSelection));
     const preregistrationEventIndex = manifestVerified
       ? eventIndex('experience_self_forecast_preregistered', record.id,
         { forecast_commitment: record.forecast_commitment }) : -1;
@@ -20617,12 +20628,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
     cache.set(experienceLedgerAuditCacheKey, ledgerVerified);
     const preregistrationVerified = preregistrationBound && temporalOrderVerified && beforeEvidenceReentryVerified
-      && baselineVerified && behavioralPriorAudit.complete_chain_verified
+      && protocolSelectionVerified && baselineVerified && behavioralPriorAudit.complete_chain_verified
       && behavioralPriorUseVerified && behavioralSelfTrustPolicyVerified
       && metacognitiveAdjudicationVerified && ledgerVerified;
     const closed = moment.status !== 'open';
     return {
       forecast_commitment_verified: manifestVerified, preregistration_ledger_bound: preregistrationBound,
+      protocol_selection_verified: protocolSelectionVerified,
+      server_upgraded_from_protocol_v6: protocolSelectionVerified
+        && record.protocol_selection?.mode === 'server_required_mature_trust_policy',
       temporal_order_verified: temporalOrderVerified, before_evidence_reentry_verified: beforeEvidenceReentryVerified,
       baseline_replay_verified: baselineVerified,
       behavioral_self_prior_required: Number(record.protocol_version) >= 5,
@@ -20789,17 +20803,30 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && candidate.status !== 'open'
         && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
       const committedAt = clock().toISOString();
-      const behavioralSelfPrior = Number(input.protocol_version) >= 5
+      const submittedProtocolVersion = input.protocol_version == null
+        ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
+          ? 3 : input.self_state_prediction ? 2 : 1)
+        : Number(input.protocol_version);
+      const behavioralSelfPrior = submittedProtocolVersion >= 5
         ? behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles) : null;
-      const behavioralSelfTrustPolicy = Number(input.protocol_version) >= 7 && behavioralSelfPrior
+      const candidateTrustPolicy = behavioralSelfPrior
         ? behavioralSelfModel.trustPolicy({
           estimates: behavioralSelfPrior.estimates,
           sourceType: 'behavioral_self_prior', sourceId: behavioralSelfPrior.id,
           sourceCommitment: behavioralSelfPrior.content_commitment,
         }) : null;
+      // A stale v6 caller must not bypass an available measured trust controller. Preserve
+      // its normalized subject forecast and attach the replay-derived v7 control at ingress.
+      const serverUpgradeToV7 = submittedProtocolVersion === 6
+        && candidateTrustPolicy && behavioralSelfModel.verifyTrustPolicy(candidateTrustPolicy);
+      const effectiveInput = serverUpgradeToV7
+        ? { ...input, protocol_version: 7 } : input;
+      const effectiveProtocolVersion = serverUpgradeToV7 ? 7 : submittedProtocolVersion;
+      const behavioralSelfTrustPolicy = effectiveProtocolVersion >= 7
+        ? candidateTrustPolicy : null;
       const forecastRecord = cycleSelfForecast.createRecord({
-        input, cycle, moment, baselineMoments, behavioralSelfPrior,
-        behavioralSelfTrustPolicy, committedAt,
+        input: effectiveInput, cycle, moment, baselineMoments, behavioralSelfPrior,
+        behavioralSelfTrustPolicy, committedAt, submittedProtocolVersion,
       });
       const correctionFeedback = Number(forecastRecord.protocol_version) >= 3
         ? behavioralSelfCalibrationSnapshot().latest_forecast_error : null;
@@ -21084,6 +21111,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (overlappingTrial) return {
       epistemic_status: 'Lagged behavioral self-prior access is sealed during a directly overlapping blinded self-model study.',
       experimental_access_sealed: true, available: false, prior: null,
+      required_forecast_protocol_version: 4,
+      forecast_submission_contract: cycleSelfForecast.submissionContract(4),
       prior_use_schema: priorUseSchema,
     };
     const prior = behavioralSelfForecastPriorForMoment(moment);
@@ -21101,6 +21130,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       active_cycle_bound: Boolean(openMoment),
       cycle_id: openMoment?.cycle_id || null,
       moment_id: openMoment?.id || null,
+      required_forecast_protocol_version: prior ? 7 : 4,
+      forecast_submission_contract: cycleSelfForecast.submissionContract(prior ? 7 : 4),
       prior,
       trust_policy: trustPolicy,
       trust_policy_verified: trustPolicy ? behavioralSelfModel.verifyTrustPolicy(trustPolicy) : false,
@@ -21896,6 +21927,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && audit.self_forecast?.behavioral_self_trust_policy_verified === true
       && audit.self_forecast?.metacognitive_adjudication_verified === true
       && item.self_forecast.outcome.operational_metacognitive_score);
+    const serverUpgradedTrustControlledForecasts = metacognitiveTrustControlledForecasts
+      .filter(({ item, audit }) => item.self_forecast.protocol_selection?.mode
+        === 'server_required_mature_trust_policy'
+        && audit.self_forecast?.protocol_selection_verified === true);
     const metacognitiveTrustControlledEligible = metacognitiveTrustControlledForecasts.filter(({ item }) =>
       item.self_forecast.outcome.operational_metacognitive_baseline_comparison_eligible === true);
     const laggedPriorBaselineEligible = laggedPriorForecasts.filter(({ item }) =>
@@ -21956,6 +21991,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             item.self_forecast.forecast.behavioral_self_prior_use?.disposition === 'not_relevant').length,
         },
         metacognitive_trust_controlled_forecasts: metacognitiveTrustControlledForecasts.length,
+        server_upgraded_v6_to_v7_forecasts: serverUpgradedTrustControlledForecasts.length,
         metacognitive_trust_control_sources: {
           self_model: metacognitiveTrustControlledForecasts.filter(({ item }) =>
             item.self_forecast.metacognitive_adjudication.source === 'self_model').length,

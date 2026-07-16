@@ -395,6 +395,13 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(immaturePrior.response.status, 200);
   assert.equal(immaturePrior.body.available, false);
   assert.equal(immaturePrior.body.experimental_access_sealed, false);
+  assert.equal(immaturePrior.body.required_forecast_protocol_version, 4);
+  assert.deepEqual(immaturePrior.body.forecast_submission_contract.substrate_prediction
+    .required_probability_fields, [
+    'error_probability', 'warning_probability', 'backup_probability',
+    'embedding_backlog_probability', 'restart_probability',
+  ]);
+  assert.equal(immaturePrior.body.forecast_submission_contract.development_dispatch_retired, true);
   const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
     protocol_version: 4,
     predicted_action_types: ['integration_review'], surprise_probability: 0.2,

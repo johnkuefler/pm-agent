@@ -5,6 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const cycleSelfForecast = require('../../src/intelligence/cycle-self-forecast');
 const selfPredictionSubjectRuntime = require('../../src/intelligence/self-prediction-subject-runtime');
 const affectiveRegulation = require('../../src/intelligence/affective-regulation');
 
@@ -2243,6 +2244,12 @@ test('self-model access lesion distinguishes authentic access from matched decoy
       { domain: 'preference', statement: 'I prefer exhaustive replies in every channel', confidence: 0.65 },
     ],
   });
+  const sealedForecastPrior = store.behavioralSelfForecastPriorSnapshot();
+  assert.equal(sealedForecastPrior.experimental_access_sealed, true);
+  assert.equal(sealedForecastPrior.required_forecast_protocol_version, 4);
+  assert.deepEqual(sealedForecastPrior.forecast_submission_contract.substrate_prediction
+    .required_probability_fields, cycleSelfForecast.SUBSTRATE_PREDICTION_KEYS);
+  assert.equal(sealedForecastPrior.forecast_submission_contract.development_dispatch_retired, true);
   assert.throws(() => store.recordSelfClaim({
     statement: 'I form a new belief during the lesion', basis: [{ type: 'trace', id: 'sealed-trace' }],
     falsification_criteria: ['The behavior does not recur'],
@@ -2814,7 +2821,7 @@ test('natural self-correction reveals prior error only after the initial forecas
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('protocol-v6 natural forecasts bind explicit prior use without invalidating protocol-v5 history', async () => {
+test('mature trust policy upgrades stale v6 natural forecasts to replay-bound v7 without rewriting history', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-lagged-behavioral-prior-'));
   const filePath = path.join(dir, 'state.json');
   let now = new Date('2026-07-10T12:00:00.000Z');
@@ -2896,6 +2903,11 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   const priorSnapshot = store.behavioralSelfForecastPriorSnapshot();
   assert.equal(priorSnapshot.available, true);
   assert.equal(priorSnapshot.active_cycle_bound, true);
+  assert.equal(priorSnapshot.required_forecast_protocol_version, 7);
+  assert.deepEqual(priorSnapshot.forecast_submission_contract.substrate_prediction
+    .required_probability_fields, cycleSelfForecast.SUBSTRATE_PREDICTION_KEYS);
+  assert.deepEqual(priorSnapshot.forecast_submission_contract.retired_action_types,
+    cycleSelfForecast.RETIRED_ACTION_TYPES);
   assert.equal(priorSnapshot.audit.complete_chain_verified, true);
   assert.equal(priorSnapshot.trust_policy_verified, true);
   assert.equal(priorSnapshot.trust_policy.source_commitment,
@@ -2939,6 +2951,15 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   assert.equal(forecast.audit.behavioral_self_prior_verified, true);
   assert.equal(forecast.audit.behavioral_self_prior_use_verified, true);
   assert.equal(forecast.audit.behavioral_self_prior_excludes_immediate_predecessor, true);
+  assert.equal(forecast.audit.protocol_selection_verified, true);
+  assert.equal(forecast.audit.server_upgraded_from_protocol_v6, true);
+  assert.equal(forecast.protocol_version, 7);
+  assert.equal(forecast.protocol_selection.submitted_protocol_version, 6);
+  assert.equal(forecast.protocol_selection.effective_protocol_version, 7);
+  assert.equal(forecast.protocol_selection.submitted_forecast_commitment,
+    cycleSelfForecast.commitment(forecast.forecast));
+  assert.equal(forecast.forecast.metacognitive_prediction.predicted_success_probability, 0.8,
+    'the stale caller raw reliability judgment remains unchanged');
   assert.equal(forecast.behavioral_self_prior.content_commitment, priorCommitment);
   now = new Date(now.getTime() + 5 * 60 * 1000);
   store.completeCycle(target.cycle.id, {
@@ -2950,11 +2971,15 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   const stream = store.experienceStreamSnapshot();
   const closed = stream.moments.find(item => item.id === target.moment.id);
   assert.equal(closed.audit.evidence_eligible, true);
-  assert.equal(closed.self_forecast.protocol_version, 6);
+  assert.equal(closed.self_forecast.protocol_version, 7);
+  assert.equal(closed.audit.self_forecast.protocol_selection_verified, true);
+  assert.ok(closed.self_forecast.outcome.operational_metacognitive_score);
   assert.deepEqual(closed.self_forecast.outcome.actual.action_types, ['review']);
   assert.equal(closed.self_forecast.outcome.self_state_actual.action_count, 1);
   assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_forecasts, 2);
   assert.equal(stream.prospective_self_forecast.explicit_behavioral_prior_use_forecasts, 1);
+  assert.equal(stream.prospective_self_forecast.metacognitive_trust_controlled_forecasts, 1);
+  assert.equal(stream.prospective_self_forecast.server_upgraded_v6_to_v7_forecasts, 1);
   assert.deepEqual(stream.prospective_self_forecast.lagged_behavioral_prior_use,
     { applied: 1, overridden: 0, not_relevant: 0 });
   assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_baseline_eligible, 2);
@@ -3031,12 +3056,15 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   assert.equal(controlledClosed.self_forecast.outcome.self_correction
     .operational_metacognitive_reliability_score.revised_minus_initial, 0);
   assert.equal(controlledStream.prospective_self_forecast
-    .metacognitive_trust_controlled_forecasts, 1);
+    .metacognitive_trust_controlled_forecasts, 2);
+  assert.equal(controlledStream.prospective_self_forecast
+    .server_upgraded_v6_to_v7_forecasts, 1);
   assert.equal(Object.values(controlledStream.prospective_self_forecast
-    .metacognitive_trust_control_sources).reduce((sum, count) => sum + count, 0), 1);
+    .metacognitive_trust_control_sources).reduce((sum, count) => sum + count, 0), 2);
   const controlledIndicator = store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'calibrated_self_model_trust');
-  assert.equal(controlledIndicator.evidence.replay_verified_metacognitive_controlled_forecasts, 1);
+  assert.equal(controlledIndicator.evidence.replay_verified_metacognitive_controlled_forecasts, 2);
+  assert.equal(controlledIndicator.evidence.server_upgraded_v6_to_v7_forecasts, 1);
   await store.persist();
 
   const tamperedPath = path.join(dir, 'tampered-prior.json');
@@ -3051,6 +3079,20 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   const invalid = tampered.experienceStreamSnapshot().moments.at(-1);
   assert.equal(invalid.audit.self_forecast.metacognitive_adjudication_verified, false);
   assert.equal(invalid.audit.evidence_eligible, false);
+
+  const selectionTamperedPath = path.join(dir, 'tampered-protocol-selection.json');
+  const selectionTampered = JSON.parse(JSON.stringify(persisted));
+  const upgradedRecord = selectionTampered.cognition.experience_stream
+    .find(item => item.cycle_id === target.cycle.id).self_forecast;
+  upgradedRecord.protocol_selection.submitted_protocol_version = 5;
+  fs.writeFileSync(selectionTamperedPath, JSON.stringify(selectionTampered));
+  const selectionTamperedStore = createIntelligenceStore({ filePath: selectionTamperedPath,
+    db: {}, isDbReady: () => false, clock: () => new Date(now) });
+  await selectionTamperedStore.init();
+  const invalidSelection = selectionTamperedStore.experienceStreamSnapshot().moments
+    .find(item => item.cycle_id === target.cycle.id);
+  assert.equal(invalidSelection.audit.self_forecast.protocol_selection_verified, false);
+  assert.equal(invalidSelection.audit.evidence_eligible, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

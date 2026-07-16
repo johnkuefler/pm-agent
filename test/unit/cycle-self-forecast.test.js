@@ -1,6 +1,22 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const cycleSelfForecast = require('../../src/intelligence/cycle-self-forecast');
+
+test('forecast submission contracts expose exact v4 and v7 schemas without reviving dev dispatch', () => {
+  const sealed = cycleSelfForecast.submissionContract(4);
+  assert.equal(sealed.required_forecast_protocol_version, 4);
+  assert.deepEqual(sealed.substrate_prediction.required_probability_fields,
+    cycleSelfForecast.SUBSTRATE_PREDICTION_KEYS);
+  assert.equal(sealed.development_dispatch_retired, true);
+  assert.ok(sealed.retired_action_types.includes('dev_dispatch'));
+  assert.equal(sealed.required_top_level_fields.includes('behavioral_self_prior_commitment'), false);
+
+  const mature = cycleSelfForecast.submissionContract(7);
+  assert.equal(mature.required_forecast_protocol_version, 7);
+  assert.ok(mature.required_top_level_fields.includes('behavioral_self_prior_commitment'));
+  assert.ok(mature.required_top_level_fields.includes('behavioral_self_prior_use'));
+  assert.throws(() => cycleSelfForecast.submissionContract(6), /supports protocol v4 or v7/);
+});
 const behavioralSelfModel = require('../../src/intelligence/behavioral-self-model');
 
 test('cycle self-forecasts normalize prospective judgments and reject phenomenal claims', () => {

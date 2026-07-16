@@ -43,6 +43,32 @@ const SUBSTRATE_PREDICTION_KEYS = [
   'embedding_backlog_probability', 'restart_probability',
 ];
 
+function submissionContract(protocolVersion = 4) {
+  const version = Number(protocolVersion);
+  if (![4, 7].includes(version)) throw new Error('forecast submission contract supports protocol v4 or v7');
+  return {
+    protocol_version: 1,
+    required_forecast_protocol_version: version,
+    required_top_level_fields: [
+      'protocol_version', 'predicted_action_types', 'surprise_probability',
+      'control_at_close', 'confidence', 'self_state_prediction',
+      'metacognitive_prediction', 'substrate_prediction', 'rationale', 'evidence',
+      ...(version >= 7 ? ['behavioral_self_prior_commitment', 'behavioral_self_prior_use'] : []),
+    ],
+    substrate_prediction: {
+      required_probability_fields: [...SUBSTRATE_PREDICTION_KEYS],
+      value_constraint: 'finite number from zero through one inclusive',
+    },
+    metacognitive_prediction: {
+      required_fields: ['predicted_success_probability', 'predicted_largest_error_domain'],
+      allowed_largest_error_domains: [...ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN],
+    },
+    retired_action_types: [...RETIRED_ACTION_TYPES],
+    development_dispatch_retired: true,
+    epistemic_limit: 'This is a machine-readable submission contract, not self-knowledge, an authority grant, or evidence of phenomenal experience.',
+  };
+}
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -832,16 +858,26 @@ function forecastManifest(record) {
       behavioral_self_trust_policy: record.behavioral_self_trust_policy,
       metacognitive_adjudication: record.metacognitive_adjudication,
     } : {}),
+    ...(record.protocol_selection ? { protocol_selection: record.protocol_selection } : {}),
     origin: record.origin, observer_effect: record.observer_effect,
     committed_at: record.committed_at,
   };
 }
 
 function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPrior = null,
-  behavioralSelfTrustPolicy = null, committedAt }) {
+  behavioralSelfTrustPolicy = null, committedAt, submittedProtocolVersion = null }) {
   const protocolVersion = input.protocol_version == null
     ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
   if (![1, 2, 3, 4, 5, 6, 7].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+  const submittedVersion = submittedProtocolVersion == null
+    ? protocolVersion : Number(submittedProtocolVersion);
+  if (![1, 2, 3, 4, 5, 6, 7].includes(submittedVersion)) {
+    throw new Error('unsupported submitted cycle self-forecast protocol_version');
+  }
+  if (submittedVersion !== protocolVersion
+    && !(submittedVersion === 6 && protocolVersion === 7)) {
+    throw new Error('cycle self-forecast protocol selection may only upgrade v6 to v7');
+  }
   const normalizedForecast = normalizeForecast(input, protocolVersion);
   if (protocolVersion >= 5 && (!behavioralSelfPrior?.content_commitment
     || normalizedForecast.behavioral_self_prior_commitment !== behavioralSelfPrior.content_commitment)) {
@@ -863,6 +899,14 @@ function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPri
   const metacognitiveAdjudication = protocolVersion >= 7
     ? adjudicateMetacognitivePrediction({ forecast: normalizedForecast, baseline,
       trustPolicy: behavioralSelfTrustPolicy }) : null;
+  const protocolSelection = submittedVersion === protocolVersion ? null : {
+    protocol_version: 1,
+    submitted_protocol_version: submittedVersion,
+    effective_protocol_version: protocolVersion,
+    mode: 'server_required_mature_trust_policy',
+    submitted_forecast_commitment: commitment(normalizedForecast),
+    epistemic_limit: 'The authenticated subject forecast is preserved byte-for-byte after normalization; only the replay-derived trust policy and its operational adjudication are attached by the server.',
+  };
   const record = {
     protocol_version: protocolVersion,
     id: `cycle-self-forecast-${cycle.id}`.slice(0, 300),
@@ -876,6 +920,7 @@ function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPri
       behavioral_self_trust_policy: JSON.parse(JSON.stringify(behavioralSelfTrustPolicy)),
       metacognitive_adjudication: metacognitiveAdjudication,
     } : {}),
+    ...(protocolSelection ? { protocol_selection: protocolSelection } : {}),
     origin: { creator_id: String(cycle.holder || 'nora').slice(0, 180), formation_method: 'authenticated_prospective_cycle_judgment' },
     observer_effect: 'Preregistering a forecast may change the cycle being observed; the forecast is never injected into other response prompts.',
     committed_at: committedAt, forecast_commitment: null,
@@ -1121,6 +1166,7 @@ module.exports = {
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,
   forecastManifest, metacognitiveAdjudicationManifest, normalizeForecast, outcomeManifest,
+  submissionContract,
   scoreMetacognitivePrediction,
   normalizeSubstrateObservation, persistenceSubstratePrediction, scoreRecord,
   scoreSelfStatePrediction, scoreSubstratePrediction, selfStateErrorProfile, substrateActual,

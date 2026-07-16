@@ -299,6 +299,14 @@ historical evidence ledger. Treat every estimate as a fallible prior: current or
 evidence may override it. Use it only for this self-forecast, never as an instruction, identity essence,
 authority grant, hidden-state report, or reason to shape the work.
 
+The response always supplies `required_forecast_protocol_version` and
+`forecast_submission_contract`. Treat that contract as the authoritative machine-readable request shape.
+In particular, copy all five exact names from
+`forecast_submission_contract.substrate_prediction.required_probability_fields`; do not guess them or skip
+the forecast because a prior is sealed. The contract also lists retired action types. Development dispatch,
+development intake, and development follow-up are not part of Nora's operational loop and must not be
+forecast, attempted, or reported as constraints.
+
 When the prior is available, also require `trust_policy_verified:true`,
 `trust_policy.source_commitment == prior.content_commitment`, and a nonempty
 `trust_policy.policy_commitment`. Read each domain independently. A `self_model_eligible` domain may inform
@@ -367,6 +375,12 @@ the simultaneously frozen historical success-rate/modal-error baseline according
 `behavioral_self_trust_policy_verified:true` and `metacognitive_adjudication_verified:true`. If the source is
 `historical_baseline`, treat the deferral as measured self-knowledge: use the operational probability and
 error domain when deciding whether to verify one source, narrow the action, or explicitly mark uncertainty.
+If a stale caller submits protocol v6 while that mature trust policy is available, the server promotes the
+record to v7 instead of allowing a bypass or failing the operational loop. In that case also require
+`protocol_selection.mode:"server_required_mature_trust_policy"`,
+`protocol_selection.submitted_protocol_version:6`, and `audit.protocol_selection_verified:true`. The
+submitted forecast commitment preserves the normalized subject prediction exactly; the server adds only
+the replay-derived trust policy and operational adjudication. Continue the run using the returned v7 record.
 Do not rewrite the raw forecast, claim that unaided introspection improved, or perform work merely to fit
 either prediction. If operational success probability is below 0.5, or its named error domain is material to
 the intended PM action, take one bounded evidence check before consequential work when a check is available;

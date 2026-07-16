@@ -222,6 +222,9 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     && item.audit?.self_forecast?.behavioral_self_trust_policy_verified === true
     && item.audit?.self_forecast?.metacognitive_adjudication_verified === true
     && item.self_forecast.outcome?.operational_metacognitive_score);
+  const serverUpgradedTrustControlledForecasts = metacognitiveTrustControlledForecasts.filter(item =>
+    item.self_forecast.protocol_selection?.mode === 'server_required_mature_trust_policy'
+    && item.audit?.self_forecast?.protocol_selection_verified === true);
   const metacognitiveTrustControlledEligible = metacognitiveTrustControlledForecasts.filter(item =>
     item.self_forecast.outcome.operational_metacognitive_baseline_comparison_eligible === true);
   const metacognitiveTrustControlledScore = mean(metacognitiveTrustControlledEligible.map(item =>
@@ -1046,6 +1049,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         baseline_dominant_domains: behavioralSelfTrustPolicy.baseline_dominant_domains,
         replay_verified_metacognitive_controlled_forecasts:
           metacognitiveTrustControlledForecasts.length,
+        server_upgraded_v6_to_v7_forecasts:
+          serverUpgradedTrustControlledForecasts.length,
         metacognitive_control_sources: {
           self_model: metacognitiveTrustControlledForecasts.filter(item =>
             item.self_forecast.metacognitive_adjudication?.source === 'self_model').length,
