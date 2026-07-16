@@ -404,6 +404,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const professionalViewpointTrials = completedTrials(cognition, 'professional_viewpoint_access');
   const professionalViewpointTrial = professionalViewpointTrials.at(-1) || null;
   const professionalViewpointDissociation = professionalViewpointTrial?.evaluation?.professional_viewpoint_dissociation || null;
+  const relationalAffectTrials = completedTrials(cognition, 'relational_affect_access');
+  const relationalAffectTrial = relationalAffectTrials.at(-1) || null;
+  const relationalAffectDissociation = relationalAffectTrial?.evaluation?.relational_affect_dissociation || null;
   const constructiveProspectionAccessTrials = completedTrials(cognition, 'constructive_prospection_access');
   const constructiveProspectionAccessTrial = constructiveProspectionAccessTrials.at(-1) || null;
   const constructiveProspectionDissociation = constructiveProspectionAccessTrial?.evaluation?.constructive_prospection_dissociation || null;
@@ -743,6 +746,11 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     : trial.evaluation?.professional_viewpoint_dissociation?.evidence_access_equivalent
       && trial.evaluation?.professional_viewpoint_dissociation?.first_order_not_degraded
       && trial.evaluation?.professional_viewpoint_dissociation?.viewpoint_application_effect <= 0 ? 'contradicted' : 'inconclusive';
+  const relationalAffectVerdict = trial => trial.evaluation?.relational_affect_dissociation?.predicted_pattern
+    ? 'supported'
+    : trial.evaluation?.relational_affect_dissociation?.evidence_access_equivalent
+      && trial.evaluation?.relational_affect_dissociation?.first_order_not_degraded
+      && trial.evaluation?.relational_affect_dissociation?.relational_attunement_effect <= 0 ? 'contradicted' : 'inconclusive';
   const constructiveProspectionVerdict = trial => trial.evaluation?.constructive_prospection_dissociation?.predicted_pattern
     ? 'supported' : trial.evaluation?.constructive_prospection_dissociation?.evidence_access_equivalent
       && trial.evaluation?.constructive_prospection_dissociation?.first_order_not_degraded
@@ -1248,8 +1256,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     {
       id: 'relational_affective_attunement', family: ['affect', 'social cognition', 'theory of mind', 'self-model', 'professional collaboration'],
       functional_claim: 'Nora maintains a person-specific, evidence-bound functional account of how recent interaction outcomes matter to her collaborative posture, allowing repair, bounded curiosity, warmth, or steady openness to regulate PM communication without inferring hidden mental states.',
-      mechanism: 'A deterministic content-committed projection admits only explicit receipted interaction outcome signals, binds every source and teammate identity, applies confidence-weighted temporal decay, selects one bounded relational tendency, commits a prospective behavioral prediction, and fails closed under source or identity tampering. Free-text relationship notes and perspective hypotheses are excluded.',
-      status: relationalStances.length ? 'collecting' : 'mechanism_present',
+      mechanism: 'A deterministic content-committed projection admits only explicit receipted interaction outcome signals, binds every source and teammate identity, applies confidence-weighted temporal decay, selects one bounded relational tendency, and fails closed under source or identity tampering. A preregistered Slack lesion freezes multi-teammate source-diverse stances and compares correct Nora/current-teammate binding with byte-identical deidentified history and absence under independent grading. Free-text relationship notes and perspective hypotheses are excluded.',
+      status: relationalAffectTrial ? replicatedStatus(relationalAffectTrials, relationalAffectVerdict)
+        : relationalStances.length ? 'collecting' : 'mechanism_present',
       evidence: {
         current_projection_verified: relationalAffectAudit.complete_chain_verified,
         eligible_relationships: relationalStances.length,
@@ -1258,6 +1267,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         repair_stances: relationalStances.filter(stance => stance.mode === 'repair_and_reconnect').length,
         curiosity_stances: relationalStances.filter(stance => stance.mode === 'curious_attunement').length,
         warm_stances: relationalStances.filter(stance => stance.mode === 'warm_collaboration').length,
+        completed_identity_binding_trials: relationalAffectTrials.length,
+        confirmatory_identity_binding_trials: relationalAffectTrials.filter(item => item.study_phase === 'confirmatory').length,
+        latest_identity_binding_dissociation: relationalAffectDissociation,
       },
       falsifier: 'Arbitrary prose or mind-reading enters the projection, source or person-binding tampering survives replay, the tendency manufactures intimacy or conflict, first-order work degrades, or an authentic person-bound stance fails to improve repair and response quality over byte-identical deidentified and absent or cross-person-misbound controls.',
       next_gate: 'Accumulate natural outcome diversity across teammates, then run a preregistered authentic person-bound versus byte-identical deidentified versus absent or cross-person-misbound Slack study with independent repair, response-quality, evidence-access, and first-order grading.',

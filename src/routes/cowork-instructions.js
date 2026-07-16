@@ -609,6 +609,10 @@ function registerCoworkInstructionsRoute(app) {
     excluding free-text personality guesses and perspective hypotheses. It never changes facts, confidence,
     priorities, authority, privacy, safety, or tool permissions; it is not mind-reading, an intimacy claim,
     a subjective feeling report, or evidence of phenomenal consciousness. Active context studies seal it.
+    The relational_affect_access study freezes only stances with at least three explicit outcomes and two
+    signal types, then compares correctly Nora/current-teammate-bound access with byte-identical deidentified
+    access and absence. It assigns before response generation, requires independent condition-blind grading,
+    and cannot support the functional prediction without preserved evidence access and first-order quality.
   - GET /endogenous-dynamics — bounded evidence-backed salience that decays, persists, and competes
     every five minutes between model invocations. It performs no LLM inference and no actions. Treat
     its contents as fallible resumption cues, verify sources before use, never tick it manually, and

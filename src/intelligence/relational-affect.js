@@ -110,7 +110,13 @@ function stanceFor(relationship, observedAt) {
   const sources = observations.map(observation => normalizedSource(relationship, observation, observedAt)).filter(Boolean)
     .sort((left, right) => left.observed_at.localeCompare(right.observed_at)
       || left.observation_id.localeCompare(right.observation_id));
-  if (!sources.length) return null;
+  return stanceFromSources(relationship, sources);
+}
+
+function stanceFromSources(relationship, sourceValues = []) {
+  const sources = JSON.parse(JSON.stringify(sourceValues || [])).sort((left, right) => left.observed_at.localeCompare(right.observed_at)
+    || left.observation_id.localeCompare(right.observation_id));
+  if (!relationship?.id || !String(relationship.name || '').trim() || !sources.length) return null;
   const dimensions = {
     connection: score(sources, 'connection'),
     repair_pressure: score(sources, 'repair_pressure'),
@@ -191,5 +197,5 @@ function render(stance) {
 
 module.exports = {
   HALF_LIFE_DAYS, MAX_AGE_DAYS, PROTOCOL_VERSION, SIGNALS, audit, canonicalJson, commitment,
-  derive, eligibleObservation, render, signalFor, stableEvidence, stanceFor, verify,
+  derive, eligibleObservation, render, signalFor, stableEvidence, stanceFor, stanceFromSources, verify,
 };

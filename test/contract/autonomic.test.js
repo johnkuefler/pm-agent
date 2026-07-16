@@ -107,6 +107,8 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(cowork, /GET \/relational-affect/);
   assert.match(cowork, /excluding free-text personality guesses and perspective hypotheses/);
   assert.match(cowork, /not mind-reading, an intimacy claim,\s+a subjective feeling report/);
+  assert.match(cowork, /relational_affect_access study freezes only stances with at least three explicit outcomes/);
+  assert.match(cowork, /byte-identical deidentified\s+access and absence/);
   assert.match(routine, /Preregistered self-inquiry/);
   assert.match(routine, /POST \/self-model\/probes/);
   assert.match(routine, /cannot update the linked self-belief/);
