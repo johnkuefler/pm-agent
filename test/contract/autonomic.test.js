@@ -326,6 +326,9 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(server, /prospective_output_monitor_id/);
   assert.match(server, /resolveProspectiveOutputMonitorOutcome/);
   assert.match(server, /record\.calibration_binding/);
+  assert.match(server, /executionClaimGuard\.apply/);
+  assert.match(server, /recordActionClaimAttestation/);
+  assert.match(routine, /receipt-bound completion-claim guard/);
   assert.match(routine, /GET \/endogenous-attention/);
   assert.match(routine, /endogenous_attention_selection/);
   assert.match(server, /await runEndogenousSlackAttentionSelection/);

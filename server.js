@@ -35,6 +35,7 @@ const cognitiveSelfRegulationStudy = require('./src/intelligence/cognitive-self-
 const externalSourceAttestation = require('./src/intelligence/external-source-attestation');
 const selfInquiryStudy = require('./src/intelligence/self-inquiry-study');
 const prospectiveOutputMonitor = require('./src/intelligence/prospective-output-monitor');
+const executionClaimGuard = require('./src/intelligence/execution-claim-guard');
 const endogenousAttention = require('./src/intelligence/endogenous-attention');
 const providerReasoningRegulation = require('./src/intelligence/provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regulation');
@@ -4895,13 +4896,20 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
 }
 
 async function monitorProspectiveSlackOutput({ task, candidate, interactionRef, contextAssignment = null,
-  financialApproved = false, executedToolNames = [], mode = 'direct', post = axios.post } = {}) {
+  financialApproved = false, executedToolNames = [], actionExecutionRecords = [],
+  mode = 'direct', post = axios.post } = {}) {
+  const guard = value => executionClaimGuard.apply({ task, candidate: value,
+    executions: actionExecutionRecords });
+  const unmonitored = (value, record = null) => {
+    const actionClaimGuard = guard(value);
+    return { response: actionClaimGuard.response, monitored: false, record, actionClaimGuard };
+  };
   const monitorInterventions = new Set(['prospective_output_monitor', 'prospective_output_calibration_access']);
-  if (contextAssignment && !monitorInterventions.has(contextAssignment.intervention)) return { response: candidate, monitored: false, record: null };
-  if (!contextAssignment && [...monitorInterventions].some(intervention => intelligence.interventionActive(intervention))) return { response: candidate, monitored: false, record: null };
+  if (contextAssignment && !monitorInterventions.has(contextAssignment.intervention)) return unmonitored(candidate);
+  if (!contextAssignment && [...monitorInterventions].some(intervention => intelligence.interventionActive(intervention))) return unmonitored(candidate);
   const assignment = monitorInterventions.has(contextAssignment?.intervention) ? contextAssignment : null;
   const enabled = assignment || process.env.NORA_PROSPECTIVE_OUTPUT_MONITOR_ENABLED !== 'false';
-  if (!enabled || mode !== 'direct' || !String(candidate || '').trim()) return { response: candidate, monitored: false, record: null };
+  if (!enabled || mode !== 'direct' || !String(candidate || '').trim()) return unmonitored(candidate);
   const calibrationTrial = assignment?.intervention === 'prospective_output_calibration_access';
   const binding = calibrationTrial ? 'self'
     : assignment?.condition === 'deidentified_monitor' ? 'deidentified'
@@ -4920,13 +4928,14 @@ async function monitorProspectiveSlackOutput({ task, candidate, interactionRef, 
   } catch (error) {
     console.warn(`prospective output monitor start failed: ${error.message}`);
     if (assignment) { try { intelligence.excludeProspectiveOutputMonitorAssignment(assignment.assignment_id, 'monitor_start_failure'); } catch {} }
-    return { response: candidate, monitored: false, record: null };
+    return unmonitored(candidate);
   }
   if (binding === 'none') {
+    const actionClaimGuard = guard(candidate);
     const completed = intelligence.completeProspectiveOutputMonitor(record.id, {
-      task_prompt: task, candidate_response: candidate, final_response: candidate,
+      task_prompt: task, candidate_response: candidate, final_response: actionClaimGuard.response,
     });
-    return { response: candidate, monitored: false, record: completed };
+    return { response: actionClaimGuard.response, monitored: false, record: completed, actionClaimGuard };
   }
   const system = prospectiveOutputMonitor.monitorSystemPrompt(binding, record.calibration_context, record.calibration_binding || 'self');
   const user = prospectiveOutputMonitor.monitorUserPrompt({ task, candidate, signals });
@@ -4939,8 +4948,10 @@ async function monitorProspectiveSlackOutput({ task, candidate, interactionRef, 
     const decision = prospectiveOutputMonitor.parseMonitorDecision(raw, signals.map(signal => signal.id));
     if (decision.revised_response) decision.revised_response = decision.revised_response
       .split(/\n?\s*<split>\s*\n?/i).map(part => part.trim()).filter(Boolean).join('\n');
-    const finalResponse = decision.decision === 'revise' ? decision.revised_response : candidate;
-    if (!financialApproved && containsFinancialContent(finalResponse)) throw new Error('monitor revision crossed the financial disclosure boundary');
+    const monitorResponse = decision.decision === 'revise' ? decision.revised_response : candidate;
+    if (!financialApproved && containsFinancialContent(monitorResponse)) throw new Error('monitor revision crossed the financial disclosure boundary');
+    const actionClaimGuard = guard(monitorResponse);
+    const finalResponse = actionClaimGuard.response;
     const completed = intelligence.completeProspectiveOutputMonitor(record.id, {
       task_prompt: task, candidate_response: candidate, final_response: finalResponse,
       monitor_decision: decision,
@@ -4950,11 +4961,11 @@ async function monitorProspectiveSlackOutput({ task, candidate, interactionRef, 
         prompt_commitment: prospectiveOutputMonitor.commitment({ system, user }),
       },
     });
-    return { response: finalResponse, monitored: true, record: completed };
+    return { response: finalResponse, monitored: true, record: completed, actionClaimGuard };
   } catch (error) {
     console.warn(`prospective output monitor failed closed: ${error.response?.data?.error?.message || error.message}`);
     try { intelligence.failProspectiveOutputMonitor(record.id, { candidate_response: candidate, reason: error.message }); } catch {}
-    return { response: candidate, monitored: false, record };
+    return unmonitored(candidate, record);
   }
 }
 
@@ -6000,10 +6011,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     let response;
     let firedTools = [];
+    let actionExecutionIds = [];
     let providerTrace = [];
     try {
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
-      ({ response, firedTools, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
+      ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
         deferredMeta: mcpBindings.meta, origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user }
       }));
     } catch (err) {
@@ -6209,14 +6221,24 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     const candidateSegments = reply.split(/\n?\s*<split>\s*\n?/i).map(segment => segment.trim()).filter(Boolean).slice(0, 3);
     const candidateForMonitor = candidateSegments.join('\n');
+    const actionExecutionRecords = intelligence.actionExecutionsById(actionExecutionIds);
     const monitoredOutput = await monitorProspectiveSlackOutput({
       task: text, candidate: candidateForMonitor, interactionRef: key, contextAssignment,
-      financialApproved, executedToolNames: firedTools, mode,
+      financialApproved, executedToolNames: firedTools, actionExecutionRecords, mode,
     });
     reply = monitoredOutput.response;
     if (!financialApproved && containsFinancialContent(reply)) {
       console.warn(`Post-monitor financial scrubber blocked a leak to unapproved user ${user}`);
       reply = "I can't share financial details over Slack, reach out to John or Mallory and they can help.";
+    }
+    const finalActionClaimGuard = executionClaimGuard.apply({ task: text, candidate: reply,
+      executions: actionExecutionRecords });
+    reply = finalActionClaimGuard.response;
+    try {
+      intelligence.recordActionClaimAttestation({ ...finalActionClaimGuard,
+        surface: 'slack', interaction_ref: key, final_response: reply });
+    } catch (error) {
+      console.warn(`action completion claim attestation failed: ${error.message}`);
     }
 
     // Burst delivery: a casual multi-beat reply can arrive as 2-3 short messages (the model

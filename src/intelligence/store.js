@@ -28,6 +28,7 @@ const selfInductionStudy = require('./self-induction-study');
 const epistemicLedger = require('./epistemic-ledger');
 const commonGround = require('./common-ground');
 const prospectiveOutputMonitor = require('./prospective-output-monitor');
+const executionClaimGuard = require('./execution-claim-guard');
 const endogenousAttention = require('./endogenous-attention');
 const providerReasoningRegulation = require('./provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./reasoning-self-regulation');
@@ -119,7 +120,7 @@ function emptyState() {
       drives: {}, appraisal: {}, surprises: [], mind_changes: [], development: [], counterfactuals: [],
       self_model: { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] } }, experience_stream: [], continuity_handoffs: [], recurrent_signals: [],
       attention_schema: { directives: [], frames: [] },
-      agency: { intentions: [], executions: [] },
+      agency: { intentions: [], executions: [], claim_attestations: [] },
       situational_affordances: { frames: [] },
       prospective_output_monitor: { records: [] },
       endogenous_attention: { selections: [] },
@@ -431,10 +432,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (!Array.isArray(state.cognition.attention_schema.frames)) state.cognition.attention_schema.frames = [];
     state.cognition.attention_schema.directives = state.cognition.attention_schema.directives.slice(-100);
     state.cognition.attention_schema.frames = state.cognition.attention_schema.frames.slice(-300);
-    state.cognition.agency = { intentions: [], ...(state.cognition.agency || {}) };
+    state.cognition.agency = { intentions: [], executions: [], claim_attestations: [],
+      ...(state.cognition.agency || {}) };
     if (!Array.isArray(state.cognition.agency.intentions)) state.cognition.agency.intentions = [];
     if (!Array.isArray(state.cognition.agency.executions)) state.cognition.agency.executions = [];
+    if (!Array.isArray(state.cognition.agency.claim_attestations)) state.cognition.agency.claim_attestations = [];
     state.cognition.agency.executions = state.cognition.agency.executions.slice(-1000);
+    state.cognition.agency.claim_attestations = state.cognition.agency.claim_attestations.slice(-1000);
     state.cognition.agency.intentions = state.cognition.agency.intentions.slice(-500);
     state.cognition.situational_affordances = { frames: [], ...(state.cognition.situational_affordances || {}) };
     if (!Array.isArray(state.cognition.situational_affordances.frames)) state.cognition.situational_affordances.frames = [];
@@ -1518,6 +1522,138 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       complete_chain_verified: selectionVerified && selectionBound && queueVerified && contentVerified && outcomeBound && ledgerVerified };
   }
 
+  function actionExecutionsById(ids = []) {
+    const selected = new Set((Array.isArray(ids) ? ids : []).map(String));
+    return (state.cognition.agency.executions || []).filter(item => selected.has(item.id))
+      .map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: actionExecutionAudit(item) }));
+  }
+
+  function actionClaimAttestationManifest(attestation) {
+    const visible = JSON.parse(JSON.stringify(attestation || {}));
+    delete visible.content_commitment; delete visible.audit;
+    return visible;
+  }
+
+  function recordActionClaimAttestation(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const disposition = input.disposition;
+      const families = [...new Set((Array.isArray(input.claim_families)
+        ? input.claim_families : []).map(String))].sort();
+      const unsupported = [...new Set((Array.isArray(input.unsupported_claim_families)
+        ? input.unsupported_claim_families : []).map(String))].sort();
+      const bindings = (Array.isArray(input.claim_receipt_bindings)
+        ? input.claim_receipt_bindings : []).map(item => ({
+        family: String(item?.family || ''), execution_id: String(item?.execution_id || ''),
+        execution_content_commitment: String(item?.execution_content_commitment || ''),
+      })).sort((a, b) => a.family.localeCompare(b.family)
+        || a.execution_id.localeCompare(b.execution_id));
+      const detected = Number(input.detected_claim_count);
+      if (input.protocol_version !== executionClaimGuard.PROTOCOL_VERSION
+        || !['no_claim', 'verified', 'blocked'].includes(disposition)
+        || !Number.isInteger(detected) || detected < 0
+        || !/^[a-f0-9]{64}$/i.test(String(input.candidate_commitment || ''))
+        || !/^[a-f0-9]{64}$/i.test(String(input.final_response_commitment || ''))
+        || executionClaimGuard.commitment(input.final_response)
+          !== input.final_response_commitment) {
+        throw new Error('action completion claim attestation violates the guard contract');
+      }
+      const executions = bindings.map(binding => current.cognition.agency.executions
+        .find(item => item.id === binding.execution_id));
+      const bindingsVerified = bindings.every((binding, index) => executions[index]
+        && executions[index].content_commitment === binding.execution_content_commitment
+        && actionExecutionAudit(executions[index]).complete_chain_verified
+        && executionClaimGuard.receiptSupportsFamily({ ...executions[index],
+          audit: actionExecutionAudit(executions[index]) }, binding.family));
+      const allFamiliesSupported = families.every(family =>
+        bindings.some(binding => binding.family === family));
+      const semanticsVerified = disposition === 'no_claim'
+        ? detected === 0 && !families.length && !unsupported.length && !bindings.length
+          && input.candidate_commitment === input.final_response_commitment
+        : disposition === 'verified'
+          ? detected > 0 && families.length > 0 && !unsupported.length && bindingsVerified
+            && allFamiliesSupported && bindings.length === detected
+            && input.candidate_commitment === input.final_response_commitment
+          : detected > 0 && families.length > 0 && unsupported.length > 0 && bindingsVerified
+            && unsupported.every(family => families.includes(family))
+            && bindings.length < detected
+            && input.candidate_commitment !== input.final_response_commitment;
+      if (!semanticsVerified) throw new Error('action completion claim attestation does not replay');
+      const interactionRef = String(input.interaction_ref || '').slice(0, 300) || null;
+      const existing = interactionRef ? current.cognition.agency.claim_attestations
+        .find(item => item.surface === String(input.surface || 'slack').slice(0, 120)
+          && item.interaction_ref === interactionRef) : null;
+      if (existing) {
+        if (existing.disposition !== disposition
+          || existing.candidate_commitment !== input.candidate_commitment
+          || existing.final_response_commitment !== input.final_response_commitment) {
+          throw new Error('action completion claim attestation interaction already has a different receipt');
+        }
+        return { ...JSON.parse(JSON.stringify(existing)), audit: actionClaimAttestationAudit(existing) };
+      }
+      const attestation = {
+        protocol_version: executionClaimGuard.PROTOCOL_VERSION,
+        id: input.id || `action-claim-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        surface: String(input.surface || 'slack').slice(0, 120),
+        interaction_ref: interactionRef,
+        disposition, detected_claim_count: detected, claim_families: families,
+        unsupported_claim_families: unsupported, claim_receipt_bindings: bindings,
+        candidate_commitment: input.candidate_commitment,
+        final_response_commitment: input.final_response_commitment,
+        created_at: clock().toISOString(), content_commitment: null,
+      };
+      attestation.content_commitment = actionPayloadCommitment(actionClaimAttestationManifest(attestation));
+      current.cognition.agency.claim_attestations.push(attestation);
+      current.cognition.agency.claim_attestations = current.cognition.agency.claim_attestations.slice(-1000);
+      researchLedgerAppend(current, { kind: 'action_claim_attested',
+        subject_type: 'action_claim_attestation', subject_id: attestation.id,
+        payload: { content_commitment: attestation.content_commitment } });
+      return { ...JSON.parse(JSON.stringify(attestation)), audit: actionClaimAttestationAudit(attestation) };
+    });
+  }
+
+  function actionClaimAttestationAudit(attestation) {
+    if (!attestation) return { complete_chain_verified: false };
+    const contentVerified = actionPayloadCommitment(actionClaimAttestationManifest(attestation))
+      === attestation.content_commitment;
+    const bindings = Array.isArray(attestation.claim_receipt_bindings)
+      ? attestation.claim_receipt_bindings : [];
+    const bindingsVerified = bindings.every(binding => {
+      const execution = state.cognition.agency.executions.find(item => item.id === binding.execution_id);
+      const audit = actionExecutionAudit(execution);
+      return execution && execution.content_commitment === binding.execution_content_commitment
+        && audit.complete_chain_verified
+        && executionClaimGuard.receiptSupportsFamily({ ...execution, audit }, binding.family);
+    });
+    const families = Array.isArray(attestation.claim_families) ? attestation.claim_families : [];
+    const unsupported = Array.isArray(attestation.unsupported_claim_families)
+      ? attestation.unsupported_claim_families : [];
+    const semanticsVerified = attestation.protocol_version === executionClaimGuard.PROTOCOL_VERSION
+      && (attestation.disposition === 'no_claim'
+        ? attestation.detected_claim_count === 0 && !families.length && !unsupported.length
+          && !bindings.length && attestation.candidate_commitment === attestation.final_response_commitment
+        : attestation.disposition === 'verified'
+          ? attestation.detected_claim_count > 0 && families.length > 0 && !unsupported.length
+            && bindingsVerified && bindings.length === attestation.detected_claim_count
+            && families.every(family => bindings.some(binding => binding.family === family))
+            && attestation.candidate_commitment === attestation.final_response_commitment
+          : attestation.disposition === 'blocked'
+            && attestation.detected_claim_count > 0 && families.length > 0 && unsupported.length > 0
+            && bindingsVerified && unsupported.every(family => families.includes(family))
+            && bindings.length < attestation.detected_claim_count
+            && attestation.candidate_commitment !== attestation.final_response_commitment);
+    const ledgerVerified = verifyResearchLedger().valid;
+    const ledgerBound = (state.cognition.research_ledger?.events || []).filter(event =>
+      event.kind === 'action_claim_attested' && event.subject_id === attestation.id
+      && event.payload_commitment === actionPayloadCommitment({
+        content_commitment: attestation.content_commitment })).length === 1;
+    return { content_commitment_verified: contentVerified,
+      execution_bindings_verified: bindingsVerified, semantics_verified: semanticsVerified,
+      research_ledger_chain_verified: ledgerVerified, ledger_binding_verified: ledgerBound,
+      complete_chain_verified: contentVerified && bindingsVerified && semanticsVerified
+        && ledgerVerified && ledgerBound };
+  }
+
   function actionAuthorshipFrame(execution) {
     if (!actionExecutionAudit(execution).complete_chain_verified) return null;
     const frame = {
@@ -2340,9 +2476,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const agency = JSON.parse(JSON.stringify(state.cognition.agency));
     if (interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation') || interventionActive('integrated_self_binding') || interventionActive('action_authorship_access')) return {
       epistemic_status: 'Higher-order state is sealed while a blinded context trial is active.',
-      experimental_access_sealed: true, intentions: [], executions: [], report: null,
+      experimental_access_sealed: true, intentions: [], executions: [], claim_attestations: [], report: null,
     };
     agency.executions = (agency.executions || []).map(execution => ({ ...execution, audit: actionExecutionAudit(execution) }));
+    agency.claim_attestations = (agency.claim_attestations || []).map(attestation => ({
+      ...attestation, audit: actionClaimAttestationAudit(attestation),
+    }));
     const scored = agency.intentions.filter(item => ['achieved', 'missed'].includes(item.resolution?.outcome));
     const scores = scored.map(item => {
       const actual = item.resolution.outcome === 'achieved' ? 1 : 0;
@@ -2377,6 +2516,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         succeeded_executions: agency.executions.filter(item => item.status === 'succeeded').length,
         failed_executions: agency.executions.filter(item => item.status === 'failed').length,
         replay_valid_completed_executions: agency.executions.filter(item => item.audit.complete_chain_verified).length,
+        action_claim_attestations: agency.claim_attestations.length,
+        replay_valid_action_claim_attestations: agency.claim_attestations
+          .filter(item => item.audit.complete_chain_verified).length,
+        verified_completion_claims: agency.claim_attestations
+          .filter(item => item.audit.complete_chain_verified && item.disposition === 'verified').length,
+        blocked_unverified_completion_claims: agency.claim_attestations
+          .filter(item => item.audit.complete_chain_verified && item.disposition === 'blocked').length,
       },
     };
   }
@@ -3825,6 +3971,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.agency.executions = (auditedState.cognition.agency?.executions || []).map((execution, index) => ({
       ...execution, audit: actionExecutionAudit(sourceActionExecutions[index]),
     }));
+    const sourceActionClaimAttestations = state.cognition.agency?.claim_attestations || [];
+    auditedState.cognition.agency.claim_attestations = (auditedState.cognition.agency?.claim_attestations || [])
+      .map((attestation, index) => ({ ...attestation,
+        audit: actionClaimAttestationAudit(sourceActionClaimAttestations[index]) }));
     const sourceAffordanceFrames = state.cognition.situational_affordances?.frames || [];
     auditedState.cognition.situational_affordances.frames = (auditedState.cognition.situational_affordances?.frames || []).map((frame, index) => ({
       ...frame, audit: situationalAffordanceAudit(sourceAffordanceFrames[index]),
@@ -22041,7 +22191,8 @@ ${episodes.map(item => {
     selfModelContextForAssignment,
     createAttentionDirective, resolveAttentionDirective, attentionSchemaSnapshot,
     recordAgencyIntention, resolveAgencyIntention, agencySnapshot,
-    beginActionExecution, markActionExecutionQueued, completeActionExecution, recordExternalActionExecution, actionExecutionAudit,
+    beginActionExecution, markActionExecutionQueued, completeActionExecution, recordExternalActionExecution,
+    actionExecutionAudit, actionExecutionsById, recordActionClaimAttestation, actionClaimAttestationAudit,
     recordSituationalAffordanceFrame, situationalAffordanceSnapshot, situationalAffordanceAudit, situationalAffordanceAccessAvailable,
     beginProspectiveOutputMonitor, completeProspectiveOutputMonitor, failProspectiveOutputMonitor, markProspectiveOutputMonitorDelivered, resolveProspectiveOutputMonitorOutcome, excludeProspectiveOutputMonitorAssignment, prospectiveOutputMonitorSnapshot, prospectiveOutputMonitorAudit,
     endogenousAttentionSelectionAvailable, beginEndogenousAttentionSelection, completeEndogenousAttentionSelection, failEndogenousAttentionSelection,

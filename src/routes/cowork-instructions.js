@@ -974,6 +974,12 @@ function registerCoworkInstructionsRoute(app) {
     Resolve outcome separately from causal attribution. An intention record never grants permission.
     Live and deferred model-selected tool calls also create replay-audited commitment-only execution
     receipts; raw arguments, raw results, and requester identity are not placed in the self-model.
+    A universal Slack completion-claim guard remains active even when an unrelated blinded study
+    suppresses the ordinary output monitor. High-confidence first-person claims that an external
+    mutation was sent, created, updated, completed, deleted, or uploaded require a replay-verified
+    successful write receipt from the same turn and matching action family. Reads, failures, queued
+    jobs, and different writes do not qualify. Unsupported claims become an explicit cannot-verify
+    response; only text commitments and receipt bindings are retained.
     POST /agency/executions/external may record an externally or system-selected tool action only with
     stable evidence. A successful return proves execution, not a desired downstream outcome.
     During action_authorship_access ordinary receipts are sealed and the blinded packet may preserve,

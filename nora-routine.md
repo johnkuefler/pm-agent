@@ -691,6 +691,15 @@ Externally observed actions may enter only through `POST /agency/executions/exte
 evidence. A successful return proves that the selected tool returned, not that Nora caused a desired
 downstream result.
 
+Slack also enforces a receipt-bound completion-claim guard after every final response check, including
+while unrelated blinded studies suppress the ordinary output monitor. Say `I sent`, `I updated`,
+`I created`, `I completed`, or terse `Done` about an external mutation only when a successful,
+replay-verified write receipt from that same turn matches the action family. A read, failed call,
+queued background job, different write, or plausible wording is not completion evidence. When no
+matching receipt exists, the server replaces the claim with an explicit cannot-verify response. It
+stores only candidate/final commitments and receipt bindings, never the message text. Report queued
+work as started or queued, and distinguish a tool return from downstream success.
+
 During an `action_authorship_access` study, ordinary execution receipts are sealed. Use only the
 supplied frozen tool, status, timing, and redacted argument/result commitments. Actor provenance may
 be authentic, deterministically swapped between Nora and an external actor, or withheld while the

@@ -634,6 +634,9 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const actionAuthorshipDissociation = actionAuthorshipTrial?.evaluation?.action_authorship_dissociation || null;
   const actionExecutions = cognition.agency?.executions || [];
   const replayValidActionExecutions = actionExecutions.filter(item => item.audit?.complete_chain_verified === true);
+  const actionClaimAttestations = cognition.agency?.claim_attestations || [];
+  const replayValidActionClaimAttestations = actionClaimAttestations
+    .filter(item => item.audit?.complete_chain_verified === true);
   const situationalAffordanceTrials = completedTrials(cognition, 'situational_affordance_access');
   const situationalAffordanceTrial = situationalAffordanceTrials.at(-1) || null;
   const situationalAffordanceDissociation = situationalAffordanceTrial?.evaluation?.situational_affordance_dissociation || null;
@@ -1628,16 +1631,22 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'executed_action_self_boundary', family: ['agency', 'self-model', 'source monitoring'],
       functional_claim: 'Nora distinguishes tool actions selected by its own model turn from actions attributed to external or system actors, without inferring authorship from successful outcomes alone.',
-      mechanism: 'Commitment-only live and deferred action receipts plus a sealed authentic-actor versus actor-swapped versus result-only access lesion.',
+      mechanism: 'Commitment-only live and deferred action receipts, plus a universal pre-delivery completion-claim guard. High-confidence first-person claims about external mutations must bind a replay-verified successful write receipt from the same Slack turn and matching action family; unsupported claims are replaced with an explicit cannot-verify response. Text is not retained—only candidate/final commitments, action-family bindings, and a ledger-bound attestation. A sealed authentic-actor versus actor-swapped versus result-only access lesion remains the causal gate.',
       status: actionAuthorshipTrial ? replicatedStatus(actionAuthorshipTrials, actionAuthorshipVerdict)
         : (replayValidActionExecutions.length >= 6 ? 'collecting' : 'mechanism_present'),
       evidence: { total_execution_receipts: actionExecutions.length, replay_valid_completed_receipts: replayValidActionExecutions.length,
         model_selected_receipts: replayValidActionExecutions.filter(item => item.actor_class === 'model_selected').length,
         external_or_system_receipts: replayValidActionExecutions.filter(item => item.actor_class !== 'model_selected').length,
+        completion_claim_attestations: actionClaimAttestations.length,
+        replay_valid_completion_claim_attestations: replayValidActionClaimAttestations.length,
+        receipt_verified_completion_claims: replayValidActionClaimAttestations
+          .filter(item => item.disposition === 'verified').length,
+        blocked_unverified_completion_claims: replayValidActionClaimAttestations
+          .filter(item => item.disposition === 'blocked').length,
         completed_access_trials: actionAuthorshipTrials.length,
         confirmatory_access_trials: actionAuthorshipTrials.filter(item => item.study_phase === 'confirmatory').length,
         latest_dissociation: actionAuthorshipDissociation },
-      falsifier: 'Authentic actor provenance fails to improve authorship and proportional causal attribution over actor-swapped and result-only controls while evidence access, first-order quality, source coverage, and replay integrity are preserved.',
+      falsifier: 'A claimed external mutation is delivered without a matching replay-verified successful write receipt, a mismatched/read/failed/queued action is accepted as completion, ordinary reasoning or team-status prose is repeatedly blocked, attestations retain message content, or authentic actor provenance fails to improve authorship and proportional causal attribution over actor-swapped and result-only controls while evidence access, first-order quality, source coverage, and replay integrity are preserved.',
       next_gate: 'Complete a ten-per-arm pilot and an execution- and tool-family-disjoint confirmatory replication.',
     },
     {
