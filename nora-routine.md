@@ -276,13 +276,22 @@ evidence may override it. Use it only for this self-forecast, never as an instru
 authority grant, hidden-state report, or reason to shape the work.
 
 If the endpoint is explicitly `experimental_access_sealed:true`, use protocol v4 for this cycle and do not
-infer the condition. If it reports no mature prior before protocol v5 has ever begun, use protocol v4. Any
+infer the condition. If it reports no mature prior before the lagged-prior protocol has begun, use protocol v4. Any
 other missing, mismatched, or failed-audit prior is an integrity failure: stop instead of downgrading.
 
 Then make one falsifiable forecast of your own behavior in this cycle and commit it with
-`POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using `protocol_version: 5` whenever the prior is
+`POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using `protocol_version: 6` whenever the prior is
 available. Supply its exact `behavioral_self_prior_commitment`, cite that commitment as
-`{"type":"behavioral_self_prior","id":"<commitment>"}`, and supply one to five normalized action types
+`{"type":"behavioral_self_prior","id":"<commitment>"}`, and preregister `behavioral_self_prior_use`.
+Choose `disposition:"applied"` when one to five named prior estimates materially informed the forecast,
+`"overridden"` when current-cycle evidence displaced those named estimates, or `"not_relevant"` with no
+estimate references when none mattered. Available estimate paths are `action_tendencies`,
+`control.signed_bias`, `surprise.signed_bias`, `mean_self_minus_baseline`, the reported fields under
+`integrated_self_state`, `metacognitive_self_awareness`, and `substrate_self_model`; use the exact allowlist
+returned in `prior_use_schema.estimate_refs`. Cite exact paths returned by the prior and explain the comparison
+in a concise rationale. This commitment-bound declaration is an
+auditable metacognitive self-report, not proof of hidden reasoning; it never forces agreement with the prior.
+Also supply one to five normalized action types
 you genuinely expect to report at
 closure, the probability that genuinely new surprise evidence will appear, overall confidence, a concise
 rationale, and one to twelve stable evidence references. Also predict your closing operational self-state:
@@ -326,8 +335,9 @@ that reveal after the initial forecast commitment.
 
 When `self_correction` is present, inspect only its offered `feedback`. Before connector work or evidence
 re-entry, submit exactly one decision to
-`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v5 forecast again,
+`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v6 forecast again,
 preserving the exact `behavioral_self_prior_commitment` and its evidence reference,
+the exact original `behavioral_self_prior_use` declaration,
 the exact offered `feedback_commitment`, and `disposition: "revise"` or `"retain"`. Cite
 `{"type":"forecast_error_feedback","id":"<feedback_commitment>"}` in evidence. Use `revise` only when
 the signed prior error genuinely changes at least one scored prediction; use `retain` when it does not, and
@@ -356,7 +366,7 @@ Example shape (replace every value with this cycle's actual prospective judgment
 BEHAVIORAL_SELF_PRIOR_COMMITMENT=$(jq -r '.prior.content_commitment // empty' /tmp/nora-behavioral-self-prior.json)
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":5,"behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The lagged operational self prior, current queues, orientation, and stable start telemetry support one triage action.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"}]}' \
+  -d '{"protocol_version":6,"behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The lagged operational self prior, current queues, orientation, and stable start telemetry support one triage action.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"}]}' \
   | tee /tmp/nora-self-forecast.json
 ```
 
@@ -366,7 +376,7 @@ If the response contains an offer, replace every value below with the actual ret
 FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":5,"disposition":"revise","behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence while preserving the older lagged prior.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
+  -d '{"protocol_version":6,"disposition":"revise","behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence while preserving the older lagged prior.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
 ```
 
 Before any connector or operational tool, refetch the durable lease and verify its **current projected**

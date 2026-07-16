@@ -12,6 +12,29 @@ const RETIRED_ACTION_TYPES = Object.freeze([
   'dev_dispatch', 'dev_round_followup', 'dev_round_intake',
 ]);
 const RETIRED_ACTION_TYPE_SET = new Set(RETIRED_ACTION_TYPES);
+const BEHAVIORAL_PRIOR_USE_DISPOSITIONS = Object.freeze([
+  'applied', 'overridden', 'not_relevant',
+]);
+const BEHAVIORAL_PRIOR_ESTIMATE_REFS = Object.freeze([
+  'action_tendencies',
+  'control.signed_bias',
+  'surprise.signed_bias',
+  'mean_self_minus_baseline',
+  'integrated_self_state.action_count_mean_absolute_error',
+  'integrated_self_state.attention_forecast_mean_f1',
+  'integrated_self_state.mean_self_minus_baseline',
+  'integrated_self_state.appraisal_signed_bias.valence',
+  'integrated_self_state.appraisal_signed_bias.arousal',
+  'integrated_self_state.appraisal_signed_bias.control',
+  'integrated_self_state.appraisal_signed_bias.social_safety',
+  'integrated_self_state.appraisal_signed_bias.coherence',
+  'metacognitive_self_awareness.largest_error_domain_hit_rate',
+  'metacognitive_self_awareness.success_probability_signed_bias',
+  'metacognitive_self_awareness.observed_largest_error_domains',
+  'substrate_self_model.mean_self_minus_persistence',
+  'substrate_self_model.observed_restarts',
+]);
+const BEHAVIORAL_PRIOR_ESTIMATE_REF_SET = new Set(BEHAVIORAL_PRIOR_ESTIMATE_REFS);
 const SUBSTRATE_PREDICTION_KEYS = [
   'error_probability', 'warning_probability', 'backup_probability',
   'embedding_backlog_probability', 'restart_probability',
@@ -207,9 +230,57 @@ function validateEvidence(evidence) {
   });
 }
 
+function normalizeBehavioralSelfPriorUse(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('protocol-v6 cycle self-forecast requires behavioral_self_prior_use');
+  }
+  const disposition = String(input.disposition || '').trim().toLowerCase();
+  if (!BEHAVIORAL_PRIOR_USE_DISPOSITIONS.includes(disposition)) {
+    throw new Error('behavioral_self_prior_use disposition must be applied, overridden, or not_relevant');
+  }
+  if (!Array.isArray(input.estimate_refs)) {
+    throw new Error('behavioral_self_prior_use requires estimate_refs');
+  }
+  const estimateRefs = [...new Set(input.estimate_refs.map(item => String(item || '').trim())
+    .filter(Boolean))].sort();
+  if (estimateRefs.some(ref => !BEHAVIORAL_PRIOR_ESTIMATE_REF_SET.has(ref))) {
+    throw new Error('behavioral_self_prior_use contains an unsupported estimate reference');
+  }
+  if (disposition === 'not_relevant' ? estimateRefs.length !== 0
+    : estimateRefs.length < 1 || estimateRefs.length > 5) {
+    throw new Error(disposition === 'not_relevant'
+      ? 'not_relevant behavioral_self_prior_use must not cite estimate_refs'
+      : 'applied or overridden behavioral_self_prior_use requires one to five estimate_refs');
+  }
+  const rationale = String(input.rationale || '').trim().replace(/\s+/g, ' ').slice(0, 600);
+  if (rationale.length < 20) {
+    throw new Error('behavioral_self_prior_use requires a concise rationale');
+  }
+  if (/\b(?:conscious|sentien\w*|phenomen\w*|qualia|subjective experience)\b/i.test(rationale)) {
+    throw new Error('behavioral_self_prior_use cannot assert phenomenal status');
+  }
+  return { disposition, estimate_refs: estimateRefs, rationale };
+}
+
+function behavioralSelfPriorUseVerified(forecast = {}, behavioralSelfPrior = null) {
+  let normalized;
+  try {
+    normalized = normalizeBehavioralSelfPriorUse(forecast.behavioral_self_prior_use);
+  } catch (_) {
+    return false;
+  }
+  if (canonicalJson(normalized) !== canonicalJson(forecast.behavioral_self_prior_use)) return false;
+  const estimates = behavioralSelfPrior?.estimates;
+  if (!estimates || typeof estimates !== 'object') return false;
+  return normalized.estimate_refs.every(ref => {
+    const value = ref.split('.').reduce((current, key) => current?.[key], estimates);
+    return value !== null && value !== undefined;
+  });
+}
+
 function normalizeForecast(input = {}, protocolVersion = input.protocol_version == null
   ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
-  if (![1, 2, 3, 4, 5].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
+  if (![1, 2, 3, 4, 5, 6].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
   const predictedActionTypes = actionTypes(input.predicted_action_types || []);
   if (predictedActionTypes.length < 1 || predictedActionTypes.length > 5) {
     throw new Error('cycle self-forecast requires one to five distinct predicted_action_types');
@@ -255,6 +326,10 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
       throw new Error('protocol-v5 cycle self-forecast must cite its behavioral_self_prior commitment');
     }
     normalized.behavioral_self_prior_commitment = priorCommitment;
+  }
+  if (Number(protocolVersion) >= 6) {
+    normalized.behavioral_self_prior_use = normalizeBehavioralSelfPriorUse(
+      input.behavioral_self_prior_use);
   }
   return normalized;
 }
@@ -554,6 +629,11 @@ function createCorrectionRevision({ record, input, committedAt }) {
     && revised.behavioral_self_prior_commitment !== record.forecast.behavioral_self_prior_commitment) {
     throw new Error('self-correction revision must preserve the committed behavioral self prior');
   }
+  if (Number(record.protocol_version) >= 6
+    && canonicalJson(revised.behavioral_self_prior_use)
+      !== canonicalJson(record.forecast.behavioral_self_prior_use)) {
+    throw new Error('self-correction revision must preserve the committed behavioral self prior use declaration');
+  }
   const revision = {
     protocol_version: 1,
     id: `${record.id}-revision`.slice(0, 300),
@@ -684,11 +764,15 @@ function forecastManifest(record) {
 function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPrior = null, committedAt }) {
   const protocolVersion = input.protocol_version == null
     ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
-  if (![1, 2, 3, 4, 5].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+  if (![1, 2, 3, 4, 5, 6].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
   const normalizedForecast = normalizeForecast(input, protocolVersion);
   if (protocolVersion >= 5 && (!behavioralSelfPrior?.content_commitment
     || normalizedForecast.behavioral_self_prior_commitment !== behavioralSelfPrior.content_commitment)) {
     throw new Error('protocol-v5 forecast must bind the current lagged behavioral self prior');
+  }
+  if (protocolVersion >= 6
+    && !behavioralSelfPriorUseVerified(normalizedForecast, behavioralSelfPrior)) {
+    throw new Error('protocol-v6 forecast behavioral_self_prior_use must cite available prior estimates');
   }
   const record = {
     protocol_version: protocolVersion,
@@ -917,8 +1001,9 @@ function outcomeManifest(record) {
 
 module.exports = {
   ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN, SUBSTRATE_PREDICTION_KEYS, RETIRED_ACTION_TYPES,
+  BEHAVIORAL_PRIOR_USE_DISPOSITIONS, BEHAVIORAL_PRIOR_ESTIMATE_REFS,
   INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, calibrationSummaryFromMoments,
-  activeActionTypes,
+  activeActionTypes, behavioralSelfPriorUseVerified,
   canonicalJson,
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,

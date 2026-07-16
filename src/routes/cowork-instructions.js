@@ -513,7 +513,7 @@ function registerCoworkInstructionsRoute(app) {
     post-commit correction. The projection removes retired development-dispatch action families without
     rewriting their historical source records. It is isolated from response prompts and sealed only by a
     directly overlapping self-model or integrated-self trial.
-    POST /intelligence/cycles/:id/self-forecast protocol v5 commits Nora's own one-cycle-ahead prediction
+    POST /intelligence/cycles/:id/self-forecast protocol v6 commits Nora's own one-cycle-ahead prediction
     before re-entry or action: likely action types, surprise probability, closing appraisal vector,
     closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable
     evidence, plus five closing substrate probabilities for recent errors, recent warnings, backup mode,
@@ -523,19 +523,25 @@ function registerCoworkInstructionsRoute(app) {
     binds an opaque process epoch so restart is exact rather than inferred when current telemetry exists, and freezes behavioral,
     integrated-self, historical-success, and modal-error baselines at the same time and scores them
     automatically at closure, while substrate predictions are scored against exact start-state persistence.
-    Protocol v5 additionally requires the exact behavioral_self_prior_commitment and a matching
-    behavioral_self_prior evidence reference. The server replay-verifies the source revision and proves
-    that none of its source moments is the immediate predecessor. If the endpoint is explicitly sealed,
+    Protocol v5 requires the exact behavioral_self_prior_commitment and a matching behavioral_self_prior
+    evidence reference. Protocol v6 additionally requires a behavioral_self_prior_use declaration made before
+    action. That declaration says whether Nora applied specific available estimates, overrode them with
+    current evidence, or found the prior not relevant, with a concise rationale. The server verifies that
+    cited estimate paths exist and commits the declaration; it does not treat the self-report as proof of
+    hidden reasoning or force the forecast toward the prior. The server replay-verifies the source revision
+    and proves that none of its source moments is the immediate predecessor. If the endpoint is explicitly sealed,
     use protocol v4 for that cycle; no other missing or invalid prior permits a downgrade.
     Reliability scoring requires all six observable error domains and all five substrate outcomes; incomplete
     closures remain replay-visible but cannot enter calibration. The forecast is never injected into response prompts.
     Do not read cycle calibration before the initial forecast. When a replay-valid preceding error exists,
     the response reveals one commitment-bound self_correction packet only after that initial commitment.
     POST /intelligence/cycles/:id/self-forecast/revision then commits exactly one pre-reentry decision with
-    disposition revise or retain, the full forecast, the offered feedback_commitment, and a
+    disposition revise or retain, the full forecast with the original prior-use declaration unchanged,
+    the offered feedback_commitment, and a
     forecast_error_feedback evidence reference. Revise must change a scored prediction; retain must preserve
     every scored value. Closure scores the decision against the untouched initial and historical baseline.
-    Each verified closure also appends a predecessor-linked behavioral self-model revision under
+    Protocol-v5 records remain replay-valid without the later v6 declaration. Each verified closure also
+    appends a predecessor-linked behavioral self-model revision under
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples. Its raw committed history remains
     auditable, while protocol-v5 forward projections and baselines exclude retired action families.

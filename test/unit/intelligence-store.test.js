@@ -2790,7 +2790,7 @@ test('natural self-correction reveals prior error only after the initial forecas
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('protocol-v5 natural forecasts bind a replayed lagged self prior without reviving retired actions', async () => {
+test('protocol-v6 natural forecasts bind explicit prior use without invalidating protocol-v5 history', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-lagged-behavioral-prior-'));
   const filePath = path.join(dir, 'state.json');
   let now = new Date('2026-07-10T12:00:00.000Z');
@@ -2817,18 +2817,10 @@ test('protocol-v5 natural forecasts bind a replayed lagged self prior without re
     });
     now = new Date(now.getTime() + 60 * 60 * 1000);
   }
-  const target = store.startCycle({ id: 'lagged-prior-target', holder: 'nora-cowork', soma: soma() });
-  const priorSnapshot = store.behavioralSelfForecastPriorSnapshot();
-  assert.equal(priorSnapshot.available, true);
-  assert.equal(priorSnapshot.active_cycle_bound, true);
-  assert.equal(priorSnapshot.audit.complete_chain_verified, true);
-  assert.equal(priorSnapshot.prior.excluded_immediate_predecessor_id, target.moment.predecessor_id);
-  assert.equal(priorSnapshot.prior.source_moment_ids.includes(target.moment.predecessor_id), false);
-  assert.equal(priorSnapshot.prior.estimates.action_tendencies
-    .some(item => item.action_type === 'dev_dispatch'), false);
-  assert.ok(priorSnapshot.prior.excluded_retired_action_observations > 0);
-  const priorCommitment = priorSnapshot.prior.content_commitment;
-  const forecast = store.preregisterCycleSelfForecast(target.cycle.id, {
+  const legacyTarget = store.startCycle({ id: 'lagged-prior-legacy-v5',
+    holder: 'nora-cowork', soma: soma() });
+  const legacyPrior = store.behavioralSelfForecastPriorSnapshot().prior;
+  const legacyForecast = store.preregisterCycleSelfForecast(legacyTarget.cycle.id, {
     protocol_version: 5,
     predicted_action_types: ['review'], surprise_probability: 0.1,
     control_at_close: 0.7, confidence: 0.8,
@@ -2845,12 +2837,63 @@ test('protocol-v5 natural forecasts bind a replayed lagged self prior without re
       error_probability: 0.1, warning_probability: 0.1, backup_probability: 0.05,
       embedding_backlog_probability: 0.05, restart_probability: 0.05,
     },
+    behavioral_self_prior_commitment: legacyPrior.content_commitment,
+    rationale: 'The lagged operational self prior and current orientation support one review action.',
+    evidence: [{ type: 'intelligence_cycle', id: legacyTarget.cycle.id },
+      { type: 'behavioral_self_prior', id: legacyPrior.content_commitment }],
+  });
+  assert.equal(legacyForecast.audit.behavioral_self_prior_use_required, false);
+  assert.equal(legacyForecast.audit.behavioral_self_prior_use_verified, true);
+  now = new Date(now.getTime() + 5 * 60 * 1000);
+  store.completeCycle(legacyTarget.cycle.id, {
+    summary: 'Completed a replay-compatible protocol-v5 cycle before the v6 schema begins.',
+    actions: [{ type: 'review', id: 'legacy-v5-review' }], substrate_at_close: soma(),
+  });
+  assert.equal(store.experienceStreamSnapshot().moments
+    .find(item => item.id === legacyTarget.moment.id).audit.evidence_eligible, true);
+  now = new Date(now.getTime() + 60 * 60 * 1000);
+  const target = store.startCycle({ id: 'lagged-prior-target', holder: 'nora-cowork', soma: soma() });
+  const priorSnapshot = store.behavioralSelfForecastPriorSnapshot();
+  assert.equal(priorSnapshot.available, true);
+  assert.equal(priorSnapshot.active_cycle_bound, true);
+  assert.equal(priorSnapshot.audit.complete_chain_verified, true);
+  assert.ok(priorSnapshot.prior_use_schema.estimate_refs.includes('action_tendencies'));
+  assert.deepEqual(priorSnapshot.prior_use_schema.dispositions,
+    ['applied', 'overridden', 'not_relevant']);
+  assert.equal(priorSnapshot.prior.excluded_immediate_predecessor_id, target.moment.predecessor_id);
+  assert.equal(priorSnapshot.prior.source_moment_ids.includes(target.moment.predecessor_id), false);
+  assert.equal(priorSnapshot.prior.estimates.action_tendencies
+    .some(item => item.action_type === 'dev_dispatch'), false);
+  assert.ok(priorSnapshot.prior.excluded_retired_action_observations > 0);
+  const priorCommitment = priorSnapshot.prior.content_commitment;
+  const forecast = store.preregisterCycleSelfForecast(target.cycle.id, {
+    protocol_version: 6,
+    predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.7, confidence: 0.8,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.85 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.8, predicted_largest_error_domain: 'action_types',
+    },
+    substrate_prediction: {
+      error_probability: 0.1, warning_probability: 0.1, backup_probability: 0.05,
+      embedding_backlog_probability: 0.05, restart_probability: 0.05,
+    },
     behavioral_self_prior_commitment: priorCommitment,
+    behavioral_self_prior_use: {
+      disposition: 'applied', estimate_refs: ['action_tendencies'],
+      rationale: 'The prior action tendency materially informs this bounded review forecast.',
+    },
     rationale: 'The lagged operational self prior and current orientation support one review action.',
     evidence: [{ type: 'intelligence_cycle', id: target.cycle.id },
       { type: 'behavioral_self_prior', id: priorCommitment }],
   });
   assert.equal(forecast.audit.behavioral_self_prior_verified, true);
+  assert.equal(forecast.audit.behavioral_self_prior_use_verified, true);
   assert.equal(forecast.audit.behavioral_self_prior_excludes_immediate_predecessor, true);
   assert.equal(forecast.behavioral_self_prior.content_commitment, priorCommitment);
   now = new Date(now.getTime() + 5 * 60 * 1000);
@@ -2863,14 +2906,19 @@ test('protocol-v5 natural forecasts bind a replayed lagged self prior without re
   const stream = store.experienceStreamSnapshot();
   const closed = stream.moments.find(item => item.id === target.moment.id);
   assert.equal(closed.audit.evidence_eligible, true);
-  assert.equal(closed.self_forecast.protocol_version, 5);
+  assert.equal(closed.self_forecast.protocol_version, 6);
   assert.deepEqual(closed.self_forecast.outcome.actual.action_types, ['review']);
   assert.equal(closed.self_forecast.outcome.self_state_actual.action_count, 1);
-  assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_forecasts, 1);
-  assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_baseline_eligible, 1);
+  assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_forecasts, 2);
+  assert.equal(stream.prospective_self_forecast.explicit_behavioral_prior_use_forecasts, 1);
+  assert.deepEqual(stream.prospective_self_forecast.lagged_behavioral_prior_use,
+    { applied: 1, overridden: 0, not_relevant: 0 });
+  assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_baseline_eligible, 2);
   const indicator = store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'forecast_error_self_model_revision');
-  assert.equal(indicator.evidence.lagged_prior_forecasts, 1);
+  assert.equal(indicator.evidence.lagged_prior_forecasts, 2);
+  assert.deepEqual(indicator.evidence.lagged_prior_use_declarations,
+    { applied: 1, overridden: 0, not_relevant: 0 });
   await store.persist();
 
   const tamperedPath = path.join(dir, 'tampered-prior.json');

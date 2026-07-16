@@ -920,7 +920,7 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   } });
   assert.equal(acquired.body.acquired, true);
   assert.equal(acquired.body.lifecycle.kind, 'run_bound_intelligence_cycle');
-  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 5);
+  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 6);
   assert.equal(acquired.body.lifecycle.lifecycle_stage, 'forecast_required');
   assert.equal(acquired.body.lifecycle.lifecycle_projection_integrity_verified, true);
   assert.match(acquired.body.lifecycle.continuity_action, /^proceed/);

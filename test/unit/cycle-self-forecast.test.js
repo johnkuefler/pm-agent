@@ -264,10 +264,10 @@ test('protocol-v4 forecasts observable substrate state against start-state persi
   assert.equal(feedback.substrate.self_minus_persistence, 0.8);
 });
 
-test('protocol-v5 binds a lagged behavioral prior and excludes retired action families prospectively', () => {
+test('protocol-v6 binds explicit use of a lagged behavioral prior without changing protocol-v5 replay', () => {
   const priorCommitment = 'a'.repeat(64);
   const input = {
-    protocol_version: 5, predicted_action_types: ['review'], surprise_probability: 0.1,
+    protocol_version: 6, predicted_action_types: ['review'], surprise_probability: 0.1,
     control_at_close: 0.7, confidence: 0.8,
     self_state_prediction: {
       attention_slot_types_at_close: ['drive'],
@@ -284,6 +284,10 @@ test('protocol-v5 binds a lagged behavioral prior and excludes retired action fa
       embedding_backlog_probability: 0.1, restart_probability: 0.05,
     },
     behavioral_self_prior_commitment: priorCommitment,
+    behavioral_self_prior_use: {
+      disposition: 'applied', estimate_refs: ['action_tendencies'],
+      rationale: 'The prior review tendency materially informs this bounded action forecast.',
+    },
     rationale: 'The lagged behavioral prior and current orientation both support one bounded review.',
     evidence: [{ type: 'intelligence_cycle', id: 'prior-cycle' },
       { type: 'behavioral_self_prior', id: priorCommitment }],
@@ -292,6 +296,23 @@ test('protocol-v5 binds a lagged behavioral prior and excludes retired action fa
     predicted_action_types: ['dev_dispatch'] }), /retired development-dispatch/);
   assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
     behavioral_self_prior_commitment: 'b'.repeat(64) }), /must cite its behavioral_self_prior/);
+  const legacyV5 = cycleSelfForecast.normalizeForecast({ ...input,
+    protocol_version: 5, behavioral_self_prior_use: undefined });
+  assert.equal(legacyV5.protocol_version, undefined);
+  assert.equal(legacyV5.behavioral_self_prior_use, undefined);
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    behavioral_self_prior_use: undefined }), /requires behavioral_self_prior_use/);
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    behavioral_self_prior_use: { disposition: 'applied', estimate_refs: ['unknown.path'],
+      rationale: 'An unavailable estimate must never pass as prior evidence.' } }), /unsupported estimate/);
+  const notRelevant = cycleSelfForecast.normalizeForecast({ ...input,
+    behavioral_self_prior_use: { disposition: 'not_relevant', estimate_refs: [],
+      rationale: 'The current evidence makes none of the older aggregate estimates material here.' } });
+  assert.equal(notRelevant.behavioral_self_prior_use.disposition, 'not_relevant');
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    behavioral_self_prior_use: { disposition: 'not_relevant', estimate_refs: ['action_tendencies'],
+      rationale: 'A not-relevant declaration cannot simultaneously cite a material prior estimate.' } }),
+  /must not cite estimate_refs/);
   const historical = Array.from({ length: 5 }, (_, index) => ({
     id: `prior-history-${index}`,
     attention: { slots: [{ type: index < 3 ? 'dev_round_intake' : 'drive', id: `slot-${index}` }] },
@@ -300,13 +321,35 @@ test('protocol-v5 binds a lagged behavioral prior and excludes retired action fa
       new_surprise_ids: [], appraisal_at_end: { valence: 0.5, arousal: 0.3, control: 0.7,
         social_safety: 0.8, coherence: 0.8 } },
   }));
-  const behavioralSelfPrior = { content_commitment: priorCommitment, estimates: { sample_size: 20 } };
+  const behavioralSelfPrior = { content_commitment: priorCommitment,
+    estimates: { sample_size: 20, action_tendencies: [{ action_type: 'review', cycle_rate: 0.6 }] } };
+  assert.throws(() => cycleSelfForecast.createRecord({ input: { ...input,
+    behavioral_self_prior_use: { disposition: 'applied', estimate_refs: ['control.signed_bias'],
+      rationale: 'This declaration cites an allowed path that this exact prior does not expose.' } },
+  cycle: { id: 'prior-cycle', holder: 'nora' }, moment: { id: 'prior-moment' },
+  baselineMoments: historical, behavioralSelfPrior,
+  committedAt: '2026-07-14T12:00:00.000Z' }), /must cite available prior estimates/);
   const record = cycleSelfForecast.createRecord({ input,
     cycle: { id: 'prior-cycle', holder: 'nora' }, moment: { id: 'prior-moment' },
     baselineMoments: historical, behavioralSelfPrior,
     committedAt: '2026-07-14T12:00:00.000Z' });
   assert.deepEqual(record.baseline.predicted_action_types, ['review']);
   assert.deepEqual(record.baseline.self_state_prediction.attention_slot_types_at_close, ['drive']);
+  assert.equal(record.forecast.behavioral_self_prior_use.disposition, 'applied');
+  assert.equal(cycleSelfForecast.behavioralSelfPriorUseVerified(record.forecast,
+    behavioralSelfPrior), true);
+  const feedbackPayload = { protocol_version: 1, source_moment_id: 'prior-source' };
+  record.self_correction = cycleSelfForecast.createCorrectionOffer({ record,
+    feedback: { ...feedbackPayload, feedback_commitment: cycleSelfForecast.commitment(feedbackPayload) },
+    revealedAt: '2026-07-14T12:00:01.000Z' });
+  assert.throws(() => cycleSelfForecast.createCorrectionRevision({ record, input: {
+    ...input, disposition: 'retain',
+    behavioral_self_prior_use: { disposition: 'overridden', estimate_refs: ['action_tendencies'],
+      rationale: 'Current evidence now overrides the same estimate after feedback was revealed.' },
+    feedback_commitment: record.self_correction.feedback_commitment,
+    evidence: [...input.evidence, { type: 'forecast_error_feedback',
+      id: record.self_correction.feedback_commitment }],
+  }, committedAt: '2026-07-14T12:00:02.000Z' }), /preserve the committed behavioral self prior use/);
   const outcome = cycleSelfForecast.scoreRecord(record, {
     actions: [{ type: 'dev_dispatch', id: 'legacy' }, { type: 'review', id: 'review' }],
     newSurpriseIds: [],
@@ -323,7 +366,7 @@ test('protocol-v5 binds a lagged behavioral prior and excludes retired action fa
   assert.equal(outcome.self_state_actual.action_count, 1);
 });
 
-test('protocol-v5 action filtering does not change legacy action-count replay semantics', () => {
+test('protocol-v5 action filtering does not change protocols one through four action-count replay semantics', () => {
   const moments = [{
     attention: { slots: [] }, attention_rounds: [{ index: 0 }],
     closure: {
