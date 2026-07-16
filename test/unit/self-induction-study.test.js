@@ -85,7 +85,7 @@ test('matched induction causally isolates identity binding and requires prospect
   assert.equal(sealedCognition.includes('blind_map'), false);
   assert.equal(sealedCognition.includes(store.snapshot().cognition.self_induction_studies[0].analysis_seed), false);
   assert.equal(store.prepareCognitivePulse({ model: 'test-model', force: true }).reason, 'active_self_induction_study');
-  assert.throws(() => store.recordSelfClaim({}), /sealed during active matched self-model studies/);
+  assert.throws(() => store.recordSelfClaim({}), /sealed during active blinded self-model studies/);
   assert.throws(() => store.createSelfInquirySelectionStudy({}), /active self-induction study/);
 
   for (let index = 0; index < 12; index++) {

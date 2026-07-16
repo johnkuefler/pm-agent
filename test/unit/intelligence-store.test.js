@@ -1075,6 +1075,8 @@ test('model-controlled prediction resolution rejects a tampered provider-bound f
     model_control: selfPredictionModelControlFixture('tamper-model'),
     events: selfPredictionEvents('tamper-model-event', 5),
   });
+  assert.throws(() => store.recordSelfClaim({}), /sealed during active blinded self-model studies/);
+  assert.throws(() => store.createSelfProbe({}), /sealed during active blinded self-model studies/);
   const eventId = created.active_event_id;
   store.submitSelfPrediction(created.id, eventId, {
     probability: 0.7, rationale: 'Committed subject forecast.',
@@ -2188,6 +2190,12 @@ test('self-model access lesion distinguishes authentic access from matched decoy
     basis: [{ type: 'trace', id: 'authentic-trace' }], falsification_criteria: ['Contradictory evidence does not predict revision'],
     origin: { type: 'nora_hypothesis', creator_id: 'nora-test', formation_method: 'test_fixture_observation' },
   });
+  const pendingNaturalProbe = store.createSelfProbe({
+    question: 'Will the next ordinary cycle preserve a justified initial judgment?',
+    prediction: { outcome: 'yes', confidence: 0.55 },
+    method: 'Observe the next ordinary cycle without changing it',
+    success_criteria: 'The replay-valid correction disposition is retain',
+  });
   assert.throws(() => store.createContextTrial({
     hypothesis: 'Authentic self access improves self-prediction', intervention: 'self_model_access',
     outcome_metric: 'self_prediction_accuracy', outcome_metrics: ['first_order_task_quality'], surfaces: ['slack'],
@@ -2201,6 +2209,19 @@ test('self-model access lesion distinguishes authentic access from matched decoy
       { domain: 'preference', statement: 'I prefer exhaustive replies in every channel', confidence: 0.65 },
     ],
   });
+  assert.throws(() => store.recordSelfClaim({
+    statement: 'I form a new belief during the lesion', basis: [{ type: 'trace', id: 'sealed-trace' }],
+    falsification_criteria: ['The behavior does not recur'],
+    origin: { type: 'nora_hypothesis', creator_id: 'nora-test', formation_method: 'test_fixture_observation' },
+  }), /sealed during active blinded self-model studies/);
+  assert.throws(() => store.createSelfProbe({
+    question: 'Can a new probe enter during the lesion?', prediction: { outcome: 'yes', confidence: 0.5 },
+    method: 'Attempt a write', success_criteria: 'The write succeeds',
+  }), /sealed during active blinded self-model studies/);
+  assert.throws(() => store.resolveSelfProbe(pendingNaturalProbe.id, {
+    outcome: 'supported', observed: 'The outcome arrived during the lesion',
+    evidence: [{ type: 'decision_trace', id: 'sealed-outcome' }],
+  }), /sealed during active blinded self-model studies/);
   assert.deepEqual(trial.conditions, ['authentic', 'decoy', 'ablated']);
   const sealedSelfModel = store.selfModelSnapshot();
   assert.deepEqual(sealedSelfModel.claims, []);

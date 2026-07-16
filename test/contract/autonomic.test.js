@@ -96,6 +96,13 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /cannot update the linked self-belief/);
   assert.match(routine, /never access that queue, impersonate the evaluator/);
   assert.match(routine, /Bayesian belief update/);
+  assert.match(routine, /Natural-work self-inquiry checkpoint/);
+  assert.match(routine, /Considering is mandatory; inventing a claim\s+is forbidden/s);
+  assert.match(routine, /at least two independently\s+recorded reviewed interactions or decision traces/s);
+  assert.match(routine, /aggregate calibration packet with at\s+least twenty replay-valid source moments/s);
+  assert.match(routine, /must never cause, delay, select, message about, or otherwise\s+shape the situation that will score it/s);
+  assert.match(routine, /skipped_active_study/);
+  assert.match(routine, /not to generate a\s+personality artifact or evidence of phenomenal consciousness/s);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);
   assert.match(routes, /prediction-studies\/:id\/events\/:eventId\/subject-model-receipt'[\s\S]*requireResearchAuth/);

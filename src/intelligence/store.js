@@ -877,6 +877,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       || (cognition.cognitive_self_regulation_studies || []).some(item => item.status === 'active');
   }
 
+  const selfModelWriteConflictingInterventions = new Set([
+    'self_model_access',
+    'integrated_self_binding',
+    'higher_order_monitor',
+    'introspective_perturbation',
+  ]);
+
+  function selfModelWriteConflict(cognition = state.cognition) {
+    if (selfInquirySelectionActive(cognition)) return true;
+    if ((cognition.self_model?.context_trials || []).some(item => item.status === 'active'
+      && selfModelWriteConflictingInterventions.has(item.intervention))) return true;
+    return (cognition.self_model?.prediction_studies || []).some(item =>
+      !['completed', 'aborted'].includes(item.status));
+  }
+
   function activeProspectiveCognitiveInitiationStudy(cognition = state.cognition) {
     return (cognition.cognitive_initiation_studies || []).find(item => item.status === 'active'
       && item.sampling_mode === 'prospective_consecutive') || null;
@@ -9013,7 +9028,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function recordSelfClaim(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (selfInquirySelectionActive(current.cognition)) throw new Error('self-claim writes are sealed during active matched self-model studies');
+      if (selfModelWriteConflict(current.cognition)) throw new Error('self-claim writes are sealed during active blinded self-model studies');
       if (!input.statement || !Array.isArray(input.basis) || !input.basis.length || !Array.isArray(input.falsification_criteria) || !input.falsification_criteria.length) {
         throw new Error('statement, basis, and falsification_criteria are required');
       }
@@ -9055,7 +9070,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function createSelfProbe(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (selfInquirySelectionActive(current.cognition)) throw new Error('self-probe writes are sealed during active matched self-model studies');
+      if (selfModelWriteConflict(current.cognition)) throw new Error('self-probe writes are sealed during active blinded self-model studies');
       if (!input.question || !input.prediction?.outcome || !input.method || !input.success_criteria) {
         throw new Error('question, prediction.outcome, method, and success_criteria are required');
       }
@@ -9086,7 +9101,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function resolveSelfProbe(id, input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (selfInquirySelectionActive(current.cognition)) throw new Error('self-probe writes are sealed during active matched self-model studies');
+      if (selfModelWriteConflict(current.cognition)) throw new Error('self-probe writes are sealed during active blinded self-model studies');
       const probe = current.cognition.self_model.probes.find(item => item.id === id);
       if (!probe) return null;
       if (probe.status === 'resolved') throw new Error('self probe already resolved');
