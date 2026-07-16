@@ -90,6 +90,8 @@ test('authentication protects APIs and dashboard independently', async () => {
   assert.equal((await fetch(base + '/integrated-self')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+  assert.equal((await fetch(base + '/earned-viewpoints')).status, 401);
+  assert.equal((await fetch(base + '/earned-viewpoints/missing/retire', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/discrepancies')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/discrepancies/missing/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await fetch(base + '/self-model/induction-studies')).status, 401);
@@ -269,6 +271,26 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     evidence: [{ type: 'review_note', id: 'integration-discrepancy-review' }],
   } });
   assert.equal(discrepancyReview.body.discrepancy.reviews.length, 1);
+  const earnedViewpointRefs = [{ type: 'interaction', id: 'integration-viewpoint-signal-1' },
+    { type: 'decision_trace', id: 'integration-viewpoint-signal-2' }];
+  const formedViewpoint = await request('/epistemic-ledger/positions', { method: 'POST', body: {
+    proposition_kind: 'professional_viewpoint', topic_key: 'integration.qa_contingency',
+    statement: 'Integration-heavy launches need an explicit QA contingency.',
+    source_family: 'integration-delivery-observations', source_family_evidence: earnedViewpointRefs,
+    owner_type: 'nora_belief', polarity: 'supports', confidence: 0.6,
+    rationale: 'Two separate integration records show late QA exposure; a clean comparable launch would weaken the view.',
+    evidence: earnedViewpointRefs, recorded_by: 'nora-nightly-reflection',
+  } });
+  assert.equal(formedViewpoint.response.status, 200);
+  const earnedSnapshot = await request('/earned-viewpoints');
+  assert.equal(earnedSnapshot.body.current_verified, true);
+  assert.equal(earnedSnapshot.body.viewpoints.some(item => item.viewpoint_id === formedViewpoint.body.proposition.id), true);
+  const retiredViewpoint = await request(`/earned-viewpoints/${formedViewpoint.body.proposition.id}/retire`, { method: 'POST', body: {
+    rationale: 'A later comparable observation no longer supports carrying this as a current view.',
+    recorded_by: 'nora-nightly-reflection', evidence: [{ type: 'interaction', id: 'integration-viewpoint-reversal-3' }],
+  } });
+  assert.equal(retiredViewpoint.body.proposition.status, 'retired');
+  assert.equal((await request('/earned-viewpoints')).body.report.retired, 1);
 
   const experiment = await request('/learning-experiments', { method: 'POST', body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops' } });
   const sampled = await request(`/learning-experiments/${experiment.body.experiment.id}/sample`, { method: 'POST', body: { outcome: 'landed', value: 1 } });

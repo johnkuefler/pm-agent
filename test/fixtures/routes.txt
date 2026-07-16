@@ -109,6 +109,8 @@ POST /source-boundary/challenges
 POST /source-boundary/challenges/:id/answer
 GET /epistemic-ledger
 POST /epistemic-ledger/positions
+GET /earned-viewpoints
+POST /earned-viewpoints/:id/retire
 GET /epistemic-ledger/discrepancies
 POST /epistemic-ledger/discrepancies/:id/review
 GET /authorship-boundary/challenges

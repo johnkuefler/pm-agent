@@ -1309,26 +1309,23 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const allMemory = loadMemory().map(item => normalizeMemoryRecord(item));
   const projects = loadProjects();
 
-  // Split opinions and learnings out of the memory pool — each renders as its own block.
-  // - opinions (source='opinion') → [Your takes]: views about the DOMAIN/work, framed as
-  //   "honestly I think...". Formed during the dream's Reflect movement.
+  // Split legacy opinions and learnings out of the ordinary memory pool.
+  // - legacy opinions are historical records only; they are not cognition inputs.
   // - learnings (source='learning') → [Your learnings]: views about HER OWN behavior —
   //   what works and what doesn't when SHE acts — formed during the dream's Review movement
   //   from how her Slack contributions actually landed (replies, reactions, adjacent chatter).
   //   This is the recursive-self-improvement signal: she gets better at her own job from
   //   real feedback, carried forward as context.
-  const opinions = allMemory.filter(m => m.source === 'opinion' && memoryIsActive(m));
+  // Legacy source='opinion' rows remain in storage but are intentionally withheld from live
+  // prompts. They predate evidence references, bounded formation confidence, Nora-authored
+  // provenance, and revision commitments. Current professional views enter through the
+  // replay-verified earned-viewpoint ledger in the intelligence prompt context.
   const learnings = allMemory.filter(m => m.source === 'learning' && memoryIsActive(m));
   // Exclude operational markers (Filed transcript X, Dreamed on Y, Sent warmth to Z…) from
   // the knowledge block — they're idempotency bookkeeping, not things to reference in
   // conversation. They live in /markers now; this filter catches any not-yet-migrated
   // stragglers so they never reach her live prompt.
   const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning' && !markerKeyForFact(m.fact) && memoryIsActive(m));
-
-  if (opinions.length > 0) {
-    const opinionItems = isRealtime ? opinions.slice(-8) : opinions;
-    base = `${base}\n\n[Your takes: opinions you've formed from watching how things go around here]\n${opinionItems.map(m => memoryPromptLine(m)).join('\n')}`;
-  }
 
   if (learnings.length > 0) {
     const learningItems = isRealtime ? learnings.slice(-8) : learnings;
@@ -7628,7 +7625,7 @@ registerInteractionRoutes(app, {
 // ============================================================
 // "Dreaming" (à la Anthropic's agent-memory consolidation) is a nightly pass the cowork
 // loop runs: it consolidates memory (semantic dedup, contradiction resolution, pruning,
-// reorganization) AND reflects (forms new [Your takes] opinions, surfaces ideas). The
+// reorganization) AND reflects (forms evidence-bound professional viewpoints, surfaces ideas). The
 // actual work happens in the cowork loop with Claude reasoning + the /memory API; these
 // endpoints are just the durable LOG of each dream so the dashboard can show what she did
 // while "asleep." Stored on the Railway volume like the other runtime state, append-style

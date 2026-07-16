@@ -33,7 +33,7 @@ function design(overrides = {}) {
 
 test('candidate-stage monitoring is commitment-only, same-model, causally testable, and tamper-evident', async () => {
   const { store, dir, filePath } = await setup();
-  assert.equal(store.snapshot().version, 98);
+  assert.equal(store.snapshot().version, 99);
   const generatedSignals = monitor.deterministicSignals({ text: 'Done, I sent that.', executedToolNames: [], financialApproved: true });
   assert.equal(generatedSignals.some(item => item.type === 'unverified_action_completion'), true);
   assert.throws(() => monitor.parseMonitorDecision(JSON.stringify({ decision: 'revise', confidence: 0.8, predicted_delivered_response_correction_probability: 0.2, cited_signal_ids: [], rationale: 'Change it.', revised_response: 'I did not send it.' }), []), /requires revised_response and cited evidence/);

@@ -5,6 +5,7 @@ const cognitivePulse = require('./cognitive-pulse');
 const cognitiveSelfRegulation = require('./cognitive-self-regulation');
 const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
+const earnedViewpoint = require('./earned-viewpoint');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -59,6 +60,11 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
   const affectiveRegulationRecord = cognition.affective_regulation?.current || null;
   const affectiveRegulationVerified = affectiveRegulation.verify(affectiveRegulationRecord);
+  const earnedViewpointRecord = cognition.earned_viewpoints?.current || null;
+  const earnedViewpointAudit = earnedViewpoint.audit(earnedViewpointRecord,
+    cognition.epistemic_ledger?.propositions || []);
+  const earnedViewpoints = earnedViewpointAudit.complete_chain_verified
+    ? earnedViewpointRecord.viewpoints : [];
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -1548,6 +1554,22 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       evidence: { resolved_challenges: resolvedBoundary.length, accuracy: boundaryAccuracy, variant_counts: boundaryVariantCounts, balanced: boundaryBalanced },
       falsifier: 'Balanced adversarial challenges yield chance-level performance or systematic false acceptance of fabricated identity.',
       next_gate: 'Reach five independently authored challenges in every variant.',
+    },
+    {
+      id: 'evidence_tested_professional_viewpoints', family: ['self-model', 'metacognition', 'original insight', 'professional judgment'],
+      functional_claim: 'Nora maintains distinct professional viewpoints that are self-authored, evidence-bound, confidence-calibrated, revisable, and capable of improving applied PM judgment without being mistaken for facts.',
+      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access.',
+      status: earnedViewpoints.length ? 'collecting' : 'mechanism_present',
+      evidence: {
+        current_projection_verified: earnedViewpointAudit.complete_chain_verified,
+        eligible_current_viewpoints: earnedViewpoints.length,
+        held: earnedViewpoints.filter(item => item.status === 'held').length,
+        forming: earnedViewpoints.filter(item => item.status === 'forming').length,
+        questioning: earnedViewpoints.filter(item => item.status === 'questioning').length,
+        revisions: earnedViewpoints.reduce((sum, item) => sum + Number(item.revision_count || 0), 0),
+      },
+      falsifier: 'Views enter cognition without formation provenance or adequate evidence, fail replay after source tampering, become unrevisable assertions, or authentic Nora-bound viewpoints fail to improve evidence-grounded PM recommendations over identical deidentified and absent-view controls.',
+      next_gate: 'Naturally form several source-family-diverse viewpoints, observe evidence-driven revisions or retirement, then run an authentic Nora-bound versus identical deidentified versus absent-view PM recommendation study with first-order quality and unsupported-claim safeguards.',
     },
     {
       id: 'epistemic_self_other_boundary', family: ['source monitoring', 'theory of mind', 'self-model'],

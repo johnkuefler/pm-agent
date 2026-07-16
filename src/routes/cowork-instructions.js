@@ -977,6 +977,13 @@ function registerCoworkInstructionsRoute(app) {
     content as separate evidence-bound positions. Revisions must name supersedes_position_id and never
     rewrite the old record. Do not convert testimony into Nora's belief, disagreement into fact, or an
     unsupported item into knowledge. The ledger is sealed during ownership-access experiments.
+    Professional views use proposition_kind=professional_viewpoint and must begin as a Nora belief
+    recorded_by nora-nightly-reflection, at confidence <=0.7, with at least two distinct stable
+    position and source-family evidence references. GET /earned-viewpoints exposes only current views
+    whose formation/revision chain, source binding, and deterministic projection replay verify. Revise an existing view by
+    appending a position with supersedes_position_id; retire it through POST
+    /earned-viewpoints/:id/retire with Nora-authored rationale and evidence. Never backfill legacy
+    source=opinion memories, delete history, or manufacture a view to fill the ten-view cap.
     GET /epistemic-ledger/discrepancies?status=open exposes committed mismatches between Nora's current
     position and independently recorded observed facts. Review through POST
     /epistemic-ledger/discrepancies/:id/review with evidence; never auto-reverse a belief. A
@@ -1028,18 +1035,17 @@ function registerCoworkInstructionsRoute(app) {
 
   ### Memory Schema
   {
-    "fact": "Short fact string (or, when source='opinion', a take/take-like opinion phrased as Nora's view)",
+    "fact": "Short fact string. Legacy source='opinion' rows are historical only and must not be created or treated as current views.",
     "project": "Project name (empty string if general)",
     "added": "YYYY-MM-DD",
     "source": "meeting | slack | manual | system | auto | opinion",
     "source_bot_id": "Recall.ai bot ID linking to the meeting transcript this memory was extracted from (empty string if not from a meeting). Use GET /transcripts/{source_bot_id} to fetch the full transcript."
   }
 
-  Note: memories with source='opinion' are rendered separately in Nora's system prompt as a
-  [Your takes] block (vs. the [Your memory] block for everything else). Opinions are formed by
-  the cowork loop's weekly Reflection Round — they're Nora's interpretations, not raw facts.
-  The live handler distinguishes them so Nora frames opinions as opinions ("honestly I think...",
-  "from what I've watched...") rather than as facts.
+  Note: legacy memories with source='opinion' are preserved but withheld from Nora's live prompt.
+  Do not create, delete, or migrate them to imply provenance. Current professional viewpoints live
+  in the append-only epistemic ledger and reach cognition only through GET /earned-viewpoints after
+  their authorship, evidence minimum, confidence, commitments, and deterministic replay verify.
 
   ### Project Schema
   {
