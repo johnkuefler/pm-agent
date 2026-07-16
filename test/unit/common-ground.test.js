@@ -38,7 +38,7 @@ test('common ground requires verified observable uptake and fails closed when so
     nora_position_id: noraPosition.id, person_position_id: johnPosition.id,
     acknowledgment_kind: 'accurate_restatement',
     summary: 'John restated that Maya owns the launch readiness decision before asking for her sign-off.',
-    evidence: [{ type: 'slack_message', id: 'launch-owner-restatement' }],
+    evidence: [{ type: 'slack_message', id: 'C12345678:1784200000.000001:1784200000.000001' }],
     expires_at: '2026-08-15T10:00:00.000Z',
   });
   assert.equal(candidate.status, 'awaiting_independent_review');
@@ -82,7 +82,7 @@ test('common ground requires verified observable uptake and fails closed when so
     nora_position_id: noraPosition.id, person_position_id: johnPosition.id,
     acknowledgment_kind: 'targeted_correction',
     summary: 'John explicitly corrected the earlier shared owner assumption and marked ownership uncertain.',
-    evidence: [{ type: 'slack_message', id: 'launch-owner-correction' }],
+    evidence: [{ type: 'slack_message', id: 'C12345678:1784200001.000001:1784200001.000002' }],
     expires_at: '2026-08-15T12:00:00.000Z',
   });
   assert.equal(store.commonGroundReviewQueue().some(item => item.id === replacement.id), true);
@@ -111,10 +111,11 @@ test('common ground requires verified observable uptake and fails closed when so
     nora_position_id: noraPosition.id, person_position_id: mayaPosition.id,
     acknowledgment_kind: 'coordinated_action',
     summary: 'Maya used the shared launch-owner assignment to make the readiness decision in the thread.',
-    evidence: [{ type: 'slack_message', id: 'launch-owner-maya-action' }],
+    evidence: [{ type: 'slack_message', id: 'C12345678:1784200002.000001:1784200002.000002' }],
     expires_at: '2026-08-15T12:00:00.000Z',
   });
   assert.equal(sealedPeriodCandidate.cognitive_access_sealed_at_formation, true);
+  assert.equal(sealedPeriodCandidate.source_replay_contract_version, 1);
   assert.equal(sealedPeriodCandidate.audit.complete_chain_verified, true);
   assert.equal(store.commonGroundReviewQueue().some(item => item.id === sealedPeriodCandidate.id), true,
     'append-only evidence capture remains available to the independent review path');
@@ -125,6 +126,8 @@ test('common ground requires verified observable uptake and fails closed when so
     .find(item => item.id === 'interactional_common_ground');
   assert.equal(indicator.status, 'collecting');
   assert.equal(indicator.evidence.captured_while_cognitive_access_sealed, 1);
+  assert.equal(indicator.evidence.canonical_source_replay_contracts, 3);
+  assert.equal(indicator.evidence.provider_disjoint_consensus_reviews, 0);
   assert.equal(indicator.evidence.independently_verified_current, 0,
     'the superseded source position retracts the old record');
 

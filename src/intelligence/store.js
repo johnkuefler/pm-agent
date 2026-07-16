@@ -3057,8 +3057,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           type: String(ref.type || ref.channel).slice(0, 100),
           ...(ref.id ? { id: String(ref.id).slice(0, 500) } : {}),
           ...(ref.url ? { url: String(ref.url).slice(0, 1000) } : {}),
-        })), reviewed_at: clock().toISOString(),
+        })),
+        ...(input.automated_review_receipt ? {
+          automated_review_receipt: JSON.parse(JSON.stringify(input.automated_review_receipt)),
+        } : {}),
+        reviewed_at: clock().toISOString(),
       };
+      if (String(evaluatorId).startsWith(commonGround.AUTOMATED_EVALUATOR_PREFIX)
+        && !commonGround.validAutomatedReviewReceipt(review.automated_review_receipt,
+          review.evidence, review.outcome, review.evaluator_id)) {
+        throw new Error('automated common-ground review requires a valid provider-disjoint consensus receipt');
+      }
+      if (!String(evaluatorId).startsWith(commonGround.AUTOMATED_EVALUATOR_PREFIX)
+        && review.automated_review_receipt) {
+        throw new Error('manual evaluators cannot attach an automated common-ground review receipt');
+      }
       record.independent_review = review;
       record.independent_review_commitment = epistemicLedger.commitment(review);
       record.status = input.outcome === 'verified' ? 'independently_verified'

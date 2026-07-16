@@ -3,6 +3,9 @@
 const epistemicLedger = require('./epistemic-ledger');
 
 const PROTOCOL_VERSION = 1;
+const SOURCE_REPLAY_CONTRACT_VERSION = 1;
+const AUTOMATED_REVIEW_PROTOCOL_VERSION = 1;
+const AUTOMATED_EVALUATOR_PREFIX = 'provider-disjoint-openai-common-ground:';
 const ACKNOWLEDGMENT_KINDS = Object.freeze([
   'explicit_acknowledgment',
   'accurate_restatement',
@@ -13,6 +16,64 @@ const ACKNOWLEDGMENT_KINDS = Object.freeze([
 function validEvidence(refs) {
   return Array.isArray(refs) && refs.length > 0 && refs.every(ref => ref && typeof ref === 'object'
     && String(ref.type || ref.channel || '').trim() && String(ref.id || ref.url || '').trim());
+}
+
+function parseSlackEvidenceRef(ref) {
+  if (String(ref?.type || ref?.channel || '').trim().toLowerCase() !== 'slack_message') return null;
+  const match = String(ref?.id || '').trim().match(/^([CDG][A-Z0-9]{8,}):(\d{10,}\.\d{6}):(\d{10,}\.\d{6})$/);
+  if (!match) return null;
+  const [, channel, threadTs, messageTs] = match;
+  if (BigInt(messageTs.replace('.', '')) < BigInt(threadTs.replace('.', ''))) return null;
+  return { channel, thread_ts: threadTs, message_ts: messageTs,
+    id: `${channel}:${threadTs}:${messageTs}` };
+}
+
+function validFormationEvidence(refs) {
+  return validEvidence(refs) && refs.every(ref =>
+    String(ref.type || ref.channel || '').trim().toLowerCase() !== 'slack_message'
+      || Boolean(parseSlackEvidenceRef(ref)));
+}
+
+function automatedReviewReceiptPayload(receipt = {}) {
+  const payload = JSON.parse(JSON.stringify(receipt || {}));
+  delete payload.receipt_commitment;
+  return payload;
+}
+
+function validAutomatedReviewReceipt(receipt, evidence, outcome, evaluatorId) {
+  if (!receipt || typeof receipt !== 'object') return false;
+  const reviews = Array.isArray(receipt.reviews) ? receipt.reviews : [];
+  const sourceCommitments = Array.isArray(receipt.source_readback_commitments)
+    ? receipt.source_readback_commitments : [];
+  const evidenceCommitments = (evidence || []).map(ref => epistemicLedger.commitment(ref)).sort();
+  const receiptEvidenceCommitments = sourceCommitments.map(item => item?.evidence_ref_commitment).sort();
+  const roles = reviews.map(item => item?.role).sort();
+  const responseIds = reviews.map(item => item?.response_id);
+  const reviewOutcomes = reviews.map(item => item?.outcome);
+  const replayedConsensus = reviewOutcomes.length === 2 && reviewOutcomes[0] === reviewOutcomes[1]
+    ? reviewOutcomes[0] : 'unclear';
+  return Boolean(receipt.protocol_version === AUTOMATED_REVIEW_PROTOCOL_VERSION
+    && receipt.provider === 'openai' && receipt.subject_provider === 'anthropic'
+    && receipt.provider_disjoint_from_subject === true && receipt.condition_blind === true
+    && receipt.store === false && String(receipt.model || '').trim()
+    && String(evaluatorId || '').startsWith(AUTOMATED_EVALUATOR_PREFIX)
+    && receipt.evaluator_id === evaluatorId && receipt.consensus_outcome === outcome
+    && /^[a-f0-9]{64}$/i.test(String(receipt.packet_commitment || ''))
+    && sourceCommitments.length === evidenceCommitments.length
+    && new Set(receiptEvidenceCommitments).size === receiptEvidenceCommitments.length
+    && JSON.stringify(receiptEvidenceCommitments) === JSON.stringify(evidenceCommitments)
+    && sourceCommitments.every(item => /^[a-f0-9]{64}$/i.test(String(item?.snapshot_commitment || '')))
+    && reviews.length === 2 && JSON.stringify(roles) === JSON.stringify(['evidence_first', 'failure_first'])
+    && new Set(responseIds).size === 2
+    && receipt.consensus_outcome === replayedConsensus
+    && reviews.every(item => item && item.model === receipt.model && item.status === 'completed'
+      && ['verified', 'not_verified', 'unclear'].includes(item.outcome)
+      && (item.response_model === receipt.model
+        || String(item.response_model || '').startsWith(`${receipt.model}-`))
+      && item.packet_commitment === receipt.packet_commitment && String(item.response_id || '').trim()
+      && /^[a-f0-9]{64}$/i.test(String(item.prompt_protocol_commitment || ''))
+      && /^[a-f0-9]{64}$/i.test(String(item.output_commitment || '')))
+    && receipt.receipt_commitment === epistemicLedger.commitment(automatedReviewReceiptPayload(receipt)));
 }
 
 function currentPosition(proposition, id) {
@@ -64,7 +125,9 @@ function createCandidate(input, proposition, { id, now, cognitiveAccessSealed = 
   if (!ACKNOWLEDGMENT_KINDS.includes(input.acknowledgment_kind)) {
     throw new Error('common ground requires an observable acknowledgment kind');
   }
-  if (!validEvidence(input.evidence)) throw new Error('common ground requires stable uptake evidence');
+  if (!validFormationEvidence(input.evidence)) {
+    throw new Error('common ground requires stable uptake evidence; slack_message ids must be channel:thread_ts:message_ts');
+  }
   const summary = String(input.summary || '').trim().slice(0, 1200);
   if (summary.length < 20) throw new Error('common ground requires a bounded observable summary');
   const at = new Date(now || new Date()).toISOString();
@@ -95,6 +158,7 @@ function createCandidate(input, proposition, { id, now, cognitiveAccessSealed = 
     })),
     observed_at: observedAt.toISOString(),
     expires_at: expiresAt.toISOString(), created: at,
+    source_replay_contract_version: SOURCE_REPLAY_CONTRACT_VERSION,
     cognitive_access_sealed_at_formation: cognitiveAccessSealed === true,
     independent_review: null, independent_review_commitment: null,
     status: 'awaiting_independent_review', updated: at,
@@ -125,11 +189,19 @@ function audit(record, propositions = [], now = new Date(), ledger = null) {
     && [true, false].includes(record.cognitive_access_sealed_at_formation ?? false)
     && ACKNOWLEDGMENT_KINDS.includes(record.acknowledgment_kind)
     && String(record.summary || '').trim().length >= 20 && validEvidence(record.evidence)
+    && (record.source_replay_contract_version == null
+      || (record.source_replay_contract_version === SOURCE_REPLAY_CONTRACT_VERSION
+        && validFormationEvidence(record.evidence)))
     && Number.isFinite(createdAt.getTime()) && Number.isFinite(observedAt.getTime())
     && observedAt <= createdAt && ['aligned_position', 'known_disagreement', 'shared_uncertainty'].includes(record.relation)
     && record.formation_commitment === epistemicLedger.commitment(formationPayload(record)));
   const reviewPresent = Boolean(record?.independent_review || record?.independent_review_commitment);
   const review = record?.independent_review;
+  const automatedReceiptRequired = String(review?.evaluator_id || '').startsWith(AUTOMATED_EVALUATOR_PREFIX);
+  const automatedReceiptVerified = !reviewPresent || (!automatedReceiptRequired
+    ? !review?.automated_review_receipt
+    : validAutomatedReviewReceipt(review?.automated_review_receipt, review?.evidence,
+      review?.outcome, review?.evaluator_id));
   const reviewVerified = !reviewPresent || Boolean(review && record.independent_review_commitment
     && review.formation_commitment === record.formation_commitment
     && ['verified', 'not_verified', 'unclear'].includes(review.outcome)
@@ -137,6 +209,7 @@ function audit(record, propositions = [], now = new Date(), ledger = null) {
     && validEvidence(review.evidence)
     && Number.isFinite(new Date(review.reviewed_at).getTime())
     && new Date(review.reviewed_at) >= new Date(record.created)
+    && automatedReceiptVerified
     && epistemicLedger.commitment(review) === record.independent_review_commitment);
   const expectedStatus = review?.outcome === 'verified' ? 'independently_verified'
     : review?.outcome === 'not_verified' ? 'independently_rejected'
@@ -171,6 +244,7 @@ function audit(record, propositions = [], now = new Date(), ledger = null) {
     formation_verified: formationVerified,
     independent_review_present: reviewPresent,
     independent_review_verified: reviewVerified,
+    automated_review_receipt_verified: automatedReceiptVerified,
     lifecycle_verified: lifecycleVerified,
     ledger_binding_verified: ledgerBindingVerified,
     temporally_valid: temporallyValid,
@@ -230,6 +304,8 @@ function frame({ person, query = '', records = [], propositions = [], now = new 
 }
 
 module.exports = {
-  ACKNOWLEDGMENT_KINDS, PROTOCOL_VERSION, audit, createCandidate, formationPayload,
-  frame, propositionIdentity, relationFor, validEvidence, verifiedRecords,
+  ACKNOWLEDGMENT_KINDS, AUTOMATED_EVALUATOR_PREFIX, AUTOMATED_REVIEW_PROTOCOL_VERSION,
+  PROTOCOL_VERSION, SOURCE_REPLAY_CONTRACT_VERSION, audit, automatedReviewReceiptPayload,
+  createCandidate, formationPayload, frame, parseSlackEvidenceRef, propositionIdentity, relationFor,
+  validAutomatedReviewReceipt, validEvidence, validFormationEvidence, verifiedRecords,
 };

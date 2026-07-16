@@ -1054,14 +1054,19 @@ function registerCoworkInstructionsRoute(app) {
     source=opinion memories, delete history, or manufacture a view to fill the ten-view cap.
     GET/POST /common-ground binds a current Nora position and matching-person position to observable
     interactional uptake: explicit acknowledgment, accurate restatement, coordinated use, or targeted
-    correction. Delivery or silence never establishes common ground. A separately authenticated reviewer
+    correction. Slack citations use type=slack_message and the exact
+    channel_id:thread_root_ts:message_ts id (top-level messages repeat their timestamp) so review can
+    independently re-fetch the cited human text. Delivery or silence never establishes common ground. A separately authenticated reviewer
     must verify the evidence before a query-relevant current-person frame can enter the prompt; Nora must
     never access or impersonate that reviewer. Superseded positions, expiry, or source tampering retract the
     frame. Missing evidence is labeled only not established, never ignorance, confusion, memory failure, or
     private disagreement. During blinded context studies, GET records and prompt frames remain sealed,
     but POST may still append current externally evidenced uptake so a sequence of studies cannot erase
     natural observations. The echoed candidate is not cognitive context or validation and still requires
-    separate review. This is functional social cognition, not proof of comprehension, intimacy, shared
+    separate review. A bounded provider-disjoint autopilot may review only canonical Slack citations using
+    two condition-blind OpenAI roles; both must agree, missing readback stays pending, and disagreement is
+    inconclusive. It receives no Nora prompt, self-model, study condition, hypothesis, or expected result.
+    This is functional social cognition, not proof of comprehension, intimacy, shared
     subjective experience, or consciousness.
     GET /epistemic-ledger/discrepancies?status=open exposes committed mismatches between Nora's current
     position and independently recorded observed facts. Review through POST

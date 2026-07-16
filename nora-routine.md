@@ -1998,7 +1998,10 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    only when the epistemic ledger has current Nora and matching-person position ids and the interaction
    contains observable uptake: an explicit acknowledgment, accurate restatement, coordinated use, or
    targeted correction. Include the proposition id, both position ids, person, acknowledgment_kind,
-   bounded summary, stable uptake evidence, and an expiry within ninety days. Delivery, silence, message
+   bounded summary, stable uptake evidence, and an expiry within ninety days. For Slack evidence use
+   exactly `{ "type": "slack_message", "id": "<channel_id>:<thread_root_ts>:<message_ts>" }`; for a
+   top-level message, use its timestamp as both `thread_root_ts` and `message_ts`. This lets an evaluator
+   re-fetch the exact cited human message instead of trusting your summary. Delivery, silence, message
    visibility, a reaction alone, or your confidence that they "must know" never qualifies.
 
    Your candidate remains `awaiting_independent_review`. Never access `/common-ground/review-queue`, call
@@ -2015,6 +2018,10 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    observable-uptake requirements are independently satisfied. The POST response only acknowledges the
    submitted candidate; do not use it as context, validation, or evidence during the seal. Evidence capture
    remains separate from cognitive access, and the candidate still requires independent review after capture.
+   A bounded server reviewer may perform that review only by fetching every canonical Slack citation and
+   obtaining agreement from two condition-blind OpenAI evaluator roles. They receive no Nora prompt,
+   self-model, study condition, hypothesis, or expected result. Missing readback stays pending; role
+   disagreement becomes inconclusive. Never call, influence, or reconstruct this reviewer path.
 
    Read `GET /epistemic-ledger/discrepancies?status=open` for evidence that a committed current belief
    conflicts with independently recorded observation. A disagreement with another person alone is not

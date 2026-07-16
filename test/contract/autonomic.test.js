@@ -162,6 +162,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(cowork, /Superseded positions, expiry, or source tampering retract the\s+frame/);
   assert.match(routine, /Evidence capture\s+remains separate from cognitive access/);
   assert.match(cowork, /GET records and prompt frames remain sealed[\s\S]*POST may still append/);
+  assert.match(routine, /channel_id.*thread_root_ts.*message_ts/);
+  assert.match(routine, /agreement from two condition-blind OpenAI evaluator roles/);
+  assert.match(cowork, /provider-disjoint autopilot[\s\S]*missing readback stays pending/);
+  assert.match(server, /runCommonGroundReviewAutopilotRuntime\(\)/);
   assert.match(store, /Verified common-ground frame for the current collaborator/);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);
