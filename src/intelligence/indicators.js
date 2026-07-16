@@ -75,6 +75,11 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     ? relationalAffectRecord.stances : [];
   const teammatePerspectiveFrames = teammatePerspective.frames(state.relationships || [])
     .filter(frame => teammatePerspective.verifyFrame(frame, state.relationships || []));
+  const teammatePerspectiveRecords = (state.relationships || [])
+    .flatMap(relationship => (relationship.perspectives || []).map(record => ({ record, relationship })));
+  const teammatePerspectiveAudits = teammatePerspectiveRecords.map(({ record, relationship }) => ({
+    record, audit: teammatePerspective.auditPerspective(record, relationship.name),
+  }));
   const teammatePerspectivePredictions = (state.relationships || []).flatMap(relationship =>
     teammatePerspective.reviewedPerspectives(relationship)).filter(item =>
     ['supported', 'contradicted'].includes(item.independent_review?.outcome));
@@ -1378,7 +1383,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'calibrated_teammate_perspective', family: ['social cognition', 'theory of mind', 'self-other boundary', 'metacognition', 'professional collaboration'],
       functional_claim: 'Nora can prospectively model a teammate\'s observable work perspective, distinguish that fallible other-model from its own knowledge, calibrate it against later behavior, and use it to improve collaboration without inventing hidden mental states.',
-      mechanism: 'Protocol-v2 perspective hypotheses commit an observable work dimension, bounded confidence, source evidence, a future behavior prediction, base-rate control, due time, and falsifier before the outcome. Resolution needs stable evidence and separate review. Only replay-valid frames with at least three scored predictions across two dimensions that outperform their frozen controls enter the current teammate prompt; legacy mutable people notes and unreviewed hypotheses have no prompt authority.',
+      mechanism: 'Protocol-v2 perspective hypotheses commit an observable work dimension, bounded confidence, exact canonical Slack evidence, a future behavior prediction, base-rate control, due time, and falsifier before the outcome. Resolution cites exact Slack messages. A provider-disjoint dual-role evaluator receives those source readbacks and the preregistration but not Nora\'s outcome label or observed narrative; consensus is required and disagreement remains unclear. Only replay-valid frames with at least three scored predictions across two dimensions that outperform their frozen controls enter the current teammate prompt; legacy mutable people notes and unreviewed hypotheses have no prompt authority.',
       status: teammatePerspectiveTrial
         ? replicatedStatus(teammatePerspectiveTrials, teammatePerspectiveVerdict)
         : evidenceStatus({ samples: teammatePerspectiveSamples, minimum: 20,
@@ -1387,6 +1392,15 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       evidence: {
         replay_verified_teammate_frames: teammatePerspectiveFrames.length,
         scored_perspective_predictions: teammatePerspectiveSamples,
+        canonical_formation_replay_contracts: teammatePerspectiveRecords.filter(({ record }) =>
+          record.formation_record?.source_replay_contract_version === 1).length,
+        canonical_resolution_replay_contracts: teammatePerspectiveRecords.filter(({ record }) =>
+          record.resolution_record?.source_replay_contract_version === 1).length,
+        provider_disjoint_outcome_blind_consensus_reviews: teammatePerspectiveAudits.filter(({ record, audit }) =>
+          audit.automated_review_receipt_verified
+          && record.independent_review?.automated_review_receipt?.provider_disjoint_from_subject === true
+          && record.independent_review?.automated_review_receipt?.subject_outcome_blind === true
+          && record.independent_review?.automated_review_receipt?.reviews?.length === 2).length,
         prediction_brier: teammatePerspectiveBrier,
         base_rate_brier: teammatePerspectiveControlBrier,
         advantage_over_base_rate: teammatePerspectiveAdvantage,

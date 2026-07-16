@@ -1018,6 +1018,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const formedAt = clock().toISOString();
       const formationRecord = {
         protocol_version: teammatePerspective.PROTOCOL_VERSION,
+        source_replay_contract_version: teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION,
         id, person: relationship.name, hypothesis: hypothesis.slice(0, 800),
         dimension: input.dimension,
         confidence,
@@ -1087,7 +1088,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       if (!['supported', 'contradicted', 'unclear', 'retired'].includes(input.outcome)
         || String(input.observed || '').trim().length < 10
-        || !teammatePerspective.validEvidenceRefs(input.evidence)) {
+        || !teammatePerspective.validCanonicalEvidenceRefs(input.evidence)) {
         throw new Error('outcome, observed behavior, and stable evidence are required');
       }
       const resolvedAt = clock().toISOString();
@@ -1096,6 +1097,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       const resolutionRecord = {
         formation_commitment: perspective.formation_commitment,
+        source_replay_contract_version: teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION,
         outcome: input.outcome,
         observed: String(input.observed).trim().slice(0, 1600),
         evidence: input.evidence.slice(0, 20),
@@ -1123,6 +1125,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .map(perspective => ({
         id: perspective.id, person: perspective.person, hypothesis: perspective.hypothesis,
         dimension: perspective.dimension, prediction: JSON.parse(JSON.stringify(perspective.formation_record.prediction)),
+        formed_at: perspective.formation_record.formed_at,
+        source_replay_contract_version: perspective.formation_record.source_replay_contract_version || null,
         subject_observation: JSON.parse(JSON.stringify(perspective.resolution_record)),
         formation_commitment: perspective.formation_commitment,
         resolution_commitment: perspective.resolution_commitment,
@@ -1158,8 +1162,28 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_outcome: perspective.resolution_record.outcome,
         subject_agreement: input.outcome === perspective.resolution_record.outcome,
         rationale: String(input.rationale).trim().slice(0, 1600),
-        evidence: input.evidence.slice(0, 20), reviewed_at: reviewedAt,
+        evidence: input.evidence.slice(0, 20),
+        ...(input.automated_review_receipt ? {
+          automated_review_receipt: JSON.parse(JSON.stringify(input.automated_review_receipt)),
+        } : {}),
+        reviewed_at: reviewedAt,
       };
+      if (String(evaluatorId).startsWith(teammatePerspective.AUTOMATED_EVALUATOR_PREFIX)
+        && (perspective.formation_record.source_replay_contract_version
+          !== teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION
+          || perspective.resolution_record.source_replay_contract_version
+            !== teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION)) {
+        throw new Error('automated teammate-perspective review requires an exact replayable source lifecycle');
+      }
+      if (String(evaluatorId).startsWith(teammatePerspective.AUTOMATED_EVALUATOR_PREFIX)
+        && !teammatePerspective.validAutomatedReviewReceipt(review.automated_review_receipt,
+          review.evidence, review.outcome, review.evaluator_id)) {
+        throw new Error('automated teammate-perspective review requires a valid provider-disjoint consensus receipt');
+      }
+      if (!String(evaluatorId).startsWith(teammatePerspective.AUTOMATED_EVALUATOR_PREFIX)
+        && review.automated_review_receipt) {
+        throw new Error('manual evaluators cannot attach an automated teammate-perspective review receipt');
+      }
       perspective.independent_review = review;
       perspective.independent_review_commitment = teammatePerspective.commitment(review);
       perspective.status = input.outcome === 'supported' ? 'independently_supported'

@@ -250,7 +250,8 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const perspective = await request('/relationships/John/perspectives', { method: 'POST', body: {
     hypothesis: 'John will ask for the recommendation before implementation detail on the next planning question',
     dimension: 'communication_format', confidence: 0.55,
-    evidence: [{ channel: 'test', id: 'message-1' }],
+    evidence: [{ type: 'slack_message',
+      id: 'C12345678:1784226000.000001:1784226000.000001' }],
     prediction: { due_at: '2026-07-30T00:00:00.000Z', observable: 'Whether John asks for the recommendation before implementation detail', probability: 0.55, control_probability: 0.5,
       falsification_criteria: ['John accepts implementation detail without asking for the recommendation first.'] },
   } });

@@ -310,7 +310,8 @@ test('cognition stays bounded, evidence-based, calibrated, and explicit about si
     name: 'John',
     hypothesis: 'John will ask for the recommendation before implementation detail on the next planning question',
     dimension: 'communication_format', confidence: 0.55,
-    evidence: [{ channel: 'slack', id: 'm1' }],
+    evidence: [{ type: 'slack_message',
+      id: 'C12345678:1783781700.000001:1783781700.000001' }],
     prediction: { due_at: '2026-07-20T15:00:00.000Z', observable: 'Whether John asks for the recommendation before implementation detail', probability: 0.55, control_probability: 0.5,
       falsification_criteria: ['John accepts implementation detail without asking for the recommendation first.'] },
   });

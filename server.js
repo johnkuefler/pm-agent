@@ -43,6 +43,8 @@ const reasoningResearchAutopilot = require('./src/intelligence/reasoning-researc
 const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
 const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycle-prediction-autopilot');
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
+const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
+const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
 const app = express();
@@ -3609,10 +3611,10 @@ async function getSlackUserName(userId) {
   }
 }
 
-async function readCommonGroundSlackEvidence(ref, { get = axios.get,
+async function readExactSlackEvidence(ref, { get = axios.get,
   resolveUserName = getSlackUserName } = {}) {
-  const parsed = require('./src/intelligence/common-ground').parseSlackEvidenceRef(ref);
-  if (!parsed) throw new Error('common-ground Slack evidence reference is not canonical');
+  const parsed = slackEvidence.parseCanonicalMessageRef(ref);
+  if (!parsed) throw new Error('Slack evidence reference is not canonical');
   const headers = { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` };
   const replies = new URLSearchParams({ channel: parsed.channel, ts: parsed.thread_ts,
     oldest: parsed.message_ts, latest: parsed.message_ts, inclusive: 'true', limit: '20' });
@@ -3639,16 +3641,20 @@ async function readCommonGroundSlackEvidence(ref, { get = axios.get,
   }
   if (!message) throw new Error(`exact Slack evidence message was not found (${failures.join(', ')})`);
   if (!message.user || message.bot_id || message.subtype === 'bot_message') {
-    throw new Error('common-ground uptake evidence must be an attributable human Slack message');
+    throw new Error('exact evidence must be an attributable human Slack message');
   }
   const authorName = await resolveUserName(message.user);
-  return commonGroundReviewAutopilot.stableSourceSnapshot({
+  return slackEvidence.stableHumanSnapshot({
     evidence_ref: { type: 'slack_message', id: parsed.id }, channel: parsed.channel,
     thread_ts: parsed.thread_ts, message_ts: parsed.message_ts,
     author_id: message.user, author_name: authorName || message.user,
     author_name_verified: Boolean(authorName), text: String(message.text || ''),
     edited_ts: message.edited?.ts || null,
   });
+}
+
+async function readCommonGroundSlackEvidence(ref, options = {}) {
+  return readExactSlackEvidence(ref, options);
 }
 
 // Decode the handful of HTML entities that survive tag-stripping. Not exhaustive — just
@@ -8767,6 +8773,8 @@ let _researchAutopilotInFlight = false;
 let _researchAutopilotLastCycle = null;
 let _commonGroundReviewAutopilotInFlight = false;
 let _commonGroundReviewAutopilotLastCycle = null;
+let _teammatePerspectiveReviewAutopilotInFlight = false;
+let _teammatePerspectiveReviewAutopilotLastCycle = null;
 
 function tickEndogenousRuntime(now = new Date()) {
   return intelligence.tickEndogenousDynamics({
@@ -8842,12 +8850,31 @@ function commonGroundReviewAutopilotRuntimeConfig(env = process.env) {
   };
 }
 
+function teammatePerspectiveReviewAutopilotRuntimeConfig(env = process.env) {
+  const maxReviews = Number(env.NORA_TEAMMATE_PERSPECTIVE_REVIEW_MAX_PER_CYCLE);
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_TEAMMATE_PERSPECTIVE_REVIEW_AUTOPILOT !== '0'
+    && Boolean(env.OPENAI_API_KEY) && Boolean(env.SLACK_BOT_TOKEN);
+  return {
+    enabled,
+    model: String(env.NORA_TEAMMATE_PERSPECTIVE_REVIEW_MODEL
+      || teammatePerspectiveReviewAutopilot.DEFAULT_MODEL).slice(0, 160),
+    maxReviews: Math.max(1, Math.min(4, Number.isFinite(maxReviews) && maxReviews > 0
+      ? Math.round(maxReviews) : teammatePerspectiveReviewAutopilot.DEFAULT_MAX_REVIEWS_PER_CYCLE)),
+  };
+}
+
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig();
   const commonGroundReview = commonGroundReviewAutopilot.status(intelligence, {
     enabled: commonGroundReviewConfig.enabled, model: commonGroundReviewConfig.model,
     lastCycle: _commonGroundReviewAutopilotLastCycle,
+  });
+  const teammatePerspectiveReviewConfig = teammatePerspectiveReviewAutopilotRuntimeConfig();
+  const teammatePerspectiveReview = teammatePerspectiveReviewAutopilot.status(intelligence, {
+    enabled: teammatePerspectiveReviewConfig.enabled, model: teammatePerspectiveReviewConfig.model,
+    lastCycle: _teammatePerspectiveReviewAutopilotLastCycle,
   });
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
@@ -8873,6 +8900,7 @@ function researchAutopilotProgramStatus() {
       self_prediction_subject: selfPredictionSubject,
       natural_cycle_prediction: naturalCyclePrediction,
       common_ground_review: commonGroundReview,
+      teammate_perspective_review: teammatePerspectiveReview,
     };
   }
   const reasoning = reasoningResearchAutopilot.status(intelligence, {
@@ -8894,6 +8922,7 @@ function researchAutopilotProgramStatus() {
     self_prediction_subject: selfPredictionSubject,
     natural_cycle_prediction: naturalCyclePrediction,
     common_ground_review: commonGroundReview,
+    teammate_perspective_review: teammatePerspectiveReview,
   };
 }
 
@@ -8933,6 +8962,45 @@ async function runCommonGroundReviewAutopilotRuntime({ post = axios.post } = {})
     return _commonGroundReviewAutopilotLastCycle;
   } finally {
     _commonGroundReviewAutopilotInFlight = false;
+  }
+}
+
+async function runTeammatePerspectiveReviewAutopilotRuntime({ post = axios.post } = {}) {
+  const config = teammatePerspectiveReviewAutopilotRuntimeConfig();
+  if (!config.enabled) {
+    _teammatePerspectiveReviewAutopilotLastCycle = { protocol_version: 1, state: 'disabled',
+      reviewed: 0, skipped_unreplayable: 0, failures: [], at: new Date().toISOString() };
+    return _teammatePerspectiveReviewAutopilotLastCycle;
+  }
+  if (_teammatePerspectiveReviewAutopilotInFlight) {
+    return { protocol_version: 1, state: 'in_flight', at: new Date().toISOString() };
+  }
+  _teammatePerspectiveReviewAutopilotInFlight = true;
+  try {
+    const callProvider = async request => {
+      const response = await post('https://api.openai.com/v1/responses', request, {
+        headers: { 'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        timeout: 45000,
+      });
+      return response.data;
+    };
+    const cycle = await teammatePerspectiveReviewAutopilot.runCycle({
+      store: intelligence, enabled: true, model: config.model, maxReviews: config.maxReviews,
+      readEvidence: ref => readExactSlackEvidence(ref), callProvider,
+    });
+    _teammatePerspectiveReviewAutopilotLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _teammatePerspectiveReviewAutopilotLastCycle;
+  } catch (error) {
+    _teammatePerspectiveReviewAutopilotLastCycle = {
+      protocol_version: 1, state: 'failed_closed', reviewed: 0,
+      skipped_unreplayable: 0,
+      failures: [{ reason: String(error.message || error).slice(0, 300) }],
+      at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveReviewAutopilotLastCycle;
+  } finally {
+    _teammatePerspectiveReviewAutopilotInFlight = false;
   }
 }
 
@@ -9410,6 +9478,8 @@ async function start(options = {}) {
       runResearchAutopilotRuntime().catch(error => console.error('Research autopilot failed:', error.message));
       runCommonGroundReviewAutopilotRuntime()
         .catch(error => console.error('Common-ground review autopilot failed:', error.message));
+      runTeammatePerspectiveReviewAutopilotRuntime()
+        .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
       runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
       try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
       catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -9420,6 +9490,8 @@ async function start(options = {}) {
         runResearchAutopilotRuntime().catch(error => console.error('Research autopilot failed:', error.message));
         runCommonGroundReviewAutopilotRuntime()
           .catch(error => console.error('Common-ground review autopilot failed:', error.message));
+        runTeammatePerspectiveReviewAutopilotRuntime()
+          .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
         runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
         try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
         catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -9469,6 +9541,9 @@ module.exports = {
     runResearchAutopilotRuntime,
     commonGroundReviewAutopilotRuntimeConfig,
     runCommonGroundReviewAutopilotRuntime,
+    teammatePerspectiveReviewAutopilotRuntimeConfig,
+    runTeammatePerspectiveReviewAutopilotRuntime,
+    readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,
     runCognitiveInitiationPolicyProbeRuntime,

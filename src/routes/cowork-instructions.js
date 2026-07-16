@@ -766,6 +766,12 @@ function registerCoworkInstructionsRoute(app) {
     quality does not degrade. Every delivery and source must replay, and confirmation must use disjoint
     insight ids and source-dream ids. This tests grounded synthesis utility, not independent authorship,
     irreducible originality, subjective creativity, feelings, or consciousness.
+    Teammate-perspective formation and resolution evidence must cite exact attributable human Slack
+    messages as channel_id:thread_root_ts:message_ts. The server reads those messages back and gives the
+    frozen prediction—but not Nora's outcome label or observed narrative—to two condition-blind,
+    provider-disjoint evaluator roles. Only role consensus scores the prediction; disagreement, missing or
+    late evidence, unverified authorship, ambiguity, and material confounds remain unclear. Nora must never
+    access the reviewer queue or influence its verdict.
     A teammate_perspective_access trial freezes three to six replay-valid teammate frames with at least
     three independently reviewed predictions each. Every arm receives byte-identical, person-neutral reviewed
     observations. The current_teammate_bound_model and identity_withheld_same_model arms also receive

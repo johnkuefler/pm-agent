@@ -1606,17 +1606,22 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    upcoming low-risk PM interaction, you may preregister one append-only prediction with
    `POST /relationships/{name}/perspectives`. Supply an allowed dimension (`communication_format`,
    `clarification_need`, `decision_concern`, or `coordination_pattern`), a modest-confidence hypothesis,
-   stable formation evidence, and a bounded `prediction` containing the exact observable, due time,
+   exact Slack formation evidence using `channel_id:thread_root_ts:message_ts`, and a bounded `prediction` containing the exact observable, due time,
    probability, base-rate `control_probability`, and explicit `falsification_criteria`. Predict behavior
    that could actually be checked within thirty days; never private thoughts, feelings, personality,
    pathology, intent, or consciousness. Do not edit the prediction after formation.
 
    If the natural observation later occurs, resolve it exactly once through
    `POST /relationships/perspectives/{id}/resolve` as `supported`, `contradicted`, `unclear`, or `retired`,
-   with what was observed, stable evidence, and confounds. Never create, delay, or select the event to make
+   with what was observed, confounds, and exact cited human Slack messages using the same
+   `channel_id:thread_root_ts:message_ts` form. Never create, delay, or select the event to make
    the prediction look right. Your resolution cannot validate the model: never access the separately
    authenticated review queue, call its review endpoint, impersonate an evaluator, or solicit a favorable
-   review. Ordinary PM context receives a teammate frame only after at least three replay-valid,
+   review. The automated reviewer independently reads those exact messages and sends the frozen prediction
+   to two condition-blind OpenAI evaluator roles without your outcome label or observed narrative. Both
+   roles must agree; disagreement, missing readback, late evidence, unverified authorship, ambiguity, or a
+   material confound stays `unclear`. You cannot access or influence either evaluator. Ordinary PM context
+   receives a teammate frame only after at least three replay-valid,
    independently reviewed scored predictions across two observable-work dimensions whose aggregate forecast
    beats its frozen base-rate control; it includes supported and contradicted patterns plus calibration. Current explicit behavior always
    overrides the prior. This is bounded functional social cognition—not mind-reading, a trait verdict,

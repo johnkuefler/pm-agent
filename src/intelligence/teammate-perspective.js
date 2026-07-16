@@ -1,8 +1,12 @@
 'use strict';
 
 const crypto = require('crypto');
+const slackEvidence = require('./slack-evidence');
 
 const PROTOCOL_VERSION = 2;
+const SOURCE_REPLAY_CONTRACT_VERSION = 1;
+const AUTOMATED_REVIEW_PROTOCOL_VERSION = 1;
+const AUTOMATED_EVALUATOR_PREFIX = 'provider-disjoint-openai-teammate-perspective:';
 const DIMENSIONS = Object.freeze([
   'communication_format',
   'clarification_need',
@@ -27,6 +31,54 @@ function validEvidenceRefs(refs) {
     && String(ref.type || ref.channel || '').trim() && String(ref.id || ref.url || '').trim());
 }
 
+function validCanonicalEvidenceRefs(refs) {
+  if (!validEvidenceRefs(refs)) return false;
+  const parsed = refs.map(slackEvidence.parseCanonicalMessageRef);
+  return parsed.every(Boolean) && new Set(parsed.map(ref => ref.id)).size === parsed.length;
+}
+
+function automatedReviewReceiptPayload(receipt = {}) {
+  const payload = JSON.parse(JSON.stringify(receipt || {}));
+  delete payload.receipt_commitment;
+  return payload;
+}
+
+function validAutomatedReviewReceipt(receipt, evidence, outcome, evaluatorId) {
+  if (!receipt || typeof receipt !== 'object') return false;
+  const reviews = Array.isArray(receipt.reviews) ? receipt.reviews : [];
+  const sourceCommitments = Array.isArray(receipt.source_readback_commitments)
+    ? receipt.source_readback_commitments : [];
+  const evidenceCommitments = (evidence || []).map(ref => commitment(ref)).sort();
+  const receiptEvidenceCommitments = sourceCommitments.map(item => item?.evidence_ref_commitment).sort();
+  const roles = reviews.map(item => item?.role).sort();
+  const responseIds = reviews.map(item => item?.response_id);
+  const reviewOutcomes = reviews.map(item => item?.outcome);
+  const replayedConsensus = reviewOutcomes.length === 2 && reviewOutcomes[0] === reviewOutcomes[1]
+    ? reviewOutcomes[0] : 'unclear';
+  return Boolean(receipt.protocol_version === AUTOMATED_REVIEW_PROTOCOL_VERSION
+    && receipt.provider === 'openai' && receipt.subject_provider === 'anthropic'
+    && receipt.provider_disjoint_from_subject === true && receipt.condition_blind === true
+    && receipt.subject_outcome_blind === true && receipt.store === false
+    && String(receipt.model || '').trim()
+    && String(evaluatorId || '').startsWith(AUTOMATED_EVALUATOR_PREFIX)
+    && receipt.evaluator_id === evaluatorId && receipt.consensus_outcome === outcome
+    && /^[a-f0-9]{64}$/i.test(String(receipt.packet_commitment || ''))
+    && sourceCommitments.length === evidenceCommitments.length
+    && new Set(receiptEvidenceCommitments).size === receiptEvidenceCommitments.length
+    && JSON.stringify(receiptEvidenceCommitments) === JSON.stringify(evidenceCommitments)
+    && sourceCommitments.every(item => /^[a-f0-9]{64}$/i.test(String(item?.snapshot_commitment || '')))
+    && reviews.length === 2 && JSON.stringify(roles) === JSON.stringify(['evidence_first', 'failure_first'])
+    && new Set(responseIds).size === 2 && receipt.consensus_outcome === replayedConsensus
+    && reviews.every(item => item && item.model === receipt.model && item.status === 'completed'
+      && ['supported', 'contradicted', 'unclear'].includes(item.outcome)
+      && (item.response_model === receipt.model
+        || String(item.response_model || '').startsWith(`${receipt.model}-`))
+      && item.packet_commitment === receipt.packet_commitment && String(item.response_id || '').trim()
+      && /^[a-f0-9]{64}$/i.test(String(item.prompt_protocol_commitment || ''))
+      && /^[a-f0-9]{64}$/i.test(String(item.output_commitment || '')))
+    && receipt.receipt_commitment === commitment(automatedReviewReceiptPayload(receipt)));
+}
+
 function validFormation(formation) {
   const formedAt = new Date(formation?.formed_at);
   const dueAt = new Date(formation?.prediction?.due_at);
@@ -38,6 +90,9 @@ function validFormation(formation) {
     && DIMENSIONS.includes(formation?.dimension)
     && Number(formation?.confidence) >= 0.1 && Number(formation?.confidence) <= 0.7
     && validEvidenceRefs(formation?.evidence)
+    && (formation.source_replay_contract_version == null
+      || (formation.source_replay_contract_version === SOURCE_REPLAY_CONTRACT_VERSION
+        && validCanonicalEvidenceRefs(formation.evidence)))
     && String(formation?.prediction?.observable || '').trim().length >= 10
     && Array.isArray(formation?.prediction?.falsification_criteria)
     && formation.prediction.falsification_criteria.some(item => String(item || '').trim())
@@ -69,13 +124,24 @@ function auditPerspective(perspective, relationshipName = '') {
     ['supported', 'contradicted', 'unclear', 'retired'].includes(perspective.resolution_record?.outcome)
     && String(perspective.resolution_record?.observed || '').trim().length >= 10
     && validEvidenceRefs(perspective.resolution_record?.evidence)
+    && (perspective.resolution_record?.source_replay_contract_version == null
+      || (perspective.resolution_record.source_replay_contract_version === SOURCE_REPLAY_CONTRACT_VERSION
+        && validCanonicalEvidenceRefs(perspective.resolution_record.evidence)))
     && Number.isFinite(resolvedAt.getTime()) && resolvedAt > new Date(formation?.formed_at));
   const independentReviewPresent = Boolean(perspective?.independent_review
     || perspective?.independent_review_commitment);
+  const automatedReceiptRequired = String(perspective?.independent_review?.evaluator_id || '')
+    .startsWith(AUTOMATED_EVALUATOR_PREFIX);
+  const automatedReceiptVerified = !independentReviewPresent || (!automatedReceiptRequired
+    ? !perspective?.independent_review?.automated_review_receipt
+    : validAutomatedReviewReceipt(perspective.independent_review.automated_review_receipt,
+      perspective.independent_review.evidence, perspective.independent_review.outcome,
+      perspective.independent_review.evaluator_id));
   const independentReviewVerified = !independentReviewPresent || Boolean(perspective.independent_review
     && perspective.independent_review_commitment
     && perspective.independent_review.formation_commitment === perspective.formation_commitment
     && perspective.independent_review.resolution_commitment === perspective.resolution_commitment
+    && automatedReceiptVerified
     && commitment(perspective.independent_review) === perspective.independent_review_commitment);
   const independentReviewSemanticsVerified = !independentReviewPresent || Boolean(
     ['supported', 'contradicted', 'unclear'].includes(perspective.independent_review?.outcome)
@@ -116,6 +182,7 @@ function auditPerspective(perspective, relationshipName = '') {
     independent_review_present: independentReviewPresent,
     independent_review_verified: independentReviewVerified,
     independent_review_semantics_verified: independentReviewSemanticsVerified,
+    automated_review_receipt_verified: automatedReceiptVerified,
     status_lifecycle_verified: statusLifecycleVerified,
     final_evidence_eligible: Boolean(expectedReviewOutcome && completeChainVerified),
     scored_evidence_eligible: Boolean(['supported', 'contradicted'].includes(expectedReviewOutcome)
@@ -194,6 +261,8 @@ function frames(relationships = []) {
 }
 
 module.exports = {
-  DIMENSIONS, PROTOCOL_VERSION, auditPerspective, buildFrame, canonicalJson, commitment,
-  frames, reviewedPerspectives, validEvidenceRefs, validFormation, verifyFrame,
+  AUTOMATED_EVALUATOR_PREFIX, AUTOMATED_REVIEW_PROTOCOL_VERSION, DIMENSIONS, PROTOCOL_VERSION,
+  SOURCE_REPLAY_CONTRACT_VERSION, auditPerspective, automatedReviewReceiptPayload, buildFrame,
+  canonicalJson, commitment, frames, reviewedPerspectives, validAutomatedReviewReceipt,
+  validCanonicalEvidenceRefs, validEvidenceRefs, validFormation, verifyFrame,
 };

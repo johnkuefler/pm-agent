@@ -16,6 +16,12 @@ async function fixture() {
   return { store, dir, setNow(value) { now = new Date(value); }, getNow() { return new Date(now); } };
 }
 
+function slackRef(iso) {
+  const seconds = Math.floor(new Date(iso).getTime() / 1000);
+  const ts = `${seconds}.000001`;
+  return { type: 'slack_message', id: `C12345678:${ts}:${ts}` };
+}
+
 function addFrame(f, person, key, startDay) {
   const dimensions = ['decision_concern', 'clarification_need', 'communication_format'];
   for (let index = 0; index < 3; index++) {
@@ -26,7 +32,7 @@ function addFrame(f, person, key, startDay) {
       name: person,
       hypothesis: `${person} may request ${label} context before the next bounded project decision.`,
       dimension: dimensions[index], confidence: 0.55,
-      evidence: [{ type: 'slack_message', id: `formation-${label}` }],
+      evidence: [slackRef(`2026-07-${String(day).padStart(2, '0')}T09:55:00.000Z`)],
       prediction: {
         observable: `${person} asks for ${label} context in the next decision thread.`,
         due_at: `2026-07-${String(day + 1).padStart(2, '0')}T10:00:00.000Z`,
@@ -37,7 +43,7 @@ function addFrame(f, person, key, startDay) {
     f.setNow(`2026-07-${String(day).padStart(2, '0')}T12:00:00.000Z`);
     f.store.resolvePerspective(perspective.id, {
       outcome: 'supported', observed: `${person} asked for ${label} context before deciding.`,
-      evidence: [{ type: 'slack_message', id: `outcome-${label}` }], confounds: [],
+      evidence: [slackRef(`2026-07-${String(day).padStart(2, '0')}T12:00:00.000Z`)], confounds: [],
     });
     f.setNow(`2026-07-${String(day).padStart(2, '0')}T13:00:00.000Z`);
     f.store.reviewPerspective(perspective.id, {

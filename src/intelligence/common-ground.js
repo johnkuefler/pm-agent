@@ -1,6 +1,7 @@
 'use strict';
 
 const epistemicLedger = require('./epistemic-ledger');
+const slackEvidence = require('./slack-evidence');
 
 const PROTOCOL_VERSION = 1;
 const SOURCE_REPLAY_CONTRACT_VERSION = 1;
@@ -19,19 +20,11 @@ function validEvidence(refs) {
 }
 
 function parseSlackEvidenceRef(ref) {
-  if (String(ref?.type || ref?.channel || '').trim().toLowerCase() !== 'slack_message') return null;
-  const match = String(ref?.id || '').trim().match(/^([CDG][A-Z0-9]{8,}):(\d{10,}\.\d{6}):(\d{10,}\.\d{6})$/);
-  if (!match) return null;
-  const [, channel, threadTs, messageTs] = match;
-  if (BigInt(messageTs.replace('.', '')) < BigInt(threadTs.replace('.', ''))) return null;
-  return { channel, thread_ts: threadTs, message_ts: messageTs,
-    id: `${channel}:${threadTs}:${messageTs}` };
+  return slackEvidence.parseCanonicalMessageRef(ref);
 }
 
 function validFormationEvidence(refs) {
-  return validEvidence(refs) && refs.every(ref =>
-    String(ref.type || ref.channel || '').trim().toLowerCase() !== 'slack_message'
-      || Boolean(parseSlackEvidenceRef(ref)));
+  return validEvidence(refs) && slackEvidence.validCanonicalSlackRefs(refs);
 }
 
 function automatedReviewReceiptPayload(receipt = {}) {

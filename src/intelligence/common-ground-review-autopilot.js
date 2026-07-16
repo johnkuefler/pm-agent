@@ -2,6 +2,7 @@
 
 const commonGround = require('./common-ground');
 const epistemicLedger = require('./epistemic-ledger');
+const slackEvidence = require('./slack-evidence');
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MODEL = 'gpt-5.6-luna';
@@ -17,22 +18,7 @@ function evaluatorId(model = DEFAULT_MODEL) {
 }
 
 function stableSourceSnapshot(snapshot = {}) {
-  const parsed = commonGround.parseSlackEvidenceRef(snapshot.evidence_ref);
-  if (!parsed || parsed.id !== snapshot.evidence_ref.id
-    || snapshot.channel !== parsed.channel || snapshot.thread_ts !== parsed.thread_ts
-    || snapshot.message_ts !== parsed.message_ts || !String(snapshot.author_id || '').trim()
-    || !String(snapshot.author_name || '').trim() || !String(snapshot.text || '').trim()) {
-    throw new Error('Slack source readback does not exactly match its canonical evidence reference');
-  }
-  return {
-    evidence_ref: { type: 'slack_message', id: parsed.id }, channel: parsed.channel,
-    thread_ts: parsed.thread_ts, message_ts: parsed.message_ts,
-    author_id: String(snapshot.author_id).slice(0, 100),
-    author_name: String(snapshot.author_name).slice(0, 300),
-    author_name_verified: snapshot.author_name_verified === true,
-    text: String(snapshot.text).slice(0, 12000),
-    edited_ts: snapshot.edited_ts ? String(snapshot.edited_ts).slice(0, 40) : null,
-  };
+  return slackEvidence.stableHumanSnapshot(snapshot);
 }
 
 function reviewSchema(evidenceIds = []) {
