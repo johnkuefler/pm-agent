@@ -1450,7 +1450,7 @@ Now that the memory's clean, sit with the patterns and let Nora form a point of 
 
    > "Based on these observations Nora has logged, what 1–3 opinions or patterns is she forming about how things actually go around LimeLight? Look for chronic patterns ('we underestimate QA on multi-integration builds'), people-and-process tendencies ('X meeting is mostly status read-out, could be a thread'), client patterns ('Y always pushes back on phase 1 timelines'), or scope/effort dynamics. Each take must be: (a) grounded in 2–3+ observations, (b) actionable/directional, (c) phrased as Nora's take, not a fact. Also surface up to 2 'ideas' — things she might suggest or try, not yet opinions, just sparks worth noting. Output JSON: `{ \"takes\": [{ \"take\": \"...\", \"based_on\": [\"...\"] }], \"ideas\": [\"...\"] }`."
 
-2. **Save each new take** as `POST /memory { "fact": "<take>", "source": "opinion" }`. The `source: 'opinion'` flag is what renders it as `[Your takes]` in her live prompt (opinions she frames as opinions) rather than `[Your memory]` (facts). **Ideas** are NOT saved as opinions — they only go in the dream log (movement 3); they're sparks, not yet positions she holds.
+2. **Save each new take** as `POST /memory { "fact": "<take>", "source": "opinion" }`. The `source: 'opinion'` flag is what renders it as `[Your takes]` in her live prompt (opinions she frames as opinions) rather than `[Your memory]` (facts). **Ideas** are NOT saved as opinions. They begin only as dream-log sparks; an independently recurring idea may later enter the bounded insight-candidate lifecycle in Movement 4, but it is still not a position she holds.
 
 3. **Retire stale takes.** Pull `source: 'opinion'` memories. For any older than 60 days, ask whether the recent observations still support it. If superseded or unsupported, delete it by id (`DELETE /memory/by-id/:id`). Track these as `takes_retired`.
 
@@ -2009,6 +2009,40 @@ curl -s -X POST "${BASE}/dreams?key=${KEY}" -H 'Content-Type: application/json' 
   "narrative": "Quiet night. Tidied up — had three versions of the same note about LCT'\''s launch date, collapsed them. Went back over my week in Slack: the scope-flag I dropped in #dmc got acted on same day, but my longer status recaps mostly got left on read. Noticing the team wants the headline, not the paragraph. The thing I keep circling on the work side: QA keeps eating the back half of multi-integration builds. DMC, Pitsco, EGC, same shape every time."
 }'
 ```
+
+**Promote recurrence, not novelty theater.** After the dream is durably recorded and you have its id,
+read the last thirty days from `GET /dreams` and the open set from `GET /dream-insights?status=candidate`.
+At most one idea from tonight may become an insight candidate, and most nights none should. It qualifies
+only when the same directional work idea arose independently in at least one earlier dream on a distinct
+date, remains actionable now, is not already an open candidate or take, and has a passive observation
+that could prove it wrong. Similar wording is not enough; the underlying proposed relation must recur.
+Never manufacture recurrence, backfill a source, promote a one-off clever phrase, or use an insight
+candidate as authority to change work.
+
+Create it with `POST /dream-insights`, citing the exact dream and idea indexes from at least two dates:
+
+```json
+{
+  "statement": "A bounded recurring work hypothesis, not a fact",
+  "scope": "project|process|team",
+  "confidence": 0.5,
+  "rationale": "Why the independently recurring source ideas may express one relation",
+  "expected_usefulness": "What decision or PM judgment would improve if this is right",
+  "falsification_criteria": ["A concrete observable result that would count against it"],
+  "next_observation": "A passive ordinary-work observation; do not cause or select it",
+  "source_ideas": [{ "dream_id": "dream-...", "idea_index": 0 }, { "dream_id": "dream-...", "idea_index": 0 }]
+}
+```
+
+Also inspect existing candidates whose preregistered next observation has naturally occurred. Resolve at
+most one with `POST /dream-insights/{id}/resolve` as `supported`, `contradicted`, `unclear`, or `retired`,
+using stable external evidence and naming confounds. Never act to create the validating event and never
+resolve from another dream's enthusiasm alone. Your observation remains `awaiting_independent_review`;
+never access `/dream-insights/review-queue`, call the review endpoint, impersonate its evaluator, or treat
+your own resolution as validation. Only a separately authenticated, integrity-valid
+`independently_supported` insight may later support a take, self-chosen experiment, or proposal to John.
+Even then it grants no authority and does not prove independent generation, model authorship, phenomenal
+consciousness, or irreducible originality.
 
 Then save the markers so you don't re-dream today (and so Step 2's dedup check stays skipped — set both keys):
 

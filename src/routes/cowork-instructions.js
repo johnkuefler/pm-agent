@@ -14,7 +14,7 @@ function registerCoworkInstructionsRoute(app) {
 
   ## Authentication
 
-  The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /interactions, /run-lock, /markers.
+  The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /dream-insights, /interactions, /run-lock, /markers.
   All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
 
   Pass the key as a query parameter or header:
@@ -274,6 +274,23 @@ function registerCoworkInstructionsRoute(app) {
 
   - GET    /dreams/:id            — Full detail for one dream. 404 if not found.
   - DELETE /dreams/:id            — Delete a dream entry. 404 if not found.
+
+  - GET /dream-insights           — List recurring, provenance-bound work-insight candidates and
+    their integrity audits. Optional ?status=candidate|awaiting_independent_review|
+    independently_supported|independently_contradicted|inconclusive|retired.
+    A candidate is a fallible work hypothesis, never a fact, instruction, authorization, proof of
+    originality, or consciousness evidence.
+  - POST /dream-insights          — Bind one idea that independently recurred in at least two dreams
+    on distinct dates. Body requires statement, scope (project|process|team), confidence (0.1-0.7),
+    rationale, expected_usefulness, falsification_criteria, next_observation, and source_ideas as
+    exact {dream_id, idea_index} references. At most ten candidates may remain open.
+  - POST /dream-insights/:id/resolve — Record Nora's observation exactly once as supported,
+    contradicted, unclear, or retired using stable evidence references and optional confounds.
+    Non-retired observations remain awaiting_independent_review and cannot support a take or action.
+  - GET /dream-insights/review-queue and POST /dream-insights/:id/review — Separately authenticated
+    evaluator workflow. The evaluator independently records supported, contradicted, or unclear with
+    rationale and checked evidence. Only an integrity-valid independently_supported result may later
+    support a take, experiment, or proposal. Missing or changed source dreams fail the entire audit.
 
   ### Interactions (RSI feedback loop — Nora's outbound contributions + how they landed)
   The server logs every Slack reply Nora posts. The dream's Review movement reads these back,

@@ -103,6 +103,16 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /must never cause, delay, select, message about, or otherwise\s+shape the situation that will score it/s);
   assert.match(routine, /skipped_active_study/);
   assert.match(routine, /not to generate a\s+personality artifact or evidence of phenomenal consciousness/s);
+  assert.match(routine, /Promote recurrence, not novelty theater/);
+  assert.match(routine, /same directional work idea arose independently/s);
+  assert.match(routine, /POST \/dream-insights/);
+  assert.match(routine, /Never manufacture recurrence, backfill a source/);
+  assert.match(routine, /grants no authority/);
+  assert.match(routine, /never access `\/dream-insights\/review-queue`/);
+  assert.match(routine, /Only a separately authenticated, integrity-valid\s+`independently_supported` insight/s);
+  assert.match(cowork, /Recurring, provenance-bound work-insight candidates|recurring, provenance-bound work-insight candidates/);
+  assert.match(cowork, /Only an integrity-valid independently_supported result/);
+  assert.match(cowork, /Missing or changed source dreams fail the entire audit/i);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);
   assert.match(routes, /prediction-studies\/:id\/events\/:eventId\/subject-model-receipt'[\s\S]*requireResearchAuth/);

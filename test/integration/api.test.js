@@ -847,11 +847,58 @@ test('MCP admin supports secure auth modes without returning credentials or full
 });
 
 test('dream and transcript CRUD preserves response shapes and local files', async () => {
-  const dream = await request('/dreams', { method: 'POST', body: { narrative: 'A useful dream', reflection: { ideas: ['Ship it'] }, review: { learnings_added: ['Ask one crisper follow-up'] } } });
+  const dream = await request('/dreams', { method: 'POST', body: { date: '2026-07-14', started: '2026-07-14T05:00:00Z', finished: '2026-07-14T05:10:00Z', narrative: 'A useful dream', reflection: { ideas: ['Repeated handoff gaps may be hiding in the same project phase'] }, review: { learnings_added: ['Ask one crisper follow-up'] } } });
   assert.equal(dream.body.dream.narrative, 'A useful dream');
-  assert.equal((await request(`/dreams/${dream.body.dream.id}`)).body.reflection.ideas[0], 'Ship it');
+  assert.match((await request(`/dreams/${dream.body.dream.id}`)).body.reflection.ideas[0], /handoff gaps/);
   assert.equal((await request('/learning-experiments')).body.some(item => item.behavior === 'Ask one crisper follow-up'), true);
+  const laterDream = await request('/dreams', { method: 'POST', body: { date: '2026-07-15', started: '2026-07-15T05:00:00Z', finished: '2026-07-15T05:10:00Z', narrative: 'The handoff pattern recurred.', reflection: { ideas: ['The same delivery phase keeps producing preventable handoff gaps'] } } });
+  const insight = await request('/dream-insights', { method: 'POST', body: {
+    statement: 'A repeated delivery phase may be producing preventable handoff gaps across projects.',
+    scope: 'process', confidence: 0.55,
+    rationale: 'The same directional process concern arose on two separate nightly reviews.',
+    expected_usefulness: 'Earlier handoff checks could reduce avoidable project stalls.',
+    falsification_criteria: ['The next three independently observed gaps occur in unrelated phases.'],
+    next_observation: 'Passively classify the phase of the next naturally reported handoff gap.',
+    source_ideas: [{ dream_id: dream.body.dream.id, idea_index: 0 }, { dream_id: laterDream.body.dream.id, idea_index: 0 }],
+  } });
+  assert.equal(insight.response.status, 200);
+  assert.equal(insight.body.insight.status, 'candidate');
+  assert.equal(insight.body.insight.audit.complete_chain_verified, true);
+  assert.equal((await request('/dream-insights?status=candidate')).body.insights.length, 1);
+  assert.equal((await request('/dream-insights', { method: 'POST', body: {
+    statement: insight.body.insight.statement, scope: 'process', confidence: 0.5,
+    rationale: 'This is an attempted duplicate of the same still-open candidate.',
+    expected_usefulness: 'It should not create a second open record.',
+    falsification_criteria: ['A duplicate is accepted.'], next_observation: 'No new observation.',
+    source_ideas: [{ dream_id: dream.body.dream.id, idea_index: 0 }, { dream_id: laterDream.body.dream.id, idea_index: 0 }],
+  } })).response.status, 400);
+  const resolvedInsight = await request(`/dream-insights/${insight.body.insight.id}/resolve`, { method: 'POST', body: {
+    outcome: 'supported', observation: 'A later independently recorded handoff gap occurred in the same delivery phase.',
+    evidence: [{ type: 'decision_trace', id: 'handoff-gap-trace-3' }], confounds: ['Small observational sample'],
+  } });
+  assert.equal(resolvedInsight.body.insight.status, 'awaiting_independent_review');
+  assert.equal(resolvedInsight.body.insight.audit.resolution_verified, true);
+  assert.equal((await request('/dream-insights/review-queue')).response.status, 401);
+  const insightReviewQueue = await request('/dream-insights/review-queue', { headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' } });
+  assert.equal(insightReviewQueue.body.insights[0].id, insight.body.insight.id);
+  assert.equal(insightReviewQueue.body.insights[0].subject_resolution, undefined);
+  assert.equal(insightReviewQueue.body.insights[0].subject_observation.outcome, undefined);
+  const reviewedInsight = await request(`/dream-insights/${insight.body.insight.id}/review`, { method: 'POST',
+    headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' }, body: {
+      outcome: 'supported', rationale: 'The cited trace independently supports the preregistered phase relation.',
+      evidence: [{ type: 'independent_review', id: 'handoff-gap-review-3' }],
+    } });
+  assert.equal(reviewedInsight.body.insight.status, 'independently_supported');
+  assert.equal(reviewedInsight.body.insight.audit.independent_review_verified, true);
+  assert.equal(reviewedInsight.body.insight.audit.final_evidence_eligible, true);
+  const insightReport = (await request('/dream-insights')).body.report;
+  assert.equal(insightReport.independently_supported, 1);
+  assert.equal(insightReport.final_evidence_eligible, 1);
   assert.equal((await request(`/dreams/${dream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
+  const invalidated = (await request('/dream-insights')).body.insights.find(item => item.id === insight.body.insight.id);
+  assert.equal(invalidated.audit.source_ideas_verified, false);
+  assert.equal(invalidated.audit.complete_chain_verified, false);
+  assert.equal((await request(`/dreams/${laterDream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
 
   const list = await request('/transcripts');
   assert.equal(list.body[0].bot_id, 'test-bot');

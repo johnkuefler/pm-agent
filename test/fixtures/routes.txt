@@ -323,5 +323,10 @@ GET /interactions
 POST /interactions/:id/outcome
 GET /dreams
 GET /dreams/:id
+GET /dream-insights
+POST /dream-insights
+POST /dream-insights/:id/resolve
+GET /dream-insights/review-queue
+POST /dream-insights/:id/review
 POST /dreams
 DELETE /dreams/:id
