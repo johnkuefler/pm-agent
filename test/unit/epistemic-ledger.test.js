@@ -47,7 +47,7 @@ function trialDesign(ids, extra = {}) {
 test('epistemic ledger preserves belief ownership and causally tests authentic labels', async () => {
   const { store, dir } = await makeStore();
   const topics = [0, 1, 2].map(index => addTopic(store, index));
-  assert.equal(store.snapshot().version, 97);
+  assert.equal(store.snapshot().version, 98);
   assert.equal(topics[0].report.perspective_disagreement, true);
   assert.equal(topics[0].report.epistemic_conflict, false, 'different people disagreeing is not itself an evidence-integrity conflict');
 

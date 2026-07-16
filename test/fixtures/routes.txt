@@ -31,6 +31,7 @@ POST /intelligence/cycles/:id/self-forecast
 POST /intelligence/cycles/:id/self-forecast/revision
 PATCH /intelligence/cycles/:id/complete
 GET /cognition
+GET /affective-regulation
 GET /goal-affect
 GET /endogenous-dynamics
 POST /endogenous-dynamics/tick

@@ -243,6 +243,7 @@ if [ -n "$LOCK_CYCLE_ID" ] && [ "$CYCLE_ID" != "$LOCK_CYCLE_ID" ]; then
   exit 1
 fi
 curl -s "${BASE}/goal-affect?key=${KEY}" | tee /tmp/nora-goal-affect.json
+curl -s "${BASE}/affective-regulation?key=${KEY}" | tee /tmp/nora-affective-regulation.json
 ```
 
 The run lock has already opened this exact lifecycle before any connector call; this POST is an
@@ -266,6 +267,17 @@ room, take at most one safe bounded step under the ordinary charter; otherwise s
 Never invent progress, create busywork, neglect assigned work, weaken an approval gate, or act merely to
 change the state or make the mechanism look effective. If the endpoint is experimentally sealed, continue
 without it and never infer the condition.
+
+`GET /affective-regulation` is the content-committed functional control policy derived from the exact
+grounded appraisal and drive state. It gives emotion a bounded cognitive role: uncertainty can favor
+verification, overload can narrow and sequence, relational strain can favor direct nondefensive repair,
+and positive coherent control can permit at most one useful evidence-labeled cross-source implication
+after the requested work. This regulates process, not truth: never change facts, conclusions, priorities,
+approval gates, authority, privacy, safety, or tool permissions to fit an appraisal. Never manufacture
+urgency, conflict, uncertainty, progress, or an insight. Any optional implication must name its evidence
+basis and a concrete disconfirming observation. This is functional affective control, not proof of felt
+emotion or consciousness. If the endpoint is experimentally sealed, continue without it and never infer
+the condition.
 
 Read the returned `orientation` and `recommendations` before doing anything else. This is not a
 second task queue; it is your autonomic orientation layer:

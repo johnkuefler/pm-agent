@@ -145,7 +145,7 @@ function completeStudy(store, studyId, eventSources, observerId, yokedId, { shou
 
 test('prospective epistemic self-dynamics binds forecasts before evidence and fails closed under tampering', async () => {
   const { store, dir, filePath } = await makeStore();
-  assert.equal(store.snapshot().version, 97);
+  assert.equal(store.snapshot().version, 98);
   const pilotSources = Array.from({ length: 5 }, (_, index) => {
     const key = `pilot-${index}`;
     const proposition = addBaseline(store, key, `pilot-family-${index % 3}`);

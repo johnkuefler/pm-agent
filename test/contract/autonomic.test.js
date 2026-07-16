@@ -100,6 +100,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /experiment in functional caring, not proof of felt emotion/);
   assert.match(routine, /Never invent progress, create busywork/);
   assert.match(cowork, /provenance-valid active wants as\s+forming, progressing, or stalled/);
+  assert.match(routine, /GET \/affective-regulation/);
+  assert.match(routine, /functional affective control, not proof of felt\s+emotion or consciousness/);
+  assert.match(routine, /Never manufacture\s+urgency, conflict, uncertainty, progress, or an insight/);
+  assert.match(cowork, /regulate verification, breadth, correction posture, and one\s+bounded evidence-labeled synthesis/);
   assert.match(routine, /Preregistered self-inquiry/);
   assert.match(routine, /POST \/self-model\/probes/);
   assert.match(routine, /cannot update the linked self-belief/);

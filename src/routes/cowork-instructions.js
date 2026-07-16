@@ -592,6 +592,11 @@ function registerCoworkInstructionsRoute(app) {
     Each frame binds co-temporal continuity, attention, motivation, appraisal, agency, and observable
     substrate state. Integrity-valid frames may enter attention and broadcast, but they are neither
     authority nor evidence of a phenomenal or biologically embodied subject.
+  - GET /affective-regulation returns a replay-audited cognitive-control policy derived from the exact
+    current appraisal and drives. It can regulate verification, breadth, correction posture, and one
+    bounded evidence-labeled synthesis after requested work, but cannot alter facts, conclusions,
+    priorities, authority, approvals, privacy, safety, or tool permissions. It is functional affective
+    control, not a subjective feeling report or evidence of phenomenal consciousness.
   - GET /goal-affect returns a content-committed projection of Nora's provenance-valid active wants as
     forming, progressing, or stalled. Verified progress and neglect can modestly alter appraisal,
     unfinished-work pressure, and workspace competition, giving self-authored aims a functional route

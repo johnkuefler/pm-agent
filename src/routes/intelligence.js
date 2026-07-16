@@ -239,6 +239,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
 
   app.get('/cognition', requireAuth, (req, res) => res.json(store.cognitionSnapshot(getPredictions())));
+  app.get('/affective-regulation', requireAuth, (req, res) => res.json(store.affectiveRegulationSnapshot()));
   app.get('/goal-affect', requireAuth, (req, res) => res.json(store.goalAffectSnapshot()));
   app.get('/endogenous-dynamics', requireAuth, (req, res) => res.json(store.endogenousDynamicsSnapshot()));
   app.post('/endogenous-dynamics/tick', requireResearchAuth, (req, res) => {

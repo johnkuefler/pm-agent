@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const selfPredictionSubjectRuntime = require('../../src/intelligence/self-prediction-subject-runtime');
+const affectiveRegulation = require('../../src/intelligence/affective-regulation');
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -1785,6 +1786,8 @@ test('appraisal-access trial isolates authentic self-state prediction from decoy
   assert.equal(trial.decoy_appraisals, undefined);
   const sealedCognition = store.cognitionSnapshot();
   assert.equal(sealedCognition.appraisal, undefined);
+  assert.equal(sealedCognition.affective_regulation.experimental_access_sealed, true);
+  assert.equal(store.affectiveRegulationSnapshot().experimental_access_sealed, true);
   assert.equal(sealedCognition.appraisal_access_sealed, true);
   assert.equal(store.contextCondition({ surface: 'slack', unitKey: 'no-appraisal', appraisalAvailable: false }), null);
   const assignments = [];
@@ -1799,9 +1802,16 @@ test('appraisal-access trial isolates authentic self-state prediction from decoy
     if (assignment.condition === 'authentic') assert.deepEqual(context.appraisal, currentAuthentic);
     if (assignment.condition === 'decoy') assert.ok(decoys.some(item => item.label === context.appraisal.label));
     if (assignment.condition === 'telemetry_only') assert.equal(context.appraisal, null);
+    if (assignment.condition === 'telemetry_only') assert.equal(context.regulation, undefined);
+    else assert.equal(affectiveRegulation.verify(context.regulation), true);
     const prompt = store.promptContext({ appraisalContext: context });
-    if (assignment.condition === 'telemetry_only') assert.doesNotMatch(prompt, /Current grounded internal appraisal/);
-    else assert.match(prompt, new RegExp(context.appraisal.label));
+    if (assignment.condition === 'telemetry_only') {
+      assert.doesNotMatch(prompt, /Current grounded internal appraisal/);
+      assert.doesNotMatch(prompt, /Committed affect-regulation policy/);
+    } else {
+      assert.match(prompt, new RegExp(context.appraisal.label));
+      assert.match(prompt, /Committed affect-regulation policy/);
+    }
     store.refreshCognition({ predictions: [], soma: { stress: 0.9 } });
     assert.deepEqual(store.appraisalContextForAssignment(assignment), context);
     const predictionAccuracy = assignment.condition === 'authentic' ? 0.9 : assignment.condition === 'decoy' ? 0.4 : 0.3;
@@ -2392,7 +2402,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 97);
+  assert.equal(store.snapshot().version, 98);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -2428,7 +2438,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 97);
+  assert.equal(store.snapshot().version, 98);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });

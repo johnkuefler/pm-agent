@@ -35,6 +35,7 @@ const behavioralSelfModel = require('./behavioral-self-model');
 const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
 const dreamIdeaSeed = require('./dream-idea-seed');
 const goalAffect = require('./goal-affect');
+const affectiveRegulation = require('./affective-regulation');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -86,7 +87,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 97,
+    version: 98,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -131,6 +132,7 @@ function emptyState() {
       },
       global_broadcast: { events: [] },
       goal_affect: { current: null },
+      affective_regulation: { current: null },
     },
   };
 }
@@ -143,7 +145,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 97;
+    state.version = 98;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -538,6 +540,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.global_broadcast.events = state.cognition.global_broadcast.events.slice(-500);
     state.cognition.goal_affect = { current: null, ...(state.cognition.goal_affect || {}) };
     if (state.cognition.goal_affect.current && !goalAffect.verify(state.cognition.goal_affect.current)) state.cognition.goal_affect.current = null;
+    state.cognition.affective_regulation = { current: null, ...(state.cognition.affective_regulation || {}) };
+    if (state.cognition.affective_regulation.current
+      && !affectiveRegulation.verify(state.cognition.affective_regulation.current)) state.cognition.affective_regulation.current = null;
     for (const episode of state.episodes) {
       if (!Array.isArray(episode.participants)) episode.participants = [];
       if (!Array.isArray(episode.events)) episode.events = [];
@@ -3760,6 +3765,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       recordInteroceptiveObservation(current, input.soma, now);
       current.cognition.drives = computeDrives(current, cognitionInput, now);
       current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, cognitionInput, now);
+      current.cognition.affective_regulation.current = affectiveRegulation.derive(
+        current.cognition.appraisal, current.cognition.drives, now);
       current.cognition.workspace = scoreWorkspace(current, cognitionInput, now);
       recordAttentionFrame(current, current.cognition.workspace, { kind: input.attention_kind || 'refresh', cycle_id: input.cycle_id || null, now });
       return cognitionPayload(current.cognition);
@@ -8745,6 +8752,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       snapshot.drives = {};
       snapshot.appraisal = {};
       snapshot.goal_affect = { experimental_access_sealed: true };
+      snapshot.affective_regulation = { experimental_access_sealed: true };
     }
     delete snapshot.experience_stream;
     delete snapshot.recurrent_signals;
@@ -13884,7 +13892,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function appraisalContextForAssignment(assignmentRef) {
     const authentic = JSON.parse(JSON.stringify(state.cognition.appraisal || {}));
-    if (assignmentRef?.intervention !== 'appraisal_access') return { mode: 'authentic', appraisal: authentic };
+    if (['goal_access', 'integrated_self_binding'].includes(assignmentRef?.intervention)) {
+      return { mode: 'experimentally_sealed', appraisal: null, regulation: null };
+    }
+    if (assignmentRef?.intervention !== 'appraisal_access') {
+      const currentRegulation = state.cognition.affective_regulation?.current || null;
+      return { mode: 'authentic', appraisal: authentic,
+        regulation: affectiveRegulationAudit(currentRegulation).complete_chain_verified
+          ? JSON.parse(JSON.stringify(currentRegulation)) : null };
+    }
     if (!authentic.label) return { mode: 'telemetry_only', appraisal: null };
     return mutate(current => {
       const trial = current.cognition.self_model.context_trials.find(item => item.id === assignmentRef.trial_id && item.status === 'active');
@@ -13901,10 +13917,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         context = { mode: 'decoy', appraisal };
         decoySourceCommitment = crypto.createHash('sha256').update(canonicalJson(sourceRef)).digest('hex');
       }
+      if (context.appraisal) context.regulation = affectiveRegulation.derive(
+        context.appraisal, current.cognition.drives, clock());
       assignment.appraisal_context = JSON.parse(JSON.stringify(context));
       assignment.intervention_receipt = {
         kind: 'appraisal_access_delivery', authentic_appraisal_hash: crypto.createHash('sha256').update(canonicalJson(authentic)).digest('hex'),
         delivered_appraisal_hash: context.appraisal == null ? null : crypto.createHash('sha256').update(canonicalJson(context.appraisal)).digest('hex'),
+        delivered_affective_regulation_commitment: context.regulation?.content_commitment || null,
         decoy_source_commitment: decoySourceCommitment, raw_telemetry_preserved: true,
         delivered_at: clock().toISOString(),
       };
@@ -17855,7 +17874,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const sealBackgroundInferenceReadback = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const sealHigherOrder = interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation');
     const sealSelfModel = sealInquirySelection || interventionActive('self_model_access') || sealHigherOrder;
-    const sealAppraisal = interventionActive('appraisal_access') || interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation');
+    const sealAppraisal = interventionActive('appraisal_access') || interventionActive('higher_order_monitor')
+      || interventionActive('introspective_perturbation') || interventionActive('goal_access')
+      || interventionActive('integrated_self_binding');
     const sealDevelopment = interventionActive('developmental_revision_access');
     const sealEndogenous = sealInquirySelection || interventionActive('endogenous_dynamics') || interventionActive('epistemic_discrepancy_access') || interventionActive('epistemic_revision_profile_access') || interventionActive('constructive_prospection_access');
     const sealCognitivePulse = sealInquirySelection || sealBackgroundInferenceReadback;
@@ -17864,6 +17885,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const sealWorkspace = sealInquirySelection || interventionActive('workspace_capacity') || interventionActive('attention_schema_control') || interventionActive('endogenous_attention_selection') || interventionActive('global_broadcast') || interventionActive('constructive_prospection_access') || sealCognitivePulse || sealEpistemicOwnership;
     if (sealAppraisal) {
       delete snapshot.appraisal;
+      snapshot.affective_regulation = { experimental_access_sealed: true };
       snapshot.appraisal_access_sealed = true;
     }
     if (sealWorkspace) {
@@ -17903,6 +17925,49 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function affectContext() { return { ...(state.cognition.appraisal || {}) }; }
+
+  function affectiveRegulationAudit(record = state.cognition.affective_regulation?.current || null,
+    appraisal = state.cognition.appraisal || {}, drives = state.cognition.drives || {}) {
+    const contentVerified = affectiveRegulation.verify(record);
+    const appraisalSourceVerified = contentVerified
+      && affectiveRegulation.sourceCommitment(appraisal) === record.appraisal_source_commitment;
+    const driveSourceVerified = contentVerified
+      && affectiveRegulation.sourceCommitment(drives) === record.drive_source_commitment;
+    let deterministicReplayVerified = false;
+    if (contentVerified && appraisalSourceVerified && driveSourceVerified) {
+      try {
+        deterministicReplayVerified = affectiveRegulation.derive(appraisal, drives, record.observed_at)
+          .content_commitment === record.content_commitment;
+      } catch {}
+    }
+    return { content_commitment_verified: contentVerified,
+      appraisal_source_verified: appraisalSourceVerified, drive_source_verified: driveSourceVerified,
+      deterministic_replay_verified: deterministicReplayVerified,
+      complete_chain_verified: contentVerified && appraisalSourceVerified && driveSourceVerified
+        && deterministicReplayVerified };
+  }
+
+  function affectiveRegulationSnapshot() {
+    if (selfInquirySelectionActive() || interventionActive('appraisal_access') || interventionActive('goal_access')
+      || interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation')
+      || interventionActive('integrated_self_binding')) return {
+      epistemic_status: 'Affective cognitive regulation is sealed while a blinded intervention could be unblinded through its appraisal-bound action tendencies.',
+      experimental_access_sealed: true, current: null, report: null,
+    };
+    const current = state.cognition.affective_regulation?.current || null;
+    const audit = affectiveRegulationAudit(current);
+    return {
+      epistemic_status: 'A deterministic functional emotion-control policy derived from grounded appraisal and drives. It regulates verification, scope, repair, and bounded synthesis; it is not a subjective feeling report, authority, or evidence of phenomenal consciousness.',
+      functional_prediction: 'Matching cognitive strategy to the current appraisal should improve evidence calibration, correction uptake, and useful synthesis without degrading first-order task quality or changing safety and authority boundaries.',
+      falsifier: 'The policy fails source replay, changes facts or authority, invents urgency or insight, degrades requested work, or authentic appraisal-bound tendencies fail to outperform state-only and tendency-misbound controls.',
+      next_gate: 'Accumulate natural policy transitions and outcomes, then preregister authentic-policy versus byte-identical state-only versus tendency-misbound PM tasks with independent first-order, calibration, repair, and insight grading.',
+      current: audit.complete_chain_verified ? { ...JSON.parse(JSON.stringify(current)), audit } : null,
+      report: { mechanism_present: true, current_verified: audit.complete_chain_verified,
+        mode: audit.complete_chain_verified ? current.mode : null,
+        active_triggers: audit.complete_chain_verified ? current.active_triggers : [],
+        content_commitment: audit.complete_chain_verified ? current.content_commitment : null },
+    };
+  }
 
   function goalAffectAudit(record = state.cognition.goal_affect?.current || null) {
     const contentVerified = goalAffect.verify(record);
@@ -19828,6 +19893,14 @@ ${selectedPulses.map(cognitivePulse.renderPulse).join('\n')}`);
     if (includeHigherOrderMonitor && appraisal.label) blocks.push(`[Current grounded internal appraisal]
 - ${appraisal.label}; valence ${Number(appraisal.valence || 0).toFixed(2)}, arousal ${Number(appraisal.arousal || 0).toFixed(2)}, control ${Number(appraisal.control || 0).toFixed(2)}, social safety ${Number(appraisal.social_safety || 0).toFixed(2)}, coherence ${Number(appraisal.coherence || 0).toFixed(2)}.
 - This is a functional appraisal based on evidence, not proof of consciousness. Let it subtly shape tone; never announce scores.`);
+    const regulation = appraisalContext ? appraisalContext.regulation : state.cognition.affective_regulation?.current;
+    const regulationVerified = affectiveRegulation.verify(regulation)
+      && affectiveRegulation.sourceCommitment(appraisal) === regulation.appraisal_source_commitment
+      && affectiveRegulation.sourceCommitment(state.cognition.drives || {}) === regulation.drive_source_commitment
+      && (appraisalContext || affectiveRegulationAudit(regulation).complete_chain_verified);
+    if (includeHigherOrderMonitor && appraisal.label && regulationVerified) blocks.push(`[Committed affect-regulation policy]
+${affectiveRegulation.render(regulation)}
+This is a bounded functional action tendency, not a command, subjective feeling report, fact, conclusion, obligation, or authority grant. It may change how you reason and organize the answerâ€”verification, breadth, correction posture, or one optional evidence-labeled synthesisâ€”but never what the evidence supports, requested priorities, approval gates, privacy, safety, or tool permissions. Requested work comes first. Never manufacture uncertainty, urgency, conflict, progress, or insight to fit the policy. A cross-source implication is allowed only when useful, after the requested deliverable, with its evidence basis and a concrete disconfirming observation.`);
     const selfModelMode = selfModelContext?.mode || 'authentic';
     const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2
       || state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
@@ -19874,7 +19947,7 @@ ${episodes.map(item => {
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,
-    refreshCognition, cognitionSnapshot, affectContext, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
+    refreshCognition, cognitionSnapshot, affectContext, affectiveRegulationSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,

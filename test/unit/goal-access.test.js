@@ -66,7 +66,10 @@ test('goal-access design requires prospectively attested authentic aims and matc
   assert.equal(publicTrial.authentic_goal, undefined);
   assert.equal(publicTrial.decoy_goals, undefined);
   assert.equal(store.goalAffectSnapshot().experimental_access_sealed, true);
+  assert.equal(store.affectiveRegulationSnapshot().experimental_access_sealed, true);
   assert.equal(store.cognitionSnapshot().goal_affect.experimental_access_sealed, true);
+  assert.equal(store.cognitionSnapshot().appraisal, undefined);
+  assert.equal(store.cognitionSnapshot().affective_regulation.experimental_access_sealed, true);
 });
 
 test('goal-access delivery suppresses ordinary goal routes and captures a condition-blind grading unit', async () => {
@@ -74,6 +77,10 @@ test('goal-access delivery suppresses ordinary goal routes and captures a condit
   store.createContextTrial(design());
   const assignment = store.contextCondition({ surface: 'slack', unitKey: 'slack:C1:100' });
   const context = store.goalContextForAssignment(assignment);
+  const appraisalContext = store.appraisalContextForAssignment(assignment);
+  assert.equal(appraisalContext.appraisal, null);
+  assert.equal(appraisalContext.regulation, null);
+  assert.doesNotMatch(store.promptContext({ appraisalContext }), /Committed affect-regulation policy/);
   assert.equal(context.mode, assignment.condition);
   assert.equal(context.goal == null, assignment.condition === 'absent_goal');
   const captured = store.recordGoalAccessResponse(assignment.assignment_id, {

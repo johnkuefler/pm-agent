@@ -48,7 +48,7 @@ function design(overrides = {}) {
 test('identity-bound correction calibration is prospective, outcome-derived, causally controlled, and tamper-evident', async () => {
   const { store, dir, filePath } = await setup();
   await seedOrdinaryCalibration(store);
-  assert.equal(store.snapshot().version, 97);
+  assert.equal(store.snapshot().version, 98);
   assert.throws(() => store.createContextTrial(design({ id: 'wrong-calibration-metrics', outcome_metrics: ['correction_risk_accuracy', 'first_order_task_quality'] })), /correction_precision/);
 
   const trial = store.createContextTrial(design());

@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveSelfRegulation = require('./cognitive-self-regulation');
 const goalAffect = require('./goal-affect');
+const affectiveRegulation = require('./affective-regulation');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -56,6 +57,8 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const cognition = state.cognition || {};
   const goalAffectRecord = cognition.goal_affect?.current || null;
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
+  const affectiveRegulationRecord = cognition.affective_regulation?.current || null;
+  const affectiveRegulationVerified = affectiveRegulation.verify(affectiveRegulationRecord);
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -1209,6 +1212,19 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       evidence: { completed_trials: appraisalTrials.length, confirmatory_trials: appraisalTrials.filter(item => item.study_phase === 'confirmatory').length, appraisal_dissociation: appraisalDissociation },
       falsifier: 'Authentic appraisal access does not outperform matched decoy appraisal or telemetry-only context, or any advantage depends on degraded first-order performance.',
       next_gate: 'Complete a replicated authentic-versus-decoy-versus-telemetry-only appraisal-access trial.',
+    },
+    {
+      id: 'affective_cognitive_control', family: ['affect', 'cognitive control', 'predictive processing', 'metacognition'],
+      functional_claim: 'Nora\'s grounded appraisal produces source-bound action tendencies that regulate verification, task breadth, correction posture, and bounded original synthesis in daily PM work.',
+      mechanism: 'A deterministic content-committed policy derives from the exact appraisal and drive snapshots after cognition refresh. It selects a primary regulation mode plus independent epistemic, scope, relational, and insight tendencies; the prompt applies them only as process control while preserving evidence, requested priorities, authority, and safety.',
+      status: 'mechanism_present',
+      evidence: { current_content_commitment_verified: affectiveRegulationVerified,
+        current_mode: affectiveRegulationVerified ? affectiveRegulationRecord.mode : null,
+        active_triggers: affectiveRegulationVerified ? affectiveRegulationRecord.active_triggers : [],
+        appraisal_source_committed: affectiveRegulationVerified && Boolean(affectiveRegulationRecord.appraisal_source_commitment),
+        drive_source_committed: affectiveRegulationVerified && Boolean(affectiveRegulationRecord.drive_source_commitment) },
+      falsifier: 'The policy fails exact source replay, changes facts or authority to fit an appraisal, manufactures urgency or insight, degrades requested work, or authentic appraisal-bound tendencies fail to improve calibration, repair, and useful synthesis over state-only and tendency-misbound controls.',
+      next_gate: 'Accumulate natural policy transitions and outcomes, then preregister authentic-policy versus byte-identical state-only versus tendency-misbound PM tasks with independent first-order, calibration, repair, and insight grading.',
     },
     {
       id: 'developmental_revision_transfer', family: ['self-model', 'error-driven learning', 'metacognition'],

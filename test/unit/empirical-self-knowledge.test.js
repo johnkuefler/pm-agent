@@ -44,7 +44,7 @@ test('replay-derived empirical self-knowledge guides prospective regulation beyo
   let now = Date.parse('2026-07-13T15:00:00.000Z');
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date(now) });
   await store.init();
-  assert.equal(store.snapshot().version, 97);
+  assert.equal(store.snapshot().version, 98);
 
   const sourceIds = [];
   sourceIds.push(completeSourceTrial(store, {
