@@ -61,6 +61,9 @@ function normalizePosition(input, { id, now, predecessor = null } = {}) {
     recorded_by: recordedBy, observed_at: input.observed_at ? new Date(input.observed_at).toISOString() : now,
     created: now, supersedes_position_id: predecessor?.id || null,
     previous_position_commitment: predecessor?.position_commitment || null,
+    ...(input.generation_receipt ? {
+      generation_receipt: JSON.parse(JSON.stringify(input.generation_receipt)),
+    } : {}),
   };
   if (!Number.isFinite(position.confidence)) throw new Error('epistemic position confidence must be numeric');
   if (!position.rationale) throw new Error('epistemic positions require a bounded rationale');

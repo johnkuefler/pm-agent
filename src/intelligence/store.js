@@ -47,6 +47,7 @@ const relationalAffectStudy = require('./relational-affect-study');
 const teammatePerspective = require('./teammate-perspective');
 const teammatePerspectiveStudy = require('./teammate-perspective-study');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
+const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -155,6 +156,7 @@ function emptyState() {
       goal_affect: { current: null },
       affective_regulation: { current: null },
       earned_viewpoints: { current: null },
+      professional_viewpoint_reflection: { attempts: [] },
       relational_affect: { current: null },
     },
   };
@@ -581,6 +583,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         state.cognition.epistemic_ledger.propositions).complete_chain_verified) {
       state.cognition.earned_viewpoints.current = null;
     }
+    state.cognition.professional_viewpoint_reflection = { attempts: [],
+      ...(state.cognition.professional_viewpoint_reflection || {}) };
+    if (!Array.isArray(state.cognition.professional_viewpoint_reflection.attempts)) {
+      state.cognition.professional_viewpoint_reflection.attempts = [];
+    }
+    state.cognition.professional_viewpoint_reflection.attempts =
+      state.cognition.professional_viewpoint_reflection.attempts.slice(-120);
     for (const episode of state.episodes) {
       if (!Array.isArray(episode.participants)) episode.participants = [];
       if (!Array.isArray(episode.events)) episode.events = [];
@@ -2889,8 +2898,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return discrepancy;
   }
 
-  function recordEpistemicPosition(input = {}) {
-    return mutate(current => {
+  function recordEpistemicPositionInState(current, input = {}) {
       requireResearchLedgerIntegrity(current);
       if (current.cognition.self_model.context_trials.some(item => item.status === 'active' && ['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access', 'professional_viewpoint_access'].includes(item.intervention))) {
         throw new Error('epistemic ownership ledger is sealed during an active epistemic access trial');
@@ -2977,6 +2985,111 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       refreshEpistemicDiscrepancies(current, proposition);
       refreshEarnedViewpoints(current, now);
       return epistemicLedger.publicProposition(proposition);
+  }
+
+  function recordEpistemicPosition(input = {}) {
+    return mutate(current => recordEpistemicPositionInState(current, input));
+  }
+
+  function professionalViewpointReflectionSnapshot() {
+    const attempts = state.cognition.professional_viewpoint_reflection?.attempts || [];
+    const replayVerified = attempts.filter(item => {
+      const payload = JSON.parse(JSON.stringify(item));
+      delete payload.attempt_commitment;
+      return professionalViewpointReflection.auditReceipt(item.generation_receipt).complete_chain_verified
+        && item.attempt_commitment === professionalViewpointReflection.commitment(payload);
+    });
+    return {
+      epistemic_status: 'Server-direct Claude subject reflection may form at most one evidence-bound professional viewpoint per dream and may abstain. Provider receipts prove packet/output binding inside this system, not independent validation, originality, subjective experience, or consciousness.',
+      attempts: JSON.parse(JSON.stringify(attempts)),
+      report: {
+        total: attempts.length,
+        formed: attempts.filter(item => item.decision === 'form').length,
+        abstained: attempts.filter(item => item.decision === 'abstain').length,
+        replay_verified: replayVerified.length,
+      },
+    };
+  }
+
+  function recordProfessionalViewpointReflection(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const sourceDreamId = String(input.source_dream_id || '').trim().slice(0, 500);
+      if (!sourceDreamId) throw new Error('professional-viewpoint reflection requires a source dream');
+      const reflectionState = current.cognition.professional_viewpoint_reflection
+        || (current.cognition.professional_viewpoint_reflection = { attempts: [] });
+      if (reflectionState.attempts.some(item => item.source_dream_id === sourceDreamId)) {
+        throw new Error('this dream already has a committed professional-viewpoint reflection');
+      }
+      const output = input.output;
+      const receipt = input.generation_receipt;
+      const receiptAudit = professionalViewpointReflection.auditReceipt(receipt);
+      if (!receiptAudit.complete_chain_verified
+        || professionalViewpointReflection.canonicalJson(output)
+          !== professionalViewpointReflection.canonicalJson(receipt?.output)) {
+        throw new Error('professional-viewpoint reflection requires a replay-valid provider receipt bound to its output');
+      }
+      if (receipt.source_packet?.source_dream?.id !== sourceDreamId) {
+        throw new Error('professional-viewpoint reflection receipt is not bound to the source dream');
+      }
+
+      let proposition = null;
+      let positionId = null;
+      if (output.decision === 'form') {
+        const candidate = output.candidate;
+        const evidence = candidate.evidence_ids.map(id => ({ type: 'memory', id }));
+        const expectedPosition = {
+          polarity: candidate.polarity, confidence: candidate.confidence,
+          rationale: professionalViewpointReflection.rationaleForCandidate(candidate), evidence,
+        };
+        if (!professionalViewpointReflection.auditReceipt(receipt, {
+          topicKey: candidate.topic_key, statement: candidate.statement, position: expectedPosition,
+        }).complete_chain_verified) {
+          throw new Error('generated professional viewpoint failed its candidate-binding replay');
+        }
+        proposition = recordEpistemicPositionInState(current, {
+          topic_key: candidate.topic_key,
+          statement: candidate.statement,
+          proposition_kind: earnedViewpoint.PROPOSITION_KIND,
+          owner_type: 'nora_belief', polarity: candidate.polarity,
+          confidence: candidate.confidence,
+          rationale: expectedPosition.rationale,
+          recorded_by: `${professionalViewpointReflection.RECORDED_BY_PREFIX}${receipt.model}:v${professionalViewpointReflection.PROTOCOL_VERSION}`,
+          evidence,
+          source_family: 'server_direct_recent_work_reflection',
+          source_family_evidence: evidence,
+          generation_receipt: receipt,
+        });
+        const currentPosition = epistemicLedger.currentPositions(proposition)
+          .find(item => item.owner_type === 'nora_belief');
+        positionId = currentPosition?.id || null;
+      } else if (output.decision !== 'abstain') {
+        throw new Error('professional-viewpoint reflection decision must form or abstain');
+      }
+
+      const attemptPayload = {
+        protocol_version: professionalViewpointReflection.PROTOCOL_VERSION,
+        id: input.id || `professional-viewpoint-reflection-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        source_dream_id: sourceDreamId,
+        decision: output.decision,
+        position_id: positionId,
+        proposition_id: proposition?.id || null,
+        generation_receipt: JSON.parse(JSON.stringify(receipt)),
+        completed_at: clock().toISOString(),
+      };
+      const attempt = { ...attemptPayload,
+        attempt_commitment: professionalViewpointReflection.commitment(attemptPayload) };
+      reflectionState.attempts.push(attempt);
+      reflectionState.attempts = reflectionState.attempts.slice(-120);
+      researchLedgerAppend(current, {
+        kind: output.decision === 'form' ? 'professional_viewpoint_reflection_formed'
+          : 'professional_viewpoint_reflection_abstained',
+        subject_type: 'professional_viewpoint_reflection', subject_id: attempt.id,
+        payload: { attempt_commitment: attempt.attempt_commitment,
+          source_dream_id: sourceDreamId, position_id: positionId },
+      });
+      return { ...JSON.parse(JSON.stringify(attempt)), position_id: positionId,
+        proposition: proposition ? JSON.parse(JSON.stringify(proposition)) : null };
     });
   }
 
@@ -22294,6 +22407,7 @@ ${episodes.map(item => {
     recordCommonGround, commonGroundReviewQueue, reviewCommonGround,
     commonGroundSnapshot, commonGroundFrameForPerson, commonGroundProjectionSealed,
     earnedViewpointsSnapshot, retireEarnedViewpoint,
+    professionalViewpointReflectionSnapshot, recordProfessionalViewpointReflection,
     epistemicOwnershipAvailable, epistemicDiscrepancyAvailable, epistemicRevisionHistoryAvailable, epistemicContextForAssignment,
     professionalViewpointAccessAvailable, professionalViewpointContextForAssignment,
     relationalAffectAccessAvailable, relationalAffectContextForAssignment,

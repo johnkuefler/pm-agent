@@ -6,6 +6,7 @@ const cognitiveSelfRegulation = require('./cognitive-self-regulation');
 const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
+const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const relationalAffect = require('./relational-affect');
 const teammatePerspective = require('./teammate-perspective');
 const commonGround = require('./common-ground');
@@ -69,6 +70,13 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     cognition.epistemic_ledger?.propositions || []);
   const earnedViewpoints = earnedViewpointAudit.complete_chain_verified
     ? earnedViewpointRecord.viewpoints : [];
+  const professionalReflectionAttempts = cognition.professional_viewpoint_reflection?.attempts || [];
+  const replayVerifiedProfessionalReflections = professionalReflectionAttempts.filter(item => {
+    const payload = JSON.parse(JSON.stringify(item));
+    delete payload.attempt_commitment;
+    return professionalViewpointReflection.auditReceipt(item.generation_receipt).complete_chain_verified
+      && item.attempt_commitment === professionalViewpointReflection.commitment(payload);
+  });
   const relationalAffectRecord = cognition.relational_affect?.current || null;
   const relationalAffectAudit = relationalAffect.audit(relationalAffectRecord, state.relationships || []);
   const relationalStances = relationalAffectAudit.complete_chain_verified
@@ -1791,7 +1799,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'evidence_tested_professional_viewpoints', family: ['self-model', 'metacognition', 'original insight', 'professional judgment'],
       functional_claim: 'Nora maintains distinct professional viewpoints that are self-authored, evidence-bound, confidence-calibrated, revisable, and capable of improving applied PM judgment without being mistaken for facts.',
-      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access.',
+      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access. A once-per-dream server-direct Claude subject reflection can form at most one view or abstain; its balanced source packet, provider response, output, falsifier, and exact evidence selection must replay before a generated view is eligible.',
       status: professionalViewpointTrial ? replicatedStatus(professionalViewpointTrials, professionalViewpointVerdict)
         : earnedViewpoints.length ? 'collecting' : 'mechanism_present',
       evidence: {
@@ -1801,6 +1809,12 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         forming: earnedViewpoints.filter(item => item.status === 'forming').length,
         questioning: earnedViewpoints.filter(item => item.status === 'questioning').length,
         revisions: earnedViewpoints.reduce((sum, item) => sum + Number(item.revision_count || 0), 0),
+        subject_reflection_attempts: professionalReflectionAttempts.length,
+        replay_verified_subject_reflections: replayVerifiedProfessionalReflections.length,
+        subject_reflection_formations: replayVerifiedProfessionalReflections
+          .filter(item => item.decision === 'form').length,
+        subject_reflection_abstentions: replayVerifiedProfessionalReflections
+          .filter(item => item.decision === 'abstain').length,
         completed_identity_binding_trials: professionalViewpointTrials.length,
         confirmatory_identity_binding_trials: professionalViewpointTrials.filter(item => item.study_phase === 'confirmatory').length,
         latest_identity_binding_dissociation: professionalViewpointDissociation,

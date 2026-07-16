@@ -45,6 +45,7 @@ const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broa
 const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycle-prediction-autopilot');
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
+const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -7752,6 +7753,8 @@ registerDreamRoutes(app, {
         intelligence.createExperiment({ behavior: String(learning), hypothesis: 'Applying this observed learning should improve how future interactions land.', metric: 'positive_rate', review_at: new Date(Date.now() + 14 * 86400000).toISOString() });
       }
     }
+    runProfessionalViewpointReflectionAutopilotRuntime()
+      .catch(error => console.error('Professional-viewpoint reflection failed:', error.message));
   },
 });
 
@@ -8797,6 +8800,8 @@ let _commonGroundReviewAutopilotInFlight = false;
 let _commonGroundReviewAutopilotLastCycle = null;
 let _teammatePerspectiveReviewAutopilotInFlight = false;
 let _teammatePerspectiveReviewAutopilotLastCycle = null;
+let _professionalViewpointReflectionInFlight = false;
+let _professionalViewpointReflectionLastCycle = null;
 
 function tickEndogenousRuntime(now = new Date()) {
   return intelligence.tickEndogenousDynamics({
@@ -8886,6 +8891,17 @@ function teammatePerspectiveReviewAutopilotRuntimeConfig(env = process.env) {
   };
 }
 
+function professionalViewpointReflectionRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_PROFESSIONAL_VIEWPOINT_REFLECTION !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_PROFESSIONAL_VIEWPOINT_REFLECTION_MODEL
+      || professionalViewpointReflection.DEFAULT_MODEL).slice(0, 160),
+  };
+}
+
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig();
@@ -8898,6 +8914,16 @@ function researchAutopilotProgramStatus() {
     enabled: teammatePerspectiveReviewConfig.enabled, model: teammatePerspectiveReviewConfig.model,
     lastCycle: _teammatePerspectiveReviewAutopilotLastCycle,
   });
+  const professionalViewpointConfig = professionalViewpointReflectionRuntimeConfig();
+  const professionalViewpointStatus = intelligence.professionalViewpointReflectionSnapshot();
+  const professionalViewpointReflectionStatus = {
+    protocol_version: professionalViewpointReflection.PROTOCOL_VERSION,
+    enabled: professionalViewpointConfig.enabled,
+    model: professionalViewpointConfig.model,
+    report: professionalViewpointStatus.report,
+    last_cycle: _professionalViewpointReflectionLastCycle,
+    scientific_boundary: 'This is a receipt-bound Claude subject synthesis over frozen recent-work evidence. It is not independent validation, proof of originality, subjective experience, or phenomenal consciousness.',
+  };
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
   });
@@ -8923,6 +8949,7 @@ function researchAutopilotProgramStatus() {
       natural_cycle_prediction: naturalCyclePrediction,
       common_ground_review: commonGroundReview,
       teammate_perspective_review: teammatePerspectiveReview,
+      professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     };
   }
   const reasoning = reasoningResearchAutopilot.status(intelligence, {
@@ -8945,6 +8972,7 @@ function researchAutopilotProgramStatus() {
     natural_cycle_prediction: naturalCyclePrediction,
     common_ground_review: commonGroundReview,
     teammate_perspective_review: teammatePerspectiveReview,
+    professional_viewpoint_reflection: professionalViewpointReflectionStatus,
   };
 }
 
@@ -9023,6 +9051,51 @@ async function runTeammatePerspectiveReviewAutopilotRuntime({ post = axios.post 
     return _teammatePerspectiveReviewAutopilotLastCycle;
   } finally {
     _teammatePerspectiveReviewAutopilotInFlight = false;
+  }
+}
+
+async function runProfessionalViewpointReflectionAutopilotRuntime({ post = axios.post } = {}) {
+  const config = professionalViewpointReflectionRuntimeConfig();
+  if (!config.enabled) {
+    _professionalViewpointReflectionLastCycle = {
+      protocol_version: professionalViewpointReflection.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _professionalViewpointReflectionLastCycle;
+  }
+  if (_professionalViewpointReflectionInFlight) {
+    return { protocol_version: professionalViewpointReflection.PROTOCOL_VERSION,
+      state: 'in_flight', at: new Date().toISOString() };
+  }
+  _professionalViewpointReflectionInFlight = true;
+  try {
+    const callProvider = async request => {
+      const response = await post('https://api.anthropic.com/v1/messages', request, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 45000,
+      });
+      return response.data;
+    };
+    const cycle = await professionalViewpointReflection.runCycle({
+      store: intelligence, memories: loadMemory(), dreams: loadDreams(),
+      enabled: true, model: config.model, callProvider,
+      lastCycle: _professionalViewpointReflectionLastCycle,
+    });
+    _professionalViewpointReflectionLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _professionalViewpointReflectionLastCycle;
+  } catch (error) {
+    _professionalViewpointReflectionLastCycle = {
+      protocol_version: professionalViewpointReflection.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _professionalViewpointReflectionLastCycle;
+  } finally {
+    _professionalViewpointReflectionInFlight = false;
   }
 }
 
@@ -9502,6 +9575,8 @@ async function start(options = {}) {
         .catch(error => console.error('Common-ground review autopilot failed:', error.message));
       runTeammatePerspectiveReviewAutopilotRuntime()
         .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
+      runProfessionalViewpointReflectionAutopilotRuntime()
+        .catch(error => console.error('Professional-viewpoint reflection failed:', error.message));
       runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
       try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
       catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -9514,6 +9589,8 @@ async function start(options = {}) {
           .catch(error => console.error('Common-ground review autopilot failed:', error.message));
         runTeammatePerspectiveReviewAutopilotRuntime()
           .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
+        runProfessionalViewpointReflectionAutopilotRuntime()
+          .catch(error => console.error('Professional-viewpoint reflection failed:', error.message));
         runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
         try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
         catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -9565,6 +9642,8 @@ module.exports = {
     runCommonGroundReviewAutopilotRuntime,
     teammatePerspectiveReviewAutopilotRuntimeConfig,
     runTeammatePerspectiveReviewAutopilotRuntime,
+    professionalViewpointReflectionRuntimeConfig,
+    runProfessionalViewpointReflectionAutopilotRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,

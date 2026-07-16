@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const epistemicLedger = require('./epistemic-ledger');
+const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 
 const PROTOCOL_VERSION = 1;
 const PROPOSITION_KIND = 'professional_viewpoint';
@@ -43,16 +44,25 @@ function eligibility(proposition) {
   const position = currentNoraPosition(proposition || {});
   const evidence = distinctReferences(position?.evidence);
   const sourceEvidence = distinctReferences(proposition?.source_family_evidence);
+  const reflectionAuthored = String(position?.recorded_by || '')
+    .startsWith(professionalViewpointReflection.RECORDED_BY_PREFIX);
+  const generationReceiptAudit = reflectionAuthored
+    ? professionalViewpointReflection.auditReceipt(position?.generation_receipt, {
+      topicKey: proposition?.topic_key, statement: proposition?.statement, position,
+    }) : null;
   const checks = {
     professional_viewpoint: proposition?.proposition_kind === PROPOSITION_KIND,
     active: proposition?.status === 'active',
     position_chain_verified: epistemicLedger.auditProposition(proposition || {}).complete_chain_verified,
     single_current_nora_position: Boolean(position),
     nora_authored: Boolean(position && noraAuthored(position.recorded_by)),
+    subject_generation_receipt_verified: !reflectionAuthored
+      || generationReceiptAudit?.complete_chain_verified === true,
     position_evidence_minimum_met: evidence.length >= 2,
     source_family_evidence_minimum_met: sourceEvidence.length >= 2,
   };
-  return { eligible: Object.values(checks).every(Boolean), checks, position, evidence, source_evidence: sourceEvidence };
+  return { eligible: Object.values(checks).every(Boolean), checks, position, evidence,
+    source_evidence: sourceEvidence, generation_receipt_audit: generationReceiptAudit };
 }
 
 function sourceCommitment(proposition) {
