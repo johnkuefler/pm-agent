@@ -131,6 +131,9 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const replayValidSelfCorrections = replayValidCycleSelfForecasts.filter(item =>
     item.self_forecast?.outcome?.self_correction
     && item.audit?.self_forecast?.self_correction_complete_chain_verified === true);
+  const aggregateCalibratedSelfCorrections = replayValidSelfCorrections.filter(item =>
+    Number(item.self_forecast?.self_correction?.feedback?.protocol_version) >= 3
+    && item.self_forecast.self_correction.feedback.aggregate_calibration);
   const integratedSelfCorrectionAdvantage = mean(replayValidSelfCorrections.map(item =>
     item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial)
     .filter(Number.isFinite));
@@ -141,6 +144,17 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     item.self_forecast.outcome.self_correction.metacognitive_reliability_score?.revised_minus_initial)
     .filter(Number.isFinite));
   const integratedSelfCorrectionImprovementRate = mean(replayValidSelfCorrections.map(item => Number(
+    Number(item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial) > 0)));
+  const aggregateIntegratedSelfCorrectionAdvantage = mean(aggregateCalibratedSelfCorrections.map(item =>
+    item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial)
+    .filter(Number.isFinite));
+  const aggregateBehavioralSelfCorrectionAdvantage = mean(aggregateCalibratedSelfCorrections.map(item =>
+    item.self_forecast.outcome.self_correction.behavioral_score?.revised_minus_initial)
+    .filter(Number.isFinite));
+  const aggregateMetacognitiveSelfCorrectionAdvantage = mean(aggregateCalibratedSelfCorrections.map(item =>
+    item.self_forecast.outcome.self_correction.metacognitive_reliability_score?.revised_minus_initial)
+    .filter(Number.isFinite));
+  const aggregateIntegratedSelfCorrectionImprovementRate = mean(aggregateCalibratedSelfCorrections.map(item => Number(
     Number(item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial) > 0)));
   const behavioralSelfModelRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
   const replayValidBehavioralSelfModelRevisions = behavioralSelfModelRevisions
@@ -785,9 +799,22 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         mean_behavioral_revised_minus_initial: behavioralSelfCorrectionAdvantage,
         mean_metacognitive_reliability_revised_minus_initial: metacognitiveSelfCorrectionAdvantage,
         integrated_self_state_improvement_rate: integratedSelfCorrectionImprovementRate,
+        aggregate_calibrated_cohort: {
+          protocol_version: 3,
+          replay_verified_decisions: aggregateCalibratedSelfCorrections.length,
+          revised: aggregateCalibratedSelfCorrections.filter(item =>
+            item.self_forecast.self_correction.revision?.disposition === 'revise').length,
+          retained_initial: aggregateCalibratedSelfCorrections.filter(item =>
+            item.self_forecast.self_correction.revision?.disposition === 'retain').length,
+          mean_integrated_self_state_revised_minus_initial: aggregateIntegratedSelfCorrectionAdvantage,
+          mean_behavioral_revised_minus_initial: aggregateBehavioralSelfCorrectionAdvantage,
+          mean_metacognitive_reliability_revised_minus_initial: aggregateMetacognitiveSelfCorrectionAdvantage,
+          integrated_self_state_improvement_rate: aggregateIntegratedSelfCorrectionImprovementRate,
+          interpretation: 'Prospective outcomes whose correction packet contained a replay-verified aggregate calibration prior; legacy latest-error-only decisions are excluded.',
+        },
       },
       falsifier: 'The initial forecast is not committed before error access, the error packet does not replay from its cited prior outcome, revisions occur after evidence re-entry, altered or repeated revisions pass audit, or revised predictions fail to improve integrated self-state accuracy after twenty natural opportunities.',
-      next_gate: 'Accumulate twenty replay-valid natural correction opportunities, then preregister a same-initial-forecast trial comparing authentic prior error with an information-matched deidentified error packet and no-error access.',
+      next_gate: 'Accumulate twenty replay-valid aggregate-calibrated natural correction opportunities, then preregister a same-initial-forecast trial comparing authentic prior error with an information-matched deidentified error packet and no-error access.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],

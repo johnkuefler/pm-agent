@@ -330,11 +330,13 @@ test('natural-cycle substrate self-prediction requires advantage over exact pers
 });
 
 test('prospective self-model error correction scores revised forecasts against their frozen initial judgment', () => {
-  const moment = (index, integratedDelta = 0.08) => ({
+  const moment = (index, integratedDelta = 0.08, aggregateCalibrated = false) => ({
     id: `self-correction-moment-${index}`, status: 'completed',
     self_forecast: {
       protocol_version: 3,
       self_correction: { offer_commitment: `offer-${index}`,
+        feedback: aggregateCalibrated ? { protocol_version: 3,
+          aggregate_calibration: { sample_size: 20 } } : { protocol_version: 2 },
         revision: { revision_commitment: `revision-${index}`, disposition: 'revise' } },
       outcome: {
         baseline_comparison_eligible: true,
@@ -365,6 +367,15 @@ test('prospective self-model error correction scores revised forecasts against t
   assert.equal(supported.status, 'observational_signal_observed');
   assert.equal(supported.evidence.replay_verified_decisions, 20);
   assert.ok(Math.abs(supported.evidence.mean_integrated_self_state_revised_minus_initial - 0.08) < 1e-12);
+  assert.equal(supported.evidence.aggregate_calibrated_cohort.replay_verified_decisions, 0);
+  report = buildIndicatorReport(stateWith({ experience_stream:
+    [moment(0, -0.1), moment(1, 0.12, true), moment(2, 0.04, true)] }));
+  const aggregateCohort = indicator(report, 'prospective_self_model_error_correction')
+    .evidence.aggregate_calibrated_cohort;
+  assert.equal(aggregateCohort.replay_verified_decisions, 2);
+  assert.equal(aggregateCohort.revised, 2);
+  assert.ok(Math.abs(aggregateCohort.mean_integrated_self_state_revised_minus_initial - 0.08) < 1e-12);
+  assert.equal(aggregateCohort.integrated_self_state_improvement_rate, 1);
   report = buildIndicatorReport(stateWith({ experience_stream:
     Array.from({ length: 20 }, (_, index) => moment(index, -0.01)) }));
   assert.equal(indicator(report, 'prospective_self_model_error_correction').status,
