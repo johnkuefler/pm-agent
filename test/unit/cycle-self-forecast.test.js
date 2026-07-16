@@ -323,6 +323,37 @@ test('protocol-v5 binds a lagged behavioral prior and excludes retired action fa
   assert.equal(outcome.self_state_actual.action_count, 1);
 });
 
+test('protocol-v5 action filtering does not change legacy action-count replay semantics', () => {
+  const moments = [{
+    attention: { slots: [] }, attention_rounds: [{ index: 0 }],
+    closure: {
+      actions: [{ type: 'review', id: 'review-a' }, { type: 'review', id: 'review-b' }],
+      appraisal_at_end: { valence: 0.5, arousal: 0.5, control: 0.5,
+        social_safety: 0.5, coherence: 0.5 },
+    },
+  }];
+  assert.equal(cycleSelfForecast.baselineFromMoments(moments, 4)
+    .self_state_prediction.expected_action_count, 2);
+  assert.equal(cycleSelfForecast.baselineFromMoments(moments, 5)
+    .self_state_prediction.expected_action_count, 1);
+  const prediction = {
+    predicted_action_types: ['review'], surprise_probability: 0, control_at_close: 0.5,
+    self_state_prediction: { attention_slot_types_at_close: [], expected_action_count: 2,
+      appraisal_at_close: { valence: 0.5, arousal: 0.5, control: 0.5,
+        social_safety: 0.5, coherence: 0.5 }, reentry_probability: 0 },
+    metacognitive_prediction: { integrated_success_threshold: 0.75,
+      predicted_success_probability: 0.5, predicted_largest_error_domain: 'action_count' },
+    substrate_prediction: { error_probability: 0.1, warning_probability: 0.1,
+      backup_probability: 0.1, embedding_backlog_probability: 0.1, restart_probability: 0.1 },
+  };
+  const legacy = cycleSelfForecast.scoreRecord({ protocol_version: 4, forecast: prediction,
+    baseline: { ...prediction, sample_size: 1 } }, {
+    actions: moments[0].closure.actions, appraisalAtClose: moments[0].closure.appraisal_at_end,
+    scoredAt: '2026-07-14T13:00:00.000Z',
+  });
+  assert.equal(legacy.self_state_actual.action_count, 2);
+});
+
 test('protocol-v4 substrate scoring requires complete authoritative telemetry for comparison', () => {
   const actual = cycleSelfForecast.substrateActual({
     start: { uptime_minutes: 10 }, close: { errors10: 0, warns10: null,

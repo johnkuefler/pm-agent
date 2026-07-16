@@ -617,8 +617,10 @@ function baselineSelfStateFromMoments(moments = [], protocolVersion = 1) {
       valence: appraisal('valence'), arousal: appraisal('arousal'), control: appraisal('control'),
       social_safety: appraisal('social_safety'), coherence: appraisal('coherence'),
     },
-    expected_action_count: mean(moments.map(moment => activeActionTypes((moment.closure?.actions || [])
-      .filter(item => item?.type && (item.id || item.url)), protocolVersion).length), 0),
+    expected_action_count: mean(moments.map(moment => Number(protocolVersion) >= 5
+      ? activeActionTypes((moment.closure?.actions || [])
+        .filter(item => item?.type && (item.id || item.url)), protocolVersion).length
+      : (moment.closure?.actions || []).filter(item => item?.type && (item.id || item.url)).length), 0),
     reentry_probability: moments.filter(moment => (moment.attention_rounds || []).length > 1).length / moments.length,
   };
 }
@@ -796,8 +798,10 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
           const raw = closingAppraisal?.[key];
           return [key, raw !== null && raw !== undefined && Number.isFinite(Number(raw)) ? clamp01(raw) : null];
         })),
-      action_count: activeActionTypes(actions.filter(item => item?.type && (item.id || item.url)),
-        record.protocol_version).length,
+      action_count: Number(record.protocol_version) >= 5
+        ? activeActionTypes(actions.filter(item => item?.type && (item.id || item.url)),
+          record.protocol_version).length
+        : actions.filter(item => item?.type && (item.id || item.url)).length,
       reentered: reentryOccurred === true,
     };
     const selfStateScore = scoreSelfStatePrediction(record.forecast.self_state_prediction, actualSelfState);
