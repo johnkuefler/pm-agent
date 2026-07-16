@@ -18183,7 +18183,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const sourceMoment = cognition.experience_stream.find(item =>
         item.id === correctionOffer.feedback?.source_moment_id);
       const expectedFeedback = sourceMoment
-        ? cycleSelfForecast.errorFeedbackFromMoment(sourceMoment, eligibleHistoricalMoments) : null;
+        ? cycleSelfForecast.errorFeedbackFromMoment(sourceMoment,
+          Number(correctionOffer.feedback?.protocol_version) >= 3
+            ? eligibleHistoricalMoments : []) : null;
       const sourceIndex = sourceMoment ? cognition.experience_stream.findIndex(item => item.id === sourceMoment.id) : -1;
       const revealAt = new Date(correctionOffer.revealed_at).getTime();
       const offerEventIndex = eventIndex('experience_self_forecast_feedback_revealed', record.id,
