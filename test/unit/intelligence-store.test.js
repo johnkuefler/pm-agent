@@ -2825,12 +2825,28 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
     errors10: 0, warns10: 0, loopLag: 5, uptimeMin: 100,
     processEpochId: 'lagged-prior-process', onBackup: false, memCount: 100, embedBacklog: 0,
   } });
+  store.refreshCognition({ now, soma: soma() });
   for (let index = 0; index < 21; index++) {
     const started = store.startCycle({ id: `lagged-prior-source-${index}`,
       holder: 'nora-cowork', soma: soma() });
     store.preregisterCycleSelfForecast(started.cycle.id, {
+      protocol_version: 4,
       predicted_action_types: ['review'], surprise_probability: 0.2,
       control_at_close: 0.7, confidence: 0.6,
+      self_state_prediction: {
+        attention_slot_types_at_close: [],
+        appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7,
+          social_safety: 0.8, coherence: 0.8 },
+        expected_action_count: 1, reentry_probability: 0.1,
+      },
+      metacognitive_prediction: {
+        predicted_success_probability: 0.6,
+        predicted_largest_error_domain: 'action_types',
+      },
+      substrate_prediction: {
+        error_probability: 0.1, warning_probability: 0.1, backup_probability: 0.05,
+        embedding_backlog_probability: 0.05, restart_probability: 0.05,
+      },
       rationale: `The bounded source cycle ${index} supplies prospective behavioral evidence.`,
       evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
     });
@@ -2947,17 +2963,93 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   assert.equal(indicator.evidence.lagged_prior_forecasts, 2);
   assert.deepEqual(indicator.evidence.lagged_prior_use_declarations,
     { applied: 1, overridden: 0, not_relevant: 0 });
+  now = new Date(now.getTime() + 60 * 60 * 1000);
+  const controlledTarget = store.startCycle({ id: 'lagged-prior-controlled-v7',
+    holder: 'nora-cowork', soma: soma() });
+  const controlledPrior = store.behavioralSelfForecastPriorSnapshot();
+  assert.equal(controlledPrior.available, true);
+  assert.equal(controlledPrior.trust_policy_verified, true);
+  const controlledCommitment = controlledPrior.prior.content_commitment;
+  const controlledInput = {
+    protocol_version: 7,
+    predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.7, confidence: 0.8,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.85 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.8,
+      predicted_largest_error_domain: 'action_types',
+    },
+    substrate_prediction: {
+      error_probability: 0.1, warning_probability: 0.1, backup_probability: 0.05,
+      embedding_backlog_probability: 0.05, restart_probability: 0.05,
+    },
+    behavioral_self_prior_commitment: controlledCommitment,
+    behavioral_self_prior_use: {
+      disposition: 'applied', estimate_refs: ['action_tendencies'],
+      rationale: 'The lagged action tendency informs the raw forecast while trust control remains separate.',
+    },
+    rationale: 'The lagged operational prior and current orientation support one bounded review action.',
+    evidence: [{ type: 'intelligence_cycle', id: controlledTarget.cycle.id },
+      { type: 'behavioral_self_prior', id: controlledCommitment }],
+  };
+  const controlledForecast = store.preregisterCycleSelfForecast(controlledTarget.cycle.id,
+    controlledInput);
+  assert.equal(controlledForecast.audit.behavioral_self_trust_policy_verified, true);
+  assert.equal(controlledForecast.audit.metacognitive_adjudication_verified, true);
+  assert.equal(controlledForecast.metacognitive_adjudication.source,
+    controlledPrior.trust_policy.domains.metacognitive_reliability.disposition
+      === 'self_model_eligible' ? 'self_model' : 'historical_baseline');
+  assert.equal(controlledForecast.forecast.metacognitive_prediction.predicted_success_probability,
+    0.8, 'raw reliability judgment remains preserved');
+  assert.ok(controlledForecast.self_correction?.feedback_commitment);
+  const controlledRevision = store.reviseCycleSelfForecast(controlledTarget.cycle.id, {
+    ...controlledInput, disposition: 'retain',
+    feedback_commitment: controlledForecast.self_correction.feedback_commitment,
+    evidence: [...controlledInput.evidence, { type: 'forecast_error_feedback',
+      id: controlledForecast.self_correction.feedback_commitment }],
+  });
+  assert.equal(controlledRevision.audit.self_correction_revision_adjudication_verified, true);
+  assert.equal(controlledRevision.self_correction.revision.metacognitive_adjudication.source,
+    controlledForecast.metacognitive_adjudication.source);
+  now = new Date(now.getTime() + 5 * 60 * 1000);
+  store.completeCycle(controlledTarget.cycle.id, {
+    summary: 'Completed the trust-controlled natural forecast cycle.',
+    actions: [{ type: 'review', id: 'controlled-review' }],
+    substrate_at_close: soma(),
+  });
+  const controlledStream = store.experienceStreamSnapshot();
+  const controlledClosed = controlledStream.moments
+    .find(item => item.id === controlledTarget.moment.id);
+  assert.equal(controlledClosed.audit.evidence_eligible, true);
+  assert.equal(controlledClosed.audit.self_forecast.metacognitive_adjudication_verified, true);
+  assert.ok(controlledClosed.self_forecast.outcome.operational_metacognitive_score);
+  assert.equal(controlledClosed.self_forecast.outcome.self_correction
+    .operational_metacognitive_reliability_score.revised_minus_initial, 0);
+  assert.equal(controlledStream.prospective_self_forecast
+    .metacognitive_trust_controlled_forecasts, 1);
+  assert.equal(Object.values(controlledStream.prospective_self_forecast
+    .metacognitive_trust_control_sources).reduce((sum, count) => sum + count, 0), 1);
+  const controlledIndicator = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'calibrated_self_model_trust');
+  assert.equal(controlledIndicator.evidence.replay_verified_metacognitive_controlled_forecasts, 1);
   await store.persist();
 
   const tamperedPath = path.join(dir, 'tampered-prior.json');
   const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  persisted.cognition.experience_stream.at(-1).self_forecast.behavioral_self_prior.estimates.sample_size = 19;
+  persisted.cognition.experience_stream.at(-1).self_forecast.metacognitive_adjudication.source
+    = persisted.cognition.experience_stream.at(-1).self_forecast.metacognitive_adjudication.source
+      === 'self_model' ? 'historical_baseline' : 'self_model';
   fs.writeFileSync(tamperedPath, JSON.stringify(persisted));
   const tampered = createIntelligenceStore({ filePath: tamperedPath, db: {}, isDbReady: () => false,
     clock: () => new Date(now) });
   await tampered.init();
   const invalid = tampered.experienceStreamSnapshot().moments.at(-1);
-  assert.equal(invalid.audit.self_forecast.behavioral_self_prior_verified, false);
+  assert.equal(invalid.audit.self_forecast.metacognitive_adjudication_verified, false);
   assert.equal(invalid.audit.evidence_eligible, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });

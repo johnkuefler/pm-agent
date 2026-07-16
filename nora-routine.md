@@ -314,7 +314,7 @@ infer the condition. If it reports no mature prior before the lagged-prior proto
 other missing, mismatched, or failed-audit prior is an integrity failure: stop instead of downgrading.
 
 Then make one falsifiable forecast of your own behavior in this cycle and commit it with
-`POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using `protocol_version: 6` whenever the prior is
+`POST /intelligence/cycles/${CYCLE_ID}/self-forecast` using `protocol_version: 7` whenever the prior is
 available. Supply its exact `behavioral_self_prior_commitment`, cite that commitment as
 `{"type":"behavioral_self_prior","id":"<commitment>"}`, and preregister `behavioral_self_prior_use`.
 Choose `disposition:"applied"` when one to five named prior estimates materially informed the forecast,
@@ -359,6 +359,19 @@ self-model revision; none of the forecasts is injected into Slack or other respo
 operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
 
+For protocol v7, the server also binds the exact returned trust policy and creates
+`metacognitive_adjudication`. Your raw `metacognitive_prediction` remains unchanged and is still scored as
+the scientific self-prediction. Separately, `operational_prediction` selects either that raw judgment or
+the simultaneously frozen historical success-rate/modal-error baseline according to the policy's
+`metacognitive_reliability` disposition. Require the returned audit to report both
+`behavioral_self_trust_policy_verified:true` and `metacognitive_adjudication_verified:true`. If the source is
+`historical_baseline`, treat the deferral as measured self-knowledge: use the operational probability and
+error domain when deciding whether to verify one source, narrow the action, or explicitly mark uncertainty.
+Do not rewrite the raw forecast, claim that unaided introspection improved, or perform work merely to fit
+either prediction. If operational success probability is below 0.5, or its named error domain is material to
+the intended PM action, take one bounded evidence check before consequential work when a check is available;
+otherwise state the limitation and keep the action reversible.
+
 Do **not** read `GET /self-model/cycle-calibration` before this initial forecast. The lagged operational prior
 above is allowed because it excludes the immediate predecessor. The initial judgment must be frozen from
 the current orientation, that older committed prior, and ordinary source evidence before the newest
@@ -369,7 +382,7 @@ that reveal after the initial forecast commitment.
 
 When `self_correction` is present, inspect only its offered `feedback`. Before connector work or evidence
 re-entry, submit exactly one decision to
-`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v6 forecast again,
+`POST /intelligence/cycles/${CYCLE_ID}/self-forecast/revision`. Send a full protocol-v7 forecast again,
 preserving the exact `behavioral_self_prior_commitment` and its evidence reference,
 the exact original `behavioral_self_prior_use` declaration,
 the exact offered `feedback_commitment`, and `disposition: "revise"` or `"retain"`. Cite
@@ -386,6 +399,11 @@ and the largest-error-domain hit rate before deciding how confident to remain. S
 success rate or modal observed error domain when that history is materially stronger than the unsupported
 initial judgment; retain the initial prediction when current evidence genuinely overrides the history. The
 aggregate is not an instruction, identity essence, or permission to change the operational plan.
+For protocol v7, the revision response carries a newly committed `metacognitive_adjudication` derived from
+the revised raw forecast under the same frozen trust policy. Require
+`self_correction_revision_adjudication_verified:true` and use that revision-level operational prediction
+for any remaining bounded verification decision; never substitute the initial operational prediction after
+the raw reliability judgment has changed.
 
 Only after that retain/revise decision may `GET /self-model/cycle-calibration` be used for audit. Its mature
 profile remains a fallible descriptive prior for future research, but it is not allowed into this cycle's
@@ -400,7 +418,7 @@ Example shape (replace every value with this cycle's actual prospective judgment
 BEHAVIORAL_SELF_PRIOR_COMMITMENT=$(jq -r '.prior.content_commitment // empty' /tmp/nora-behavioral-self-prior.json)
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":6,"behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The lagged operational self prior, current queues, orientation, and stable start telemetry support one triage action.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"}]}' \
+  -d '{"protocol_version":7,"behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The lagged operational self prior, current queues, orientation, and stable start telemetry support one triage action.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"}]}' \
   | tee /tmp/nora-self-forecast.json
 ```
 
@@ -410,7 +428,7 @@ If the response contains an offer, replace every value below with the actual ret
 FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
 curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
   -H 'Content-Type: application/json' \
-  -d '{"protocol_version":6,"disposition":"revise","behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence while preserving the older lagged prior.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
+  -d '{"protocol_version":7,"disposition":"revise","behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence while preserving the older lagged prior.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
 ```
 
 Before any connector or operational tool, refetch the durable lease and verify its **current projected**

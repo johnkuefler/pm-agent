@@ -15,6 +15,9 @@ const RETIRED_ACTION_TYPE_SET = new Set(RETIRED_ACTION_TYPES);
 const BEHAVIORAL_PRIOR_USE_DISPOSITIONS = Object.freeze([
   'applied', 'overridden', 'not_relevant',
 ]);
+const METACOGNITIVE_ADJUDICATION_SOURCES = Object.freeze([
+  'self_model', 'historical_baseline',
+]);
 const BEHAVIORAL_PRIOR_ESTIMATE_REFS = Object.freeze([
   'action_tendencies',
   'control.signed_bias',
@@ -50,6 +53,15 @@ function canonicalJson(value) {
 
 function commitment(value) {
   return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
+
+function committedPolicyVerified(policy) {
+  if (!policy || typeof policy !== 'object'
+    || !/^[a-f0-9]{64}$/.test(String(policy.policy_commitment || ''))) return false;
+  const manifest = JSON.parse(JSON.stringify(policy));
+  const expected = manifest.policy_commitment;
+  delete manifest.policy_commitment;
+  return commitment(manifest) === expected;
 }
 
 function clamp01(value) {
@@ -278,9 +290,60 @@ function behavioralSelfPriorUseVerified(forecast = {}, behavioralSelfPrior = nul
   });
 }
 
+function metacognitiveProjection(input = {}) {
+  const domain = String(input.predicted_largest_error_domain || '').trim();
+  if (![...ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN].includes(domain)) {
+    throw new Error('metacognitive trust control requires a valid largest-error domain');
+  }
+  return {
+    integrated_success_threshold: Number(input.integrated_success_threshold),
+    predicted_success_probability: clamp01(input.predicted_success_probability),
+    predicted_largest_error_domain: domain,
+  };
+}
+
+function metacognitiveAdjudicationManifest(adjudication = {}) {
+  const visible = JSON.parse(JSON.stringify(adjudication));
+  delete visible.content_commitment;
+  return visible;
+}
+
+function adjudicateMetacognitivePrediction({ forecast = {}, baseline = {}, trustPolicy = null } = {}) {
+  if (!committedPolicyVerified(trustPolicy)
+    || trustPolicy.source_commitment !== forecast.behavioral_self_prior_commitment) {
+    throw new Error('protocol-v7 metacognitive trust control requires the bound committed trust policy');
+  }
+  const trustDomain = trustPolicy.domains?.metacognitive_reliability;
+  if (!trustDomain || !['collecting', 'self_model_eligible', 'defer_to_baseline',
+    'uncertain_defer_to_baseline'].includes(trustDomain.disposition)) {
+    throw new Error('protocol-v7 metacognitive trust control requires a valid reliability disposition');
+  }
+  const rawPrediction = metacognitiveProjection(forecast.metacognitive_prediction);
+  const baselinePrediction = metacognitiveProjection(baseline.metacognitive_prediction);
+  const source = trustDomain.disposition === 'self_model_eligible'
+    ? 'self_model' : 'historical_baseline';
+  const operationalPrediction = source === 'self_model' ? rawPrediction : baselinePrediction;
+  const adjudication = {
+    protocol_version: 1,
+    domain: 'metacognitive_reliability',
+    source,
+    trust_disposition: trustDomain.disposition,
+    trust_policy_commitment: trustPolicy.policy_commitment,
+    raw_prediction_commitment: commitment(rawPrediction),
+    baseline_prediction_commitment: commitment(baselinePrediction),
+    operational_prediction: JSON.parse(JSON.stringify(operationalPrediction)),
+    epistemic_limit: source === 'self_model'
+      ? 'The self-estimate cleared a replay-bound historical calibration gate. It remains a fallible operational forecast, not hidden-state access or consciousness evidence.'
+      : 'The raw self-estimate remains preserved and scored, but measured calibration does not justify using it operationally. Baseline deferral is evidence of a bounded limitation, not identity essence or consciousness evidence.',
+    content_commitment: null,
+  };
+  adjudication.content_commitment = commitment(metacognitiveAdjudicationManifest(adjudication));
+  return adjudication;
+}
+
 function normalizeForecast(input = {}, protocolVersion = input.protocol_version == null
   ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
-  if (![1, 2, 3, 4, 5, 6].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
+  if (![1, 2, 3, 4, 5, 6, 7].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
   const predictedActionTypes = actionTypes(input.predicted_action_types || []);
   if (predictedActionTypes.length < 1 || predictedActionTypes.length > 5) {
     throw new Error('cycle self-forecast requires one to five distinct predicted_action_types');
@@ -596,6 +659,9 @@ function correctionRevisionManifest(revision) {
     feedback_commitment: revision.feedback_commitment,
     disposition: revision.disposition,
     forecast: revision.forecast,
+    ...(revision.metacognitive_adjudication ? {
+      metacognitive_adjudication: revision.metacognitive_adjudication,
+    } : {}),
     changed_domains: revision.changed_domains,
     committed_at: revision.committed_at,
   };
@@ -643,6 +709,12 @@ function createCorrectionRevision({ record, input, committedAt }) {
     feedback_commitment: offer.feedback_commitment,
     disposition,
     forecast: revised,
+    ...(Number(record.protocol_version) >= 7 ? {
+      metacognitive_adjudication: adjudicateMetacognitivePrediction({
+        forecast: revised, baseline: record.baseline,
+        trustPolicy: record.behavioral_self_trust_policy,
+      }),
+    } : {}),
     changed_domains: changedDomains,
     committed_at: committedAt,
     revision_commitment: null,
@@ -756,15 +828,20 @@ function forecastManifest(record) {
     ...(Number(record.protocol_version) >= 5 ? {
       behavioral_self_prior: record.behavioral_self_prior,
     } : {}),
+    ...(Number(record.protocol_version) >= 7 ? {
+      behavioral_self_trust_policy: record.behavioral_self_trust_policy,
+      metacognitive_adjudication: record.metacognitive_adjudication,
+    } : {}),
     origin: record.origin, observer_effect: record.observer_effect,
     committed_at: record.committed_at,
   };
 }
 
-function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPrior = null, committedAt }) {
+function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPrior = null,
+  behavioralSelfTrustPolicy = null, committedAt }) {
   const protocolVersion = input.protocol_version == null
     ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
-  if (![1, 2, 3, 4, 5, 6].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+  if (![1, 2, 3, 4, 5, 6, 7].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
   const normalizedForecast = normalizeForecast(input, protocolVersion);
   if (protocolVersion >= 5 && (!behavioralSelfPrior?.content_commitment
     || normalizedForecast.behavioral_self_prior_commitment !== behavioralSelfPrior.content_commitment)) {
@@ -774,16 +851,30 @@ function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPri
     && !behavioralSelfPriorUseVerified(normalizedForecast, behavioralSelfPrior)) {
     throw new Error('protocol-v6 forecast behavioral_self_prior_use must cite available prior estimates');
   }
+  if (protocolVersion >= 7 && (!committedPolicyVerified(behavioralSelfTrustPolicy)
+    || behavioralSelfTrustPolicy.source_type !== 'behavioral_self_prior'
+    || behavioralSelfTrustPolicy.source_id !== behavioralSelfPrior?.id
+    || behavioralSelfTrustPolicy.source_commitment !== behavioralSelfPrior?.content_commitment)) {
+    throw new Error('protocol-v7 forecast requires the exact committed behavioral self trust policy');
+  }
+  const baseline = baselineFromMoments(baselineMoments, protocolVersion, {
+    substrateAtStart: moment.substrate_at_start || null,
+  });
+  const metacognitiveAdjudication = protocolVersion >= 7
+    ? adjudicateMetacognitivePrediction({ forecast: normalizedForecast, baseline,
+      trustPolicy: behavioralSelfTrustPolicy }) : null;
   const record = {
     protocol_version: protocolVersion,
     id: `cycle-self-forecast-${cycle.id}`.slice(0, 300),
     cycle_id: cycle.id, moment_id: moment.id,
     forecast: normalizedForecast,
-    baseline: baselineFromMoments(baselineMoments, protocolVersion, {
-      substrateAtStart: moment.substrate_at_start || null,
-    }),
+    baseline,
     ...(protocolVersion >= 5 ? {
       behavioral_self_prior: JSON.parse(JSON.stringify(behavioralSelfPrior)),
+    } : {}),
+    ...(protocolVersion >= 7 ? {
+      behavioral_self_trust_policy: JSON.parse(JSON.stringify(behavioralSelfTrustPolicy)),
+      metacognitive_adjudication: metacognitiveAdjudication,
     } : {}),
     origin: { creator_id: String(cycle.holder || 'nora').slice(0, 180), formation_method: 'authenticated_prospective_cycle_judgment' },
     observer_effect: 'Preregistering a forecast may change the cycle being observed; the forecast is never injected into other response prompts.',
@@ -962,12 +1053,28 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
         && Number(record.baseline.metacognitive_prediction?.sample_size) >= 5);
     }
   }
+  if (Number(record.protocol_version) >= 7 && outcome.metacognitive_actual
+    && record.metacognitive_adjudication?.operational_prediction) {
+    const operationalScore = outcome.metacognitive_actual.complete_domain_observation
+      ? scoreMetacognitivePrediction(record.metacognitive_adjudication.operational_prediction,
+        outcome.metacognitive_actual) : null;
+    outcome.operational_metacognitive_score = operationalScore;
+    outcome.operational_metacognitive_minus_baseline = operationalScore
+      && outcome.baseline_metacognitive_score
+      ? operationalScore.composite - outcome.baseline_metacognitive_score.composite : null;
+    outcome.operational_metacognitive_minus_raw = operationalScore
+      && outcome.metacognitive_score
+      ? operationalScore.composite - outcome.metacognitive_score.composite : null;
+    outcome.operational_metacognitive_baseline_comparison_eligible = Boolean(operationalScore
+      && Number(record.baseline.metacognitive_prediction?.sample_size) >= 5);
+  }
   if (record.self_correction?.revision) {
     const revision = record.self_correction.revision;
     const revisedOutcome = scoreRecord({
       protocol_version: record.protocol_version,
       forecast: revision.forecast,
       baseline: record.baseline,
+      metacognitive_adjudication: revision.metacognitive_adjudication,
     }, {
       actions, newSurpriseIds, controlAtClose, appraisalAtClose, attentionAtClose,
       reentryOccurred, substrateAtStart, substrateAtClose, startedAt, finishedAt, scoredAt,
@@ -988,6 +1095,9 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
         revisedOutcome.self_state_score?.composite),
       metacognitive_reliability_score: comparison(outcome.metacognitive_score?.composite,
         revisedOutcome.metacognitive_score?.composite),
+      operational_metacognitive_reliability_score: comparison(
+        outcome.operational_metacognitive_score?.composite,
+        revisedOutcome.operational_metacognitive_score?.composite),
       substrate_score: comparison(outcome.substrate_score?.composite,
         revisedOutcome.substrate_score?.composite),
     };
@@ -1002,12 +1112,14 @@ function outcomeManifest(record) {
 module.exports = {
   ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN, SUBSTRATE_PREDICTION_KEYS, RETIRED_ACTION_TYPES,
   BEHAVIORAL_PRIOR_USE_DISPOSITIONS, BEHAVIORAL_PRIOR_ESTIMATE_REFS,
+  METACOGNITIVE_ADJUDICATION_SOURCES,
   INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, calibrationSummaryFromMoments,
-  activeActionTypes, behavioralSelfPriorUseVerified,
+  activeActionTypes, adjudicateMetacognitivePrediction, behavioralSelfPriorUseVerified,
   canonicalJson,
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,
-  forecastManifest, normalizeForecast, outcomeManifest, scoreMetacognitivePrediction,
+  forecastManifest, metacognitiveAdjudicationManifest, normalizeForecast, outcomeManifest,
+  scoreMetacognitivePrediction,
   normalizeSubstrateObservation, persistenceSubstratePrediction, scoreRecord,
   scoreSelfStatePrediction, scoreSubstratePrediction, selfStateErrorProfile, substrateActual,
 };

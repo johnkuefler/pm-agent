@@ -329,6 +329,51 @@ test('deliberate behavioral-prior use freezes a protocol-v6 gate before interpre
     'observational_signal_contradicted');
 });
 
+test('protocol-v7 metacognitive trust control reports operational, raw, and baseline scores separately', () => {
+  const controlled = {
+    id: 'trust-controlled-cycle', status: 'completed',
+    self_forecast: {
+      protocol_version: 7,
+      forecast: { behavioral_self_prior_use: { disposition: 'applied',
+        estimate_refs: ['metacognitive_self_awareness.largest_error_domain_hit_rate'],
+        rationale: 'The replayed reliability estimate constrains the operational prediction.' } },
+      metacognitive_adjudication: { source: 'historical_baseline' },
+      outcome: {
+        baseline_comparison_eligible: true,
+        self_score: { composite: 0.7 }, baseline_score: { composite: 0.7 },
+        self_minus_baseline: 0,
+        self_state_score: { composite: 0.7 }, baseline_state_score: { composite: 0.8 },
+        self_state_minus_baseline: -0.1, self_state_baseline_comparison_eligible: true,
+        metacognitive_score: { composite: 0.35, success_brier: 0.5,
+          largest_error_domain_hit: false },
+        baseline_metacognitive_score: { composite: 0.8 },
+        metacognitive_self_minus_baseline: -0.45,
+        metacognitive_baseline_comparison_eligible: true,
+        operational_metacognitive_score: { composite: 0.8 },
+        operational_metacognitive_minus_raw: 0.45,
+        operational_metacognitive_minus_baseline: 0,
+        operational_metacognitive_baseline_comparison_eligible: true,
+      },
+    },
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true,
+      self_forecast: { complete_chain_verified: true,
+        behavioral_self_prior_verified: true,
+        behavioral_self_prior_excludes_immediate_predecessor: true,
+        behavioral_self_prior_use_verified: true,
+        behavioral_self_trust_policy_verified: true,
+        metacognitive_adjudication_verified: true } },
+  };
+  const report = buildIndicatorReport(stateWith({ experience_stream: [controlled] }));
+  const evidence = indicator(report, 'prospective_self_model_reliability_awareness')
+    .evidence.protocol_v7_trust_control;
+  assert.equal(evidence.replay_verified_scored, 1);
+  assert.equal(evidence.mean_operational_score, 0.8);
+  assert.equal(evidence.mean_raw_score, 0.35);
+  assert.equal(evidence.mean_baseline_score, 0.8);
+  assert.equal(evidence.mean_operational_minus_raw, 0.45);
+  assert.equal(evidence.mean_operational_minus_baseline, 0);
+});
+
 test('prospective reliability awareness requires calibrated success and error-domain advantage', () => {
   const moment = (index, advantage = 0.2) => ({
     id: `metacognitive-forecast-moment-${index}`, status: 'completed',

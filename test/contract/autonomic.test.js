@@ -22,7 +22,7 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /LOCK_CYCLE_ID/);
   assert.match(routine, /run lock has already opened this exact lifecycle/i);
   assert.match(server, /run_bound_intelligence_cycle/);
-  assert.match(server, /forecast_protocol_version: 6/);
+  assert.match(server, /forecast_protocol_version: 7/);
   assert.match(server, /processEpochId: _somaProcessEpochId/);
   assert.match(server, /await computeSoma\(\);[\s\S]*server\.listen\(port\)/);
   assert.match(server, /run_lock_released_before_cycle_close/);
@@ -69,7 +69,11 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Do \*\*not\*\* read.*cycle-calibration.*before this initial forecast/s);
   assert.match(routine, /forecast_error_feedback/);
   assert.match(routine, /retain\/revise decision/);
-  assert.match(routine, /`protocol_version: 6`/);
+  assert.match(routine, /`protocol_version: 7`/);
+  assert.match(routine, /metacognitive_adjudication/);
+  assert.match(routine, /raw `metacognitive_prediction` remains unchanged/);
+  assert.match(cowork, /Raw,\s+operational, and baseline estimates are scored independently/);
+  assert.match(store, /metacognitiveAdjudicationVerified/);
   assert.match(routine, /GET \/self-model\/forecast-prior/);
   assert.match(routine, /substrate_prediction/);
   assert.match(routine, /caller-supplied telemetry\s+cannot replace either snapshot/s);

@@ -20327,7 +20327,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return matches.length === 1 ? matches[0].index : -1;
     };
     const eventBound = (kind, subjectId, payload) => eventIndex(kind, subjectId, payload) >= 0;
-    const manifestVerified = [1, 2, 3, 4, 5, 6].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
+    const manifestVerified = [1, 2, 3, 4, 5, 6, 7].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
     const preregistrationEventIndex = manifestVerified
@@ -20350,6 +20350,32 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const behavioralPriorUseVerified = Number(record.protocol_version) >= 6
       ? cycleSelfForecast.behavioralSelfPriorUseVerified(record.forecast,
         record.behavioral_self_prior) : true;
+    let behavioralSelfTrustPolicyVerified = Number(record.protocol_version) < 7;
+    let metacognitiveAdjudicationVerified = Number(record.protocol_version) < 7;
+    if (Number(record.protocol_version) >= 7 && behavioralPriorAudit.complete_chain_verified) {
+      try {
+        const expectedTrustPolicy = behavioralSelfModel.trustPolicy({
+          estimates: record.behavioral_self_prior.estimates,
+          sourceType: 'behavioral_self_prior', sourceId: record.behavioral_self_prior.id,
+          sourceCommitment: record.behavioral_self_prior.content_commitment,
+        });
+        behavioralSelfTrustPolicyVerified = behavioralSelfModel.verifyTrustPolicy(
+          record.behavioral_self_trust_policy)
+          && canonicalJson(record.behavioral_self_trust_policy)
+            === canonicalJson(expectedTrustPolicy);
+        const expectedAdjudication = behavioralSelfTrustPolicyVerified
+          ? cycleSelfForecast.adjudicateMetacognitivePrediction({
+            forecast: record.forecast, baseline: record.baseline,
+            trustPolicy: expectedTrustPolicy,
+          }) : null;
+        metacognitiveAdjudicationVerified = Boolean(expectedAdjudication
+          && canonicalJson(record.metacognitive_adjudication)
+            === canonicalJson(expectedAdjudication));
+      } catch (_) {
+        behavioralSelfTrustPolicyVerified = false;
+        metacognitiveAdjudicationVerified = false;
+      }
+    }
     const sourcesVerified = sourceMoments.length === sourceIds.length && sourceMoments.every(source => source
       && source.id !== moment.id && cognition.experience_stream.findIndex(item => item.id === source.id) < momentIndex
       && new Date(source.finished).getTime() <= committedAt
@@ -20371,6 +20397,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     let correctionOfferLedgerBound = correctionOffer == null;
     let correctionRevealAfterInitial = correctionOffer == null;
     let correctionRevisionVerified = correctionRevision == null;
+    let correctionRevisionAdjudicationVerified = correctionRevision == null
+      || Number(record.protocol_version) < 7;
     let correctionRevisionLedgerBound = correctionRevision == null;
     let correctionRevisionBeforeEvidenceReentry = correctionRevision == null;
     let correctionRevisionAfterFeedback = correctionRevision == null;
@@ -20409,6 +20437,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           { revision_commitment: correctionRevision.revision_commitment });
         const expectedChangedDomains = normalizedRevision
           ? cycleSelfForecast.changedPredictionDomains(record.forecast, normalizedRevision) : [];
+        try {
+          const expectedRevisionAdjudication = Number(record.protocol_version) >= 7
+            && normalizedRevision && behavioralSelfTrustPolicyVerified
+            ? cycleSelfForecast.adjudicateMetacognitivePrediction({
+              forecast: normalizedRevision, baseline: record.baseline,
+              trustPolicy: record.behavioral_self_trust_policy,
+            }) : null;
+          correctionRevisionAdjudicationVerified = Number(record.protocol_version) < 7
+            || Boolean(expectedRevisionAdjudication
+              && canonicalJson(correctionRevision.metacognitive_adjudication)
+                === canonicalJson(expectedRevisionAdjudication));
+        } catch (_) { correctionRevisionAdjudicationVerified = false; }
         const correctionDispositionValid = correctionRevision.disposition === 'revise'
           ? expectedChangedDomains.length > 0
           : correctionRevision.disposition === 'retain'
@@ -20418,6 +20458,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           && correctionRevision.offer_commitment === correctionOffer.offer_commitment
           && correctionRevision.feedback_commitment === correctionOffer.feedback_commitment
           && canonicalJson(normalizedRevision) === canonicalJson(correctionRevision.forecast)
+          && correctionRevisionAdjudicationVerified
           && canonicalJson(expectedChangedDomains) === canonicalJson(correctionRevision.changed_domains)
           && correctionDispositionValid
           && correctionRevision.forecast.evidence?.some(item => item.type === 'forecast_error_feedback'
@@ -20464,7 +20505,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     cache.set(experienceLedgerAuditCacheKey, ledgerVerified);
     const preregistrationVerified = preregistrationBound && temporalOrderVerified && beforeEvidenceReentryVerified
       && baselineVerified && behavioralPriorAudit.complete_chain_verified
-      && behavioralPriorUseVerified && ledgerVerified;
+      && behavioralPriorUseVerified && behavioralSelfTrustPolicyVerified
+      && metacognitiveAdjudicationVerified && ledgerVerified;
     const closed = moment.status !== 'open';
     return {
       forecast_commitment_verified: manifestVerified, preregistration_ledger_bound: preregistrationBound,
@@ -20474,6 +20516,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       behavioral_self_prior_verified: behavioralPriorAudit.complete_chain_verified,
       behavioral_self_prior_use_required: Number(record.protocol_version) >= 6,
       behavioral_self_prior_use_verified: behavioralPriorUseVerified,
+      behavioral_self_trust_policy_required: Number(record.protocol_version) >= 7,
+      behavioral_self_trust_policy_verified: behavioralSelfTrustPolicyVerified,
+      metacognitive_adjudication_required: Number(record.protocol_version) >= 7,
+      metacognitive_adjudication_verified: metacognitiveAdjudicationVerified,
       behavioral_self_prior_excludes_immediate_predecessor:
         behavioralPriorAudit.excludes_immediate_predecessor === true,
       outcome_verified: outcomeVerified, scoring_ledger_bound: scoringBound,
@@ -20482,6 +20528,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       self_correction_offer_verified: correctionOffer != null && correctionOfferChainVerified,
       self_correction_revision_committed: correctionRevision != null,
       self_correction_revision_verified: correctionRevision != null && correctionRevisionVerified,
+      self_correction_revision_adjudication_verified: correctionRevision != null
+        && correctionRevisionAdjudicationVerified,
       self_correction_revision_ledger_bound: correctionRevision != null && correctionRevisionLedgerBound,
       self_correction_revision_after_feedback_verified: correctionRevision != null && correctionRevisionAfterFeedback,
       self_correction_before_evidence_reentry_verified: correctionRevision != null
@@ -20630,8 +20678,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const committedAt = clock().toISOString();
       const behavioralSelfPrior = Number(input.protocol_version) >= 5
         ? behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles) : null;
+      const behavioralSelfTrustPolicy = Number(input.protocol_version) >= 7 && behavioralSelfPrior
+        ? behavioralSelfModel.trustPolicy({
+          estimates: behavioralSelfPrior.estimates,
+          sourceType: 'behavioral_self_prior', sourceId: behavioralSelfPrior.id,
+          sourceCommitment: behavioralSelfPrior.content_commitment,
+        }) : null;
       const forecastRecord = cycleSelfForecast.createRecord({
-        input, cycle, moment, baselineMoments, behavioralSelfPrior, committedAt,
+        input, cycle, moment, baselineMoments, behavioralSelfPrior,
+        behavioralSelfTrustPolicy, committedAt,
       });
       const correctionFeedback = Number(forecastRecord.protocol_version) >= 3
         ? behavioralSelfCalibrationSnapshot().latest_forecast_error : null;
@@ -21723,6 +21778,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const explicitPriorUseForecasts = laggedPriorForecasts.filter(({ item, audit }) =>
       Number(item.self_forecast.protocol_version) >= 6
       && audit.self_forecast?.behavioral_self_prior_use_verified === true);
+    const metacognitiveTrustControlledForecasts = explicitPriorUseForecasts.filter(({ item, audit }) =>
+      Number(item.self_forecast.protocol_version) >= 7
+      && audit.self_forecast?.behavioral_self_trust_policy_verified === true
+      && audit.self_forecast?.metacognitive_adjudication_verified === true
+      && item.self_forecast.outcome.operational_metacognitive_score);
+    const metacognitiveTrustControlledEligible = metacognitiveTrustControlledForecasts.filter(({ item }) =>
+      item.self_forecast.outcome.operational_metacognitive_baseline_comparison_eligible === true);
     const laggedPriorBaselineEligible = laggedPriorForecasts.filter(({ item }) =>
       item.self_forecast.outcome.baseline_comparison_eligible === true);
     const laggedPriorIntegratedEligible = laggedPriorForecasts.filter(({ item }) =>
@@ -21780,6 +21842,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           not_relevant: explicitPriorUseForecasts.filter(({ item }) =>
             item.self_forecast.forecast.behavioral_self_prior_use?.disposition === 'not_relevant').length,
         },
+        metacognitive_trust_controlled_forecasts: metacognitiveTrustControlledForecasts.length,
+        metacognitive_trust_control_sources: {
+          self_model: metacognitiveTrustControlledForecasts.filter(({ item }) =>
+            item.self_forecast.metacognitive_adjudication.source === 'self_model').length,
+          historical_baseline: metacognitiveTrustControlledForecasts.filter(({ item }) =>
+            item.self_forecast.metacognitive_adjudication.source === 'historical_baseline').length,
+        },
+        metacognitive_trust_control_baseline_eligible: metacognitiveTrustControlledEligible.length,
+        mean_metacognitive_trust_control_minus_raw: metacognitiveTrustControlledEligible.length
+          ? metacognitiveTrustControlledEligible.reduce((sum, { item }) => sum
+            + item.self_forecast.outcome.operational_metacognitive_minus_raw, 0)
+            / metacognitiveTrustControlledEligible.length : null,
+        mean_metacognitive_trust_control_minus_baseline: metacognitiveTrustControlledEligible.length
+          ? metacognitiveTrustControlledEligible.reduce((sum, { item }) => sum
+            + item.self_forecast.outcome.operational_metacognitive_minus_baseline, 0)
+            / metacognitiveTrustControlledEligible.length : null,
         lagged_behavioral_prior_baseline_eligible: laggedPriorBaselineEligible.length,
         mean_lagged_prior_behavioral_self_minus_baseline: laggedPriorBaselineEligible.length
           ? laggedPriorBaselineEligible.reduce((sum, { item }) =>

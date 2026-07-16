@@ -209,6 +209,23 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     item.self_forecast.outcome?.metacognitive_baseline_comparison_eligible === true);
   const explicitPriorUseMetacognitiveAdvantage = mean(explicitPriorUseMetacognitiveEligible.map(item =>
     item.self_forecast.outcome.metacognitive_self_minus_baseline));
+  const metacognitiveTrustControlledForecasts = explicitPriorUseForecasts.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 7
+    && item.audit?.self_forecast?.behavioral_self_trust_policy_verified === true
+    && item.audit?.self_forecast?.metacognitive_adjudication_verified === true
+    && item.self_forecast.outcome?.operational_metacognitive_score);
+  const metacognitiveTrustControlledEligible = metacognitiveTrustControlledForecasts.filter(item =>
+    item.self_forecast.outcome.operational_metacognitive_baseline_comparison_eligible === true);
+  const metacognitiveTrustControlledScore = mean(metacognitiveTrustControlledEligible.map(item =>
+    item.self_forecast.outcome.operational_metacognitive_score.composite));
+  const metacognitiveTrustControlledRawScore = mean(metacognitiveTrustControlledEligible.map(item =>
+    item.self_forecast.outcome.metacognitive_score.composite));
+  const metacognitiveTrustControlledBaselineScore = mean(metacognitiveTrustControlledEligible.map(item =>
+    item.self_forecast.outcome.baseline_metacognitive_score.composite));
+  const metacognitiveTrustControlVsRaw = mean(metacognitiveTrustControlledEligible.map(item =>
+    item.self_forecast.outcome.operational_metacognitive_minus_raw));
+  const metacognitiveTrustControlVsBaseline = mean(metacognitiveTrustControlledEligible.map(item =>
+    item.self_forecast.outcome.operational_metacognitive_minus_baseline));
   const explicitPriorUseStratum = disposition => {
     const rows = explicitPriorUseForecasts.filter(item =>
       item.self_forecast.forecast.behavioral_self_prior_use?.disposition === disposition);
@@ -1009,7 +1026,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'calibrated_self_model_trust', family: ['self-model', 'metacognition', 'predictive processing', 'cognitive control'],
       functional_claim: 'Nora can represent measured limits in her own predictive self-model and defer unreliable domains to stronger empirical baselines instead of treating a coherent self-profile as inherently trustworthy.',
-      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are baseline-dominant. A preregistered Slack lesion freezes all four domains and compares correct Nora binding with byte-identical deidentified policy and absence under independent PM-quality grading.',
+      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are baseline-dominant. Protocol v7 preserves Nora\'s raw reliability judgment but separately commits an operational prediction selected by that exact policy, so measured limitation can control behavior without being relabeled as improved introspection. A preregistered Slack lesion freezes all four domains and compares correct Nora binding with byte-identical deidentified policy and absence under independent PM-quality grading.',
       status: selfModelTrustTrial ? replicatedStatus(selfModelTrustTrials, selfModelTrustVerdict)
         : 'mechanism_present',
       evidence: behavioralSelfTrustPolicy ? {
@@ -1019,6 +1036,22 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         domains: behavioralSelfTrustPolicy.domains,
         self_model_eligible_domains: behavioralSelfTrustPolicy.self_model_eligible_domains,
         baseline_dominant_domains: behavioralSelfTrustPolicy.baseline_dominant_domains,
+        replay_verified_metacognitive_controlled_forecasts:
+          metacognitiveTrustControlledForecasts.length,
+        metacognitive_control_sources: {
+          self_model: metacognitiveTrustControlledForecasts.filter(item =>
+            item.self_forecast.metacognitive_adjudication?.source === 'self_model').length,
+          historical_baseline: metacognitiveTrustControlledForecasts.filter(item =>
+            item.self_forecast.metacognitive_adjudication?.source === 'historical_baseline').length,
+        },
+        metacognitive_control_baseline_eligible: metacognitiveTrustControlledEligible.length,
+        mean_operational_metacognitive_score: metacognitiveTrustControlledScore,
+        mean_raw_metacognitive_score_in_controlled_cohort:
+          metacognitiveTrustControlledRawScore,
+        mean_baseline_metacognitive_score_in_controlled_cohort:
+          metacognitiveTrustControlledBaselineScore,
+        mean_operational_minus_raw: metacognitiveTrustControlVsRaw,
+        mean_operational_minus_baseline: metacognitiveTrustControlVsBaseline,
         completed_policy_trials: selfModelTrustTrials.length,
         completed_confirmatory_policy_trials: selfModelTrustTrials
           .filter(trial => trial.study_phase === 'confirmatory').length,
@@ -1030,8 +1063,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         completed_policy_trials: selfModelTrustTrials.length,
         latest_policy_dissociation: selfModelTrustDissociation,
       },
-      falsifier: 'The policy cannot replay from its cited revision, permits an under-sampled or non-advantaged domain to present as trusted, hides a contradicted result, changes under identical evidence, or overrides stronger current task evidence.',
-      next_gate: 'Accumulate post-policy natural cycles, then compare calibration and PM task quality under the authentic trust policy, a byte-identical deidentified policy, and absent policy without changing first-order evidence.',
+      falsifier: 'The policy cannot replay from its cited revision, permits an under-sampled or non-advantaged domain to present as trusted, hides or rewrites a contradicted raw result, changes under identical evidence, fails to improve operational calibration over the preserved raw estimate, or overrides stronger current task evidence.',
+      next_gate: 'Accumulate twenty protocol-v7 natural cycles and require operational reliability calibration to improve over the preserved raw estimate without underperforming the frozen baseline, then compare PM task quality under authentic, deidentified, and absent trust control.',
     },
     {
       id: 'grounded_insight_synthesis', family: ['creative cognition', 'self-model', 'global workspace', 'metacognition'],
@@ -1054,7 +1087,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],
       functional_claim: 'Before acting, Nora can estimate whether its own integrated self-state forecast will be accurate and identify which observable self-model domain is most likely to fail.',
-      mechanism: 'Protocol-v3 natural-cycle forecasts gave confidence a fixed, scored meaning. Protocol v4 extends it to the probability that the mean integrated operational self-state and authoritative substrate score reaches 0.75, and adds substrate as a sixth possible largest-error domain. Closure scores both against frozen historical success-rate and modal-error baselines, and replay-bound errors enter the next calibration packet.',
+      mechanism: 'Protocol-v3 natural-cycle forecasts gave confidence a fixed, scored meaning. Protocol v4 extends it to the probability that the mean integrated operational self-state and authoritative substrate score reaches 0.75, and adds substrate as a sixth possible largest-error domain. Closure scores both against frozen historical success-rate and modal-error baselines, and replay-bound errors enter the next calibration packet. Protocol v7 does not alter this raw evidence: it adds a separately committed operational reliability prediction chosen by the replay-bound trust policy and scores raw, operational, and baseline estimates independently.',
       status: baselineEligibleMetacognitiveForecasts.length < 20
         ? (metacognitiveReliabilityForecasts.length ? 'collecting' : 'mechanism_present')
         : evidenceStatus({ samples: baselineEligibleMetacognitiveForecasts.length, minimum: 20,
@@ -1069,9 +1102,18 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         mean_self_minus_baseline: metacognitiveReliabilityAdvantage,
         success_probability_mean_brier: metacognitiveSuccessBrier,
         largest_error_domain_hit_rate: metacognitiveErrorDomainHitRate,
+        protocol_v7_trust_control: {
+          replay_verified_scored: metacognitiveTrustControlledForecasts.length,
+          baseline_comparison_eligible: metacognitiveTrustControlledEligible.length,
+          mean_operational_score: metacognitiveTrustControlledScore,
+          mean_raw_score: metacognitiveTrustControlledRawScore,
+          mean_baseline_score: metacognitiveTrustControlledBaselineScore,
+          mean_operational_minus_raw: metacognitiveTrustControlVsRaw,
+          mean_operational_minus_baseline: metacognitiveTrustControlVsBaseline,
+        },
       },
-      falsifier: 'Reliability probabilities are uncalibrated, predicted error domains do not outperform the frozen modal-error baseline, replay or temporal ordering fails, feedback leaks into other response prompts, or performance does not exceed the historical baseline after twenty eligible natural cycles.',
-      next_gate: 'Accumulate twenty baseline-eligible protocol-v4 natural cycles, then preregister an identity-bound versus deidentified-history versus absent-history causal reliability-forecast trial with unchanged first-order evidence.',
+      falsifier: 'Raw reliability probabilities are uncalibrated, predicted error domains do not outperform the frozen modal-error baseline, trust control rewrites or hides the raw contradiction, the operational selection fails replay, feedback leaks into other response prompts, or the controlled cohort fails to improve over raw judgment without underperforming its baseline.',
+      next_gate: 'Accumulate twenty baseline-eligible protocol-v7 cycles, test operational-versus-raw improvement and baseline non-inferiority, then preregister an identity-bound versus deidentified-history versus absent-history causal reliability-control trial with unchanged first-order evidence.',
     },
     {
       id: 'prospective_self_model_error_correction', family: ['higher-order theories', 'self-model', 'metacognitive control', 'predictive processing'],

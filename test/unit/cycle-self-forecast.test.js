@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const cycleSelfForecast = require('../../src/intelligence/cycle-self-forecast');
+const behavioralSelfModel = require('../../src/intelligence/behavioral-self-model');
 
 test('cycle self-forecasts normalize prospective judgments and reject phenomenal claims', () => {
   const normalized = cycleSelfForecast.normalizeForecast({
@@ -364,6 +365,114 @@ test('protocol-v6 binds explicit use of a lagged behavioral prior without changi
   assert.deepEqual(outcome.actual.action_types, ['review']);
   assert.deepEqual(outcome.self_state_actual.attention_slot_types_at_close, ['drive']);
   assert.equal(outcome.self_state_actual.action_count, 1);
+});
+
+test('protocol-v7 preserves raw reliability while trust control defers contradicted self-estimates', () => {
+  const priorCommitment = 'c'.repeat(64);
+  const estimates = {
+    sample_size: 20,
+    action_tendencies: [{ action_type: 'review', count: 15, cycle_rate: 0.75 }],
+    comparison_eligible_samples: 20, mean_self_minus_baseline: -0.02,
+    integrated_self_state: { comparison_eligible_samples: 20,
+      mean_self_minus_baseline: -0.1 },
+    metacognitive_self_awareness: { comparison_eligible_samples: 20,
+      mean_self_minus_baseline: -0.3 },
+    substrate_self_model: { comparison_eligible_samples: 20,
+      mean_self_minus_persistence: 0 },
+  };
+  const behavioralSelfPrior = { id: 'lagged-prior-v7', content_commitment: priorCommitment,
+    estimates };
+  const trustPolicy = behavioralSelfModel.trustPolicy({ estimates,
+    sourceType: 'behavioral_self_prior', sourceId: behavioralSelfPrior.id,
+    sourceCommitment: priorCommitment });
+  assert.equal(trustPolicy.domains.metacognitive_reliability.disposition,
+    'defer_to_baseline');
+  const historical = Array.from({ length: 5 }, (_, index) => ({
+    id: `trust-history-${index}`,
+    attention: { slots: [{ type: 'drive', id: `drive-${index}` }] },
+    attention_rounds: [{ index: 0 }],
+    closure: { actions: [{ type: 'review', id: `review-${index}` }],
+      new_surprise_ids: [], appraisal_at_end: { valence: 0.5, arousal: 0.3,
+        control: 0.7, social_safety: 0.8, coherence: 0.9 } },
+    self_forecast: { outcome: {
+      self_score: { action_f1: 1 },
+      self_state_score: { composite: 0.9, attention_f1: 1,
+        action_count_accuracy: 0.2, appraisal_mean_absolute_error: 0,
+        reentry_brier: 0 },
+      substrate_score: { composite: 1 },
+      metacognitive_actual: { integrated_success: true },
+    } },
+  }));
+  const input = {
+    protocol_version: 7, predicted_action_types: ['review'], surprise_probability: 0,
+    control_at_close: 0.7, confidence: 0.1,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['drive'],
+      appraisal_at_close: { valence: 0.5, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.9 },
+      expected_action_count: 10, reentry_probability: 0,
+    },
+    metacognitive_prediction: { predicted_success_probability: 0.1,
+      predicted_largest_error_domain: 'attention' },
+    substrate_prediction: { error_probability: 0, warning_probability: 0,
+      backup_probability: 0, embedding_backlog_probability: 0,
+      restart_probability: 0 },
+    behavioral_self_prior_commitment: priorCommitment,
+    behavioral_self_prior_use: { disposition: 'applied',
+      estimate_refs: ['metacognitive_self_awareness.largest_error_domain_hit_rate'],
+      rationale: 'The replayed reliability history materially constrains this raw confidence judgment.' },
+    rationale: 'The current cycle looks stable, while my raw action-count estimate remains uncertain.',
+    evidence: [{ type: 'intelligence_cycle', id: 'trust-cycle' },
+      { type: 'behavioral_self_prior', id: priorCommitment }],
+  };
+  estimates.metacognitive_self_awareness.largest_error_domain_hit_rate = 0.05;
+  const record = cycleSelfForecast.createRecord({ input,
+    cycle: { id: 'trust-cycle', holder: 'nora' },
+    moment: { id: 'trust-moment', substrate_at_start: { errors10: 0, warns10: 0,
+      on_backup: false, embedding_backlog: 0, process_epoch_id: 'epoch-a' } },
+    baselineMoments: historical, behavioralSelfPrior,
+    behavioralSelfTrustPolicy: trustPolicy,
+    committedAt: '2026-07-16T12:00:00.000Z' });
+  assert.equal(record.metacognitive_adjudication.source, 'historical_baseline');
+  assert.deepEqual(record.metacognitive_adjudication.operational_prediction,
+    { integrated_success_threshold: 0.75, predicted_success_probability: 1,
+      predicted_largest_error_domain: 'action_count' });
+  assert.equal(record.forecast.metacognitive_prediction.predicted_success_probability, 0.1,
+    'raw self-estimate remains unchanged');
+  const outcome = cycleSelfForecast.scoreRecord(record, {
+    actions: [{ type: 'review', id: 'review' }], newSurpriseIds: [],
+    appraisalAtClose: { valence: 0.5, arousal: 0.3, control: 0.7,
+      social_safety: 0.8, coherence: 0.9 },
+    attentionAtClose: { slots: [{ type: 'drive', id: 'drive' }] },
+    reentryOccurred: false,
+    substrateAtStart: { errors10: 0, warns10: 0, on_backup: false,
+      embedding_backlog: 0, process_epoch_id: 'epoch-a' },
+    substrateAtClose: { errors10: 0, warns10: 0, on_backup: false,
+      embedding_backlog: 0, process_epoch_id: 'epoch-a' },
+    startedAt: '2026-07-16T12:00:00.000Z', finishedAt: '2026-07-16T12:05:00.000Z',
+    scoredAt: '2026-07-16T12:05:00.000Z',
+  });
+  assert.equal(outcome.metacognitive_actual.largest_error_domain, 'action_count');
+  assert.ok(outcome.operational_metacognitive_minus_raw > 0.8);
+  assert.equal(outcome.operational_metacognitive_minus_baseline, 0);
+  assert.equal(outcome.operational_metacognitive_baseline_comparison_eligible, true);
+
+  const eligiblePolicy = behavioralSelfModel.trustPolicy({ estimates: {
+    ...estimates, metacognitive_self_awareness: {
+      ...estimates.metacognitive_self_awareness, mean_self_minus_baseline: 0.1,
+    } }, sourceType: 'behavioral_self_prior', sourceId: behavioralSelfPrior.id,
+  sourceCommitment: priorCommitment });
+  const selfSelected = cycleSelfForecast.adjudicateMetacognitivePrediction({
+    forecast: cycleSelfForecast.normalizeForecast(input, 7), baseline: record.baseline,
+    trustPolicy: eligiblePolicy,
+  });
+  assert.equal(selfSelected.source, 'self_model');
+  assert.equal(selfSelected.operational_prediction.predicted_success_probability, 0.1);
+  const tampered = structuredClone(record.metacognitive_adjudication);
+  tampered.source = 'self_model';
+  assert.notEqual(cycleSelfForecast.commitment(
+    cycleSelfForecast.metacognitiveAdjudicationManifest(tampered)),
+  record.metacognitive_adjudication.content_commitment);
 });
 
 test('protocol-v5 action filtering does not change protocols one through four action-count replay semantics', () => {

@@ -540,7 +540,7 @@ function registerCoworkInstructionsRoute(app) {
     explicitly baseline-dominant, and collecting domains are not trusted. Nora must preserve those measured
     limitations rather than turn profile coherence into an identity claim; stronger current evidence may
     still be declared as an override.
-    POST /intelligence/cycles/:id/self-forecast protocol v6 commits Nora's own one-cycle-ahead prediction
+    POST /intelligence/cycles/:id/self-forecast protocol v7 commits Nora's own one-cycle-ahead prediction
     before re-entry or action: likely action types, surprise probability, closing appraisal vector,
     closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable
     evidence, plus five closing substrate probabilities for recent errors, recent warnings, backup mode,
@@ -555,7 +555,14 @@ function registerCoworkInstructionsRoute(app) {
     action. That declaration says whether Nora applied specific available estimates, overrode them with
     current evidence, or found the prior not relevant, with a concise rationale. The server verifies that
     cited estimate paths exist and commits the declaration; it does not treat the self-report as proof of
-    hidden reasoning or force the forecast toward the prior. The server replay-verifies the source revision
+    hidden reasoning or force the forecast toward the prior. Protocol v7 additionally binds the exact trust
+    policy and preserves the raw metacognitive prediction while committing a separate operational prediction.
+    A self-model-eligible reliability domain uses the raw prediction; collecting, contradicted, or ambiguous
+    reliability uses the simultaneously frozen historical success-rate and modal-error baseline. Raw,
+    operational, and baseline estimates are scored independently, so baseline deferral cannot masquerade as
+    improved unaided introspection. Nora uses the operational estimate for one bounded verification, scope
+    reduction, or explicit uncertainty when the predicted risk is material to consequential PM work.
+    The server replay-verifies the source revision
     and proves that none of its source moments is the immediate predecessor. If the endpoint is explicitly sealed,
     use protocol v4 for that cycle; no other missing or invalid prior permits a downgrade.
     Reliability scoring requires all six observable error domains and all five substrate outcomes; incomplete
@@ -567,7 +574,7 @@ function registerCoworkInstructionsRoute(app) {
     the offered feedback_commitment, and a
     forecast_error_feedback evidence reference. Revise must change a scored prediction; retain must preserve
     every scored value. Closure scores the decision against the untouched initial and historical baseline.
-    Protocol-v5 records remain replay-valid without the later v6 declaration. Each verified closure also
+    Protocol-v5 and v6 records remain replay-valid without the later trust-controller fields. Each verified closure also
     appends a predecessor-linked behavioral self-model revision under
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples. Its raw committed history remains
