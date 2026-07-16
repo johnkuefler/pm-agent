@@ -9134,7 +9134,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function reviewSelfProbe(id, input = {}, evaluatorId = null) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (selfInquirySelectionActive(current.cognition)) throw new Error('self-probe writes are sealed during active matched self-model studies');
+      if (selfModelWriteConflict(current.cognition)) throw new Error('self-probe writes are sealed during active blinded self-model studies');
       if (!evaluatorId) throw new Error('authenticated evaluator identity is required');
       const probe = current.cognition.self_model.probes.find(item => item.id === id);
       if (!probe) return null;

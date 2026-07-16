@@ -2196,6 +2196,16 @@ test('self-model access lesion distinguishes authentic access from matched decoy
     method: 'Observe the next ordinary cycle without changing it',
     success_criteria: 'The replay-valid correction disposition is retain',
   });
+  const pendingReviewProbe = store.createSelfProbe({
+    question: 'Will a separately reviewed trace support the existing claim?',
+    prediction: { outcome: 'yes', confidence: 0.55 },
+    method: 'Observe a separate ordinary trace without changing it',
+    success_criteria: 'The trace contains a proportionate revision',
+  });
+  store.resolveSelfProbe(pendingReviewProbe.id, {
+    outcome: 'supported', observed: 'The trace contained a proportionate revision',
+    evidence: [{ type: 'decision_trace', id: 'pre-lesion-reviewed-outcome' }],
+  });
   assert.throws(() => store.createContextTrial({
     hypothesis: 'Authentic self access improves self-prediction', intervention: 'self_model_access',
     outcome_metric: 'self_prediction_accuracy', outcome_metrics: ['first_order_task_quality'], surfaces: ['slack'],
@@ -2222,6 +2232,9 @@ test('self-model access lesion distinguishes authentic access from matched decoy
     outcome: 'supported', observed: 'The outcome arrived during the lesion',
     evidence: [{ type: 'decision_trace', id: 'sealed-outcome' }],
   }), /sealed during active blinded self-model studies/);
+  assert.throws(() => store.reviewSelfProbe(pendingReviewProbe.id, {
+    outcome: 'supported', evidence: [{ type: 'independent_review', id: 'sealed-review' }],
+  }, 'sealed-reviewer'), /sealed during active blinded self-model studies/);
   assert.deepEqual(trial.conditions, ['authentic', 'decoy', 'ablated']);
   const sealedSelfModel = store.selfModelSnapshot();
   assert.deepEqual(sealedSelfModel.claims, []);
