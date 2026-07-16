@@ -81,12 +81,14 @@ function validOutput(packet) {
 }
 
 function complete(store, begun, action, responseId) {
-  const system = initiationProtocol.systemPrompt('self');
-  const user = initiationProtocol.userPrompt(begun.packet);
+  const promptManifest = begun.prompt_manifest || {
+    system: initiationProtocol.systemPrompt('self'),
+    user: initiationProtocol.userPrompt(begun.packet),
+  };
   return store.completeCognitivePulseInitiation(begun.id, {
     decision: decision(begun.packet, action), response_id: responseId, model: 'test-model',
     input_tokens: 40, output_tokens: 20,
-    prompt_commitment: initiationProtocol.commitment({ system, user }),
+    prompt_commitment: initiationProtocol.commitment(promptManifest),
   });
 }
 
@@ -95,6 +97,8 @@ test('endogenous initiation prospectively commits THINK or WAIT and applies the 
   assert.equal(thinking.store.snapshot().version, 96);
   const prepared = thinking.store.prepareCognitivePulse({ id: 'think-pulse', model: 'test-model', force: true });
   const begun = thinking.store.beginCognitivePulseInitiation(prepared.pulse.id, { id: 'think-gate', model: 'test-model' });
+  assert.equal(begun.protocol_version, 2);
+  assert.equal(initiationProtocol.commitment(begun.prompt_manifest), begun.prompt_protocol_commitment);
   assert.equal(begun.packet.target, 'nora_current_agent');
   assert.equal(begun.packet.pulse_input_commitment, prepared.pulse.input_commitment);
   assert.throws(() => initiationProtocol.parseDecision(JSON.stringify({ ...decision(begun.packet, 'think'), focus_refs: [{ type: 'invented', id: 'outside' }] }), begun.packet), /supplied references/);

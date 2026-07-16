@@ -60,10 +60,12 @@ function submission(condition, packet, action, index) {
 }
 
 function completeAppliedGate(store, begun, binding, action, responseId) {
-  const system = initiation.systemPrompt(binding); const user = initiation.userPrompt(begun.packet);
+  const promptManifest = begun.prompt_manifest || {
+    system: initiation.systemPrompt(binding), user: initiation.userPrompt(begun.packet),
+  };
   return store.completeCognitivePulseInitiation(begun.id, { decision: gateDecision(begun.packet, action, responseId),
     response_id: responseId, model: 'test-model', input_tokens: 40, output_tokens: 20,
-    prompt_commitment: initiation.commitment({ system, user }) });
+    prompt_commitment: initiation.commitment(promptManifest) });
 }
 
 test('matched cognitive-initiation allocation isolates self-binding, charges compute, and fails closed under tampering', async () => {

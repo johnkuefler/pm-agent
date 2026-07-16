@@ -5580,16 +5580,31 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         decisionVerified = cognitiveInitiation.commitment(normalized) === record.decision_commitment;
       } catch (_) { decisionVerified = false; }
     }
-    const expectedPromptCommitment = cognitiveInitiation.commitment({
+    const protocolVersion = Number(record.protocol_version) || 1;
+    const legacyPromptManifest = {
       system: cognitiveInitiation.systemPrompt(record.binding),
       user: cognitiveInitiation.userPrompt(record.packet),
-    });
+    };
+    const promptManifest = protocolVersion >= 2 ? record.prompt_manifest : legacyPromptManifest;
+    const expectedPromptCommitment = promptManifest
+      ? cognitiveInitiation.commitment(promptManifest) : null;
+    const promptManifestVerified = protocolVersion < 2 || Boolean(record.prompt_manifest
+      && record.prompt_protocol_commitment
+      && expectedPromptCommitment === record.prompt_protocol_commitment);
     const providerVerified = record.status !== 'completed' || Boolean(record.provider_receipt?.response_id
       && record.provider_receipt?.model && record.provider_receipt?.prompt_commitment === expectedPromptCommitment
       && !(state.cognition.background_inference.initiation_records || []).some(item => item.id !== record.id
         && item.provider_receipt?.response_id === record.provider_receipt.response_id));
-    const beganPayload = { packet_commitment: record.packet_commitment, pulse_input_commitment: record.pulse_input_commitment,
-      binding: record.binding, model: record.model };
+    const beganPayload = {
+      packet_commitment: record.packet_commitment,
+      pulse_input_commitment: record.pulse_input_commitment,
+      binding: record.binding,
+      model: record.model,
+      ...(protocolVersion >= 2 ? {
+        protocol_version: protocolVersion,
+        prompt_protocol_commitment: record.prompt_protocol_commitment,
+      } : {}),
+    };
     const beganVerified = cognitiveInitiationLedgerEventVerified(record, 'cognitive_pulse_initiation_began', beganPayload);
     const completedPayload = record.decision ? { decision_commitment: record.decision_commitment, provider_receipt: record.provider_receipt } : null;
     const completionVerified = record.status === 'pending' ? true : record.status === 'failed'
@@ -5600,10 +5615,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && ((record.decision.decision === 'think' && ['accepted', 'failed', 'rejected'].includes(record.outcome.pulse_status))
         || (record.decision.decision === 'wait' && record.outcome.pulse_status === 'deferred')));
     const ledgerVerified = verifyResearchLedger(state.cognition.research_ledger).valid;
-    return { packet_verified: packetVerified, decision_verified: decisionVerified, provider_verified: providerVerified,
+    return { protocol_version: protocolVersion, packet_verified: packetVerified,
+      prompt_manifest_verified: promptManifestVerified,
+      decision_verified: decisionVerified, provider_verified: providerVerified,
       began_event_verified: beganVerified, completion_event_verified: completionVerified, outcome_event_verified: outcomeVerified,
       research_ledger_chain_verified: ledgerVerified,
-      complete_chain_verified: record.status === 'completed' && packetVerified && decisionVerified && providerVerified
+      complete_chain_verified: record.status === 'completed' && packetVerified && promptManifestVerified
+        && decisionVerified && providerVerified
         && beganVerified && completionVerified && outcomeVerified && ledgerVerified };
   }
 
@@ -5626,18 +5644,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const used = inference.pulses.filter(item => new Date(item.requested_at).getTime() >= dayAgo
         && ['accepted', 'rejected', 'failed'].includes(item.status)).length;
       const packet = cognitiveInitiation.buildPacket(pulse, { binding, dailyBudgetRemaining: Math.max(0, inference.daily_budget - used) });
+      const promptManifest = {
+        system: cognitiveInitiation.systemPrompt(binding),
+        user: cognitiveInitiation.userPrompt(packet),
+      };
       const record = {
+        protocol_version: 2,
         id: input.id || `cognitive-initiation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
         pulse_id: pulse.id, pulse_input_commitment: pulse.input_commitment, binding,
         model: String(input.model || pulse.model || 'unspecified').slice(0, 120),
-        packet, packet_commitment: cognitiveInitiation.commitment(packet), status: 'pending',
+        packet, packet_commitment: cognitiveInitiation.commitment(packet),
+        prompt_manifest: promptManifest,
+        prompt_protocol_commitment: cognitiveInitiation.commitment(promptManifest),
+        status: 'pending',
         decision: null, decision_commitment: null, provider_receipt: null, outcome: null, failure: null,
         created_at: clock().toISOString(), completed_at: null,
       };
       pulse.initiation_id = record.id;
       inference.initiation_records.push(record); inference.initiation_records = inference.initiation_records.slice(-500);
-      const payload = { packet_commitment: record.packet_commitment, pulse_input_commitment: record.pulse_input_commitment,
-        binding: record.binding, model: record.model };
+      const payload = { packet_commitment: record.packet_commitment,
+        pulse_input_commitment: record.pulse_input_commitment,
+        binding: record.binding, model: record.model,
+        protocol_version: record.protocol_version,
+        prompt_protocol_commitment: record.prompt_protocol_commitment };
       researchLedgerAppend(current, { kind: 'cognitive_pulse_initiation_began', subject_type: 'cognitive_pulse_initiation', subject_id: record.id, payload });
       return JSON.parse(JSON.stringify(record));
     });
@@ -5661,7 +5690,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!provider.response_id || !provider.model) throw new Error('cognitive initiation provider response id and model are required');
       if (provider.model !== record.model) throw new Error('cognitive initiation must use the preregistered model');
       if (current.cognition.background_inference.initiation_records.some(item => item.id !== record.id && item.provider_receipt?.response_id === provider.response_id)) throw new Error('cognitive initiation provider response id has already been used');
-      const expectedPrompt = cognitiveInitiation.commitment({ system: cognitiveInitiation.systemPrompt(record.binding), user: cognitiveInitiation.userPrompt(record.packet) });
+      if (Number(record.protocol_version) >= 2 && (!record.prompt_manifest
+        || cognitiveInitiation.commitment(record.prompt_manifest)
+          !== record.prompt_protocol_commitment)) {
+        throw new Error('cognitive initiation prompt manifest integrity mismatch');
+      }
+      const expectedPrompt = record.prompt_protocol_commitment
+        || cognitiveInitiation.commitment({
+          system: cognitiveInitiation.systemPrompt(record.binding),
+          user: cognitiveInitiation.userPrompt(record.packet),
+        });
       if (provider.prompt_commitment !== expectedPrompt) throw new Error('cognitive initiation prompt commitment mismatch');
       record.decision = decision; record.decision_commitment = cognitiveInitiation.commitment(decision);
       record.provider_receipt = provider; record.status = 'completed'; record.completed_at = clock().toISOString();
@@ -7117,11 +7155,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const latestInitiation = initiations.at(-1) || null;
     const latestInitiationAudit = latestInitiation
       ? cognitiveInitiationAudit(latestInitiation) : null;
+    const latestInitiationProtocolVersion = Number(latestInitiation?.protocol_version) || 1;
+    const latestInitiationExpectedPrompt = !latestInitiation ? null
+      : latestInitiationProtocolVersion >= 2
+        ? latestInitiation.prompt_protocol_commitment || null
+        : cognitiveInitiation.commitment({
+          system: cognitiveInitiation.systemPrompt(latestInitiation.binding),
+          user: cognitiveInitiation.userPrompt(latestInitiation.packet),
+        });
     const latest = pulses.at(-1) || null;
     const latestAudit = latest ? cognitivePulseAudit(latest, new Set(), auditCache) : null;
     const pending = inference.pending || null;
     return {
-      protocol_version: 1,
+      protocol_version: 2,
       content_and_experimental_conditions_sealed: true,
       attempts_total: pulses.length,
       status_counts: statusCounts,
@@ -7133,8 +7179,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         latest: latestInitiation ? {
           status: latestInitiation.status,
           outcome_present: Boolean(latestInitiation.outcome),
+          provider_checks: {
+            response_id_present: Boolean(latestInitiation.provider_receipt?.response_id),
+            model_present: Boolean(latestInitiation.provider_receipt?.model),
+            prompt_commitment_matches: Boolean(latestInitiation.provider_receipt?.prompt_commitment
+              && latestInitiation.provider_receipt.prompt_commitment
+                === latestInitiationExpectedPrompt),
+            response_id_unique: Boolean(latestInitiation.provider_receipt?.response_id)
+              && !initiations.some(record => record.id !== latestInitiation.id
+                && record.provider_receipt?.response_id
+                  === latestInitiation.provider_receipt.response_id),
+          },
           audit: {
+            protocol_version: latestInitiationAudit.protocol_version,
             packet_verified: latestInitiationAudit.packet_verified === true,
+            prompt_manifest_verified: latestInitiationAudit.prompt_manifest_verified === true,
             decision_verified: latestInitiationAudit.decision_verified === true,
             provider_verified: latestInitiationAudit.provider_verified === true,
             began_event_verified: latestInitiationAudit.began_event_verified === true,

@@ -8928,8 +8928,10 @@ async function runCognitivePulseRuntime({ now = new Date(), post = axios.post, f
     if (!prospectiveStudy && gateRequired) {
       const binding = policyAssignment?.binding || 'self';
       initiation = intelligence.beginCognitivePulseInitiation(pulse.id, { binding, model });
-      const initiationSystem = cognitiveInitiation.systemPrompt(binding);
-      const initiationUser = cognitiveInitiation.userPrompt(initiation.packet);
+      const initiationSystem = initiation.prompt_manifest?.system
+        || cognitiveInitiation.systemPrompt(binding);
+      const initiationUser = initiation.prompt_manifest?.user
+        || cognitiveInitiation.userPrompt(initiation.packet);
       const gateResponse = await post('https://api.anthropic.com/v1/messages', {
         model, max_tokens: 300, temperature: 0,
         system: initiationSystem,

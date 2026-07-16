@@ -131,6 +131,9 @@ test('runtime diagnostics expose replay and failure metadata without sealed puls
   const gate = deferredFixture.store.beginCognitivePulseInitiation(deferredPrepared.pulse.id, {
     binding: 'self', model: 'test-model',
   });
+  assert.equal(gate.protocol_version, 2);
+  assert.equal(gate.prompt_protocol_commitment,
+    cognitiveInitiation.commitment(gate.prompt_manifest));
   const decision = {
     decision: 'wait', expected_value: 0.2,
     focus_refs: [gate.packet.evidence[0].ref],
@@ -141,18 +144,36 @@ test('runtime diagnostics expose replay and failure metadata without sealed puls
   deferredFixture.store.completeCognitivePulseInitiation(gate.id, {
     decision, response_id: 'diagnostic-gate-response', model: 'test-model',
     input_tokens: 50, output_tokens: 20,
-    prompt_commitment: cognitiveInitiation.commitment({
-      system: cognitiveInitiation.systemPrompt('self'),
-      user: cognitiveInitiation.userPrompt(gate.packet),
-    }),
+    prompt_commitment: cognitiveInitiation.commitment(gate.prompt_manifest),
   });
   deferredFixture.store.deferCognitivePulse(deferredPrepared.pulse.id);
   const deferred = deferredFixture.store.cognitivePulseRuntimeDiagnostics();
+  assert.equal(deferred.protocol_version, 2);
   assert.equal(deferred.status_counts.deferred, 1);
   assert.equal(deferred.latest_attempt.failure_code, 'endogenously_deferred');
   assert.equal(deferred.initiation.replay_verified_applied, 1);
+  assert.equal(deferred.initiation.latest.audit.prompt_manifest_verified, true);
+  assert.deepEqual(deferred.initiation.latest.provider_checks, {
+    response_id_present: true,
+    model_present: true,
+    prompt_commitment_matches: true,
+    response_id_unique: true,
+  });
   assert.equal(deferred.initiation.latest.audit.complete_chain_verified, true);
   assert.doesNotMatch(JSON.stringify(deferred), /diagnostic-gate-response|later pulse can test/);
+  await deferredFixture.store.persist();
+  const tamperedState = JSON.parse(fs.readFileSync(deferredFixture.filePath, 'utf8'));
+  tamperedState.cognition.background_inference.initiation_records[0].prompt_manifest.system =
+    'Tampered after the provider call.';
+  fs.writeFileSync(deferredFixture.filePath, JSON.stringify(tamperedState));
+  const tamperedStore = createIntelligenceStore({
+    filePath: deferredFixture.filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date('2026-07-13T18:00:00.000Z'),
+  });
+  await tamperedStore.init();
+  const tampered = tamperedStore.cognitivePulseRuntimeDiagnostics();
+  assert.equal(tampered.initiation.latest.audit.prompt_manifest_verified, false);
+  assert.equal(tampered.initiation.latest.audit.complete_chain_verified, false);
   fs.rmSync(deferredFixture.dir, { recursive: true, force: true });
 });
 
