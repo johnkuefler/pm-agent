@@ -264,6 +264,65 @@ test('protocol-v4 forecasts observable substrate state against start-state persi
   assert.equal(feedback.substrate.self_minus_persistence, 0.8);
 });
 
+test('protocol-v5 binds a lagged behavioral prior and excludes retired action families prospectively', () => {
+  const priorCommitment = 'a'.repeat(64);
+  const input = {
+    protocol_version: 5, predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.7, confidence: 0.8,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['drive'],
+      appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.85 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.8,
+      predicted_largest_error_domain: 'action_types',
+    },
+    substrate_prediction: {
+      error_probability: 0.1, warning_probability: 0.2, backup_probability: 0.05,
+      embedding_backlog_probability: 0.1, restart_probability: 0.05,
+    },
+    behavioral_self_prior_commitment: priorCommitment,
+    rationale: 'The lagged behavioral prior and current orientation both support one bounded review.',
+    evidence: [{ type: 'intelligence_cycle', id: 'prior-cycle' },
+      { type: 'behavioral_self_prior', id: priorCommitment }],
+  };
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    predicted_action_types: ['dev_dispatch'] }), /retired development-dispatch/);
+  assert.throws(() => cycleSelfForecast.normalizeForecast({ ...input,
+    behavioral_self_prior_commitment: 'b'.repeat(64) }), /must cite its behavioral_self_prior/);
+  const historical = Array.from({ length: 5 }, (_, index) => ({
+    id: `prior-history-${index}`,
+    attention: { slots: [{ type: index < 3 ? 'dev_round_intake' : 'drive', id: `slot-${index}` }] },
+    attention_rounds: [{ index: 0 }],
+    closure: { actions: [{ type: index < 3 ? 'dev_dispatch' : 'review', id: `action-${index}` }],
+      new_surprise_ids: [], appraisal_at_end: { valence: 0.5, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.8 } },
+  }));
+  const behavioralSelfPrior = { content_commitment: priorCommitment, estimates: { sample_size: 20 } };
+  const record = cycleSelfForecast.createRecord({ input,
+    cycle: { id: 'prior-cycle', holder: 'nora' }, moment: { id: 'prior-moment' },
+    baselineMoments: historical, behavioralSelfPrior,
+    committedAt: '2026-07-14T12:00:00.000Z' });
+  assert.deepEqual(record.baseline.predicted_action_types, ['review']);
+  assert.deepEqual(record.baseline.self_state_prediction.attention_slot_types_at_close, ['drive']);
+  const outcome = cycleSelfForecast.scoreRecord(record, {
+    actions: [{ type: 'dev_dispatch', id: 'legacy' }, { type: 'review', id: 'review' }],
+    newSurpriseIds: [],
+    appraisalAtClose: { valence: 0.6, arousal: 0.3, control: 0.7,
+      social_safety: 0.8, coherence: 0.85 },
+    attentionAtClose: { slots: [{ type: 'dev_round_followup', id: 'legacy-slot' },
+      { type: 'drive', id: 'drive' }] },
+    reentryOccurred: false, substrateAtStart: {}, substrateAtClose: {},
+    startedAt: '2026-07-14T12:00:00.000Z', finishedAt: '2026-07-14T13:00:00.000Z',
+    scoredAt: '2026-07-14T13:00:00.000Z',
+  });
+  assert.deepEqual(outcome.actual.action_types, ['review']);
+  assert.deepEqual(outcome.self_state_actual.attention_slot_types_at_close, ['drive']);
+  assert.equal(outcome.self_state_actual.action_count, 1);
+});
+
 test('protocol-v4 substrate scoring requires complete authoritative telemetry for comparison', () => {
   const actual = cycleSelfForecast.substrateActual({
     start: { uptime_minutes: 10 }, close: { errors10: 0, warns10: null,

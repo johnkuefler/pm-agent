@@ -578,6 +578,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/self-model', requireAuth, (req, res) => res.json(store.selfModelSnapshot()));
+  app.get('/self-model/forecast-prior', requireAuth,
+    (req, res) => res.json(store.behavioralSelfForecastPriorSnapshot()));
   app.get('/self-model/cycle-calibration', requireAuth,
     (req, res) => res.json(store.behavioralSelfCalibrationSnapshot()));
   app.get('/self-model/inquiries', requireAuth, (req, res) => res.json(store.selfInquirySnapshot()));

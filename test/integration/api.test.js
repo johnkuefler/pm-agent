@@ -85,6 +85,7 @@ test('authentication protects APIs and dashboard independently', async () => {
   assert.equal((await fetch(base + '/episodic-prospection-studies')).status, 401);
   assert.equal((await request('/episodic-prospection-studies', { method: 'POST', body: {} })).response.status, 401);
   assert.equal((await fetch(base + '/constructive-prospection')).status, 401);
+  assert.equal((await fetch(base + '/self-model/forecast-prior')).status, 401);
   assert.equal((await request('/constructive-prospection/missing/resolve', { method: 'POST', body: {} })).response.status, 401);
   assert.equal((await fetch(base + '/integrated-self')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger')).status, 401);
@@ -329,6 +330,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.notEqual(cycle.body.moment.substrate_at_start?.process_epoch_id, 'forged-process-epoch');
   assert.ok(Array.isArray(cycle.body.orientation.recommendations));
   assert.equal(cycle.body.moment.cycle_id, cycle.body.cycle.id);
+  const immaturePrior = await request('/self-model/forecast-prior');
+  assert.equal(immaturePrior.response.status, 200);
+  assert.equal(immaturePrior.body.available, false);
+  assert.equal(immaturePrior.body.experimental_access_sealed, false);
   const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
     protocol_version: 4,
     predicted_action_types: ['integration_review'], surprise_probability: 0.2,
@@ -915,7 +920,7 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   } });
   assert.equal(acquired.body.acquired, true);
   assert.equal(acquired.body.lifecycle.kind, 'run_bound_intelligence_cycle');
-  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 4);
+  assert.equal(acquired.body.lifecycle.forecast_protocol_version, 5);
   assert.equal(acquired.body.lifecycle.lifecycle_stage, 'forecast_required');
   assert.equal(acquired.body.lifecycle.lifecycle_projection_integrity_verified, true);
   assert.match(acquired.body.lifecycle.continuity_action, /^proceed/);

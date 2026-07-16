@@ -412,6 +412,7 @@ test('forecast-error self-model revision requires replay-valid multi-cycle evide
     natural_cycle_feedback_access_sealed: false,
     natural_cycle_feedback_samples: 0,
     latest_feedback_available: false,
+    lagged_prior_forecasts: 0,
   });
 
   report = buildIndicatorReport(stateWith({ self_model: { probes: [], context_trials: [

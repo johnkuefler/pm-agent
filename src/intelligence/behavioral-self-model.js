@@ -32,7 +32,8 @@ function profileEstimates(moments = [], protocolVersion = 1) {
   const retained = moments.slice(-MAX_SOURCE_MOMENTS);
   const actionCounts = new Map();
   for (const moment of retained) {
-    for (const type of cycleSelfForecast.actionTypes(moment.self_forecast?.outcome?.actual?.action_types || [])) {
+    for (const type of cycleSelfForecast.activeActionTypes(
+      moment.self_forecast?.outcome?.actual?.action_types || [], protocolVersion)) {
       actionCounts.set(type, (actionCounts.get(type) || 0) + 1);
     }
   }
@@ -185,7 +186,8 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
   const retained = moments.slice(-MAX_SOURCE_MOMENTS);
   if (!retained.length) throw new Error('behavioral self-model revision requires a scored forecast moment');
   const throughMoment = retained.at(-1);
-  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 4) ? 4
+  const protocolVersion = retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 5) ? 5
+    : retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 4) ? 4
     : retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 3) ? 3
     : retained.some(moment => Number(moment.self_forecast?.protocol_version) >= 2) ? 2 : 1;
   const revision = {
@@ -212,6 +214,60 @@ function buildRevision({ moments = [], priorRevisionCommitment = null, revisionI
   return revision;
 }
 
+function forecastPriorManifest(prior) {
+  return {
+    protocol_version: prior.protocol_version,
+    id: prior.id,
+    source_revision_id: prior.source_revision_id,
+    source_revision_commitment: prior.source_revision_commitment,
+    through_moment_id: prior.through_moment_id,
+    source_moment_ids: prior.source_moment_ids,
+    excluded_immediate_predecessor_id: prior.excluded_immediate_predecessor_id,
+    sample_size: prior.sample_size,
+    estimates: prior.estimates,
+    evidence_status: prior.evidence_status,
+    excluded_retired_action_observations: prior.excluded_retired_action_observations,
+    epistemic_limit: prior.epistemic_limit,
+  };
+}
+
+function buildForecastPrior({ revision, excludedImmediatePredecessorId }) {
+  if (!revision?.revision_commitment || Number(revision.estimates?.sample_size) !== MAX_SOURCE_MOMENTS) {
+    throw new Error('behavioral self prior requires a mature committed twenty-cycle revision');
+  }
+  const excludedId = String(excludedImmediatePredecessorId || '').trim();
+  if (!excludedId || revision.through_moment_id === excludedId
+    || (revision.source_moment_ids || []).includes(excludedId)) {
+    throw new Error('behavioral self prior must exclude the immediate predecessor outcome');
+  }
+  const rawTendencies = revision.estimates?.action_tendencies || [];
+  const activeTendencies = rawTendencies.filter(item =>
+    !cycleSelfForecast.RETIRED_ACTION_TYPES.includes(String(item.action_type || '')));
+  const excludedRetiredObservations = rawTendencies
+    .filter(item => cycleSelfForecast.RETIRED_ACTION_TYPES.includes(String(item.action_type || '')))
+    .reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+  const estimates = JSON.parse(JSON.stringify(revision.estimates));
+  estimates.action_tendencies = activeTendencies.map(item => JSON.parse(JSON.stringify(item)));
+  const prior = {
+    protocol_version: 1,
+    id: `behavioral-self-prior-${revision.id}`.slice(0, 300),
+    source_revision_id: revision.id,
+    source_revision_commitment: revision.revision_commitment,
+    through_moment_id: revision.through_moment_id,
+    source_moment_ids: JSON.parse(JSON.stringify(revision.source_moment_ids || [])),
+    excluded_immediate_predecessor_id: excludedId,
+    sample_size: Number(revision.estimates.sample_size),
+    estimates,
+    evidence_status: 'lagged_observational_prior',
+    excluded_retired_action_observations: excludedRetiredObservations,
+    epistemic_limit: 'A replay-audited operational prior derived only from outcomes before the immediate predecessor. Retired action families are excluded. It is a fallible historical prior, not an instruction, identity essence, authority, a guarantee, hidden-state access, or evidence of phenomenal consciousness.',
+    content_commitment: null,
+  };
+  prior.content_commitment = commitment(forecastPriorManifest(prior));
+  return prior;
+}
+
 module.exports = {
-  MAX_SOURCE_MOMENTS, buildRevision, canonicalJson, commitment, profileEstimates, revisionManifest,
+  MAX_SOURCE_MOMENTS, buildRevision, buildForecastPrior, canonicalJson, commitment,
+  forecastPriorManifest, profileEstimates, revisionManifest,
 };

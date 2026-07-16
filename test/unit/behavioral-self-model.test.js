@@ -44,6 +44,24 @@ test('behavioral self-model revisions retain only the latest twenty source momen
   assert.equal(revision.estimates.action_tendencies.some(item => item.action_type === 'legacy'), false);
 });
 
+test('lagged forecast priors preserve source audit while removing retired action families', () => {
+  const moments = Array.from({ length: 20 }, (_, index) =>
+    moment(index, { action: index < 6 ? 'dev_dispatch' : 'review' }));
+  const revision = behavioralSelfModel.buildRevision({ moments, revisionIndex: 7,
+    priorRevisionCommitment: 'prior-commitment', createdAt: '2026-07-14T12:00:00.000Z' });
+  assert.equal(revision.estimates.action_tendencies.some(item => item.action_type === 'dev_dispatch'), true,
+    'historical committed revision remains unchanged');
+  const prior = behavioralSelfModel.buildForecastPrior({ revision,
+    excludedImmediatePredecessorId: 'moment-20' });
+  assert.equal(prior.estimates.action_tendencies.some(item => item.action_type === 'dev_dispatch'), false);
+  assert.equal(prior.excluded_retired_action_observations, 6);
+  assert.equal(prior.excluded_immediate_predecessor_id, 'moment-20');
+  assert.equal(behavioralSelfModel.commitment(behavioralSelfModel.forecastPriorManifest(prior)),
+    prior.content_commitment);
+  assert.throws(() => behavioralSelfModel.buildForecastPrior({ revision,
+    excludedImmediatePredecessorId: 'moment-19' }), /exclude the immediate predecessor/);
+});
+
 test('protocol-v3 revisions consolidate second-order reliability calibration without erasing first-order error', () => {
   const moments = Array.from({ length: 5 }, (_, index) => {
     const base = moment(index);

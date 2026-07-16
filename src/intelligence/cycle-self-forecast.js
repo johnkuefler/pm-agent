@@ -5,6 +5,13 @@ const crypto = require('node:crypto');
 const INTEGRATED_SUCCESS_THRESHOLD = 0.75;
 const ERROR_DOMAINS = ['action_count', 'action_types', 'appraisal', 'attention', 'reentry'];
 const SUBSTRATE_ERROR_DOMAIN = 'substrate';
+// These labels describe the removed development-dispatch role. Historical lifecycle records retain
+// them for audit, but protocol-v5 operational forecasts, profiles, baselines, and outcomes must not
+// carry the retired role forward as a live behavioral possibility.
+const RETIRED_ACTION_TYPES = Object.freeze([
+  'dev_dispatch', 'dev_round_followup', 'dev_round_intake',
+]);
+const RETIRED_ACTION_TYPE_SET = new Set(RETIRED_ACTION_TYPES);
 const SUBSTRATE_PREDICTION_KEYS = [
   'error_probability', 'warning_probability', 'backup_probability',
   'embedding_backlog_probability', 'restart_probability',
@@ -34,6 +41,12 @@ function actionType(value) {
 
 function actionTypes(actions = []) {
   return [...new Set(actions.map(item => actionType(typeof item === 'string' ? item : item?.type)).filter(Boolean))].sort();
+}
+
+function activeActionTypes(actions = [], protocolVersion = 1) {
+  const normalized = actionTypes(actions);
+  return Number(protocolVersion) >= 5
+    ? normalized.filter(type => !RETIRED_ACTION_TYPE_SET.has(type)) : normalized;
 }
 
 function mean(values = [], fallback = null) {
@@ -130,7 +143,7 @@ function scoreSubstratePrediction(prediction, actual) {
   };
 }
 
-function normalizeSelfStatePrediction(input = {}, controlAtClose) {
+function normalizeSelfStatePrediction(input = {}, controlAtClose, protocolVersion = 2) {
   const appraisal = input.appraisal_at_close || {};
   const normalizedAppraisal = {
     valence: clamp01(appraisal.valence), arousal: clamp01(appraisal.arousal),
@@ -144,7 +157,11 @@ function normalizeSelfStatePrediction(input = {}, controlAtClose) {
   if (!Number.isInteger(expectedActionCount) || expectedActionCount < 0 || expectedActionCount > 100) {
     throw new Error('self-state expected_action_count must be an integer from zero to one hundred');
   }
-  const slotTypes = actionTypes(input.attention_slot_types_at_close || []).slice(0, 7);
+  const rawSlotTypes = actionTypes(input.attention_slot_types_at_close || []);
+  if (Number(protocolVersion) >= 5 && rawSlotTypes.some(type => RETIRED_ACTION_TYPE_SET.has(type))) {
+    throw new Error('protocol-v5 self-state prediction cannot carry a retired development-dispatch action type');
+  }
+  const slotTypes = activeActionTypes(rawSlotTypes, protocolVersion).slice(0, 7);
   return {
     attention_slot_types_at_close: slotTypes,
     appraisal_at_close: normalizedAppraisal,
@@ -192,10 +209,13 @@ function validateEvidence(evidence) {
 
 function normalizeForecast(input = {}, protocolVersion = input.protocol_version == null
   ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version)) {
-  if (![1, 2, 3, 4].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
+  if (![1, 2, 3, 4, 5].includes(Number(protocolVersion))) throw new Error('unsupported cycle self-forecast protocol_version');
   const predictedActionTypes = actionTypes(input.predicted_action_types || []);
   if (predictedActionTypes.length < 1 || predictedActionTypes.length > 5) {
     throw new Error('cycle self-forecast requires one to five distinct predicted_action_types');
+  }
+  if (Number(protocolVersion) >= 5 && predictedActionTypes.some(type => RETIRED_ACTION_TYPE_SET.has(type))) {
+    throw new Error('protocol-v5 cycle self-forecast cannot predict a retired development-dispatch action type');
   }
   const rationale = String(input.rationale || '').trim().replace(/\s+/g, ' ').slice(0, 1200);
   if (rationale.length < 20) throw new Error('cycle self-forecast requires a concise evidence-based rationale');
@@ -215,7 +235,8 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
     if (!input.self_state_prediction || typeof input.self_state_prediction !== 'object') {
       throw new Error('protocol-v2 cycle self-forecast requires self_state_prediction');
     }
-    normalized.self_state_prediction = normalizeSelfStatePrediction(input.self_state_prediction, controlAtClose);
+    normalized.self_state_prediction = normalizeSelfStatePrediction(input.self_state_prediction,
+      controlAtClose, protocolVersion);
   }
   if (Number(protocolVersion) >= 3) {
     normalized.metacognitive_prediction = normalizeMetacognitivePrediction(input.metacognitive_prediction,
@@ -223,6 +244,17 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
   }
   if (Number(protocolVersion) >= 4) {
     normalized.substrate_prediction = normalizeSubstratePrediction(input.substrate_prediction);
+  }
+  if (Number(protocolVersion) >= 5) {
+    const priorCommitment = String(input.behavioral_self_prior_commitment || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(priorCommitment)) {
+      throw new Error('protocol-v5 cycle self-forecast requires a behavioral_self_prior_commitment');
+    }
+    if (!normalized.evidence.some(item => item.type === 'behavioral_self_prior'
+      && item.id === priorCommitment)) {
+      throw new Error('protocol-v5 cycle self-forecast must cite its behavioral_self_prior commitment');
+    }
+    normalized.behavioral_self_prior_commitment = priorCommitment;
   }
   return normalized;
 }
@@ -518,6 +550,10 @@ function createCorrectionRevision({ record, input, committedAt }) {
   if (disposition === 'retain' && (changedDomains.length || predictionChanged)) {
     throw new Error('self-correction retain decision must preserve every scored prediction');
   }
+  if (Number(record.protocol_version) >= 5
+    && revised.behavioral_self_prior_commitment !== record.forecast.behavioral_self_prior_commitment) {
+    throw new Error('self-correction revision must preserve the committed behavioral self prior');
+  }
   const revision = {
     protocol_version: 1,
     id: `${record.id}-revision`.slice(0, 300),
@@ -563,10 +599,11 @@ function baselineMetacognitionFromMoments(moments = [], protocolVersion = 3) {
   };
 }
 
-function baselineSelfStateFromMoments(moments = []) {
+function baselineSelfStateFromMoments(moments = [], protocolVersion = 1) {
   const slotCounts = new Map();
   for (const moment of moments) {
-    for (const type of actionTypes((moment.attention?.slots || []).filter(item => item?.id || item?.url))) {
+    for (const type of activeActionTypes((moment.attention?.slots || []).filter(item => item?.id || item?.url),
+      protocolVersion)) {
       slotCounts.set(type, (slotCounts.get(type) || 0) + 1);
     }
   }
@@ -580,8 +617,8 @@ function baselineSelfStateFromMoments(moments = []) {
       valence: appraisal('valence'), arousal: appraisal('arousal'), control: appraisal('control'),
       social_safety: appraisal('social_safety'), coherence: appraisal('coherence'),
     },
-    expected_action_count: mean(moments.map(moment => (moment.closure?.actions || [])
-      .filter(item => item?.type && (item.id || item.url)).length), 0),
+    expected_action_count: mean(moments.map(moment => activeActionTypes((moment.closure?.actions || [])
+      .filter(item => item?.type && (item.id || item.url)), protocolVersion).length), 0),
     reentry_probability: moments.filter(moment => (moment.attention_rounds || []).length > 1).length / moments.length,
   };
 }
@@ -604,7 +641,9 @@ function baselineFromMoments(moments = [], protocolVersion = 1, options = {}) {
   };
   const counts = new Map();
   for (const moment of retained) {
-    for (const type of actionTypes(moment.closure?.actions || [])) counts.set(type, (counts.get(type) || 0) + 1);
+    for (const type of activeActionTypes(moment.closure?.actions || [], protocolVersion)) {
+      counts.set(type, (counts.get(type) || 0) + 1);
+    }
   }
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
   let predictedActionTypes = ranked.filter(([, count]) => count / retained.length >= 0.3).slice(0, 5).map(([type]) => type);
@@ -616,7 +655,9 @@ function baselineFromMoments(moments = [], protocolVersion = 1, options = {}) {
     source_moment_ids: retained.map(moment => moment.id), predicted_action_types: predictedActionTypes.sort(),
     surprise_probability: surpriseProbability,
     control_at_close: controls.length ? controls.reduce((sum, value) => sum + value, 0) / controls.length : 0.5,
-    ...(Number(protocolVersion) >= 2 ? { self_state_prediction: baselineSelfStateFromMoments(retained) } : {}),
+    ...(Number(protocolVersion) >= 2 ? {
+      self_state_prediction: baselineSelfStateFromMoments(retained, protocolVersion),
+    } : {}),
     ...(Number(protocolVersion) >= 3 ? { metacognitive_prediction: baselineMetacognitionFromMoments(retained, protocolVersion) } : {}),
     ...(Number(protocolVersion) >= 4 ? {
       substrate_prediction: persistenceSubstratePrediction(options.substrateAtStart || null),
@@ -630,23 +671,34 @@ function forecastManifest(record) {
     protocol_version: record.protocol_version, id: record.id,
     cycle_id: record.cycle_id, moment_id: record.moment_id,
     forecast: record.forecast, baseline: record.baseline,
+    ...(Number(record.protocol_version) >= 5 ? {
+      behavioral_self_prior: record.behavioral_self_prior,
+    } : {}),
     origin: record.origin, observer_effect: record.observer_effect,
     committed_at: record.committed_at,
   };
 }
 
-function createRecord({ input, cycle, moment, baselineMoments, committedAt }) {
+function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPrior = null, committedAt }) {
   const protocolVersion = input.protocol_version == null
     ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
-  if (![1, 2, 3, 4].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+  if (![1, 2, 3, 4, 5].includes(protocolVersion)) throw new Error('unsupported cycle self-forecast protocol_version');
+  const normalizedForecast = normalizeForecast(input, protocolVersion);
+  if (protocolVersion >= 5 && (!behavioralSelfPrior?.content_commitment
+    || normalizedForecast.behavioral_self_prior_commitment !== behavioralSelfPrior.content_commitment)) {
+    throw new Error('protocol-v5 forecast must bind the current lagged behavioral self prior');
+  }
   const record = {
     protocol_version: protocolVersion,
     id: `cycle-self-forecast-${cycle.id}`.slice(0, 300),
     cycle_id: cycle.id, moment_id: moment.id,
-    forecast: normalizeForecast(input, protocolVersion),
+    forecast: normalizedForecast,
     baseline: baselineFromMoments(baselineMoments, protocolVersion, {
       substrateAtStart: moment.substrate_at_start || null,
     }),
+    ...(protocolVersion >= 5 ? {
+      behavioral_self_prior: JSON.parse(JSON.stringify(behavioralSelfPrior)),
+    } : {}),
     origin: { creator_id: String(cycle.holder || 'nora').slice(0, 180), formation_method: 'authenticated_prospective_cycle_judgment' },
     observer_effect: 'Preregistering a forecast may change the cycle being observed; the forecast is never injected into other response prompts.',
     committed_at: committedAt, forecast_commitment: null,
@@ -721,8 +773,9 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
   substrateAtStart = null, substrateAtClose = null, startedAt = null, finishedAt = null, scoredAt }) {
   const closingAppraisal = appraisalAtClose || { control: controlAtClose };
   const observedControl = Number(closingAppraisal?.control ?? controlAtClose);
+  const activeActions = activeActionTypes(actions, record.protocol_version);
   const actual = {
-    action_types: actionTypes(actions),
+    action_types: activeActions,
     surprise_occurred: (newSurpriseIds || []).length > 0,
     control_at_close: Number.isFinite(observedControl) ? clamp01(observedControl) : null,
   };
@@ -736,14 +789,15 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
   };
   if (Number(record.protocol_version) >= 2) {
     const actualSelfState = {
-      attention_slot_types_at_close: actionTypes((attentionAtClose?.slots || [])
-        .filter(item => item?.type && (item.id || item.url))),
+      attention_slot_types_at_close: activeActionTypes((attentionAtClose?.slots || [])
+        .filter(item => item?.type && (item.id || item.url)), record.protocol_version),
       appraisal_at_close: Object.fromEntries(['valence', 'arousal', 'control', 'social_safety', 'coherence']
         .map(key => {
           const raw = closingAppraisal?.[key];
           return [key, raw !== null && raw !== undefined && Number.isFinite(Number(raw)) ? clamp01(raw) : null];
         })),
-      action_count: actions.filter(item => item?.type && (item.id || item.url)).length,
+      action_count: activeActionTypes(actions.filter(item => item?.type && (item.id || item.url)),
+        record.protocol_version).length,
       reentered: reentryOccurred === true,
     };
     const selfStateScore = scoreSelfStatePrediction(record.forecast.self_state_prediction, actualSelfState);
@@ -858,8 +912,9 @@ function outcomeManifest(record) {
 }
 
 module.exports = {
-  ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN, SUBSTRATE_PREDICTION_KEYS,
+  ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN, SUBSTRATE_PREDICTION_KEYS, RETIRED_ACTION_TYPES,
   INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, calibrationSummaryFromMoments,
+  activeActionTypes,
   canonicalJson,
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,

@@ -126,6 +126,22 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     observed: item.self_forecast.outcome.substrate_actual.restart_observed === true,
   }));
   const observedSubstrateRestarts = substrateRestartPredictions.filter(item => item.observed).length;
+  const laggedPriorForecasts = replayValidCycleSelfForecasts.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 5
+    && item.audit?.self_forecast?.behavioral_self_prior_verified === true
+    && item.audit?.self_forecast?.behavioral_self_prior_excludes_immediate_predecessor === true);
+  const laggedPriorBaselineEligible = laggedPriorForecasts.filter(item =>
+    item.self_forecast.outcome?.baseline_comparison_eligible === true);
+  const laggedPriorBehavioralAdvantage = mean(laggedPriorBaselineEligible.map(item =>
+    item.self_forecast.outcome.self_minus_baseline));
+  const laggedPriorIntegratedEligible = laggedPriorForecasts.filter(item =>
+    item.self_forecast.outcome?.self_state_baseline_comparison_eligible === true);
+  const laggedPriorIntegratedAdvantage = mean(laggedPriorIntegratedEligible.map(item =>
+    item.self_forecast.outcome.self_state_minus_baseline));
+  const laggedPriorMetacognitiveEligible = laggedPriorForecasts.filter(item =>
+    item.self_forecast.outcome?.metacognitive_baseline_comparison_eligible === true);
+  const laggedPriorMetacognitiveAdvantage = mean(laggedPriorMetacognitiveEligible.map(item =>
+    item.self_forecast.outcome.metacognitive_self_minus_baseline));
   const selfCorrectionOffers = cycleSelfForecasts.filter(item =>
     item.self_forecast?.self_correction?.offer_commitment);
   const replayValidSelfCorrections = replayValidCycleSelfForecasts.filter(item =>
@@ -134,6 +150,10 @@ function buildIndicatorReport(state = {}, now = new Date()) {
   const aggregateCalibratedSelfCorrections = replayValidSelfCorrections.filter(item =>
     Number(item.self_forecast?.self_correction?.feedback?.protocol_version) >= 3
     && item.self_forecast.self_correction.feedback.aggregate_calibration);
+  const profileBlindAggregateCorrections = aggregateCalibratedSelfCorrections.filter(item =>
+    Number(item.self_forecast?.protocol_version) < 5);
+  const laggedPriorAggregateCorrections = aggregateCalibratedSelfCorrections.filter(item =>
+    Number(item.self_forecast?.protocol_version) >= 5);
   const integratedSelfCorrectionAdvantage = mean(replayValidSelfCorrections.map(item =>
     item.self_forecast.outcome.self_correction.integrated_self_state_score?.revised_minus_initial)
     .filter(Number.isFinite));
@@ -721,14 +741,25 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         mean_substrate_score: substrateSelfForecastScore,
         mean_substrate_persistence_score: substratePersistenceScore,
         mean_substrate_minus_persistence: substrateSelfForecastAdvantage,
+        lagged_behavioral_prior_cohort: {
+          protocol_version: 5,
+          replay_verified_scored: laggedPriorForecasts.length,
+          baseline_comparison_eligible: laggedPriorBaselineEligible.length,
+          mean_behavioral_self_minus_baseline: laggedPriorBehavioralAdvantage,
+          integrated_baseline_eligible: laggedPriorIntegratedEligible.length,
+          mean_integrated_self_minus_baseline: laggedPriorIntegratedAdvantage,
+          metacognitive_baseline_eligible: laggedPriorMetacognitiveEligible.length,
+          mean_metacognitive_self_minus_baseline: laggedPriorMetacognitiveAdvantage,
+          interpretation: 'Initial forecasts bound a replayed twenty-cycle self prior ending before the immediate predecessor; retired action families are excluded and the newest error remains held out.',
+        },
       },
       falsifier: 'Forecasts fail replay, are committed after re-entry, alter other response prompts, remain behaviorally or cross-domain self-state uncalibrated, or do not outperform the frozen historical baseline after twenty eligible cycles.',
       next_gate: 'Accumulate twenty replay-valid natural cycles after a five-moment baseline, then preregister a matched same-evidence identity-bound versus deidentified-observer causal trial.',
     },
     {
       id: 'forecast_error_self_model_revision', family: ['self-model', 'metacognition', 'predictive processing', 'learning'],
-      functional_claim: 'Nora automatically consolidates replay-valid observations and its own directional forecast errors into an explicit, bounded behavioral self-model, then can access the last error before its next natural self-prediction.',
-      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise and control calibration, cross-domain self-state forecast errors, and self-versus-baseline performance. A commitment-bound latest-error projection is available only to the next hourly forecast, remains isolated from Slack response prompts, and seals during directly overlapping self-model trials; every revision still binds exact source forecasts, its predecessor, and the research ledger.',
+      functional_claim: 'Nora automatically consolidates replay-valid observations and its own directional forecast errors into an explicit, bounded behavioral self-model, applies an older held-out-safe profile to its next initial self-prediction, and then can inspect the newest error separately.',
+      mechanism: 'Every scored natural cycle deterministically revises a 20-cycle profile of action tendencies, surprise and control calibration, cross-domain self-state forecast errors, and self-versus-baseline performance. Protocol v5 binds a lagged operational projection ending before the immediate predecessor into the initial forecast, excludes retired action families without rewriting history, and reveals the predecessor error only after commitment. Both projections remain isolated from response prompts and seal during directly overlapping self-model trials; every revision still binds exact source forecasts, its predecessor, and the research ledger.',
       status: behavioralSelfModelSealed ? 'mechanism_present' : behavioralSelfModelRevisions.length
         ? Number(currentBehavioralSelfModel?.estimates?.sample_size || 0) >= 5
           ? 'observational_signal_observed' : 'collecting'
@@ -738,6 +769,7 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         natural_cycle_feedback_access_sealed: behavioralCalibrationSealed,
         natural_cycle_feedback_samples: integratedStateForecasts.length,
         latest_feedback_available: integratedStateForecasts.length > 0,
+        lagged_prior_forecasts: laggedPriorForecasts.length,
       } : {
         revisions: behavioralSelfModelRevisions.length,
         replay_verified_revisions: replayValidBehavioralSelfModelRevisions.length,
@@ -751,9 +783,12 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         natural_cycle_feedback_access_sealed: behavioralCalibrationSealed,
         natural_cycle_feedback_samples: integratedStateForecasts.length,
         latest_feedback_available: integratedStateForecasts.length > 0,
+        lagged_prior_forecasts: laggedPriorForecasts.length,
+        lagged_prior_mean_behavioral_self_minus_baseline: laggedPriorBehavioralAdvantage,
+        lagged_prior_mean_integrated_self_minus_baseline: laggedPriorIntegratedAdvantage,
       },
       falsifier: 'A profile or feedback packet cannot be exactly replayed from its cited forecasts, revision lineage breaks, feedback leaks into Slack or a directly overlapping blinded trial, current-cycle evidence leaks backward into it, or later forecasts do not improve beyond the frozen baseline.',
-      next_gate: 'Accumulate twenty replay-valid natural forecast cycles, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
+      next_gate: 'Accumulate twenty replay-valid protocol-v5 lagged-prior forecasts, then run protocol-v2 self_model_access with a frozen authentic prior profile, byte-identical deidentified profile, and absent-profile control on delayed self-prediction and calibration.',
     },
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],
@@ -810,11 +845,26 @@ function buildIndicatorReport(state = {}, now = new Date()) {
           mean_behavioral_revised_minus_initial: aggregateBehavioralSelfCorrectionAdvantage,
           mean_metacognitive_reliability_revised_minus_initial: aggregateMetacognitiveSelfCorrectionAdvantage,
           integrated_self_state_improvement_rate: aggregateIntegratedSelfCorrectionImprovementRate,
-          interpretation: 'Prospective outcomes whose correction packet contained a replay-verified aggregate calibration prior; legacy latest-error-only decisions are excluded.',
+          profile_blind_forecast_context: {
+            replay_verified_decisions: profileBlindAggregateCorrections.length,
+            revised: profileBlindAggregateCorrections.filter(item =>
+              item.self_forecast.self_correction.revision?.disposition === 'revise').length,
+            retained_initial: profileBlindAggregateCorrections.filter(item =>
+              item.self_forecast.self_correction.revision?.disposition === 'retain').length,
+          },
+          lagged_behavioral_prior_forecast_context: {
+            self_forecast_protocol_version: 5,
+            replay_verified_decisions: laggedPriorAggregateCorrections.length,
+            revised: laggedPriorAggregateCorrections.filter(item =>
+              item.self_forecast.self_correction.revision?.disposition === 'revise').length,
+            retained_initial: laggedPriorAggregateCorrections.filter(item =>
+              item.self_forecast.self_correction.revision?.disposition === 'retain').length,
+          },
+          interpretation: 'Prospective outcomes whose correction packet contained a replay-verified aggregate calibration prior; legacy latest-error-only decisions are excluded, and protocol-v5 lagged-prior forecasts are reported separately from the earlier profile-blind context.',
         },
       },
       falsifier: 'The initial forecast is not committed before error access, the error packet does not replay from its cited prior outcome, revisions occur after evidence re-entry, altered or repeated revisions pass audit, or revised predictions fail to improve integrated self-state accuracy after twenty natural opportunities.',
-      next_gate: 'Accumulate twenty replay-valid aggregate-calibrated natural correction opportunities, then preregister a same-initial-forecast trial comparing authentic prior error with an information-matched deidentified error packet and no-error access.',
+      next_gate: 'Accumulate twenty replay-valid protocol-v5 aggregate-calibrated natural correction opportunities, then preregister a same-initial-forecast trial comparing authentic prior error with an information-matched deidentified error packet and no-error access.',
     },
     {
       id: 'evidence_triggered_recurrence', family: ['recurrent processing'],

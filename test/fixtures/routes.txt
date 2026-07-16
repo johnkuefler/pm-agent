@@ -116,6 +116,7 @@ GET /authorship-boundary/studies
 POST /authorship-boundary/studies
 POST /authorship-boundary/studies/:id/abort
 GET /self-model
+GET /self-model/forecast-prior
 GET /self-model/cycle-calibration
 GET /self-model/inquiries
 POST /self-model/inquiries/:id/approve

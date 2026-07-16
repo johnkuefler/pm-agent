@@ -2790,6 +2790,102 @@ test('natural self-correction reveals prior error only after the initial forecas
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('protocol-v5 natural forecasts bind a replayed lagged self prior without reviving retired actions', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-lagged-behavioral-prior-'));
+  const filePath = path.join(dir, 'state.json');
+  let now = new Date('2026-07-10T12:00:00.000Z');
+  const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await store.init();
+  const soma = () => ({ updated_at: now.toISOString(), vitals: {
+    errors10: 0, warns10: 0, loopLag: 5, uptimeMin: 100,
+    processEpochId: 'lagged-prior-process', onBackup: false, memCount: 100, embedBacklog: 0,
+  } });
+  for (let index = 0; index < 21; index++) {
+    const started = store.startCycle({ id: `lagged-prior-source-${index}`,
+      holder: 'nora-cowork', soma: soma() });
+    store.preregisterCycleSelfForecast(started.cycle.id, {
+      predicted_action_types: ['review'], surprise_probability: 0.2,
+      control_at_close: 0.7, confidence: 0.6,
+      rationale: `The bounded source cycle ${index} supplies prospective behavioral evidence.`,
+      evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+    });
+    store.completeCycle(started.cycle.id, {
+      summary: 'Closed one bounded source cycle.',
+      actions: [{ type: index < 8 ? 'dev_dispatch' : 'review', id: `source-action-${index}` }],
+      substrate_at_close: soma(),
+    });
+    now = new Date(now.getTime() + 60 * 60 * 1000);
+  }
+  const target = store.startCycle({ id: 'lagged-prior-target', holder: 'nora-cowork', soma: soma() });
+  const priorSnapshot = store.behavioralSelfForecastPriorSnapshot();
+  assert.equal(priorSnapshot.available, true);
+  assert.equal(priorSnapshot.active_cycle_bound, true);
+  assert.equal(priorSnapshot.audit.complete_chain_verified, true);
+  assert.equal(priorSnapshot.prior.excluded_immediate_predecessor_id, target.moment.predecessor_id);
+  assert.equal(priorSnapshot.prior.source_moment_ids.includes(target.moment.predecessor_id), false);
+  assert.equal(priorSnapshot.prior.estimates.action_tendencies
+    .some(item => item.action_type === 'dev_dispatch'), false);
+  assert.ok(priorSnapshot.prior.excluded_retired_action_observations > 0);
+  const priorCommitment = priorSnapshot.prior.content_commitment;
+  const forecast = store.preregisterCycleSelfForecast(target.cycle.id, {
+    protocol_version: 5,
+    predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.7, confidence: 0.8,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.85 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.8, predicted_largest_error_domain: 'action_types',
+    },
+    substrate_prediction: {
+      error_probability: 0.1, warning_probability: 0.1, backup_probability: 0.05,
+      embedding_backlog_probability: 0.05, restart_probability: 0.05,
+    },
+    behavioral_self_prior_commitment: priorCommitment,
+    rationale: 'The lagged operational self prior and current orientation support one review action.',
+    evidence: [{ type: 'intelligence_cycle', id: target.cycle.id },
+      { type: 'behavioral_self_prior', id: priorCommitment }],
+  });
+  assert.equal(forecast.audit.behavioral_self_prior_verified, true);
+  assert.equal(forecast.audit.behavioral_self_prior_excludes_immediate_predecessor, true);
+  assert.equal(forecast.behavioral_self_prior.content_commitment, priorCommitment);
+  now = new Date(now.getTime() + 5 * 60 * 1000);
+  store.completeCycle(target.cycle.id, {
+    summary: 'Completed the profile-bound natural forecast cycle.',
+    actions: [{ type: 'dev_dispatch', id: 'retired-observation' },
+      { type: 'review', id: 'active-observation' }],
+    substrate_at_close: soma(),
+  });
+  const stream = store.experienceStreamSnapshot();
+  const closed = stream.moments.find(item => item.id === target.moment.id);
+  assert.equal(closed.audit.evidence_eligible, true);
+  assert.equal(closed.self_forecast.protocol_version, 5);
+  assert.deepEqual(closed.self_forecast.outcome.actual.action_types, ['review']);
+  assert.equal(closed.self_forecast.outcome.self_state_actual.action_count, 1);
+  assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_forecasts, 1);
+  assert.equal(stream.prospective_self_forecast.lagged_behavioral_prior_baseline_eligible, 1);
+  const indicator = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'forecast_error_self_model_revision');
+  assert.equal(indicator.evidence.lagged_prior_forecasts, 1);
+  await store.persist();
+
+  const tamperedPath = path.join(dir, 'tampered-prior.json');
+  const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  persisted.cognition.experience_stream.at(-1).self_forecast.behavioral_self_prior.estimates.sample_size = 19;
+  fs.writeFileSync(tamperedPath, JSON.stringify(persisted));
+  const tampered = createIntelligenceStore({ filePath: tamperedPath, db: {}, isDbReady: () => false,
+    clock: () => new Date(now) });
+  await tampered.init();
+  const invalid = tampered.experienceStreamSnapshot().moments.at(-1);
+  assert.equal(invalid.audit.self_forecast.behavioral_self_prior_verified, false);
+  assert.equal(invalid.audit.evidence_eligible, false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('behavioral self-model revisions form a replay-valid chain and remain sealed during active trials', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-behavioral-self-model-chain-'));
   const filePath = path.join(dir, 'state.json');

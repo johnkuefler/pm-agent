@@ -18153,7 +18153,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return matches.length === 1 ? matches[0].index : -1;
     };
     const eventBound = (kind, subjectId, payload) => eventIndex(kind, subjectId, payload) >= 0;
-    const manifestVerified = [1, 2, 3, 4].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
+    const manifestVerified = [1, 2, 3, 4, 5].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
       && cycleSelfForecast.commitment(cycleSelfForecast.forecastManifest(record)) === record.forecast_commitment;
     const preregistrationEventIndex = manifestVerified
@@ -18170,6 +18170,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const sourceIds = record.baseline?.source_moment_ids || [];
     const sourceMoments = sourceIds.map(id => cognition.experience_stream.find(item => item.id === id));
     const nextVisited = new Set(visited); nextVisited.add(moment.id);
+    const behavioralPriorAudit = Number(record.protocol_version) >= 5
+      ? behavioralSelfForecastPriorAudit(record.behavioral_self_prior, moment, cognition, cycles, cache)
+      : { complete_chain_verified: true, required: false };
     const sourcesVerified = sourceMoments.length === sourceIds.length && sourceMoments.every(source => source
       && source.id !== moment.id && cognition.experience_stream.findIndex(item => item.id === source.id) < momentIndex
       && new Date(source.finished).getTime() <= committedAt
@@ -18283,12 +18286,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
     cache.set(experienceLedgerAuditCacheKey, ledgerVerified);
     const preregistrationVerified = preregistrationBound && temporalOrderVerified && beforeEvidenceReentryVerified
-      && baselineVerified && ledgerVerified;
+      && baselineVerified && behavioralPriorAudit.complete_chain_verified && ledgerVerified;
     const closed = moment.status !== 'open';
     return {
       forecast_commitment_verified: manifestVerified, preregistration_ledger_bound: preregistrationBound,
       temporal_order_verified: temporalOrderVerified, before_evidence_reentry_verified: beforeEvidenceReentryVerified,
       baseline_replay_verified: baselineVerified,
+      behavioral_self_prior_required: Number(record.protocol_version) >= 5,
+      behavioral_self_prior_verified: behavioralPriorAudit.complete_chain_verified,
+      behavioral_self_prior_excludes_immediate_predecessor:
+        behavioralPriorAudit.excludes_immediate_predecessor === true,
       outcome_verified: outcomeVerified, scoring_ledger_bound: scoringBound,
       research_ledger_chain_verified: ledgerVerified,
       self_correction_offered: correctionOffer != null,
@@ -18441,13 +18448,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && candidate.status !== 'open'
         && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
       const committedAt = clock().toISOString();
-      const forecastRecord = cycleSelfForecast.createRecord({ input, cycle, moment, baselineMoments, committedAt });
+      const behavioralSelfPrior = Number(input.protocol_version) >= 5
+        ? behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles) : null;
+      const forecastRecord = cycleSelfForecast.createRecord({
+        input, cycle, moment, baselineMoments, behavioralSelfPrior, committedAt,
+      });
       const correctionFeedback = Number(forecastRecord.protocol_version) >= 3
         ? behavioralSelfCalibrationSnapshot().latest_forecast_error : null;
       const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
         candidate.id === moment.id ? highest : Math.max(highest,
           Number(candidate.self_forecast?.protocol_version) || 0), 0);
-      if (highestPriorProtocol && Number(forecastRecord.protocol_version) < highestPriorProtocol) {
+      const laggedPriorSealed = current.cognition.self_model.context_trials.some(trial => trial.status === 'active'
+        && ['self_model_access', 'integrated_self_binding'].includes(trial.intervention));
+      const sealedProtocolFiveFallback = highestPriorProtocol >= 5
+        && Number(forecastRecord.protocol_version) === 4 && laggedPriorSealed;
+      if (highestPriorProtocol && Number(forecastRecord.protocol_version) < highestPriorProtocol
+        && !sealedProtocolFiveFallback) {
         throw new Error('cycle self-forecast protocol cannot downgrade after a richer self-prediction protocol begins');
       }
       moment.self_forecast = forecastRecord;
@@ -18638,6 +18654,96 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function behavioralSelfProfileTransferEligible(cognition = state.cognition, cycles = state.cycles) {
     return (cognition.self_model?.behavioral_self_model?.revisions || [])
       .map(revision => behavioralSelfProfileTransferFrame(revision, cognition, cycles)).filter(Boolean);
+  }
+
+  function behavioralSelfForecastPriorForMoment(moment, cognition = state.cognition,
+    cycles = state.cycles, cache = new Map()) {
+    if (!moment?.predecessor_id) return null;
+    const predecessorIndex = cognition.experience_stream.findIndex(item => item.id === moment.predecessor_id);
+    if (predecessorIndex < 1) return null;
+    const overlappingTrial = (cognition.self_model?.context_trials || []).some(trial => trial.status === 'active'
+      && ['self_model_access', 'integrated_self_binding'].includes(trial.intervention));
+    if (overlappingTrial) return null;
+    const candidates = (cognition.self_model?.behavioral_self_model?.revisions || []).filter(revision => {
+      const throughIndex = cognition.experience_stream.findIndex(item => item.id === revision.through_moment_id);
+      return Number(revision.estimates?.sample_size) === behavioralSelfModel.MAX_SOURCE_MOMENTS
+        && throughIndex >= 0 && throughIndex < predecessorIndex
+        && behavioralSelfModelRevisionAudit(revision, cognition, cycles, cache).complete_chain_verified;
+    });
+    const revision = candidates.at(-1) || null;
+    if (!revision) return null;
+    return behavioralSelfModel.buildForecastPrior({
+      revision,
+      excludedImmediatePredecessorId: moment.predecessor_id,
+    });
+  }
+
+  function behavioralSelfForecastPriorAudit(prior, moment, cognition = state.cognition,
+    cycles = state.cycles, cache = new Map()) {
+    if (!prior || !moment?.predecessor_id) {
+      return { required: true, source_revision_verified: false,
+        excludes_immediate_predecessor: false, content_commitment_verified: false,
+        complete_chain_verified: false };
+    }
+    const revision = (cognition.self_model?.behavioral_self_model?.revisions || [])
+      .find(item => item.id === prior.source_revision_id);
+    const predecessorIndex = cognition.experience_stream.findIndex(item => item.id === moment.predecessor_id);
+    const throughIndex = revision
+      ? cognition.experience_stream.findIndex(item => item.id === revision.through_moment_id) : -1;
+    const excludesImmediatePredecessor = predecessorIndex >= 1 && throughIndex >= 0
+      && throughIndex < predecessorIndex
+      && prior.excluded_immediate_predecessor_id === moment.predecessor_id
+      && !(revision?.source_moment_ids || []).includes(moment.predecessor_id);
+    const sourceRevisionVerified = Boolean(revision
+      && behavioralSelfModelRevisionAudit(revision, cognition, cycles, cache).complete_chain_verified);
+    let expected = null;
+    try {
+      expected = sourceRevisionVerified && excludesImmediatePredecessor
+        ? behavioralSelfModel.buildForecastPrior({
+          revision, excludedImmediatePredecessorId: moment.predecessor_id,
+        }) : null;
+    } catch (_) { expected = null; }
+    const contentCommitmentVerified = behavioralSelfModel.commitment(
+      behavioralSelfModel.forecastPriorManifest(prior)) === prior.content_commitment;
+    const exactReplayVerified = Boolean(expected)
+      && canonicalJson(expected) === canonicalJson(prior);
+    return {
+      required: true,
+      source_revision_verified: sourceRevisionVerified,
+      excludes_immediate_predecessor: excludesImmediatePredecessor,
+      content_commitment_verified: contentCommitmentVerified,
+      exact_replay_verified: exactReplayVerified,
+      complete_chain_verified: sourceRevisionVerified && excludesImmediatePredecessor
+        && contentCommitmentVerified && exactReplayVerified,
+    };
+  }
+
+  function behavioralSelfForecastPriorSnapshot() {
+    const openMoment = (state.cognition.experience_stream || []).find(item => item.status === 'open') || null;
+    const latestClosed = [...(state.cognition.experience_stream || [])]
+      .reverse().find(item => item.status !== 'open') || null;
+    const moment = openMoment || (latestClosed ? {
+      id: null, cycle_id: null, predecessor_id: latestClosed.id,
+    } : null);
+    const overlappingTrial = state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
+      && ['self_model_access', 'integrated_self_binding'].includes(trial.intervention));
+    if (overlappingTrial) return {
+      epistemic_status: 'Lagged behavioral self-prior access is sealed during a directly overlapping blinded self-model study.',
+      experimental_access_sealed: true, available: false, prior: null,
+    };
+    const prior = behavioralSelfForecastPriorForMoment(moment);
+    return {
+      epistemic_status: prior
+        ? 'A replay-audited twenty-cycle operational prior ending before the immediate predecessor. It may inform the initial natural-cycle self-forecast without leaking the newest held-out error.'
+        : 'No mature replay-audited lagged behavioral self prior is available for the active cycle.',
+      experimental_access_sealed: false,
+      available: Boolean(prior),
+      active_cycle_bound: Boolean(openMoment),
+      cycle_id: openMoment?.cycle_id || null,
+      moment_id: openMoment?.id || null,
+      prior,
+      ...(prior ? { audit: behavioralSelfForecastPriorAudit(prior, moment) } : {}),
+    };
   }
 
   function reviseBehavioralSelfModel(current, moment) {
@@ -19400,6 +19506,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         / substrateBaselineEligible.length : null;
     const selfCorrectionOffers = selfForecasts.filter(({ item, audit }) =>
       item.self_forecast.self_correction && audit.self_forecast?.self_correction_offer_verified === true);
+    const laggedPriorForecasts = scoredSelfForecasts.filter(({ item, audit }) =>
+      Number(item.self_forecast.protocol_version) >= 5
+      && audit.self_forecast?.behavioral_self_prior_verified === true
+      && audit.self_forecast?.behavioral_self_prior_excludes_immediate_predecessor === true);
+    const laggedPriorBaselineEligible = laggedPriorForecasts.filter(({ item }) =>
+      item.self_forecast.outcome.baseline_comparison_eligible === true);
+    const laggedPriorIntegratedEligible = laggedPriorForecasts.filter(({ item }) =>
+      item.self_forecast.outcome.self_state_baseline_comparison_eligible === true);
     const selfCorrectionDecisions = scoredSelfForecasts.filter(({ item, audit }) =>
       item.self_forecast.outcome?.self_correction
         && audit.self_forecast?.self_correction_complete_chain_verified === true);
@@ -19443,6 +19557,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         substrate_forecasts: substrateForecasts.length,
         substrate_baseline_eligible: substrateBaselineEligible.length,
         mean_substrate_minus_persistence: meanSubstrateAdvantage,
+        lagged_behavioral_prior_forecasts: laggedPriorForecasts.length,
+        lagged_behavioral_prior_baseline_eligible: laggedPriorBaselineEligible.length,
+        mean_lagged_prior_behavioral_self_minus_baseline: laggedPriorBaselineEligible.length
+          ? laggedPriorBaselineEligible.reduce((sum, { item }) =>
+            sum + item.self_forecast.outcome.self_minus_baseline, 0) / laggedPriorBaselineEligible.length : null,
+        lagged_behavioral_prior_integrated_baseline_eligible: laggedPriorIntegratedEligible.length,
+        mean_lagged_prior_integrated_self_minus_baseline: laggedPriorIntegratedEligible.length
+          ? laggedPriorIntegratedEligible.reduce((sum, { item }) =>
+            sum + item.self_forecast.outcome.self_state_minus_baseline, 0) / laggedPriorIntegratedEligible.length : null,
         self_correction_offers: selfCorrectionOffers.length,
         replay_verified_self_correction_decisions: selfCorrectionDecisions.length,
         revised_self_correction_decisions: selfCorrectionDecisions.filter(({ item }) =>
@@ -19651,6 +19774,7 @@ ${episodes.map(item => {
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
+    behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionRecovery, continuityProjectionRepair,
