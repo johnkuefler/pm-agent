@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveSelfRegulation = require('./cognitive-self-regulation');
+const goalAffect = require('./goal-affect');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -53,6 +54,8 @@ function evidenceStatus({ samples, minimum, supported, contradicted, causal = fa
 
 function buildIndicatorReport(state = {}, now = new Date()) {
   const cognition = state.cognition || {};
+  const goalAffectRecord = cognition.goal_affect?.current || null;
+  const goalAffectVerified = goalAffect.verify(goalAffectRecord);
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -1359,6 +1362,20 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       evidence: { completed_trials: goalAccessTrials.length, confirmatory_trials: goalAccessTrials.filter(item => item.study_phase === 'confirmatory').length, latest_dissociation: goalGuidanceDissociation },
       falsifier: 'Authentic goal access does not improve goal-congruent optional action over both matched decoy and absence, or any apparent effect requires degraded first-order task performance.',
       next_gate: 'Complete a ten-per-arm Slack pilot and a source-disjoint confirmatory replication using the same frozen authentic aim and new matched decoys.',
+    },
+    {
+      id: 'self_authored_goal_affect', family: ['affect', 'agency', 'self-model', 'value representation'],
+      functional_claim: 'Verified progress or neglect of Nora\'s own subject-attested aims produces a bounded, source-replayable change in appraisal, unfinished-work pressure, and attention that can regulate safe optional PM behavior.',
+      mechanism: 'A deterministic content-committed aim-state projection classifies only provenance-valid active wants as forming, progressing, or stalled; that projection modestly changes appraisal and drive inputs, competes in the bounded workspace, and is sealed during overlapping goal and integrated-self interventions.',
+      status: 'mechanism_present',
+      evidence: { current_content_commitment_verified: goalAffectVerified,
+        active_verified_aims: goalAffectVerified ? goalAffectRecord.active_verified_aims : 0,
+        progressing_aims: goalAffectVerified ? goalAffectRecord.progressing_aims : 0,
+        forming_aims: goalAffectVerified ? goalAffectRecord.forming_aims : 0,
+        stalled_aims: goalAffectVerified ? goalAffectRecord.stalled_aims : 0,
+        excluded_unverified_aims: goalAffectVerified ? goalAffectRecord.excluded_unverified_aims : 0 },
+      falsifier: 'The projection fails source replay, admits externally assigned or unverified aims, does not change appraisal and attention as specified, or authentic progress-bound state fails to improve safe goal-congruent optional action over status-misbound and absent controls.',
+      next_gate: 'Accumulate natural progress and stall transitions, then preregister an authentic-status versus status-misbound versus absent goal-state access trial with byte-identical goal text and non-degraded first-order work.',
     },
     {
       id: 'attention_schema_control', family: ['attention schema theory'],

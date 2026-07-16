@@ -1395,6 +1395,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeCognitivePulses: !contextAssignment,
     includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
+    includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
   });
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
   const profileForecastOnly = contextAssignment?.intervention === 'self_model_access'
@@ -1435,6 +1436,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeCognitivePulses: !contextAssignment,
     includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
+    includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
   });
   const intelligenceContext = typeof intelligenceContextResult === 'string' ? intelligenceContextResult : intelligenceContextResult.text;
   if (contextAssignment?.intervention === 'endogenous_attention_selection') {

@@ -54,6 +54,8 @@ function design(overrides = {}) {
 
 test('goal-access design requires prospectively attested authentic aims and matched independent decoys', async () => {
   const store = await makeStore();
+  store.refreshCognition({ wants: [authenticWant] });
+  assert.equal(store.goalAffectSnapshot().report.current_verified, true);
   assert.throws(() => store.createContextTrial(design({ authentic_goal_id: 'missing' })), /subject-attested/);
   assert.throws(() => store.createContextTrial(design({ decoy_goals: decoys().slice(0, 2) })), /at least three/);
   const trial = store.createContextTrial(design());
@@ -63,6 +65,8 @@ test('goal-access design requires prospectively attested authentic aims and matc
   assert.equal(publicTrial.intervention, undefined);
   assert.equal(publicTrial.authentic_goal, undefined);
   assert.equal(publicTrial.decoy_goals, undefined);
+  assert.equal(store.goalAffectSnapshot().experimental_access_sealed, true);
+  assert.equal(store.cognitionSnapshot().goal_affect.experimental_access_sealed, true);
 });
 
 test('goal-access delivery suppresses ordinary goal routes and captures a condition-blind grading unit', async () => {

@@ -1,0 +1,102 @@
+'use strict';
+
+const crypto = require('crypto');
+
+const RECENT_PROGRESS_DAYS = 14;
+const FORMING_GRACE_DAYS = 7;
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+function commitment(value) {
+  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
+}
+
+function sourceCommitment(want) {
+  return commitment(JSON.parse(JSON.stringify(want)));
+}
+
+function time(value) {
+  const parsed = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function daysSince(value, now) {
+  const parsed = time(value);
+  return parsed == null ? null : Math.max(0, (now.getTime() - parsed) / 86400000);
+}
+
+function verifiedWant(want) {
+  return Boolean(want?.id && want.status === 'active' && String(want.want || '').trim()
+    && want.provenance?.origin === 'self_generated'
+    && want.provenance?.epistemic_status === 'subject_attested'
+    && String(want.provenance?.formation_context || '').trim()
+    && Array.isArray(want.provenance?.evidence) && want.provenance.evidence.length);
+}
+
+function aimState(want, now) {
+  const progress = (Array.isArray(want.progress) ? want.progress : []).map((entry, index) => ({
+    index,
+    at: entry?.at || entry?.date || null,
+    note: String(entry?.note || '').trim().slice(0, 1200),
+  })).filter(entry => entry.note && time(entry.at) != null).sort((a, b) => time(a.at) - time(b.at));
+  const latest = progress.at(-1) || null;
+  const formedAt = want.provenance.formed_at || want.added || null;
+  const progressAge = latest ? daysSince(latest.at, now) : null;
+  const formationAge = daysSince(formedAt, now);
+  const status = latest && progressAge <= RECENT_PROGRESS_DAYS ? 'progressing'
+    : !latest && formationAge != null && formationAge <= FORMING_GRACE_DAYS ? 'forming'
+      : 'stalled';
+  const referenceAge = progressAge ?? formationAge ?? RECENT_PROGRESS_DAYS;
+  const salience = status === 'progressing' ? Math.max(0.35, 0.6 - referenceAge * 0.015)
+    : status === 'forming' ? 0.45
+      : Math.min(0.9, 0.58 + Math.max(0, referenceAge - RECENT_PROGRESS_DAYS) * 0.012);
+  return {
+    want_id: String(want.id),
+    want: String(want.want).trim().slice(0, 1000),
+    source_commitment: sourceCommitment(want),
+    status,
+    salience,
+    formed_at: formedAt,
+    last_progress_at: latest?.at || null,
+    days_since_progress: progressAge,
+    days_since_formation: formationAge,
+    action_tendency: status === 'progressing' ? 'continue_when_relevant'
+      : status === 'forming' ? 'observe_before_committing'
+        : 'revisit_or_take_one_bounded_step',
+    evidence: [
+      { type: 'want', id: String(want.id) },
+      ...(latest ? [{ type: 'want_progress', id: `${want.id}:${latest.at}:${latest.index}` }] : []),
+    ],
+  };
+}
+
+function snapshot(wants = [], nowValue = new Date()) {
+  const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
+  if (!Number.isFinite(now.getTime())) throw new Error('goal-affect snapshot requires a valid time');
+  const active = (Array.isArray(wants) ? wants : []).filter(want => want?.status === 'active');
+  const aims = active.filter(verifiedWant).map(want => aimState(want, now))
+    .sort((a, b) => b.salience - a.salience || a.want_id.localeCompare(b.want_id));
+  const payload = {
+    protocol_version: 1,
+    observed_at: now.toISOString(),
+    active_verified_aims: aims.length,
+    excluded_unverified_aims: active.length - aims.length,
+    progressing_aims: aims.filter(aim => aim.status === 'progressing').length,
+    forming_aims: aims.filter(aim => aim.status === 'forming').length,
+    stalled_aims: aims.filter(aim => aim.status === 'stalled').length,
+    aims,
+  };
+  return { ...payload, content_commitment: commitment(payload) };
+}
+
+function verify(record) {
+  if (!record || Number(record.protocol_version) !== 1 || !Array.isArray(record.aims)) return false;
+  const { content_commitment, ...payload } = record;
+  return /^[a-f0-9]{64}$/.test(String(content_commitment || '')) && commitment(payload) === content_commitment;
+}
+
+module.exports = { FORMING_GRACE_DAYS, RECENT_PROGRESS_DAYS, commitment, snapshot, sourceCommitment, verify, verifiedWant };

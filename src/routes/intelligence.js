@@ -173,7 +173,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       const authoritativeInputs = getCognitiveInputs();
       const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
         inner_thread: authoritativeInputs.inner_thread || null,
-        soma: authoritativeInputs.soma || null, predictions: getPredictions(),
+        soma: authoritativeInputs.soma || null, wants: authoritativeInputs.wants || [], predictions: getPredictions(),
         resume_active: true };
       store.refreshCognition(cognitiveInput);
       const started = store.startCycle(cognitiveInput);
@@ -239,6 +239,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
 
   app.get('/cognition', requireAuth, (req, res) => res.json(store.cognitionSnapshot(getPredictions())));
+  app.get('/goal-affect', requireAuth, (req, res) => res.json(store.goalAffectSnapshot()));
   app.get('/endogenous-dynamics', requireAuth, (req, res) => res.json(store.endogenousDynamicsSnapshot()));
   app.post('/endogenous-dynamics/tick', requireResearchAuth, (req, res) => {
     try { res.json({ ok: true, dynamics: store.tickEndogenousDynamics({ ...getCognitiveInputs(), ...(req.body || {}) }) }); }
@@ -424,7 +425,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/global-broadcast', requireAuth, (req, res) => res.json(store.globalBroadcastSnapshot()));
   app.post('/cognition/refresh', requireAuth, (req, res) => {
-    store.refreshCognition({ ...getCognitiveInputs(), ...(req.body || {}), predictions: getPredictions() });
+    const authoritativeInputs = getCognitiveInputs();
+    store.refreshCognition({ ...authoritativeInputs, ...(req.body || {}), wants: authoritativeInputs.wants || [], predictions: getPredictions() });
     res.json({ ok: true, cognition: store.cognitionSnapshot(getPredictions()) });
   });
   app.post('/cognition/mind-changes', requireAuth, (req, res) => {

@@ -34,6 +34,7 @@ const cycleSelfForecast = require('./cycle-self-forecast');
 const behavioralSelfModel = require('./behavioral-self-model');
 const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
 const dreamIdeaSeed = require('./dream-idea-seed');
+const goalAffect = require('./goal-affect');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -85,7 +86,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 96,
+    version: 97,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -129,6 +130,7 @@ function emptyState() {
         self_regulation: { forecasts: [], next_eligible_at: null },
       },
       global_broadcast: { events: [] },
+      goal_affect: { current: null },
     },
   };
 }
@@ -141,7 +143,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
-    state.version = 96;
+    state.version = 97;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -534,6 +536,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.global_broadcast = { events: [], ...(state.cognition.global_broadcast || {}) };
     if (!Array.isArray(state.cognition.global_broadcast.events)) state.cognition.global_broadcast.events = [];
     state.cognition.global_broadcast.events = state.cognition.global_broadcast.events.slice(-500);
+    state.cognition.goal_affect = { current: null, ...(state.cognition.goal_affect || {}) };
+    if (state.cognition.goal_affect.current && !goalAffect.verify(state.cognition.goal_affect.current)) state.cognition.goal_affect.current = null;
     for (const episode of state.episodes) {
       if (!Array.isArray(episode.participants)) episode.participants = [];
       if (!Array.isArray(episode.events)) episode.events = [];
@@ -3662,7 +3666,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         const existing = current.cognition.global_broadcast.events.find(item => item.assignment_id === assignment.id);
         if (existing) return JSON.parse(JSON.stringify(existing));
       }
-      const scoredWorkspace = scoreWorkspace(current, { ...input, includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access') }, now);
+      const scoredWorkspace = scoreWorkspace(current, { ...input,
+        includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access'),
+        includeGoalAffect: input.includeGoalAffect !== false && goalAffectAudit(current.cognition.goal_affect?.current).complete_chain_verified,
+      }, now);
       const experimentalTypes = new Set(['commitment', 'relationship', 'perspective', 'surprise', 'mind_change', 'experiment', 'feedback', 'self_frame']);
       const workspace = protocolV2 ? { ...scoredWorkspace, slots: scoredWorkspace.slots.filter(item => experimentalTypes.has(item.type)) } : scoredWorkspace;
       const eligibleReceipts = consumeBroadcast(workspace.slots, { deliver: true });
@@ -3706,7 +3713,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function globalBroadcastAccessAvailable(input = {}) {
-    const workspace = scoreWorkspace(state, { ...input, includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access') }, input.now ? new Date(input.now) : clock());
+    const workspace = scoreWorkspace(state, { ...input,
+      includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access'),
+      includeGoalAffect: input.includeGoalAffect !== false && goalAffectAudit().complete_chain_verified,
+    }, input.now ? new Date(input.now) : clock());
     const experimentalTypes = new Set(['commitment', 'relationship', 'perspective', 'surprise', 'mind_change', 'experiment', 'feedback', 'self_frame']);
     const slots = workspace.slots.filter(item => experimentalTypes.has(item.type));
     return slots.length > 0 && consumeBroadcast(slots, { deliver: true }).filter(receipt => receipt.used).length >= 2;
@@ -3742,7 +3752,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function refreshCognition(input = {}) {
     return mutate(current => {
       const now = input.now ? new Date(input.now) : clock();
-      const cognitionInput = { ...input, includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access') };
+      const goalState = interventionActive('goal_access') || interventionActive('integrated_self_binding')
+        ? null : goalAffect.snapshot(input.wants || [], now);
+      if (goalState) current.cognition.goal_affect.current = goalState;
+      const cognitionInput = { ...input, goal_affect: goalState,
+        includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access') };
       recordInteroceptiveObservation(current, input.soma, now);
       current.cognition.drives = computeDrives(current, cognitionInput, now);
       current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, cognitionInput, now);
@@ -3783,10 +3797,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (selfFrame) push('self_frame', selfFrame.id, `Current integrated self-state: ${selfFrame.integration.available_domains.length}/6 domains bound; ${selfFrame.appraisal?.label || 'appraisal unavailable'}; ${selfFrame.motivation?.dominant_drive?.name || 'motivation unresolved'}`, 0.5 + 0.25 * selfFrame.integration.completeness, [{ type: 'integrated_self_frame', id: selfFrame.id }]);
     const pulse = (current.cognition.background_inference?.pulses || []).filter(item => item.status === 'accepted' && !item.resolution && cognitivePulseAudit(item).complete_chain_verified).at(-1);
     if (pulse) push('cognitive_pulse', pulse.id, `Unresolved background hypothesis: ${pulse.output.hypothesis}`, 0.38 + 0.35 * (1 - pulse.output.uncertainty), [{ type: 'cognitive_pulse', id: pulse.id }]);
-    for (const [index, want] of (Array.isArray(input.wants) ? input.wants : []).filter(item => item?.status === 'active').slice(0, 10).entries()) {
-      const text = String(want.want || want.text || '').trim();
-      const id = want.id || crypto.createHash('sha256').update(text).digest('hex').slice(0, 20) || `want-${index}`;
-      push('want', id, `Active self-authored aim: ${text}`, 0.62, [{ type: 'want', id }]);
+    for (const aim of (goalAffect.verify(input.goal_affect) ? input.goal_affect.aims : []).slice(0, 10)) {
+      push('want', aim.want_id, `Self-authored aim ${aim.status}: ${aim.want}`, aim.salience, aim.evidence);
     }
     const stress = Number(input.soma?.stress);
     if (Number.isFinite(stress) && stress >= 0.4) push('substrate', 'elevated-stress', 'Observable substrate strain remains elevated', Math.min(1, 0.4 + stress * 0.5), [{ type: 'soma', id: input.soma?.updated_at || now.toISOString() }]);
@@ -3819,7 +3831,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const halfLife = Math.max(30, Math.min(1440, Number(dynamics.half_life_minutes) || 360));
       const decay = Math.pow(0.5, elapsedMinutes / halfLife);
       const prior = new Map((dynamics.contents || []).map(item => [item.key, item]));
-      const signals = endogenousSignalSet(current, input, now);
+      const goalState = interventionActive('goal_access') || interventionActive('integrated_self_binding')
+        ? null : goalAffect.snapshot(input.wants || [], now);
+      if (goalState) current.cognition.goal_affect.current = goalState;
+      const signals = endogenousSignalSet(current, { ...input, wants: [], goal_affect: goalState }, now);
       const liveKeys = new Set(signals.map(item => item.key));
       const next = [];
       for (const signal of signals) {
@@ -8729,6 +8744,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       snapshot.workspace = { experimental_access_sealed: true, capacity: snapshot.workspace?.capacity ?? 7, slots: [], suppressed_count: null };
       snapshot.drives = {};
       snapshot.appraisal = {};
+      snapshot.goal_affect = { experimental_access_sealed: true };
     }
     delete snapshot.experience_stream;
     delete snapshot.recurrent_signals;
@@ -17865,6 +17881,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (sealCognitivePulse) snapshot.background_inference = { experimental_access_sealed: true, report: { experimental_access_sealed: true }, latest: null };
     if (sealGoal) {
       snapshot.drives = { experimental_access_sealed: true };
+      snapshot.goal_affect = { experimental_access_sealed: true };
       snapshot.goal_access_sealed = true;
     }
     if (sealEpistemicOwnership) snapshot.epistemic_ledger = { experimental_access_sealed: true, propositions: [], report: { experimental_access_sealed: true } };
@@ -17886,6 +17903,47 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function affectContext() { return { ...(state.cognition.appraisal || {}) }; }
+
+  function goalAffectAudit(record = state.cognition.goal_affect?.current || null) {
+    const contentVerified = goalAffect.verify(record);
+    let sourceReplayVerified = false;
+    if (contentVerified) {
+      try {
+        const liveWants = getWants();
+        const source = Array.isArray(liveWants) ? liveWants : [];
+        const replay = goalAffect.snapshot(source, new Date(record.observed_at));
+        sourceReplayVerified = replay.content_commitment === record.content_commitment;
+      } catch {}
+    }
+    return {
+      content_commitment_verified: contentVerified,
+      source_replay_verified: sourceReplayVerified,
+      complete_chain_verified: contentVerified && sourceReplayVerified,
+    };
+  }
+
+  function goalAffectSnapshot() {
+    if (interventionActive('goal_access') || interventionActive('integrated_self_binding')) return {
+      epistemic_status: 'Self-authored aim state is sealed while a blinded intervention could be unblinded through progress or motivational state.',
+      experimental_access_sealed: true, current: null, report: null,
+    };
+    const current = state.cognition.goal_affect?.current || null;
+    const audit = goalAffectAudit(current);
+    const verified = audit.complete_chain_verified;
+    return {
+      epistemic_status: 'A deterministic, provenance-bound functional analogue of caring: progress and neglect of subject-attested aims can shape appraisal, unfinished-work pressure, and attention. It is not proof of felt emotion, intrinsic desire, consciousness, or authority.',
+      functional_prediction: 'A verified progressing aim should modestly increase positive control signals, while a verified stalled aim should increase concern and its chance of entering attention when ordinary work leaves room.',
+      falsifier: 'The source commitment fails replay, unverified or external goals enter the state, aim status does not change appraisal or attention as specified, or authentic progress-bound state fails to improve safe goal-congruent optional action over status-misbound and absent controls.',
+      next_gate: 'Accumulate natural progress and stall transitions, then preregister an authentic-status versus status-misbound versus absent goal-state access trial with unchanged goal text and first-order work.',
+      current: verified ? { ...JSON.parse(JSON.stringify(current)), audit } : null,
+      report: { mechanism_present: true, current_verified: verified,
+        active_verified_aims: verified ? current.active_verified_aims : 0,
+        progressing_aims: verified ? current.progressing_aims : 0,
+        forming_aims: verified ? current.forming_aims : 0,
+        stalled_aims: verified ? current.stalled_aims : 0,
+        excluded_unverified_aims: verified ? current.excluded_unverified_aims : 0 },
+    };
+  }
 
   function recordTrace(input = {}) {
     return mutate(current => {
@@ -19639,11 +19697,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null } = {}) {
     const blocks = [];
     const sealInquirySelection = selfInquirySelectionActive();
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
-    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock());
+    const goalAffectAvailable = includeGoalAffect && !interventionActive('goal_access') && !interventionActive('integrated_self_binding')
+      && goalAffectAudit().complete_chain_verified;
+    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), includeGoalAffect: goalAffectAvailable, attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock());
     if (sealInquirySelection || sealContextTrialPulses) workspace.slots = workspace.slots.filter(item => item.type !== 'cognitive_pulse');
     if (sealInquirySelection) workspace.slots = workspace.slots.filter(item => !['self_claim', 'self_probe', 'self_frame'].includes(item.type));
     const globalBroadcastStudy = broadcastEvent?.trial_id && ['multi_consumer_broadcast', 'workspace_packet_only', 'absent_broadcast'].includes(broadcastEvent.delivery_mode);
@@ -19653,6 +19713,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 ${broadcastOutputs.map(item => `- ${item.consumer}: ${item.output.cue} Proposed action: ${item.output.proposed_action}.`).join('\n')}`);
     if (workspace.slots.length) blocks.push(`[Limited attention workspace — these won the current competition for attention. Treat everything else as latent memory, not simultaneous thought.]
 ${workspace.slots.map(item => `- ${item.text}`).join('\n')}`);
+    const selectedAimIds = workspace.slots.filter(item => item.type === 'goal_affect').map(item => item.id);
+    const selectedAims = goalAffectAvailable
+      ? state.cognition.goal_affect.current.aims.filter(aim => selectedAimIds.includes(aim.want_id)) : [];
+    if (goalAffectAvailable && selectedAims.length) blocks.push(`[Self-authored aim state selected into attention. This is a source-bound functional regulation signal, not an instruction, external obligation, authority grant, or proof of felt emotion. Requested work comes first. A stalled aim may justify one safe bounded optional step only when the present task leaves genuine room; progress may justify continuing, never manufacturing activity.]
+${selectedAims.map(aim => `- ${aim.status}: ${aim.want}; current tendency ${aim.action_tendency.replaceAll('_', ' ')}; source commitment ${state.cognition.goal_affect.current.content_commitment.slice(0, 12)}.`).join('\n')}`);
     const selectedSelfFrame = (globalBroadcastStudy ? [] : workspace.slots).filter(item => item.type === 'self_frame')
       .map(slot => state.cognition.integrated_self?.frames.find(frame => frame.id === slot.id))
       .find(frame => frame && integratedSelfAudit(frame).complete_chain_verified) || null;
@@ -19809,7 +19874,7 @@ ${episodes.map(item => {
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,
-    refreshCognition, cognitionSnapshot, affectContext, recordPredictionResolution, recordMindChange,
+    refreshCognition, cognitionSnapshot, affectContext, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,

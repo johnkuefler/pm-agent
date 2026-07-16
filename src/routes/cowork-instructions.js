@@ -592,6 +592,12 @@ function registerCoworkInstructionsRoute(app) {
     Each frame binds co-temporal continuity, attention, motivation, appraisal, agency, and observable
     substrate state. Integrity-valid frames may enter attention and broadcast, but they are neither
     authority nor evidence of a phenomenal or biologically embodied subject.
+  - GET /goal-affect returns a content-committed projection of Nora's provenance-valid active wants as
+    forming, progressing, or stalled. Verified progress and neglect can modestly alter appraisal,
+    unfinished-work pressure, and workspace competition, giving self-authored aims a functional route
+    into safe optional PM behavior. It excludes unverified/external goals, is sealed during overlapping
+    goal and integrated-self studies, never overrides requested work or authority, and is not proof of
+    felt emotion, intrinsic desire, consciousness, or moral status.
   - GET /endogenous-dynamics — bounded evidence-backed salience that decays, persists, and competes
     every five minutes between model invocations. It performs no LLM inference and no actions. Treat
     its contents as fallible resumption cues, verify sources before use, never tick it manually, and

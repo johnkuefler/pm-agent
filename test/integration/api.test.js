@@ -411,11 +411,19 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.ok(cognition.body.cognition.appraisal.label);
   assert.ok(cognition.body.cognition.workspace.slots.length <= 7);
   assert.equal((await request('/endogenous-dynamics/tick', { method: 'POST', body: { now: '2026-07-13T00:00:00Z' } })).response.status, 401);
-  const dynamicsTick = await request('/endogenous-dynamics/tick', { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { now: '2026-07-13T00:00:00Z', wants: [{ id: 'api-dynamics-want', want: 'Calibrate my own uncertainty', status: 'active' }] } });
+  const dynamicsTick = await request('/endogenous-dynamics/tick', { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { now: '2026-07-13T00:00:00Z', wants: [{
+    id: 'api-dynamics-want', want: 'Calibrate my own uncertainty', status: 'active', progress: [],
+    provenance: { origin: 'self_generated', epistemic_status: 'subject_attested', formed_at: '2026-07-01T00:00:00Z',
+      formation_context: 'Repeated prediction misses formed this calibration aim.', evidence: [{ type: 'decision_trace', id: 'api-dynamics-source' }] },
+  }] } });
   assert.equal(dynamicsTick.body.dynamics.advanced, true);
   const dynamics = await request('/endogenous-dynamics');
   assert.equal(dynamics.body.report.tick_count, 1);
   assert.ok(dynamics.body.report.top_contents.some(item => item.key === 'want:api-dynamics-want'));
+  const goalState = await request('/goal-affect');
+  assert.equal(goalState.body.report.mechanism_present, true);
+  assert.equal(goalState.body.report.current_verified, false);
+  assert.equal(goalState.body.current, null);
   assert.match(dynamics.body.epistemic_status, /not evidence of continuous subjective experience/);
   const replay = await request('/cognition/counterfactuals', { method: 'POST', body: { actual: 'Answered', alternative: 'Asked first', evidence_basis: [{ type: 'trace', id: 'trace-1' }] } });
   assert.equal(replay.body.counterfactual.status, 'simulated');

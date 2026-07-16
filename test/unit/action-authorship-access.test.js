@@ -59,7 +59,7 @@ function design(executions, overrides = {}) {
 
 test('action receipts redact payloads and authentic provenance improves executed-action self-boundary', async () => {
   const { store, dir, filePath, executions } = await setup();
-  assert.equal(store.snapshot().version, 96);
+  assert.equal(store.snapshot().version, 97);
   assert.equal(executions.every(item => store.actionExecutionAudit(item).complete_chain_verified), true);
   const agency = store.agencySnapshot();
   assert.equal(agency.report.replay_valid_completed_executions, 6);

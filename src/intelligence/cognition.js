@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const constructiveProspection = require('./constructive-prospection');
 const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
+const goalAffect = require('./goal-affect');
 
 function clamp01(value) {
   const number = Number(value);
@@ -30,12 +31,15 @@ function computeDrives(state, input = {}, now = new Date()) {
   const activeExperiments = state.experiments.filter(item => item.status === 'active').length;
   const openProspections = contextAllowsProspection(input)
     ? (state.cognition?.prospection?.simulations || []).filter(item => item.status === 'open' && constructiveProspection.contentCommitment(item) === item.content_commitment) : [];
+  const aimState = goalAffect.verify(input.goal_affect) ? input.goal_affect : null;
+  const stalledAims = Number(aimState?.stalled_aims || 0);
+  const formingAims = Number(aimState?.forming_aims || 0);
   const targets = {
     uncertainty: clamp01((unresolved.length + openProspections.length * 0.35 + Number(input.disputed_memories || 0) * 2) / 12),
-    unfinished: clamp01((overdue.length * 2 + loops.length + open.length * 0.35) / 10),
+    unfinished: clamp01((overdue.length * 2 + loops.length + open.length * 0.35 + stalledAims * 0.75) / 10),
     social_debt: clamp01((negative + Number(input.unanswered_people || 0)) / 8),
     overload: clamp01((open.length + loops.length + (staleCycle ? 5 : 0) + Number(input.soma?.stress || 0) * 5) / 18),
-    curiosity: clamp01((unresolved.length + openProspections.length * 0.25 + (2 - Math.min(2, activeExperiments)) * 2 + (input.wants?.length || 0)) / 12),
+    curiosity: clamp01((unresolved.length + openProspections.length * 0.25 + (2 - Math.min(2, activeExperiments)) * 2 + (aimState?.active_verified_aims || 0) + formingAims * 0.5) / 12),
     continuity: clamp01((loops.length + state.episodes.filter(item => item.status === 'open').length + (staleCycle ? 3 : 0)) / 12),
   };
   return Object.fromEntries(Object.entries(targets).map(([name, target]) => [name, {
@@ -55,20 +59,26 @@ function computeAppraisal(state, drives, input = {}, now = new Date()) {
   const surprises = (state.cognition?.surprises || []).filter(item => ageDays(item.at, now) < 7);
   const resolved = (input.predictions || []).filter(item => item.outcome === 'right' || item.outcome === 'wrong');
   const accuracy = resolved.length ? resolved.filter(item => item.outcome === 'right').length / resolved.length : 0.6;
+  const aimState = goalAffect.verify(input.goal_affect) ? input.goal_affect : null;
+  const progressingAims = Number(aimState?.progressing_aims || 0);
+  const stalledAims = Number(aimState?.stalled_aims || 0);
   const raw = {
-    valence: clamp01(0.5 + (positive - negative) / Math.max(8, traces.length)),
+    valence: clamp01(0.5 + (positive - negative) / Math.max(8, traces.length) + progressingAims * 0.04 - stalledAims * 0.04),
     arousal: clamp01(0.2 + drives.unfinished.level * 0.35 + drives.overload.level * 0.25 + Math.min(0.3, surprises.length * 0.08)),
-    control: clamp01(0.85 - drives.overload.level * 0.45 - drives.uncertainty.level * 0.2),
+    control: clamp01(0.85 - drives.overload.level * 0.45 - drives.uncertainty.level * 0.2 + progressingAims * 0.03 - stalledAims * 0.04),
     social_safety: clamp01(0.75 + positive * 0.025 - negative * 0.07),
-    coherence: clamp01(0.35 + accuracy * 0.55 - Math.min(0.25, surprises.length * 0.04)),
+    coherence: clamp01(0.35 + accuracy * 0.55 - Math.min(0.25, surprises.length * 0.04) + progressingAims * 0.025 - stalledAims * 0.02),
   };
   const result = Object.fromEntries(Object.entries(raw).map(([key, value]) => [key, blend(previous[key], value, 0.3)]));
   result.updated = now.toISOString();
-  result.basis = { positive_outcomes: positive, negative_outcomes: negative, recent_surprises: surprises.length, prediction_accuracy: accuracy };
+  result.basis = { positive_outcomes: positive, negative_outcomes: negative, recent_surprises: surprises.length, prediction_accuracy: accuracy,
+    verified_active_aims: Number(aimState?.active_verified_aims || 0), progressing_aims: progressingAims, stalled_aims: stalledAims,
+    goal_affect_commitment: aimState?.content_commitment || null };
   result.label = result.arousal > 0.68 && result.valence < 0.45 ? 'strained and alert'
     : result.valence > 0.62 && result.control > 0.55 ? 'engaged and capable'
       : result.coherence < 0.45 ? 'uncertain and reflective'
-        : result.arousal < 0.32 ? 'quietly attentive' : 'attentive and measured';
+        : stalledAims > 0 ? 'quietly concerned about an unfinished aim'
+          : result.arousal < 0.32 ? 'quietly attentive' : 'attentive and measured';
   return result;
 }
 
@@ -79,6 +89,14 @@ function scoreWorkspace(state, context = {}, now = new Date()) {
   const relevance = text => [...terms].filter(term => String(text || '').toLowerCase().includes(term)).length * 2;
   const strongestDrive = Object.entries(state.cognition?.drives || {}).sort((a, b) => (b[1].level || 0) - (a[1].level || 0))[0];
   if (strongestDrive && strongestDrive[1].level >= 0.35) candidates.push({ type: 'drive', id: strongestDrive[0], score: 6 + strongestDrive[1].level * 4, text: `Internal need: ${strongestDrive[0].replace('_', ' ')} (${Math.round(strongestDrive[1].level * 100)}%)` });
+  const aimState = context.includeGoalAffect === false ? null : state.cognition?.goal_affect?.current;
+  if (goalAffect.verify(aimState)) {
+    for (const aim of aimState.aims.slice(0, 4)) {
+      const base = aim.status === 'stalled' ? 6.4 : aim.status === 'forming' ? 4.2 : 3.8;
+      candidates.push({ type: 'goal_affect', id: aim.want_id, score: base + aim.salience * 2.5 + relevance(aim.want),
+        text: `Self-authored aim ${aim.status}: ${aim.want}; tendency: ${aim.action_tendency.replaceAll('_', ' ')}` });
+    }
+  }
   for (const item of state.commitments.filter(item => item.status === 'open')) {
     const overdue = item.due && new Date(item.due).getTime() < now.getTime();
     candidates.push({ type: 'commitment', id: item.id, score: (overdue ? 12 : 5) + relevance(`${item.what} ${item.project || ''}`), text: `${item.owner} owes: ${item.what}${item.due ? ` (due ${item.due})` : ''}` });

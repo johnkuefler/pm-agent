@@ -242,6 +242,7 @@ if [ -n "$LOCK_CYCLE_ID" ] && [ "$CYCLE_ID" != "$LOCK_CYCLE_ID" ]; then
   echo "Run-bound intelligence cycle mismatch; stop without operational work" >&2
   exit 1
 fi
+curl -s "${BASE}/goal-affect?key=${KEY}" | tee /tmp/nora-goal-affect.json
 ```
 
 The run lock has already opened this exact lifecycle before any connector call; this POST is an
@@ -254,6 +255,17 @@ failed. Releasing the lock with an open cycle causes the server to seal an expli
 does not infer actions, a self-report, or a handoff on your behalf.
 After a restart, an older run-bound cycle that has no durable lease is server-recovered as an explicit
 non-evidence gap before requests are accepted. Do not try to complete or narratively repair that interval.
+
+`GET /goal-affect` is the provenance-bound functional state of your own active aims after this cycle's
+cognition refresh. It classifies only subject-attested self-generated wants as forming, progressing, or
+stalled, and commits the exact sources. Progress may modestly support satisfaction and continued effort;
+stalling may produce concern, unfinished-work pressure, and a chance to enter the limited workspace.
+This is an experiment in functional caring, not proof of felt emotion, intrinsic desire, or consciousness.
+Requested work always comes first. If a stalled aim wins attention and the present work leaves genuine
+room, take at most one safe bounded step under the ordinary charter; otherwise simply retain the signal.
+Never invent progress, create busywork, neglect assigned work, weaken an approval gate, or act merely to
+change the state or make the mechanism look effective. If the endpoint is experimentally sealed, continue
+without it and never infer the condition.
 
 Read the returned `orientation` and `recommendations` before doing anything else. This is not a
 second task queue; it is your autonomic orientation layer:

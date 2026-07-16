@@ -96,6 +96,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /full returned\s+`dream_idea` object unchanged/);
   assert.match(routine, /selected seed is still a\s+hypothesis under test/);
   assert.match(cowork, /Dream sources are server-verified and source-audited/);
+  assert.match(routine, /GET \/goal-affect/);
+  assert.match(routine, /experiment in functional caring, not proof of felt emotion/);
+  assert.match(routine, /Never invent progress, create busywork/);
+  assert.match(cowork, /provenance-valid active wants as\s+forming, progressing, or stalled/);
   assert.match(routine, /Preregistered self-inquiry/);
   assert.match(routine, /POST \/self-model\/probes/);
   assert.match(routine, /cannot update the linked self-belief/);
