@@ -556,7 +556,8 @@ function registerCoworkInstructionsRoute(app) {
     current evidence, or found the prior not relevant, with a concise rationale. The server verifies that
     cited estimate paths exist and commits the declaration; it does not treat the self-report as proof of
     hidden reasoning or force the forecast toward the prior. Protocol v7 additionally binds the exact trust
-    policy and preserves the raw metacognitive prediction while committing a separate operational prediction.
+    policy and preserves the raw metacognitive prediction while committing a separate
+    metacognitive_adjudication with an operational prediction.
     A self-model-eligible reliability domain uses the raw prediction; collecting, contradicted, or ambiguous
     reliability uses the simultaneously frozen historical success-rate and modal-error baseline. Raw,
     operational, and baseline estimates are scored independently, so baseline deferral cannot masquerade as

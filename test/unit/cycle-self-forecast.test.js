@@ -633,6 +633,8 @@ test('forecast-error feedback can produce one committed self-correction scored a
   });
   assert.ok(outcome.self_correction.integrated_self_state_score.revised_minus_initial > 0);
   assert.ok(outcome.self_correction.behavioral_score.revised_minus_initial > 0);
+  assert.equal('operational_metacognitive_reliability_score' in outcome.self_correction,
+    false, 'protocols one through six retain their exact historical outcome shape');
   assert.deepEqual(record.self_correction.revision.changed_domains,
     ['action_types', 'surprise', 'action_count', 'attention', 'appraisal', 'reentry', 'reliability']);
 });

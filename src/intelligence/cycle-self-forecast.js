@@ -1095,9 +1095,11 @@ function scoreRecord(record, { actions = [], newSurpriseIds = [], controlAtClose
         revisedOutcome.self_state_score?.composite),
       metacognitive_reliability_score: comparison(outcome.metacognitive_score?.composite,
         revisedOutcome.metacognitive_score?.composite),
-      operational_metacognitive_reliability_score: comparison(
-        outcome.operational_metacognitive_score?.composite,
-        revisedOutcome.operational_metacognitive_score?.composite),
+      ...(Number(record.protocol_version) >= 7 ? {
+        operational_metacognitive_reliability_score: comparison(
+          outcome.operational_metacognitive_score?.composite,
+          revisedOutcome.operational_metacognitive_score?.composite),
+      } : {}),
       substrate_score: comparison(outcome.substrate_score?.composite,
         revisedOutcome.substrate_score?.composite),
     };
