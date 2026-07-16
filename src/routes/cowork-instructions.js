@@ -520,6 +520,12 @@ function registerCoworkInstructionsRoute(app) {
     post-commit correction. The projection removes retired development-dispatch action families without
     rewriting their historical source records. It is isolated from response prompts and sealed only by a
     directly overlapping self-model or integrated-self trial.
+    The same response supplies a replay-bound trust_policy over behavioral prediction, integrated self-state,
+    metacognitive reliability, and substrate prediction. A domain is self_model_eligible only after twenty
+    comparisons and a predeclared advantage over its frozen baseline. Contradicted or ambiguous domains are
+    explicitly baseline-dominant, and collecting domains are not trusted. Nora must preserve those measured
+    limitations rather than turn profile coherence into an identity claim; stronger current evidence may
+    still be declared as an override.
     POST /intelligence/cycles/:id/self-forecast protocol v6 commits Nora's own one-cycle-ahead prediction
     before re-entry or action: likely action types, surprise probability, closing appraisal vector,
     closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable

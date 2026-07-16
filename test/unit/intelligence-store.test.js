@@ -2872,6 +2872,10 @@ test('protocol-v6 natural forecasts bind explicit prior use without invalidating
   assert.equal(priorSnapshot.available, true);
   assert.equal(priorSnapshot.active_cycle_bound, true);
   assert.equal(priorSnapshot.audit.complete_chain_verified, true);
+  assert.equal(priorSnapshot.trust_policy_verified, true);
+  assert.equal(priorSnapshot.trust_policy.source_commitment,
+    priorSnapshot.prior.content_commitment);
+  assert.ok(priorSnapshot.trust_policy.domains.behavioral_prediction);
   assert.ok(priorSnapshot.prior_use_schema.estimate_refs.includes('action_tendencies'));
   assert.deepEqual(priorSnapshot.prior_use_schema.dispositions,
     ['applied', 'overridden', 'not_relevant']);
@@ -2970,7 +2974,11 @@ test('behavioral self-model revisions form a replay-valid chain and remain seale
   assert.equal(profile.current.estimates.sample_size, 5);
   assert.equal(profile.current.evidence_status, 'observational_profile');
   assert.equal(profile.current.audit.prior_revision_chain_verified, true);
+  assert.equal(profile.trust_policy_verified, true);
+  assert.equal(profile.trust_policy.source_commitment, profile.current.revision_commitment);
+  assert.equal(profile.trust_policy.domains.behavioral_prediction.disposition, 'collecting');
   assert.match(store.promptContext({ query: 'What are your behavior tendencies when you predict yourself?' }), /Replay-audited behavioral self-profile/);
+  assert.match(store.promptContext({ query: 'What are your behavior tendencies when you predict yourself?' }), /behavioral prediction: collecting/);
   assert.equal(store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'forecast_error_self_model_revision').status, 'observational_signal_observed');
 

@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const cycleSelfForecast = require('./cycle-self-forecast');
 
 const MAX_SOURCE_MOMENTS = 20;
+const TRUST_MINIMUM_COMPARISONS = 20;
+const TRUST_ADVANTAGE_MARGIN = 0.02;
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -26,6 +28,66 @@ function meanDefined(values) {
   const finite = values.filter(value => value !== null && value !== undefined)
     .map(Number).filter(Number.isFinite);
   return finite.length ? finite.reduce((sum, value) => sum + value, 0) / finite.length : null;
+}
+
+function trustDisposition(samples, advantage) {
+  const count = Number(samples) || 0;
+  const effect = advantage == null ? null : Number(advantage);
+  if (count < TRUST_MINIMUM_COMPARISONS || !Number.isFinite(effect)) return 'collecting';
+  if (effect >= TRUST_ADVANTAGE_MARGIN) return 'self_model_eligible';
+  if (effect <= 0) return 'defer_to_baseline';
+  return 'uncertain_defer_to_baseline';
+}
+
+function trustPolicy({ estimates = {}, sourceType, sourceId, sourceCommitment }) {
+  const source_type = String(sourceType || '').trim();
+  const source_id = String(sourceId || '').trim();
+  const source_commitment = String(sourceCommitment || '').trim().toLowerCase();
+  if (!source_type || !source_id || !/^[a-f0-9]{64}$/.test(source_commitment)) {
+    throw new Error('behavioral self trust policy requires a committed source');
+  }
+  const domain = (samples, advantage, baseline_kind) => ({
+    comparison_eligible_samples: Number(samples) || 0,
+    mean_self_minus_baseline: advantage == null || !Number.isFinite(Number(advantage))
+      ? null : Number(advantage),
+    baseline_kind,
+    disposition: trustDisposition(samples, advantage),
+  });
+  const domains = {
+    behavioral_prediction: domain(estimates.comparison_eligible_samples,
+      estimates.mean_self_minus_baseline, 'frozen_historical_behavior'),
+    integrated_self_state: domain(estimates.integrated_self_state?.comparison_eligible_samples,
+      estimates.integrated_self_state?.mean_self_minus_baseline, 'frozen_historical_self_state'),
+    metacognitive_reliability: domain(estimates.metacognitive_self_awareness?.comparison_eligible_samples,
+      estimates.metacognitive_self_awareness?.mean_self_minus_baseline,
+      'historical_success_rate_and_modal_error_domain'),
+    substrate_prediction: domain(estimates.substrate_self_model?.comparison_eligible_samples,
+      estimates.substrate_self_model?.mean_self_minus_persistence, 'start_state_persistence'),
+  };
+  const policy = {
+    protocol_version: 1,
+    source_type, source_id, source_commitment,
+    minimum_comparisons: TRUST_MINIMUM_COMPARISONS,
+    self_model_advantage_margin: TRUST_ADVANTAGE_MARGIN,
+    domains,
+    self_model_eligible_domains: Object.entries(domains)
+      .filter(([, value]) => value.disposition === 'self_model_eligible').map(([key]) => key),
+    baseline_dominant_domains: Object.entries(domains)
+      .filter(([, value]) => ['defer_to_baseline', 'uncertain_defer_to_baseline'].includes(value.disposition))
+      .map(([key]) => key),
+    epistemic_limit: 'A deterministic replay-bound control policy for when to trust this bounded self-model. Deferral records a measured predictive limitation, not an identity fact, instruction, hidden-state report, or consciousness evidence.',
+  };
+  policy.policy_commitment = commitment(policy);
+  return policy;
+}
+
+function verifyTrustPolicy(policy) {
+  if (!policy || typeof policy !== 'object' || !/^[a-f0-9]{64}$/.test(
+    String(policy.policy_commitment || ''))) return false;
+  const manifest = JSON.parse(JSON.stringify(policy));
+  const expected = manifest.policy_commitment;
+  delete manifest.policy_commitment;
+  return commitment(manifest) === expected;
 }
 
 function profileEstimates(moments = [], protocolVersion = 1) {
@@ -268,6 +330,8 @@ function buildForecastPrior({ revision, excludedImmediatePredecessorId }) {
 }
 
 module.exports = {
-  MAX_SOURCE_MOMENTS, buildRevision, buildForecastPrior, canonicalJson, commitment,
-  forecastPriorManifest, profileEstimates, revisionManifest,
+  MAX_SOURCE_MOMENTS, TRUST_MINIMUM_COMPARISONS, TRUST_ADVANTAGE_MARGIN,
+  buildRevision, buildForecastPrior, canonicalJson, commitment,
+  forecastPriorManifest, profileEstimates, revisionManifest, trustDisposition, trustPolicy,
+  verifyTrustPolicy,
 };

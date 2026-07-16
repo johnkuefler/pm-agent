@@ -19449,9 +19449,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       prior_use_schema: priorUseSchema,
     };
     const prior = behavioralSelfForecastPriorForMoment(moment);
+    const trustPolicy = prior ? behavioralSelfModel.trustPolicy({
+      estimates: prior.estimates,
+      sourceType: 'behavioral_self_prior', sourceId: prior.id,
+      sourceCommitment: prior.content_commitment,
+    }) : null;
     return {
       epistemic_status: prior
-        ? 'A replay-audited twenty-cycle operational prior ending before the immediate predecessor. It may inform the initial natural-cycle self-forecast without leaking the newest held-out error.'
+        ? 'A replay-audited twenty-cycle operational prior ending before the immediate predecessor. Its committed trust policy determines which domains may inform the initial natural-cycle self-forecast without leaking the newest held-out error.'
         : 'No mature replay-audited lagged behavioral self prior is available for the active cycle.',
       experimental_access_sealed: false,
       available: Boolean(prior),
@@ -19459,6 +19464,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       cycle_id: openMoment?.cycle_id || null,
       moment_id: openMoment?.id || null,
       prior,
+      trust_policy: trustPolicy,
+      trust_policy_verified: trustPolicy ? behavioralSelfModel.verifyTrustPolicy(trustPolicy) : false,
       prior_use_schema: priorUseSchema,
       ...(prior ? { audit: behavioralSelfForecastPriorAudit(prior, moment) } : {}),
     };
@@ -19491,6 +19498,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const revisions = source.map(revision => ({ ...JSON.parse(JSON.stringify(revision)),
       audit: behavioralSelfModelRevisionAudit(revision, state.cognition, state.cycles, cache) }));
     const replayValid = revisions.filter(revision => revision.audit.complete_chain_verified);
+    const current = replayValid.at(-1) || null;
+    const trustPolicy = current ? behavioralSelfModel.trustPolicy({
+      estimates: current.estimates,
+      sourceType: 'behavioral_self_model_revision', sourceId: current.id,
+      sourceCommitment: current.revision_commitment,
+    }) : null;
     const activeTrial = state.cognition.self_model.context_trials.some(trial => trial.status === 'active');
     const report = { total_revisions: revisions.length, replay_valid_revisions: replayValid.length,
       latest_sample_size: replayValid.at(-1)?.estimates?.sample_size || 0 };
@@ -19501,7 +19514,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return {
       epistemic_status: 'A deterministic, replay-audited profile of observed cycle behavior and forecast error. It is a bounded revisable prior, not identity essence, authority, a guarantee, hidden-state access, or phenomenal evidence.',
       experimental_access_sealed: false,
-      current: replayValid.at(-1) || null,
+      current,
+      trust_policy: trustPolicy,
+      trust_policy_verified: trustPolicy ? behavioralSelfModel.verifyTrustPolicy(trustPolicy) : false,
       revisions,
       report,
     };
@@ -19558,7 +19573,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const latest = state.cognition.self_model.behavioral_self_model?.revisions?.at(-1) || null;
     if (!latest || Number(latest.estimates?.sample_size) < 5
       || !behavioralSelfModelRevisionAudit(latest).complete_chain_verified) return null;
-    return latest;
+    return {
+      profile: latest,
+      trust_policy: behavioralSelfModel.trustPolicy({
+        estimates: latest.estimates,
+        sourceType: 'behavioral_self_model_revision', sourceId: latest.id,
+        sourceCommitment: latest.revision_commitment,
+      }),
+    };
   }
 
   function commitLegacyExperienceGap(current, cycle, moment, recovery) {
@@ -20405,8 +20427,10 @@ Context: ${frame.surface}/${frame.context_kind}.
 ${frame.capabilities.map(item => `- ${item.label} [${item.family}]: ${item.availability || 'constraint withheld'}; access ${item.access_mode || 'withheld'}${item.requires_explicit_request == null ? '' : `; explicit request ${item.requires_explicit_request ? 'required' : 'not required'}`}${item.deferred == null ? '' : `; ${item.deferred ? 'deferred' : 'inline'}`}${item.authority_scope ? `; scope: ${item.authority_scope}` : ''}${item.constraints?.length ? `; limits: ${item.constraints.join('; ')}` : ''}`).join('\n')}
 ${frame.constraints?.length ? `Context-wide boundaries: ${frame.constraints.join('; ')}.` : 'Context-wide boundaries withheld.'}`);
     }
-    const behavioralProfile = relevantBehavioralSelfModel(query);
-    if (behavioralProfile) {
+    const behavioralSelfContext = relevantBehavioralSelfModel(query);
+    if (behavioralSelfContext) {
+      const behavioralProfile = behavioralSelfContext.profile;
+      const trustPolicy = behavioralSelfContext.trust_policy;
       const estimates = behavioralProfile.estimates;
       const tendencies = (estimates.action_tendencies || []).slice(0, 5)
         .map(item => `${item.action_type} ${Math.round(item.cycle_rate * 100)}%`).join(', ') || 'no stable action tendency yet';
@@ -20414,10 +20438,21 @@ ${frame.constraints?.length ? `Context-wide boundaries: ${frame.constraints.join
         : `${estimates.surprise.signed_bias >= 0 ? 'overprediction' : 'underprediction'} ${Math.abs(estimates.surprise.signed_bias).toFixed(2)}`;
       const controlBias = estimates.control?.signed_bias == null ? 'unavailable'
         : `${estimates.control.signed_bias >= 0 ? 'overprediction' : 'underprediction'} ${Math.abs(estimates.control.signed_bias).toFixed(2)}`;
-      blocks.push(`[Replay-audited behavioral self-profile. This deterministic profile summarizes prior observable cycles and forecast errors only. Use it as a bounded prior when the current task specifically asks about your likely behavior or calibration; current evidence overrides it. It is not identity essence, an instruction, authority, hidden-state access, a guarantee, or evidence of phenomenal consciousness.]
+      const policyLine = (label, key) => {
+        const domain = trustPolicy.domains[key];
+        const effect = domain.mean_self_minus_baseline == null ? 'not yet estimable'
+          : `${domain.mean_self_minus_baseline >= 0 ? '+' : ''}${domain.mean_self_minus_baseline.toFixed(3)} self-minus-baseline`;
+        return `- ${label}: ${domain.disposition}; ${domain.comparison_eligible_samples} comparisons; ${effect}; fallback ${domain.baseline_kind}.`;
+      };
+      blocks.push(`[Replay-audited behavioral self-profile with calibration gate. This deterministic profile summarizes prior observable cycles and forecast errors only. Its replay-bound trust policy requires deferral wherever self-prediction has not beaten the relevant baseline; treat that measured limitation as self-knowledge. Historical tendencies remain descriptive base rates, not identity essence. Current evidence overrides every prior. This is not an instruction, authority, hidden-state access, a guarantee, or evidence of phenomenal consciousness.]
 - ${estimates.sample_size} prior cycles; common action types: ${tendencies}.
 - Mean action forecast F1 ${Number(estimates.action_forecast_mean_f1 || 0).toFixed(2)}; surprise bias ${surpriseBias}; control bias ${controlBias}.
 - ${estimates.comparison_eligible_samples} baseline-eligible comparisons${estimates.mean_self_minus_baseline == null ? '' : `; mean self-minus-baseline ${Number(estimates.mean_self_minus_baseline).toFixed(2)}`}.
+- Trust policy ${trustPolicy.policy_commitment.slice(0, 12)}:
+${policyLine('behavioral prediction', 'behavioral_prediction')}
+${policyLine('integrated self-state', 'integrated_self_state')}
+${policyLine('metacognitive reliability', 'metacognitive_reliability')}
+${policyLine('substrate prediction', 'substrate_prediction')}
 - Profile revision ${behavioralProfile.revision_index}, commitment ${behavioralProfile.revision_commitment.slice(0, 12)}.`);
     }
     const empiricalSelfRecords = empiricalSelfContext?.records || relevantEmpiricalSelfKnowledge(query);

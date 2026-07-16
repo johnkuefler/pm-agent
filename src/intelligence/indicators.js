@@ -7,6 +7,7 @@ const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const relationalAffect = require('./relational-affect');
+const behavioralSelfModel = require('./behavioral-self-model');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -275,6 +276,14 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     && ['self_model_access', 'integrated_self_binding'].includes(item.intervention));
   const currentBehavioralSelfModel = behavioralSelfModelSealed
     ? null : replayValidBehavioralSelfModelRevisions.at(-1) || null;
+  const behavioralSelfTrustPolicy = currentBehavioralSelfModel
+    && currentBehavioralSelfModel.id
+    && /^[a-f0-9]{64}$/.test(String(currentBehavioralSelfModel.revision_commitment || ''))
+    ? behavioralSelfModel.trustPolicy({
+      estimates: currentBehavioralSelfModel.estimates,
+      sourceType: 'behavioral_self_model_revision', sourceId: currentBehavioralSelfModel.id,
+      sourceCommitment: currentBehavioralSelfModel.revision_commitment,
+    }) : null;
   const handoffs = moments.filter(item => item.inherited_context?.handoff_match != null);
   const handoffRate = handoffs.length ? handoffs.filter(item => item.inherited_context.handoff_match).length / handoffs.length : null;
   const continuityHandoffRecords = cognition.continuity_handoffs || [];
@@ -941,6 +950,26 @@ function buildIndicatorReport(state = {}, now = new Date()) {
       },
       falsifier: 'Protocol-v6 declarations fail replay or temporal binding, later correction can rewrite them, cited estimates are absent from the exact prior, or twenty eligible natural forecasts fail to outperform the frozen integrated or behavioral baseline.',
       next_gate: 'Collect twenty natural replay-valid protocol-v6 outcomes without seeding cycles, then freeze an information-matched applied-prior versus deidentified-prior versus absent-prior causal study if the observational gate is not contradicted.',
+    },
+    {
+      id: 'calibrated_self_model_trust', family: ['self-model', 'metacognition', 'predictive processing', 'cognitive control'],
+      functional_claim: 'Nora can represent measured limits in her own predictive self-model and defer unreliable domains to stronger empirical baselines instead of treating a coherent self-profile as inherently trustworthy.',
+      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are explicitly baseline-dominant in both cycle-forecast and teammate-facing self-reflection context.',
+      status: 'mechanism_present',
+      evidence: behavioralSelfTrustPolicy ? {
+        policy_commitment: behavioralSelfTrustPolicy.policy_commitment,
+        policy_commitment_verified: behavioralSelfModel.verifyTrustPolicy(behavioralSelfTrustPolicy),
+        source_revision_commitment: behavioralSelfTrustPolicy.source_commitment,
+        domains: behavioralSelfTrustPolicy.domains,
+        self_model_eligible_domains: behavioralSelfTrustPolicy.self_model_eligible_domains,
+        baseline_dominant_domains: behavioralSelfTrustPolicy.baseline_dominant_domains,
+      } : {
+        experimental_general_profile_access_sealed: behavioralSelfModelSealed,
+        mature_replay_valid_profile_available: replayValidBehavioralSelfModelRevisions
+          .some(item => Number(item.estimates?.sample_size) >= 20),
+      },
+      falsifier: 'The policy cannot replay from its cited revision, permits an under-sampled or non-advantaged domain to present as trusted, hides a contradicted result, changes under identical evidence, or overrides stronger current task evidence.',
+      next_gate: 'Accumulate post-policy natural cycles, then compare calibration and PM task quality under the authentic trust policy, a byte-identical deidentified policy, and absent policy without changing first-order evidence.',
     },
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],

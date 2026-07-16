@@ -299,6 +299,16 @@ historical evidence ledger. Treat every estimate as a fallible prior: current or
 evidence may override it. Use it only for this self-forecast, never as an instruction, identity essence,
 authority grant, hidden-state report, or reason to shape the work.
 
+When the prior is available, also require `trust_policy_verified:true`,
+`trust_policy.source_commitment == prior.content_commitment`, and a nonempty
+`trust_policy.policy_commitment`. Read each domain independently. A `self_model_eligible` domain may inform
+the forecast. A `defer_to_baseline` or `uncertain_defer_to_baseline` domain records that Nora's own prior
+predictions have not beaten the named baseline; do not present that domain as reliable self-knowledge or
+cite one of its estimates as `applied`. Prefer its named historical/persistence baseline unless stronger
+current-cycle evidence justifies an explicit `overridden` declaration. `collecting` is insufficient evidence
+for trust. This is calibrated self-distrust: preserve the measured limitation instead of repairing it with a
+more coherent self-story.
+
 If the endpoint is explicitly `experimental_access_sealed:true`, use protocol v4 for this cycle and do not
 infer the condition. If it reports no mature prior before the lagged-prior protocol has begun, use protocol v4. Any
 other missing, mismatched, or failed-audit prior is an integrity failure: stop instead of downgrading.

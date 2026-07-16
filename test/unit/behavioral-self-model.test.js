@@ -62,6 +62,37 @@ test('lagged forecast priors preserve source audit while removing retired action
     excludedImmediatePredecessorId: 'moment-19' }), /exclude the immediate predecessor/);
 });
 
+test('replay-bound trust policy defers contradicted self-prediction and admits only demonstrated domains', () => {
+  const moments = Array.from({ length: 20 }, (_, index) => {
+    const item = moment(index);
+    item.self_forecast.outcome.self_score.composite = 0.55;
+    item.self_forecast.outcome.baseline_score.composite = 0.75;
+    item.self_forecast.outcome.self_minus_baseline = -0.2;
+    return item;
+  });
+  const revision = behavioralSelfModel.buildRevision({ moments, revisionIndex: 2,
+    createdAt: '2026-07-14T12:00:00.000Z' });
+  const policy = behavioralSelfModel.trustPolicy({
+    estimates: revision.estimates,
+    sourceType: 'behavioral_self_model_revision', sourceId: revision.id,
+    sourceCommitment: revision.revision_commitment,
+  });
+  assert.equal(policy.domains.behavioral_prediction.disposition, 'defer_to_baseline');
+  assert.equal(policy.domains.integrated_self_state.disposition, 'collecting');
+  assert.deepEqual(policy.baseline_dominant_domains, ['behavioral_prediction']);
+  assert.deepEqual(policy.self_model_eligible_domains, []);
+  assert.equal(behavioralSelfModel.verifyTrustPolicy(policy), true);
+  policy.domains.behavioral_prediction.disposition = 'self_model_eligible';
+  assert.equal(behavioralSelfModel.verifyTrustPolicy(policy), false);
+
+  const supported = behavioralSelfModel.trustPolicy({
+    estimates: { ...revision.estimates, mean_self_minus_baseline: 0.03 },
+    sourceType: 'behavioral_self_model_revision', sourceId: revision.id,
+    sourceCommitment: revision.revision_commitment,
+  });
+  assert.equal(supported.domains.behavioral_prediction.disposition, 'self_model_eligible');
+});
+
 test('protocol-v3 revisions consolidate second-order reliability calibration without erasing first-order error', () => {
   const moments = Array.from({ length: 5 }, (_, index) => {
     const base = moment(index);
