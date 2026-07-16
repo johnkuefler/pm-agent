@@ -92,6 +92,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Step 10: Close the Intelligence Cycle/);
   assert.match(routine, /Choose your own experiments when genuine curiosity earns one/);
   assert.match(routine, /learning-experiments\/choose/);
+  assert.match(routine, /GET \/dream-idea-seeds\?status=available/);
+  assert.match(routine, /full returned\s+`dream_idea` object unchanged/);
+  assert.match(routine, /selected seed is still a\s+hypothesis under test/);
+  assert.match(cowork, /Dream sources are server-verified and source-audited/);
   assert.match(routine, /Preregistered self-inquiry/);
   assert.match(routine, /POST \/self-model\/probes/);
   assert.match(routine, /cannot update the linked self-belief/);

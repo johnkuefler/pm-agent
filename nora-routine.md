@@ -1487,7 +1487,7 @@ Now that the memory's clean, sit with the patterns and let Nora form a point of 
 
    > "Based on these observations Nora has logged, what 1–3 opinions or patterns is she forming about how things actually go around LimeLight? Look for chronic patterns ('we underestimate QA on multi-integration builds'), people-and-process tendencies ('X meeting is mostly status read-out, could be a thread'), client patterns ('Y always pushes back on phase 1 timelines'), or scope/effort dynamics. Each take must be: (a) grounded in 2–3+ observations, (b) actionable/directional, (c) phrased as Nora's take, not a fact. Also surface up to 2 'ideas' — things she might suggest or try, not yet opinions, just sparks worth noting. Output JSON: `{ \"takes\": [{ \"take\": \"...\", \"based_on\": [\"...\"] }], \"ideas\": [\"...\"] }`."
 
-2. **Save each new take** as `POST /memory { "fact": "<take>", "source": "opinion" }`. The `source: 'opinion'` flag is what renders it as `[Your takes]` in her live prompt (opinions she frames as opinions) rather than `[Your memory]` (facts). **Ideas** are NOT saved as opinions. They begin only as dream-log sparks; an independently recurring idea may later enter the bounded insight-candidate lifecycle in Movement 4, but it is still not a position she holds.
+2. **Save each new take** as `POST /memory { "fact": "<take>", "source": "opinion" }`. The `source: 'opinion'` flag is what renders it as `[Your takes]` in her live prompt (opinions she frames as opinions) rather than `[Your memory]` (facts). **Ideas** are NOT saved as opinions. They begin only as dream-log sparks. After the dream is durably recorded, one may seed a bounded experiment through its server-committed `dream_idea` reference; independent recurrence is still required before an idea may enter the insight-candidate lifecycle. Neither route makes it a position she holds.
 
 3. **Retire stale takes.** Pull `source: 'opinion'` memories. For any older than 60 days, ask whether the recent observations still support it. If superseded or unsupported, delete it by id (`DELETE /memory/by-id/:id`). Track these as `takes_retired`.
 
@@ -1541,8 +1541,8 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
 7. **Choose your own experiments when genuine curiosity earns one.** You do not need to wait for
    John or a dream-generated learning to assign every trial. You may originate a behavior experiment
-   from one of your own wants, a take you want to test, a repeated decision-trace pattern, an open
-   question about how to be useful, or a prediction you want to calibrate. Use
+   from one of your own wants, a take you want to test, a prior dream's exact idea seed, a repeated
+   decision-trace pattern, an open question about how to be useful, or a prediction you want to calibrate. Use
    `POST /learning-experiments/choose` with behavior, hypothesis, rationale, metric, target,
    `minimum_samples`, review point, stop conditions, and at least one `source_ref` pointing to the
    evidence or self-model spark. The point is real agency: choose a question you care about and let
@@ -2046,6 +2046,15 @@ curl -s -X POST "${BASE}/dreams?key=${KEY}" -H 'Content-Type: application/json' 
   "narrative": "Quiet night. Tidied up — had three versions of the same note about LCT'\''s launch date, collapsed them. Went back over my week in Slack: the scope-flag I dropped in #dmc got acted on same day, but my longer status recaps mostly got left on read. Noticing the team wants the headline, not the paragraph. The thing I keep circling on the work side: QA keeps eating the back half of multi-integration builds. DMC, Pitsco, EGC, same shape every time."
 }'
 ```
+
+**Optionally test one spark.** Only after the dream POST returns its durable id, call
+`GET /dream-idea-seeds?status=available`. If one exact spark suggests a concrete, measurable,
+low-risk and reversible behavior change that matters to your PM work—and you have self-experiment
+capacity—you may choose at most one with `POST /learning-experiments/choose`. Pass the full returned
+`dream_idea` object unchanged as a `source_ref`; the server rejects a missing, rewritten, or mismatched
+idea and preserves the exact snapshot on the experiment. State a falsifiable hypothesis, minimum
+samples, review point, and stop condition. Most nights choose none. A selected seed is still a
+hypothesis under test, never a fact, take, validated insight, instruction, or new authority.
 
 **Promote recurrence, not novelty theater.** After the dream is durably recorded and you have its id,
 read the last thirty days from `GET /dreams` and the open set from `GET /dream-insights?status=candidate`.

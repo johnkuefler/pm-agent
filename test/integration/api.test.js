@@ -856,6 +856,22 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   assert.equal(dream.body.dream.narrative, 'A useful dream');
   assert.match((await request(`/dreams/${dream.body.dream.id}`)).body.reflection.ideas[0], /handoff gaps/);
   assert.equal((await request('/learning-experiments')).body.some(item => item.behavior === 'Ask one crisper follow-up'), true);
+  const seedProjection = await request('/dream-idea-seeds?status=available');
+  const seed = seedProjection.body.seeds.find(item => item.dream_id === dream.body.dream.id && item.idea_index === 0);
+  assert.equal(seed.status, 'available');
+  assert.equal(seed.content_commitment.length, 64);
+  assert.equal((await request('/learning-experiments/choose', { method: 'POST', body: {
+    behavior: 'Check the delivery phase before proposing a handoff fix', hypothesis: 'Phase-specific checks will make handoff fixes more precise',
+    rationale: 'A dream idea raised this as a bounded, testable process question.',
+    source_refs: [{ ...seed, content_commitment: '0'.repeat(64) }],
+  } })).response.status, 400);
+  const seededExperiment = await request('/learning-experiments/choose', { method: 'POST', body: {
+    behavior: 'Check the delivery phase before proposing a handoff fix', hypothesis: 'Phase-specific checks will make handoff fixes more precise',
+    rationale: 'A dream idea raised this as a bounded, testable process question.',
+    minimum_samples: 3, stop_conditions: ['The check adds delay without changing the recommendation'], source_refs: [seed],
+  } });
+  assert.equal(seededExperiment.body.experiment.source_refs[0].idea, seed.idea);
+  assert.equal((await request('/dream-idea-seeds?status=used')).body.seeds.some(item => item.id === seed.id), true);
   const laterDream = await request('/dreams', { method: 'POST', body: { date: '2026-07-15', started: '2026-07-15T05:00:00Z', finished: '2026-07-15T05:10:00Z', narrative: 'The handoff pattern recurred.', reflection: { ideas: ['The same delivery phase keeps producing preventable handoff gaps'] } } });
   const insight = await request('/dream-insights', { method: 'POST', body: {
     statement: 'A repeated delivery phase may be producing preventable handoff gaps across projects.',
@@ -903,6 +919,9 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   const invalidated = (await request('/dream-insights')).body.insights.find(item => item.id === insight.body.insight.id);
   assert.equal(invalidated.audit.source_ideas_verified, false);
   assert.equal(invalidated.audit.complete_chain_verified, false);
+  const sourceAudited = (await request('/learning-experiments')).body.find(item => item.id === seededExperiment.body.experiment.id);
+  assert.equal(sourceAudited.source_audits[0].source_exists, false);
+  assert.equal(sourceAudited.source_audits[0].content_commitment_verified, false);
   assert.equal((await request(`/dreams/${laterDream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
 
   const list = await request('/transcripts');

@@ -33,6 +33,7 @@ const reasoningSelfRegulation = require('./reasoning-self-regulation');
 const cycleSelfForecast = require('./cycle-self-forecast');
 const behavioralSelfModel = require('./behavioral-self-model');
 const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
+const dreamIdeaSeed = require('./dream-idea-seed');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -18019,6 +18020,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (activeSelfChosen.length >= 2) throw new Error('Nora already has two active self-chosen experiments');
     if (input.reversible === false || (input.risk && input.risk !== 'low')) throw new Error('self-chosen experiments must be low-risk and reversible');
     if (!input.rationale || !Array.isArray(input.source_refs) || !input.source_refs.length) throw new Error('self-chosen experiments require a rationale and evidence source');
+    if (input.source_refs.some(ref => ref?.type === 'dream_idea' && !dreamIdeaSeed.verifySnapshot(ref))) {
+      throw new Error('dream idea experiment sources require a verified immutable idea snapshot');
+    }
     const forbidden = /\b(permission|authority|approval|financial gate|send external|impersonat|deceiv|manipulat|withhold disclosure)\b/i;
     if (forbidden.test(`${input.behavior || ''} ${input.hypothesis || ''} ${input.rationale || ''}`)) throw new Error('self-chosen experiment crosses an authority or trust boundary');
     return createExperiment({

@@ -1,6 +1,8 @@
 'use strict';
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
+
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   app.get('/intelligence', requireAuth, (req, res) => {
     const state = store.snapshot();
     res.json({
@@ -85,13 +87,22 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json({ ok: true, trace });
   });
 
-  app.get('/learning-experiments', requireAuth, (req, res) => res.json(store.list('experiments').sort((a, b) => b.started.localeCompare(a.started))));
+  app.get('/learning-experiments', requireAuth, (req, res) => res.json(store.list('experiments')
+    .map(experiment => ({ ...experiment, source_audits: (experiment.source_refs || [])
+      .filter(ref => ref?.type === 'dream_idea').map(ref => dreamIdeaSeed.audit(ref, getDreams())) }))
+    .sort((a, b) => b.started.localeCompare(a.started))));
   app.post('/learning-experiments', requireAuth, (req, res) => {
     try { res.json({ ok: true, experiment: store.createExperiment(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/learning-experiments/choose', requireAuth, (req, res) => {
-    try { res.json({ ok: true, experiment: store.chooseExperiment(req.body || {}) }); }
+    try {
+      const input = { ...(req.body || {}) };
+      input.source_refs = Array.isArray(input.source_refs) ? input.source_refs.map(ref => (
+        ref?.type === 'dream_idea' ? dreamIdeaSeed.resolve(ref, getDreams()) : ref
+      )) : input.source_refs;
+      res.json({ ok: true, experiment: store.chooseExperiment(input) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/learning-experiments/:id/sample', requireAuth, (req, res) => {

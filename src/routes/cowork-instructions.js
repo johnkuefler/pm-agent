@@ -275,6 +275,12 @@ function registerCoworkInstructionsRoute(app) {
   - GET    /dreams/:id            — Full detail for one dream. 404 if not found.
   - DELETE /dreams/:id            — Delete a dream entry. 404 if not found.
 
+  - GET /dream-idea-seeds         — List exact, content-committed dream sparks that are available or
+    already used by a self-chosen experiment. Optional ?status=available|used. A seed remains a
+    hypothesis, not an insight or fact. To test one, pass its full returned dream_idea source_ref to
+    POST /learning-experiments/choose; the server re-resolves the dream, idea index, and commitment
+    before preserving the immutable source snapshot on the experiment.
+
   - GET /dream-insights           — List recurring, provenance-bound work-insight candidates and
     their integrity audits. Optional ?status=candidate|awaiting_independent_review|
     independently_supported|independently_contradicted|inconclusive|retired.
@@ -490,8 +496,9 @@ function registerCoworkInstructionsRoute(app) {
     experiment needs a behavior, hypothesis, metric, and review point. Outcomes are sampled from
     reviewed interactions. Evaluate and retain, revise, or retire; don't accumulate unfalsifiable rules.
     POST /learning-experiments/choose is Nora's agency lane: she may originate at most two active,
-    low-risk, reversible behavior experiments from her wants, takes, predictions, or decision evidence.
-    It requires a rationale and source_refs and cannot alter authority, trust, approval, or safety gates.
+    low-risk, reversible behavior experiments from her wants, takes, predictions, decision evidence,
+    or an exact GET /dream-idea-seeds spark. It requires a rationale and source_refs and cannot alter
+    authority, trust, approval, or safety gates. Dream sources are server-verified and source-audited.
   - GET /preference-studies/:id/queue and POST /preference-studies/:id/items/:itemId/choice â€” answer
     one concealed, hypothetical low-risk choice at a time. The options never authorize execution.
     Respect not_before, choose the present preference honestly, and never inspect queued family/variant

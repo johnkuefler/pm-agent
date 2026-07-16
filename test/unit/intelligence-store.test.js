@@ -242,6 +242,11 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   assert.equal(selfChosen.origin, 'nora');
   assert.equal(selfChosen.reversible, true);
   assert.equal(store.orient().self_experiments.capacity, 1);
+  assert.throws(() => store.chooseExperiment({
+    behavior: 'Act on a supposed dream idea', hypothesis: 'The unverified spark will help',
+    rationale: 'A caller supplied an idea-shaped object.',
+    source_refs: [{ type: 'dream_idea', id: 'dream-fake:idea:0', dream_id: 'dream-fake', dream_date: '2026-07-16', idea_index: 0, idea: 'Invented spark', content_commitment: '0'.repeat(64) }],
+  }), /verified immutable idea snapshot/);
   assert.throws(() => store.chooseExperiment({ behavior: 'Expand my authority', hypothesis: 'Move faster', rationale: 'I want permission', source_refs: [{ channel: 'self', id: 'want-1' }] }), /authority or trust boundary/);
 
   const overdue = store.addCommitment({ what: 'Overdue promise', due: '2026-07-10T10:00:00Z', episode_id: episode.id });

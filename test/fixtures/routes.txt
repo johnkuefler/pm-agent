@@ -324,6 +324,7 @@ GET /interactions
 POST /interactions/:id/outcome
 GET /dreams
 GET /dreams/:id
+GET /dream-idea-seeds
 GET /dream-insights
 POST /dream-insights
 POST /dream-insights/:id/resolve

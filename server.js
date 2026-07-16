@@ -171,6 +171,7 @@ function currentCognitiveInputs() {
 
 registerIntelligenceRoutes(app, {
     requireAuth, requireResearchAuth, requireEvaluatorAuth, store: intelligence,
+    getDreams: loadDreams,
     runSelfInquirySelectionSubject: runSelfInquirySelectionSubjectRuntime,
     runSelfInductionSubject: runSelfInductionSubjectRuntime,
     runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,
@@ -7648,7 +7649,7 @@ function saveDreams(dreams) {
 const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
 
 registerDreamRoutes(app, {
-  requireAuth, requireEvaluatorAuth, loadDreams, saveDreams, MAX_DREAMS_KEPT,
+  requireAuth, requireEvaluatorAuth, loadDreams, saveDreams, listExperiments: () => intelligence.list('experiments'), MAX_DREAMS_KEPT,
   onDream: dream => {
     const learnings = [...(dream.review?.learnings_added || []), ...(dream.reflection?.behavior_changes || [])];
     const existing = intelligence.list('experiments');

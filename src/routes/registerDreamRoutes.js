@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -62,7 +63,7 @@ function insightAudit(insight, dreams) {
 }
 
 function registerDreamRoutes(app, deps) {
-  const { requireAuth, requireEvaluatorAuth = requireAuth, loadDreams, saveDreams, MAX_DREAMS_KEPT, onDream } = deps;
+  const { requireAuth, requireEvaluatorAuth = requireAuth, loadDreams, saveDreams, listExperiments = () => [], MAX_DREAMS_KEPT, onDream } = deps;
 
   // GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
   // dashboard can render without a second round-trip per dream.
@@ -77,6 +78,23 @@ function registerDreamRoutes(app, deps) {
     const dream = loadDreams().find(d => d.id === req.params.id);
     if (!dream) return res.status(404).json({ error: 'dream not found' });
     res.json(dream);
+  });
+
+  // Dream ideas are hypotheses, not established insights. This projection gives each exact stored
+  // spark a stable, content-committed reference so Nora may test it without rewriting its origin.
+  app.get('/dream-idea-seeds', requireAuth, (req, res) => {
+    const allSeeds = dreamIdeaSeed.list(loadDreams(), listExperiments())
+      .sort((a, b) => String(b.dream_date || '').localeCompare(String(a.dream_date || '')) || a.idea_index - b.idea_index);
+    const status = req.query.status;
+    const seeds = status ? allSeeds.filter(seed => seed.status === status) : allSeeds;
+    res.json({
+      seeds,
+      report: {
+        total: allSeeds.length,
+        available: allSeeds.filter(seed => seed.status === 'available').length,
+        used: allSeeds.filter(seed => seed.status === 'used').length,
+      },
+    });
   });
 
   // Repeated dream ideas remain fallible sparks until Nora explicitly binds the exact date-separated
