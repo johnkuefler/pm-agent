@@ -160,6 +160,8 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /"Not established" means only that this ledger lacks evidence/);
   assert.match(cowork, /GET\/POST \/common-ground binds a current Nora position and matching-person position/);
   assert.match(cowork, /Superseded positions, expiry, or source tampering retract the\s+frame/);
+  assert.match(routine, /Evidence capture\s+remains separate from cognitive access/);
+  assert.match(cowork, /GET records and prompt frames remain sealed[\s\S]*POST may still append/);
   assert.match(store, /Verified common-ground frame for the current collaborator/);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);

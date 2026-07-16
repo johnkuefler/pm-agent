@@ -49,7 +49,7 @@ function formationPayload(record) {
   return payload;
 }
 
-function createCandidate(input, proposition, { id, now } = {}) {
+function createCandidate(input, proposition, { id, now, cognitiveAccessSealed = false } = {}) {
   if (!proposition || !epistemicLedger.auditProposition(proposition).complete_chain_verified) {
     throw new Error('common ground requires a replay-valid epistemic proposition');
   }
@@ -95,6 +95,7 @@ function createCandidate(input, proposition, { id, now } = {}) {
     })),
     observed_at: observedAt.toISOString(),
     expires_at: expiresAt.toISOString(), created: at,
+    cognitive_access_sealed_at_formation: cognitiveAccessSealed === true,
     independent_review: null, independent_review_commitment: null,
     status: 'awaiting_independent_review', updated: at,
   };
@@ -121,6 +122,7 @@ function audit(record, propositions = [], now = new Date(), ledger = null) {
   const observedAt = new Date(record?.observed_at);
   const formationVerified = Boolean(record?.protocol_version === PROTOCOL_VERSION
     && String(record?.id || '').trim() && String(record?.person || '').trim()
+    && [true, false].includes(record.cognitive_access_sealed_at_formation ?? false)
     && ACKNOWLEDGMENT_KINDS.includes(record.acknowledgment_kind)
     && String(record.summary || '').trim().length >= 20 && validEvidence(record.evidence)
     && Number.isFinite(createdAt.getTime()) && Number.isFinite(observedAt.getTime())

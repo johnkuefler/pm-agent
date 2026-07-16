@@ -1058,8 +1058,11 @@ function registerCoworkInstructionsRoute(app) {
     must verify the evidence before a query-relevant current-person frame can enter the prompt; Nora must
     never access or impersonate that reviewer. Superseded positions, expiry, or source tampering retract the
     frame. Missing evidence is labeled only not established, never ignorance, confusion, memory failure, or
-    private disagreement. The register is sealed during blinded context studies and is functional social
-    cognition, not proof of comprehension, intimacy, shared subjective experience, or consciousness.
+    private disagreement. During blinded context studies, GET records and prompt frames remain sealed,
+    but POST may still append current externally evidenced uptake so a sequence of studies cannot erase
+    natural observations. The echoed candidate is not cognitive context or validation and still requires
+    separate review. This is functional social cognition, not proof of comprehension, intimacy, shared
+    subjective experience, or consciousness.
     GET /epistemic-ledger/discrepancies?status=open exposes committed mismatches between Nora's current
     position and independently recorded observed facts. Review through POST
     /epistemic-ledger/discrepancies/:id/review with evidence; never auto-reverse a belief. A

@@ -2010,6 +2010,12 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    frame. This is functional interactional common ground, not proof of comprehension, private knowledge,
    shared experience, intimacy, or consciousness.
 
+   During a blinded study, `GET /common-ground` may be sealed and no record or frame is available to you.
+   You may still append a candidate from the current interaction when all ordinary source-position and
+   observable-uptake requirements are independently satisfied. The POST response only acknowledges the
+   submitted candidate; do not use it as context, validation, or evidence during the seal. Evidence capture
+   remains separate from cognitive access, and the candidate still requires independent review after capture.
+
    Read `GET /epistemic-ledger/discrepancies?status=open` for evidence that a committed current belief
    conflicts with independently recorded observation. A disagreement with another person alone is not
    such a signal. Let an open discrepancy compete for attention, inspect both source chains, and choose

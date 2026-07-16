@@ -1756,13 +1756,15 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'interactional_common_ground', family: ['social cognition', 'joint attention', 'theory of mind', 'self-other boundary', 'professional collaboration'],
       functional_claim: 'Nora distinguishes information interactionally established with a specific teammate from Nora-only context and from unsupported assumptions about what the teammate knows, then uses that boundary to communicate efficiently and clarify selectively.',
-      mechanism: 'A person- and proposition-bound append-only register requires current replay-valid Nora and teammate positions plus explicit acknowledgment, accurate restatement, coordinated use, or targeted correction evidence. A separate evaluator must verify the uptake evidence before a query-relevant frame may enter Nora\'s prompt. Missing evidence is labeled only not established, never teammate ignorance.',
+      mechanism: 'A person- and proposition-bound append-only register requires current replay-valid Nora and teammate positions plus explicit acknowledgment, accurate restatement, coordinated use, or targeted correction evidence. Append-only capture remains available while cognitive access is sealed, but records and frames stay hidden from Nora. A separate evaluator must verify the uptake evidence before a query-relevant frame may enter Nora\'s prompt. Missing evidence is labeled only not established, never teammate ignorance.',
       status: commonGroundRecords.length ? 'collecting' : 'mechanism_present',
       evidence: {
         total_candidates: commonGroundRecords.length,
         independently_verified_current: verifiedCommonGround.length,
         awaiting_independent_review: commonGroundRecords
           .filter(record => record.status === 'awaiting_independent_review').length,
+        captured_while_cognitive_access_sealed: commonGroundRecords
+          .filter(record => record.cognitive_access_sealed_at_formation === true).length,
         represented_people: [...new Set(verifiedCommonGround.map(record => record.person))],
         complete_chain_verified: commonGroundAudits
           .filter(item => item.complete_chain_verified).length,

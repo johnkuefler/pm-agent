@@ -87,6 +87,15 @@ test('common ground requires verified observable uptake and fails closed when so
   });
   assert.equal(store.commonGroundReviewQueue().some(item => item.id === replacement.id), true);
 
+  proposition = store.recordEpistemicPosition({
+    topic_key: 'launch.owner', statement: 'Maya owns the launch readiness decision.',
+    owner_type: 'person_belief', subject: 'Maya', polarity: 'supports', confidence: 0.9,
+    rationale: 'Maya explicitly acknowledged her launch-readiness decision ownership.',
+    evidence: [{ type: 'slack_message', id: 'launch-owner-maya' }], recorded_by: 'nora-runtime',
+  });
+  const mayaPosition = proposition.positions.find(item => item.owner_type === 'person_belief'
+    && item.subject === 'Maya');
+
   store.createContextTrial({
     id: 'common-ground-seal-control', intervention: 'workspace_capacity',
     hypothesis: 'Workspace capacity affects first-order task quality.',
@@ -94,13 +103,28 @@ test('common ground requires verified observable uptake and fails closed when so
   });
   const sealed = store.commonGroundSnapshot({ person: 'John', query: 'launch owner' });
   assert.equal(sealed.experimental_access_sealed, true);
+  assert.deepEqual(sealed.records, []);
   assert.equal(store.commonGroundReviewQueue().some(item => item.id === replacement.id), true,
     'independently authenticated review remains outside the subject seal');
-  assert.throws(() => store.recordCommonGround({}), /sealed/);
+  const sealedPeriodCandidate = store.recordCommonGround({
+    proposition_id: proposition.id, person: 'Maya',
+    nora_position_id: noraPosition.id, person_position_id: mayaPosition.id,
+    acknowledgment_kind: 'coordinated_action',
+    summary: 'Maya used the shared launch-owner assignment to make the readiness decision in the thread.',
+    evidence: [{ type: 'slack_message', id: 'launch-owner-maya-action' }],
+    expires_at: '2026-08-15T12:00:00.000Z',
+  });
+  assert.equal(sealedPeriodCandidate.cognitive_access_sealed_at_formation, true);
+  assert.equal(sealedPeriodCandidate.audit.complete_chain_verified, true);
+  assert.equal(store.commonGroundReviewQueue().some(item => item.id === sealedPeriodCandidate.id), true,
+    'append-only evidence capture remains available to the independent review path');
+  assert.equal(store.commonGroundSnapshot({ person: 'Maya', query: 'launch owner' })
+    .experimental_access_sealed, true, 'new evidence cannot feed subject cognition during the trial');
 
   const indicator = store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'interactional_common_ground');
   assert.equal(indicator.status, 'collecting');
+  assert.equal(indicator.evidence.captured_while_cognitive_access_sealed, 1);
   assert.equal(indicator.evidence.independently_verified_current, 0,
     'the superseded source position retracts the old record');
 

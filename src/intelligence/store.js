@@ -2981,9 +2981,6 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function recordCommonGround(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (commonGroundProjectionSealed()) {
-        throw new Error('common-ground formation is sealed during an active blinded study');
-      }
       const proposition = current.cognition.epistemic_ledger.propositions
         .find(item => item.id === input.proposition_id);
       const normalizedPerson = String(input.person || '').trim().toLowerCase();
@@ -3000,7 +2997,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (current.cognition.common_ground.records.some(record => record.id === id)) {
         throw new Error('common-ground id already exists');
       }
-      const record = commonGround.createCandidate(input, proposition, { id, now: clock() });
+      // Evidence capture is deliberately distinct from cognitive access. Sequential blinded
+      // studies can keep the projection sealed for long stretches; refusing append-only capture
+      // here would erase naturally occurring uptake evidence and permanently starve the model.
+      // The subject still cannot list, frame, or receive any common-ground prompt context until
+      // the active seal lifts, and an independently authenticated review remains mandatory.
+      const record = commonGround.createCandidate(input, proposition, {
+        id, now: clock(), cognitiveAccessSealed: commonGroundProjectionSealed(),
+      });
       current.cognition.common_ground.records.push(record);
       current.cognition.common_ground.records = current.cognition.common_ground.records.slice(-500);
       researchLedgerAppend(current, { kind: 'common_ground_candidate_formed',
