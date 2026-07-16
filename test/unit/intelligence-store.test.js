@@ -306,10 +306,18 @@ test('cognition stays bounded, evidence-based, calibrated, and explicit about si
   assert.ok(resolution.mind_change);
   assert.equal(resolution.brier, 0.81);
 
-  const perspective = store.observePerspective({ name: 'John', hypothesis: 'May want the recommendation first today', confidence: 0.55, evidence: [{ channel: 'slack', id: 'm1' }] });
-  assert.equal(perspective.status, 'active');
-  assert.ok(perspective.valid_until);
-  assert.throws(() => store.observePerspective({ name: 'John', hypothesis: 'Wants speed' }), /require evidence/);
+  const perspective = store.observePerspective({
+    name: 'John',
+    hypothesis: 'John will ask for the recommendation before implementation detail on the next planning question',
+    dimension: 'communication_format', confidence: 0.55,
+    evidence: [{ channel: 'slack', id: 'm1' }],
+    prediction: { due_at: '2026-07-20T15:00:00.000Z', observable: 'Whether John asks for the recommendation before implementation detail', probability: 0.55, control_probability: 0.5,
+      falsification_criteria: ['John accepts implementation detail without asking for the recommendation first.'] },
+  });
+  assert.equal(perspective.status, 'open');
+  assert.match(perspective.formation_commitment, /^[a-f0-9]{64}$/);
+  assert.throws(() => store.updatePerspective(perspective.id, { confidence: 0.6 }), /append-only/);
+  assert.throws(() => store.observePerspective({ name: 'John', hypothesis: 'Wants speed' }), /require.*evidence/);
 
   const replay = store.recordCounterfactual({ actual: 'Answered immediately', alternative: 'Asked one clarifying question', predicted_difference: 'Might reduce correction', evidence_basis: [{ type: 'trace', id: 't1' }] });
   assert.equal(replay.status, 'simulated');

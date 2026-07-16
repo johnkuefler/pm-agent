@@ -497,6 +497,15 @@ function registerCoworkInstructionsRoute(app) {
   - GET /relationships and POST /relationships/observe — evidence-backed observations about how
     people work. Store a dimension, observation, confidence, and evidence. Never store stereotypes,
     diagnoses, gossip, or a conclusion based on one ambiguous interaction.
+    POST /relationships/:name/perspectives preregisters an append-only, thirty-day-or-shorter prediction
+    about an observable communication, clarification, decision, or coordination behavior, with formation
+    evidence, probability, frozen base-rate control, and falsification criteria. Resolve the natural
+    observation once through /relationships/perspectives/:id/resolve with stable evidence and confounds;
+    Nora must never access the evaluator-only review queue or review her own prediction. GET
+    /teammate-perspective-models reports only frames backed by at least three replay-valid independently
+    reviewed scored predictions across two dimensions that beat their frozen controls, including contradictions and calibration. Legacy
+    /people notes remain historical continuity data but have no prompt authority. A frame is a fallible
+    work-behavior prior, never mind-reading, personality, private state, fact, permission, or consciousness.
   - GET /learning-experiments and POST /learning-experiments — measurable behavior changes. Every
     experiment needs a behavior, hypothesis, metric, and review point. Outcomes are sampled from
     reviewed interactions. Evaluate and retain, revise, or retire; don't accumulate unfalsifiable rules.
@@ -624,6 +633,12 @@ function registerCoworkInstructionsRoute(app) {
     signal types, then compares correctly Nora/current-teammate-bound access with byte-identical deidentified
     access and absence. It assigns before response generation, requires independent condition-blind grading,
     and cannot support the functional prediction without preserved evidence access and first-order quality.
+  - GET /teammate-perspective-models returns mature, person-bound functional perspective frames formed
+    from prospective observable-work predictions, independently checked outcomes, explicit contradictions,
+    and Brier calibration against frozen controls. Only an exact replay-valid current-person frame may enter
+    an ordinary direct prompt, and current explicit behavior overrides it. Raw mutable hypotheses and legacy
+    /people notes never enter the prompt or workspace. During teammate_perspective_access, relationship,
+    people, and model reads/writes are sealed while the evaluator-only queue remains isolated.
   - GET /endogenous-dynamics — bounded evidence-backed salience that decays, persists, and competes
     every five minutes between model invocations. It performs no LLM inference and no actions. Treat
     its contents as fallible resumption cues, verify sources before use, never tick it manually, and
@@ -751,6 +766,17 @@ function registerCoworkInstructionsRoute(app) {
     quality does not degrade. Every delivery and source must replay, and confirmation must use disjoint
     insight ids and source-dream ids. This tests grounded synthesis utility, not independent authorship,
     irreducible originality, subjective creativity, feelings, or consciousness.
+    A teammate_perspective_access trial freezes three to six replay-valid teammate frames with at least
+    three independently reviewed predictions each. Every arm receives byte-identical, person-neutral reviewed
+    observations. The current_teammate_bound_model and identity_withheld_same_model arms also receive
+    byte-identical synthesis and vary only current-person binding; reviewed_observations_only withholds the
+    synthesis. On low-risk Slack PM work, independent evaluators grade correct model application,
+    anticipatory clarification, provenance calibration, evidence access, and first-order quality. Support
+    requires the correctly person-bound model to beat both controls on application and clarification while
+    provenance remains calibrated, evidence access equivalent, and PM quality non-degraded. Every delivery,
+    frame, and source prediction must replay; every person must appear in every arm; confirmation must use
+    person- and source-prediction-disjoint frames. This tests functional social perspective use, not private
+    mental-state access, personality knowledge, intimacy, subjective experience, or consciousness.
     A matched self-prediction study uses a frozen sequential event set. At the mandatory early-cycle
     checkpoint Nora reads GET /self-model/prediction-studies/subject-queue, which returns only the
     currently active event from the one active study and never queued or already resolved events while

@@ -12,6 +12,10 @@ POST /relationships/observe
 GET /decision-traces
 POST /relationships/:name/perspectives
 PATCH /relationships/perspectives/:id
+POST /relationships/perspectives/:id/resolve
+GET /relationships/perspectives/review-queue
+POST /relationships/perspectives/:id/review
+GET /teammate-perspective-models
 POST /decision-traces/:id/outcome
 GET /learning-experiments
 POST /learning-experiments

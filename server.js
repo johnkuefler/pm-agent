@@ -1251,6 +1251,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
         meetingContext?.requester?.name || meetingContext?.requester_name || null),
       selfModelTrustAvailable: intelligence.selfModelTrustAccessAvailable(),
       dreamInsightAvailable: intelligence.dreamInsightAccessAvailable(),
+      teammatePerspectiveAvailable: intelligence.teammatePerspectiveAccessAvailable(
+        meetingContext?.requester?.name || meetingContext?.requester_name || null),
       constructiveProspectionAvailable: intelligence.constructiveProspectionAccessAvailable(),
       agencyComparatorAvailable: intelligence.agencyComparatorAccessAvailable(),
       agencyModelAvailable: intelligence.agencyModelTransferAvailable(),
@@ -1368,15 +1370,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     }
   }
 
-  // Theory of mind: her maintained models of how each teammate works. Same discipline as the
-  // rest of the self-model: use them to shape HOW you communicate with each person, never
-  // recite them, never mention that you keep them. (John's full model lives in the charter.)
-  if (_dbReady && _cache.people && Array.isArray(_cache.people.items) && _cache.people.items.length) {
-    const ppl = _cache.people.items.filter(p => p && p.name && p.model).slice(0, 20);
-    if (ppl.length) {
-      base = `${base}\n\n[How each teammate works, from your own observation. Shape your communication to the person; never recite or mention these notes.]\n${ppl.map(p => `- ${p.name}: ${p.model}`).join('\n')}`;
-    }
-  }
+  // Legacy free-text people models remain readable for continuity but no longer enter prompts.
+  // Teammate perspective guidance must pass the prospective, independently reviewed intelligence
+  // lifecycle before it can affect a response.
 
   // Intelligence substrate: commitments, evidence-backed relationship observations, active
   // learning experiments, and explicit grounding/repair discipline. These augment Nora's
@@ -1410,6 +1406,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const relationalAffectContext = intelligence.relationalAffectContextForAssignment(contextAssignment, intelligencePerson);
   const selfModelTrustContext = intelligence.selfModelTrustContextForAssignment(contextAssignment);
   const dreamInsightContext = intelligence.dreamInsightContextForAssignment(contextAssignment);
+  const teammatePerspectiveContext = intelligence.teammatePerspectiveContextForAssignment(
+    contextAssignment, intelligencePerson);
   const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
   const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
@@ -1433,6 +1431,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     relationalAffectContext,
     selfModelTrustContext,
     dreamInsightContext,
+    teammatePerspectiveContext,
     endogenousContext,
     integratedSelfContext,
     cognitivePulseContext,
@@ -2335,9 +2334,17 @@ app.post('/predictions/:id/resolve', requireAuth, async (req, res) => {
 // them), maintained by her from real interactions the same way the John section of the charter
 // is. Injected into her prompts; the dream tends it.
 app.get('/people', (req, res) => {
+  if (intelligence.teammatePerspectiveStudyActive()) return res.status(423).json({
+    error: 'legacy people models are sealed during an active blinded teammate-perspective study',
+    experimental_access_sealed: true,
+  });
   res.json((_dbReady && _cache.people) || { items: [] });
 });
 app.put('/people', requireAuth, async (req, res) => {
+  if (intelligence.teammatePerspectiveStudyActive()) return res.status(423).json({
+    error: 'legacy people models are sealed during an active blinded teammate-perspective study',
+    experimental_access_sealed: true,
+  });
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   const items = req.body && req.body.items;
   if (!Array.isArray(items)) return res.status(400).json({ error: 'items (array of {name, model}) required' });

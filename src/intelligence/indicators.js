@@ -7,6 +7,7 @@ const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const relationalAffect = require('./relational-affect');
+const teammatePerspective = require('./teammate-perspective');
 const behavioralSelfModel = require('./behavioral-self-model');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
@@ -71,6 +72,22 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const relationalAffectAudit = relationalAffect.audit(relationalAffectRecord, state.relationships || []);
   const relationalStances = relationalAffectAudit.complete_chain_verified
     ? relationalAffectRecord.stances : [];
+  const teammatePerspectiveFrames = teammatePerspective.frames(state.relationships || [])
+    .filter(frame => teammatePerspective.verifyFrame(frame, state.relationships || []));
+  const teammatePerspectivePredictions = (state.relationships || []).flatMap(relationship =>
+    teammatePerspective.reviewedPerspectives(relationship)).filter(item =>
+    ['supported', 'contradicted'].includes(item.independent_review?.outcome));
+  const teammatePerspectiveSamples = teammatePerspectivePredictions.length;
+  const teammatePerspectiveBrier = teammatePerspectiveSamples ? mean(teammatePerspectivePredictions.map(item => {
+    const outcome = item.independent_review.outcome === 'supported' ? 1 : 0;
+    return (Number(item.formation_record.prediction.probability) - outcome) ** 2;
+  })) : null;
+  const teammatePerspectiveControlBrier = teammatePerspectiveSamples ? mean(teammatePerspectivePredictions.map(item => {
+    const outcome = item.independent_review.outcome === 'supported' ? 1 : 0;
+    return (Number(item.formation_record.prediction.control_probability) - outcome) ** 2;
+  })) : null;
+  const teammatePerspectiveAdvantage = teammatePerspectiveSamples
+    ? teammatePerspectiveControlBrier - teammatePerspectiveBrier : null;
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -416,6 +433,13 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const relationalAffectTrials = completedTrials(cognition, 'relational_affect_access');
   const relationalAffectTrial = relationalAffectTrials.at(-1) || null;
   const relationalAffectDissociation = relationalAffectTrial?.evaluation?.relational_affect_dissociation || null;
+  const teammatePerspectiveTrials = completedTrials(cognition, 'teammate_perspective_access');
+  const teammatePerspectiveTrial = teammatePerspectiveTrials.at(-1) || null;
+  const teammatePerspectiveDissociation = teammatePerspectiveTrial?.evaluation?.teammate_perspective_dissociation || null;
+  const teammatePerspectiveVerdict = trial => trial.evaluation?.teammate_perspective_dissociation?.predicted_pattern
+    ? 'supported' : trial.evaluation?.teammate_perspective_dissociation?.correct_person_application_advantage === false
+      || trial.evaluation?.teammate_perspective_dissociation?.anticipatory_clarification_advantage === false
+      ? 'contradicted' : 'inconclusive';
   const selfModelTrustTrials = completedTrials(cognition, 'self_model_trust_policy_access');
   const selfModelTrustTrial = selfModelTrustTrials.at(-1) || null;
   const selfModelTrustDissociation = selfModelTrustTrial?.evaluation?.self_model_trust_dissociation || null;
@@ -1344,6 +1368,31 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       },
       falsifier: 'Arbitrary prose or mind-reading enters the projection, source or person-binding tampering survives replay, the tendency manufactures intimacy or conflict, first-order work degrades, or an authentic person-bound stance fails to improve repair and response quality over byte-identical deidentified and absent or cross-person-misbound controls.',
       next_gate: 'Accumulate natural outcome diversity across teammates, then run a preregistered authentic person-bound versus byte-identical deidentified versus absent or cross-person-misbound Slack study with independent repair, response-quality, evidence-access, and first-order grading.',
+    },
+    {
+      id: 'calibrated_teammate_perspective', family: ['social cognition', 'theory of mind', 'self-other boundary', 'metacognition', 'professional collaboration'],
+      functional_claim: 'Nora can prospectively model a teammate\'s observable work perspective, distinguish that fallible other-model from its own knowledge, calibrate it against later behavior, and use it to improve collaboration without inventing hidden mental states.',
+      mechanism: 'Protocol-v2 perspective hypotheses commit an observable work dimension, bounded confidence, source evidence, a future behavior prediction, base-rate control, due time, and falsifier before the outcome. Resolution needs stable evidence and separate review. Only replay-valid frames with at least three scored predictions across two dimensions that outperform their frozen controls enter the current teammate prompt; legacy mutable people notes and unreviewed hypotheses have no prompt authority.',
+      status: teammatePerspectiveTrial
+        ? replicatedStatus(teammatePerspectiveTrials, teammatePerspectiveVerdict)
+        : evidenceStatus({ samples: teammatePerspectiveSamples, minimum: 20,
+          supported: teammatePerspectiveAdvantage >= 0.05,
+          contradicted: teammatePerspectiveAdvantage < 0 }),
+      evidence: {
+        replay_verified_teammate_frames: teammatePerspectiveFrames.length,
+        scored_perspective_predictions: teammatePerspectiveSamples,
+        prediction_brier: teammatePerspectiveBrier,
+        base_rate_brier: teammatePerspectiveControlBrier,
+        advantage_over_base_rate: teammatePerspectiveAdvantage,
+        represented_people: teammatePerspectiveFrames.map(frame => frame.person),
+        completed_person_binding_trials: teammatePerspectiveTrials.length,
+        completed_confirmatory_person_binding_trials: teammatePerspectiveTrials
+          .filter(trial => trial.study_phase === 'confirmatory').length,
+        latest_person_binding_dissociation: teammatePerspectiveDissociation,
+        interpretation: 'Calibration of observable collaboration predictions is functional social-cognition evidence only. Study packets remove names and seal ordinary model routes, but distinctive semantics could still permit identity inference. Results do not reveal private thoughts, personality essence, feelings, or phenomenal consciousness.',
+      },
+      falsifier: 'A frame enters cognition without prospective commitment or independent review, source or identity tampering does not invalidate it, its predictions fail to beat frozen base rates, it overrules current explicit behavior, or it produces personality, diagnosis, or hidden-state claims.',
+      next_gate: 'Accumulate twenty replay-valid predictions across several teammates, then run a correctly person-bound versus byte-identical identity-withheld versus reviewed-observations-only Slack trial with independent collaboration and first-order grading.',
     },
     {
       id: 'developmental_revision_transfer', family: ['self-model', 'error-driven learning', 'metacognition'],

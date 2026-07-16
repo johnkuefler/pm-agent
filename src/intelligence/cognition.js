@@ -113,9 +113,6 @@ function scoreWorkspace(state, context = {}, now = new Date()) {
   for (const item of state.relationships) {
     const direct = context.person && item.name.toLowerCase() === String(context.person).toLowerCase();
     if (direct) candidates.push({ type: 'relationship', id: item.id, score: 11, text: `With ${item.name}: ${item.observations.filter(o => o.status === 'active').slice(-2).map(o => o.observation).join('; ')}` });
-    for (const p of (item.perspectives || []).filter(p => p.status === 'active' && (!p.valid_until || new Date(p.valid_until) >= now))) {
-      if (direct) candidates.push({ type: 'perspective', id: p.id, score: 10 * p.confidence, text: `Hypothesis about ${item.name}: ${p.hypothesis} (${Math.round(p.confidence * 100)}% confidence)` });
-    }
   }
   for (const item of (state.cognition?.mind_changes || []).filter(item => item.status === 'open').slice(-10)) candidates.push({ type: 'mind_change', id: item.id, score: 8, text: `Reconsider: ${item.prior_belief}` });
   if (context.includeDevelopment !== false) {

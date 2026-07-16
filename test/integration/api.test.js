@@ -247,8 +247,15 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const relationalSnapshot = await request('/relational-affect');
   assert.equal(relationalSnapshot.body.report.current_verified, true);
   assert.equal(relationalSnapshot.body.current.stances.find(item => item.person === 'John').mode, 'repair_and_reconnect');
-  const perspective = await request('/relationships/John/perspectives', { method: 'POST', body: { hypothesis: 'May want the recommendation first today', confidence: 0.55, evidence: [{ channel: 'test', id: 'message-1' }] } });
-  assert.equal(perspective.body.perspective.status, 'active');
+  const perspective = await request('/relationships/John/perspectives', { method: 'POST', body: {
+    hypothesis: 'John will ask for the recommendation before implementation detail on the next planning question',
+    dimension: 'communication_format', confidence: 0.55,
+    evidence: [{ channel: 'test', id: 'message-1' }],
+    prediction: { due_at: '2026-07-30T00:00:00.000Z', observable: 'Whether John asks for the recommendation before implementation detail', probability: 0.55, control_probability: 0.5,
+      falsification_criteria: ['John accepts implementation detail without asking for the recommendation first.'] },
+  } });
+  assert.equal(perspective.body.perspective.status, 'open');
+  assert.match(perspective.body.perspective.formation_commitment, /^[a-f0-9]{64}$/);
   const epistemicNora = await request('/epistemic-ledger/positions', { method: 'POST', body: {
     topic_key: 'integration.launch_readiness', statement: 'The integration launch is ready.',
     source_family: 'integration-readiness', source_family_evidence: [{ type: 'fixture', id: 'integration-readiness-family' }],

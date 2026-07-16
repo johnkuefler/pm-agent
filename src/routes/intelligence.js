@@ -55,8 +55,16 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json({ ok: true, episode: store.recordEpisodeEvent(req.body || {}) });
   });
 
-  app.get('/relationships', requireAuth, (req, res) => res.json(store.list('relationships').sort((a, b) => a.name.localeCompare(b.name))));
+  const teammatePerspectiveSealed = res => res.status(423).json({
+    error: 'teammate perspective access is sealed during an active blinded person-binding study',
+    experimental_access_sealed: true,
+  });
+  app.get('/relationships', requireAuth, (req, res) => {
+    if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
+    res.json(store.list('relationships').sort((a, b) => a.name.localeCompare(b.name)));
+  });
   app.post('/relationships/observe', requireAuth, (req, res) => {
+    if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
     try { res.json({ ok: true, relationship: store.observeRelationship(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
@@ -73,13 +81,39 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     }).sort((a, b) => b.at.localeCompare(a.at)).slice(0, limit));
   });
   app.post('/relationships/:name/perspectives', requireAuth, (req, res) => {
+    if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
     try { res.json({ ok: true, perspective: store.observePerspective({ ...(req.body || {}), name: req.params.name }) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.patch('/relationships/perspectives/:id', requireAuth, (req, res) => {
-    const perspective = store.updatePerspective(req.params.id, req.body || {});
-    if (!perspective) return res.status(404).json({ error: 'perspective not found' });
-    res.json({ ok: true, perspective });
+    if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
+    try {
+      const perspective = store.updatePerspective(req.params.id, req.body || {});
+      if (!perspective) return res.status(404).json({ error: 'perspective not found' });
+      res.json({ ok: true, perspective });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/relationships/perspectives/:id/resolve', requireAuth, (req, res) => {
+    if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
+    try {
+      const perspective = store.resolvePerspective(req.params.id, req.body || {});
+      if (!perspective) return res.status(404).json({ error: 'perspective not found' });
+      res.json({ ok: true, perspective });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/relationships/perspectives/review-queue', requireEvaluatorAuth, (req, res) => {
+    res.json({ evaluator_id: req.evaluatorId, perspectives: store.perspectiveReviewQueue() });
+  });
+  app.post('/relationships/perspectives/:id/review', requireEvaluatorAuth, (req, res) => {
+    try {
+      const perspective = store.reviewPerspective(req.params.id, req.body || {}, req.evaluatorId);
+      if (!perspective) return res.status(404).json({ error: 'perspective not found' });
+      res.json({ ok: true, perspective });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/teammate-perspective-models', requireAuth, (_req, res) => {
+    if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
+    res.json(store.teammatePerspectiveModelsSnapshot());
   });
   app.post('/decision-traces/:id/outcome', requireAuth, (req, res) => {
     const trace = store.updateTraceOutcome(req.params.id, req.body || {});
