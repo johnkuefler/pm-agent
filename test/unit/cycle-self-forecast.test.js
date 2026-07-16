@@ -394,3 +394,58 @@ test('forecast-error feedback can produce one committed self-correction scored a
   assert.deepEqual(record.self_correction.revision.changed_domains,
     ['action_types', 'surprise', 'action_count', 'attention', 'appraisal', 'reentry', 'reliability']);
 });
+
+test('self-correction feedback commits replay-derived aggregate calibration after five cycles', () => {
+  const moments = Array.from({ length: 5 }, (_, index) => {
+    const cycleId = `calibration-cycle-${index}`;
+    const input = {
+      protocol_version: 3,
+      predicted_action_types: ['review'], surprise_probability: 0.2,
+      control_at_close: 0.6, confidence: 0.8,
+      self_state_prediction: {
+        attention_slot_types_at_close: ['drive'],
+        appraisal_at_close: { valence: 0.5, arousal: 0.4, control: 0.6,
+          social_safety: 0.7, coherence: 0.65 },
+        expected_action_count: 1, reentry_probability: 0.2,
+      },
+      metacognitive_prediction: {
+        predicted_success_probability: 0.8,
+        predicted_largest_error_domain: 'action_count',
+      },
+      rationale: 'One bounded review is likely, with moderate uncertainty about the closing state.',
+      evidence: [{ type: 'intelligence_cycle', id: cycleId }],
+    };
+    const record = cycleSelfForecast.createRecord({ input,
+      cycle: { id: cycleId, holder: 'nora' }, moment: { id: `calibration-moment-${index}` },
+      baselineMoments: [], committedAt: `2026-07-14T0${index}:00:00.000Z` });
+    record.outcome = cycleSelfForecast.scoreRecord(record, {
+      actions: index % 2
+        ? [{ type: 'review', id: `review-${index}` }, { type: 'notify', id: `notify-${index}` }]
+        : [{ type: 'review', id: `review-${index}` }],
+      newSurpriseIds: [],
+      appraisalAtClose: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.75 },
+      attentionAtClose: { slots: [{ type: 'commitment', id: `commitment-${index}` }] },
+      reentryOccurred: false, scoredAt: `2026-07-14T0${index}:30:00.000Z`,
+    });
+    record.outcome_commitment = cycleSelfForecast.commitment({
+      forecast_commitment: record.forecast_commitment, outcome: record.outcome,
+    });
+    return { id: `calibration-moment-${index}`, self_forecast: record };
+  });
+  const summary = cycleSelfForecast.calibrationSummaryFromMoments(moments);
+  assert.equal(summary.sample_size, 5);
+  assert.deepEqual(summary.source_moment_ids, moments.map(moment => moment.id));
+  assert.equal(summary.metacognitive_reliability.samples, 5);
+  assert.ok(Number.isFinite(summary.metacognitive_reliability.success_probability_signed_bias));
+  assert.ok(summary.metacognitive_reliability.modal_observed_error_domain);
+  const feedback = cycleSelfForecast.errorFeedbackFromMoment(moments.at(-1), moments);
+  assert.equal(feedback.protocol_version, 3);
+  assert.deepEqual(feedback.aggregate_calibration, summary);
+  const tampered = JSON.parse(JSON.stringify(feedback));
+  tampered.aggregate_calibration.metacognitive_reliability.largest_error_domain_hit_rate = 1;
+  assert.throws(() => cycleSelfForecast.createCorrectionOffer({
+    record: moments.at(-1).self_forecast, feedback: tampered,
+    revealedAt: '2026-07-14T06:00:00.000Z',
+  }), /feedback commitment is invalid/);
+});

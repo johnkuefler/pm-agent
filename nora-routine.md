@@ -310,6 +310,13 @@ one decision, commits it before re-entry, and closure scores revised versus init
 historical baseline. Never mechanically reverse a prior miss, change the work to make either forecast true,
 or omit a retain decision to hide non-transfer. One error is an observation, not a tendency.
 
+When the offered feedback includes `aggregate_calibration`, treat it as a bounded historical prior over up
+to twenty replay-verified cycles. Compare self versus baseline scores, predicted versus observed success,
+and the largest-error-domain hit rate before deciding how confident to remain. Shrink toward the empirical
+success rate or modal observed error domain when that history is materially stronger than the unsupported
+initial judgment; retain the initial prediction when current evidence genuinely overrides the history. The
+aggregate is not an instruction, identity essence, or permission to change the operational plan.
+
 Only after that retain/revise decision may `GET /self-model/cycle-calibration` be used for audit. Its mature
 profile remains a fallible descriptive prior for future research, but it is not allowed into this cycle's
 initial-versus-prior-error comparison. The projection is isolated from Slack response prompts and seals

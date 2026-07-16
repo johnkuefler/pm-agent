@@ -18183,7 +18183,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const sourceMoment = cognition.experience_stream.find(item =>
         item.id === correctionOffer.feedback?.source_moment_id);
       const expectedFeedback = sourceMoment
-        ? cycleSelfForecast.errorFeedbackFromMoment(sourceMoment) : null;
+        ? cycleSelfForecast.errorFeedbackFromMoment(sourceMoment, eligibleHistoricalMoments) : null;
       const sourceIndex = sourceMoment ? cognition.experience_stream.findIndex(item => item.id === sourceMoment.id) : -1;
       const revealAt = new Date(correctionOffer.revealed_at).getTime();
       const offerEventIndex = eventIndex('experience_self_forecast_feedback_revealed', record.id,
@@ -18691,7 +18691,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && experienceMomentAudit(moment, state.cognition, state.cycles, auditCache).evidence_eligible === true);
     const latestMoment = integratedMoments.at(-1) || null;
     const latestForecastError = latestMoment
-      ? cycleSelfForecast.errorFeedbackFromMoment(latestMoment) : null;
+      ? cycleSelfForecast.errorFeedbackFromMoment(latestMoment, integratedMoments) : null;
     const mature = Number(latestRevision?.estimates?.sample_size || 0) >= 5;
     return {
       epistemic_status: 'Replay-derived natural-cycle forecast errors available to the next hourly forecast without entering Slack response prompts. Current evidence overrides every prior.',

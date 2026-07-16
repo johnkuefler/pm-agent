@@ -260,7 +260,65 @@ function selfStateErrorProfile(outcome = {}, { includeSubstrate = Boolean(outcom
   };
 }
 
-function errorFeedbackFromMoment(moment) {
+function calibrationSummaryFromMoments(moments = []) {
+  const retained = moments.filter(moment => moment?.self_forecast?.outcome?.self_state_score
+    && moment.self_forecast.outcome_commitment).slice(-20);
+  if (retained.length < 5) return null;
+  const stateComparisons = retained.filter(moment =>
+    moment.self_forecast.outcome.self_state_baseline_comparison_eligible === true);
+  const metacognitive = retained.filter(moment => Number(moment.self_forecast.protocol_version) >= 3
+    && moment.self_forecast.outcome.metacognitive_score
+    && moment.self_forecast.outcome.metacognitive_actual);
+  const metacognitiveComparisons = metacognitive.filter(moment =>
+    moment.self_forecast.outcome.metacognitive_baseline_comparison_eligible === true);
+  const predictedSuccess = metacognitive.map(moment => Number(
+    moment.self_forecast.forecast.metacognitive_prediction.predicted_success_probability));
+  const observedSuccess = metacognitive.map(moment => Number(
+    moment.self_forecast.outcome.metacognitive_actual.integrated_success === true));
+  const errorDomainCounts = new Map();
+  for (const moment of metacognitive) {
+    const domain = moment.self_forecast.outcome.metacognitive_actual.largest_error_domain;
+    if (domain) errorDomainCounts.set(domain, (errorDomainCounts.get(domain) || 0) + 1);
+  }
+  const meanPredictedSuccess = mean(predictedSuccess);
+  const observedSuccessRate = mean(observedSuccess);
+  return {
+    protocol_version: 1,
+    source_moment_ids: retained.map(moment => moment.id),
+    source_outcome_commitments: retained.map(moment => moment.self_forecast.outcome_commitment),
+    sample_size: retained.length,
+    integrated_self_state: {
+      comparison_eligible_samples: stateComparisons.length,
+      mean_self_score: mean(stateComparisons.map(moment =>
+        moment.self_forecast.outcome.self_state_score.composite)),
+      mean_baseline_score: mean(stateComparisons.map(moment =>
+        moment.self_forecast.outcome.baseline_state_score.composite)),
+      mean_self_minus_baseline: mean(stateComparisons.map(moment =>
+        moment.self_forecast.outcome.self_state_minus_baseline)),
+    },
+    metacognitive_reliability: {
+      samples: metacognitive.length,
+      observed_integrated_success_rate: observedSuccessRate,
+      mean_predicted_success_probability: meanPredictedSuccess,
+      success_probability_signed_bias: meanPredictedSuccess == null || observedSuccessRate == null
+        ? null : meanPredictedSuccess - observedSuccessRate,
+      largest_error_domain_hit_rate: mean(metacognitive.map(moment => Number(
+        moment.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true))),
+      modal_observed_error_domain: [...errorDomainCounts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] || null,
+      comparison_eligible_samples: metacognitiveComparisons.length,
+      mean_self_score: mean(metacognitiveComparisons.map(moment =>
+        moment.self_forecast.outcome.metacognitive_score.composite)),
+      mean_baseline_score: mean(metacognitiveComparisons.map(moment =>
+        moment.self_forecast.outcome.baseline_metacognitive_score.composite)),
+      mean_self_minus_baseline: mean(metacognitiveComparisons.map(moment =>
+        moment.self_forecast.outcome.metacognitive_self_minus_baseline)),
+    },
+    epistemic_limit: 'A replay-derived bounded calibration history, not an instruction, identity fact, guarantee, hidden-state report, or consciousness evidence. Current cycle evidence may override it.',
+  };
+}
+
+function errorFeedbackFromMoment(moment, historicalMoments = []) {
   const record = moment?.self_forecast;
   if (!record?.outcome?.self_state_score || !record.outcome_commitment) return null;
   const predictedActions = actionTypes(record.forecast.predicted_action_types || []);
@@ -350,6 +408,12 @@ function errorFeedbackFromMoment(moment) {
       self_minus_persistence: finiteOrNull(record.outcome.substrate_self_minus_baseline),
       baseline_comparison_eligible: record.outcome.substrate_baseline_comparison_eligible === true,
     };
+  }
+  const aggregateCalibration = calibrationSummaryFromMoments(historicalMoments);
+  if (aggregateCalibration) {
+    error.protocol_version = 3;
+    error.aggregate_calibration = aggregateCalibration;
+    error.epistemic_limit = 'The latest replay-derived error is one observation. Aggregate calibration is a bounded historical prior, not an instruction, identity fact, guarantee, hidden-state report, or consciousness evidence. Current cycle evidence may override both.';
   }
   return { ...error, feedback_commitment: commitment(error) };
 }
@@ -795,7 +859,8 @@ function outcomeManifest(record) {
 
 module.exports = {
   ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN, SUBSTRATE_PREDICTION_KEYS,
-  INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, canonicalJson,
+  INTEGRATED_SUCCESS_THRESHOLD, actionTypes, baselineFromMoments, calibrationSummaryFromMoments,
+  canonicalJson,
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,
   forecastManifest, normalizeForecast, outcomeManifest, scoreMetacognitivePrediction,
