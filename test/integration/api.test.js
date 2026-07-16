@@ -91,6 +91,7 @@ test('authentication protects APIs and dashboard independently', async () => {
   assert.equal((await fetch(base + '/epistemic-ledger')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await fetch(base + '/earned-viewpoints')).status, 401);
+  assert.equal((await fetch(base + '/relational-affect')).status, 401);
   assert.equal((await fetch(base + '/earned-viewpoints/missing/retire', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/discrepancies')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/discrepancies/missing/review', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
@@ -242,6 +243,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
 
   const relationship = await request('/relationships/observe', { method: 'POST', body: { name: 'John', dimension: 'communication', observation: 'Prefers the answer first', confidence: 0.9 } });
   assert.equal(relationship.body.relationship.name, 'John');
+  await request('/relationships/observe', { method: 'POST', body: { name: 'John', dimension: 'response_feedback', observation: 'corrected: missed the decision owner', confidence: 0.9, evidence: { channel: 'slack', id: 'integration-relational-feedback-1' } } });
+  const relationalSnapshot = await request('/relational-affect');
+  assert.equal(relationalSnapshot.body.report.current_verified, true);
+  assert.equal(relationalSnapshot.body.current.stances.find(item => item.person === 'John').mode, 'repair_and_reconnect');
   const perspective = await request('/relationships/John/perspectives', { method: 'POST', body: { hypothesis: 'May want the recommendation first today', confidence: 0.55, evidence: [{ channel: 'test', id: 'message-1' }] } });
   assert.equal(perspective.body.perspective.status, 'active');
   const epistemicNora = await request('/epistemic-ledger/positions', { method: 'POST', body: {

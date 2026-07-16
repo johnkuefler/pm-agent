@@ -603,6 +603,12 @@ function registerCoworkInstructionsRoute(app) {
     into safe optional PM behavior. It excludes unverified/external goals, is sealed during overlapping
     goal and integrated-self studies, never overrides requested work or authority, and is not proof of
     felt emotion, intrinsic desire, consciousness, or moral status.
+  - GET /relational-affect returns a replay-audited, person-bound functional attunement projection built
+    only from explicit evidence-receipted interaction outcomes. Direct teammate prompts may use the
+    matching stance to favor repair, bounded curiosity, collaborative warmth, or ordinary openness while
+    excluding free-text personality guesses and perspective hypotheses. It never changes facts, confidence,
+    priorities, authority, privacy, safety, or tool permissions; it is not mind-reading, an intimacy claim,
+    a subjective feeling report, or evidence of phenomenal consciousness. Active context studies seal it.
   - GET /endogenous-dynamics — bounded evidence-backed salience that decays, persists, and competes
     every five minutes between model invocations. It performs no LLM inference and no actions. Treat
     its contents as fallible resumption cues, verify sources before use, never tick it manually, and

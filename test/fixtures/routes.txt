@@ -33,6 +33,7 @@ PATCH /intelligence/cycles/:id/complete
 GET /cognition
 GET /affective-regulation
 GET /goal-affect
+GET /relational-affect
 GET /endogenous-dynamics
 POST /endogenous-dynamics/tick
 GET /cognitive-pulses

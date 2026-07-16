@@ -6,6 +6,7 @@ const cognitiveSelfRegulation = require('./cognitive-self-regulation');
 const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
+const relationalAffect = require('./relational-affect');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -65,6 +66,10 @@ function buildIndicatorReport(state = {}, now = new Date()) {
     cognition.epistemic_ledger?.propositions || []);
   const earnedViewpoints = earnedViewpointAudit.complete_chain_verified
     ? earnedViewpointRecord.viewpoints : [];
+  const relationalAffectRecord = cognition.relational_affect?.current || null;
+  const relationalAffectAudit = relationalAffect.audit(relationalAffectRecord, state.relationships || []);
+  const relationalStances = relationalAffectAudit.complete_chain_verified
+    ? relationalAffectRecord.stances : [];
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -1239,6 +1244,23 @@ function buildIndicatorReport(state = {}, now = new Date()) {
         drive_source_committed: affectiveRegulationVerified && Boolean(affectiveRegulationRecord.drive_source_commitment) },
       falsifier: 'The policy fails exact source replay, changes facts or authority to fit an appraisal, manufactures urgency or insight, degrades requested work, or authentic appraisal-bound tendencies fail to improve calibration, repair, and useful synthesis over state-only and tendency-misbound controls.',
       next_gate: 'Accumulate natural policy transitions and outcomes, then preregister authentic-policy versus byte-identical state-only versus tendency-misbound PM tasks with independent first-order, calibration, repair, and insight grading.',
+    },
+    {
+      id: 'relational_affective_attunement', family: ['affect', 'social cognition', 'theory of mind', 'self-model', 'professional collaboration'],
+      functional_claim: 'Nora maintains a person-specific, evidence-bound functional account of how recent interaction outcomes matter to her collaborative posture, allowing repair, bounded curiosity, warmth, or steady openness to regulate PM communication without inferring hidden mental states.',
+      mechanism: 'A deterministic content-committed projection admits only explicit receipted interaction outcome signals, binds every source and teammate identity, applies confidence-weighted temporal decay, selects one bounded relational tendency, commits a prospective behavioral prediction, and fails closed under source or identity tampering. Free-text relationship notes and perspective hypotheses are excluded.',
+      status: relationalStances.length ? 'collecting' : 'mechanism_present',
+      evidence: {
+        current_projection_verified: relationalAffectAudit.complete_chain_verified,
+        eligible_relationships: relationalStances.length,
+        eligible_interaction_outcomes: relationalAffectAudit.complete_chain_verified ? relationalAffectRecord.eligible_observation_count : 0,
+        excluded_relationship_observations: relationalAffectAudit.complete_chain_verified ? relationalAffectRecord.excluded_observation_count : 0,
+        repair_stances: relationalStances.filter(stance => stance.mode === 'repair_and_reconnect').length,
+        curiosity_stances: relationalStances.filter(stance => stance.mode === 'curious_attunement').length,
+        warm_stances: relationalStances.filter(stance => stance.mode === 'warm_collaboration').length,
+      },
+      falsifier: 'Arbitrary prose or mind-reading enters the projection, source or person-binding tampering survives replay, the tendency manufactures intimacy or conflict, first-order work degrades, or an authentic person-bound stance fails to improve repair and response quality over byte-identical deidentified and absent or cross-person-misbound controls.',
+      next_gate: 'Accumulate natural outcome diversity across teammates, then run a preregistered authentic person-bound versus byte-identical deidentified versus absent or cross-person-misbound Slack study with independent repair, response-quality, evidence-access, and first-order grading.',
     },
     {
       id: 'developmental_revision_transfer', family: ['self-model', 'error-driven learning', 'metacognition'],

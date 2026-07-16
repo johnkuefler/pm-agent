@@ -7619,6 +7619,8 @@ registerInteractionRoutes(app, {
         observation: `${interaction.outcome}: ${interaction.signal}`,
         confidence: interaction.outcome === 'corrected' ? 0.9 : 0.7,
         evidence: { channel: 'slack', id: interaction.ts, captured_at: interaction.reviewed_at },
+        ...(['appreciated', 'landed', 'corrected', 'ignored'].includes(interaction.outcome)
+          ? { relational_signal: interaction.outcome } : {}),
       });
     }
   },

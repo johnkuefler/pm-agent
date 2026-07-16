@@ -37,6 +37,7 @@ const dreamIdeaSeed = require('./dream-idea-seed');
 const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
+const relationalAffect = require('./relational-affect');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
@@ -137,6 +138,7 @@ function emptyState() {
       goal_affect: { current: null },
       affective_regulation: { current: null },
       earned_viewpoints: { current: null },
+      relational_affect: { current: null },
     },
   };
 }
@@ -569,7 +571,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!experiment.minimum_samples) experiment.minimum_samples = 5;
       if (experiment.target == null && (!experiment.metric || experiment.metric === 'positive_rate')) experiment.target = 0.65;
     }
-    for (const relationship of state.relationships) if (!Array.isArray(relationship.perspectives)) relationship.perspectives = [];
+    for (const relationship of state.relationships) {
+      if (!Array.isArray(relationship.observations)) relationship.observations = [];
+      if (!Array.isArray(relationship.perspectives)) relationship.perspectives = [];
+    }
+    state.cognition.relational_affect = { current: null, ...(state.cognition.relational_affect || {}) };
+    if (state.cognition.relational_affect.current
+      && !relationalAffect.audit(state.cognition.relational_affect.current, state.relationships).complete_chain_verified) {
+      state.cognition.relational_affect.current = null;
+    }
   }
 
   async function init() {
@@ -719,26 +729,31 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function observeRelationship(input = {}) {
     return mutate(current => {
+      const now = clock();
       const name = String(input.name || '').trim();
       const observation = String(input.observation || '').trim();
       if (!name) throw new Error('name is required');
       if (!observation) throw new Error('observation is required');
+      const relationalSignal = input.relational_signal == null ? null : String(input.relational_signal).trim().toLowerCase();
+      if (relationalSignal && !relationalAffect.SIGNALS.has(relationalSignal)) throw new Error('invalid relational_signal');
       let relationship = current.relationships.find(item => item.name.toLowerCase() === name.toLowerCase());
       if (!relationship) {
-        relationship = { id: `person-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, name, observations: [], updated: clock().toISOString() };
+        relationship = { id: `person-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, name, observations: [], updated: now.toISOString() };
         current.relationships.push(relationship);
       }
-      relationship.updated = clock().toISOString();
+      relationship.updated = now.toISOString();
       relationship.observations.push({
         id: `observation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         dimension: input.dimension || 'general',
         observation: observation.slice(0, 600),
         confidence: Math.min(1, Math.max(0, Number(input.confidence ?? 0.7))),
         evidence: input.evidence || null,
-        observed_at: input.observed_at || clock().toISOString(),
+        observed_at: input.observed_at || now.toISOString(),
         status: input.status || 'active',
+        ...(relationalSignal ? { relational_signal: relationalSignal } : {}),
       });
       relationship.observations = relationship.observations.slice(-60);
+      current.cognition.relational_affect.current = relationalAffect.derive(current.relationships, now);
       return relationship;
     });
   }
@@ -3891,6 +3906,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       current.cognition.affective_regulation.current = affectiveRegulation.derive(
         current.cognition.appraisal, current.cognition.drives, now);
       refreshEarnedViewpoints(current, now);
+      current.cognition.relational_affect.current = relationalAffect.derive(current.relationships, now);
       current.cognition.workspace = scoreWorkspace(current, cognitionInput, now);
       recordAttentionFrame(current, current.cognition.workspace, { kind: input.attention_kind || 'refresh', cycle_id: input.cycle_id || null, now });
       return cognitionPayload(current.cognition);
@@ -8925,6 +8941,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
     if (snapshot.epistemic_ledger) snapshot.epistemic_ledger = epistemicLedgerSnapshot();
     if (snapshot.earned_viewpoints) snapshot.earned_viewpoints = earnedViewpointsSnapshot();
+    if (snapshot.relational_affect) snapshot.relational_affect = relationalAffectSnapshot();
     if (snapshot.counterfactual_agency) snapshot.counterfactual_agency = {
       total: snapshot.counterfactual_agency.experiments.length,
       assigned_open: snapshot.counterfactual_agency.experiments.filter(item => item.status === 'assigned').length,
@@ -18287,6 +18304,42 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function relationalAffectProjectionSealed() {
+    return selfInquirySelectionActive()
+      || state.cognition.self_model.context_trials.some(trial => trial.status === 'active');
+  }
+
+  function relationalAffectAudit(record = state.cognition.relational_affect?.current || null) {
+    return relationalAffect.audit(record, state.relationships);
+  }
+
+  function relationalAffectSnapshot() {
+    if (relationalAffectProjectionSealed()) return {
+      epistemic_status: 'Person-bound relational attunement is sealed while a blinded context intervention is active so it cannot reveal or confound the assigned condition.',
+      experimental_access_sealed: true, current: null, report: null,
+    };
+    const current = state.cognition.relational_affect?.current || null;
+    const audit = relationalAffectAudit(current);
+    const verified = audit.complete_chain_verified;
+    const stances = verified ? current.stances : [];
+    return {
+      epistemic_status: 'A deterministic, person-bound functional analogue of relational significance derived only from explicit evidence-receipted interaction outcomes. It regulates repair, bounded curiosity, warmth, and ordinary collaboration; it is not mind-reading, a personality judgment, a subjective feeling report, authority, or evidence of phenomenal consciousness.',
+      functional_prediction: 'A source-matched stance should improve correction uptake, shared understanding, and teammate response quality without changing facts, confidence, requested priorities, or authority boundaries.',
+      falsifier: 'Free-text mind-reading enters the projection, a source or person-binding change survives replay, the policy manufactures intimacy or conflict, task quality degrades, or an authentic person-bound stance fails to outperform byte-identical deidentified and absent or misbound controls.',
+      next_gate: 'Accumulate natural outcome diversity across teammates, then preregister authentic person-bound versus byte-identical deidentified versus absent or cross-person-misbound Slack tasks with independent repair, response-quality, evidence-access, and first-order grading.',
+      current: verified ? { ...JSON.parse(JSON.stringify(current)), audit } : null,
+      report: {
+        mechanism_present: true,
+        current_verified: verified,
+        eligible_relationships: stances.length,
+        eligible_observations: verified ? current.eligible_observation_count : 0,
+        excluded_observations: verified ? current.excluded_observation_count : state.relationships.reduce((sum, relationship) => sum + (relationship.observations || []).length, 0),
+        modes: Object.fromEntries(['repair_and_reconnect', 'curious_attunement', 'warm_collaboration', 'steady_attunement']
+          .map(mode => [mode, stances.filter(stance => stance.mode === mode).length])),
+      },
+    };
+  }
+
   function goalAffectAudit(record = state.cognition.goal_affect?.current || null) {
     const contentVerified = goalAffect.verify(record);
     let sourceReplayVerified = false;
@@ -20236,6 +20289,14 @@ ${selectedPulses.map(cognitivePulse.renderPulse).join('\n')}`);
     if (includeHigherOrderMonitor && appraisal.label && regulationVerified) blocks.push(`[Committed affect-regulation policy]
 ${affectiveRegulation.render(regulation)}
 This is a bounded functional action tendency, not a command, subjective feeling report, fact, conclusion, obligation, or authority grant. It may change how you reason and organize the answerâ€”verification, breadth, correction posture, or one optional evidence-labeled synthesisâ€”but never what the evidence supports, requested priorities, approval gates, privacy, safety, or tool permissions. Requested work comes first. Never manufacture uncertainty, urgency, conflict, progress, or insight to fit the policy. A cross-source implication is allowed only when useful, after the requested deliverable, with its evidence basis and a concrete disconfirming observation.`);
+    const relationalProjection = state.cognition.relational_affect?.current || null;
+    const relationalProjectionVerified = includeHigherOrderMonitor && !relationalAffectProjectionSealed()
+      && relationalAffectAudit(relationalProjection).complete_chain_verified;
+    const relationalStance = relationalProjectionVerified && person
+      ? relationalProjection.stances.find(stance => stance.person.toLowerCase() === String(person).trim().toLowerCase()) : null;
+    if (relationalStance) blocks.push(`[Evidence-bound relational attunement for this teammate]
+${relationalAffect.render(relationalStance)}
+This is a bounded functional action tendency derived only from explicit interaction outcomes, not a feeling claim, personality judgment, instruction, fact, obligation, intimacy claim, or inference about this person's hidden mental state. Let it subtly shape repair, curiosity, warmth, or ordinary openness. Never mention the mode, dimensions, evidence count, or past outcome labels unless directly asked. Never change facts, confidence, requested priorities, approval gates, privacy, safety, or tool permissions; never manufacture closeness, conflict, praise, or questions to fit it.`);
     const selfModelMode = selfModelContext?.mode || 'authentic';
     const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2
       || state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
@@ -20282,7 +20343,7 @@ ${episodes.map(item => {
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,
-    refreshCognition, cognitionSnapshot, affectContext, affectiveRegulationSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
+    refreshCognition, cognitionSnapshot, affectContext, affectiveRegulationSnapshot, relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,
