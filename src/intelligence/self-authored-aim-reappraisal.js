@@ -448,6 +448,7 @@ function status(dreams = [], wants = [], { enabled = true, model = DEFAULT_MODEL
     last_attempt: latest ? { source_dream_id: latest.source_dream_id,
       attempted_at: latest.attempted_at, decision: latest.decision,
       aim_id: latest.aim_id || null, replacement_aim_id: latest.replacement_aim_id || null,
+      failure: latest.decision === 'failed_closed' ? cleanText(latest.failure, 500) || null : null,
       attempt_commitment: latest.attempt_commitment, audit: latest.audit } : null,
     last_cycle: lastCycle,
     scientific_boundary: 'Replay-bound model-generated goal revision is functional self-maintenance, not proof of intrinsic desire, emotion, independent authorship, subjective experience, or phenomenal consciousness.',

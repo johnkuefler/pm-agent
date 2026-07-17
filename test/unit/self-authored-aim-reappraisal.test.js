@@ -180,6 +180,16 @@ test('abstention discards non-operative structured-output filler', () => {
   });
 });
 
+test('research status exposes the bounded reason for a replay-verified failed-closed attempt', async () => {
+  const f = fixture();
+  const run = await reappraisal.runCycle({ ...f, memories: memories(), now: NOW,
+    callProvider: async () => { throw new Error('diagnostic provider failure'); } });
+  assert.equal(run.state, 'failed_closed');
+  const report = reappraisal.status(f.dreams(), f.wants(), { now: NOW });
+  assert.equal(report.last_attempt.failure, 'diagnostic provider failure');
+  assert.equal(report.last_attempt.audit.complete_chain_verified, true);
+});
+
 test('a committed revision recovers after want persistence fails without another provider call', async () => {
   const f = fixture();
   const packet = reappraisal.packetFor({ memories: memories(), sourceDream: f.dreams()[0],
