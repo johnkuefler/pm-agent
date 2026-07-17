@@ -1349,6 +1349,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const situationalAffordanceContext = contextAssignment?.intervention === 'situational_affordance_access'
     ? intelligence.situationalAffordanceContextForAssignment(contextAssignment)
     : (opts.situationalAffordanceFrame ? { mode: 'authentic_runtime', frame: opts.situationalAffordanceFrame } : null);
+  const taskCapabilityBoundaryContext = intelligence.capabilityBoundaryContext(
+    trialConversationText, opts.situationalAffordanceFrame || null);
   const endogenousAttentionSelectionContext = intelligence.endogenousAttentionContextForAssignment(contextAssignment);
 
   // Swap channel-specific framing
@@ -1511,6 +1513,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     empiricalSelfContext,
     actionAuthorshipContext,
     situationalAffordanceContext,
+    capabilityBoundaryContext: taskCapabilityBoundaryContext,
     includeIntegratedSelf: contextAssignment?.intervention !== 'integrated_self_binding',
     includeDevelopment: contextAssignment?.intervention !== 'developmental_revision_access',
     includeCognitivePulses: !contextAssignment,
@@ -7947,6 +7950,8 @@ function logInteraction(entry) {
 registerInteractionRoutes(app, {
   requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT,
   onOutcome: interaction => {
+    try { intelligence.syncCapabilityBoundaryOutcomes([interaction]); }
+    catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
     if (interaction.prospective_output_monitor_id) {
       try {
         intelligence.resolveProspectiveOutputMonitorOutcome(interaction.prospective_output_monitor_id, {
@@ -8024,6 +8029,14 @@ registerDreamRoutes(app, {
     runDreamReflectionLifecycleWithPriorityRuntime()
       .catch(error => console.error('Dream reflection lifecycle failed:', error.message));
   },
+});
+
+app.get('/capability-boundaries', requireAuth, (req, res) => {
+  res.json(intelligence.capabilityBoundarySnapshot({ includeRecords: req.query.include_records === 'true' }));
+});
+app.post('/capability-boundaries/sync', requireAuth, (_req, res) => {
+  try { res.json({ ok: true, result: intelligence.syncCapabilityBoundaryOutcomes(loadInteractions()) }); }
+  catch (error) { res.status(409).json({ error: error.message }); }
 });
 
 // Detect if Nora's reply is asking clarifying questions rather than confirming an action

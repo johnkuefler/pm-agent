@@ -21,7 +21,7 @@ You are executing an hourly operations loop for Nora, LimeLight Marketing's AI p
 
 ## API Authentication
 
-Nora's API requires authentication. This authenticated harness response receives its credential from the server at request time. Append `?key={{NORA_API_KEY}}` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/markers`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/interactions`, `/run-lock`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), append `&key={{NORA_API_KEY}}` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
+Nora's API requires authentication. This authenticated harness response receives its credential from the server at request time. Append `?key={{NORA_API_KEY}}` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/markers`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/interactions`, `/capability-boundaries`, `/run-lock`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), append `&key={{NORA_API_KEY}}` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
 
 ## LimeLight Agentic Corpus access
 

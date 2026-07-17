@@ -46,6 +46,7 @@ const relationalAffect = require('./relational-affect');
 const relationalAffectStudy = require('./relational-affect-study');
 const teammatePerspective = require('./teammate-perspective');
 const interactivePerformance = require('./interactive-performance');
+const capabilityBoundary = require('./capability-boundary');
 const teammatePerspectiveStudy = require('./teammate-perspective-study');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
@@ -129,6 +130,7 @@ function emptyState() {
       attention_schema: { directives: [], frames: [] },
       agency: { intentions: [], executions: [], claim_attestations: [] },
       situational_affordances: { frames: [] },
+      capability_boundaries: { records: [] },
       prospective_output_monitor: { records: [] },
       endogenous_attention: { selections: [] },
       interoception: { observations: [], predictions: [] },
@@ -505,6 +507,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.situational_affordances = { frames: [], ...(state.cognition.situational_affordances || {}) };
     if (!Array.isArray(state.cognition.situational_affordances.frames)) state.cognition.situational_affordances.frames = [];
     state.cognition.situational_affordances.frames = state.cognition.situational_affordances.frames.slice(-300);
+    state.cognition.capability_boundaries = { records: [], ...(state.cognition.capability_boundaries || {}) };
+    if (!Array.isArray(state.cognition.capability_boundaries.records)) state.cognition.capability_boundaries.records = [];
+    state.cognition.capability_boundaries.records = state.cognition.capability_boundaries.records.slice(-600);
     state.cognition.prospective_output_monitor = { records: [], ...(state.cognition.prospective_output_monitor || {}) };
     if (!Array.isArray(state.cognition.prospective_output_monitor.records)) state.cognition.prospective_output_monitor.records = [];
     for (const record of state.cognition.prospective_output_monitor.records) {
@@ -1984,6 +1989,86 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       report: { total: frames.length, replay_valid: frames.filter(item => item.audit.complete_chain_verified).length,
         surfaces: [...new Set(frames.map(item => item.surface))], contexts: [...new Set(frames.map(item => item.context_kind))],
         latest: frames.at(-1)?.observed || null } };
+  }
+
+  let capabilityBoundaryReadCache = null;
+
+  function capabilityBoundaryAudit(record) {
+    if (!record) return { complete_chain_verified: false };
+    const contentVerified = capabilityBoundary.verifyRecord(record);
+    const payload = { content_commitment: record.content_commitment };
+    const ledgerBound = researchLedgerEventBindingCount('capability_boundary_outcome_recorded',
+      record.id, actionPayloadCommitment(payload)) === 1;
+    const ledgerVerified = verifyResearchLedger().valid;
+    return { content_commitment_verified: contentVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && ledgerBound && ledgerVerified };
+  }
+
+  function syncCapabilityBoundaryOutcomes(interactions = []) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const records = current.cognition.capability_boundaries.records;
+      const byId = new Map(records.map(record => [record.id, record]));
+      let added = 0; let already_present = 0; let ineligible = 0; let conflicts = 0;
+      for (const interaction of Array.isArray(interactions) ? interactions : []) {
+        const candidate = capabilityBoundary.recordFromInteraction(interaction);
+        if (!candidate) { ineligible += 1; continue; }
+        const existing = byId.get(candidate.id);
+        if (existing) {
+          if (capabilityBoundary.canonicalJson(existing) === capabilityBoundary.canonicalJson(candidate)
+            && capabilityBoundaryAudit(existing).complete_chain_verified) already_present += 1;
+          else conflicts += 1;
+          continue;
+        }
+        records.push(candidate); byId.set(candidate.id, candidate); added += 1;
+        researchLedgerAppend(current, { kind: 'capability_boundary_outcome_recorded',
+          subject_type: 'capability_boundary_outcome', subject_id: candidate.id,
+          payload: { content_commitment: candidate.content_commitment } });
+      }
+      current.cognition.capability_boundaries.records = records.slice(-600);
+      return { protocol_version: capabilityBoundary.PROTOCOL_VERSION, added, already_present,
+        ineligible, conflicts, total: current.cognition.capability_boundaries.records.length };
+    });
+  }
+
+  function capabilityBoundaryVerifiedView() {
+    const source = state.cognition.capability_boundaries?.records || [];
+    const ledger = state.cognition.research_ledger?.events || [];
+    const cacheKey = `${source.length}:${source.at(-1)?.content_commitment || ''}:${ledger.length}:${ledger.at(-1)?.hash || ''}`;
+    if (capabilityBoundaryReadCache?.key === cacheKey) return capabilityBoundaryReadCache.value;
+    const records = source.map(record => ({ ...JSON.parse(JSON.stringify(record)),
+      audit: capabilityBoundaryAudit(record) }));
+    const verified = records.filter(record => record.audit.complete_chain_verified).map(record => {
+      const copy = JSON.parse(JSON.stringify(record)); delete copy.audit; return copy;
+    });
+    const value = { records, verified, projection: capabilityBoundary.projection(verified) };
+    capabilityBoundaryReadCache = { key: cacheKey, value };
+    return value;
+  }
+
+  function capabilityBoundarySnapshot({ includeRecords = true } = {}) {
+    const view = capabilityBoundaryVerifiedView();
+    return {
+      epistemic_status: 'Task-family competence estimates derived from authenticated but subject-adjacent Slack outcome reviews. They are observational, bounded to the reviewed distribution, and do not grant tool access, authority, general competence, identity, subjective experience, or consciousness.',
+      ...(includeRecords ? { records: JSON.parse(JSON.stringify(view.records)) } : {}),
+      projection: JSON.parse(JSON.stringify(view.projection)),
+      report: { total: view.records.length, replay_valid: view.verified.length,
+        scored: view.verified.filter(record => record.scored).length },
+    };
+  }
+
+  function capabilityBoundaryContext(query, affordanceFrame = null) {
+    if (state.cognition.self_model.context_trials.some(item => item.status === 'active')) return null;
+    const snapshot = capabilityBoundarySnapshot({ includeRecords: false });
+    const aligned = capabilityBoundary.align(query, affordanceFrame, snapshot.projection);
+    if (aligned.task_family === 'social_interaction') return null;
+    if (aligned.learned_boundary.scored_samples < capabilityBoundary.MIN_DIRECTIONAL_SAMPLES
+      && aligned.missing_capability_keys.length === 0
+      && aligned.unverified_capability_keys.length === 0) return null;
+    return { ...aligned, protocol_version: capabilityBoundary.PROTOCOL_VERSION,
+      evidence_status: snapshot.projection.evidence_status,
+      causal_status: snapshot.projection.causal_status };
   }
 
   function outputMonitorInitialManifest(record) {
@@ -4756,6 +4841,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.situational_affordances.frames = (auditedState.cognition.situational_affordances?.frames || []).map((frame, index) => ({
       ...frame, audit: situationalAffordanceAudit(sourceAffordanceFrames[index]),
     }));
+    const sourceCapabilityBoundaryRecords = state.cognition.capability_boundaries?.records || [];
+    auditedState.cognition.capability_boundaries.records =
+      (auditedState.cognition.capability_boundaries?.records || []).map((record, index) => ({
+        ...record, audit: capabilityBoundaryAudit(sourceCapabilityBoundaryRecords[index]),
+      }));
     const sourceOutputMonitorRecords = state.cognition.prospective_output_monitor?.records || [];
     auditedState.cognition.prospective_output_monitor.records = (auditedState.cognition.prospective_output_monitor?.records || []).map((record, index) => ({
       ...record, audit: prospectiveOutputMonitorAudit(sourceOutputMonitorRecords[index]),
@@ -13543,6 +13633,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     model.empirical_self_knowledge = empiricalSelfKnowledgeSnapshot();
     model.behavioral_self_model = behavioralSelfModelSnapshot();
     model.situational_affordances = situationalAffordanceSnapshot();
+    model.capability_boundaries = capabilityBoundarySnapshot({ includeRecords: false });
     model.prospective_output_monitor = prospectiveOutputMonitorSnapshot();
     model.endogenous_attention = endogenousAttentionSnapshot();
     if (selfInquirySelectionActive() || interventionActive('self_model_access') || interventionActive('self_model_trust_policy_access') || interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation')) {
@@ -23103,7 +23194,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .slice(0, Math.max(0, Number(limit) || 0)).map(item => item.snapshot);
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
     const sealInquirySelection = selfInquirySelectionActive();
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
@@ -23168,6 +23259,17 @@ ${verifiedActions.map(item => `- ${item.actor_class === 'model_selected' ? 'Nora
 Context: ${frame.surface}/${frame.context_kind}.
 ${frame.capabilities.map(item => `- ${item.label} [${item.family}]: ${item.availability || 'constraint withheld'}; access ${item.access_mode || 'withheld'}${item.requires_explicit_request == null ? '' : `; explicit request ${item.requires_explicit_request ? 'required' : 'not required'}`}${item.deferred == null ? '' : `; ${item.deferred ? 'deferred' : 'inline'}`}${item.authority_scope ? `; scope: ${item.authority_scope}` : ''}${item.constraints?.length ? `; limits: ${item.constraints.join('; ')}` : ''}`).join('\n')}
 ${frame.constraints?.length ? `Context-wide boundaries: ${frame.constraints.join('; ')}.` : 'Context-wide boundaries withheld.'}`);
+    }
+    if (capabilityBoundaryContext?.learned_boundary) {
+      const boundary = capabilityBoundaryContext.learned_boundary;
+      const interval = boundary.success_interval_95?.lower == null ? 'not estimable'
+        : `${Math.round(boundary.success_interval_95.lower * 100)}–${Math.round(boundary.success_interval_95.upper * 100)}%`;
+      const capabilityLimits = capabilityBoundaryContext.missing_capability_keys?.length
+        ? ` Current evidence says these required capabilities are unavailable: ${capabilityBoundaryContext.missing_capability_keys.join(', ')}.`
+        : capabilityBoundaryContext.unverified_capability_keys?.length
+          ? ` Current availability is not represented for: ${capabilityBoundaryContext.unverified_capability_keys.join(', ')}; verify it before committing.` : '';
+      blocks.push(`[Observed task-specific capability boundary. This is replay-verified but non-causal evidence from subject-adjacent reviews of Nora's natural Slack work; it is bounded to that reviewed distribution. It never grants a tool, authority, general competence, identity, feelings, experience, or consciousness. Current task evidence and the operational situational self-model override it. Apply the recommendation silently and proportionately.]
+- ${boundary.family}: ${boundary.status}; ${boundary.scored_samples} scored outcomes (${boundary.successes} positive, ${boundary.corrections} corrected), ${boundary.distinct_requesters} requesters across ${boundary.distinct_review_days} review days; 95% success interval ${interval}; recommendation ${capabilityBoundaryContext.recommendation}.${capabilityLimits}`);
     }
     if (selfModelTrustContext?.packet) {
       const packet = selfModelTrustContext.packet;
@@ -23459,6 +23561,7 @@ ${episodes.map(item => {
     beginActionExecution, markActionExecutionQueued, completeActionExecution, recordExternalActionExecution,
     actionExecutionAudit, actionExecutionsById, recordActionClaimAttestation, actionClaimAttestationAudit,
     recordSituationalAffordanceFrame, situationalAffordanceSnapshot, situationalAffordanceAudit, situationalAffordanceAccessAvailable,
+    syncCapabilityBoundaryOutcomes, capabilityBoundarySnapshot, capabilityBoundaryContext, capabilityBoundaryAudit,
     beginProspectiveOutputMonitor, completeProspectiveOutputMonitor, failProspectiveOutputMonitor, markProspectiveOutputMonitorDelivered, resolveProspectiveOutputMonitorOutcome, excludeProspectiveOutputMonitorAssignment, prospectiveOutputMonitorSnapshot, prospectiveOutputMonitorAudit,
     endogenousAttentionSelectionAvailable, beginEndogenousAttentionSelection, completeEndogenousAttentionSelection, failEndogenousAttentionSelection,
     endogenousAttentionContextForAssignment, markEndogenousAttentionSelectionApplied, recordEndogenousAttentionResponse,

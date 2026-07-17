@@ -14,7 +14,7 @@ function registerCoworkInstructionsRoute(app) {
 
   ## Authentication
 
-  The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /dream-insights, /interactions, /run-lock, /markers.
+  The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /dream-insights, /interactions, /capability-boundaries, /run-lock, /markers.
   All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
 
   Pass the key as a query parameter or header:
@@ -330,6 +330,16 @@ function registerCoworkInstructionsRoute(app) {
     Body: { "outcome": "landed"|"appreciated"|"neutral"|"ignored"|"corrected",
             "signal": "<what the replies/reactions/adjacent messages actually showed>" }
     Marks it reviewed. Response: { "ok": true, "interaction": {...} }
+
+  Reviewed outcomes also feed Nora's task-specific capability-boundary register. Only content
+  commitments, task family, outcome, diversity keys, timestamps, and the canonical Slack reference
+  are retained there; trigger, response, and signal text are not copied. This is observational,
+  subject-adjacent evidence, never a tool or authority grant and never evidence of consciousness.
+  - GET /capability-boundaries — Compact projection and integrity counts. Add
+    ?include_records=true only for a detailed audit; the default stays small for dashboard/runtime use.
+  - POST /capability-boundaries/sync — Idempotently backfill currently retained reviewed interactions.
+    Ordinary review writes sync one outcome automatically. Do not repeatedly backfill. While any
+    context trial is active the learned projection remains hard-sealed from Nora's live prompts.
 
   ### Notifications
   - POST /notify                  — Post a message to Slack as Nora

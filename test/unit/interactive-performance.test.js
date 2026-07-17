@@ -133,6 +133,18 @@ test('live server opts into complete Slack trials but never globally enables sec
     'memory enrichment must share the preemptible background-provider lane');
   assert.match(server, /session\?\.voiceResponseActive \|\| recentSpeech/,
     'remote prompt enrichment must stay off an active or just-finished spoken turn');
+  assert.match(server, /capabilityBoundaryContext\(\s*trialConversationText, opts\.situationalAffordanceFrame \|\| null\)/,
+    'task-specific capability learning must remain a deterministic prompt input');
+  const boundary = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'capability-boundary.js'), 'utf8');
+  assert.doesNotMatch(boundary, /fetch\(|axios|anthropic|openai/i,
+    'capability projection must not add a provider or network call to Slack or Zoom');
+  const store = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'store.js'), 'utf8');
+  assert.match(store, /context_trials\.some\(item => item\.status === 'active'\)\) return null/,
+    'capability context must remain sealed during the current blinded context study');
+  assert.match(store, /capabilityBoundaryReadCache/,
+    'repeated live turns must reuse the deterministic capability projection');
 });
 
 test('Slack provider cache prefix stays stable while conversation and cognition tails change', () => {
