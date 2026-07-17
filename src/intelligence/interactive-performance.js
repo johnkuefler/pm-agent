@@ -1,6 +1,6 @@
 'use strict';
 
-const PROTOCOL_VERSION = 5;
+const PROTOCOL_VERSION = 6;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
@@ -38,7 +38,7 @@ const INLINE_LATENCY_TAXED_INTERVENTIONS = new Set([
 const protocol = Object.freeze({
   protocol_version: PROTOCOL_VERSION,
   prediction: 'Human-facing cognition can stay within channel-specific first-delivery and prompt-size budgets when extra provider-round research is excluded from interactive paths and background inference yields to live work.',
-  intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, preempt background provider inference and CPU-heavy research snapshot workers, and hold those background lanes through a short post-interaction quiet window.',
+  intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, abort timed-out semantic retrieval, preempt background provider inference including memory embedding backfill, suppress remote prompt refresh during active or just-finished speech, and hold background lanes through a short post-interaction quiet window.',
   controls: 'Scheduled research retains the quarantined interventions through one serialized, preemptible provider lane; ordinary live tool use remains available when the requested work itself requires it.',
   outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger, with the exact live prompt character count and bounded stage timings attached to the same receipt.',
   minimum_samples_per_surface: 20,

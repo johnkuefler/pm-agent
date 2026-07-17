@@ -228,13 +228,20 @@ function toVectorLiteral(arr) {
 
 // Embed text via OpenAI. Returns number[] or null (no key / failure — caller degrades
 // gracefully to keyword search). Never throws.
-async function embed(text) {
+async function embed(text, { signal = null, timeoutMs = 2500 } = {}) {
   const key = process.env.OPENAI_API_KEY;
   if (!key || !text) return null;
   // Hard timeout: embed() sits in the Slack/Zoom reply path, so a slow/hung embeddings
   // endpoint must lose fast (recall degrades to []) rather than stall the reply.
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 2500);
+  let timedOut = false;
+  const abortFromCaller = () => ctl.abort(signal?.reason);
+  if (signal?.aborted) abortFromCaller();
+  else signal?.addEventListener?.('abort', abortFromCaller, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    ctl.abort();
+  }, Math.max(1, Number(timeoutMs) || 2500));
   try {
     const res = await fetch('https://api.openai.com/v1/embeddings', {
       method: 'POST',
@@ -247,14 +254,18 @@ async function embed(text) {
     const v = j && j.data && j.data[0] && j.data[0].embedding;
     return Array.isArray(v) && v.length === EMBED_DIM ? v : null;
   } catch (e) {
-    if (e?.name === 'AbortError') {
+    if (ctl.signal.aborted) {
+      if (!timedOut) return null;
       console.log('Embedding lookup timed out; continuing without semantic-memory recall');
     } else {
       console.warn('embed error:', e.message);
     }
     return null;
   }
-  finally { clearTimeout(timer); }
+  finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abortFromCaller);
+  }
 }
 
 // ── memory ─────────────────────────────────────────────────────────────────────

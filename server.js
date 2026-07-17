@@ -809,15 +809,24 @@ function startEmbeddingBackfiller() {
   if (_embedTimer) return;
   const tick = async () => {
     if (!_dbReady) return;
+    // Embedding new memories is useful, but it is never more important than a human waiting on
+    // Slack or talking to Nora in a meeting. Share the same single background-provider lane as
+    // reflection/research, and pass its abort signal to fetch so live work can stop an in-flight
+    // embedding instead of merely waiting for its private timeout.
+    const priorityLease = interactivePerformance.beginBackground('memory-embedding-backfill');
+    if (!priorityLease.allowed) return;
     try {
       const need = await db.memoryNeedingEmbedding(16);
       let filled = 0;
       for (const row of need) {
-        const vec = await db.embed(row.fact);
+        if (priorityLease.signal.aborted) break;
+        const vec = await db.embed(row.fact, { signal: priorityLease.signal });
+        if (priorityLease.signal.aborted) break;
         if (vec) { await db.setMemoryEmbedding(row.id, vec); filled++; }
       }
       if (filled) console.log(`🧠 Embedded ${filled} memory rows for semantic recall`);
     } catch (e) { console.warn('embed backfill:', e.message); }
+    finally { priorityLease.release(); }
   };
   _embedTimer = setInterval(tick, 20000);
   setTimeout(tick, 4000); // first pass shortly after boot
@@ -1935,10 +1944,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 // cached prompt prefix. Excludes opinions/learnings (those have their own blocks) and any
 // straggler operational markers. Returns [] when the DB is off or no rows are embedded yet, so
 // every caller degrades cleanly to the existing keyword project-focus.
-async function retrieveSemanticMemories(queryText, limit = 8) {
+async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } = {}) {
   if (!_dbReady || !queryText || !queryText.trim()) return [];
   try {
-    const vec = await db.embed(queryText.slice(0, 2000));
+    const vec = await db.embed(queryText.slice(0, 2000), { signal });
     if (!vec) return [];
     // Fetch a wider band, then re-rank with memory dynamics: similarity is the base signal,
     // salience (how hot the memory encoded) and recall history (retrieval strengthening) tip
@@ -2002,8 +2011,16 @@ async function realtimePromptWithRecall(session) {
   if (session && session.dummy) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
+  // A prompt refresh supports the call; it must not compete with the spoken turn. Recall's new
+  // transcript line typically lands immediately before the realtime model needs to answer, so
+  // refresh names and local context synchronously, then wait for a quiet interval before making
+  // the optional remote embedding request.
+  const recentSpeech = session?.lastRecallLineAt
+    && (Date.now() - session.lastRecallLineAt) < 15000;
+  if (session?.voiceResponseActive || recentSpeech) return realtimePromptForSession(session);
   const q = (session?.transcript || []).slice(-14).map(t => t.text || '').join(' ');
-  const semanticMemories = await settleWithin(retrieveSemanticMemories(q), 1200, [],
+  const semanticMemories = await settleWithinAbortable(
+    signal => retrieveSemanticMemories(q, 8, { signal }), 1200, [],
     'realtime semantic recall');
   return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories, trialUnitKey: session?.trialUnitKey });
 }
@@ -3408,7 +3425,8 @@ app.post('/webhook/chat', async (req, res) => {
     const zoomLightweightSocial = isLightweightSocialSlackMessage(query);
     const zoomRecallStartedAt = Date.now();
     const zoomSemanticMemories = zoomLightweightSocial ? []
-      : await settleWithin(retrieveSemanticMemories(zoomConv), 900, [], 'Zoom-chat semantic recall');
+      : await settleWithinAbortable(signal => retrieveSemanticMemories(zoomConv, 8, { signal }),
+        900, [], 'Zoom-chat semantic recall');
     const zoomRecallFinishedAt = Date.now();
     const zoomAttachLiveTools = !zoomLightweightSocial;
     const zoomMcp = zoomAttachLiveTools
@@ -3750,6 +3768,29 @@ async function settleWithin(promise, timeoutMs, fallback, label = 'optional look
   try {
     return await Promise.race([Promise.resolve(promise).catch(error => {
       console.warn(`${label} failed:`, error.message);
+      return fallback;
+    }), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Promise.race returns a fallback on time but normally leaves the losing request alive. On a live
+// reply that hidden tail can still occupy a socket or provider slot while the main model is trying
+// to answer. Optional network work uses this form so its latency budget also ends the request.
+async function settleWithinAbortable(operation, timeoutMs, fallback, label = 'optional lookup') {
+  const controller = new AbortController();
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => {
+      console.log(`${label} exceeded ${timeoutMs}ms; aborting and continuing on the latency-safe fallback`);
+      resolve(fallback);
+      controller.abort(new Error(`${label} exceeded latency budget`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve().then(() => operation(controller.signal)).catch(error => {
+      if (!controller.signal.aborted) console.warn(`${label} failed:`, error.message);
       return fallback;
     }), timeout]);
   } finally {
@@ -5957,7 +5998,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const lightweightSocial = isLightweightSocialSlackMessage(text);
     const recallStartedAt = Date.now();
     const semanticMemories = lightweightSocial
-      ? [] : await settleWithin(retrieveSemanticMemories(convText), 900, [],
+      ? [] : await settleWithinAbortable(
+        signal => retrieveSemanticMemories(convText, 8, { signal }), 900, [],
         'Slack semantic recall');
     latencyStages.recall_ms = Date.now() - recallStartedAt;
     const isDirect = mode !== 'proactive';
@@ -10445,6 +10487,7 @@ module.exports = {
     isLightweightSocialSlackMessage,
     slackResponseModel,
     settleWithin,
+    settleWithinAbortable,
     trySlackReaction,
     resetSlackReactionCapabilityForTest,
     parseNoraMuteCommand,

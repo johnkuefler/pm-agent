@@ -98,8 +98,8 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'slack'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'zoom-chat'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'realtime'/);
-  assert.match(server, /settleWithin\(retrieveSemanticMemories\(convText\), 900/,
-    'optional semantic recall must lose quickly to the live reply path');
+  assert.match(server, /settleWithinAbortable\(\s*signal => retrieveSemanticMemories\(convText, 8, \{ signal \}\), 900/,
+    'optional semantic recall must be aborted when it loses to the live reply path');
   assert.match(server, /Slack thread context'\)/,
     'optional Slack thread context must lose quickly to the live reply path');
   assert.match(server, /Slack linked-page enrichment'\)/,
@@ -129,6 +129,10 @@ test('live server opts into complete Slack trials but never globally enables sec
     'background intelligence must be serialized behind the foreground-priority lane');
   assert.match(server, /model: slackResponseModel\(query\)/,
     'typed Zoom chat must share the bounded fast-turn model policy');
+  assert.match(server, /beginBackground\('memory-embedding-backfill'\)/,
+    'memory enrichment must share the preemptible background-provider lane');
+  assert.match(server, /session\?\.voiceResponseActive \|\| recentSpeech/,
+    'remote prompt enrichment must stay off an active or just-finished spoken turn');
 });
 
 test('Slack provider cache prefix stays stable while conversation and cognition tails change', () => {
@@ -168,6 +172,12 @@ test('Slack uses a fast Claude path only for bounded conversational turns', asyn
   assert.equal(__test.slackResponseModel('whatd you do today', 'proactive'), 'claude-opus-4-8');
   const fallback = await __test.settleWithin(new Promise(() => {}), 5, [], 'test lookup');
   assert.deepEqual(fallback, []);
+  let aborted = false;
+  const abortableFallback = await __test.settleWithinAbortable(signal => new Promise(resolve => {
+    signal.addEventListener('abort', () => { aborted = true; resolve(['late']); }, { once: true });
+  }), 5, [], 'abortable test lookup');
+  assert.deepEqual(abortableFallback, []);
+  assert.equal(aborted, true);
 });
 
 test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {
@@ -183,4 +193,29 @@ test('scheduled intelligence defers without touching providers while a person ha
   assert.equal(providerCalls, 0);
   foreground.release();
   performance.resetPriorityGateForTest();
+});
+
+test('embedding transport accepts foreground preemption instead of lingering to its private timeout', async () => {
+  const db = require('../../db');
+  const originalFetch = global.fetch;
+  const originalKey = process.env.OPENAI_API_KEY;
+  const controller = new AbortController();
+  let transportAborted = false;
+  process.env.OPENAI_API_KEY = 'test-key';
+  global.fetch = (_url, options) => new Promise((_resolve, reject) => {
+    options.signal.addEventListener('abort', () => {
+      transportAborted = true;
+      reject(options.signal.reason || new Error('aborted'));
+    }, { once: true });
+  });
+  try {
+    const pending = db.embed('background memory', { signal: controller.signal, timeoutMs: 1000 });
+    controller.abort(new Error('live Slack turn arrived'));
+    assert.equal(await pending, null);
+    assert.equal(transportAborted, true);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalKey;
+  }
 });
