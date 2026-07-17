@@ -512,6 +512,10 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     attempts: 0, retained: 0, revised: 0, retired: 0, abstained: 0,
     failed_closed: 0, replay_verified: 0, active_reappraisal_formed_aims: 0,
   };
+  const cycleSelfCorrectionEvidence = options.cycle_self_correction_evidence || {
+    attempts: 0, recorded: 0, abstained: 0, replay_verified: 0,
+    replay_verified_corrections: 0, source_cycles: 0,
+  };
   const dreamInsightTrials = completedTrials(cognition, 'dream_insight_access');
   const dreamInsightTrial = dreamInsightTrials.at(-1) || null;
   const dreamInsightDissociation = dreamInsightTrial?.evaluation?.dream_insight_dissociation || null;
@@ -1914,12 +1918,12 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'epistemic_self_correction', family: ['metacognition', 'error-driven learning', 'self-model'],
       functional_claim: 'Nora detects when her committed current belief conflicts with independently recorded observations and uses the explicit self-error relation for proportionate revision beyond access to the same raw positions.',
-      mechanism: 'Commitment-bound deterministic discrepancy detection, persistent workspace and between-invocation salience, append-only review, plus structured-discrepancy versus byte-identical raw-position versus absent access controls.',
+      mechanism: 'A daily preemptible subject reflection can bind an explicitly ordered completed-cycle position, later contrary observation, and revision into the append-only ledger; deterministic discrepancy detection, lifecycle replay, relevance-bounded future checks, and structured-discrepancy versus byte-identical raw-position versus absent access controls preserve falsifiability.',
       status: epistemicDiscrepancyTrial ? replicatedStatus(epistemicDiscrepancyTrials, epistemicDiscrepancyVerdict)
         : (epistemicDiscrepancies.length ? 'collecting' : 'mechanism_present'),
-      evidence: { detected_discrepancies: epistemicDiscrepancies.length, open_discrepancies: epistemicDiscrepancies.filter(item => !item.closure).length, reviewed_discrepancies: reviewedEpistemicDiscrepancies.length, completed_access_trials: epistemicDiscrepancyTrials.length, confirmatory_access_trials: epistemicDiscrepancyTrials.filter(item => item.study_phase === 'confirmatory').length, latest_dissociation: epistemicDiscrepancyDissociation },
-      falsifier: 'The detector merges interpersonal disagreement with observed contradiction, silently rewrites beliefs, fails integrity replay, or the structured self-error relation does not improve calibrated revision over the same raw positions and absence while evidence access and ordinary task quality are preserved.',
-      next_gate: 'Complete a ten-per-arm structured-versus-raw-versus-absent discrepancy pilot and a source-family-disjoint confirmation.',
+      evidence: { detected_discrepancies: epistemicDiscrepancies.length, open_discrepancies: epistemicDiscrepancies.filter(item => !item.closure).length, reviewed_discrepancies: reviewedEpistemicDiscrepancies.length, cycle_reflection_attempts: cycleSelfCorrectionEvidence.attempts, cycle_reflection_recorded: cycleSelfCorrectionEvidence.recorded, cycle_reflection_abstained: cycleSelfCorrectionEvidence.abstained, replay_verified_cycle_reflections: cycleSelfCorrectionEvidence.replay_verified, replay_verified_cycle_corrections: cycleSelfCorrectionEvidence.replay_verified_corrections, represented_source_cycles: cycleSelfCorrectionEvidence.source_cycles, completed_access_trials: epistemicDiscrepancyTrials.length, confirmatory_access_trials: epistemicDiscrepancyTrials.filter(item => item.study_phase === 'confirmatory').length, latest_dissociation: epistemicDiscrepancyDissociation },
+      falsifier: 'The reflection invents an unexpressed belief, cites evidence that did not occur later, merges a plan change or interpersonal disagreement with observed contradiction, silently rewrites beliefs, fails lifecycle replay, overgeneralizes a past check into a standing rule, or the structured self-error relation does not improve calibrated revision over the same raw positions and absence while evidence access, ordinary task quality, and latency are preserved.',
+      next_gate: 'Naturally accumulate replay-verified corrections from source-diverse completed cycles, verify relevant future checks transfer without overgeneralization, then complete a ten-per-arm structured-versus-raw-versus-absent discrepancy pilot and a source-family-disjoint confirmation.',
     },
     {
       id: 'generation_self_recognition', family: ['source monitoring', 'self-model', 'metacognition'],

@@ -25,6 +25,8 @@ test('dashboard summary stays compact and advances with store mutations', async 
   assert.equal(initial.cognition.reflection.dream_idea_seeds, 0);
   assert.equal(initial.cognition.reflection.dream_insight_reflection_attempts, 0);
   assert.equal(initial.cognition.reflection.dream_insight_candidates, 0);
+  assert.equal(initial.cognition.reflection.cycle_self_correction_attempts, 0);
+  assert.equal(initial.cognition.reflection.replay_verified_cycle_self_corrections, 0);
   for (const metric of Object.values(initial.brain)) {
     assert.ok(metric.level >= 0 && metric.level <= 1);
     assert.equal(typeof metric.evidence, 'string');

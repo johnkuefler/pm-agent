@@ -21,13 +21,15 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'reflection', label: 'Reflection', layer: 'focused', x: .29, y: .28,
-    description: 'Evidence-backed surprises, questions, professional viewpoints, and recurring work insights Nora can retain, test, revise, or retire as evidence changes.',
+    description: 'Evidence-backed surprises, questions, corrected judgments, professional viewpoints, and recurring work insights Nora can retain, test, revise, or retire as evidence changes.',
     links: ['attention', 'self-model', 'learning', 'background'],
     read: state => {
       const cognition = state.cognition || {};
       const pulse = cognition.background_inference?.report || {};
-      const count = (cognition.surprises || []).length + (cognition.mind_changes || []).length + (pulse.unresolved || 0);
-      return activity(scaleCount(count, 8), `${count} reflective signal${count === 1 ? '' : 's'} available`, count > 0);
+      const corrections = cognition.epistemic_self_correction_reflection?.report?.replay_verified_corrections || 0;
+      const count = (cognition.surprises || []).length + (cognition.mind_changes || []).length
+        + (pulse.unresolved || 0) + corrections;
+      return activity(scaleCount(count, 8), `${count} reflective signal${count === 1 ? '' : 's'} available; ${corrections} replay-verified cycle self-corrections`, count > 0);
     },
   },
   {

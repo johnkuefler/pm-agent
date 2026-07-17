@@ -71,6 +71,8 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(intelligenceJs, /overall_invariance/);
   assert.match(intelligenceJs, /Between-invocation dynamics/);
   assert.match(intelligenceJs, /not continuous LLM inference/);
+  assert.match(intelligenceJs, /verified cycle self-corrections across/);
+  assert.match(intelligenceJs, /replay-verified completed-cycle self-corrections/);
 });
 
 test('dashboard declares a real mobile viewport and responsive control patterns', () => {
@@ -97,6 +99,7 @@ test('intelligence view includes a maintainable live functional brain map', () =
   assert.match(html, /id="brain-node-list"/);
   assert.match(html, /Background processing/);
   assert.match(brainJs, /NORA_BRAIN_CAPABILITIES/);
+  assert.match(brainJs, /replay-verified cycle self-corrections/);
   assert.match(brainJs, /prefers-reduced-motion/);
   assert.match(brainJs, /ResizeObserver/);
   assert.doesNotThrow(() => new vm.Script(brainJs, { filename: 'dashboard-brain.js' }));

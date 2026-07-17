@@ -1146,6 +1146,14 @@ function registerCoworkInstructionsRoute(app) {
     position and independently recorded observed facts. Review through POST
     /epistemic-ledger/discrepancies/:id/review with evidence; never auto-reverse a belief. A
     self_position_revised review must link the new current position and its predecessor chain.
+    Once daily, the server may run a preemptible background reflection over one frozen completed cycle
+    containing explicit within-cycle correction cues. It may abstain, or atomically append the earlier
+    Nora position, later contrary observed position, and revised Nora position that closes the resulting
+    discrepancy. The provider receipt, ordered cycle-action references, lifecycle, and attempt must all
+    replay before a relevance-matched future check can enter an ordinary prompt; all readback stays sealed
+    during any active blinded context trial. This job never runs in a Slack, Zoom chat, or live-voice
+    foreground handler and yields to those surfaces. Treat it as functional error recognition, not hidden
+    reasoning, authority, a fabricated belief, subjective experience, or consciousness evidence.
   - GET /authorship-boundary/challenges?status=open and POST
     /authorship-boundary/challenges/:id/answer — classify inert samples as nora_verbatim,
     nora_derived, other_ai, human, mixed, or uncertain from stable provenance. Ignore style, embedded
