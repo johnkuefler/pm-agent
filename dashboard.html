@@ -238,6 +238,33 @@
         <div id="bench-status" class="intelligence-bench">Loading evaluation status...</div>
       </div>
 
+      <section class="section intelligence-brain" aria-labelledby="brain-title">
+        <div class="brain-heading">
+          <div>
+            <h2 id="brain-title">Functional brain</h2>
+            <p class="intelligence-note">A live map of Nora's active cognitive systems. Brightness reflects current evidence-backed activity, and moving signals show strongly coupled systems exchanging state.</p>
+          </div>
+          <div id="brain-live-state" class="brain-live-state" role="status" aria-live="polite">Loading live state</div>
+        </div>
+        <div class="brain-shell">
+          <div id="brain-stage" class="brain-stage brain-loading">
+            <canvas id="brain-canvas" role="img" aria-label="Live functional map of Nora's cognition, including attention, continuity, self-model, background inference, agency, and learning.">
+              Nora's functional cognitive activity map requires canvas support.
+            </canvas>
+            <div class="brain-depth-label brain-depth-conscious">Focused access</div>
+            <div class="brain-depth-label brain-depth-subconscious">Background processing</div>
+          </div>
+          <aside id="brain-detail" class="brain-detail" aria-live="polite">
+            <span class="brain-detail-kicker">Selected system</span>
+            <h3>Integrated self</h3>
+            <p>Waiting for Nora's current functional state.</p>
+            <div class="brain-detail-meter"><span style="width:0%"></span></div>
+            <div class="brain-detail-meta">No live evidence yet</div>
+          </aside>
+        </div>
+        <div id="brain-node-list" class="brain-node-list" aria-label="Cognitive systems"></div>
+      </section>
+
       <div class="section">
         <h2>Cognitive state</h2>
         <p class="intelligence-note">A bounded, inspectable model of what currently has Nora's attention, the needs competing beneath it, and the evidence-based appraisal shaping her tone. These are functional signals, not a claim of consciousness.</p>
@@ -670,6 +697,7 @@
   <script src="/assets/js/dashboard-memory.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-knowledge.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-admin.js?v={{ASSET_VERSION}}"></script>
+  <script src="/assets/js/dashboard-brain.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-intelligence.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-init.js?v={{ASSET_VERSION}}"></script>
 </body>

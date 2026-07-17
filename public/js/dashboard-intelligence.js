@@ -5,6 +5,7 @@ async function loadIntelligence() {
   ]);
   if (![summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes, cognitionRes, selfModelRes, experienceRes, handoffsRes, attentionRes, agencyRes, counterfactualAgencyRes, interoceptionRes, boundaryRes, sourceBoundaryRes, authorshipBoundaryRes, authorshipStudiesRes, researchRes, researchLedgerRes].every(response => response.ok)) {
     document.getElementById('intelligence-stats').innerHTML = '<div class="error">Could not load intelligence state.</div>';
+    renderNoraBrainError();
     return;
   }
   const [summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles, cognition, selfModel, experience, handoffs, attention, agency, counterfactualAgency, interoception, boundary, sourceBoundary, authorshipBoundary, authorshipStudies, research, researchLedger] = await Promise.all([
@@ -15,6 +16,11 @@ async function loadIntelligence() {
     ['Active experiments', summary.experiments.active], ['Experience moments', summary.experience_moments || 0], ['Decision traces', summary.traces],
   ].map(([label, value]) => `<div class="intelligence-stat"><strong>${value}</strong><span>${label}</span></div>`).join('');
   document.getElementById('bench-status').innerHTML = `<strong>Nora Bench: ${bench.passed}/${bench.total} passing</strong> &middot; meeting judgment, uncertainty, repair, and initiative policies`;
+  renderNoraBrain({
+    summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles,
+    cognition, selfModel, experience, handoffs, attention, agency, counterfactualAgency,
+    interoception, boundary, sourceBoundary, authorshipBoundary, authorshipStudies, research, researchLedger,
+  });
   renderCommitments(commitments);
   renderEpisodes(episodes);
   renderRelationships(relationships);

@@ -179,6 +179,35 @@
     .mcp-auth-fields[hidden]{display:none}
     .intelligence-card{padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;line-height:1.5}
     .intelligence-card:last-child{border-bottom:0}.intelligence-meta{font-size:11px;color:var(--dim);margin-top:3px}
+
+    /* Functional brain: a live data instrument, not a consciousness score. */
+    .intelligence-brain{grid-column:1/-1;overflow:hidden;background:radial-gradient(circle at 50% 42%,var(--accent-soft),transparent 42%),var(--surface)}
+    .brain-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:14px}
+    .brain-heading h2{margin-bottom:5px}
+    .brain-heading .intelligence-note{max-width:76ch;margin-bottom:0}
+    .brain-live-state{flex:0 0 auto;padding:6px 9px;border:1px solid var(--accent-line);border-radius:var(--radius-sm);background:var(--surface);color:var(--accent-ink);font-family:var(--mono);font-size:10px;font-variant-numeric:tabular-nums;white-space:nowrap}
+    .brain-shell{display:grid;grid-template-columns:minmax(0,1fr) 250px;min-height:460px;overflow:hidden;border:1px solid var(--border-strong);border-radius:var(--radius);background:color-mix(in srgb,var(--surface) 82%,transparent)}
+    .brain-stage{position:relative;min-width:0;min-height:460px;overflow:hidden;background:linear-gradient(180deg,color-mix(in srgb,var(--surface) 70%,transparent),color-mix(in srgb,var(--surface-2) 84%,transparent))}
+    .brain-stage::after{content:"";position:absolute;left:8%;right:8%;top:50%;border-top:1px solid color-mix(in srgb,var(--border) 68%,transparent);pointer-events:none}
+    .brain-stage canvas{display:block;width:100%;height:460px;position:relative;z-index:1}
+    .brain-stage.brain-loading canvas{opacity:.22}
+    .brain-stage.brain-loading::before{content:"Mapping Nora's current systems";position:absolute;z-index:2;inset:0;display:grid;place-items:center;color:var(--muted);font-size:12px}
+    .brain-stage.brain-error::before{content:"Live cognition is temporarily unavailable";position:absolute;z-index:2;inset:0;display:grid;place-items:center;color:var(--danger);font-size:12px}
+    .brain-depth-label{position:absolute;z-index:2;left:14px;color:var(--dim);font-family:var(--mono);font-size:9px;letter-spacing:.04em;pointer-events:none}
+    .brain-depth-conscious{top:12px}.brain-depth-subconscious{bottom:12px}
+    .brain-detail{display:flex;min-width:0;flex-direction:column;justify-content:center;padding:26px;border-left:1px solid var(--border);background:color-mix(in srgb,var(--surface) 92%,transparent)}
+    .brain-detail-kicker{color:var(--accent-ink);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:capitalize}
+    .brain-detail h3{margin-top:7px;font-size:22px;line-height:1.15;letter-spacing:-.03em}
+    .brain-detail p{margin-top:10px;color:var(--muted)!important;font-size:12px;line-height:1.65}
+    .brain-detail-meter{height:3px;margin-top:20px;overflow:hidden;background:var(--border)}
+    .brain-detail-meter span{display:block;height:100%;background:var(--accent);transition:width .32s ease}
+    .brain-detail-meta{margin-top:9px;color:var(--text-2);font-family:var(--mono);font-size:10px;line-height:1.55}
+    .brain-node-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:7px;margin-top:10px}
+    .brain-node-key{min-width:0;padding:8px 9px;border:1px solid transparent;border-radius:var(--radius-sm);background:transparent;color:var(--muted);cursor:pointer;text-align:left;transition:background .14s,border-color .14s,color .14s}
+    .brain-node-key:hover{background:var(--surface-2);color:var(--text)}
+    .brain-node-key.selected{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-ink)}
+    .brain-node-key-name,.brain-node-key-value{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .brain-node-key-name{font-size:11px;font-weight:680}.brain-node-key-value{margin-top:2px;font-family:var(--mono);font-size:9px;color:var(--dim)}
     #page-self.active{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
     #page-self>.section{margin:0}
     #page-self>.section:nth-child(3),#page-self>.section:nth-child(4),#page-self>.section:nth-child(5){grid-column:1/-1}
@@ -224,6 +253,8 @@
       .content-head{align-items:flex-start;flex-wrap:wrap;margin-bottom:18px}.content-head-copy{flex:1 1 220px}.content-head h1{font-size:27px}.content-head .subtitle{font-size:12px}
       .content-actions .utility-btn:first-child{display:none}
       .section{padding:18px}.section h2[style]{align-items:flex-start!important;gap:10px}
+      .brain-shell{grid-template-columns:minmax(0,1fr)}
+      .brain-detail{min-height:180px;border-top:1px solid var(--border);border-left:0}
       #page-meeting.active,#page-tasks.active,#page-memory.active,#page-admin.active,#page-self.active,#page-intelligence.active{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
     }
     @media(max-width:600px){
@@ -252,6 +283,10 @@
       .toggle-pill{width:100%;min-height:44px;justify-content:flex-start}
       .intelligence-stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
       .intelligence-stat{padding:10px}.intelligence-stat strong{font-size:20px}
+      .brain-heading{display:block}.brain-live-state{display:inline-block;margin-top:9px}
+      .brain-stage,.brain-stage canvas{height:360px;min-height:360px}
+      .brain-detail{min-height:0;padding:20px}.brain-detail h3{font-size:19px}
+      .brain-node-list{grid-template-columns:repeat(2,minmax(0,1fr))}
       .mcp-auth-fields{padding:10px;margin-left:0;margin-right:0}
       .page.active div[style*="display: flex"],.page.active div[style*="display:flex"],.page.active span[style*="display: flex"],.page.active span[style*="display:flex"]{min-width:0;max-width:100%;flex-wrap:wrap}
       .page.active div[style*="display: flex"]>input:not([type="checkbox"]),.page.active div[style*="display:flex"]>input:not([type="checkbox"]),.page.active div[style*="display: flex"]>select,.page.active div[style*="display:flex"]>select{flex:1 1 220px!important;width:100%!important;min-width:0!important}

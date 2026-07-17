@@ -31,6 +31,7 @@ test('dashboard presentation and behavior live in focused external assets', () =
     '/assets/js/dashboard-memory.js',
     '/assets/js/dashboard-knowledge.js',
     '/assets/js/dashboard-admin.js',
+    '/assets/js/dashboard-brain.js',
     '/assets/js/dashboard-intelligence.js',
     '/assets/js/dashboard-init.js',
   ]);
@@ -88,4 +89,29 @@ test('memory editor passes stable ids as strings and dashboard assets are deploy
   assert.match(memoryJs, /saveMemoryEdit\(this\.dataset\.memoryKey\)/);
   assert.match(html, /dashboard-core\.js\?v=\{\{ASSET_VERSION\}\}/);
   assert.match(html, /dashboard-memory\.js\?v=\{\{ASSET_VERSION\}\}/);
+});
+
+test('intelligence view includes a maintainable live functional brain map', () => {
+  const brainJs = fs.readFileSync(path.join(root, 'public/js/dashboard-brain.js'), 'utf8');
+  assert.match(html, /id="brain-canvas"/);
+  assert.match(html, /id="brain-node-list"/);
+  assert.match(html, /Background processing/);
+  assert.match(brainJs, /NORA_BRAIN_CAPABILITIES/);
+  assert.match(brainJs, /prefers-reduced-motion/);
+  assert.match(brainJs, /ResizeObserver/);
+  assert.doesNotThrow(() => new vm.Script(brainJs, { filename: 'dashboard-brain.js' }));
+
+  const context = {};
+  vm.runInNewContext(`${brainJs}\n;globalThis.__brainCapabilities = NORA_BRAIN_CAPABILITIES;`, context);
+  const capabilities = context.__brainCapabilities;
+  const ids = capabilities.map(item => item.id);
+  assert.ok(capabilities.length >= 12, 'the map should cover focused, integrative, applied, and background systems');
+  assert.equal(new Set(ids).size, ids.length, 'capability ids must remain unique');
+  for (const capability of capabilities) {
+    assert.ok(['focused', 'integrative', 'applied', 'background'].includes(capability.layer));
+    assert.ok(capability.links.every(target => ids.includes(target)), `${capability.id} links must target registered systems`);
+    const reading = capability.read({});
+    assert.ok(reading.level >= 0 && reading.level <= 1, `${capability.id} activity must be normalized`);
+    assert.equal(typeof reading.evidence, 'string');
+  }
 });
