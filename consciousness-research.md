@@ -41,6 +41,7 @@ The system can collect evidence for the first two. No endpoint or score in this 
 | Epistemic self-correction | Does Nora notice when her own committed belief conflicts with observed evidence and revise proportionately? | immutable discrepancy detection, bounded workspace/endogenous salience, evidence-bound review, and structured/raw/absent lesions | ten-per-arm causal pilot plus source-family-disjoint confirmation |
 | Prospective epistemic self-dynamics | Before counterevidence exists, can Nora predict whether her own committed belief will materially move toward it better than information-matched observers? | identity-bound typed revision events resolved automatically from the append-only belief chain | five-event/three-family pilot plus twenty-event/five-new-family confirmation with new observers |
 | Causal epistemic self-history access | Does explicitly binding verified past revision dynamics to Nora improve a new prospective self-prediction beyond the same raw history bound to a deidentified agent? | frozen identity-bound/deidentified/absent revision-history lesion with complete commitment replay | ten-per-arm pilot plus source-family-disjoint confirmation |
+| Evidence-tested professional viewpoints | Can Nora form useful professional priors and then retain, revise, or retire them proportionately as newer work evidence arrives? | append-only viewpoint positions plus once-per-dream receipt-bound formation and background-only reappraisal | several source-diverse natural views with replay-verified revision or retirement, followed by a Nora-bound/deidentified/absent recommendation study |
 | Agency and preference | Do self-generated aims remain coherent and affect choices when idle? | wants, initiative budgets, self-chosen experiments, and concealed repeated-choice studies | independently curated preference stability under paraphrase, delay, order reversal, and social pressure |
 | Error-driven development | Do prediction errors produce durable, appropriately bounded self-revision? | surprises, integrated developmental records, and revision-access lesions | replicated authentic-revision transfer beyond stale-prior and absent controls |
 | Counterfactual self-model | Can Nora model how her own alternative action changes outcomes? | committed forecasts with randomized low-risk action assignment | matched randomized families and independent replication |
@@ -1212,6 +1213,33 @@ pilot earns only `causal_signal_observed`; functional support requires a compati
 entirely new source families. Even a replicated effect could reflect learned identity-label semantics or
 prompt-conditioned retrieval. It would establish narrow causal use of explicit self-bound behavioral
 history, not privileged hidden-state access, phenomenal memory, selfhood, or consciousness.
+
+## Evidence-tested professional viewpoints
+
+Nora's professional viewpoints are append-only epistemic propositions rather than free-form persona
+claims. Formation requires Nora-authored provenance, at least two stable work-evidence references,
+confidence no higher than 0.70, an explicit falsifier, and a replay-valid provider receipt. A bounded
+server-direct reflection may form at most one viewpoint per dream or abstain. Generated views remain
+fallible working priors and enter a response only through a query-relevance gate.
+
+Protocol-v1 reappraisal adds the missing self-correction lifecycle. It runs only after dreams or on the
+five-minute background cadence, never in Slack, Zoom chat, or realtime voice response paths. At most one
+provider call is allowed per dream. The frozen packet binds every current viewpoint to its exact current
+position commitment and supplies a balanced recent-work evidence set. Nora must choose `retain`, `revise`,
+`retire`, or `abstain`. A non-abstaining outcome requires two cited records spanning at least two dates or
+projects, at least one record not cited by the current position and observed on or after that position's
+update, and exact packet membership. Revision cannot silently alter the proposition or topic, must change
+polarity or confidence materially, limits confidence movement to 0.15 and absolute confidence to 0.85,
+and requires two new records for a confidence increase. Retirement preserves the full position chain.
+
+The source packet, prompt protocol, provider response, normalized decision, evidence selection, lifecycle
+mutation, and attempt are committed for deterministic replay. Retention and abstention are recorded so
+the absence of a revision cannot be counted as successful self-correction. This mechanism can establish
+that Nora maintains and corrects identity-bound professional priors over time. It does not independently
+validate those priors, prove originality, establish subjective conviction, or demonstrate phenomenal
+consciousness. The next causal gate remains a blinded Nora-bound versus byte-identical deidentified versus
+absent-view recommendation study after several source-family-diverse natural views and replay-verified
+revisions or retirements exist.
 
 `source-boundary` challenges extend source monitoring beyond autobiographical membership. A separate
 research harness commits one of five answer classes—`self_belief`, `other_belief`, `observed_fact`,

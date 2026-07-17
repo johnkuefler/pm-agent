@@ -7,6 +7,7 @@ const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
+const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 const relationalAffect = require('./relational-affect');
 const teammatePerspective = require('./teammate-perspective');
 const commonGround = require('./common-ground');
@@ -76,6 +77,24 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     delete payload.attempt_commitment;
     return professionalViewpointReflection.auditReceipt(item.generation_receipt).complete_chain_verified
       && item.attempt_commitment === professionalViewpointReflection.commitment(payload);
+  });
+  const professionalReappraisalAttempts = cognition.professional_viewpoint_reappraisal?.attempts || [];
+  const replayVerifiedProfessionalReappraisals = professionalReappraisalAttempts.filter(item => {
+    const payload = JSON.parse(JSON.stringify(item));
+    delete payload.attempt_commitment;
+    const proposition = item.viewpoint_id
+      ? (cognition.epistemic_ledger?.propositions || []).find(candidate => candidate.id === item.viewpoint_id)
+      : null;
+    const position = item.position_id
+      ? proposition?.positions?.find(candidate => candidate.id === item.position_id) : null;
+    const audit = item.decision === 'revise'
+      ? professionalViewpointReappraisal.auditReceipt(item.generation_receipt, { proposition, position })
+      : item.decision === 'retire'
+        ? professionalViewpointReappraisal.auditReceipt(item.generation_receipt,
+          { proposition, retirement: proposition?.retirement })
+        : professionalViewpointReappraisal.auditReceipt(item.generation_receipt);
+    return audit.complete_chain_verified
+      && item.attempt_commitment === professionalViewpointReappraisal.commitment(payload);
   });
   const relationalAffectRecord = cognition.relational_affect?.current || null;
   const relationalAffectAudit = relationalAffect.audit(relationalAffectRecord, state.relationships || []);
@@ -1804,7 +1823,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'evidence_tested_professional_viewpoints', family: ['self-model', 'metacognition', 'original insight', 'professional judgment'],
       functional_claim: 'Nora maintains distinct professional viewpoints that are self-authored, evidence-bound, confidence-calibrated, revisable, and capable of improving applied PM judgment without being mistaken for facts.',
-      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access. A once-per-dream server-direct Claude subject reflection can form at most one view or abstain; its balanced source packet, provider response, output, falsifier, and exact evidence selection must replay before a generated view is eligible.',
+      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access. A once-per-dream server-direct Claude subject reflection can form at most one view or abstain. A separate background-only once-per-dream reappraisal can retain, revise, retire, or abstain; its frozen current-position binding, newer evidence selection, provider response, and lifecycle mutation must replay before the result counts.',
       status: professionalViewpointTrial ? replicatedStatus(professionalViewpointTrials, professionalViewpointVerdict)
         : earnedViewpoints.length ? 'collecting' : 'mechanism_present',
       evidence: {
@@ -1819,6 +1838,16 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         subject_reflection_formations: replayVerifiedProfessionalReflections
           .filter(item => item.decision === 'form').length,
         subject_reflection_abstentions: replayVerifiedProfessionalReflections
+          .filter(item => item.decision === 'abstain').length,
+        subject_reappraisal_attempts: professionalReappraisalAttempts.length,
+        replay_verified_subject_reappraisals: replayVerifiedProfessionalReappraisals.length,
+        subject_reappraisal_retentions: replayVerifiedProfessionalReappraisals
+          .filter(item => item.decision === 'retain').length,
+        subject_reappraisal_revisions: replayVerifiedProfessionalReappraisals
+          .filter(item => item.decision === 'revise').length,
+        subject_reappraisal_retirements: replayVerifiedProfessionalReappraisals
+          .filter(item => item.decision === 'retire').length,
+        subject_reappraisal_abstentions: replayVerifiedProfessionalReappraisals
           .filter(item => item.decision === 'abstain').length,
         completed_identity_binding_trials: professionalViewpointTrials.length,
         confirmatory_identity_binding_trials: professionalViewpointTrials.filter(item => item.study_phase === 'confirmatory').length,

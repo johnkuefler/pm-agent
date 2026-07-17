@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 const epistemicLedger = require('./epistemic-ledger');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
+const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 
 const PROTOCOL_VERSION = 1;
 const PROPOSITION_KIND = 'professional_viewpoint';
@@ -46,17 +47,21 @@ function eligibility(proposition) {
   const sourceEvidence = distinctReferences(proposition?.source_family_evidence);
   const reflectionAuthored = String(position?.recorded_by || '')
     .startsWith(professionalViewpointReflection.RECORDED_BY_PREFIX);
+  const reappraisalAuthored = String(position?.recorded_by || '')
+    .startsWith(professionalViewpointReappraisal.RECORDED_BY_PREFIX);
   const generationReceiptAudit = reflectionAuthored
     ? professionalViewpointReflection.auditReceipt(position?.generation_receipt, {
       topicKey: proposition?.topic_key, statement: proposition?.statement, position,
-    }) : null;
+    }) : reappraisalAuthored
+      ? professionalViewpointReappraisal.auditReceipt(position?.generation_receipt,
+        { proposition, position }) : null;
   const checks = {
     professional_viewpoint: proposition?.proposition_kind === PROPOSITION_KIND,
     active: proposition?.status === 'active',
     position_chain_verified: epistemicLedger.auditProposition(proposition || {}).complete_chain_verified,
     single_current_nora_position: Boolean(position),
     nora_authored: Boolean(position && noraAuthored(position.recorded_by)),
-    subject_generation_receipt_verified: !reflectionAuthored
+    subject_generation_receipt_verified: !reflectionAuthored && !reappraisalAuthored
       || generationReceiptAudit?.complete_chain_verified === true,
     position_evidence_minimum_met: evidence.length >= 2,
     source_family_evidence_minimum_met: sourceEvidence.length >= 2,

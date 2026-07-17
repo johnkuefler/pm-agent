@@ -46,6 +46,7 @@ const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycl
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
+const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -7830,8 +7831,8 @@ registerDreamRoutes(app, {
         intelligence.createExperiment({ behavior: String(learning), hypothesis: 'Applying this observed learning should improve how future interactions land.', metric: 'positive_rate', review_at: new Date(Date.now() + 14 * 86400000).toISOString() });
       }
     }
-    runProfessionalViewpointReflectionAutopilotRuntime()
-      .catch(error => console.error('Professional-viewpoint reflection failed:', error.message));
+    runProfessionalViewpointLifecycleAutopilotRuntime()
+      .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
   },
 });
 
@@ -8880,6 +8881,8 @@ let _teammatePerspectiveReviewAutopilotInFlight = false;
 let _teammatePerspectiveReviewAutopilotLastCycle = null;
 let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
+let _professionalViewpointReappraisalInFlight = false;
+let _professionalViewpointReappraisalLastCycle = null;
 
 function tickEndogenousRuntime(now = new Date()) {
   return intelligence.tickEndogenousDynamics({
@@ -8980,6 +8983,17 @@ function professionalViewpointReflectionRuntimeConfig(env = process.env) {
   };
 }
 
+function professionalViewpointReappraisalRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_PROFESSIONAL_VIEWPOINT_REAPPRAISAL !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_PROFESSIONAL_VIEWPOINT_REAPPRAISAL_MODEL
+      || professionalViewpointReappraisal.DEFAULT_MODEL).slice(0, 160),
+  };
+}
+
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig();
@@ -9001,6 +9015,17 @@ function researchAutopilotProgramStatus() {
     report: professionalViewpointStatus.report,
     last_cycle: _professionalViewpointReflectionLastCycle,
     scientific_boundary: 'This is a receipt-bound Claude subject synthesis over frozen recent-work evidence. It is not independent validation, proof of originality, subjective experience, or phenomenal consciousness.',
+  };
+  const professionalViewpointReappraisalConfig = professionalViewpointReappraisalRuntimeConfig();
+  const professionalViewpointReappraisalStoreStatus = intelligence.professionalViewpointReappraisalSnapshot();
+  const professionalViewpointReappraisalStatus = {
+    protocol_version: professionalViewpointReappraisal.PROTOCOL_VERSION,
+    enabled: professionalViewpointReappraisalConfig.enabled,
+    model: professionalViewpointReappraisalConfig.model,
+    background_only: true,
+    report: professionalViewpointReappraisalStoreStatus.report,
+    last_cycle: _professionalViewpointReappraisalLastCycle,
+    scientific_boundary: 'This is replay-bound subject-side self-correction over frozen work evidence. It is not independent validation, proof of originality, subjective experience, or phenomenal consciousness.',
   };
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
@@ -9028,6 +9053,7 @@ function researchAutopilotProgramStatus() {
       common_ground_review: commonGroundReview,
       teammate_perspective_review: teammatePerspectiveReview,
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
+      professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
     };
   }
   const reasoning = reasoningResearchAutopilot.status(intelligence, {
@@ -9051,6 +9077,7 @@ function researchAutopilotProgramStatus() {
     common_ground_review: commonGroundReview,
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
+    professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
   };
 }
 
@@ -9175,6 +9202,57 @@ async function runProfessionalViewpointReflectionAutopilotRuntime({ post = axios
   } finally {
     _professionalViewpointReflectionInFlight = false;
   }
+}
+
+async function runProfessionalViewpointReappraisalAutopilotRuntime({ post = axios.post } = {}) {
+  const config = professionalViewpointReappraisalRuntimeConfig();
+  if (!config.enabled) {
+    _professionalViewpointReappraisalLastCycle = {
+      protocol_version: professionalViewpointReappraisal.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _professionalViewpointReappraisalLastCycle;
+  }
+  if (_professionalViewpointReappraisalInFlight) {
+    return { protocol_version: professionalViewpointReappraisal.PROTOCOL_VERSION,
+      state: 'in_flight', at: new Date().toISOString() };
+  }
+  _professionalViewpointReappraisalInFlight = true;
+  try {
+    const callProvider = async request => {
+      const response = await post('https://api.anthropic.com/v1/messages', request, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 45000,
+      });
+      return response.data;
+    };
+    const cycle = await professionalViewpointReappraisal.runCycle({
+      store: intelligence, memories: loadMemory(), dreams: loadDreams(),
+      enabled: true, model: config.model, callProvider,
+      lastCycle: _professionalViewpointReappraisalLastCycle,
+    });
+    _professionalViewpointReappraisalLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _professionalViewpointReappraisalLastCycle;
+  } catch (error) {
+    _professionalViewpointReappraisalLastCycle = {
+      protocol_version: professionalViewpointReappraisal.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _professionalViewpointReappraisalLastCycle;
+  } finally {
+    _professionalViewpointReappraisalInFlight = false;
+  }
+}
+
+async function runProfessionalViewpointLifecycleAutopilotRuntime({ post = axios.post } = {}) {
+  const reflection = await runProfessionalViewpointReflectionAutopilotRuntime({ post });
+  const reappraisal = await runProfessionalViewpointReappraisalAutopilotRuntime({ post });
+  return { reflection, reappraisal };
 }
 
 async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
@@ -9653,8 +9731,8 @@ async function start(options = {}) {
         .catch(error => console.error('Common-ground review autopilot failed:', error.message));
       runTeammatePerspectiveReviewAutopilotRuntime()
         .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
-      runProfessionalViewpointReflectionAutopilotRuntime()
-        .catch(error => console.error('Professional-viewpoint reflection failed:', error.message));
+      runProfessionalViewpointLifecycleAutopilotRuntime()
+        .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
       runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
       try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
       catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -9667,8 +9745,8 @@ async function start(options = {}) {
           .catch(error => console.error('Common-ground review autopilot failed:', error.message));
         runTeammatePerspectiveReviewAutopilotRuntime()
           .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
-        runProfessionalViewpointReflectionAutopilotRuntime()
-          .catch(error => console.error('Professional-viewpoint reflection failed:', error.message));
+        runProfessionalViewpointLifecycleAutopilotRuntime()
+          .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
         runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
         try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
         catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
@@ -9722,6 +9800,9 @@ module.exports = {
     runTeammatePerspectiveReviewAutopilotRuntime,
     professionalViewpointReflectionRuntimeConfig,
     runProfessionalViewpointReflectionAutopilotRuntime,
+    professionalViewpointReappraisalRuntimeConfig,
+    runProfessionalViewpointReappraisalAutopilotRuntime,
+    runProfessionalViewpointLifecycleAutopilotRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,

@@ -49,6 +49,7 @@ const interactivePerformance = require('./interactive-performance');
 const teammatePerspectiveStudy = require('./teammate-perspective-study');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
+const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -158,6 +159,7 @@ function emptyState() {
       affective_regulation: { current: null },
       earned_viewpoints: { current: null },
       professional_viewpoint_reflection: { attempts: [] },
+      professional_viewpoint_reappraisal: { attempts: [] },
       relational_affect: { current: null },
     },
   };
@@ -593,6 +595,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     state.cognition.professional_viewpoint_reflection.attempts =
       state.cognition.professional_viewpoint_reflection.attempts.slice(-120);
+    state.cognition.professional_viewpoint_reappraisal = { attempts: [],
+      ...(state.cognition.professional_viewpoint_reappraisal || {}) };
+    if (!Array.isArray(state.cognition.professional_viewpoint_reappraisal.attempts)) {
+      state.cognition.professional_viewpoint_reappraisal.attempts = [];
+    }
+    state.cognition.professional_viewpoint_reappraisal.attempts =
+      state.cognition.professional_viewpoint_reappraisal.attempts.slice(-120);
     for (const episode of state.episodes) {
       if (!Array.isArray(episode.participants)) episode.participants = [];
       if (!Array.isArray(episode.events)) episode.events = [];
@@ -3098,6 +3107,144 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function professionalViewpointReappraisalSnapshot() {
+    const attempts = state.cognition.professional_viewpoint_reappraisal?.attempts || [];
+    const replayVerified = attempts.filter(item => {
+      const payload = JSON.parse(JSON.stringify(item));
+      delete payload.attempt_commitment;
+      const proposition = item.viewpoint_id
+        ? state.cognition.epistemic_ledger.propositions.find(candidate => candidate.id === item.viewpoint_id)
+        : null;
+      const position = item.position_id
+        ? proposition?.positions?.find(candidate => candidate.id === item.position_id) : null;
+      const lifecycleAudit = item.decision === 'revise'
+        ? professionalViewpointReappraisal.auditReceipt(item.generation_receipt, { proposition, position })
+        : item.decision === 'retire'
+          ? professionalViewpointReappraisal.auditReceipt(item.generation_receipt,
+            { proposition, retirement: proposition?.retirement })
+          : professionalViewpointReappraisal.auditReceipt(item.generation_receipt);
+      return lifecycleAudit.complete_chain_verified
+        && item.attempt_commitment === professionalViewpointReappraisal.commitment(payload);
+    });
+    return {
+      epistemic_status: 'Background Claude reappraisal may retain, revise, retire, or abstain over a current evidence-bound professional viewpoint once per dream. Replay-valid receipts establish lifecycle binding inside this system, not independent validation, originality, subjective experience, or consciousness.',
+      attempts: JSON.parse(JSON.stringify(attempts)),
+      report: {
+        total: attempts.length,
+        retained: attempts.filter(item => item.decision === 'retain').length,
+        revised: attempts.filter(item => item.decision === 'revise').length,
+        retired: attempts.filter(item => item.decision === 'retire').length,
+        abstained: attempts.filter(item => item.decision === 'abstain').length,
+        replay_verified: replayVerified.length,
+      },
+    };
+  }
+
+  function recordProfessionalViewpointReappraisal(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const sourceDreamId = String(input.source_dream_id || '').trim().slice(0, 500);
+      if (!sourceDreamId) throw new Error('professional-viewpoint reappraisal requires a source dream');
+      const reappraisalState = current.cognition.professional_viewpoint_reappraisal
+        || (current.cognition.professional_viewpoint_reappraisal = { attempts: [] });
+      if (reappraisalState.attempts.some(item => item.source_dream_id === sourceDreamId)) {
+        throw new Error('this dream already has a committed professional-viewpoint reappraisal');
+      }
+      const output = input.output;
+      const receipt = input.generation_receipt;
+      const receiptAudit = professionalViewpointReappraisal.auditReceipt(receipt);
+      if (!receiptAudit.complete_chain_verified
+        || professionalViewpointReappraisal.canonicalJson(output)
+          !== professionalViewpointReappraisal.canonicalJson(receipt?.output)) {
+        throw new Error('professional-viewpoint reappraisal requires a replay-valid provider receipt bound to its output');
+      }
+      if (receipt.source_packet?.source_dream?.id !== sourceDreamId) {
+        throw new Error('professional-viewpoint reappraisal receipt is not bound to the source dream');
+      }
+
+      let proposition = null;
+      let positionId = null;
+      let retirementCommitment = null;
+      if (output.decision !== 'abstain') {
+        proposition = current.cognition.epistemic_ledger.propositions
+          .find(item => item.id === output.viewpoint_id);
+        if (!proposition || proposition.proposition_kind !== earnedViewpoint.PROPOSITION_KIND
+          || proposition.status !== 'active') {
+          throw new Error('professional-viewpoint reappraisal target is not a current active viewpoint');
+        }
+        const packetViewpoint = receipt.source_packet.viewpoints
+          .find(item => item.viewpoint_id === proposition.id);
+        const currentPosition = epistemicLedger.currentPositions(proposition)
+          .find(item => item.owner_type === 'nora_belief');
+        if (!packetViewpoint || !currentPosition
+          || packetViewpoint.current_position_id !== currentPosition.id
+          || packetViewpoint.current_position_commitment !== currentPosition.position_commitment
+          || packetViewpoint.statement !== proposition.statement
+          || packetViewpoint.topic_key !== proposition.topic_key) {
+          throw new Error('professional-viewpoint reappraisal receipt is stale or not bound to the current position');
+        }
+        const evidence = output.evidence_ids.map(id => ({ type: 'memory', id }));
+        const recordedBy = `${professionalViewpointReappraisal.RECORDED_BY_PREFIX}${receipt.model}:v${professionalViewpointReappraisal.PROTOCOL_VERSION}`;
+        if (output.decision === 'revise') {
+          proposition = recordEpistemicPositionInState(current, {
+            topic_key: proposition.topic_key,
+            statement: proposition.statement,
+            proposition_kind: earnedViewpoint.PROPOSITION_KIND,
+            owner_type: 'nora_belief', polarity: output.polarity,
+            confidence: output.confidence,
+            rationale: professionalViewpointReappraisal.rationaleForOutput(output),
+            evidence, supersedes_position_id: currentPosition.id,
+            recorded_by: recordedBy, generation_receipt: receipt,
+          });
+          const revisedPosition = epistemicLedger.currentPositions(proposition)
+            .find(item => item.owner_type === 'nora_belief');
+          if (!professionalViewpointReappraisal.auditReceipt(receipt,
+            { proposition, position: revisedPosition }).complete_chain_verified) {
+            throw new Error('revised professional viewpoint failed its lifecycle-binding replay');
+          }
+          positionId = revisedPosition?.id || null;
+        } else if (output.decision === 'retire') {
+          proposition = retireEarnedViewpointInState(current, proposition.id, {
+            rationale: output.rationale, recorded_by: recordedBy, evidence,
+            generation_receipt: receipt,
+          });
+          if (!professionalViewpointReappraisal.auditReceipt(receipt,
+            { proposition, retirement: proposition?.retirement }).complete_chain_verified) {
+            throw new Error('retired professional viewpoint failed its lifecycle-binding replay');
+          }
+          retirementCommitment = proposition?.retirement?.retirement_commitment || null;
+        } else if (output.decision !== 'retain') {
+          throw new Error('professional-viewpoint reappraisal decision is invalid');
+        }
+      }
+
+      const attemptPayload = {
+        protocol_version: professionalViewpointReappraisal.PROTOCOL_VERSION,
+        id: input.id || `professional-viewpoint-reappraisal-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        source_dream_id: sourceDreamId,
+        decision: output.decision,
+        viewpoint_id: output.viewpoint_id || null,
+        position_id: positionId,
+        retirement_commitment: retirementCommitment,
+        generation_receipt: JSON.parse(JSON.stringify(receipt)),
+        completed_at: clock().toISOString(),
+      };
+      const attempt = { ...attemptPayload,
+        attempt_commitment: professionalViewpointReappraisal.commitment(attemptPayload) };
+      reappraisalState.attempts.push(attempt);
+      reappraisalState.attempts = reappraisalState.attempts.slice(-120);
+      researchLedgerAppend(current, {
+        kind: `professional_viewpoint_reappraisal_${output.decision}`,
+        subject_type: 'professional_viewpoint_reappraisal', subject_id: attempt.id,
+        payload: { attempt_commitment: attempt.attempt_commitment,
+          source_dream_id: sourceDreamId, viewpoint_id: attempt.viewpoint_id,
+          position_id: positionId, retirement_commitment: retirementCommitment },
+      });
+      return { ...JSON.parse(JSON.stringify(attempt)),
+        proposition: proposition ? JSON.parse(JSON.stringify(proposition)) : null };
+    });
+  }
+
   function epistemicAccessActive(cognition = state.cognition) {
     return (cognition.self_model?.context_trials || []).some(item => item.status === 'active'
       && ['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access', 'professional_viewpoint_access'].includes(item.intervention));
@@ -3115,8 +3262,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return current.cognition.earned_viewpoints.current;
   }
 
-  function retireEarnedViewpoint(id, input = {}) {
-    return mutate(current => {
+  function retireEarnedViewpointInState(current, id, input = {}) {
       requireResearchLedgerIntegrity(current);
       if (earnedViewpointProjectionSealed(current.cognition)) throw new Error('earned viewpoints are sealed during an active epistemic, professional-viewpoint, or self-inquiry access trial');
       const proposition = current.cognition.epistemic_ledger.propositions.find(item => item.id === id);
@@ -3137,6 +3283,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const retirement = {
         rationale, recorded_by: recordedBy, evidence, retired_at: retiredAt,
         previous_source_commitment: earnedViewpoint.sourceCommitment(proposition),
+        ...(input.generation_receipt
+          ? { generation_receipt: JSON.parse(JSON.stringify(input.generation_receipt)) } : {}),
       };
       retirement.retirement_commitment = epistemicLedger.commitment(retirement);
       proposition.status = 'retired';
@@ -3146,7 +3294,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_id: proposition.id, payload: { retirement_commitment: retirement.retirement_commitment } });
       refreshEarnedViewpoints(current, retiredAt);
       return epistemicLedger.publicProposition(proposition);
-    });
+  }
+
+  function retireEarnedViewpoint(id, input = {}) {
+    return mutate(current => retireEarnedViewpointInState(current, id, input));
   }
 
   function earnedViewpointsSnapshot() {
@@ -9592,7 +9743,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const frames = cognition.integrated_self?.frames || [];
     const latestFrame = frames.at(-1) || null;
     const integratedSelfSealed = selfInquirySelectionActive(cognition) || interventionActive('integrated_self_binding');
-    const reflectionSignals = (cognition.surprises || []).length + (cognition.mind_changes || []).length + unresolvedPulses;
+    const viewpointReappraisals = cognition.professional_viewpoint_reappraisal?.attempts || [];
+    const viewpointRevisions = viewpointReappraisals.filter(item => item.decision === 'revise').length;
+    const viewpointRetirements = viewpointReappraisals.filter(item => item.decision === 'retire').length;
+    const reflectionSignals = (cognition.surprises || []).length + (cognition.mind_changes || []).length
+      + unresolvedPulses + viewpointReappraisals.length;
     const researchEvents = cognition.research_ledger?.events?.length || 0;
     const appraisal = cognition.appraisal || {};
     const calibrationResolved = cognition.calibration?.resolved || 0;
@@ -9625,7 +9780,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       },
       brain: {
         attention: metric((workspace.slots || []).length / (workspace.capacity || 7), `${(workspace.slots || []).length}/${workspace.capacity || 7} workspace slots occupied`, (workspace.slots || []).length > 0),
-        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'} available`, reflectionSignals > 0),
+        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${viewpointRevisions} viewpoint revisions, ${viewpointRetirements} retirements`, reflectionSignals > 0),
         'self-model': metric(scaleCount(activeClaims + openProbes, 10), `${activeClaims} active claims, ${openProbes} open probes`, activeClaims + openProbes > 0),
         appraisal: metric(appraisal.updated ? Math.max(0.4, scaleCount(calibrationResolved, 12)) : 0, appraisal.label || 'awaiting first cycle', Boolean(appraisal.updated)),
         agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions`, openIntentions + resolvedIntentions > 0),
@@ -9656,7 +9811,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           active_contents: activeContents, accepted_pulses: acceptedPulses, unresolved_pulses: unresolvedPulses,
           top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
         reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
-          development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length },
+          development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length,
+          viewpoint_reappraisals: viewpointReappraisals.length,
+          viewpoint_revisions: viewpointRevisions, viewpoint_retirements: viewpointRetirements },
         responsiveness,
       },
     };
@@ -22556,6 +22713,7 @@ ${episodes.map(item => {
     commonGroundSnapshot, commonGroundFrameForPerson, commonGroundProjectionSealed,
     earnedViewpointsSnapshot, retireEarnedViewpoint,
     professionalViewpointReflectionSnapshot, recordProfessionalViewpointReflection,
+    professionalViewpointReappraisalSnapshot, recordProfessionalViewpointReappraisal,
     epistemicOwnershipAvailable, epistemicDiscrepancyAvailable, epistemicRevisionHistoryAvailable, epistemicContextForAssignment,
     professionalViewpointAccessAvailable, professionalViewpointContextForAssignment,
     relationalAffectAccessAvailable, relationalAffectContextForAssignment,

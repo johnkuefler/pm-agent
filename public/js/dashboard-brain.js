@@ -21,7 +21,7 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'reflection', label: 'Reflection', layer: 'focused', x: .29, y: .28,
-    description: 'Evidence-backed surprises, belief revisions, and questions Nora is actively reviewing.',
+    description: 'Evidence-backed surprises, questions, and professional viewpoints Nora can retain, revise, or retire as her evidence changes.',
     links: ['attention', 'self-model', 'learning', 'background'],
     read: state => {
       const cognition = state.cognition || {};
