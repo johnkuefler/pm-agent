@@ -42,7 +42,8 @@ test('latency evidence is assessed against frozen per-surface budgets without a 
   const summary = performance.summarize(traces, now);
   assert.equal(summary.samples, 4);
   assert.equal(summary.excluded_legacy_samples, 1);
-  assert.deepEqual(summary.observed_protocol_versions, { 2: 1, 3: 4 });
+  assert.deepEqual(summary.observed_protocol_versions,
+    { 2: 1, [performance.PROTOCOL_VERSION]: 4 });
   assert.equal(summary.within_budget, 3);
   assert.equal(summary.surfaces.slack.p95_ms, 9000);
   assert.equal(summary.surfaces.slack.gate, 'collecting');
@@ -104,6 +105,9 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /beginInteractive\('slack'\)/);
   assert.match(server, /beginInteractive\('zoom-chat'\)/);
   assert.match(server, /beginInteractive\('realtime'\)/);
+  assert.match(server, /preemptConsciousnessResearchStatus\('slack'\)/);
+  assert.match(server, /preemptConsciousnessResearchStatus\('zoom-chat'\)/);
+  assert.match(server, /preemptConsciousnessResearchStatus\('realtime'\)/);
   assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
     'background intelligence must be serialized behind the foreground-priority lane');
   assert.match(server, /model: slackResponseModel\(query\)/,

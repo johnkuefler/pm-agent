@@ -10,7 +10,8 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
   now = () => new Date(), maxAgeMs = DEFAULT_MAX_AGE_MS,
   minRefreshIntervalMs = DEFAULT_MIN_REFRESH_INTERVAL_MS,
   workerPath = path.join(__dirname, 'research-status-worker.js'),
-  createWorker = options => new Worker(workerPath, options) } = {}) {
+  createWorker = options => new Worker(workerPath, options),
+  shouldDeferRefresh = () => false } = {}) {
   if (!store || typeof store.snapshot !== 'function' || typeof store.snapshotRevision !== 'function') {
     throw new Error('research status cache requires a snapshot-capable intelligence store');
   }
@@ -18,6 +19,15 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
   let inFlight = null;
   let activeWorker = null;
   let lastRefreshStartedAt = 0;
+  let preemptions = 0;
+  let lastPreemption = null;
+  const workerPreemptions = new WeakMap();
+
+  function deferredError() {
+    const error = new Error('research status refresh deferred for interactive priority');
+    error.code = 'interactive_priority_deferred';
+    return error;
+  }
 
   function capture() {
     const observedAt = now();
@@ -42,6 +52,10 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
 
   function refresh({ force = false } = {}) {
     if (inFlight) return inFlight;
+    if (shouldDeferRefresh()) {
+      if (current) return Promise.resolve(current);
+      return Promise.reject(deferredError());
+    }
     const startedAt = Date.now();
     if (!force && current && startedAt - lastRefreshStartedAt < minRefreshIntervalMs) {
       return Promise.resolve(current);
@@ -79,6 +93,12 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       });
       worker.once('error', error => finish(error));
       worker.once('exit', code => {
+        const preemptedBy = workerPreemptions.get(worker);
+        if (!settled && preemptedBy) {
+          const error = new Error(`research status worker preempted by ${preemptedBy}`);
+          error.code = 'interactive_preemption';
+          return finish(error);
+        }
         if (!settled) finish(new Error(code === 0
           ? 'research status worker exited before returning a snapshot'
           : `research status worker exited with code ${code}`));
@@ -117,7 +137,8 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       }
       return { ...value, cache_state: 'cold', stale: coldStale };
     }
-    if (stale && !inFlight && Date.now() - lastRefreshStartedAt >= minRefreshIntervalMs) {
+    if (stale && !inFlight && !shouldDeferRefresh()
+      && Date.now() - lastRefreshStartedAt >= minRefreshIntervalMs) {
       refresh().catch(() => {});
     }
     return { ...current, cache_state: stale ? 'stale' : 'fresh', stale };
@@ -136,7 +157,20 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       experimental_access_current: current ? current.experimental_access_fingerprint === (
         typeof store.experimentalAccessFingerprint === 'function'
           ? store.experimentalAccessFingerprint() : null) : null,
+      preemptions,
+      last_preemption: lastPreemption,
     };
+  }
+
+  function preempt(reason = 'interactive') {
+    const worker = activeWorker;
+    if (!worker) return false;
+    const boundedReason = String(reason || 'interactive').slice(0, 80);
+    workerPreemptions.set(worker, boundedReason);
+    preemptions += 1;
+    lastPreemption = { reason: boundedReason, at: new Date().toISOString() };
+    worker.terminate().catch(() => {});
+    return true;
   }
 
   async function close() {
@@ -147,7 +181,7 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
     try { await inFlight; } catch { /* worker failure already surfaced to the caller */ }
   }
 
-  return { get, refresh, status, close };
+  return { get, refresh, status, preempt, close };
 }
 
 module.exports = {

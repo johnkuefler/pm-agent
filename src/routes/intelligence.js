@@ -3,9 +3,10 @@
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const { createResearchStatusCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
-  const researchStatusCache = createResearchStatusCache({ store, getDreams, getWants });
+  const researchStatusCache = createResearchStatusCache({ store, getDreams, getWants,
+    shouldDeferRefresh: shouldDeferResearchStatusRefresh });
   function cachedJson(res, key, build, { ttlMs = 15000, project = value => value } = {}) {
     const revision = typeof store.snapshotRevision === 'function' ? store.snapshotRevision() : null;
     const now = Date.now();
@@ -1156,6 +1157,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   return {
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
+    preemptConsciousnessResearchStatus: surface => researchStatusCache.preempt(surface),
     consciousnessResearchStatusCache: () => researchStatusCache.status(),
     close: () => researchStatusCache.close(),
   };

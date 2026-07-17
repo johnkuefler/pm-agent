@@ -123,6 +123,29 @@ test('server shutdown terminates an in-flight audit worker promptly', async t =>
   assert.ok(Date.now() - started < 150, 'shutdown must not wait for the expensive audit to finish');
 });
 
+test('interactive priority preempts a CPU-heavy audit and defers respawn', async t => {
+  const store = await createStore(t);
+  let interactive = false;
+  const cache = createResearchStatusCache({
+    store,
+    now: () => new Date(OBSERVED_AT),
+    workerPath: path.join(__dirname, '..', 'fixtures', 'research-status-spin-worker.js'),
+    shouldDeferRefresh: () => interactive,
+  });
+  t.after(() => cache.close());
+  const outcome = cache.refresh().then(value => value, error => error);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  interactive = true;
+  assert.equal(cache.preempt('slack'), true);
+  const result = await outcome;
+  assert.equal(result.code, 'interactive_preemption');
+  await assert.rejects(cache.refresh(), error => error.code === 'interactive_priority_deferred');
+  assert.equal(cache.status().preemptions, 1);
+  interactive = false;
+  const recovered = await cache.refresh();
+  assert.equal(JSON.parse(recovered.serialized).isolated_worker_fixture, true);
+});
+
 test('active trial summary avoids the full self-model audit without changing sealed output', async t => {
   const source = await createStore(t);
   const state = source.snapshot();

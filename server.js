@@ -196,6 +196,10 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
       diagnostics: intelligence.cognitivePulseRuntimeDiagnostics(),
     }),
     getResearchAutopilotStatus: () => researchAutopilotProgramStatus(),
+    shouldDeferResearchStatusRefresh: () => {
+      const priority = interactivePerformance.prioritySnapshot();
+      return priority.active_interactions > 0 || priority.quiet_remaining_ms > 0;
+    },
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: currentCognitiveInputs,
 });
@@ -3388,6 +3392,7 @@ app.post('/webhook/chat', async (req, res) => {
   if (!query) return;
   const interactionStartedAt = Date.now();
   const interactivePriorityLease = interactivePerformance.beginInteractive('zoom-chat');
+  intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('zoom-chat');
 
   console.log(`💬 Chat trigger from ${speaker}: ${query}`);
 
@@ -5796,6 +5801,7 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
   const interactionStartedAt = Date.now();
   const interactivePriorityLease = interactivePerformance.beginInteractive('slack');
+  intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('slack');
   try {
     return await withSlackSessionLock(sessionKey, () =>
       handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
@@ -8655,6 +8661,7 @@ wss.on('connection', async (ws, req) => {
   // A connected realtime call owns the foreground lane for its full lifetime. Background model
   // research is preempted now and cannot restart until the call closes plus a short quiet window.
   const realtimePriorityLease = interactivePerformance.beginInteractive('realtime');
+  intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('realtime');
   ws.once('close', () => realtimePriorityLease.release());
 
   // Store WebSocket references on the session so /mute can send live updates
@@ -10321,7 +10328,11 @@ async function start(options = {}) {
     console.log(`Nora server running on port ${typeof address === 'object' ? address.port : port}`);
     if (background) {
       intelligenceRoutesRuntime.warmConsciousnessResearchStatus()
-        .catch(error => console.error('Research status warmup failed:', error.message));
+        .catch(error => {
+          if (!['interactive_preemption', 'interactive_priority_deferred'].includes(error.code)) {
+            console.error('Research status warmup failed:', error.message);
+          }
+        });
       backfillTranscriptDates();
       refreshRecentMeetingsCache();
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
