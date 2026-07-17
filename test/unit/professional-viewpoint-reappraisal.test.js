@@ -142,7 +142,8 @@ test('retain and abstain record bounded outcomes without changing the viewpoint'
     callProvider: async request => modelResponse(request, {
       decision: 'retain', viewpoint_id: first.formed.id,
       rationale: 'The newer outcomes narrow the scope but do not yet overturn the contingency prior across integration-heavy work.',
-      polarity: null, confidence: null, falsification_criteria: [],
+      polarity: 'supports', confidence: 0.62,
+      falsification_criteria: ['Repeated comparable launches without a contingency would eventually overturn this view.'],
       evidence_ids: ['memory-new-gamma', 'memory-new-delta'],
     }, 'msg-viewpoint-retain-1'),
   });
@@ -182,6 +183,10 @@ test('reappraisal rejects uncommitted, old-only, and overlarge confidence update
     /confidence change exceeds/);
   assert.throws(() => reappraisal.normalizeOutput({ ...base, polarity: 'supports', confidence: 0.7,
     evidence_ids: ['memory-old-alpha', 'memory-new-gamma'] }, packet), /increases require at least two new/);
+  assert.throws(() => reappraisal.normalizeOutput({ decision: 'retain', viewpoint_id: 'viewpoint-1',
+    rationale: 'The newer evidence is relevant but does not justify changing the current position yet.',
+    polarity: 'denies', confidence: 0.62, falsification_criteria: [],
+    evidence_ids: ['memory-new-gamma', 'memory-new-delta'] }, packet), /cannot contradict/);
   const stalePacket = structuredClone(packet);
   stalePacket.viewpoints[0].updated_at = '2026-07-17T00:00:00.000Z';
   assert.throws(() => reappraisal.normalizeOutput(base, stalePacket), /on or after the current position update/);

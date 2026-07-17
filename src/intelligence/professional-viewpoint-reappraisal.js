@@ -202,8 +202,10 @@ function normalizeOutput(raw, packet) {
     return { decision, viewpoint_id: viewpointId, rationale, polarity, confidence,
       falsification_criteria: criteria, evidence_ids: evidenceIds };
   }
-  if (raw.polarity != null || raw.confidence != null || criteria.length) {
-    throw new Error(`${decision} must not synthesize a replacement position`);
+  const echoesCurrentPosition = (raw.polarity == null || String(raw.polarity) === viewpoint.polarity)
+    && (raw.confidence == null || Number(raw.confidence) === Number(viewpoint.confidence));
+  if (!echoesCurrentPosition) {
+    throw new Error(`${decision} cannot contradict the current position without choosing revise`);
   }
   return { decision, viewpoint_id: viewpointId, rationale, polarity: null, confidence: null,
     falsification_criteria: [], evidence_ids: evidenceIds };
