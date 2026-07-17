@@ -108,6 +108,10 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /preemptConsciousnessResearchStatus\('slack'\)/);
   assert.match(server, /preemptConsciousnessResearchStatus\('zoom-chat'\)/);
   assert.match(server, /preemptConsciousnessResearchStatus\('realtime'\)/);
+  const startup = server.slice(server.indexOf('async function start('),
+    server.indexOf('async function stop('));
+  assert.doesNotMatch(startup, /warmConsciousnessResearchStatus/,
+    'CPU-heavy research status must remain lazy during restart recovery');
   assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
     'background intelligence must be serialized behind the foreground-priority lane');
   assert.match(server, /model: slackResponseModel\(query\)/,

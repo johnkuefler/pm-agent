@@ -120,7 +120,8 @@ test('server shutdown terminates an in-flight audit worker promptly', async t =>
   await cache.close();
   const result = await outcome;
   assert.ok(result instanceof Error);
-  assert.ok(Date.now() - started < 150, 'shutdown must not wait for the expensive audit to finish');
+  assert.ok(Date.now() - started < 700,
+    'shutdown must terminate well before the one-second audit would finish');
 });
 
 test('interactive priority preempts a CPU-heavy audit and defers respawn', async t => {

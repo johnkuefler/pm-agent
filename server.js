@@ -10327,12 +10327,10 @@ async function start(options = {}) {
     const address = server.address();
     console.log(`Nora server running on port ${typeof address === 'object' ? address.port : port}`);
     if (background) {
-      intelligenceRoutesRuntime.warmConsciousnessResearchStatus()
-        .catch(error => {
-          if (!['interactive_preemption', 'interactive_priority_deferred'].includes(error.code)) {
-            console.error('Research status warmup failed:', error.message);
-          }
-        });
+      // The full research report is intentionally lazy. Warming its CPU-heavy worker during
+      // startup caused multi-second event-loop lag precisely when Slack/Zoom reconnect and
+      // continuity traffic arrive. The progressive dashboard starts it only when the research
+      // section is requested; a live interaction can then preempt it through the v4 firewall.
       backfillTranscriptDates();
       refreshRecentMeetingsCache();
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
