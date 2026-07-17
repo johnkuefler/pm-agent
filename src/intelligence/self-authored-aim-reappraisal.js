@@ -11,6 +11,7 @@ const MAX_TOKENS = 1400;
 const MAX_PACKET_ITEMS = 36;
 const MAX_DAILY_ATTEMPTS = 1;
 const FORMATION_PROTOCOL = RECEIPT_BOUND_REAPPRAISAL_PROTOCOL;
+const ABSTENTION_RATIONALE_FALLBACK = 'The provider abstained without supplying a sufficiently bounded rationale.';
 const PHENOMENAL_CLAIM = /\b(conscious(?:ness)?|sentien(?:t|ce)|qualia|phenomenal|subjective experience|real feeling)\b/i;
 const ASSIGNMENT_LIKE = /^(?:process|complete|clear|handle|work through|review)\s+(?:the\s+|my\s+|all\s+)?(?:task\s+)?(?:queue|backlog|assigned tasks?)\b/i;
 
@@ -204,13 +205,14 @@ function normalizeOutput(raw, packet) {
   const evidenceIds = [...new Set((Array.isArray(raw.evidence_ids) ? raw.evidence_ids : [])
     .map(item => cleanText(item, 500)).filter(Boolean))].slice(0, 4);
   if (decision === 'abstain') {
-    if (rationale.length < 20) {
-      throw new Error('aim reappraisal abstention requires only a bounded rationale');
-    }
     // Abstention is deliberately non-operative. Structured-output providers may still fill
     // nullable sibling fields even when the decision is abstain; discard them so harmless
-    // schema filler cannot turn a safe non-action into a failed lifecycle attempt.
-    return { decision, aim_id: null, rationale, evidence_ids: [], replacement: null };
+    // schema filler or terse explanatory prose cannot turn a safe non-action into a failed
+    // lifecycle attempt. The deterministic fallback describes the transport limitation; it
+    // does not invent evidence or a substantive reason for changing an aim.
+    return { decision, aim_id: null,
+      rationale: rationale.length >= 20 ? rationale : ABSTENTION_RATIONALE_FALLBACK,
+      evidence_ids: [], replacement: null };
   }
   if (!['retain', 'revise', 'retire'].includes(decision) || rationale.length < 30) {
     throw new Error('aim reappraisal requires retain, revise, retire, or a valid abstention');
@@ -563,7 +565,7 @@ async function runCycle({ loadDreams, saveDreams, loadWants, saveWants, memories
 
 module.exports = {
   PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS, MAX_PACKET_ITEMS, MAX_DAILY_ATTEMPTS,
-  FORMATION_PROTOCOL, canonicalJson, commitment, cleanText, utcDate,
+  FORMATION_PROTOCOL, ABSTENTION_RATIONALE_FALLBACK, canonicalJson, commitment, cleanText, utcDate,
   reflectionAttempts, attemptsOnUtcDate, selectSourceDream, evidenceIdsForWant,
   latestSubstantiveDate, aimSnapshot, packetFor, replacementSchema, outputSchema,
   systemPrompt, buildManifest, requestFor, responseText, parseJsonObject,

@@ -180,6 +180,24 @@ test('abstention discards non-operative structured-output filler', () => {
   });
 });
 
+test('a terse provider abstention remains a replay-bound safe non-action', async () => {
+  const f = fixture();
+  const packet = reappraisal.packetFor({ memories: memories(), sourceDream: f.dreams()[0],
+    wants: f.wants(), now: NOW });
+  const run = await reappraisal.runCycle({ ...f, memories: memories(), now: NOW,
+    callProvider: async request => response(request, {
+      decision: 'abstain', aim_id: 'w-1', rationale: 'Too thin.',
+      evidence_ids: packet.evidence.slice(0, 2).map(item => item.ref.id),
+      replacement: revisionOutput(packet).replacement,
+    }, 'msg-aim-terse-abstention') });
+  assert.equal(run.state, 'abstained');
+  const attempt = reappraisal.reflectionAttempts(f.dreams())[0].attempt;
+  assert.equal(attempt.generation_receipt.output.rationale,
+    reappraisal.ABSTENTION_RATIONALE_FALLBACK);
+  assert.equal(reappraisal.auditAttempt(attempt, f.wants(), f.dreams()[0]).complete_chain_verified, true);
+  assert.equal(f.wants()[0].status, 'active');
+});
+
 test('research status exposes the bounded reason for a replay-verified failed-closed attempt', async () => {
   const f = fixture();
   const run = await reappraisal.runCycle({ ...f, memories: memories(), now: NOW,
