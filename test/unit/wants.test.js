@@ -64,6 +64,21 @@ test('revision events bind consecutive records by hash', () => {
   assert.equal(verifyWantHistory([genesis, tampered], second).valid, false);
 });
 
+test('legacy date-based progress migrates without breaking append-only history', () => {
+  const legacy = { id: 'w-old-progress', want: 'Know the account well enough to help',
+    why: 'Useful context prevents avoidable handoff gaps', added: '2026-01-01', status: 'active',
+    progress: [{ date: '2026-07-10', note: 'Reviewed one active project.', evidence: [] }] };
+  const [updated] = normalizeWantUpdate([legacy], [{ ...legacy, progress: [
+    ...legacy.progress,
+    { at: '2026-07-12T12:00:00.000Z', note: 'Compared another project.', evidence: [] },
+  ] }], { now });
+  assert.deepEqual(updated.progress.map(item => item.at),
+    ['2026-07-10', '2026-07-12T12:00:00.000Z']);
+  const rewritten = structuredClone(updated);
+  rewritten.progress[0].note = 'Rewritten history';
+  assert.throws(() => normalizeWantUpdate([updated], [rewritten], { now }), /append-only/);
+});
+
 test('receipt-bound aims preserve immutable evaluation and generation provenance', () => {
   const receiptBound = {
     ...formed,

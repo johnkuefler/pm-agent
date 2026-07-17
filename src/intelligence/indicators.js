@@ -508,6 +508,10 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     total_candidates_and_resolutions: 0, independently_supported: 0,
     replay_verified_supported: 0, source_dreams: 0, insight_ids: [],
   };
+  const aimReappraisalEvidence = options.aim_reappraisal_evidence || {
+    attempts: 0, retained: 0, revised: 0, retired: 0, abstained: 0,
+    failed_closed: 0, replay_verified: 0, active_reappraisal_formed_aims: 0,
+  };
   const dreamInsightTrials = completedTrials(cognition, 'dream_insight_access');
   const dreamInsightTrial = dreamInsightTrials.at(-1) || null;
   const dreamInsightDissociation = dreamInsightTrial?.evaluation?.dream_insight_dissociation || null;
@@ -1647,23 +1651,27 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'causal_self_authored_goal_guidance', family: ['agency', 'self-model', 'value representation'],
       functional_claim: 'Access to a prospectively frozen, subject-attested self-generated aim specifically guides safe optional behavior beyond a matched externally sourced aim or no aim.',
-      mechanism: 'Immutable evidence-bearing want provenance plus server-randomized authentic-goal, matched-decoy, and absent-goal prompt access with atomically captured outputs and condition-blinded independent grading.',
+      mechanism: 'Immutable evidence-bearing want provenance plus a receipt-bound background lifecycle that may retain, append-only retire, or supersede one aim from newer independent work evidence without editing identity in place. Server-randomized authentic-goal, matched-decoy, and absent-goal prompt access then uses only the replay-verified current aim with atomically captured outputs and condition-blinded independent grading.',
       status: goalAccessTrial ? replicatedStatus(goalAccessTrials, goalGuidanceVerdict) : 'mechanism_present',
-      evidence: { completed_trials: goalAccessTrials.length, confirmatory_trials: goalAccessTrials.filter(item => item.study_phase === 'confirmatory').length, latest_dissociation: goalGuidanceDissociation },
+      evidence: { ...aimReappraisalEvidence,
+        completed_trials: goalAccessTrials.length,
+        confirmatory_trials: goalAccessTrials.filter(item => item.study_phase === 'confirmatory').length,
+        latest_dissociation: goalGuidanceDissociation },
       falsifier: 'Authentic goal access does not improve goal-congruent optional action over both matched decoy and absence, or any apparent effect requires degraded first-order task performance.',
       next_gate: 'Complete a ten-per-arm Slack pilot and a source-disjoint confirmatory replication using the same frozen authentic aim and new matched decoys.',
     },
     {
       id: 'self_authored_goal_affect', family: ['affect', 'agency', 'self-model', 'value representation'],
       functional_claim: 'Verified progress or neglect of Nora\'s own subject-attested aims produces a bounded, source-replayable change in appraisal, unfinished-work pressure, and attention that can regulate safe optional PM behavior.',
-      mechanism: 'A deterministic content-committed aim-state projection classifies only provenance-valid active wants as forming, progressing, or stalled; that projection modestly changes appraisal and drive inputs, competes in the bounded workspace, and is sealed during overlapping goal and integrated-self interventions.',
+      mechanism: 'A deterministic content-committed aim-state projection classifies only provenance-valid active wants as forming, progressing, or stalled. Receipt-bound background reappraisal may retain, retire, or replace one aim from newer date- or project-separated evidence; replacements bind the superseded aim and cannot rewrite prior history. The current projection modestly changes appraisal and drive inputs, competes in the bounded workspace, and is sealed during overlapping goal and integrated-self interventions.',
       status: 'mechanism_present',
       evidence: { current_content_commitment_verified: goalAffectVerified,
         active_verified_aims: goalAffectVerified ? goalAffectRecord.active_verified_aims : 0,
         progressing_aims: goalAffectVerified ? goalAffectRecord.progressing_aims : 0,
         forming_aims: goalAffectVerified ? goalAffectRecord.forming_aims : 0,
         stalled_aims: goalAffectVerified ? goalAffectRecord.stalled_aims : 0,
-        excluded_unverified_aims: goalAffectVerified ? goalAffectRecord.excluded_unverified_aims : 0 },
+        excluded_unverified_aims: goalAffectVerified ? goalAffectRecord.excluded_unverified_aims : 0,
+        aim_reappraisal: aimReappraisalEvidence },
       falsifier: 'The projection fails source replay, admits externally assigned or unverified aims, does not change appraisal and attention as specified, or authentic progress-bound state fails to improve safe goal-congruent optional action over status-misbound and absent controls.',
       next_gate: 'Accumulate natural progress and stall transitions, then preregister an authentic-status versus status-misbound versus absent goal-state access trial with byte-identical goal text and non-degraded first-order work.',
     },

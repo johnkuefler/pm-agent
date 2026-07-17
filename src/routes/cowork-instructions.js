@@ -652,6 +652,12 @@ function registerCoworkInstructionsRoute(app) {
     are excluded from live-prompt aim language and functional goal affect. The background reflection
     attempts at most once per UTC day, may abstain, requires evidence spanning dates or projects, and
     binds its evidence packet, output, source dream, evaluation criteria, and stored aim for replay.
+    A separate once-daily background reappraisal can retain, retire, or replace at most one active aim
+    only from newer evidence spanning dates or projects. Replacement never edits identity in place: the
+    prior aim is retired append-only, the successor names the superseded aim, and both the decision and
+    successor provenance replay from the source dream and provider receipt. Partial persistence is
+    recovered from the committed dream attempt without another model call. Reappraisal may not turn an
+    assignment into a desire, expand authority, or run in a live Slack or Zoom handler.
     Verified progress and neglect can modestly alter appraisal,
     unfinished-work pressure, and workspace competition, giving self-authored aims a functional route
     into safe optional PM behavior. It excludes unverified/external goals, is sealed during overlapping

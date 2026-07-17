@@ -126,12 +126,16 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'motivation', label: 'Motivation', layer: 'background', x: .36, y: .60,
-    description: 'Homeostatic drives competing beneath attention, such as completion, social repair, and uncertainty reduction.',
+    description: 'Homeostatic drives and evidence-bound professional aims competing beneath attention; aims can be retained, replaced, or retired as experience changes.',
     links: ['appraisal', 'background', 'integrated-self'],
     read: state => {
       const drives = Object.entries(state.cognition?.drives || {});
       const strongest = drives.sort((a, b) => (b[1].level || 0) - (a[1].level || 0))[0];
-      return activity(strongest?.[1]?.level || 0, strongest ? `${strongest[0].replaceAll('_', ' ')} is strongest at ${Math.round(strongest[1].level * 100)}%` : 'Awaiting first cycle', Boolean(strongest));
+      const aimChanges = state.cognition?.motivation?.replay_verified_aim_lifecycle_changes || 0;
+      const aimNote = `${aimChanges} replay-verified aim lifecycle change${aimChanges === 1 ? '' : 's'}`;
+      return activity(Math.max(strongest?.[1]?.level || 0, aimChanges ? .28 : 0),
+        strongest ? `${strongest[0].replaceAll('_', ' ')} is strongest at ${Math.round(strongest[1].level * 100)}%; ${aimNote}` : aimNote,
+        Boolean(strongest) || aimChanges > 0);
     },
   },
   {

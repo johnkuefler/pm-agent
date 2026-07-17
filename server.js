@@ -49,6 +49,7 @@ const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
 const selfAuthoredAimReflection = require('./src/intelligence/self-authored-aim-reflection');
+const selfAuthoredAimReappraisal = require('./src/intelligence/self-authored-aim-reappraisal');
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
 const postDeliverySelfEvaluation = require('./src/intelligence/post-delivery-self-evaluation');
 const slackEvidence = require('./src/intelligence/slack-evidence');
@@ -9022,6 +9023,8 @@ let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
 let _selfAuthoredAimReflectionInFlight = false;
 let _selfAuthoredAimReflectionLastCycle = null;
+let _selfAuthoredAimReappraisalInFlight = false;
+let _selfAuthoredAimReappraisalLastCycle = null;
 let _dreamInsightReflectionInFlight = false;
 let _dreamInsightReflectionLastCycle = null;
 let _postDeliverySelfEvaluationInFlight = false;
@@ -9165,6 +9168,17 @@ function selfAuthoredAimReflectionRuntimeConfig(env = process.env) {
   };
 }
 
+function selfAuthoredAimReappraisalRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_SELF_AUTHORED_AIM_REAPPRAISAL !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_SELF_AUTHORED_AIM_REAPPRAISAL_MODEL
+      || selfAuthoredAimReappraisal.DEFAULT_MODEL).slice(0, 160),
+  };
+}
+
 function dreamInsightReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_DREAM_INSIGHT_REFLECTION !== '0'
@@ -9227,6 +9241,12 @@ function researchAutopilotProgramStatus() {
     enabled: aimConfig.enabled, model: aimConfig.model,
     lastCycle: _selfAuthoredAimReflectionLastCycle,
   });
+  const aimReappraisalConfig = selfAuthoredAimReappraisalRuntimeConfig();
+  const aimReappraisalStatus = selfAuthoredAimReappraisal.status(
+    loadDreams(), _cache.wants?.items || [], {
+      enabled: aimReappraisalConfig.enabled, model: aimReappraisalConfig.model,
+      lastCycle: _selfAuthoredAimReappraisalLastCycle,
+    });
   const dreamInsightConfig = dreamInsightReflectionRuntimeConfig();
   const dreamInsightStatus = dreamInsightReflection.status(loadDreams(), {
     enabled: dreamInsightConfig.enabled, model: dreamInsightConfig.model,
@@ -9269,6 +9289,7 @@ function researchAutopilotProgramStatus() {
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
       professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
       self_authored_aim_reflection: aimStatus,
+      self_authored_aim_reappraisal: aimReappraisalStatus,
       dream_insight_reflection: dreamInsightStatus,
       post_delivery_self_evaluation: postDeliveryStatus,
       interactive_priority: interactivePriority,
@@ -9298,6 +9319,7 @@ function researchAutopilotProgramStatus() {
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
     self_authored_aim_reflection: aimStatus,
+    self_authored_aim_reappraisal: aimReappraisalStatus,
     dream_insight_reflection: dreamInsightStatus,
     post_delivery_self_evaluation: postDeliveryStatus,
     interactive_priority: interactivePriority,
@@ -9527,6 +9549,59 @@ async function runSelfAuthoredAimReflectionAutopilotRuntime({ post = axios.post 
   } finally {
     _selfAuthoredAimReflectionInFlight = false;
   }
+}
+
+async function runSelfAuthoredAimReappraisalAutopilotRuntime({ post = axios.post } = {}) {
+  const config = selfAuthoredAimReappraisalRuntimeConfig();
+  if (!config.enabled) {
+    _selfAuthoredAimReappraisalLastCycle = {
+      protocol_version: selfAuthoredAimReappraisal.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _selfAuthoredAimReappraisalLastCycle;
+  }
+  if (_selfAuthoredAimReappraisalInFlight) {
+    return { protocol_version: selfAuthoredAimReappraisal.PROTOCOL_VERSION,
+      state: 'in_flight', at: new Date().toISOString() };
+  }
+  _selfAuthoredAimReappraisalInFlight = true;
+  try {
+    const cycle = await selfAuthoredAimReappraisal.runCycle({
+      loadDreams, saveDreams,
+      loadWants: () => JSON.parse(JSON.stringify(_cache.wants?.items || [])),
+      saveWants: (items, options = {}) => persistWantsUpdate(items, options),
+      memories: loadMemory(), enabled: true,
+      sealed: intelligence.interventionActive('goal_access'), model: config.model,
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          timeout: 45000,
+        });
+        return response.data;
+      },
+    });
+    _selfAuthoredAimReappraisalLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _selfAuthoredAimReappraisalLastCycle;
+  } catch (error) {
+    _selfAuthoredAimReappraisalLastCycle = {
+      protocol_version: selfAuthoredAimReappraisal.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _selfAuthoredAimReappraisalLastCycle;
+  } finally {
+    _selfAuthoredAimReappraisalInFlight = false;
+  }
+}
+
+async function runSelfAuthoredAimLifecycleAutopilotRuntime({ post = axios.post } = {}) {
+  const reflection = await runSelfAuthoredAimReflectionAutopilotRuntime({ post });
+  const reappraisal = await runSelfAuthoredAimReappraisalAutopilotRuntime({ post });
+  return { reflection, reappraisal };
 }
 
 async function runDreamInsightReflectionAutopilotRuntime({ post = axios.post } = {}) {
@@ -10110,8 +10185,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
       ['professional_viewpoint_lifecycle',
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
-      ['self_authored_aim_reflection',
-        () => runSelfAuthoredAimReflectionAutopilotRuntime({ post: priorityPost })],
+      ['self_authored_aim_lifecycle',
+        () => runSelfAuthoredAimLifecycleAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
       ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
     ];
@@ -10244,6 +10319,9 @@ module.exports = {
     runProfessionalViewpointLifecycleWithPriorityRuntime,
     selfAuthoredAimReflectionRuntimeConfig,
     runSelfAuthoredAimReflectionAutopilotRuntime,
+    selfAuthoredAimReappraisalRuntimeConfig,
+    runSelfAuthoredAimReappraisalAutopilotRuntime,
+    runSelfAuthoredAimLifecycleAutopilotRuntime,
     dreamInsightReflectionRuntimeConfig,
     runDreamInsightReflectionAutopilotRuntime,
     runDreamReflectionLifecycleWithPriorityRuntime,

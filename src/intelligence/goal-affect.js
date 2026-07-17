@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const selfAuthoredAimReflection = require('./self-authored-aim-reflection');
+const selfAuthoredAimReappraisal = require('./self-authored-aim-reappraisal');
 
 const RECENT_PROGRESS_DAYS = 14;
 const FORMING_GRACE_DAYS = 7;
@@ -40,6 +41,14 @@ function verifiedWant(want) {
     return want.provenance?.epistemic_status === 'receipt_bound_subject_synthesis'
       && selfAuthoredAimReflection.auditReceipt(want.provenance.generation_receipt, { want })
         .complete_chain_verified;
+  }
+  if (want.provenance?.formation_protocol === selfAuthoredAimReappraisal.FORMATION_PROTOCOL) {
+    return want.provenance?.epistemic_status === 'receipt_bound_subject_synthesis'
+      && selfAuthoredAimReappraisal.auditReceipt(want.provenance.generation_receipt, {
+        want,
+        priorWant: want.provenance.generation_receipt?.source_packet?.aims
+          ?.find(item => item.id === want.provenance.supersedes_aim_id),
+      }).complete_chain_verified;
   }
   return want.provenance?.epistemic_status === 'subject_attested';
 }

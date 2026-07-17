@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const STATUSES = new Set(['active', 'completed', 'retired']);
 const ORIGINS = new Set(['self_generated', 'user_suggested', 'system_seed', 'unknown']);
 const RECEIPT_BOUND_FORMATION_PROTOCOL = 'server_direct_subject_aim_reflection_v1';
+const RECEIPT_BOUND_REAPPRAISAL_PROTOCOL = 'server_direct_subject_aim_reappraisal_v1';
 
 function cleanText(value, name, max, required = false) {
   if (value == null && !required) return '';
@@ -33,10 +34,12 @@ function cleanProvenance(value, now) {
     throw new Error('self-generated wants require formation evidence');
   }
   const formation_protocol = cleanText(value.formation_protocol, 'provenance.formation_protocol', 100);
-  const receiptBound = formation_protocol === RECEIPT_BOUND_FORMATION_PROTOCOL;
+  const receiptBound = [RECEIPT_BOUND_FORMATION_PROTOCOL,
+    RECEIPT_BOUND_REAPPRAISAL_PROTOCOL].includes(formation_protocol);
   if (formation_protocol && !receiptBound) throw new Error('provenance.formation_protocol is invalid');
   let generation_receipt = null;
   let source_dream_id = '';
+  let supersedes_aim_id = '';
   if (receiptBound) {
     source_dream_id = cleanText(value.source_dream_id, 'provenance.source_dream_id', 500, true);
     if (!value.generation_receipt || typeof value.generation_receipt !== 'object'
@@ -47,6 +50,10 @@ function cleanProvenance(value, now) {
     if (!/^[a-f0-9]{64}$/.test(String(generation_receipt.receipt_commitment || ''))) {
       throw new Error('receipt-bound wants require a committed generation receipt');
     }
+    if (formation_protocol === RECEIPT_BOUND_REAPPRAISAL_PROTOCOL) {
+      supersedes_aim_id = cleanText(value.supersedes_aim_id,
+        'provenance.supersedes_aim_id', 100, true);
+    }
   }
   return {
     origin,
@@ -56,6 +63,7 @@ function cleanProvenance(value, now) {
     epistemic_status: receiptBound ? 'receipt_bound_subject_synthesis'
       : origin === 'self_generated' ? 'subject_attested' : 'source_labeled',
     ...(receiptBound ? { formation_protocol, source_dream_id, generation_receipt } : {}),
+    ...(supersedes_aim_id ? { supersedes_aim_id } : {}),
   };
 }
 
@@ -81,7 +89,7 @@ function cleanProgress(value) {
     if (typeof entry === 'string') return cleanText(entry, `progress[${index}]`, 1000, true);
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`progress[${index}] is invalid`);
     return {
-      at: cleanText(entry.at, `progress[${index}].at`, 40, true),
+      at: cleanText(entry.at || entry.date, `progress[${index}].at`, 40, true),
       note: cleanText(entry.note, `progress[${index}].note`, 1000, true),
       evidence: cleanEvidence(entry.evidence || []),
     };
@@ -122,7 +130,9 @@ function normalizeWantUpdate(previousItems, requestedItems, options = {}) {
       throw new Error(`evaluation is immutable for existing id ${id}`);
     }
     const progress = cleanProgress(raw.progress);
-    if (old?.progress && (progress.length < old.progress.length || old.progress.some((entry, i) => stableHash(entry) !== stableHash(progress[i])))) {
+    const previousProgress = old?.progress ? cleanProgress(old.progress) : [];
+    if (old?.progress && (progress.length < previousProgress.length
+      || previousProgress.some((entry, i) => stableHash(entry) !== stableHash(progress[i])))) {
       throw new Error(`progress history is append-only for existing id ${id}`);
     }
     const provenance = old?.provenance || (old ? {
@@ -175,5 +185,5 @@ function verifyWantHistory(events, currentRecord) {
   return { valid: true, events: events.length, head: events.length ? events[events.length - 1].record_hash : null };
 }
 
-module.exports = { RECEIPT_BOUND_FORMATION_PROTOCOL, normalizeWantUpdate, stableHash,
-  wantRevisionEvent, verifyWantHistory };
+module.exports = { RECEIPT_BOUND_FORMATION_PROTOCOL, RECEIPT_BOUND_REAPPRAISAL_PROTOCOL,
+  normalizeWantUpdate, stableHash, wantRevisionEvent, verifyWantHistory };

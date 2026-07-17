@@ -51,6 +51,7 @@ const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 const dreamInsightReflection = require('./dream-insight-reflection');
+const selfAuthoredAimReappraisal = require('./self-authored-aim-reappraisal');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -1086,6 +1087,27 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       source_dreams: new Set(eligible.flatMap(({ insight }) =>
         (insight.formation_record?.source_ideas || []).map(source => source.dream_id))).size,
       insight_ids: eligible.map(({ insight }) => insight.id),
+    };
+  }
+
+  function aimReappraisalEvidenceSnapshot() {
+    const dreams = currentDreams();
+    let wants = [];
+    try {
+      const current = getWants();
+      wants = Array.isArray(current) ? current : [];
+    } catch { wants = []; }
+    const lifecycle = selfAuthoredAimReappraisal.status(dreams, wants, { enabled: true });
+    return {
+      attempts: lifecycle.report.attempts,
+      retained: lifecycle.report.retained,
+      revised: lifecycle.report.revised,
+      retired: lifecycle.report.retired,
+      abstained: lifecycle.report.abstained,
+      failed_closed: lifecycle.report.failed_closed,
+      replay_verified: lifecycle.report.replay_verified,
+      active_reappraisal_formed_aims: wants.filter(want => want?.status === 'active'
+        && want.provenance?.formation_protocol === selfAuthoredAimReappraisal.FORMATION_PROTOCOL).length,
     };
   }
 
@@ -4659,6 +4681,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     return { ...buildIndicatorReport(auditedState, clock(), {
       dream_insight_evidence: dreamInsightEvidenceSnapshot(),
+      aim_reappraisal_evidence: aimReappraisalEvidenceSnapshot(),
     }),
       operational_environment: operationalEnvironmentStatus() };
   }
@@ -9932,12 +9955,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const dashboardDreams = insightReflectionSealed ? [] : getDreams();
     const insightReflectionStatus = insightReflectionSealed ? null
       : dreamInsightReflection.status(dashboardDreams, { enabled: true });
+    const aimReappraisalStatus = insightReflectionSealed ? null
+      : selfAuthoredAimReappraisal.status(dashboardDreams, getWants(), { enabled: true });
+    const replayVerifiedAimLifecycleChanges = (aimReappraisalStatus?.report?.revised || 0)
+      + (aimReappraisalStatus?.report?.retired || 0);
     const insightCandidates = insightReflectionSealed ? []
       : dreamInsight.dreamInsights(dashboardDreams).map(item => item.insight)
         .filter(item => item.status === 'candidate');
     const reflectionSignals = (cognition.surprises || []).length + (cognition.mind_changes || []).length
       + unresolvedPulses + viewpointReappraisals.length + currentViewpoints.length
-      + (insightReflectionStatus?.report?.attempts || 0) + insightCandidates.length;
+      + (insightReflectionStatus?.report?.attempts || 0) + insightCandidates.length
+      + (aimReappraisalStatus?.report?.attempts || 0);
     const researchEvents = cognition.research_ledger?.events?.length || 0;
     const appraisal = cognition.appraisal || {};
     const calibrationResolved = cognition.calibration?.resolved || 0;
@@ -9982,7 +10010,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
         learning: metric(scaleCount(activeExperiments + (cognition.development || []).length, 10), `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories`, activeExperiments + (cognition.development || []).length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
-        motivation: metric(strongestDriveLevel, strongestDrive ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%` : 'awaiting first cycle', Boolean(strongestDrive)),
+        motivation: metric(strongestDriveLevel, strongestDrive
+          ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}`
+          : `awaiting first cycle; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle changes`,
+        Boolean(strongestDrive) || replayVerifiedAimLifecycleChanges > 0),
         experience: metric(experience.length ? terminalExperience / experience.length : 0, `${terminalExperience}/${experience.length} functional moments terminal; replay verification loads with details`, experience.length > 0),
         continuity: metric(scaleCount(handoffs.length, 12), `${handoffs.length} recorded handoffs; replay verification loads with details`, handoffs.length > 0),
         'integrated-self': integratedSelfSealed
@@ -9998,7 +10029,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         appraisal: { label: appraisal.label || 'awaiting first cycle', updated: appraisal.updated || null,
           calibration_resolved: calibrationResolved, brier: cognition.calibration?.brier ?? null },
         motivation: { strongest_name: strongestDriveName, strongest_level: strongestDriveLevel,
-          drives: drives.slice(0, 6).map(([name, value]) => ({ name, level: value.level || 0 })) },
+          drives: drives.slice(0, 6).map(([name, value]) => ({ name, level: value.level || 0 })),
+          aim_reappraisals: aimReappraisalStatus?.report?.attempts || 0,
+          aim_revisions: aimReappraisalStatus?.report?.revised || 0,
+          aim_retirements: aimReappraisalStatus?.report?.retired || 0,
+          replay_verified_aim_lifecycle_changes: replayVerifiedAimLifecycleChanges },
         integrated_self: { sealed: integratedSelfSealed, domains: integratedDomains, frame_count: frames.length },
         self_model: { sealed: activeContextTrial && behavioralSelfRevisions.length > 0,
           active_claims: activeClaims, open_probes: openProbes,
