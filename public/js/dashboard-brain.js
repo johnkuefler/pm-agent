@@ -188,7 +188,7 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'responsiveness', label: 'Responsiveness', layer: 'applied', x: .84, y: .30,
-    description: 'Measured first-delivery latency on Slack, Zoom chat, and live voice, protected from extra-round research work by Nora\'s cognitive latency firewall.',
+    description: 'Measured first-delivery latency, prompt-size envelopes, and stage timings on Slack, Zoom chat, and live voice, protected from extra-round research work by Nora\'s cognitive latency firewall.',
     links: ['attention', 'agency', 'research'],
     read: state => {
       const performance = state.cognition?.responsiveness || {};

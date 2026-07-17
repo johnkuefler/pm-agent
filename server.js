@@ -1247,13 +1247,12 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
   }
 }
 
-function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, interactionId = null,
-  trigger = null } = {}) {
+function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, promptChars = null,
+  interactionId = null, trigger = null } = {}) {
   if (!startedAt || !interactivePerformance.BUDGET_MS[surface]) return null;
-  const assessment = interactivePerformance.assess(surface, Date.now() - startedAt);
-  const boundedStages = Object.fromEntries(Object.entries(stages)
-    .filter(([, value]) => Number.isFinite(Number(value)))
-    .map(([key, value]) => [key, Math.max(0, Math.round(Number(value)))]));
+  const assessment = interactivePerformance.assess(surface, Date.now() - startedAt,
+    { promptChars, stages });
+  const boundedStages = assessment.stages;
   try {
     const trace = intelligence.recordTrace({
       channel: surface === 'realtime' ? 'meeting' : surface,
@@ -1267,8 +1266,7 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, int
       ],
       interaction_id: interactionId,
       preview: trigger ? String(trigger).slice(0, 120) : String(assessment.latency_ms),
-      outcome: { ...assessment, stages: boundedStages,
-        protocol_version: interactivePerformance.PROTOCOL_VERSION },
+      outcome: assessment,
     });
     console.log(`⚡ ${surface} first delivery ${assessment.latency_ms}ms / ${assessment.budget_ms}ms (${assessment.within_budget ? 'within budget' : 'over budget'})`);
     return trace;
@@ -3446,6 +3444,7 @@ app.post('/webhook/chat', async (req, res) => {
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
     if (!zoomAttachLiveTools) zoomTail += '\n\nThis is a bounded social turn. No live tools are attached because the message does not ask for information or action. Respond naturally and briefly.';
     const zoomToolSetupFinishedAt = Date.now();
+    const zoomPromptChars = zoomStable.length + zoomTail.length;
 
     const zoomReq = {
       // Bounded conversational/status turns use Sonnet for human-speed delivery; substantive
@@ -3494,6 +3493,7 @@ app.post('/webhook/chat', async (req, res) => {
       { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
     );
     recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
+      promptChars: zoomPromptChars,
       stages: {
         prepare_ms: providerStartedAt - interactionStartedAt,
         recall_ms: zoomRecallFinishedAt - zoomRecallStartedAt,
@@ -6116,6 +6116,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       messages: claudeMessages.slice(),
       ...(toolDefs.length ? { tools: toolDefs } : {})
     };
+    const slackPromptChars = slackStable.length + tail.length;
     const anthropicHeaders = { headers: {
       'Content-Type': 'application/json',
       'x-api-key': process.env.ANTHROPIC_API_KEY,
@@ -6401,7 +6402,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (reacted) {
         latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
         recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
-          stages: latencyStages, interactionId: key, trigger: text });
+          stages: latencyStages, promptChars: slackPromptChars, interactionId: key, trigger: text });
         recordIntrospectiveResponse(`:${emoji}:`);
         recordGoalResponse(`:${emoji}:`, false);
         recordEndogenousAttentionResponse(`:${emoji}:`, false);
@@ -6483,7 +6484,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
           recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
-            stages: latencyStages, interactionId: key, trigger: text });
+            stages: latencyStages, promptChars: slackPromptChars, interactionId: key, trigger: text });
         }
       }
     } catch (error) {
@@ -8815,7 +8816,8 @@ wss.on('connection', async (ws, req) => {
           const latencyMs = Date.now() - s.voiceTriggerAt;
           s.voiceFirstAudioPending = false;
           recordInteractiveResponseLatency({ surface: 'realtime', startedAt: s.voiceTriggerAt,
-            interactionId: botId, trigger: s.voiceTriggerReason || 'voice turn' });
+            promptChars: systemPrompt.length, interactionId: botId,
+            trigger: s.voiceTriggerReason || 'voice turn' });
           console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
         }
       }

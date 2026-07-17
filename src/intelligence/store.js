@@ -10300,8 +10300,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .filter(([, value]) => value.p95_ms !== null)
       .map(([surface, value]) => `${surface} p95 ${value.p95_ms}ms`)
       .join(', ');
+    const promptP95 = Object.entries(responsiveness.surfaces)
+      .filter(([, value]) => value.prompt_p95_chars !== null)
+      .map(([surface, value]) => `${surface} prompt p95 ${value.prompt_p95_chars} chars`)
+      .join(', ');
     const responsivenessEvidence = responsiveness.samples
-      ? `${responsiveness.within_budget}/${responsiveness.samples} within budget${responseP95 ? `; ${responseP95}` : ''}`
+      ? `${responsiveness.within_budget}/${responsiveness.samples} within budget${responseP95 ? `; ${responseP95}` : ''}${promptP95 ? `; ${promptP95}` : ''}`
       : 'awaiting first measured Slack, Zoom chat, or voice response';
     const scaleCount = (value, saturation) => 1 - Math.exp(-(Number(value) || 0) / saturation * 2.2);
     const metric = (level, evidence, available) => ({ level: clamp01(level), evidence, available: Boolean(available) });

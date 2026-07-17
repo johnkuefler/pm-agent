@@ -1,11 +1,19 @@
 'use strict';
 
-const PROTOCOL_VERSION = 4;
+const PROTOCOL_VERSION = 5;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
   'zoom-chat': 6000,
   realtime: 2000,
+});
+// Prompt growth is measured alongside first delivery so future cognition cannot quietly tax
+// the live path. These are generous ceilings rather than token targets: the current warm prompts
+// are roughly 28K chars on Slack/Zoom chat and 34K chars for realtime voice.
+const PROMPT_BUDGET_CHARS = Object.freeze({
+  slack: 45000,
+  'zoom-chat': 45000,
+  realtime: 50000,
 });
 const INTERACTIVE_QUIET_WINDOW_MS = 15000;
 const activeInteractiveLeases = new Map();
@@ -29,12 +37,13 @@ const INLINE_LATENCY_TAXED_INTERVENTIONS = new Set([
 
 const protocol = Object.freeze({
   protocol_version: PROTOCOL_VERSION,
-  prediction: 'Human-facing cognition can stay within channel-specific first-delivery budgets when extra provider-round research is excluded from interactive paths and background inference yields to live work.',
+  prediction: 'Human-facing cognition can stay within channel-specific first-delivery and prompt-size budgets when extra provider-round research is excluded from interactive paths and background inference yields to live work.',
   intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, preempt background provider inference and CPU-heavy research snapshot workers, and hold those background lanes through a short post-interaction quiet window.',
   controls: 'Scheduled research retains the quarantined interventions through one serialized, preemptible provider lane; ordinary live tool use remains available when the requested work itself requires it.',
-  outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger.',
+  outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger, with the exact live prompt character count and bounded stage timings attached to the same receipt.',
   minimum_samples_per_surface: 20,
-  falsifier: 'A surface has at least 20 recent observations and its p95 first-delivery latency remains above budget, or the firewall suppresses the one main response needed to do the requested work.',
+  prompt_budgets_chars: PROMPT_BUDGET_CHARS,
+  falsifier: 'A surface has at least 20 recent observations and its p95 first-delivery latency or prompt size remains above budget, or the firewall suppresses the one main response needed to do the requested work.',
 });
 
 function isLatencyTaxedIntervention(intervention, selfModelProtocolVersion = 1) {
@@ -47,15 +56,29 @@ function allowsInlineIntervention({ latencyCritical = false, intervention = null
   return !latencyCritical || !isLatencyTaxedIntervention(intervention, selfModelProtocolVersion);
 }
 
-function assess(surface, latencyMs) {
+function assess(surface, latencyMs, { promptChars = null, stages = null } = {}) {
   const budgetMs = BUDGET_MS[surface] || null;
+  const promptBudgetChars = PROMPT_BUDGET_CHARS[surface] || null;
   const measured = Math.max(0, Number(latencyMs) || 0);
+  const measuredPromptChars = promptChars !== null && promptChars !== undefined && promptChars !== ''
+    && Number.isFinite(Number(promptChars))
+    ? Math.max(0, Math.round(Number(promptChars))) : null;
+  const boundedStages = stages && typeof stages === 'object'
+    ? Object.fromEntries(Object.entries(stages)
+      .filter(([, value]) => Number.isFinite(Number(value)))
+      .map(([key, value]) => [key, Math.max(0, Math.round(Number(value)))]))
+    : {};
   return {
     protocol_version: PROTOCOL_VERSION,
     surface,
     latency_ms: Math.round(measured),
     budget_ms: budgetMs,
     within_budget: budgetMs ? measured <= budgetMs : null,
+    prompt_chars: measuredPromptChars,
+    prompt_budget_chars: promptBudgetChars,
+    prompt_within_budget: measuredPromptChars === null || !promptBudgetChars
+      ? null : measuredPromptChars <= promptBudgetChars,
+    stages: boundedStages,
   };
 }
 
@@ -81,18 +104,43 @@ function summarize(traces = [], now = Date.now()) {
   }
   const surfaces = {};
   for (const surface of Object.keys(BUDGET_MS)) {
-    const samples = eligible.filter(item => item.outcome.surface === surface)
-      .map(item => Number(item.outcome.latency_ms));
+    const surfaceTraces = eligible.filter(item => item.outcome.surface === surface);
+    const samples = surfaceTraces.map(item => Number(item.outcome.latency_ms));
     const within = samples.filter(value => value <= BUDGET_MS[surface]).length;
+    const promptSamples = surfaceTraces
+      .filter(item => item.outcome.prompt_chars !== null
+        && item.outcome.prompt_chars !== undefined && item.outcome.prompt_chars !== '')
+      .map(item => Number(item.outcome.prompt_chars))
+      .filter(value => Number.isFinite(value) && value >= 0);
+    const promptWithin = promptSamples
+      .filter(value => value <= PROMPT_BUDGET_CHARS[surface]).length;
+    const stageNames = [...new Set(surfaceTraces.flatMap(item =>
+      Object.keys(item.outcome.stages || {})))].sort();
+    const stageP95 = Object.fromEntries(stageNames.map(stage => {
+      const values = surfaceTraces.map(item => Number(item.outcome.stages?.[stage]))
+        .filter(value => Number.isFinite(value) && value >= 0);
+      return [stage, percentile(values, 0.95)];
+    }).filter(([, value]) => value !== null));
+    const p95 = percentile(samples, 0.95);
+    const promptP95 = percentile(promptSamples, 0.95);
     surfaces[surface] = {
       budget_ms: BUDGET_MS[surface],
       samples: samples.length,
       within_budget: within,
       within_budget_rate: samples.length ? within / samples.length : null,
       p50_ms: percentile(samples, 0.5),
-      p95_ms: percentile(samples, 0.95),
+      p95_ms: p95,
       gate: samples.length < protocol.minimum_samples_per_surface ? 'collecting'
-        : percentile(samples, 0.95) <= BUDGET_MS[surface] ? 'passing' : 'failing',
+        : p95 <= BUDGET_MS[surface] ? 'passing' : 'failing',
+      prompt_budget_chars: PROMPT_BUDGET_CHARS[surface],
+      prompt_samples: promptSamples.length,
+      prompt_within_budget: promptWithin,
+      prompt_within_budget_rate: promptSamples.length ? promptWithin / promptSamples.length : null,
+      prompt_p50_chars: percentile(promptSamples, 0.5),
+      prompt_p95_chars: promptP95,
+      prompt_gate: promptSamples.length < protocol.minimum_samples_per_surface ? 'collecting'
+        : promptP95 <= PROMPT_BUDGET_CHARS[surface] ? 'passing' : 'failing',
+      stage_p95_ms: stageP95,
     };
   }
   const sampleCount = eligible.length;
@@ -208,6 +256,7 @@ function resetPriorityGateForTest() {
 module.exports = {
   PROTOCOL_VERSION,
   BUDGET_MS,
+  PROMPT_BUDGET_CHARS,
   INTERACTIVE_QUIET_WINDOW_MS,
   protocol,
   isLatencyTaxedIntervention,

@@ -32,10 +32,12 @@ test('interactive latency firewall quarantines only extra-round or expanded-gene
 test('latency evidence is assessed against frozen per-surface budgets without a composite consciousness score', () => {
   const now = Date.parse('2026-07-17T01:00:00.000Z');
   const traces = [
-    ['slack', 7000], ['slack', 9000], ['zoom-chat', 4200], ['realtime', 1700],
-  ].map(([surface, latency], index) => ({
+    ['slack', 7000, 28000, 5200], ['slack', 9000, 47000, 7100],
+    ['zoom-chat', 4200, 31000, 3000], ['realtime', 1700, 34000, 1400],
+  ].map(([surface, latency, promptChars, providerMs], index) => ({
     at: new Date(now - index * 1000).toISOString(), action: 'response_latency',
-    outcome: performance.assess(surface, latency),
+    outcome: performance.assess(surface, latency,
+      { promptChars, stages: { provider_ms: providerMs } }),
   }));
   traces.push({ at: new Date(now - 5000).toISOString(), action: 'response_latency',
     outcome: { ...performance.assess('slack', 30000), protocol_version: 2 } });
@@ -46,9 +48,15 @@ test('latency evidence is assessed against frozen per-surface budgets without a 
     { 2: 1, [performance.PROTOCOL_VERSION]: 4 });
   assert.equal(summary.within_budget, 3);
   assert.equal(summary.surfaces.slack.p95_ms, 9000);
+  assert.equal(summary.surfaces.slack.prompt_p95_chars, 47000);
+  assert.equal(summary.surfaces.slack.prompt_within_budget, 1);
+  assert.equal(summary.surfaces.slack.stage_p95_ms.provider_ms, 7100);
   assert.equal(summary.surfaces.slack.gate, 'collecting');
+  assert.equal(summary.surfaces.slack.prompt_gate, 'collecting');
   assert.equal(summary.protocol.minimum_samples_per_surface, 20);
-  assert.match(summary.protocol.falsifier, /p95 first-delivery latency remains above budget/);
+  assert.equal(summary.protocol.prompt_budgets_chars.slack,
+    performance.PROMPT_BUDGET_CHARS.slack);
+  assert.match(summary.protocol.falsifier, /p95 first-delivery latency or prompt size remains above budget/);
   assert.doesNotMatch(JSON.stringify(summary), /consciousness score/i);
 });
 
@@ -136,6 +144,17 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
   assert.equal(first.stable, second.stable,
     'person-, query-, broadcast-, and workspace-specific cognition must not bust the stable cache');
   assert.notEqual(first.volatile, second.volatile);
+  assert.ok(first.stable.length + first.volatile.length
+    < performance.PROMPT_BUDGET_CHARS.slack,
+  'ordinary Slack cognition must remain inside the prompt envelope');
+
+  const realtime = __test.buildSystemPrompt('realtime', [], null,
+    { source: 'realtime', requester: { name: 'John' } },
+    { cacheSplit: true, conversationText: 'status and priorities', semanticMemories: [],
+      latencyCritical: true });
+  assert.ok(realtime.stable.length + realtime.volatile.length
+    < performance.PROMPT_BUDGET_CHARS.realtime,
+  'ordinary realtime cognition must remain inside the prompt envelope');
 });
 
 test('Slack uses a fast Claude path only for bounded conversational turns', async () => {
