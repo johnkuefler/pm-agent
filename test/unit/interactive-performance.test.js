@@ -91,6 +91,14 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'realtime'/);
   assert.match(server, /settleWithin\(retrieveSemanticMemories\(convText\), 900/,
     'optional semantic recall must lose quickly to the live reply path');
+  assert.match(server, /Slack thread context'\)/,
+    'optional Slack thread context must lose quickly to the live reply path');
+  assert.match(server, /Slack linked-page enrichment'\)/,
+    'optional linked-page enrichment must lose quickly to the live reply path');
+  assert.match(server, /const attachLiveTools = !lightweightSocial/,
+    'bounded Slack social turns must omit irrelevant live-tool schemas');
+  assert.match(server, /const zoomAttachLiveTools = !zoomLightweightSocial/,
+    'bounded Zoom-chat social turns must omit irrelevant live-tool schemas');
   assert.match(server, /const volatileIntelligenceContext = intelligenceContext \|\| ''/,
     'changing cognition must stay outside the stable provider-cache prefix');
   assert.match(server, /beginInteractive\('slack'\)/);

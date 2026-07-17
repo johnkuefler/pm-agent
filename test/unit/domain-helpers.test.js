@@ -139,6 +139,20 @@ test('runtime situational affordances stay within the committed sixty-capability
   assert.match(overflow.constraints[0], /does not grant access/);
 });
 
+test('bounded social turns expose a truthful no-tools affordance frame', () => {
+  const capabilities = helpers.runtimeSituationalCapabilities({
+    surface: 'slack', direct: true, financialApproved: false, toolsAttached: false,
+    mcp: { inventory: [{ name: 'tool_1', connection: 'fixture', tool: 'lookup' }],
+      meta: { tool_1: { accessMode: 'read' } } },
+  });
+  assert.equal(capabilities.length, 7);
+  assert.equal(capabilities.some(item => item.key.startsWith('mcp:')), false);
+  for (const item of capabilities.filter(value => value.key !== 'financial_disclosure')) {
+    assert.equal(item.availability, 'unavailable');
+    assert.match(item.constraints.join(' '), /bounded social turn/);
+  }
+});
+
 test('missing Slack reaction scope is cached and degrades without repeated API failures', async () => {
   helpers.resetSlackReactionCapabilityForTest();
   let calls = 0;
