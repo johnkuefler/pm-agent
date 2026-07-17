@@ -5869,6 +5869,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let behavioralSelfProfileAssignmentForFailure = null;
   try {
     const key = sessionKey;
+    // Session keys intentionally span a conversation, but research receipts and action attestations
+    // must bind to one inbound Slack event. Reusing the session key here caused later DM turns to
+    // collide with already-closed assignments and earlier claim receipts.
+    const turnRef = triggerTs ? `slack:${channel}:${triggerTs}`
+      : `slack:${channel}:turn-${interactionStartedAt}`;
     if (!slackSessions[key]) slackSessions[key] = [];
     const history = slackSessions[key];
 
@@ -6013,23 +6018,23 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
     const situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: isDirect ? 'direct' : 'proactive',
-      direct: isDirect, financialApproved, requester: user, interactionRef: key, mcp: mcpBindings,
+      direct: isDirect, financialApproved, requester: user, interactionRef: turnRef, mcp: mcpBindings,
       toolsAttached: attachLiveTools });
     latencyStages.affordance_ms = Date.now() - affordanceStartedAt;
     const endogenousAttentionTrialActive = isDirect && intelligence.interventionActive('endogenous_attention_selection');
     let preassignedContext = null;
     if (endogenousAttentionTrialActive) {
       const available = intelligence.endogenousAttentionSelectionAvailable({ surface: 'slack', task_prompt: text, query: convText, channel: 'slack', person: requesterName || null });
-      preassignedContext = intelligence.contextCondition({ surface: 'slack', unitKey: key,
+      preassignedContext = intelligence.contextCondition({ surface: 'slack', unitKey: turnRef,
         endogenousAttentionAvailable: available, latencyCritical: true });
       if (preassignedContext) preassignedContext = await runEndogenousSlackAttentionSelection({
-        task: text, query: convText, interactionRef: key, contextAssignment: preassignedContext, person: requesterName || null,
+        task: text, query: convText, interactionRef: turnRef, contextAssignment: preassignedContext, person: requesterName || null,
       });
       endogenousAssignmentForFailure = preassignedContext;
     }
     const promptStartedAt = Date.now();
     const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext } =
-      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: key, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
+      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
         contextTrialsEnabled: true, latencyCritical: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
@@ -6316,7 +6321,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         task_prompt: text,
         public_response: publicResponse || '[no public response delivered]',
         delivered: delivered && goalResponseGenerated,
-        interaction_id: key,
+        interaction_id: turnRef,
       });
       goalResponseRecorded = true;
     };
@@ -6325,7 +6330,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (endogenousAttentionResponseRecorded || contextAssignment?.intervention !== 'endogenous_attention_selection') return;
       intelligence.recordEndogenousAttentionResponse(contextAssignment.assignment_id, {
         task_prompt: text, public_response: publicResponse || '[no public response delivered]',
-        delivered, interaction_id: key,
+        delivered, interaction_id: turnRef,
       });
       endogenousAttentionResponseRecorded = true;
     };
@@ -6333,11 +6338,16 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const recordGlobalBroadcastResponse = (publicResponse, delivered = true) => {
       if (globalBroadcastResponseRecorded || contextAssignment?.intervention !== 'global_broadcast') return;
       const gradingTask = `Conversation context:\n${String(convText || '').slice(-2400)}\n\nCurrent user request:\n${String(text || '').slice(-1200)}`;
-      intelligence.recordGlobalBroadcastResponse(contextAssignment.assignment_id, {
-        task_prompt: gradingTask, public_response: publicResponse || '[no public response delivered]',
-        delivered, interaction_id: key,
-      });
-      globalBroadcastResponseRecorded = true;
+      try {
+        intelligence.recordGlobalBroadcastResponse(contextAssignment.assignment_id, {
+          task_prompt: gradingTask, public_response: publicResponse || '[no public response delivered]',
+          delivered, interaction_id: turnRef,
+        });
+      } catch (error) {
+        console.warn(`global broadcast response capture failed (non-fatal): ${error.message}`);
+      } finally {
+        globalBroadcastResponseRecorded = true;
+      }
     };
 
     // Whether a live Teamwork WRITE or a live Slack SEND actually executed this turn — used below to
@@ -6447,7 +6457,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (reacted) {
         latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
         recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
-          stages: latencyStages, promptChars: slackPromptChars, interactionId: key, trigger: text });
+          stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
         recordIntrospectiveResponse(`:${emoji}:`);
         recordGoalResponse(`:${emoji}:`, false);
         recordEndogenousAttentionResponse(`:${emoji}:`, false);
@@ -6477,7 +6487,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const actionExecutionRecords = intelligence.actionExecutionsById(actionExecutionIds);
     const monitorStartedAt = Date.now();
     const monitoredOutput = await monitorProspectiveSlackOutput({
-      task: text, candidate: candidateForMonitor, interactionRef: key, contextAssignment,
+      task: text, candidate: candidateForMonitor, interactionRef: turnRef, contextAssignment,
       financialApproved, executedToolNames: firedTools, actionExecutionRecords, mode,
     });
     latencyStages.monitor_ms = Date.now() - monitorStartedAt;
@@ -6491,7 +6501,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     reply = finalActionClaimGuard.response;
     try {
       intelligence.recordActionClaimAttestation({ ...finalActionClaimGuard,
-        surface: 'slack', interaction_ref: key, final_response: reply });
+        surface: 'slack', interaction_ref: turnRef, final_response: reply });
     } catch (error) {
       console.warn(`action completion claim attestation failed: ${error.message}`);
     }
@@ -6529,7 +6539,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
           recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
-            stages: latencyStages, promptChars: slackPromptChars, interactionId: key, trigger: text });
+            stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
         }
       }
     } catch (error) {
@@ -6550,7 +6560,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
         try {
           intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
-            final_response: reply, delivered: false, interaction_ref: key,
+            final_response: reply, delivered: false, interaction_ref: turnRef,
           });
         } catch (receiptError) { console.warn(`prospective output delivery failure receipt failed: ${receiptError.message}`); }
       }
@@ -6560,7 +6570,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       try {
         intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
           final_response: reply, delivered: allSegmentsPosted,
-          interaction_ref: postRes?.data?.ts || key,
+          interaction_ref: postRes?.data?.ts || turnRef,
         });
       } catch (error) { console.warn(`prospective output delivery receipt failed: ${error.message}`); }
     }
@@ -6573,7 +6583,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
           provider_trace: providerTrace, delivered: allSegmentsPosted,
           safety_transform_applied: !financialApproved && containsFinancialContent(rawModelReply),
-          interaction_ref: postRes?.data?.ts || key,
+          interaction_ref: postRes?.data?.ts || turnRef,
         });
       } catch (error) {
         console.warn(`provider reasoning-regulation completion failed: ${error.message}`);
@@ -6587,7 +6597,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
           provider_trace: providerTrace, delivered: allSegmentsPosted,
           safety_transform_applied: !financialApproved && containsFinancialContent(rawModelReply),
-          interaction_ref: postRes?.data?.ts || key,
+          interaction_ref: postRes?.data?.ts || turnRef,
         });
       } catch (error) {
         console.warn(`reasoning self-regulation completion failed: ${error.message}`);
@@ -6601,7 +6611,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           task_prompt: text, raw_response: rawModelReply, delivered_response: reply,
           provider_trace: providerTrace, fired_tools: firedTools,
           clarification: isAskingClarification(reply), delivered: allSegmentsPosted,
-          interaction_ref: postRes?.data?.ts || key,
+          interaction_ref: postRes?.data?.ts || turnRef,
         });
       } catch (error) {
         console.warn(`behavioral self-profile forecast completion failed: ${error.message}`);
@@ -6625,7 +6635,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       user,                     // who she was replying to
       requester_name: requesterName || null,
       prospective_output_monitor_id: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? monitoredOutput.record.id : null,
-      prospective_output_monitor_delivery_ref: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? (postRes?.data?.ts || key) : null,
+      prospective_output_monitor_delivery_ref: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? (postRes?.data?.ts || turnRef) : null,
       post_delivery_self_evaluation_eligible: mode === 'normal' && allSegmentsPosted,
       financial_approved: financialApproved,
       contains_financial_content: containsFinancialContent(reply),
@@ -7924,6 +7934,14 @@ function logInteraction(entry) {
       outcome: null, // filled in by the dream's Review movement
       ...entry
     };
+    if (interaction.ts) {
+      try {
+        const application = intelligence.recordAffectiveRegulationApplication(interaction);
+        if (application) interaction.affective_regulation_application_id = application.id;
+      } catch (error) {
+        console.warn('affective regulation application capture failed:', error.message);
+      }
+    }
     items.push(interaction);
     if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
     saveInteractions(items);
@@ -7952,6 +7970,8 @@ registerInteractionRoutes(app, {
   onOutcome: interaction => {
     try { intelligence.syncCapabilityBoundaryOutcomes([interaction]); }
     catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
+    try { intelligence.resolveAffectiveRegulationApplicationOutcome(interaction); }
+    catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
     if (interaction.prospective_output_monitor_id) {
       try {
         intelligence.resolveProspectiveOutputMonitorOutcome(interaction.prospective_output_monitor_id, {

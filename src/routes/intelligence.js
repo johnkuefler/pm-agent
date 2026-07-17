@@ -299,7 +299,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
 
   app.get('/cognition', requireAuth, (_req, res) => cachedJson(res, 'cognition',
     () => store.cognitionSnapshot(getPredictions()), { ttlMs: 10000 }));
-  app.get('/affective-regulation', requireAuth, (req, res) => res.json(store.affectiveRegulationSnapshot()));
+  app.get('/affective-regulation', requireAuth, (req, res) => {
+    const includeRecords = req.query.include_records === 'true';
+    return cachedJson(res, `affective-regulation:${includeRecords ? 'records' : 'summary'}`,
+      () => store.affectiveRegulationSnapshot({ includeRecords }), { ttlMs: 10000 });
+  });
   app.get('/goal-affect', requireAuth, (req, res) => res.json(store.goalAffectSnapshot()));
   app.get('/relational-affect', requireAuth, (req, res) => res.json(store.relationalAffectSnapshot()));
   app.get('/endogenous-dynamics', requireAuth, (req, res) => res.json(store.endogenousDynamicsSnapshot()));

@@ -658,7 +658,10 @@ function registerCoworkInstructionsRoute(app) {
     current appraisal and drives. It can regulate verification, breadth, correction posture, and one
     bounded evidence-labeled synthesis after requested work, but cannot alter facts, conclusions,
     priorities, authority, approvals, privacy, safety, or tool permissions. It is functional affective
-    control, not a subjective feeling report or evidence of phenomenal consciousness.
+    control, not a subjective feeling report or evidence of phenomenal consciousness. The compact default
+    also reports replay-valid natural policy transitions and post-delivery Slack outcome counts without
+    retaining message content; use ?include_records=true for the audited receipts. Outcomes gathered during
+    an active context experiment are excluded from scoring, and all projections remain observational.
   - GET /goal-affect returns a content-committed projection of Nora's provenance-valid active wants as
     forming, progressing, or stalled. It accepts subject-attested aims and fully receipt-verified
     background professional-aim reflections; unverified repository seeds remain auditable in /self but

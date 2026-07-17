@@ -482,6 +482,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(regulation.body.report.mechanism_present, true);
   assert.equal(regulation.body.report.current_verified, true);
   assert.ok(regulation.body.current.audit.complete_chain_verified);
+  assert.equal(regulation.body.transitions, undefined);
+  const regulationEvidence = await request('/affective-regulation?include_records=true');
+  assert.ok(Array.isArray(regulationEvidence.body.transitions));
+  assert.ok(Array.isArray(regulationEvidence.body.applications));
   assert.equal((await request('/endogenous-dynamics/tick', { method: 'POST', body: { now: '2026-07-13T00:00:00Z' } })).response.status, 401);
   const dynamicsTick = await request('/endogenous-dynamics/tick', { method: 'POST', headers: { 'X-Nora-Research-Key': 'integration-research-key' }, body: { now: '2026-07-13T00:00:00Z', wants: [{
     id: 'api-dynamics-want', want: 'Calibrate my own uncertainty', status: 'active', progress: [],

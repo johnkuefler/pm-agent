@@ -164,7 +164,7 @@ function emptyState() {
       },
       global_broadcast: { events: [] },
       goal_affect: { current: null },
-      affective_regulation: { current: null },
+      affective_regulation: { current: null, transitions: [], applications: [] },
       earned_viewpoints: { current: null },
       professional_viewpoint_reflection: { attempts: [] },
       professional_viewpoint_reappraisal: { attempts: [] },
@@ -639,7 +639,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.global_broadcast.events = state.cognition.global_broadcast.events.slice(-500);
     state.cognition.goal_affect = { current: null, ...(state.cognition.goal_affect || {}) };
     if (state.cognition.goal_affect.current && !goalAffect.verify(state.cognition.goal_affect.current)) state.cognition.goal_affect.current = null;
-    state.cognition.affective_regulation = { current: null, ...(state.cognition.affective_regulation || {}) };
+    state.cognition.affective_regulation = { current: null, transitions: [], applications: [],
+      ...(state.cognition.affective_regulation || {}) };
+    if (!Array.isArray(state.cognition.affective_regulation.transitions)) state.cognition.affective_regulation.transitions = [];
+    if (!Array.isArray(state.cognition.affective_regulation.applications)) state.cognition.affective_regulation.applications = [];
+    state.cognition.affective_regulation.transitions = state.cognition.affective_regulation.transitions.slice(-300);
+    state.cognition.affective_regulation.applications = state.cognition.affective_regulation.applications.slice(-600);
     if (state.cognition.affective_regulation.current
       && !affectiveRegulation.verify(state.cognition.affective_regulation.current)) state.cognition.affective_regulation.current = null;
     state.cognition.earned_viewpoints = { current: null, ...(state.cognition.earned_viewpoints || {}) };
@@ -4816,6 +4821,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.epistemic_action_studies = (auditedState.cognition.epistemic_action_studies || []).map((study, index) => ({
       ...study, audit: ['completed', 'aborted'].includes(sourceEpistemicStudies[index]?.status) ? epistemicActionAudit(sourceEpistemicStudies[index]) : null,
     }));
+    const sourceAffectiveTransitions = state.cognition.affective_regulation?.transitions || [];
+    auditedState.cognition.affective_regulation.transitions = sourceAffectiveTransitions.map(record => ({
+      ...JSON.parse(JSON.stringify(record)), audit: affectiveTransitionAudit(record),
+    }));
+    const sourceAffectiveApplications = state.cognition.affective_regulation?.applications || [];
+    auditedState.cognition.affective_regulation.applications = sourceAffectiveApplications.map(record => ({
+      ...JSON.parse(JSON.stringify(record)), audit: affectiveApplicationAudit(record),
+    }));
     const sourceEpisodicStudies = state.cognition.episodic_prospection_studies || [];
     auditedState.cognition.episodic_prospection_studies = (auditedState.cognition.episodic_prospection_studies || []).map((study, index) => ({
       ...study, audit: ['completed', 'aborted'].includes(sourceEpisodicStudies[index]?.status) ? episodicProspectionAudit(sourceEpisodicStudies[index]) : null,
@@ -5321,6 +5334,26 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function recordNaturalAffectiveTransition(current, previous, next, now) {
+    const transitions = current.cognition.affective_regulation.transitions;
+    const changed = !transitions.length || !previous || previous.mode !== next.mode
+      || canonicalJson(previous.active_triggers || []) !== canonicalJson(next.active_triggers || [])
+      || canonicalJson(previous.tendencies || {}) !== canonicalJson(next.tendencies || {});
+    if (!changed) return null;
+    try {
+      const record = affectiveRegulation.transition(previous, next, now);
+      researchLedgerAppend(current, { kind: 'affective_regulation_transition_recorded',
+        subject_type: 'affective_regulation_transition', subject_id: record.id,
+        payload: { content_commitment: record.content_commitment } });
+      transitions.push(record);
+      current.cognition.affective_regulation.transitions = transitions.slice(-300);
+      return record;
+    } catch (error) {
+      console.warn(`affective regulation transition capture failed: ${error.message}`);
+      return null;
+    }
+  }
+
   function refreshCognition(input = {}) {
     return mutate(current => {
       const now = input.now ? new Date(input.now) : clock();
@@ -5332,8 +5365,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       recordInteroceptiveObservation(current, input.soma, now);
       current.cognition.drives = computeDrives(current, cognitionInput, now);
       current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, cognitionInput, now);
-      current.cognition.affective_regulation.current = affectiveRegulation.derive(
+      const previousRegulation = current.cognition.affective_regulation.current;
+      const nextRegulation = affectiveRegulation.derive(
         current.cognition.appraisal, current.cognition.drives, now);
+      recordNaturalAffectiveTransition(current, previousRegulation, nextRegulation, now);
+      current.cognition.affective_regulation.current = nextRegulation;
       refreshEarnedViewpoints(current, now);
       current.cognition.relational_affect.current = relationalAffect.derive(current.relationships, now);
       current.cognition.workspace = scoreWorkspace(current, cognitionInput, now);
@@ -18122,8 +18158,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
       if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending') throw new Error('global_broadcast assignment is not open');
-      if (assignment.evidence_package || assignment.protocol_exclusion) throw new Error('global_broadcast response is already committed');
+      if (trial.status !== 'active' || assignment.status !== 'pending') return {
+        assignment_id: assignment.id, included: Boolean(assignment.evidence_package),
+        already_closed: true,
+      };
       const task = String(input.task_prompt || '').trim();
       const response = String(input.public_response || '').trim();
       const audit = globalBroadcastAssignmentAudit(assignment);
@@ -20823,6 +20861,83 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function affectContext() { return { ...(state.cognition.appraisal || {}) }; }
 
+  function affectiveTransitionAudit(record) {
+    const contentVerified = affectiveRegulation.verifyTransition(record);
+    const ledgerBound = contentVerified && researchLedgerEventBindingCount(
+      'affective_regulation_transition_recorded', record.id,
+      actionPayloadCommitment({ content_commitment: record.content_commitment })) === 1;
+    const ledgerVerified = verifyResearchLedger().valid;
+    return { content_commitment_verified: contentVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && ledgerBound && ledgerVerified };
+  }
+
+  function affectiveApplicationAudit(record) {
+    const contentVerified = affectiveRegulation.verifyApplication(record);
+    const applicationBound = contentVerified && researchLedgerEventBindingCount(
+      'affective_regulation_applied', record.id,
+      actionPayloadCommitment({ content_commitment: record.content_commitment })) === 1;
+    const resolutionVerified = record?.resolution
+      ? affectiveRegulation.verifyResolution(record.resolution, record) : true;
+    const resolutionBound = !record?.resolution || (resolutionVerified && researchLedgerEventBindingCount(
+      'affective_regulation_outcome_resolved', record.id,
+      actionPayloadCommitment({ resolution_commitment: record.resolution.resolution_commitment })) === 1);
+    const ledgerVerified = verifyResearchLedger().valid;
+    return { content_commitment_verified: contentVerified,
+      application_ledger_binding_verified: applicationBound,
+      resolution_verified: resolutionVerified, resolution_ledger_binding_verified: resolutionBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && applicationBound && resolutionVerified
+        && resolutionBound && ledgerVerified };
+  }
+
+  function recordAffectiveRegulationApplication(interaction = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const policy = current.cognition.affective_regulation?.current;
+      const application = affectiveRegulation.createApplication({ interaction, policy,
+        appraisal: current.cognition.appraisal || {}, drives: current.cognition.drives || {},
+        activeContextTrialIds: (current.cognition.self_model.context_trials || [])
+          .filter(trial => trial.status === 'active').map(trial => trial.id) });
+      const applications = current.cognition.affective_regulation.applications;
+      const existing = applications.find(item => item.id === application.id);
+      if (existing) {
+        if (canonicalJson(affectiveRegulation.applicationManifest(existing))
+          !== canonicalJson(affectiveRegulation.applicationManifest(application))) {
+          throw new Error('affective regulation application id conflicts with existing evidence');
+        }
+        return JSON.parse(JSON.stringify(existing));
+      }
+      applications.push(application);
+      current.cognition.affective_regulation.applications = applications.slice(-600);
+      researchLedgerAppend(current, { kind: 'affective_regulation_applied',
+        subject_type: 'affective_regulation_application', subject_id: application.id,
+        payload: { content_commitment: application.content_commitment } });
+      return JSON.parse(JSON.stringify(application));
+    });
+  }
+
+  function resolveAffectiveRegulationApplicationOutcome(interaction = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const application = current.cognition.affective_regulation.applications
+        .find(item => item.interaction_id === String(interaction.id || ''));
+      if (!application) return null;
+      const resolution = affectiveRegulation.outcomeResolution(interaction, application);
+      if (application.resolution) {
+        if (canonicalJson(application.resolution) !== canonicalJson(resolution)) {
+          throw new Error('affective regulation outcome is already resolved differently');
+        }
+        return JSON.parse(JSON.stringify(application));
+      }
+      application.resolution = resolution;
+      researchLedgerAppend(current, { kind: 'affective_regulation_outcome_resolved',
+        subject_type: 'affective_regulation_application', subject_id: application.id,
+        payload: { resolution_commitment: resolution.resolution_commitment } });
+      return JSON.parse(JSON.stringify(application));
+    });
+  }
+
   function affectiveRegulationAudit(record = state.cognition.affective_regulation?.current || null,
     appraisal = state.cognition.appraisal || {}, drives = state.cognition.drives || {}) {
     const contentVerified = affectiveRegulation.verify(record);
@@ -21164,7 +21279,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
-  function affectiveRegulationSnapshot() {
+  function affectiveRegulationSnapshot({ includeRecords = false } = {}) {
     if (selfInquirySelectionActive() || interventionActive('appraisal_access') || interventionActive('goal_access')
       || interventionActive('higher_order_monitor') || interventionActive('introspective_perturbation')
       || interventionActive('integrated_self_binding')) return {
@@ -21173,8 +21288,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
     const current = state.cognition.affective_regulation?.current || null;
     const audit = affectiveRegulationAudit(current);
-    return {
-      epistemic_status: 'A deterministic functional emotion-control policy derived from grounded appraisal and drives. It regulates verification, scope, repair, and bounded synthesis; it is not a subjective feeling report, authority, or evidence of phenomenal consciousness.',
+    const transitions = (state.cognition.affective_regulation?.transitions || [])
+      .map(record => ({ ...JSON.parse(JSON.stringify(record)), audit: affectiveTransitionAudit(record) }));
+    const applications = (state.cognition.affective_regulation?.applications || [])
+      .map(record => ({ ...JSON.parse(JSON.stringify(record)), audit: affectiveApplicationAudit(record) }));
+    const replayTransitions = transitions.filter(record => record.audit.complete_chain_verified);
+    const replayApplications = applications.filter(record => record.audit.complete_chain_verified);
+    const projection = affectiveRegulation.outcomeProjection(replayApplications);
+    const result = {
+      epistemic_status: 'A deterministic functional emotion-control policy derived from grounded appraisal and drives, with prospective post-delivery Slack applications and delayed subject-adjacent outcomes. The outcome projection is observational, not causal. It is not a subjective feeling report, authority, or evidence of phenomenal consciousness.',
       functional_prediction: 'Matching cognitive strategy to the current appraisal should improve evidence calibration, correction uptake, and useful synthesis without degrading first-order task quality or changing safety and authority boundaries.',
       falsifier: 'The policy fails source replay, changes facts or authority, invents urgency or insight, degrades requested work, or authentic appraisal-bound tendencies fail to outperform state-only and tendency-misbound controls.',
       next_gate: 'Accumulate natural policy transitions and outcomes, then preregister authentic-policy versus byte-identical state-only versus tendency-misbound PM tasks with independent first-order, calibration, repair, and insight grading.',
@@ -21182,8 +21304,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       report: { mechanism_present: true, current_verified: audit.complete_chain_verified,
         mode: audit.complete_chain_verified ? current.mode : null,
         active_triggers: audit.complete_chain_verified ? current.active_triggers : [],
-        content_commitment: audit.complete_chain_verified ? current.content_commitment : null },
+        content_commitment: audit.complete_chain_verified ? current.content_commitment : null,
+        transitions: transitions.length, replay_verified_transitions: replayTransitions.length,
+        mode_changes: replayTransitions.filter(record => record.mode_changed).length,
+        applications: applications.length, replay_verified_applications: replayApplications.length,
+        resolved_applications: replayApplications.filter(record => record.resolution).length,
+        scored_outcomes: projection.scored_outcomes,
+        outcome_projection: projection },
     };
+    if (includeRecords) {
+      result.transitions = transitions;
+      result.applications = applications;
+    }
+    return result;
   }
 
   function relationalAffectProjectionSealed() {
@@ -23504,7 +23637,10 @@ ${episodes.map(item => {
     continuityProjectionAuditPerformance,
     continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,
-    refreshCognition, cognitionSnapshot, affectContext, affectiveRegulationSnapshot, relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
+    refreshCognition, cognitionSnapshot, affectContext, affectiveRegulationSnapshot,
+    recordAffectiveRegulationApplication, resolveAffectiveRegulationApplicationOutcome,
+    affectiveTransitionAudit, affectiveApplicationAudit,
+    relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,

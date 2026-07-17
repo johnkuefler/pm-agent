@@ -190,9 +190,11 @@ test('undelivered broadcast outcomes are terminal exclusions and cannot be repla
   assert.equal(raw.status, 'excluded_protocol');
   assert.equal(raw.protocol_exclusion.reason, 'public_delivery_failed');
   assert.equal(raw.evidence_package, null);
-  assert.throws(() => store.recordGlobalBroadcastResponse(first.assignment_id, {
+  const lateRetry = store.recordGlobalBroadcastResponse(first.assignment_id, {
     task_prompt: 'Retry', public_response: 'Retry', delivered: true,
-  }), /not open/);
+  });
+  assert.equal(lateRetry.already_closed, true);
+  assert.equal(lateRetry.included, false);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -249,6 +251,11 @@ test('Slack runtime captures only direct delivered broadcast responses and seque
   assert.match(server, /globalBroadcastAvailable: isDirect/);
   assert.match(server, /intelligence\.recordGlobalBroadcastResponse\(contextAssignment\.assignment_id/);
   assert.match(server, /recordGlobalBroadcastResponse\(reply, allSegmentsPosted\)/);
+  assert.match(server, /global broadcast response capture failed \(non-fatal\)/);
+  assert.match(server, /const turnRef = triggerTs \? `slack:\$\{channel\}:\$\{triggerTs\}`/,
+    'research receipts must bind to one inbound Slack message, not the long-lived DM session');
+  assert.match(server, /trialUnitKey: turnRef/);
+  assert.match(server, /interaction_ref: turnRef, final_response: reply/);
   assert.match(server, /excludeGlobalBroadcastAssignment\(globalBroadcastAssignmentForFailure\.assignment_id, 'slack_handler_failure'\)/);
   assert.match(server, /current_stage: 'sealed_active_pilot'/);
 });

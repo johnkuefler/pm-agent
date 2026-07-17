@@ -68,6 +68,25 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
   const affectiveRegulationRecord = cognition.affective_regulation?.current || null;
   const affectiveRegulationVerified = affectiveRegulation.verify(affectiveRegulationRecord);
+  const affectiveTransitions = cognition.affective_regulation?.transitions || [];
+  const replayVerifiedAffectiveTransitions = affectiveTransitions
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const affectiveApplications = cognition.affective_regulation?.applications || [];
+  const replayVerifiedAffectiveApplications = affectiveApplications
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const affectiveOutcomeProjection = affectiveRegulation
+    .outcomeProjection(replayVerifiedAffectiveApplications);
+  const scoredAffectiveOutcomes = replayVerifiedAffectiveApplications
+    .filter(item => item.resolution?.scored === true);
+  const successfulAffectiveOutcomes = scoredAffectiveOutcomes
+    .filter(item => item.resolution.success === true).length;
+  const affectiveOutcomeInterval = affectiveRegulation
+    .wilson(successfulAffectiveOutcomes, scoredAffectiveOutcomes.length);
+  const affectiveControlStatus = affectiveApplications.length === 0 ? 'mechanism_present'
+    : scoredAffectiveOutcomes.length < 20 ? 'collecting'
+      : affectiveOutcomeInterval.lower > 0.5 ? 'observational_signal_observed'
+        : affectiveOutcomeInterval.upper < 0.5 ? 'observational_signal_contradicted'
+          : 'observationally_inconclusive';
   const earnedViewpointRecord = cognition.earned_viewpoints?.current || null;
   const earnedViewpointAudit = earnedViewpoint.audit(earnedViewpointRecord,
     cognition.epistemic_ledger?.propositions || []);
@@ -1458,13 +1477,23 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'affective_cognitive_control', family: ['affect', 'cognitive control', 'predictive processing', 'metacognition'],
       functional_claim: 'Nora\'s grounded appraisal produces source-bound action tendencies that regulate verification, task breadth, correction posture, and bounded original synthesis in daily PM work.',
-      mechanism: 'A deterministic content-committed policy derives from the exact appraisal and drive snapshots after cognition refresh. It selects a primary regulation mode plus independent epistemic, scope, relational, and insight tendencies; the prompt applies them only as process control while preserving evidence, requested priorities, authority, and safety.',
-      status: 'mechanism_present',
+      mechanism: 'A deterministic content-committed policy derives from exact appraisal and drive snapshots. After Slack delivery, a content-minimized receipt binds that policy to the delivered response; delayed authenticated review outcomes are replay-audited, and any application during an active context experiment is excluded from scoring. This adds no provider call or work to the first-delivery path.',
+      status: affectiveControlStatus,
       evidence: { current_content_commitment_verified: affectiveRegulationVerified,
         current_mode: affectiveRegulationVerified ? affectiveRegulationRecord.mode : null,
         active_triggers: affectiveRegulationVerified ? affectiveRegulationRecord.active_triggers : [],
         appraisal_source_committed: affectiveRegulationVerified && Boolean(affectiveRegulationRecord.appraisal_source_commitment),
-        drive_source_committed: affectiveRegulationVerified && Boolean(affectiveRegulationRecord.drive_source_commitment) },
+        drive_source_committed: affectiveRegulationVerified && Boolean(affectiveRegulationRecord.drive_source_commitment),
+        policy_transitions: affectiveTransitions.length,
+        replay_verified_transitions: replayVerifiedAffectiveTransitions.length,
+        policy_applications: affectiveApplications.length,
+        replay_verified_applications: replayVerifiedAffectiveApplications.length,
+        resolved_applications: replayVerifiedAffectiveApplications.filter(item => item.resolution).length,
+        scored_outcomes: scoredAffectiveOutcomes.length,
+        successful_outcomes: successfulAffectiveOutcomes,
+        success_interval_95: affectiveOutcomeInterval,
+        represented_modes: Object.keys(affectiveOutcomeProjection.modes),
+        observational_projection: affectiveOutcomeProjection },
       falsifier: 'The policy fails exact source replay, changes facts or authority to fit an appraisal, manufactures urgency or insight, degrades requested work, or authentic appraisal-bound tendencies fail to improve calibration, repair, and useful synthesis over state-only and tendency-misbound controls.',
       next_gate: 'Accumulate natural policy transitions and outcomes, then preregister authentic-policy versus byte-identical state-only versus tendency-misbound PM tasks with independent first-order, calibration, repair, and insight grading.',
     },

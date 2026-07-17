@@ -113,6 +113,8 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /beginInteractive\('slack'\)/);
   assert.match(server, /beginInteractive\('zoom-chat'\)/);
   assert.match(server, /beginInteractive\('realtime'\)/);
+  assert.match(server, /const turnRef = triggerTs \? `slack:\$\{channel\}:\$\{triggerTs\}`/,
+    'Slack research bookkeeping must use per-message identity without changing session continuity');
   assert.match(server, /preemptConsciousnessResearchStatus\('slack'\)/);
   assert.match(server, /preemptConsciousnessResearchStatus\('zoom-chat'\)/);
   assert.match(server, /preemptConsciousnessResearchStatus\('realtime'\)/);
@@ -139,6 +141,17 @@ test('live server opts into complete Slack trials but never globally enables sec
     'capability-boundary.js'), 'utf8');
   assert.doesNotMatch(boundary, /fetch\(|axios|anthropic|openai/i,
     'capability projection must not add a provider or network call to Slack or Zoom');
+  const affective = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'affective-regulation.js'), 'utf8');
+  assert.doesNotMatch(affective, /fetch\(|axios|anthropic|openai/i,
+    'affective outcome capture must not add a provider or network call to Slack or Zoom');
+  const normalSlackDelivery = server.slice(server.indexOf('// Log the interaction for the dream'),
+    server.indexOf('registerInteractionRoutes(app'));
+  assert.match(normalSlackDelivery, /logInteraction\(\{/,
+    'affective application capture must remain inside post-delivery interaction logging');
+  const interactionLogger = server.slice(server.indexOf('function logInteraction(entry)'),
+    server.indexOf('registerInteractionRoutes(app'));
+  assert.match(interactionLogger, /recordAffectiveRegulationApplication\(interaction\)/);
   const store = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
     'store.js'), 'utf8');
   assert.match(store, /context_trials\.some\(item => item\.status === 'active'\)\) return null/,
