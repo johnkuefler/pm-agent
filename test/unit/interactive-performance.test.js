@@ -145,6 +145,8 @@ test('live server opts into complete Slack trials but never globally enables sec
     'capability context must remain sealed during the current blinded context study');
   assert.match(store, /capabilityBoundaryReadCache/,
     'repeated live turns must reuse the deterministic capability projection');
+  assert.match(store, /dreamInsightContext \|\| sealContextTrialPulses\s*\? \[\] : relevantDreamInsights\(query\)/,
+    'newly earned insight readback must not change prompts during an active context study');
 });
 
 test('Slack provider cache prefix stays stable while conversation and cognition tails change', () => {
