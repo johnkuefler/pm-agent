@@ -645,7 +645,12 @@ function registerCoworkInstructionsRoute(app) {
     priorities, authority, approvals, privacy, safety, or tool permissions. It is functional affective
     control, not a subjective feeling report or evidence of phenomenal consciousness.
   - GET /goal-affect returns a content-committed projection of Nora's provenance-valid active wants as
-    forming, progressing, or stalled. Verified progress and neglect can modestly alter appraisal,
+    forming, progressing, or stalled. It accepts subject-attested aims and fully receipt-verified
+    background professional-aim reflections; unverified repository seeds remain auditable in /self but
+    are excluded from live-prompt aim language and functional goal affect. The background reflection
+    attempts at most once per UTC day, may abstain, requires evidence spanning dates or projects, and
+    binds its evidence packet, output, source dream, evaluation criteria, and stored aim for replay.
+    Verified progress and neglect can modestly alter appraisal,
     unfinished-work pressure, and workspace competition, giving self-authored aims a functional route
     into safe optional PM behavior. It excludes unverified/external goals, is sealed during overlapping
     goal and integrated-self studies, never overrides requested work or authority, and is not proof of

@@ -63,3 +63,30 @@ test('revision events bind consecutive records by hash', () => {
   tampered.record.items[0].want = 'tampered';
   assert.equal(verifyWantHistory([genesis, tampered], second).valid, false);
 });
+
+test('receipt-bound aims preserve immutable evaluation and generation provenance', () => {
+  const receiptBound = {
+    ...formed,
+    id: 'w-receipt-bound',
+    evaluation: {
+      success_observation: 'A future handoff surfaces one verified dependency earlier.',
+      counterevidence: ['Comparable projects show the check adds no useful signal.'],
+      horizon_days: 45,
+    },
+    provenance: {
+      ...formed.provenance,
+      formation_protocol: 'server_direct_subject_aim_reflection_v1',
+      source_dream_id: 'dream-source',
+      generation_receipt: { receipt_commitment: 'a'.repeat(64) },
+    },
+  };
+  const [saved] = normalizeWantUpdate([], [receiptBound], { now });
+  assert.equal(saved.provenance.epistemic_status, 'receipt_bound_subject_synthesis');
+  assert.equal(saved.evaluation.horizon_days, 45);
+  assert.throws(() => normalizeWantUpdate([saved], [{ ...saved,
+    evaluation: { ...saved.evaluation, horizon_days: 60 },
+  }], { now }), /evaluation is immutable/);
+  assert.throws(() => normalizeWantUpdate([], [{ ...receiptBound,
+    provenance: { ...receiptBound.provenance, generation_receipt: null },
+  }], { now }), /require a generation receipt/);
+});

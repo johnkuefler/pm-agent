@@ -2,6 +2,7 @@ const crypto = require('crypto');
 
 const STATUSES = new Set(['active', 'completed', 'retired']);
 const ORIGINS = new Set(['self_generated', 'user_suggested', 'system_seed', 'unknown']);
+const RECEIPT_BOUND_FORMATION_PROTOCOL = 'server_direct_subject_aim_reflection_v1';
 
 function cleanText(value, name, max, required = false) {
   if (value == null && !required) return '';
@@ -31,12 +32,46 @@ function cleanProvenance(value, now) {
   if (origin === 'self_generated' && evidence.length === 0) {
     throw new Error('self-generated wants require formation evidence');
   }
+  const formation_protocol = cleanText(value.formation_protocol, 'provenance.formation_protocol', 100);
+  const receiptBound = formation_protocol === RECEIPT_BOUND_FORMATION_PROTOCOL;
+  if (formation_protocol && !receiptBound) throw new Error('provenance.formation_protocol is invalid');
+  let generation_receipt = null;
+  let source_dream_id = '';
+  if (receiptBound) {
+    source_dream_id = cleanText(value.source_dream_id, 'provenance.source_dream_id', 500, true);
+    if (!value.generation_receipt || typeof value.generation_receipt !== 'object'
+      || Array.isArray(value.generation_receipt)) throw new Error('receipt-bound wants require a generation receipt');
+    const serialized = JSON.stringify(value.generation_receipt);
+    if (serialized.length > 120000) throw new Error('provenance.generation_receipt is too large');
+    generation_receipt = JSON.parse(serialized);
+    if (!/^[a-f0-9]{64}$/.test(String(generation_receipt.receipt_commitment || ''))) {
+      throw new Error('receipt-bound wants require a committed generation receipt');
+    }
+  }
   return {
     origin,
     formation_context,
     evidence,
     formed_at: cleanText(value.formed_at || now, 'provenance.formed_at', 40, true),
-    epistemic_status: origin === 'self_generated' ? 'subject_attested' : 'source_labeled',
+    epistemic_status: receiptBound ? 'receipt_bound_subject_synthesis'
+      : origin === 'self_generated' ? 'subject_attested' : 'source_labeled',
+    ...(receiptBound ? { formation_protocol, source_dream_id, generation_receipt } : {}),
+  };
+}
+
+function cleanEvaluation(value) {
+  if (value == null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('evaluation must be an object');
+  const counterevidence = (Array.isArray(value.counterevidence) ? value.counterevidence : [])
+    .slice(0, 3).map((item, index) => cleanText(item, `evaluation.counterevidence[${index}]`, 500, true));
+  const horizon_days = Number(value.horizon_days);
+  if (!counterevidence.length || !Number.isInteger(horizon_days) || horizon_days < 14 || horizon_days > 90) {
+    throw new Error('evaluation requires counterevidence and a 14-to-90-day horizon');
+  }
+  return {
+    success_observation: cleanText(value.success_observation, 'evaluation.success_observation', 700, true),
+    counterevidence,
+    horizon_days,
   };
 }
 
@@ -83,6 +118,9 @@ function normalizeWantUpdate(previousItems, requestedItems, options = {}) {
     if (old?.provenance && raw.provenance && stableHash(raw.provenance) !== stableHash(old.provenance)) {
       throw new Error(`provenance is immutable for existing id ${id}`);
     }
+    if (old?.evaluation && raw.evaluation && stableHash(raw.evaluation) !== stableHash(old.evaluation)) {
+      throw new Error(`evaluation is immutable for existing id ${id}`);
+    }
     const progress = cleanProgress(raw.progress);
     if (old?.progress && (progress.length < old.progress.length || old.progress.some((entry, i) => stableHash(entry) !== stableHash(progress[i])))) {
       throw new Error(`progress history is append-only for existing id ${id}`);
@@ -94,11 +132,13 @@ function normalizeWantUpdate(previousItems, requestedItems, options = {}) {
       formed_at: cleanText(old.added || now, `items[${index}].legacy_formed_at`, 40, true),
       epistemic_status: 'legacy_unverified',
     } : cleanProvenance(raw.provenance, now));
+    const evaluation = old?.evaluation || cleanEvaluation(raw.evaluation);
     return {
       id, want, why, status,
       added: old?.added || cleanText(raw.added || now.slice(0, 10), `items[${index}].added`, 40, true),
       progress,
       provenance,
+      ...(evaluation ? { evaluation } : {}),
       revision: Number.isInteger(old?.revision) ? old.revision + 1 : 1,
       updated_at: now,
       ...(status !== 'active' ? { closed_at: old?.closed_at || now } : {}),
@@ -135,4 +175,5 @@ function verifyWantHistory(events, currentRecord) {
   return { valid: true, events: events.length, head: events.length ? events[events.length - 1].record_hash : null };
 }
 
-module.exports = { normalizeWantUpdate, stableHash, wantRevisionEvent, verifyWantHistory };
+module.exports = { RECEIPT_BOUND_FORMATION_PROTOCOL, normalizeWantUpdate, stableHash,
+  wantRevisionEvent, verifyWantHistory };

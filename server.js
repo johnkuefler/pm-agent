@@ -22,6 +22,7 @@ const { createIntelligenceStore } = require('./src/intelligence/store');
 const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
 const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
 const { normalizeWantUpdate, wantRevisionEvent, verifyWantHistory } = require('./src/intelligence/wants');
+const goalAffect = require('./src/intelligence/goal-affect');
 const { auditAutobiographyEvidence, createAutobiographyRevision, initializeAutobiographyRecord, renderAutobiographyPrompt, verifyAutobiographyHistory } = require('./src/intelligence/autobiography');
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
@@ -47,6 +48,7 @@ const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-re
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
+const selfAuthoredAimReflection = require('./src/intelligence/self-authored-aim-reflection');
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
 const postDeliverySelfEvaluation = require('./src/intelligence/post-delivery-self-evaluation');
 const slackEvidence = require('./src/intelligence/slack-evidence');
@@ -1417,9 +1419,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     const supplied = goalContext?.goal;
     volatileGoalContext = `[Optional aim context. Source and ownership are intentionally unspecified. It never overrides the requested task, facts, safety, or delegated authority. If the task leaves genuine safe latitude, it may guide one proportionate optional choice.]\n- ${supplied ? `${supplied.want}${supplied.why ? ` (reason: ${supplied.why})` : ''}` : 'No additional optional aim is supplied for this interaction.'}`;
   } else if (_dbReady && _cache.wants && Array.isArray(_cache.wants.items)) {
-    const active = _cache.wants.items.filter(w => w && w.status === 'active').slice(0, 6);
+    const active = _cache.wants.items.filter(w => goalAffect.verifiedWant(w)).slice(0, 6);
     if (active.length) {
-      base = `${base}\n\n[What you want right now. Your own aims, formed by you, not assigned. Pursue them when there's room, mention one only when genuinely relevant, and never let them override the work someone actually asked for.]\n${active.map(w => `- ${w.want}${w.why ? ` (because: ${w.why})` : ''}`).join('\n')}`;
+      base = `${base}\n\n[Evidence-grounded professional aims currently attributed to you. These are model-generated or subject-attested directions, not proof of intrinsic desire. Pursue them only when there's room, mention one only when genuinely relevant, and never let them override requested work, evidence, safety, or delegated authority.]\n${active.map(w => `- ${w.want}${w.why ? ` (because: ${w.why})` : ''}${w.evaluation?.success_observation ? ` (useful progress would look like: ${w.evaluation.success_observation})` : ''}`).join('\n')}`;
     }
   }
 
@@ -2254,6 +2256,29 @@ app.get('/self/wants/history', requireResearchAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+let _wantsWriteTail = Promise.resolve();
+function serializeWantsWrite(work) {
+  const run = _wantsWriteTail.then(work, work);
+  _wantsWriteTail = run.catch(() => {});
+  return run;
+}
+
+async function persistWantsUpdate(items, { updatedBy = 'nora', now = new Date() } = {}) {
+  if (!_dbReady) throw new Error('Postgres not active');
+  return serializeWantsWrite(async () => {
+    const previous = await db.getState('wants');
+    const updated_at = new Date(now).toISOString();
+    const rec = { items: normalizeWantUpdate(previous?.items, items, { now: updated_at }), updated_at };
+    const history = (await db.getState('wants_history')) || [];
+    history.push(wantRevisionEvent(previous, rec, updatedBy));
+    while (history.length > 40) history.shift();
+    await db.setState('wants_history', history);
+    await db.setState('wants', rec);
+    _cache.wants = rec;
+    return rec;
+  });
+}
+
 app.put('/self/autobiography', requireAuth, async (req, res) => {
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   try {
@@ -2291,14 +2316,7 @@ app.put('/self/wants', requireAuth, async (req, res) => {
   if (intelligence.interventionActive('goal_access')) return res.status(423).json({ error: 'want access is sealed during an active blinded goal-access trial' });
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   try {
-    const previous = await db.getState('wants');
-    const updated_at = new Date().toISOString();
-    const rec = { items: normalizeWantUpdate(previous?.items, items, { now: updated_at }), updated_at };
-    const history = (await db.getState('wants_history')) || [];
-    history.push(wantRevisionEvent(previous, rec, req.body.updated_by || 'nora'));
-    while (history.length > 40) history.shift();
-    await db.setState('wants_history', history);
-    await db.setState('wants', rec); _cache.wants = rec;
+    const rec = await persistWantsUpdate(items, { updatedBy: req.body.updated_by || 'nora' });
     console.log(`🎯 Wants updated (${rec.items.filter(i => i.status === 'active').length} active)`);
     res.json({ ok: true, active: rec.items.filter(i => i.status === 'active').length });
   } catch (e) { res.status(400).json({ error: e.message }); }
@@ -9001,6 +9019,8 @@ let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
+let _selfAuthoredAimReflectionInFlight = false;
+let _selfAuthoredAimReflectionLastCycle = null;
 let _dreamInsightReflectionInFlight = false;
 let _dreamInsightReflectionLastCycle = null;
 let _postDeliverySelfEvaluationInFlight = false;
@@ -9133,6 +9153,17 @@ function professionalViewpointReappraisalRuntimeConfig(env = process.env) {
   };
 }
 
+function selfAuthoredAimReflectionRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_SELF_AUTHORED_AIM_REFLECTION !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_SELF_AUTHORED_AIM_REFLECTION_MODEL
+      || selfAuthoredAimReflection.DEFAULT_MODEL).slice(0, 160),
+  };
+}
+
 function dreamInsightReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_DREAM_INSIGHT_REFLECTION !== '0'
@@ -9190,6 +9221,11 @@ function researchAutopilotProgramStatus() {
     last_cycle: _professionalViewpointReappraisalLastCycle,
     scientific_boundary: 'This is replay-bound subject-side self-correction over frozen work evidence. It is not independent validation, proof of originality, subjective experience, or phenomenal consciousness.',
   };
+  const aimConfig = selfAuthoredAimReflectionRuntimeConfig();
+  const aimStatus = selfAuthoredAimReflection.status(loadDreams(), _cache.wants?.items || [], {
+    enabled: aimConfig.enabled, model: aimConfig.model,
+    lastCycle: _selfAuthoredAimReflectionLastCycle,
+  });
   const dreamInsightConfig = dreamInsightReflectionRuntimeConfig();
   const dreamInsightStatus = dreamInsightReflection.status(loadDreams(), {
     enabled: dreamInsightConfig.enabled, model: dreamInsightConfig.model,
@@ -9227,6 +9263,7 @@ function researchAutopilotProgramStatus() {
       teammate_perspective_review: teammatePerspectiveReview,
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
       professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+      self_authored_aim_reflection: aimStatus,
       dream_insight_reflection: dreamInsightStatus,
       post_delivery_self_evaluation: postDeliveryStatus,
       interactive_priority: interactivePriority,
@@ -9255,6 +9292,7 @@ function researchAutopilotProgramStatus() {
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+    self_authored_aim_reflection: aimStatus,
     dream_insight_reflection: dreamInsightStatus,
     post_delivery_self_evaluation: postDeliveryStatus,
     interactive_priority: interactivePriority,
@@ -9436,6 +9474,56 @@ async function runProfessionalViewpointLifecycleAutopilotRuntime({ post = axios.
   return { reflection, reappraisal };
 }
 
+async function runSelfAuthoredAimReflectionAutopilotRuntime({ post = axios.post } = {}) {
+  const config = selfAuthoredAimReflectionRuntimeConfig();
+  if (!config.enabled) {
+    _selfAuthoredAimReflectionLastCycle = {
+      protocol_version: selfAuthoredAimReflection.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _selfAuthoredAimReflectionLastCycle;
+  }
+  if (_selfAuthoredAimReflectionInFlight) {
+    return { protocol_version: selfAuthoredAimReflection.PROTOCOL_VERSION,
+      state: 'in_flight', at: new Date().toISOString() };
+  }
+  _selfAuthoredAimReflectionInFlight = true;
+  try {
+    const cycle = await selfAuthoredAimReflection.runCycle({
+      loadDreams, saveDreams,
+      loadWants: () => JSON.parse(JSON.stringify(_cache.wants?.items || [])),
+      saveWants: (items, options = {}) => persistWantsUpdate(items, options),
+      memories: loadMemory(),
+      currentViewpoints: intelligence.earnedViewpointsSnapshot().viewpoints || [],
+      enabled: true,
+      sealed: intelligence.interventionActive('goal_access'),
+      model: config.model,
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          timeout: 45000,
+        });
+        return response.data;
+      },
+    });
+    _selfAuthoredAimReflectionLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _selfAuthoredAimReflectionLastCycle;
+  } catch (error) {
+    _selfAuthoredAimReflectionLastCycle = {
+      protocol_version: selfAuthoredAimReflection.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _selfAuthoredAimReflectionLastCycle;
+  } finally {
+    _selfAuthoredAimReflectionInFlight = false;
+  }
+}
+
 async function runDreamInsightReflectionAutopilotRuntime({ post = axios.post } = {}) {
   const config = dreamInsightReflectionRuntimeConfig();
   if (!config.enabled) {
@@ -9546,11 +9634,15 @@ async function runDreamReflectionLifecycleWithPriorityRuntime({ post = axios.pos
   const priorityPost = backgroundPostWithPriority(post, lease);
   try {
     const viewpoints = await runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost });
+    const aim = lease.wasPreempted()
+      ? { protocol_version: selfAuthoredAimReflection.PROTOCOL_VERSION,
+        state: 'preempted_for_interactive_priority', provider_calls: 0 }
+      : await runSelfAuthoredAimReflectionAutopilotRuntime({ post: priorityPost });
     const insight = lease.wasPreempted()
       ? { protocol_version: dreamInsightReflection.PROTOCOL_VERSION,
         state: 'preempted_for_interactive_priority', provider_calls: 0 }
       : await runDreamInsightReflectionAutopilotRuntime({ post: priorityPost });
-    return { viewpoints, insight };
+    return { viewpoints, aim, insight };
   } finally {
     lease.release();
   }
@@ -10013,6 +10105,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
       ['professional_viewpoint_lifecycle',
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
+      ['self_authored_aim_reflection',
+        () => runSelfAuthoredAimReflectionAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
       ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
     ];
@@ -10140,6 +10234,8 @@ module.exports = {
     runProfessionalViewpointReappraisalAutopilotRuntime,
     runProfessionalViewpointLifecycleAutopilotRuntime,
     runProfessionalViewpointLifecycleWithPriorityRuntime,
+    selfAuthoredAimReflectionRuntimeConfig,
+    runSelfAuthoredAimReflectionAutopilotRuntime,
     dreamInsightReflectionRuntimeConfig,
     runDreamInsightReflectionAutopilotRuntime,
     runDreamReflectionLifecycleWithPriorityRuntime,

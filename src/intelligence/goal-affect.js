@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const selfAuthoredAimReflection = require('./self-authored-aim-reflection');
 
 const RECENT_PROGRESS_DAYS = 14;
 const FORMING_GRACE_DAYS = 7;
@@ -30,11 +31,17 @@ function daysSince(value, now) {
 }
 
 function verifiedWant(want) {
-  return Boolean(want?.id && want.status === 'active' && String(want.want || '').trim()
+  const base = Boolean(want?.id && want.status === 'active' && String(want.want || '').trim()
     && want.provenance?.origin === 'self_generated'
-    && want.provenance?.epistemic_status === 'subject_attested'
     && String(want.provenance?.formation_context || '').trim()
     && Array.isArray(want.provenance?.evidence) && want.provenance.evidence.length);
+  if (!base) return false;
+  if (want.provenance?.formation_protocol === selfAuthoredAimReflection.FORMATION_PROTOCOL) {
+    return want.provenance?.epistemic_status === 'receipt_bound_subject_synthesis'
+      && selfAuthoredAimReflection.auditReceipt(want.provenance.generation_receipt, { want })
+        .complete_chain_verified;
+  }
+  return want.provenance?.epistemic_status === 'subject_attested';
 }
 
 function aimState(want, now) {
@@ -64,6 +71,10 @@ function aimState(want, now) {
     last_progress_at: latest?.at || null,
     days_since_progress: progressAge,
     days_since_formation: formationAge,
+    success_observation: String(want.evaluation?.success_observation || '').trim().slice(0, 700) || null,
+    counterevidence: (Array.isArray(want.evaluation?.counterevidence)
+      ? want.evaluation.counterevidence : []).map(item => String(item).trim().slice(0, 500)).filter(Boolean),
+    horizon_days: Number.isInteger(want.evaluation?.horizon_days) ? want.evaluation.horizon_days : null,
     action_tendency: status === 'progressing' ? 'continue_when_relevant'
       : status === 'forming' ? 'observe_before_committing'
         : 'revisit_or_take_one_bounded_step',
