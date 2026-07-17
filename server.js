@@ -181,9 +181,10 @@ function currentCognitiveInputs() {
   };
 }
 
-registerIntelligenceRoutes(app, {
+const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     requireAuth, requireResearchAuth, requireEvaluatorAuth, store: intelligence,
     getDreams: loadDreams,
+    getWants: () => (_cache.wants?.items || []),
     runSelfInquirySelectionSubject: runSelfInquirySelectionSubjectRuntime,
     runSelfInductionSubject: runSelfInductionSubjectRuntime,
     runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,
@@ -9245,7 +9246,7 @@ function researchAutopilotProgramStatus() {
   const selfPredictionSequence = selfPredictionStudySequencer.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_sequence || null,
   });
-  const activePilots = intelligence.selfModelSnapshot().context_trials.filter(item => item.status === 'active');
+  const activePilots = intelligence.activeContextTrialsSnapshot();
   const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
   if (activePilots.length) {
     return {
@@ -10166,6 +10167,8 @@ async function start(options = {}) {
     const address = server.address();
     console.log(`Nora server running on port ${typeof address === 'object' ? address.port : port}`);
     if (background) {
+      intelligenceRoutesRuntime.warmConsciousnessResearchStatus()
+        .catch(error => console.error('Research status warmup failed:', error.message));
       backfillTranscriptDates();
       refreshRecentMeetingsCache();
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
@@ -10189,6 +10192,7 @@ async function start(options = {}) {
 async function stop() {
   for (const timer of _runtimeIntervals.splice(0)) clearInterval(timer);
   if (_embedTimer) { clearInterval(_embedTimer); _embedTimer = null; }
+  await intelligenceRoutesRuntime.close().catch(() => {});
   if (server.listening) await new Promise((resolve) => server.close(resolve));
   await db.close().catch(() => {});
   _startPromise = null;

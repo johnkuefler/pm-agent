@@ -1,9 +1,11 @@
 'use strict';
 
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
+const { createResearchStatusCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
+  const researchStatusCache = createResearchStatusCache({ store, getDreams, getWants });
   function cachedJson(res, key, build, { ttlMs = 15000, project = value => value } = {}) {
     const revision = typeof store.snapshotRevision === 'function' ? store.snapshotRevision() : null;
     const now = Date.now();
@@ -472,8 +474,19 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, study });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/consciousness-research/status', requireAuth, (_req, res) => cachedJson(res, 'consciousness-research-status',
-    () => store.consciousnessResearchStatus(), { ttlMs: 30000 }));
+  app.get('/consciousness-research/status', requireAuth, async (_req, res) => {
+    try {
+      const snapshot = await researchStatusCache.get();
+      res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
+      res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
+      res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
+      res.set('Server-Timing', `capture;dur=${snapshot.capture_ms.toFixed(1)}, research-worker;dur=${snapshot.compute_ms.toFixed(1)}`);
+      res.set('Cache-Control', 'private, no-store');
+      return res.type('application/json').send(snapshot.serialized);
+    } catch (error) {
+      return res.status(503).json({ error: 'research status snapshot unavailable', detail: error.message });
+    }
+  });
   app.get('/consciousness-research/ledger', requireAuth, (req, res) => cachedJson(res,
     `consciousness-research-ledger:${req.query.summary === '1' ? 'summary' : 'full'}`,
     () => store.researchLedgerSnapshot(), {
@@ -1127,6 +1140,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try { res.json(getResearchAutopilotStatus()); }
     catch (error) { res.status(500).json({ error: error.message }); }
   });
+  return {
+    warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
+    consciousnessResearchStatusCache: () => researchStatusCache.status(),
+    close: () => researchStatusCache.close(),
+  };
 }
 
 module.exports = { registerIntelligenceRoutes };

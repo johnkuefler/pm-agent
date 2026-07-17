@@ -2273,6 +2273,14 @@ distinguish `mechanism_present`, `collecting`, causal or observational inconclus
 `causal_signal_observed`, `functional_prediction_supported`, `functional_prediction_contradicted`,
 `replication_conflict`, and `not_implemented`.
 
+The full registry projection is intentionally kept off the live conversation event loop. A worker
+computes it from an immutable intelligence-state revision, frozen observation time, dream and want
+inputs, and the captured operational environment. The HTTP endpoint serves the last complete snapshot
+immediately while a stale revision refreshes in the background; only the first cold request waits for
+the worker. Snapshot revision, freshness, capture cost, and worker compute cost are exposed in response
+headers. This is a responsiveness boundary, not consciousness evidence: expensive audit growth must
+not make Slack or realtime meeting turns less present.
+
 Mechanism availability and evidence quantity are separate. `not_implemented` is reserved for a
 genuinely missing required mechanism or substrate interface; an implemented study with zero live
 observations is `mechanism_present`, not absent. The endpoint publishes an `implementation_audit`

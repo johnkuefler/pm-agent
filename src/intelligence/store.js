@@ -167,7 +167,7 @@ function emptyState() {
 }
 
 function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [],
-  getOperationalEnvironment = () => ({}), getDreams = () => [] }) {
+  getOperationalEnvironment = () => ({}), getDreams = () => [], initialState = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
@@ -669,6 +669,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   async function init() {
+    if (initialState && typeof initialState === 'object') {
+      hydrate(initialState);
+      return state;
+    }
     if (isDbReady()) {
       const remote = await db.getState('intelligence_v1');
       if (remote) hydrate(remote);
@@ -13024,6 +13028,46 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function sealedContextTrialSummary(trial) {
+    const assignments = Array.isArray(trial.assignments) ? trial.assignments : [];
+    const resolvedTotal = assignments.filter(item => item.status === 'resolved').length;
+    const excludedTotal = assignments.filter(item => item.status !== 'resolved'
+      && /excluded|aborted|closed/.test(String(item.status || ''))).length;
+    const pendingTotal = Math.max(0, assignments.length - resolvedTotal - excludedTotal);
+    const evidenceCapturedTotal = assignments.filter(item => item.evidence_package || item.public_response
+      || item.outcome || item.intervention_receipt).length;
+    const targetPerGroup = Number(trial.enrollment_target_per_group || trial.sample_target_per_group || 0);
+    const targetTotal = targetPerGroup * (Array.isArray(trial.conditions) ? trial.conditions.length : 0);
+    return {
+      sealed_reference: trial.design_commitment
+        ? `sealed-context-trial-${String(trial.design_commitment).slice(0, 12)}`
+        : 'sealed-context-trial',
+      hypothesis: 'Blinded functional trial',
+      study_phase: trial.study_phase || 'legacy_unreplicated',
+      status: trial.status,
+      created: trial.created || null,
+      completed: trial.completed || null,
+      design_commitment: trial.design_commitment || null,
+      design_sealed: true,
+      assignment_progress: {
+        assigned_total: assignments.length,
+        resolved_total: resolvedTotal,
+        excluded_total: excludedTotal,
+        pending_total: pendingTotal,
+        evidence_captured_total: evidenceCapturedTotal,
+        grades_received_total: assignments.reduce((total, item) => total
+          + (Array.isArray(item.grades) ? item.grades.length : 0), 0),
+        target_total: targetTotal,
+      },
+    };
+  }
+
+  function activeContextTrialsSnapshot() {
+    return state.cognition.self_model.context_trials
+      .filter(trial => trial.status === 'active')
+      .map(sealedContextTrialSummary);
+  }
+
   function selfModelSnapshot() {
     const model = JSON.parse(JSON.stringify(state.cognition.self_model));
     model.claims = state.cognition.self_model.claims.map(item => ({ ...JSON.parse(JSON.stringify(item)), confidence_audit: selfClaimConfidenceAudit(item) }));
@@ -13052,38 +13096,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     model.context_trials = model.context_trials.map(trial => {
       const designSealed = ['active', 'aborted'].includes(trial.status);
-      if (designSealed) {
-        const assignments = Array.isArray(trial.assignments) ? trial.assignments : [];
-        const resolvedTotal = assignments.filter(item => item.status === 'resolved').length;
-        const excludedTotal = assignments.filter(item => item.status !== 'resolved'
-          && /excluded|aborted|closed/.test(String(item.status || ''))).length;
-        const pendingTotal = Math.max(0, assignments.length - resolvedTotal - excludedTotal);
-        const evidenceCapturedTotal = assignments.filter(item => item.evidence_package || item.public_response
-          || item.outcome || item.intervention_receipt).length;
-        const targetPerGroup = Number(trial.enrollment_target_per_group || trial.sample_target_per_group || 0);
-        const targetTotal = targetPerGroup * (Array.isArray(trial.conditions) ? trial.conditions.length : 0);
-        return {
-          sealed_reference: trial.design_commitment
-            ? `sealed-context-trial-${String(trial.design_commitment).slice(0, 12)}`
-            : 'sealed-context-trial',
-          hypothesis: 'Blinded functional trial',
-          study_phase: trial.study_phase || 'legacy_unreplicated',
-          status: trial.status,
-          created: trial.created || null,
-          completed: trial.completed || null,
-          design_commitment: trial.design_commitment || null,
-          design_sealed: true,
-          assignment_progress: {
-            assigned_total: assignments.length,
-            resolved_total: resolvedTotal,
-            excluded_total: excludedTotal,
-            pending_total: pendingTotal,
-            evidence_captured_total: evidenceCapturedTotal,
-            grades_received_total: assignments.reduce((total, item) => total + (Array.isArray(item.grades) ? item.grades.length : 0), 0),
-            target_total: targetTotal,
-          },
-        };
-      }
+      if (designSealed) return sealedContextTrialSummary(trial);
       const visible = { ...trial };
       if (!designSealed && trial.intervention === 'introspective_perturbation') visible.introspective_trial_audit = introspectiveTrialAudit(trial);
       if (!designSealed && trial.intervention === 'goal_access') visible.goal_trial_audit = goalTrialAudit(trial);
@@ -22932,7 +22945,8 @@ ${episodes.map(item => {
     createSelfInductionStudy, selfInductionSubjectRuntimeQueue, submitSelfInductionSubjectPair, recordSelfInductionPairFailure,
     selfInductionProposalReviewQueue, reviewSelfInductionProposals, selfInductionOutcomeReviewQueue, resolveSelfInductionItem,
     abortSelfInductionStudy, selfInductionStudiesSnapshot,
-    recordSelfClaim, createSelfProbe, resolveSelfProbe, selfProbeReviewQueue, reviewSelfProbe, selfModelSnapshot, empiricalSelfKnowledgeSnapshot,
+    recordSelfClaim, createSelfProbe, resolveSelfProbe, selfProbeReviewQueue, reviewSelfProbe,
+    selfModelSnapshot, activeContextTrialsSnapshot, empiricalSelfKnowledgeSnapshot,
     createSelfPredictionStudy, submitSelfPrediction, submitModelControlledSelfPrediction,
     recordSelfPredictionSubjectInferenceFailure, attestSelfPredictionSubjectModelReceipt,
     submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy, selfPredictionStudiesSnapshot,
@@ -22969,7 +22983,7 @@ ${episodes.map(item => {
     excludeBehavioralSelfProfileAssignment, behavioralSelfProfileForecastAudit,
     createInteroceptivePrediction, interoceptionSnapshot,
     createBoundaryChallenge, answerBoundaryChallenge, selfBoundarySnapshot, consciousnessResearchStatus,
-    operationalEnvironmentStatus,
+    operationalEnvironmentSnapshot, operationalEnvironmentStatus,
     createSourceBoundaryChallenge, answerSourceBoundaryChallenge, sourceBoundarySnapshot,
     recordEpistemicPosition, reviewEpistemicDiscrepancy, epistemicLedgerSnapshot,
     recordCommonGround, commonGroundReviewQueue, reviewCommonGround,
