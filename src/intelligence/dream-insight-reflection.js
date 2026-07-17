@@ -302,12 +302,18 @@ function status(dreams = [], { enabled = true, model = DEFAULT_MODEL, lastCycle 
   const seeds = seedPacket(dreams, Number.MAX_SAFE_INTEGER);
   const attempts = reflectionAttempts(dreams).map(({ attempt }) => ({ ...attempt, audit: auditAttempt(attempt) }));
   const latestAttempt = attempts.sort((a, b) => String(b.attempted_at).localeCompare(String(a.attempted_at)))[0] || null;
+  const latestDream = dreams.slice().sort((left, right) => String(right.finished || right.started || '')
+    .localeCompare(String(left.finished || left.started || '')))[0] || null;
+  const distinctDreams = new Set(seeds.map(seed => seed.dream_id)).size;
+  const distinctDates = new Set(seeds.map(seed => seed.dream_date)).size;
+  const sourceDreamIdeaCount = latestDream
+    ? seeds.filter(seed => seed.dream_id === latestDream.id).length : 0;
   return {
     protocol_version: PROTOCOL_VERSION, enabled, model, background_only: true,
-    readiness: { seed_count: seeds.length, distinct_dreams: new Set(seeds.map(seed => seed.dream_id)).size,
-      distinct_dates: new Set(seeds.map(seed => seed.dream_date)).size,
-      ready: new Set(seeds.map(seed => seed.dream_id)).size >= 2
-        && new Set(seeds.map(seed => seed.dream_date)).size >= 2 },
+    readiness: { seed_count: seeds.length, distinct_dreams: distinctDreams,
+      distinct_dates: distinctDates, corpus_ready: distinctDreams >= 2 && distinctDates >= 2,
+      source_dream_id: latestDream?.id || null, source_dream_idea_count: sourceDreamIdeaCount,
+      ready: distinctDreams >= 2 && distinctDates >= 2 && sourceDreamIdeaCount > 0 },
     report: { attempts: attempts.length,
       formed: attempts.filter(item => item.decision === 'formed').length,
       abstained: attempts.filter(item => item.decision === 'abstained').length,
@@ -343,6 +349,9 @@ async function runCycle({ loadDreams, saveDreams, enabled = true, sealed = false
   result.source_dream_id = latestDream.id;
   if (latestDream.reflection?.insight_reflection_attempt) return { ...result, state: 'dream_already_reflected' };
   const packet = packetFor({ dreams, sourceDream: latestDream });
+  if (!packet.idea_seeds.some(seed => seed.dream_id === latestDream.id)) {
+    return { ...result, state: 'source_dream_has_no_committed_ideas' };
+  }
   if (new Set(packet.idea_seeds.map(seed => seed.dream_id)).size < 2
     || new Set(packet.idea_seeds.map(seed => seed.dream_date)).size < 2) {
     return { ...result, state: 'insufficient_date_separated_ideas' };

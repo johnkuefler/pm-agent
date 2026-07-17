@@ -91,6 +91,25 @@ test('thin recurrence produces a receipt-bound abstention rather than a candidat
   assert.equal(reflection.auditAttempt(attempt).complete_chain_verified, true);
 });
 
+test('a source dream without committed ideas skips the provider instead of failing', async () => {
+  let calls = 0;
+  const dreams = [...fixtureDreams(), {
+    id: 'dream-c', date: '2026-07-16', started: '2026-07-16T07:00:00.000Z',
+    finished: '2026-07-16T07:10:00.000Z', reflection: { ideas: [] },
+  }];
+  const run = await reflection.runCycle({
+    loadDreams: () => structuredClone(dreams), saveDreams: () => {},
+    callProvider: async () => { calls += 1; throw new Error('must not call provider'); },
+  });
+  assert.equal(run.state, 'source_dream_has_no_committed_ideas');
+  assert.equal(run.provider_calls, 0);
+  assert.equal(calls, 0);
+  const state = reflection.status(dreams);
+  assert.equal(state.readiness.corpus_ready, true);
+  assert.equal(state.readiness.source_dream_idea_count, 0);
+  assert.equal(state.readiness.ready, false);
+});
+
 test('reflection rejects sources outside the packet or without date separation', () => {
   const dreams = fixtureDreams();
   const packet = reflection.packetFor({ dreams, sourceDream: dreams[1] });
