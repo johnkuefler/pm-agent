@@ -87,6 +87,12 @@ replay creates no new handoff and does not upgrade a legacy source lifecycle to 
 The `/self` response reports projection integrity separately from aggregate historical replay coverage so
 the subject cannot mistake `replay_verified: 0` for a current continuity failure.
 
+The latest committed handoff audit is memoized by its immutable record commitment after startup or
+handoff creation. Live Slack, voice-prompt, self, and run-lock reads reuse that verified result instead
+of recursively replaying the retained lineage on every turn. Hydration always clears the memo, and a
+new handoff necessarily changes the key, so restart or persisted tampering is re-audited before use.
+Cache hits and full-audit counts remain observable in the dashboard responsiveness summary.
+
 This stream operationalizes temporal integration and recurrent self-access. It does not establish
 that the functional windows correspond to phenomenal moments.
 

@@ -77,8 +77,18 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
     moment_id: second.moment_id, sequence: second.sequence,
   };
   assert.equal(store.continuityProjectionAudit(validProjection).usable, true);
+  const cachedPerformance = store.continuityProjectionAuditPerformance();
+  assert.equal(cachedPerformance.protocol_version, 1);
+  assert.equal(cachedPerformance.full_audits, 2);
+  assert.equal(cachedPerformance.cache_hits, 2);
+  assert.equal(cachedPerformance.cached_commitment, second.commitment);
   assert.equal(store.continuityProjectionAudit({ ...validProjection, content: 'Tampered database projection.' }).usable, false);
   assert.equal(store.continuityProjectionAudit({ content: 'Legacy overwrite after chain start.' }).verified_chain_required, true);
+  store.addCommitment({ what: 'An unrelated mutation must not replay immutable continuity', owner: 'Nora' });
+  assert.equal(store.continuityProjectionAudit(validProjection).usable, true);
+  const reusedPerformance = store.continuityProjectionAuditPerformance();
+  assert.equal(reusedPerformance.full_audits, cachedPerformance.full_audits);
+  assert.equal(reusedPerformance.cache_hits, cachedPerformance.cache_hits + 3);
   const recovery = store.continuityProjectionRecovery({ ...validProjection, content: 'Stale materialized view.' });
   assert.equal(recovery.required, true);
   assert.equal(recovery.repairable, true);

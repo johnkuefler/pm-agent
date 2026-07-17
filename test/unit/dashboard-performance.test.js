@@ -75,4 +75,6 @@ test('dashboard summary stays compact and advances with store mutations', async 
   assert.match(fulfilled.brain.commitments.evidence, /0 open and 1 fulfilled promises/);
   assert.equal(updated.brain.responsiveness.available, true);
   assert.equal(updated.cognition.responsiveness.surfaces.realtime.p95_ms, 1400);
+  assert.equal(updated.cognition.responsiveness.continuity_projection_audit.protocol_version, 1);
+  assert.equal(typeof updated.cognition.responsiveness.continuity_projection_audit.cache_hits, 'number');
 });

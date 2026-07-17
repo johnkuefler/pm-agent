@@ -173,11 +173,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let snapshotRevisionValue = 0;
   let researchLedgerVerificationCache = null;
   const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
+  let latestContinuityAuditCache = null;
+  const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
+    latestContinuityAuditCache = null;
     snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -10030,7 +10033,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           replay_verified_dream_insight_attempts: insightReflectionStatus?.report?.replay_verified ?? null,
           dream_insight_candidates: insightReflectionSealed ? null : insightCandidates.length },
         responsiveness: { ...responsiveness,
-          research_ledger_verification: ledgerVerificationPerformance },
+          research_ledger_verification: ledgerVerificationPerformance,
+          continuity_projection_audit: continuityProjectionAuditPerformance() },
       },
     };
   }
@@ -21950,6 +21954,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return result;
   }
 
+  function latestContinuityHandoffAudit(latest, cognition = state.cognition) {
+    if (latestContinuityAuditCache?.commitment === latest.commitment) {
+      continuityProjectionAuditStats.cache_hits += 1;
+      return latestContinuityAuditCache.audit;
+    }
+    const audit = continuityHandoffAudit(latest, cognition);
+    latestContinuityAuditCache = { commitment: latest.commitment, audit };
+    continuityProjectionAuditStats.full_audits += 1;
+    return audit;
+  }
+
   function recordContinuityHandoff(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -21974,7 +21989,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           || (input.predecessor_commitment || null) !== (existing.predecessor_commitment || null)) {
           throw new Error('source cycle already committed a different continuity handoff');
         }
-        return { ...JSON.parse(JSON.stringify(existing)), audit: continuityHandoffAudit(existing, current.cognition) };
+        const latest = current.cognition.continuity_handoffs.at(-1);
+        const audit = latest?.commitment === existing.commitment
+          ? latestContinuityHandoffAudit(existing, current.cognition)
+          : continuityHandoffAudit(existing, current.cognition);
+        return { ...JSON.parse(JSON.stringify(existing)), audit };
       }
       if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) {
         const error = new Error('continuity handoff requires a replay-verified experience lifecycle; this source cycle cannot be repaired or upgraded by retrying the handoff write');
@@ -22015,7 +22034,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_id: record.id, payload: { record_commitment: record.commitment } });
       current.cognition.continuity_handoffs.push(record);
       current.cognition.continuity_handoffs = current.cognition.continuity_handoffs.slice(-2000);
-      return { ...JSON.parse(JSON.stringify(record)), audit: continuityHandoffAudit(record, current.cognition) };
+      return { ...JSON.parse(JSON.stringify(record)),
+        audit: latestContinuityHandoffAudit(record, current.cognition) };
     });
   }
 
@@ -22054,7 +22074,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       usable: Boolean(projection?.content), complete_chain_verified: false,
       legacy_unbound: Boolean(projection?.content), verified_chain_required: false,
     };
-    const latestAudit = continuityHandoffAudit(latest);
+    // A committed handoff and its terminal source lifecycle are immutable. Later store mutations
+    // may append unrelated valid ledger events, but cannot rewrite that lineage through this API.
+    // Hydration clears the cache so persisted tampering is always re-audited; a new handoff has a
+    // new commitment and therefore misses. This keeps prompt and run-lock reads from recursively
+    // replaying the entire retained lineage on Nora's live conversation event loop.
+    const latestAudit = latestContinuityHandoffAudit(latest);
     const projectionMatches = Boolean(projection
       && projection.continuity_commitment === latest.commitment
       && projection.content === latest.content
@@ -22071,6 +22096,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       projection_matches_latest: projectionMatches, legacy_unbound: false,
       verified_chain_required: true, latest_commitment: latest.commitment,
     };
+  }
+
+  function continuityProjectionAuditPerformance() {
+    return { protocol_version: 1, ...continuityProjectionAuditStats,
+      cached_commitment: latestContinuityAuditCache?.commitment || null };
   }
 
   // The Postgres inner-thread row is a materialized projection, not the source of evidence.
@@ -22909,6 +22939,7 @@ ${episodes.map(item => {
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
+    continuityProjectionAuditPerformance,
     continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,
     refreshCognition, cognitionSnapshot, affectContext, affectiveRegulationSnapshot, relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
