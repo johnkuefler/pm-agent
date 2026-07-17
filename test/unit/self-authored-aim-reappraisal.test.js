@@ -164,6 +164,22 @@ test('retain and abstain preserve the active aim while recording replayable deci
   }
 });
 
+test('abstention discards non-operative structured-output filler', () => {
+  const packet = reappraisal.packetFor({ memories: memories(), sourceDream: dreams()[0],
+    wants: initialWants(), now: NOW });
+  const normalized = reappraisal.normalizeOutput({
+    decision: 'abstain', aim_id: 'w-1',
+    rationale: 'The available records do not yet justify changing an active professional direction.',
+    evidence_ids: packet.evidence.slice(0, 2).map(item => item.ref.id),
+    replacement: revisionOutput(packet).replacement,
+  }, packet);
+  assert.deepEqual(normalized, {
+    decision: 'abstain', aim_id: null,
+    rationale: 'The available records do not yet justify changing an active professional direction.',
+    evidence_ids: [], replacement: null,
+  });
+});
+
 test('a committed revision recovers after want persistence fails without another provider call', async () => {
   const f = fixture();
   const packet = reappraisal.packetFor({ memories: memories(), sourceDream: f.dreams()[0],

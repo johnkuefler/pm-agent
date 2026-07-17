@@ -204,9 +204,12 @@ function normalizeOutput(raw, packet) {
   const evidenceIds = [...new Set((Array.isArray(raw.evidence_ids) ? raw.evidence_ids : [])
     .map(item => cleanText(item, 500)).filter(Boolean))].slice(0, 4);
   if (decision === 'abstain') {
-    if (rationale.length < 20 || raw.aim_id != null || evidenceIds.length || raw.replacement != null) {
+    if (rationale.length < 20) {
       throw new Error('aim reappraisal abstention requires only a bounded rationale');
     }
+    // Abstention is deliberately non-operative. Structured-output providers may still fill
+    // nullable sibling fields even when the decision is abstain; discard them so harmless
+    // schema filler cannot turn a safe non-action into a failed lifecycle attempt.
     return { decision, aim_id: null, rationale, evidence_ids: [], replacement: null };
   }
   if (!['retain', 'revise', 'retire'].includes(decision) || rationale.length < 30) {
