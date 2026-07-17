@@ -290,13 +290,17 @@ function registerCoworkInstructionsRoute(app) {
     on distinct dates. Body requires statement, scope (project|process|team), confidence (0.1-0.7),
     rationale, expected_usefulness, falsification_criteria, next_observation, and source_ideas as
     exact {dream_id, idea_index} references. At most ten candidates may remain open.
-    After a new dream is durably saved, the server also runs at most one background-only recurring-
-    insight reflection for that exact dream. It receives a committed packet of exact date-separated
-    idea seeds and current open candidates, then forms at most one candidate or explicitly abstains.
+    After dreams are durably saved, the server also runs a deterministic background-only recurring-
+    insight catch-up. At most once per UTC day it selects the newest unprocessed idea-bearing dream
+    that has strictly earlier date-separated support; empty newer dreams do not block it, semantic
+    similarity cannot influence selection, and later evidence is excluded from an older source packet.
+    It receives that committed packet and current open candidates, then forms at most one candidate
+    or explicitly abstains.
     Formation is accepted only when the provider receipt, packet, selected seed commitments,
     usefulness prediction, falsifier, and next observation replay. Failed calls are terminally
     recorded for that dream rather than retried. Slack, Zoom chat, and realtime calls preempt this
-    pass; never invoke it from an interactive handler or route around an active study seal.
+    pass. This retrospective synthesis is hypothesis generation, not validation; never invoke it from
+    an interactive handler or route around an active study seal.
   - POST /dream-insights/:id/resolve — Record Nora's observation exactly once as supported,
     contradicted, unclear, or retired using stable evidence references and optional confounds.
     Non-retired observations remain awaiting_independent_review and cannot support a take or action.

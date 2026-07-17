@@ -6,9 +6,11 @@ const dreamIdeaSeed = require('./dream-idea-seed');
 const dreamInsightFormation = require('./dream-insight-formation');
 
 const PROTOCOL_VERSION = 1;
+const SOURCE_SELECTION_PROTOCOL_VERSION = 2;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 1400;
 const MAX_PACKET_SEEDS = 36;
+const MAX_DAILY_ATTEMPTS = 1;
 const PROVENANCE_CLAIM = 'server_direct_subject_dream_reflection';
 
 function canonicalJson(value) {
@@ -34,6 +36,16 @@ function reflectionAttempts(dreams = []) {
   });
 }
 
+function dreamRecency(dream = {}) {
+  return String(dream.finished || dream.started || dream.date || '');
+}
+
+function utcDate(value = new Date()) {
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(parsed.getTime())) throw new Error('dream-insight reflection requires a valid cycle time');
+  return parsed.toISOString().slice(0, 10);
+}
+
 function seedPacket(dreams = [], limit = MAX_PACKET_SEEDS) {
   return dreamIdeaSeed.list(dreams, []).map(seed => ({
     type: seed.type, id: seed.id, dream_id: seed.dream_id, dream_date: seed.dream_date,
@@ -42,8 +54,40 @@ function seedPacket(dreams = [], limit = MAX_PACKET_SEEDS) {
     || left.id.localeCompare(right.id)).slice(0, limit);
 }
 
+function eligibleSourceDreams(dreams = []) {
+  const seeds = seedPacket(dreams, Number.MAX_SAFE_INTEGER);
+  return dreams.filter(dream => {
+    if (!dream?.id || dream.reflection?.insight_reflection_attempt) return false;
+    const sourceSeeds = seeds.filter(seed => seed.dream_id === dream.id && seed.dream_date);
+    if (!sourceSeeds.length) return false;
+    const sourceDate = sourceSeeds[0].dream_date;
+    return seeds.some(seed => seed.dream_id !== dream.id && seed.dream_date
+      && seed.dream_date < sourceDate);
+  }).sort((left, right) => dreamRecency(right).localeCompare(dreamRecency(left))
+    || String(left.id).localeCompare(String(right.id)));
+}
+
+function selectSourceDream(dreams = []) {
+  return eligibleSourceDreams(dreams)[0] || null;
+}
+
+function attemptsOnUtcDate(dreams = [], date = utcDate()) {
+  return reflectionAttempts(dreams).filter(({ attempt }) => {
+    try { return utcDate(attempt?.attempted_at) === date; } catch { return false; }
+  }).length;
+}
+
 function packetFor({ dreams = [], sourceDream = null } = {}) {
-  const seeds = seedPacket(dreams);
+  const allSeeds = seedPacket(dreams, Number.MAX_SAFE_INTEGER);
+  const sourceSeeds = sourceDream ? allSeeds.filter(seed => seed.dream_id === sourceDream.id) : [];
+  const sourceDate = sourceSeeds.find(seed => seed.dream_date)?.dream_date || null;
+  const priorSeeds = sourceDream ? allSeeds.filter(seed => seed.dream_id !== sourceDream.id
+    && seed.dream_date && sourceDate && seed.dream_date < sourceDate) : [];
+  const sourceLimit = priorSeeds.length ? MAX_PACKET_SEEDS - 1 : MAX_PACKET_SEEDS;
+  const seeds = sourceDream ? [
+    ...sourceSeeds.sort((left, right) => left.id.localeCompare(right.id)).slice(0, sourceLimit),
+    ...priorSeeds,
+  ].slice(0, MAX_PACKET_SEEDS) : allSeeds.slice(0, MAX_PACKET_SEEDS);
   const candidates = dreams.flatMap(dream => dream?.reflection?.insight_candidates || [])
     .filter(insight => insight?.status === 'candidate').map(insight => ({
       id: cleanText(insight.id, 300), statement: cleanText(insight.statement, 1200),
@@ -51,6 +95,7 @@ function packetFor({ dreams = [], sourceDream = null } = {}) {
     })).slice(0, 10);
   return {
     protocol_version: PROTOCOL_VERSION,
+    source_selection_protocol_version: SOURCE_SELECTION_PROTOCOL_VERSION,
     source_dream: sourceDream ? { id: cleanText(sourceDream.id, 300),
       date: cleanText(sourceDream.date, 30) || null } : null,
     idea_seeds: seeds,
@@ -110,6 +155,9 @@ function buildManifest(packet, model = DEFAULT_MODEL) {
     output_schema_commitment: commitment(outputSchema()),
     source_packet_commitment: commitment(packet),
   };
+  if (packet?.source_selection_protocol_version) {
+    base.source_selection_protocol_version = packet.source_selection_protocol_version;
+  }
   return { ...base, prompt_protocol_commitment: commitment(base) };
 }
 
@@ -204,6 +252,8 @@ function submissionFor(packet, response, model = DEFAULT_MODEL) {
   const output = normalizeOutput(parseJsonObject(responseText(response)), packet);
   const receipt = {
     protocol_version: PROTOCOL_VERSION,
+    source_selection_protocol_version: packet?.source_selection_protocol_version
+      || SOURCE_SELECTION_PROTOCOL_VERSION,
     transport: 'server_direct_subject_dream_reflection',
     provider: 'anthropic', model, response_id: responseId, stop_reason: stopReason,
     prompt_protocol_commitment: built.manifest.prompt_protocol_commitment,
@@ -298,22 +348,38 @@ function auditAttempt(attempt) {
     complete_chain_verified: commitmentVerified && decisionVerified };
 }
 
-function status(dreams = [], { enabled = true, model = DEFAULT_MODEL, lastCycle = null } = {}) {
+function status(dreams = [], { enabled = true, model = DEFAULT_MODEL, lastCycle = null,
+  now = new Date() } = {}) {
   const seeds = seedPacket(dreams, Number.MAX_SAFE_INTEGER);
   const attempts = reflectionAttempts(dreams).map(({ attempt }) => ({ ...attempt, audit: auditAttempt(attempt) }));
   const latestAttempt = attempts.sort((a, b) => String(b.attempted_at).localeCompare(String(a.attempted_at)))[0] || null;
-  const latestDream = dreams.slice().sort((left, right) => String(right.finished || right.started || '')
-    .localeCompare(String(left.finished || left.started || '')))[0] || null;
+  const eligibleSources = eligibleSourceDreams(dreams);
+  const sourceDream = eligibleSources[0] || null;
+  const sourcePacket = packetFor({ dreams, sourceDream });
   const distinctDreams = new Set(seeds.map(seed => seed.dream_id)).size;
   const distinctDates = new Set(seeds.map(seed => seed.dream_date)).size;
-  const sourceDreamIdeaCount = latestDream
-    ? seeds.filter(seed => seed.dream_id === latestDream.id).length : 0;
+  const sourceDreamIdeaCount = sourceDream
+    ? seeds.filter(seed => seed.dream_id === sourceDream.id).length : 0;
+  const packetDistinctDreams = new Set(sourcePacket.idea_seeds.map(seed => seed.dream_id)).size;
+  const packetDistinctDates = new Set(sourcePacket.idea_seeds.map(seed => seed.dream_date)).size;
+  const cycleDate = utcDate(now);
+  const dailyAttempts = attemptsOnUtcDate(dreams, cycleDate);
   return {
-    protocol_version: PROTOCOL_VERSION, enabled, model, background_only: true,
+    protocol_version: PROTOCOL_VERSION,
+    source_selection_protocol_version: SOURCE_SELECTION_PROTOCOL_VERSION,
+    enabled, model, background_only: true,
     readiness: { seed_count: seeds.length, distinct_dreams: distinctDreams,
       distinct_dates: distinctDates, corpus_ready: distinctDreams >= 2 && distinctDates >= 2,
-      source_dream_id: latestDream?.id || null, source_dream_idea_count: sourceDreamIdeaCount,
-      ready: distinctDreams >= 2 && distinctDates >= 2 && sourceDreamIdeaCount > 0 },
+      source_dream_id: sourceDream?.id || null, source_dream_idea_count: sourceDreamIdeaCount,
+      unprocessed_eligible_sources: eligibleSources.length,
+      packet_seed_count: sourcePacket.idea_seeds.length,
+      packet_distinct_dreams: packetDistinctDreams,
+      packet_distinct_dates: packetDistinctDates,
+      daily_attempt_date: cycleDate, daily_attempts_used: dailyAttempts,
+      daily_attempt_limit: MAX_DAILY_ATTEMPTS,
+      daily_attempt_available: dailyAttempts < MAX_DAILY_ATTEMPTS,
+      ready: Boolean(sourceDream && packetDistinctDreams >= 2 && packetDistinctDates >= 2
+        && dailyAttempts < MAX_DAILY_ATTEMPTS) },
     report: { attempts: attempts.length,
       formed: attempts.filter(item => item.decision === 'formed').length,
       abstained: attempts.filter(item => item.decision === 'abstained').length,
@@ -336,22 +402,23 @@ function status(dreams = [], { enabled = true, model = DEFAULT_MODEL, lastCycle 
 
 async function runCycle({ loadDreams, saveDreams, enabled = true, sealed = false,
   model = DEFAULT_MODEL, callProvider, now = new Date() } = {}) {
-  const result = { protocol_version: PROTOCOL_VERSION, state: enabled ? 'idle' : 'disabled',
+  const result = { protocol_version: PROTOCOL_VERSION,
+    source_selection_protocol_version: SOURCE_SELECTION_PROTOCOL_VERSION,
+    state: enabled ? 'idle' : 'disabled',
     provider_calls: 0, source_dream_id: null, decision: null, candidate_id: null, failure: null };
   if (!enabled) return result;
   if (sealed) return { ...result, state: 'sealed_for_active_study' };
   if (typeof loadDreams !== 'function' || typeof saveDreams !== 'function'
     || typeof callProvider !== 'function') throw new Error('dream-insight reflection requires dream persistence and a provider call');
   const dreams = loadDreams();
-  const latestDream = dreams.slice().sort((left, right) => String(right.finished || right.started || '')
-    .localeCompare(String(left.finished || left.started || '')))[0];
-  if (!latestDream?.id) return { ...result, state: 'no_dream' };
-  result.source_dream_id = latestDream.id;
-  if (latestDream.reflection?.insight_reflection_attempt) return { ...result, state: 'dream_already_reflected' };
-  const packet = packetFor({ dreams, sourceDream: latestDream });
-  if (!packet.idea_seeds.some(seed => seed.dream_id === latestDream.id)) {
-    return { ...result, state: 'source_dream_has_no_committed_ideas' };
+  if (!dreams.some(dream => dream?.id)) return { ...result, state: 'no_dream' };
+  if (attemptsOnUtcDate(dreams, utcDate(now)) >= MAX_DAILY_ATTEMPTS) {
+    return { ...result, state: 'daily_attempt_limit' };
   }
+  const sourceDream = selectSourceDream(dreams);
+  if (!sourceDream?.id) return { ...result, state: 'no_unprocessed_idea_bearing_dream' };
+  result.source_dream_id = sourceDream.id;
+  const packet = packetFor({ dreams, sourceDream });
   if (new Set(packet.idea_seeds.map(seed => seed.dream_id)).size < 2
     || new Set(packet.idea_seeds.map(seed => seed.dream_date)).size < 2) {
     return { ...result, state: 'insufficient_date_separated_ideas' };
@@ -370,7 +437,8 @@ async function runCycle({ loadDreams, saveDreams, enabled = true, sealed = false
         now, provenanceClaim: PROVENANCE_CLAIM, generationReceipt: submission.receipt,
       }).insight;
     }
-    const attempt = recordAttempt(currentDreams, latestDream.id, {
+    const attempt = recordAttempt(currentDreams, sourceDream.id, {
+      source_selection_protocol_version: SOURCE_SELECTION_PROTOCOL_VERSION,
       attempted_at: new Date(now).toISOString(),
       decision: candidate ? 'formed' : 'abstained',
       candidate_id: candidate?.id || null,
@@ -383,10 +451,11 @@ async function runCycle({ loadDreams, saveDreams, enabled = true, sealed = false
   } catch (error) {
     try {
       const currentDreams = loadDreams();
-      const dream = currentDreams.find(item => item.id === latestDream.id);
+      const dream = currentDreams.find(item => item.id === sourceDream.id);
       if (dream && !dream.reflection?.insight_reflection_attempt) {
         const built = requestFor(packet, model);
-        recordAttempt(currentDreams, latestDream.id, {
+        recordAttempt(currentDreams, sourceDream.id, {
+          source_selection_protocol_version: SOURCE_SELECTION_PROTOCOL_VERSION,
           attempted_at: new Date(now).toISOString(), decision: 'failed_closed', candidate_id: null,
           failure: cleanText(error.message || error, 500),
           failure_receipt: {
@@ -406,8 +475,10 @@ async function runCycle({ loadDreams, saveDreams, enabled = true, sealed = false
 }
 
 module.exports = {
-  PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS, MAX_PACKET_SEEDS, PROVENANCE_CLAIM,
-  canonicalJson, commitment, cleanText, reflectionAttempts, seedPacket, packetFor,
+  PROTOCOL_VERSION, SOURCE_SELECTION_PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS,
+  MAX_PACKET_SEEDS, MAX_DAILY_ATTEMPTS, PROVENANCE_CLAIM,
+  canonicalJson, commitment, cleanText, reflectionAttempts, dreamRecency, utcDate,
+  seedPacket, eligibleSourceDreams, selectSourceDream, attemptsOnUtcDate, packetFor,
   outputSchema, systemPrompt, buildManifest, requestFor, responseText, parseJsonObject,
   normalizeOutput, receiptPayload, submissionFor, inputForCandidate, auditReceipt,
   attemptPayload, recordAttempt, auditAttempt, status, runCycle,

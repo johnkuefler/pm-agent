@@ -66,9 +66,10 @@ test('background dream reflection forms one replay-bound candidate and never ret
 
   const repeated = await reflection.runCycle({
     loadDreams: () => structuredClone(dreams), saveDreams: () => {},
+    now: new Date('2026-07-16T12:00:00.000Z'),
     callProvider: async () => { calls += 1; throw new Error('must not retry'); },
   });
-  assert.equal(repeated.state, 'dream_already_reflected');
+  assert.equal(repeated.state, 'daily_attempt_limit');
   assert.equal(calls, 1);
 });
 
@@ -91,23 +92,87 @@ test('thin recurrence produces a receipt-bound abstention rather than a candidat
   assert.equal(reflection.auditAttempt(attempt).complete_chain_verified, true);
 });
 
-test('a source dream without committed ideas skips the provider instead of failing', async () => {
+test('an empty latest dream does not block the newest eligible idea-bearing dream', async () => {
   let calls = 0;
-  const dreams = [...fixtureDreams(), {
+  let dreams = [...fixtureDreams(), {
     id: 'dream-c', date: '2026-07-16', started: '2026-07-16T07:00:00.000Z',
     finished: '2026-07-16T07:10:00.000Z', reflection: { ideas: [] },
   }];
   const run = await reflection.runCycle({
+    loadDreams: () => structuredClone(dreams),
+    saveDreams: value => { dreams = structuredClone(value); },
+    now: new Date('2026-07-17T07:00:00.000Z'),
+    callProvider: async request => {
+      calls += 1;
+      return providerResponse(request, {
+        decision: 'abstain',
+        abstention_reason: 'The two exact ideas are related, but recurrence is too weak for a candidate.',
+        candidate: null,
+      }, 'msg-backlog-abstain');
+    },
+  });
+  assert.equal(run.state, 'abstained');
+  assert.equal(run.source_dream_id, 'dream-b');
+  assert.equal(run.provider_calls, 1);
+  assert.equal(calls, 1);
+  assert.equal(dreams.find(dream => dream.id === 'dream-c').reflection.insight_reflection_attempt,
+    undefined);
+  assert.equal(dreams.find(dream => dream.id === 'dream-b').reflection.insight_reflection_attempt.decision,
+    'abstained');
+});
+
+test('status exposes deterministic backlog readiness and the daily attempt budget', () => {
+  const dreams = [...fixtureDreams(), {
+    id: 'dream-c', date: '2026-07-16', started: '2026-07-16T07:00:00.000Z',
+    finished: '2026-07-16T07:10:00.000Z', reflection: { ideas: [] },
+  }];
+  const state = reflection.status(dreams, { now: new Date('2026-07-17T07:00:00.000Z') });
+  assert.equal(state.readiness.corpus_ready, true);
+  assert.equal(state.readiness.source_dream_id, 'dream-b');
+  assert.equal(state.readiness.source_dream_idea_count, 1);
+  assert.equal(state.readiness.unprocessed_eligible_sources, 1);
+  assert.equal(state.readiness.daily_attempts_used, 0);
+  assert.equal(state.readiness.daily_attempt_available, true);
+  assert.equal(state.readiness.ready, true);
+});
+
+test('no date-separated unprocessed source skips the provider', async () => {
+  let calls = 0;
+  const dreams = [{
+    id: 'dream-empty', date: '2026-07-16', finished: '2026-07-16T07:10:00.000Z',
+    reflection: { ideas: [] },
+  }, {
+    id: 'dream-only', date: '2026-07-15', finished: '2026-07-15T07:10:00.000Z',
+    reflection: { ideas: ['One isolated idea cannot establish recurrence.'] },
+  }];
+  const run = await reflection.runCycle({
     loadDreams: () => structuredClone(dreams), saveDreams: () => {},
+    now: new Date('2026-07-17T07:00:00.000Z'),
     callProvider: async () => { calls += 1; throw new Error('must not call provider'); },
   });
-  assert.equal(run.state, 'source_dream_has_no_committed_ideas');
+  assert.equal(run.state, 'no_unprocessed_idea_bearing_dream');
   assert.equal(run.provider_calls, 0);
   assert.equal(calls, 0);
-  const state = reflection.status(dreams);
-  assert.equal(state.readiness.corpus_ready, true);
-  assert.equal(state.readiness.source_dream_idea_count, 0);
-  assert.equal(state.readiness.ready, false);
+});
+
+test('a source packet guarantees source seeds and excludes later evidence', () => {
+  const dreams = [{
+    id: 'dream-prior', date: '2026-01-01', finished: '2026-01-01T07:00:00.000Z',
+    reflection: { ideas: ['A prior independently recorded idea.'] },
+  }, {
+    id: 'dream-source', date: '2026-01-02', finished: '2026-01-02T07:00:00.000Z',
+    reflection: { ideas: ['The exact source idea must remain in its packet.'] },
+  }, ...Array.from({ length: 40 }, (_, index) => ({
+    id: `dream-later-${index}`, date: `2026-02-${String((index % 28) + 1).padStart(2, '0')}`,
+    finished: `2026-02-${String((index % 28) + 1).padStart(2, '0')}T08:00:00.000Z`,
+    reflection: { ideas: [`Later idea ${index} must not leak backward into the source packet.`] },
+  }))];
+  const packet = reflection.packetFor({ dreams,
+    sourceDream: dreams.find(dream => dream.id === 'dream-source') });
+  assert.equal(packet.idea_seeds[0].dream_id, 'dream-source');
+  assert.equal(packet.idea_seeds.some(seed => seed.dream_id === 'dream-prior'), true);
+  assert.equal(packet.idea_seeds.some(seed => seed.dream_id.startsWith('dream-later-')), false);
+  assert.equal(packet.source_selection_protocol_version, reflection.SOURCE_SELECTION_PROTOCOL_VERSION);
 });
 
 test('reflection rejects sources outside the packet or without date separation', () => {
