@@ -191,6 +191,9 @@ function renderCognitionSummary(cognition) {
   const integrated = cognition.integrated_self || {};
   const background = cognition.background || {};
   const reflection = cognition.reflection || {};
+  const insightLine = reflection.dream_insight_reflection_sealed
+    ? 'Recurring insight evidence is sealed by an active blinded study.'
+    : `${reflection.dream_idea_seeds || 0} committed dream ideas across ${reflection.dream_idea_dates || 0} dates &middot; ${reflection.dream_insight_reflection_attempts || 0} synthesis attempts (${reflection.replay_verified_dream_insight_attempts || 0} replay-verified) &middot; ${reflection.dream_insight_candidates || 0} open candidates`;
   document.getElementById('cognition-state').innerHTML = `
     <div class="intelligence-card"><strong>In attention (${workspace.used || 0}/${workspace.capacity || 7})</strong>
       ${(workspace.items || []).map(item => `<div>${escHtml(item)}</div>`).join('') || '<div class="intelligence-meta">No cognition cycle has run yet.</div>'}
@@ -203,7 +206,7 @@ function renderCognitionSummary(cognition) {
     <div class="intelligence-card"><strong>Between-invocation dynamics: ${background.sealed ? 'sealed by active trial' : `${background.active_contents || 0} active signals`}</strong>
       <div class="intelligence-meta">${background.tick_count || 0} ticks &middot; ${background.accepted_pulses || 0} accepted actionless cognitive pulses</div>
       ${(background.top_contents || []).map(item => `<div>${escHtml(item.text)} <span class="intelligence-meta">activation ${Number(item.activation).toFixed(2)}</span></div>`).join('')}</div>
-    <div class="intelligence-card"><strong>Reflective ledger</strong><div>${reflection.surprises || 0} surprises &middot; ${reflection.mind_changes || 0} belief revisions &middot; ${reflection.development || 0} developmental memories &middot; ${reflection.counterfactuals || 0} simulated alternatives</div></div>`;
+    <div class="intelligence-card"><strong>Reflective ledger</strong><div>${reflection.surprises || 0} surprises &middot; ${reflection.mind_changes || 0} belief revisions &middot; ${reflection.development || 0} developmental memories &middot; ${reflection.counterfactuals || 0} simulated alternatives</div><div class="intelligence-meta">${insightLine}</div></div>`;
 }
 
 function renderConsciousnessResearch(report, ledger = {}) {

@@ -50,6 +50,7 @@ const teammatePerspectiveStudy = require('./teammate-perspective-study');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
+const dreamInsightReflection = require('./dream-insight-reflection');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -1061,6 +1062,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function dreamInsightEvidenceSnapshot() {
     const dreams = currentDreams();
     const records = dreamInsight.dreamInsights(dreams);
+    const reflectionStatus = dreamInsightReflection.status(dreams, { enabled: true });
     const supported = records.filter(({ insight }) => insight?.status === 'independently_supported');
     const eligible = supported.filter(({ insight }) =>
       dreamInsight.insightAudit(insight, dreams).final_evidence_eligible);
@@ -1068,6 +1070,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       total_candidates_and_resolutions: records.length,
       independently_supported: supported.length,
       replay_verified_supported: eligible.length,
+      committed_idea_seeds: reflectionStatus.readiness.seed_count,
+      distinct_idea_dates: reflectionStatus.readiness.distinct_dates,
+      synthesis_attempts: reflectionStatus.report.attempts,
+      replay_verified_synthesis_attempts: reflectionStatus.report.replay_verified,
+      synthesis_abstentions: reflectionStatus.report.abstained,
+      synthesis_failures: reflectionStatus.report.failed_closed,
       source_dreams: new Set(eligible.flatMap(({ insight }) =>
         (insight.formation_record?.source_ideas || []).map(source => source.dream_id))).size,
       insight_ids: eligible.map(({ insight }) => insight.id),
@@ -9888,8 +9896,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const provenanceBoundViewpoints = currentViewpoints
       .filter(item => item.source_family_provenance_verified === true);
     const viewpointSourceFamilies = [...new Set(provenanceBoundViewpoints.map(item => item.source_family))].sort();
+    const insightReflectionSealed = dreamInsightStudyActive(cognition);
+    const dashboardDreams = insightReflectionSealed ? [] : getDreams();
+    const insightReflectionStatus = insightReflectionSealed ? null
+      : dreamInsightReflection.status(dashboardDreams, { enabled: true });
+    const insightCandidates = insightReflectionSealed ? []
+      : dreamInsight.dreamInsights(dashboardDreams).map(item => item.insight)
+        .filter(item => item.status === 'candidate');
     const reflectionSignals = (cognition.surprises || []).length + (cognition.mind_changes || []).length
-      + unresolvedPulses + viewpointReappraisals.length + currentViewpoints.length;
+      + unresolvedPulses + viewpointReappraisals.length + currentViewpoints.length
+      + (insightReflectionStatus?.report?.attempts || 0) + insightCandidates.length;
     const researchEvents = cognition.research_ledger?.events?.length || 0;
     const appraisal = cognition.appraisal || {};
     const calibrationResolved = cognition.calibration?.resolved || 0;
@@ -9923,7 +9939,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       },
       brain: {
         attention: metric((workspace.slots || []).length / (workspace.capacity || 7), `${(workspace.slots || []).length}/${workspace.capacity || 7} workspace slots occupied`, (workspace.slots || []).length > 0),
-        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${provenanceBoundViewpoints.length} provenance-bound views across ${viewpointSourceFamilies.length} source families; ${replayVerifiedViewpointLifecycleChanges} replay-verified lifecycle changes`, reflectionSignals > 0),
+        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${provenanceBoundViewpoints.length} provenance-bound views across ${viewpointSourceFamilies.length} source families; ${replayVerifiedViewpointLifecycleChanges} replay-verified viewpoint changes; ${insightReflectionSealed ? 'recurring insights sealed' : `${insightCandidates.length} insight candidates from ${insightReflectionStatus?.readiness?.distinct_dates || 0} idea dates`}`, reflectionSignals > 0 || insightReflectionSealed),
         'self-model': metric(scaleCount(activeClaims + openProbes, 10), `${activeClaims} active claims, ${openProbes} open probes`, activeClaims + openProbes > 0),
         appraisal: metric(appraisal.updated ? Math.max(0.4, scaleCount(calibrationResolved, 12)) : 0, appraisal.label || 'awaiting first cycle', Boolean(appraisal.updated)),
         agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions`, openIntentions + resolvedIntentions > 0),
@@ -9966,7 +9982,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             && viewpointSourceFamilies.length >= 2,
           recommendation_study_ready: provenanceBoundViewpoints.length >= 3
             && viewpointSourceFamilies.length >= 2
-            && replayVerifiedViewpointLifecycleChanges >= 1 },
+            && replayVerifiedViewpointLifecycleChanges >= 1,
+          dream_insight_reflection_sealed: insightReflectionSealed,
+          dream_idea_seeds: insightReflectionStatus?.readiness?.seed_count ?? null,
+          dream_idea_dates: insightReflectionStatus?.readiness?.distinct_dates ?? null,
+          dream_insight_reflection_ready: insightReflectionStatus?.readiness?.ready ?? null,
+          dream_insight_reflection_attempts: insightReflectionStatus?.report?.attempts ?? null,
+          replay_verified_dream_insight_attempts: insightReflectionStatus?.report?.replay_verified ?? null,
+          dream_insight_candidates: insightReflectionSealed ? null : insightCandidates.length },
         responsiveness: { ...responsiveness,
           research_ledger_verification: ledgerVerificationPerformance },
       },

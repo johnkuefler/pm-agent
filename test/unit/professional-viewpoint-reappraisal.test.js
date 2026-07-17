@@ -90,7 +90,7 @@ test('background reappraisal revises one current viewpoint append-only with a re
   const dashboard = store.dashboardIntelligenceSummary();
   assert.equal(dashboard.cognition.reflection.viewpoint_reappraisals, 1);
   assert.equal(dashboard.cognition.reflection.viewpoint_revisions, 1);
-  assert.match(dashboard.brain.reflection.evidence, /1 replay-verified lifecycle changes/);
+  assert.match(dashboard.brain.reflection.evidence, /1 replay-verified viewpoint changes/);
 
   const proposition = store.snapshot().cognition.epistemic_ledger.propositions[0];
   const position = proposition.positions.at(-1);
@@ -206,7 +206,7 @@ test('runtime enables reappraisal only in background-capable production mode', (
   }).enabled, false);
 
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.equal((source.match(/runProfessionalViewpointLifecycleWithPriorityRuntime\(\)/g) || []).length, 1,
+  assert.equal((source.match(/runDreamReflectionLifecycleWithPriorityRuntime\(\)/g) || []).length, 1,
     'dream capture should enter the foreground-aware background lane exactly once');
   assert.equal((source.match(/runBackgroundIntelligenceRuntime\(\{ trigger: '(?:startup|five-minute-scheduler)' \}\)/g) || []).length, 2,
     'startup and interval work should share the serialized background scheduler');

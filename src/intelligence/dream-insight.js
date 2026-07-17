@@ -43,6 +43,16 @@ function insightAudit(insight, dreams = []) {
     && insight?.scope === formation.scope
     && Number(insight?.confidence) === Number(formation.confidence)
     && insight?.formed_at === formation.formed_at);
+  const generationReceiptPresent = Boolean(insight?.generation_receipt
+    || formation?.generation_receipt_commitment);
+  let generationReceiptVerified = !generationReceiptPresent;
+  if (generationReceiptPresent && insight?.generation_receipt
+    && formation?.generation_receipt_commitment === insight.generation_receipt.receipt_commitment) {
+    // Lazy load avoids a module-initialization cycle: formation uses this module's lifecycle helpers.
+    const dreamInsightReflection = require('./dream-insight-reflection');
+    generationReceiptVerified = dreamInsightReflection.auditReceipt(
+      insight.generation_receipt, { insight }).complete_chain_verified;
+  }
   const resolutionPresent = Boolean(insight?.resolution_record || insight?.resolution_commitment);
   const resolutionVerified = !resolutionPresent || Boolean(insight.resolution_record
     && insight.resolution_commitment
@@ -83,7 +93,7 @@ function insightAudit(insight, dreams = []) {
         : Boolean(expectedReviewOutcome && resolutionPresent && independentReviewPresent
           && insight.independent_review?.outcome === expectedReviewOutcome);
   const completeChainVerified = formationCommitmentVerified && projectionMatchesFormation
-    && sourceIdeasVerified && sourceDateSeparationVerified && resolutionVerified
+    && sourceIdeasVerified && sourceDateSeparationVerified && generationReceiptVerified && resolutionVerified
     && resolutionSemanticsVerified && independentReviewVerified
     && independentReviewSemanticsVerified && statusLifecycleVerified;
   return {
@@ -91,6 +101,8 @@ function insightAudit(insight, dreams = []) {
     projection_matches_formation: projectionMatchesFormation,
     source_ideas_verified: sourceIdeasVerified,
     source_date_separation_verified: sourceDateSeparationVerified,
+    generation_receipt_present: generationReceiptPresent,
+    generation_receipt_verified: generationReceiptVerified,
     resolution_present: resolutionPresent,
     resolution_verified: resolutionVerified,
     resolution_semantics_verified: resolutionSemanticsVerified,

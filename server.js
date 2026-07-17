@@ -47,6 +47,7 @@ const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-re
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
+const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -7894,8 +7895,8 @@ registerDreamRoutes(app, {
         intelligence.createExperiment({ behavior: String(learning), hypothesis: 'Applying this observed learning should improve how future interactions land.', metric: 'positive_rate', review_at: new Date(Date.now() + 14 * 86400000).toISOString() });
       }
     }
-    runProfessionalViewpointLifecycleWithPriorityRuntime()
-      .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
+    runDreamReflectionLifecycleWithPriorityRuntime()
+      .catch(error => console.error('Dream reflection lifecycle failed:', error.message));
   },
 });
 
@@ -8951,6 +8952,8 @@ let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
+let _dreamInsightReflectionInFlight = false;
+let _dreamInsightReflectionLastCycle = null;
 let _backgroundIntelligenceCycleInFlight = false;
 let _backgroundIntelligenceCycleLast = null;
 
@@ -9079,6 +9082,17 @@ function professionalViewpointReappraisalRuntimeConfig(env = process.env) {
   };
 }
 
+function dreamInsightReflectionRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_DREAM_INSIGHT_REFLECTION !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_DREAM_INSIGHT_REFLECTION_MODEL
+      || dreamInsightReflection.DEFAULT_MODEL).slice(0, 160),
+  };
+}
+
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const interactivePriority = interactivePerformance.prioritySnapshot();
@@ -9114,6 +9128,11 @@ function researchAutopilotProgramStatus() {
     last_cycle: _professionalViewpointReappraisalLastCycle,
     scientific_boundary: 'This is replay-bound subject-side self-correction over frozen work evidence. It is not independent validation, proof of originality, subjective experience, or phenomenal consciousness.',
   };
+  const dreamInsightConfig = dreamInsightReflectionRuntimeConfig();
+  const dreamInsightStatus = dreamInsightReflection.status(loadDreams(), {
+    enabled: dreamInsightConfig.enabled, model: dreamInsightConfig.model,
+    lastCycle: _dreamInsightReflectionLastCycle,
+  });
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
   });
@@ -9141,6 +9160,7 @@ function researchAutopilotProgramStatus() {
       teammate_perspective_review: teammatePerspectiveReview,
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
       professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+      dream_insight_reflection: dreamInsightStatus,
       interactive_priority: interactivePriority,
       background_intelligence_cycle: backgroundCycle,
     };
@@ -9167,6 +9187,7 @@ function researchAutopilotProgramStatus() {
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+    dream_insight_reflection: dreamInsightStatus,
     interactive_priority: interactivePriority,
     background_intelligence_cycle: backgroundCycle,
   };
@@ -9346,6 +9367,51 @@ async function runProfessionalViewpointLifecycleAutopilotRuntime({ post = axios.
   return { reflection, reappraisal };
 }
 
+async function runDreamInsightReflectionAutopilotRuntime({ post = axios.post } = {}) {
+  const config = dreamInsightReflectionRuntimeConfig();
+  if (!config.enabled) {
+    _dreamInsightReflectionLastCycle = {
+      protocol_version: dreamInsightReflection.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _dreamInsightReflectionLastCycle;
+  }
+  if (_dreamInsightReflectionInFlight) {
+    return { protocol_version: dreamInsightReflection.PROTOCOL_VERSION,
+      state: 'in_flight', at: new Date().toISOString() };
+  }
+  _dreamInsightReflectionInFlight = true;
+  try {
+    const callProvider = async request => {
+      const response = await post('https://api.anthropic.com/v1/messages', request, {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01',
+        },
+        timeout: 45000,
+      });
+      return response.data;
+    };
+    const cycle = await dreamInsightReflection.runCycle({
+      loadDreams, saveDreams, enabled: true,
+      sealed: intelligence.dreamInsightStudyActive(),
+      model: config.model, callProvider,
+    });
+    _dreamInsightReflectionLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _dreamInsightReflectionLastCycle;
+  } catch (error) {
+    _dreamInsightReflectionLastCycle = {
+      protocol_version: dreamInsightReflection.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _dreamInsightReflectionLastCycle;
+  } finally {
+    _dreamInsightReflectionInFlight = false;
+  }
+}
+
 async function runProfessionalViewpointLifecycleWithPriorityRuntime({ post = axios.post } = {}) {
   const lease = interactivePerformance.beginBackground('professional-viewpoint-lifecycle');
   if (!lease.allowed) return backgroundPriorityDeferred('professional-viewpoint-lifecycle', lease);
@@ -9353,6 +9419,22 @@ async function runProfessionalViewpointLifecycleWithPriorityRuntime({ post = axi
     return await runProfessionalViewpointLifecycleAutopilotRuntime({
       post: backgroundPostWithPriority(post, lease),
     });
+  } finally {
+    lease.release();
+  }
+}
+
+async function runDreamReflectionLifecycleWithPriorityRuntime({ post = axios.post } = {}) {
+  const lease = interactivePerformance.beginBackground('dream-reflection-lifecycle');
+  if (!lease.allowed) return backgroundPriorityDeferred('dream-reflection-lifecycle', lease);
+  const priorityPost = backgroundPostWithPriority(post, lease);
+  try {
+    const viewpoints = await runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost });
+    const insight = lease.wasPreempted()
+      ? { protocol_version: dreamInsightReflection.PROTOCOL_VERSION,
+        state: 'preempted_for_interactive_priority', provider_calls: 0 }
+      : await runDreamInsightReflectionAutopilotRuntime({ post: priorityPost });
+    return { viewpoints, insight };
   } finally {
     lease.release();
   }
@@ -9815,6 +9897,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
       ['professional_viewpoint_lifecycle',
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
+      ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
     ];
     for (const [name, action] of scheduledSteps) {
       if (!await runStep(name, action)) break;
@@ -9940,6 +10023,9 @@ module.exports = {
     runProfessionalViewpointReappraisalAutopilotRuntime,
     runProfessionalViewpointLifecycleAutopilotRuntime,
     runProfessionalViewpointLifecycleWithPriorityRuntime,
+    dreamInsightReflectionRuntimeConfig,
+    runDreamInsightReflectionAutopilotRuntime,
+    runDreamReflectionLifecycleWithPriorityRuntime,
     runBackgroundIntelligenceRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,

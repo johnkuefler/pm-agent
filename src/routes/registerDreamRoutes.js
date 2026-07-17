@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const dreamInsight = require('../intelligence/dream-insight');
+const dreamInsightFormation = require('../intelligence/dream-insight-formation');
 const { commitment, dreamInsights, insightAudit, validEvidenceRefs } = dreamInsight;
 
 function registerDreamRoutes(app, deps) {
@@ -81,68 +82,8 @@ function registerDreamRoutes(app, deps) {
   app.post('/dream-insights', requireAuth, (req, res) => {
     if (dreamInsightStudyActive()) return sealed(res);
     try {
-      const body = req.body || {};
       const dreams = loadDreams();
-      const statement = String(body.statement || '').trim();
-      const rationale = String(body.rationale || '').trim();
-      const expectedUsefulness = String(body.expected_usefulness || '').trim();
-      const nextObservation = String(body.next_observation || '').trim();
-      const falsificationCriteria = Array.isArray(body.falsification_criteria)
-        ? body.falsification_criteria.map(value => String(value).trim()).filter(Boolean).slice(0, 8) : [];
-      const sourceRefs = Array.isArray(body.source_ideas) ? body.source_ideas.slice(0, 8) : [];
-      const confidence = Number(body.confidence);
-      const scopes = new Set(['project', 'process', 'team']);
-      if (statement.length < 20 || rationale.length < 20 || expectedUsefulness.length < 10
-        || nextObservation.length < 10 || !falsificationCriteria.length) {
-        throw new Error('statement, rationale, expected_usefulness, falsification_criteria, and next_observation are required');
-      }
-      if (/\b(conscious(?:ness)?|sentien(?:t|ce)|qualia|phenomenal|subjective experience)\b/i.test(statement)) {
-        throw new Error('dream insight candidates cannot assert phenomenal status');
-      }
-      if (!scopes.has(body.scope)) throw new Error('dream insight scope must be project, process, or team');
-      if (!Number.isFinite(confidence) || confidence < 0.1 || confidence > 0.7) {
-        throw new Error('dream insight confidence must be between 0.1 and 0.7');
-      }
-      if (sourceRefs.length < 2) throw new Error('dream insights require ideas from at least two date-separated dream records');
-      const sourceIdeas = sourceRefs.map(ref => {
-        const dream = dreams.find(candidate => candidate.id === ref.dream_id);
-        const index = Number(ref.idea_index);
-        const idea = Number.isInteger(index) ? dream?.reflection?.ideas?.[index] : null;
-        if (!dream || typeof idea !== 'string' || !idea.trim() || idea.length > 1600) throw new Error('each source idea must resolve to an exact bounded stored dream idea');
-        return { dream_id: dream.id, dream_date: dream.date, idea_index: index, idea };
-      });
-      if (new Set(sourceIdeas.map(source => source.dream_id)).size !== sourceIdeas.length
-        || new Set(sourceIdeas.map(source => source.dream_date)).size !== sourceIdeas.length) {
-        throw new Error('dream insight sources must come from distinct dreams on distinct dates');
-      }
-      const existing = dreamInsights(dreams).map(({ insight }) => insight);
-      if (existing.filter(insight => insight.status === 'candidate').length >= 10) {
-        throw new Error('at most ten open dream insight candidates are allowed');
-      }
-      if (existing.some(insight => insight.status === 'candidate'
-        && String(insight.statement).trim().toLowerCase() === statement.toLowerCase())) {
-        throw new Error('an open dream insight candidate already has this statement');
-      }
-      const formedAt = new Date().toISOString();
-      const id = body.id || `dream-insight-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`;
-      if (existing.some(insight => insight.id === id)) throw new Error('dream insight id already exists');
-      const formationRecord = {
-        id, statement: statement.slice(0, 1200), scope: body.scope, confidence,
-        rationale: rationale.slice(0, 1600), expected_usefulness: expectedUsefulness.slice(0, 1200),
-        falsification_criteria: falsificationCriteria, next_observation: nextObservation.slice(0, 1200),
-        source_ideas: sourceIdeas, provenance_claim: 'submitted_as_nora_nightly_reflection', formed_at: formedAt,
-      };
-      const insight = {
-        id, statement: formationRecord.statement, scope: formationRecord.scope, confidence,
-        status: 'candidate', formed_at: formedAt, formation_record: formationRecord,
-        formation_commitment: commitment(formationRecord), resolution_record: null, resolution_commitment: null,
-        independent_review: null, independent_review_commitment: null,
-      };
-      const anchor = sourceIdeas.map(source => dreams.find(dream => dream.id === source.dream_id))
-        .sort((a, b) => new Date(b.finished || b.started || 0) - new Date(a.finished || a.started || 0))[0];
-      anchor.reflection = anchor.reflection || {};
-      anchor.reflection.insight_candidates = anchor.reflection.insight_candidates || [];
-      anchor.reflection.insight_candidates.push(insight);
+      const { insight, anchor } = dreamInsightFormation.createCandidate({ dreams, input: req.body || {} });
       saveDreams(dreams);
       res.json({ ok: true, insight: { ...insight, anchor_dream_id: anchor.id, audit: insightAudit(insight, dreams) } });
     } catch (error) { res.status(400).json({ error: error.message }); }
