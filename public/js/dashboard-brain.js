@@ -186,7 +186,10 @@ let noraBrainSelected = 'integrated-self';
 let noraBrainFrame = null;
 let noraBrainResizeObserver = null;
 let noraBrainThemeObserver = null;
+let noraBrainVisibilityObserver = null;
 let noraBrainBound = false;
+let noraBrainOnscreen = true;
+let noraBrainLastDraw = 0;
 
 function activity(level, evidence, available) {
   return { level: clamp(level), evidence, available };
@@ -204,7 +207,7 @@ function renderNoraBrain(snapshot) {
   noraBrainSnapshot = snapshot;
   noraBrainNodes = NORA_BRAIN_CAPABILITIES.map(definition => ({
     ...definition,
-    ...definition.read(snapshot),
+    ...(snapshot.dashboard?.brain?.[definition.id] || definition.read(snapshot)),
   }));
 
   const stage = document.getElementById('brain-stage');
@@ -251,6 +254,14 @@ function bindNoraBrain() {
   noraBrainResizeObserver.observe(stage);
   noraBrainThemeObserver = new MutationObserver(drawNoraBrainStatic);
   noraBrainThemeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  if ('IntersectionObserver' in window) {
+    noraBrainVisibilityObserver = new IntersectionObserver(entries => {
+      noraBrainOnscreen = entries.some(entry => entry.isIntersecting);
+      if (noraBrainOnscreen) startNoraBrainAnimation();
+      else stopNoraBrainAnimation();
+    }, { rootMargin: '80px 0px', threshold: 0.01 });
+    noraBrainVisibilityObserver.observe(stage);
+  }
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stopNoraBrainAnimation();
     else startNoraBrainAnimation();
@@ -318,12 +329,16 @@ function startNoraBrainAnimation() {
   stopNoraBrainAnimation();
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const page = document.getElementById('page-intelligence');
-  if (reduced || document.hidden || !page?.classList.contains('active') || !noraBrainSnapshot) {
+  if (reduced || document.hidden || !noraBrainOnscreen || !page?.classList.contains('active') || !noraBrainSnapshot) {
     drawNoraBrainStatic();
     return;
   }
+  noraBrainLastDraw = 0;
   const animate = time => {
-    drawNoraBrain(time);
+    if (time - noraBrainLastDraw >= 40) {
+      drawNoraBrain(time);
+      noraBrainLastDraw = time;
+    }
     noraBrainFrame = requestAnimationFrame(animate);
   };
   noraBrainFrame = requestAnimationFrame(animate);

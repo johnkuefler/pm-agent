@@ -51,7 +51,7 @@
       if (name === 'charter') loadCharterEditor();
       if (name === 'self') loadSelfTab();
       if (name === 'intelligence') loadIntelligence();
-      else if (typeof stopNoraBrainAnimation === 'function') stopNoraBrainAnimation();
+      else if (typeof suspendIntelligence === 'function') suspendIntelligence();
       if (name === 'admin') loadAdmin();
     }
 

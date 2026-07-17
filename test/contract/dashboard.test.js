@@ -115,3 +115,23 @@ test('intelligence view includes a maintainable live functional brain map', () =
     assert.equal(typeof reading.evidence, 'string');
   }
 });
+
+test('intelligence dashboard paints a fast summary before progressively loading details', () => {
+  const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  const brainJs = fs.readFileSync(path.join(root, 'public/js/dashboard-brain.js'), 'utf8');
+  const sections = [...html.matchAll(/data-intelligence-section="([^"]+)"/g)].map(match => match[1]);
+  assert.equal(sections.length, 14);
+  assert.equal(new Set(sections).size, sections.length);
+  const targetLiteral = intelligenceJs.match(/const intelligenceSectionTargets = (\{[\s\S]*?\n\});/);
+  assert.ok(targetLiteral, 'progressive section registry should stay inspectable');
+  const targetNames = Object.keys(vm.runInNewContext(`(${targetLiteral[1]})`));
+  assert.deepEqual(targetNames.sort(), sections.sort(), 'every dashboard section should have one matching loader key');
+  assert.match(intelligenceJs, /intelligence\/dashboard-summary/);
+  assert.match(intelligenceJs, /IntersectionObserver/);
+  assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
+  assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);
+  const initialLoader = intelligenceJs.slice(intelligenceJs.indexOf('async function loadIntelligence()'), intelligenceJs.indexOf('async function loadIntelligenceBench'));
+  assert.doesNotMatch(initialLoader, /\/cognition|\/self-model|\/consciousness-research\/status/);
+  assert.match(brainJs, /noraBrainVisibilityObserver/);
+  assert.match(brainJs, /time - noraBrainLastDraw >= 40/);
+});

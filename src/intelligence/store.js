@@ -166,10 +166,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   getOperationalEnvironment = () => ({}), getDreams = () => [] }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
+  let snapshotRevisionValue = 0;
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
+    snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
@@ -627,6 +629,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function enqueuePersistence({ strict = false } = {}) {
+    snapshotRevisionValue += 1;
     const snapshot = JSON.parse(JSON.stringify(state));
     const operation = writeQueue.then(async () => {
       if (isDbReady()) return db.setState('intelligence_v1', snapshot);
@@ -641,6 +644,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function persist() { return enqueuePersistence(); }
   function persistStrict() { return enqueuePersistence({ strict: true }); }
+  function snapshotRevision() { return snapshotRevisionValue; }
 
   function mutate(fn) {
     const result = fn(state);
@@ -9554,6 +9558,96 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function cognitiveInitiationPolicyStudiesSnapshot() {
     return { epistemic_status: 'Randomized applied identity-bound, deidentified, and schedule-only initiation policies are evaluated intention-to-treat with assignment-blind independent grading and explicit compute costs. Standardized studies use the same delayed actionless task; ecological studies use prospectively selected connector-sourced commitments and fixed-window natural outcomes. Neither establishes continuous or phenomenal consciousness.',
       studies: state.cognition.cognitive_initiation_policy_studies.map(publicCognitiveInitiationPolicyStudy) };
+  }
+
+  function dashboardIntelligenceSummary() {
+    const cognition = state.cognition || {};
+    const workspace = cognition.workspace || { slots: [], capacity: 7 };
+    const dynamics = cognition.endogenous_dynamics || {};
+    const dynamicsContents = (dynamics.contents || []).slice().sort((a, b) => (b.activation || 0) - (a.activation || 0));
+    const activeContents = dynamicsContents.filter(item => Number(item.activation) >= 0.15).length;
+    const pulses = cognition.background_inference?.pulses || [];
+    const acceptedPulses = pulses.filter(item => item.status === 'accepted').length;
+    const unresolvedPulses = pulses.filter(item => item.status === 'accepted' && !item.resolution).length;
+    const claims = cognition.self_model?.claims || [];
+    const probes = cognition.self_model?.probes || [];
+    const activeClaims = claims.filter(item => item.status === 'active').length;
+    const openProbes = probes.filter(item => item.status === 'open').length;
+    const drives = Object.entries(cognition.drives || {}).sort((a, b) => (b[1]?.level || 0) - (a[1]?.level || 0));
+    const strongestDrive = drives[0] || null;
+    const intentions = cognition.agency?.intentions || [];
+    const openIntentions = intentions.filter(item => item.status === 'open').length;
+    const resolvedIntentions = intentions.filter(item => item.status === 'resolved').length;
+    const predictions = cognition.interoception?.predictions || [];
+    const openPredictions = predictions.filter(item => item.status === 'open').length;
+    const resolvedPredictions = predictions.filter(item => item.status === 'resolved').length;
+    const openCommitments = state.commitments.filter(item => item.status === 'open').length;
+    const activeExperiments = state.experiments.filter(item => item.status === 'active').length;
+    const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
+      + (relationship.observations || []).filter(item => item.status === 'active').length, 0);
+    const experience = cognition.experience_stream || [];
+    const closedExperience = experience.filter(item => item.status === 'closed').length;
+    const handoffs = cognition.continuity_handoffs || [];
+    const frames = cognition.integrated_self?.frames || [];
+    const latestFrame = frames.at(-1) || null;
+    const integratedSelfSealed = selfInquirySelectionActive(cognition) || interventionActive('integrated_self_binding');
+    const reflectionSignals = (cognition.surprises || []).length + (cognition.mind_changes || []).length + unresolvedPulses;
+    const researchEvents = cognition.research_ledger?.events?.length || 0;
+    const appraisal = cognition.appraisal || {};
+    const calibrationResolved = cognition.calibration?.resolved || 0;
+    const scaleCount = (value, saturation) => 1 - Math.exp(-(Number(value) || 0) / saturation * 2.2);
+    const metric = (level, evidence, available) => ({ level: clamp01(level), evidence, available: Boolean(available) });
+    const integratedDomains = integratedSelfSealed ? 0 : (latestFrame?.integration?.available_domains?.length || 0);
+    const strongestDriveLevel = strongestDrive?.[1]?.level || 0;
+    const strongestDriveName = strongestDrive?.[0]?.replaceAll('_', ' ') || null;
+
+    return {
+      generated_at: clock().toISOString(),
+      revision: snapshotRevisionValue,
+      overview: {
+        commitments: { total: state.commitments.length, open: openCommitments },
+        episodes: state.episodes.length,
+        relationships: state.relationships.length,
+        traces: state.traces.length,
+        experiments: { total: state.experiments.length, active: activeExperiments },
+        experience_moments: experience.length,
+        cycles: { total: state.cycles.length, running: state.cycles.filter(item => item.status === 'running').length },
+        initiative: JSON.parse(JSON.stringify(state.initiative)),
+      },
+      brain: {
+        attention: metric((workspace.slots || []).length / (workspace.capacity || 7), `${(workspace.slots || []).length}/${workspace.capacity || 7} workspace slots occupied`, (workspace.slots || []).length > 0),
+        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'} available`, reflectionSignals > 0),
+        'self-model': metric(scaleCount(activeClaims + openProbes, 10), `${activeClaims} active claims, ${openProbes} open probes`, activeClaims + openProbes > 0),
+        appraisal: metric(appraisal.updated ? Math.max(0.4, scaleCount(calibrationResolved, 12)) : 0, appraisal.label || 'awaiting first cycle', Boolean(appraisal.updated)),
+        agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions`, openIntentions + resolvedIntentions > 0),
+        forecasting: metric(Math.max(scaleCount(openPredictions, 5), resolvedPredictions ? 0.28 : 0), `${openPredictions} open and ${resolvedPredictions} resolved predictions`, openPredictions + resolvedPredictions > 0),
+        commitments: metric(scaleCount(openCommitments, 8), `${openCommitments} open promise${openCommitments === 1 ? '' : 's'}`, openCommitments > 0),
+        relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
+        learning: metric(scaleCount(activeExperiments + (cognition.development || []).length, 10), `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories`, activeExperiments + (cognition.development || []).length > 0),
+        background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
+        motivation: metric(strongestDriveLevel, strongestDrive ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%` : 'awaiting first cycle', Boolean(strongestDrive)),
+        experience: metric(experience.length ? closedExperience / experience.length : 0, `${closedExperience}/${experience.length} functional moments closed`, experience.length > 0),
+        continuity: metric(scaleCount(handoffs.length, 12), `${handoffs.length} recorded handoffs; replay verification loads with details`, handoffs.length > 0),
+        'integrated-self': integratedSelfSealed
+          ? metric(0.18, 'authentic frame sealed by an active trial', true)
+          : metric(integratedDomains / 6, `${integratedDomains}/6 functional domains bound`, Boolean(latestFrame)),
+        research: metric(scaleCount(researchEvents, 40), `${researchEvents} committed research ledger events`, researchEvents > 0),
+      },
+      cognition: {
+        workspace: { used: (workspace.slots || []).length, capacity: workspace.capacity || 7,
+          suppressed: workspace.suppressed_count || 0, items: (workspace.slots || []).slice(0, 7).map(item => item.text) },
+        appraisal: { label: appraisal.label || 'awaiting first cycle', updated: appraisal.updated || null,
+          calibration_resolved: calibrationResolved, brier: cognition.calibration?.brier ?? null },
+        motivation: { strongest_name: strongestDriveName, strongest_level: strongestDriveLevel,
+          drives: drives.slice(0, 6).map(([name, value]) => ({ name, level: value.level || 0 })) },
+        integrated_self: { sealed: integratedSelfSealed, domains: integratedDomains, frame_count: frames.length },
+        background: { sealed: selfInquirySelectionActive(cognition), tick_count: dynamics.tick_count || 0,
+          active_contents: activeContents, accepted_pulses: acceptedPulses, unresolved_pulses: unresolvedPulses,
+          top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
+        reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
+          development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length },
+      },
+    };
   }
 
   function cognitionPayload(cognition = state.cognition) {
@@ -22353,7 +22447,8 @@ ${episodes.map(item => {
   }
 
   return {
-    init, snapshot: () => JSON.parse(JSON.stringify(state)), persist, persistStrict, interventionActive,
+    init, snapshot: () => JSON.parse(JSON.stringify(state)), snapshotRevision, dashboardIntelligenceSummary,
+    persist, persistStrict, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,

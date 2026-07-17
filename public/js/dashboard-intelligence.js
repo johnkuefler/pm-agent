@@ -1,40 +1,209 @@
+let intelligenceSectionObserver = null;
+let intelligenceAbortController = null;
+let intelligenceLoadToken = 0;
+const intelligenceLoadedSections = new Set();
+const intelligenceSectionPromises = new Map();
+
+const intelligenceSectionTargets = {
+  cognition: ['cognition-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
+  boundary: ['self-boundary-state'], attention: ['attention-schema-state'], agency: ['agency-state'],
+  interoception: ['interoception-state'], experience: ['experience-stream-state'],
+  orientation: ['orientation-list', 'cycle-list'], commitments: ['commitment-list'], episodes: ['episode-list'],
+  relationships: ['relationship-list'], experiments: ['experiment-list'], traces: ['trace-list'],
+};
+
+async function intelligenceJson(path, signal) {
+  const response = await api(path, { signal });
+  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
+  return response.json();
+}
+
+function resetIntelligenceSection(name) {
+  const section = document.querySelector(`[data-intelligence-section="${name}"]`);
+  if (section) section.setAttribute('aria-busy', 'false');
+  (intelligenceSectionTargets[name] || []).forEach((id, index) => {
+    const target = document.getElementById(id);
+    if (!target) return;
+    target.innerHTML = index === 0 ? `<div class="intelligence-loading-state">
+      <span>Details load when this section approaches the viewport.</span>
+      <button class="btn btn-sm" type="button" onclick="loadIntelligenceSection('${name}', intelligenceLoadToken)">Load now</button>
+    </div>` : '';
+  });
+}
+
+function markIntelligenceSectionReady(name) {
+  const section = document.querySelector(`[data-intelligence-section="${name}"]`);
+  if (section) section.setAttribute('aria-busy', 'false');
+}
+
+function markIntelligenceSectionError(name) {
+  const target = document.getElementById((intelligenceSectionTargets[name] || [])[0]);
+  if (target) target.innerHTML = `<div class="intelligence-load-error">This section could not load.
+    <button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('${name}')">Retry</button></div>`;
+  markIntelligenceSectionReady(name);
+}
+
+function retryIntelligenceSection(name) {
+  intelligenceLoadedSections.delete(name);
+  intelligenceSectionPromises.delete(name);
+  resetIntelligenceSection(name);
+  loadIntelligenceSection(name, intelligenceLoadToken);
+}
+
 async function loadIntelligence() {
-  const [summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes, cognitionRes, selfModelRes, experienceRes, handoffsRes, attentionRes, agencyRes, counterfactualAgencyRes, interoceptionRes, boundaryRes, sourceBoundaryRes, authorshipBoundaryRes, authorshipStudiesRes, researchRes, researchLedgerRes] = await Promise.all([
-    api('/intelligence'), api('/commitments?status=open'), api('/episodes?limit=12'), api('/relationships'),
-    api('/learning-experiments'), api('/decision-traces?limit=20'), api('/nora-bench'), api('/intelligence/orient'), api('/intelligence/cycles?limit=8'), api('/cognition'), api('/self-model'), api('/experience-stream?limit=12'), api('/continuity-handoffs'), api('/attention-schema'), api('/agency'), api('/counterfactual-agency/experiments'), api('/interoception'), api('/self-boundary/challenges'), api('/source-boundary/challenges'), api('/authorship-boundary/challenges'), api('/authorship-boundary/studies'), api('/consciousness-research/status'), api('/consciousness-research/ledger'),
-  ]);
-  if (![summaryRes, commitmentsRes, episodesRes, relationshipsRes, experimentsRes, tracesRes, benchRes, orientationRes, cyclesRes, cognitionRes, selfModelRes, experienceRes, handoffsRes, attentionRes, agencyRes, counterfactualAgencyRes, interoceptionRes, boundaryRes, sourceBoundaryRes, authorshipBoundaryRes, authorshipStudiesRes, researchRes, researchLedgerRes].every(response => response.ok)) {
+  suspendIntelligence();
+  const token = ++intelligenceLoadToken;
+  intelligenceAbortController = new AbortController();
+  intelligenceLoadedSections.clear();
+  intelligenceSectionPromises.clear();
+  Object.keys(intelligenceSectionTargets).forEach(resetIntelligenceSection);
+  document.getElementById('intelligence-stats').innerHTML = '<div class="intelligence-loading-state"><span>Loading Nora\'s current functional state.</span></div>';
+  document.getElementById('bench-status').textContent = 'Evaluation status loading independently.';
+  document.getElementById('brain-stage')?.classList.add('brain-loading');
+
+  try {
+    const summary = await intelligenceJson('/intelligence/dashboard-summary', intelligenceAbortController.signal);
+    if (token !== intelligenceLoadToken) return;
+    const overview = summary.overview || {};
+    document.getElementById('intelligence-stats').innerHTML = [
+      ['Open promises', overview.commitments?.open || 0], ['Episodes', overview.episodes || 0],
+      ['People learned', overview.relationships || 0], ['Active experiments', overview.experiments?.active || 0],
+      ['Experience moments', overview.experience_moments || 0], ['Decision traces', overview.traces || 0],
+    ].map(([label, value]) => `<div class="intelligence-stat"><strong>${value}</strong><span>${label}</span></div>`).join('');
+    renderNoraBrain({ dashboard: summary });
+    renderCognitionSummary(summary.cognition || {});
+    intelligenceLoadedSections.add('cognition');
+    markIntelligenceSectionReady('cognition');
+    observeIntelligenceSections(token);
+    loadIntelligenceBench(token);
+  } catch (error) {
+    if (error.name === 'AbortError') return;
     document.getElementById('intelligence-stats').innerHTML = '<div class="error">Could not load intelligence state.</div>';
     renderNoraBrainError();
+  }
+}
+
+async function loadIntelligenceBench(token) {
+  try {
+    const bench = await intelligenceJson('/nora-bench', intelligenceAbortController?.signal);
+    if (token !== intelligenceLoadToken) return;
+    document.getElementById('bench-status').innerHTML = `<strong>Nora Bench: ${bench.passed}/${bench.total} passing</strong> &middot; meeting judgment, uncertainty, repair, and initiative policies`;
+  } catch (error) {
+    if (error.name !== 'AbortError' && token === intelligenceLoadToken) document.getElementById('bench-status').textContent = 'Evaluation status is temporarily unavailable.';
+  }
+}
+
+function observeIntelligenceSections(token) {
+  if (!('IntersectionObserver' in window)) {
+    Object.keys(intelligenceSectionTargets).filter(name => name !== 'cognition').forEach(name => loadIntelligenceSection(name, token));
     return;
   }
-  const [summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles, cognition, selfModel, experience, handoffs, attention, agency, counterfactualAgency, interoception, boundary, sourceBoundary, authorshipBoundary, authorshipStudies, research, researchLedger] = await Promise.all([
-    summaryRes.json(), commitmentsRes.json(), episodesRes.json(), relationshipsRes.json(), experimentsRes.json(), tracesRes.json(), benchRes.json(), orientationRes.json(), cyclesRes.json(), cognitionRes.json(), selfModelRes.json(), experienceRes.json(), handoffsRes.json(), attentionRes.json(), agencyRes.json(), counterfactualAgencyRes.json(), interoceptionRes.json(), boundaryRes.json(), sourceBoundaryRes.json(), authorshipBoundaryRes.json(), authorshipStudiesRes.json(), researchRes.json(), researchLedgerRes.json(),
-  ]);
-  document.getElementById('intelligence-stats').innerHTML = [
-    ['Open promises', summary.commitments.open], ['Episodes', summary.episodes], ['People learned', summary.relationships],
-    ['Active experiments', summary.experiments.active], ['Experience moments', summary.experience_moments || 0], ['Decision traces', summary.traces],
-  ].map(([label, value]) => `<div class="intelligence-stat"><strong>${value}</strong><span>${label}</span></div>`).join('');
-  document.getElementById('bench-status').innerHTML = `<strong>Nora Bench: ${bench.passed}/${bench.total} passing</strong> &middot; meeting judgment, uncertainty, repair, and initiative policies`;
-  renderNoraBrain({
-    summary, commitments, episodes, relationships, experiments, traces, bench, orientation, cycles,
-    cognition, selfModel, experience, handoffs, attention, agency, counterfactualAgency,
-    interoception, boundary, sourceBoundary, authorshipBoundary, authorshipStudies, research, researchLedger,
+  intelligenceSectionObserver = new IntersectionObserver(entries => {
+    entries.filter(entry => entry.isIntersecting).forEach(entry => {
+      intelligenceSectionObserver.unobserve(entry.target);
+      loadIntelligenceSection(entry.target.dataset.intelligenceSection, token);
+    });
+  }, { rootMargin: '240px 0px', threshold: 0.01 });
+  document.querySelectorAll('[data-intelligence-section]').forEach(section => {
+    if (section.dataset.intelligenceSection !== 'cognition') intelligenceSectionObserver.observe(section);
   });
-  renderCommitments(commitments);
-  renderEpisodes(episodes);
-  renderRelationships(relationships);
-  renderExperiments(experiments);
-  renderDecisionTraces(traces);
-  renderOrientation(orientation, cycles);
-  renderCognition(cognition);
-  renderSelfModel(selfModel);
-  renderExperienceStream(experience, handoffs);
-  renderAttentionSchema(attention);
-  renderAgency(agency, counterfactualAgency);
-  renderInteroception(interoception);
-  renderSelfBoundary(boundary, sourceBoundary, authorshipBoundary, authorshipStudies);
-  renderConsciousnessResearch(research, researchLedger);
+}
+
+async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
+  if (token !== intelligenceLoadToken || intelligenceLoadedSections.has(name)) return;
+  if (intelligenceSectionPromises.has(name)) return intelligenceSectionPromises.get(name);
+  const section = document.querySelector(`[data-intelligence-section="${name}"]`);
+  if (section) section.setAttribute('aria-busy', 'true');
+  const signal = intelligenceAbortController?.signal;
+  const promise = (async () => {
+    try {
+      if (name === 'research') {
+        const [research, ledger] = await Promise.all([
+          intelligenceJson('/consciousness-research/status', signal),
+          intelligenceJson('/consciousness-research/ledger?summary=1', signal),
+        ]);
+        if (token === intelligenceLoadToken) renderConsciousnessResearch(research, ledger);
+      } else if (name === 'self-model') {
+        const model = await intelligenceJson('/self-model', signal);
+        if (token === intelligenceLoadToken) renderSelfModel(model);
+      } else if (name === 'boundary') {
+        const values = await Promise.all([
+          intelligenceJson('/self-boundary/challenges', signal), intelligenceJson('/source-boundary/challenges', signal),
+          intelligenceJson('/authorship-boundary/challenges', signal), intelligenceJson('/authorship-boundary/studies', signal),
+        ]);
+        if (token === intelligenceLoadToken) renderSelfBoundary(...values);
+      } else if (name === 'attention') {
+        const value = await intelligenceJson('/attention-schema', signal);
+        if (token === intelligenceLoadToken) renderAttentionSchema(value);
+      } else if (name === 'agency') {
+        const values = await Promise.all([intelligenceJson('/agency', signal), intelligenceJson('/counterfactual-agency/experiments', signal)]);
+        if (token === intelligenceLoadToken) renderAgency(...values);
+      } else if (name === 'interoception') {
+        const value = await intelligenceJson('/interoception', signal);
+        if (token === intelligenceLoadToken) renderInteroception(value);
+      } else if (name === 'experience') {
+        const values = await Promise.all([intelligenceJson('/experience-stream?limit=6', signal), intelligenceJson('/continuity-handoffs?summary=1', signal)]);
+        if (token === intelligenceLoadToken) renderExperienceStream(...values);
+      } else if (name === 'orientation') {
+        const values = await Promise.all([intelligenceJson('/intelligence/orient', signal), intelligenceJson('/intelligence/cycles?limit=4', signal)]);
+        if (token === intelligenceLoadToken) renderOrientation(...values);
+      } else if (name === 'commitments') {
+        const value = await intelligenceJson('/commitments?status=open', signal);
+        if (token === intelligenceLoadToken) renderCommitments(value);
+      } else if (name === 'episodes') {
+        const value = await intelligenceJson('/episodes?limit=6', signal);
+        if (token === intelligenceLoadToken) renderEpisodes(value);
+      } else if (name === 'relationships') {
+        const value = await intelligenceJson('/relationships', signal);
+        if (token === intelligenceLoadToken) renderRelationships(value);
+      } else if (name === 'experiments') {
+        const value = await intelligenceJson('/learning-experiments', signal);
+        if (token === intelligenceLoadToken) renderExperiments(value);
+      } else if (name === 'traces') {
+        const value = await intelligenceJson('/decision-traces?limit=12', signal);
+        if (token === intelligenceLoadToken) renderDecisionTraces(value);
+      }
+      if (token !== intelligenceLoadToken) return;
+      intelligenceLoadedSections.add(name);
+      markIntelligenceSectionReady(name);
+    } catch (error) {
+      if (error.name !== 'AbortError' && token === intelligenceLoadToken) markIntelligenceSectionError(name);
+    } finally {
+      intelligenceSectionPromises.delete(name);
+    }
+  })();
+  intelligenceSectionPromises.set(name, promise);
+  return promise;
+}
+
+function suspendIntelligence() {
+  if (intelligenceSectionObserver) intelligenceSectionObserver.disconnect();
+  intelligenceSectionObserver = null;
+  if (intelligenceAbortController) intelligenceAbortController.abort();
+  intelligenceAbortController = null;
+  if (typeof stopNoraBrainAnimation === 'function') stopNoraBrainAnimation();
+}
+
+function renderCognitionSummary(cognition) {
+  const workspace = cognition.workspace || {};
+  const appraisal = cognition.appraisal || {};
+  const motivation = cognition.motivation || {};
+  const integrated = cognition.integrated_self || {};
+  const background = cognition.background || {};
+  const reflection = cognition.reflection || {};
+  document.getElementById('cognition-state').innerHTML = `
+    <div class="intelligence-card"><strong>In attention (${workspace.used || 0}/${workspace.capacity || 7})</strong>
+      ${(workspace.items || []).map(item => `<div>${escHtml(item)}</div>`).join('') || '<div class="intelligence-meta">No cognition cycle has run yet.</div>'}
+      ${workspace.suppressed ? `<div class="intelligence-meta">${workspace.suppressed} lower-priority signals stayed latent.</div>` : ''}</div>
+    <div class="intelligence-card"><strong>Motivation</strong><div>${motivation.strongest_name ? `${escHtml(motivation.strongest_name)} ${Math.round((motivation.strongest_level || 0) * 100)}%` : 'Awaiting first cycle'}</div></div>
+    <div class="intelligence-card"><strong>Appraisal: ${escHtml(appraisal.label || 'awaiting first cycle')}</strong>
+      <div class="intelligence-meta">${appraisal.calibration_resolved || 0} resolved predictions${appraisal.brier != null ? ` &middot; Brier ${Number(appraisal.brier).toFixed(3)}` : ''}</div></div>
+    <div class="intelligence-card"><strong>Integrated operational self: ${integrated.sealed ? 'sealed by active trial' : `${integrated.domains || 0}/6 domains bound`}</strong>
+      <div class="intelligence-meta">${integrated.frame_count || 0} recorded frames &middot; functional self-integration, not phenomenal unity</div></div>
+    <div class="intelligence-card"><strong>Between-invocation dynamics: ${background.sealed ? 'sealed by active trial' : `${background.active_contents || 0} active signals`}</strong>
+      <div class="intelligence-meta">${background.tick_count || 0} ticks &middot; ${background.accepted_pulses || 0} accepted actionless cognitive pulses</div>
+      ${(background.top_contents || []).map(item => `<div>${escHtml(item.text)} <span class="intelligence-meta">activation ${Number(item.activation).toFixed(2)}</span></div>`).join('')}</div>
+    <div class="intelligence-card"><strong>Reflective ledger</strong><div>${reflection.surprises || 0} surprises &middot; ${reflection.mind_changes || 0} belief revisions &middot; ${reflection.development || 0} developmental memories &middot; ${reflection.counterfactuals || 0} simulated alternatives</div></div>`;
 }
 
 function renderConsciousnessResearch(report, ledger = {}) {

@@ -3,18 +3,34 @@
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 
 function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+  const snapshotCache = new Map();
+  function cachedJson(res, key, build, { ttlMs = 15000, project = value => value } = {}) {
+    const revision = typeof store.snapshotRevision === 'function' ? store.snapshotRevision() : null;
+    const now = Date.now();
+    const cached = snapshotCache.get(key);
+    if (cached && cached.revision === revision && cached.expires_at > now) {
+      res.set('X-Nora-Snapshot-Cache', 'hit');
+      res.set('Cache-Control', 'private, no-store');
+      return res.type('application/json').send(cached.serialized);
+    }
+    const started = process.hrtime.bigint();
+    const value = project(build());
+    const serialized = JSON.stringify(value);
+    const durationMs = Number(process.hrtime.bigint() - started) / 1e6;
+    snapshotCache.set(key, { revision, expires_at: now + ttlMs, serialized });
+    res.set('X-Nora-Snapshot-Cache', 'miss');
+    res.set('Server-Timing', `snapshot;dur=${durationMs.toFixed(1)}`);
+    res.set('Cache-Control', 'private, no-store');
+    return res.type('application/json').send(serialized);
+  }
+
+  app.get('/intelligence/dashboard-summary', requireAuth, (_req, res) => {
+    cachedJson(res, 'dashboard-summary', () => store.dashboardIntelligenceSummary(), { ttlMs: 5000 });
+  });
+
   app.get('/intelligence', requireAuth, (req, res) => {
-    const state = store.snapshot();
-    res.json({
-      commitments: { total: state.commitments.length, open: state.commitments.filter(item => item.status === 'open').length },
-      episodes: state.episodes.length,
-      relationships: state.relationships.length,
-      traces: state.traces.length,
-      cycles: { total: state.cycles.length, running: state.cycles.filter(item => item.status === 'running').length },
-      experiments: { total: state.experiments.length, active: state.experiments.filter(item => item.status === 'active').length },
-      experience_moments: state.cognition.experience_stream.length,
-      initiative: state.initiative,
-    });
+    const overview = store.dashboardIntelligenceSummary().overview;
+    res.json({ ...overview, initiative: overview.initiative });
   });
 
   app.get('/commitments', requireAuth, (req, res) => {
@@ -197,10 +213,16 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json(cycles);
   });
   app.get('/experience-stream', requireAuth, (req, res) => {
-    res.json(store.experienceStreamSnapshot({ limit: req.query.limit }));
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    cachedJson(res, `experience-stream:${limit}`, () => store.experienceStreamSnapshot({ limit }), { ttlMs: 15000 });
   });
   app.get('/continuity-handoffs', requireAuth, (req, res) => {
-    res.json(store.continuityHandoffSnapshot());
+    cachedJson(res, `continuity-handoffs:${req.query.summary === '1' ? 'summary' : 'full'}`, () => store.continuityHandoffSnapshot(), {
+      ttlMs: 15000,
+      project: value => req.query.summary === '1'
+        ? { epistemic_status: value.epistemic_status, report: value.report }
+        : value,
+    });
   });
   app.post('/intelligence/cycles', requireAuth, (req, res) => {
     try {
@@ -272,7 +294,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
-  app.get('/cognition', requireAuth, (req, res) => res.json(store.cognitionSnapshot(getPredictions())));
+  app.get('/cognition', requireAuth, (_req, res) => cachedJson(res, 'cognition',
+    () => store.cognitionSnapshot(getPredictions()), { ttlMs: 10000 }));
   app.get('/affective-regulation', requireAuth, (req, res) => res.json(store.affectiveRegulationSnapshot()));
   app.get('/goal-affect', requireAuth, (req, res) => res.json(store.goalAffectSnapshot()));
   app.get('/relational-affect', requireAuth, (req, res) => res.json(store.relationalAffectSnapshot()));
@@ -449,8 +472,14 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, study });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/consciousness-research/status', requireAuth, (req, res) => res.json(store.consciousnessResearchStatus()));
-  app.get('/consciousness-research/ledger', requireAuth, (req, res) => res.json(store.researchLedgerSnapshot()));
+  app.get('/consciousness-research/status', requireAuth, (_req, res) => cachedJson(res, 'consciousness-research-status',
+    () => store.consciousnessResearchStatus(), { ttlMs: 30000 }));
+  app.get('/consciousness-research/ledger', requireAuth, (req, res) => cachedJson(res,
+    `consciousness-research-ledger:${req.query.summary === '1' ? 'summary' : 'full'}`,
+    () => store.researchLedgerSnapshot(), {
+      ttlMs: 30000,
+      project: value => req.query.summary === '1' ? { report: value.report } : value,
+    }));
   app.get('/consciousness-research/source-attestations', requireResearchAuth,
     (req, res) => res.json(store.externalSourceAttestationsSnapshot()));
   app.get('/consciousness-research/transparency-export', requireResearchAuth,
@@ -497,7 +526,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/integrated-self', requireAuth, (req, res) => res.json(store.integratedSelfSnapshot()));
-  app.get('/attention-schema', requireAuth, (req, res) => res.json(store.attentionSchemaSnapshot()));
+  app.get('/attention-schema', requireAuth, (_req, res) => cachedJson(res, 'attention-schema',
+    () => store.attentionSchemaSnapshot(), { ttlMs: 15000 }));
   app.post('/attention-schema/directives', requireAuth, (req, res) => {
     try { res.json({ ok: true, directive: store.createAttentionDirective(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
@@ -509,7 +539,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, directive });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/agency', requireAuth, (req, res) => res.json(store.agencySnapshot()));
+  app.get('/agency', requireAuth, (_req, res) => cachedJson(res, 'agency',
+    () => store.agencySnapshot(), { ttlMs: 15000 }));
   app.post('/agency/intentions', requireAuth, (req, res) => {
     try { res.json({ ok: true, intention: store.recordAgencyIntention(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
@@ -532,7 +563,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/prospective-output-monitor', requireAuth, (req, res) => res.json(store.prospectiveOutputMonitorSnapshot()));
   app.get('/endogenous-attention', requireAuth, (req, res) => res.json(store.endogenousAttentionSnapshot()));
-  app.get('/counterfactual-agency/experiments', requireAuth, (req, res) => res.json(store.counterfactualAgencySnapshot()));
+  app.get('/counterfactual-agency/experiments', requireAuth, (_req, res) => cachedJson(res, 'counterfactual-agency',
+    () => store.counterfactualAgencySnapshot(), { ttlMs: 15000 }));
   app.post('/counterfactual-agency/experiments', requireAuth, (req, res) => {
     try { res.json({ ok: true, experiment: store.createCounterfactualAgencyExperiment(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
@@ -544,7 +576,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, experiment });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/interoception', requireAuth, (req, res) => res.json(store.interoceptionSnapshot()));
+  app.get('/interoception', requireAuth, (_req, res) => cachedJson(res, 'interoception',
+    () => store.interoceptionSnapshot(), { ttlMs: 15000 }));
   app.post('/interoception/predictions', requireAuth, (req, res) => {
     try { res.json({ ok: true, prediction: store.createInteroceptivePrediction(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
@@ -651,7 +684,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, study });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/self-model', requireAuth, (req, res) => res.json(store.selfModelSnapshot()));
+  app.get('/self-model', requireAuth, (_req, res) => cachedJson(res, 'self-model',
+    () => store.selfModelSnapshot(), { ttlMs: 30000 }));
   app.get('/self-model/forecast-prior', requireAuth,
     (req, res) => res.json(store.behavioralSelfForecastPriorSnapshot()));
   app.get('/self-model/cycle-calibration', requireAuth,

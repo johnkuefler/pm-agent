@@ -1,3 +1,4 @@
+GET /intelligence/dashboard-summary
 GET /intelligence
 GET /commitments
 POST /commitments

@@ -893,6 +893,13 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const abortedEvaluation = await request(`/self-model/context-trials/${recurrenceTrial.body.trial.id}/evaluate`, { method: 'POST', body: {} });
   assert.equal(abortedEvaluation.body.evaluation.aborted, true);
   assert.ok((await request('/cognition')).body.calibration);
+  const dashboardSummary = await request('/intelligence/dashboard-summary');
+  assert.equal(Object.keys(dashboardSummary.body.brain).length, 15);
+  assert.ok(JSON.stringify(dashboardSummary.body).length < 15000);
+  assert.equal(dashboardSummary.response.headers.get('x-nora-snapshot-cache'), 'miss');
+  const cachedDashboardSummary = await request('/intelligence/dashboard-summary');
+  assert.equal(cachedDashboardSummary.response.headers.get('x-nora-snapshot-cache'), 'hit');
+  assert.equal(cachedDashboardSummary.body.revision, dashboardSummary.body.revision);
   const summary = await request('/intelligence');
   assert.ok(summary.body.relationships >= 1);
   const bench = await request('/nora-bench');
