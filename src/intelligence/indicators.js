@@ -707,6 +707,9 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const reasoningSelfRegulationTrials = completedTrials(cognition, 'reasoning_self_regulation');
   const reasoningSelfRegulationTrial = reasoningSelfRegulationTrials.at(-1) || null;
   const reasoningSelfRegulationDissociation = reasoningSelfRegulationTrial?.evaluation?.reasoning_self_regulation_dissociation || null;
+  const reasoningSelfRegulationRetirement = (cognition.self_model?.context_trials || []).find(item =>
+    item.intervention === 'reasoning_self_regulation' && item.status === 'aborted'
+      && (item.abort?.evidence || []).some(evidence => evidence.type === 'interactive_performance_protocol')) || null;
   const endogenousAttentionSelections = cognition.endogenous_attention?.selections || [];
   const replayValidAttentionSelections = endogenousAttentionSelections.filter(item => item.audit?.complete_chain_verified === true);
   const counterfactualExperiments = cognition.counterfactual_agency?.experiments || [];
@@ -1392,18 +1395,24 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'prospective_reasoning_self_regulation', family: ['metacognition', 'self-model', 'cognitive control', 'predictive processing'],
       functional_claim: 'Before answering, Nora can use an identity-bound forecast of her own likely error and reasoning need to allocate production reasoning compute more effectively than the identical forecast deidentified or Claude native adaptive thinking alone.',
-      mechanism: 'Every live Slack assignment atomically generates counterbalanced self-bound and deidentified Opus 4.8 resource forecasts over information-equivalent task, conversation, tool, and capability packets. The concealed arm deterministically maps one forecast to the main API reasoning mode, while a matched provider-adaptive arm ignores both; independent graders never see forecasts, allocation, usage, or condition.',
+      mechanism: reasoningSelfRegulationRetirement
+        ? 'The retired live design required counterbalanced identity-bound and deidentified forecast provider calls before every Slack answer. Interactive performance protocol v3 now excludes that pre-delivery mechanism; the sealed pilot lifecycle is retained only as an auditable abort.'
+        : 'Every live Slack assignment atomically generates counterbalanced self-bound and deidentified Opus 4.8 resource forecasts over information-equivalent task, conversation, tool, and capability packets. The concealed arm deterministically maps one forecast to the main API reasoning mode, while a matched provider-adaptive arm ignores both; independent graders never see forecasts, allocation, usage, or condition.',
       status: reasoningSelfRegulationTrial
         ? replicatedStatus(reasoningSelfRegulationTrials, reasoningSelfRegulationVerdict)
-        : 'mechanism_present',
+        : reasoningSelfRegulationRetirement ? 'retired_latency_incompatible' : 'mechanism_present',
       evidence: { completed_trials: reasoningSelfRegulationTrials.length,
         confirmatory_trials: reasoningSelfRegulationTrials.filter(item => item.study_phase === 'confirmatory').length,
         latest_dissociation: reasoningSelfRegulationDissociation,
+        lifecycle_resolution: reasoningSelfRegulationRetirement ? 'retired_latency_incompatible' : null,
+        partial_outcomes_analyzed: reasoningSelfRegulationRetirement ? false : null,
         forecast_precedes_response: true,
         direct_hidden_activation_access: false,
         phenomenal_inference_permitted: false },
       falsifier: 'Self-bound forecasts are no better calibrated than deidentified forecasts on provider-adaptive control tasks, do not improve compute-adjusted utility over both controls, fail to allocate more thinking to higher-demand tasks, degrade response quality or evidence access, or fail replay.',
-      next_gate: 'Complete a fifteen-per-arm production pilot, then repeat with interaction-, evaluator-, and provider-receipt-disjoint tasks under the frozen policy and externally checkpointed raw receipts.',
+      next_gate: reasoningSelfRegulationRetirement
+        ? 'Redesign the intervention for post-delivery or offline execution, preregister a latency-neutral causal pathway, and require performance admission before any future live influence.'
+        : 'Complete a fifteen-per-arm production pilot, then repeat with interaction-, evaluator-, and provider-receipt-disjoint tasks under the frozen policy and externally checkpointed raw receipts.',
     },
     {
       id: 'blinded_introspective_access', family: ['higher-order theories', 'metacognition', 'self-model'],

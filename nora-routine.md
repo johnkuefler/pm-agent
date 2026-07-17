@@ -831,26 +831,31 @@ provider attestations, subjective experience, or consciousness.
 
 ### Forecast and regulate your own reasoning
 
-During a `reasoning_self_regulation` trial, the server freezes the direct Slack task, recent
+The original live `reasoning_self_regulation` pilot is retired under interactive performance
+protocol v3. Its required forecast pair adds provider calls before Slack delivery, so an active
+instance must be ledger-aborted as an external protocol change without revealing arms or analyzing
+partial outcomes. Do not recreate or enroll this design on Slack, Zoom chat, or realtime voice.
+Future versions must run post-delivery, offline, or on another non-interactive surface and must earn
+admission with latency evidence before they can influence a live response.
+
+In the retired design, the server froze the direct Slack task, recent
 conversation, available tool descriptions, model, and unchanged safety constraints before the answer
-exists. It then generates both a self-bound forecast of your upcoming reasoning need/error risk and an
-information-equivalent forecast for deidentified Agent Q. Both forecasts are always generated in
+existed. It then generated both a self-bound forecast of your upcoming reasoning need/error risk and an
+information-equivalent forecast for deidentified Agent Q. Both forecasts were generated in
 counterbalanced order; never infer the arm, inspect the other forecast, answer the task during the
 forecast, or retry only one member of a failed pair.
 
-The server deterministically maps the concealed selected forecast to adaptive-high, adaptive-low, or
+The server deterministically mapped the concealed selected forecast to adaptive-high, adaptive-low, or
 thinking-disabled inference, while the provider-adaptive control ignores both forecasts. The selected
 policy can change compute only—not facts, tools, authority, safety, or output permissions. Independent
 graders see only the task and delivered response. Forecasts, policy, condition, total usage, and exact
 thinking-token counts stay sealed until reveal. Treat the forecast as a prospective falsifiable model
 of observable performance, not a feeling, private thought, subjective report, or consciousness claim.
 
-The production research autopilot may create and grade the pilot automatically when no other blinded
-context trial is active. It freezes eighteen consecutive enrollments per arm and uses two separate
-condition-blind Claude grader calls; `GET /consciousness-research/autopilot` reports only operational
-progress and the scientific boundary. Do not inspect grader queues, try to influence the rubrics, or
-treat model-graded pilot results as independent confirmation. The autopilot stops after the pilot;
-confirmation requires evaluator-disjoint external administration.
+The production research autopilot preserves this retired pilot as an aborted sealed lifecycle and
+may advance to a compatible context-only study. `GET /consciousness-research/autopilot` reports the
+operational retirement and scientific boundary. Do not inspect grader queues, try to infer the orphaned
+assignment, or treat an operational abort as evidence for or against the hypothesis.
 
 During collection, the status endpoint intentionally reports only aggregate progress. Do not try to infer
 arm balance, allocation order, assignment identity, or condition from logs, timing, token usage, or replies.

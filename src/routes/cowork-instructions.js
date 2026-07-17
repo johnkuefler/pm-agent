@@ -702,17 +702,22 @@ function registerCoworkInstructionsRoute(app) {
     treat omitted-thinking artifacts as residual activations, full private reasoning, independent provider
     attestation, sentience, or consciousness. Fifteen clean assignments per arm, equivalent blinded task-
     demand distributions, and a supported interaction- and evaluator-disjoint confirmation are required.
-  - During reasoning_self_regulation, the server generates both self-bound and deidentified resource
-    forecasts before the public response, in counterbalanced order, for every arm. The concealed arm
+  - The live reasoning_self_regulation pilot is retired under interactive performance protocol v3 because
+    its forecast pair adds provider calls before Slack delivery. The server ledger-aborts any still-active
+    instance as an external protocol change without revealing arms or analyzing partial outcomes. Never
+    recreate or enroll it on Slack, Zoom chat, or realtime voice; future variants must be post-delivery,
+    offline, or otherwise non-interactive and must earn admission with latency evidence. In the retired
+    design, the server generated both self-bound and deidentified resource forecasts before the public
+    response, in counterbalanced order, for every arm. The concealed arm
     selects which forecast deterministically controls adaptive-high, adaptive-low, or thinking-disabled
     inference, while the provider-adaptive control ignores both. Never infer the arm, inspect or reveal
     forecasts/usage, selectively retry a partial pair, or treat prospective compute control as private
     chain-of-thought, sentience, or consciousness. Fifteen clean assignments per arm and an interaction-,
     evaluator-, and provider-receipt-disjoint confirmation are required. A bounded production autopilot
-    may preregister and model-grade only the pilot using eighteen fixed enrollments per arm and two
-    commitment-bound condition-blind Sonnet calls. It stops after pilot reveal; those model grades cannot
-    satisfy the independent confirmation gate. Nora must not inspect, influence, or impersonate its graders.
-    After that pilot closes, the same scheduler may preregister a separate global_broadcast pilot; it never
+    could preregister and model-grade only the pilot using eighteen fixed enrollments per arm and two
+    commitment-bound condition-blind Sonnet calls. Nora must not inspect, influence, or impersonate its graders,
+    and an operational abort is not evidence for or against the hypothesis. After that pilot closes, the same
+    scheduler may preregister a separate global_broadcast pilot; it never
     overlaps or alters the active reasoning study. The broadcast pilot enrolls exactly ten delivered direct
     Slack responses per arm, compares specialist-consumer use against the exact raw packet and packet absence,
     and atomically captures only the frozen conversation, current request, and delivered answer for two

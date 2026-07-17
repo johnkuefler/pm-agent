@@ -91,8 +91,7 @@ test('autopilot freezes a model-graded pilot without leaking experimental state 
   assert.equal(design.automated_pilot_grading.evidence_scope, 'model_graded_pilot_only');
   assert.equal(design.automated_pilot_grading.evaluator_roles.length, 2);
 
-  const ensured = autopilot.ensurePilot(store, { enabled: true });
-  assert.equal(ensured.state, 'pilot_created');
+  store.createContextTrial(design);
   const raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === autopilot.PILOT_ID);
   assert.equal(raw.stopping_rule, 'fixed_enrollment_per_group_with_preregistered_reliability_attrition_cap');
   assert.equal(raw.enrollment_target_per_group, 18);
@@ -126,7 +125,7 @@ test('autopilot freezes a model-graded pilot without leaking experimental state 
 
 test('autopilot commits two replay-bound blind grades for a delivered production assignment', async () => {
   const { dir, store } = await setup();
-  autopilot.ensurePilot(store, { enabled: true });
+  store.createContextTrial(autopilot.pilotDesign());
   const assignmentId = completeOneAssignment(store);
   const subjectVisible = JSON.stringify(store.cognitionSnapshot().self_model.context_trials);
   assert.doesNotMatch(subjectVisible, new RegExp(assignmentId));
@@ -208,7 +207,7 @@ test('autopilot waits rather than displacing another active blinded trial', asyn
 
 test('autopilot keeps the preregistered grader model frozen after runtime configuration changes', async () => {
   const { dir, store } = await setup();
-  autopilot.ensurePilot(store, { enabled: true, graderModel: autopilot.DEFAULT_GRADER_MODEL });
+  store.createContextTrial(autopilot.pilotDesign({ graderModel: autopilot.DEFAULT_GRADER_MODEL }));
   completeOneAssignment(store, 'frozen-grader-model');
   const requestedModels = [];
   const result = await autopilot.runCycle({
@@ -256,10 +255,59 @@ test('fixed reliability exclusions are terminal but cannot replace the minimum a
   assert.equal(insufficient.reason, 'insufficient_agreement');
 });
 
+test('autopilot ledger-aborts a pilot that the foreground latency protocol can no longer enroll', async () => {
+  const { dir, store } = await setup();
+  const trial = store.createContextTrial(autopilot.pilotDesign());
+  const assignment = store.contextCondition({
+    surface: 'slack', unitKey: 'latency-retirement-orphan', reasoningSelfRegulationAvailable: true,
+  });
+  assert.ok(assignment);
+  assert.deepEqual(autopilot.latencyCompatibility(trial), {
+    compatible: false,
+    intervention: 'reasoning_self_regulation',
+    surfaces: ['slack'],
+    blocked_surfaces: ['slack'],
+    interactive_performance_protocol_version: 3,
+  });
+
+  let providerCalls = 0;
+  const result = await autopilot.runCycle({
+    store, enabled: true,
+    callProvider: async () => { providerCalls += 1; throw new Error('provider must not be called'); },
+  });
+  assert.equal(result.state, autopilot.LATENCY_RETIREMENT.state);
+  assert.equal(result.grades_committed, 0);
+  assert.equal(providerCalls, 0);
+
+  const retired = store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id);
+  assert.equal(retired.status, 'aborted');
+  assert.equal(retired.assignments[0].status, 'aborted_ungraded');
+  assert.equal(retired.abort.reason_code, 'external_change');
+  assert.equal(retired.abort.mapping_revealed, false);
+  assert.equal(retired.abort.potential_outcome_dependent_stopping, false);
+  assert.equal(retired.abort.flow.assigned, 1);
+  assert.ok(retired.abort.evidence.some(item => item.type === 'interactive_performance_protocol'
+    && item.id === 'interactive-performance-v3'));
+  assert.equal(autopilot.isLatencyRetirement(retired), true);
+
+  const status = autopilot.status(store, { enabled: true, lastCycle: result });
+  assert.equal(status.mode, 'retired_from_interactive_path');
+  assert.equal(status.pilot.lifecycle_resolution, autopilot.LATENCY_RETIREMENT.state);
+  assert.match(status.scientific_boundary, /operational lifecycle result, not evidence/i);
+  const indicator = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'prospective_reasoning_self_regulation');
+  assert.equal(indicator.status, 'retired_latency_incompatible');
+  assert.equal(indicator.evidence.partial_outcomes_analyzed, false);
+  assert.equal(autopilot.ensurePilot(store, { enabled: true }).state, 'pilot_closed');
+  assert.equal(store.snapshot().cognition.self_model.context_trials.length, 1);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('server schedules the bounded autopilot only outside test mode', () => {
   const root = path.join(__dirname, '..', '..');
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  assert.match(server, /runResearchAutopilotRuntime\(\)\.catch/);
+  assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'startup' \}\)/);
+  assert.match(server, /\['research_autopilot', \(\) => runResearchAutopilotRuntime\(\{ post: priorityPost \}\)\]/);
   assert.match(server, /NORA_RESEARCH_AUTOPILOT !== '0'/);
   assert.match(server, /NORA_TEST_MODE !== '1'/);
   assert.match(server, /getResearchAutopilotStatus/);

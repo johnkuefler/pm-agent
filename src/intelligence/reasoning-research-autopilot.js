@@ -2,12 +2,22 @@
 
 const crypto = require('crypto');
 const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
+const interactivePerformance = require('./interactive-performance');
 
 const PROTOCOL_VERSION = 1;
 const PILOT_ID = 'reasoning-self-regulation-production-pilot-v1';
 const DEFAULT_GRADER_MODEL = 'claude-sonnet-4-6';
 const DEFAULT_MAX_GRADES_PER_CYCLE = 4;
 const EVALUATOR_ROLES = ['evidence-first', 'failure-first'];
+const LATENCY_RETIREMENT = Object.freeze({
+  lifecycle_protocol_version: 2,
+  state: 'pilot_aborted_latency_incompatible',
+  reason_code: 'external_change',
+  evidence: Object.freeze([
+    Object.freeze({ type: 'interactive_performance_protocol', id: `interactive-performance-v${interactivePerformance.PROTOCOL_VERSION}` }),
+    Object.freeze({ type: 'preregistered_pilot', id: PILOT_ID }),
+  ]),
+});
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -195,6 +205,46 @@ function relevantTrials(store) {
     .filter(trial => trial.intervention === 'reasoning_self_regulation');
 }
 
+function latencyCompatibility(design = pilotDesign()) {
+  const surfaces = [...new Set((design.surfaces || []).map(String))];
+  const blockedSurfaces = surfaces.filter(surface => Object.hasOwn(interactivePerformance.BUDGET_MS, surface)
+    && !interactivePerformance.allowsInlineIntervention({
+      latencyCritical: true,
+      intervention: design.intervention,
+    }));
+  return {
+    compatible: surfaces.length > 0 && blockedSurfaces.length < surfaces.length,
+    intervention: design.intervention,
+    surfaces,
+    blocked_surfaces: blockedSurfaces,
+    interactive_performance_protocol_version: interactivePerformance.PROTOCOL_VERSION,
+  };
+}
+
+function isLatencyRetirement(trial) {
+  return trial?.status === 'aborted' && trial.abort?.reason_code === LATENCY_RETIREMENT.reason_code
+    && (trial.abort.evidence || []).some(item => item.type === 'interactive_performance_protocol'
+      && /^interactive-performance-v\d+$/.test(String(item.id || '')));
+}
+
+function retireLatencyIncompatiblePilot(store, trial) {
+  const compatibility = latencyCompatibility(trial);
+  if (trial?.status !== 'active' || compatibility.compatible) return null;
+  // A response that was already delivered before the policy change may still receive its
+  // preregistered blind grades in the background. That work cannot delay the user, and finishing
+  // the frozen evidence package avoids selectively discarding an observed outcome. Retirement
+  // happens on the next cycle; the closed cohort is never analyzed or replenished.
+  const gradeableDeliveredEvidence = (trial.assignments || []).some(assignment =>
+    assignment.status === 'pending' && assignment.evidence_package);
+  if (gradeableDeliveredEvidence) return null;
+  store.abortContextTrial(trial.id, {
+    reason_code: LATENCY_RETIREMENT.reason_code,
+    explanation: `Interactive performance protocol v${interactivePerformance.PROTOCOL_VERSION} forbids ${trial.intervention} on every preregistered surface because it adds forecast provider calls and expanded generation before first delivery. Continuing enrollment would violate the foreground latency policy. This lifecycle decision does not depend on outcome values; partial outcomes will not be revealed or analyzed.`,
+    evidence: LATENCY_RETIREMENT.evidence,
+  });
+  return store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id) || null;
+}
+
 function summarizeTrial(trial) {
   if (!trial) return null;
   const conditions = trial.conditions || [];
@@ -224,6 +274,7 @@ function summarizeTrial(trial) {
   }
   return {
     ...common,
+    ...(isLatencyRetirement(trial) ? { lifecycle_resolution: LATENCY_RETIREMENT.state } : {}),
     assigned_by_condition: Object.fromEntries(conditions.map(condition => [condition,
       assignments.filter(item => item.condition === condition).length])),
     resolved_by_condition: Object.fromEntries(conditions.map(condition => [condition,
@@ -262,8 +313,10 @@ function status(store, runtime = {}) {
   return {
     protocol_version: PROTOCOL_VERSION,
     enabled: runtime.enabled === true,
-    mode: 'model_graded_pilot_only',
-    scientific_boundary: 'Automated condition-blind Claude grades may support pilot causal-signal analysis only. They cannot satisfy the evaluator-disjoint independent confirmation gate.',
+    mode: isLatencyRetirement(pilot) ? 'retired_from_interactive_path' : 'model_graded_pilot_only',
+    scientific_boundary: isLatencyRetirement(pilot)
+      ? `The preregistered pilot was aborted without reveal after interactive performance protocol v${interactivePerformance.PROTOCOL_VERSION} made its pre-delivery provider calls inadmissible. This is an operational lifecycle result, not evidence for or against the functional hypothesis.`
+      : 'Automated condition-blind Claude grades may support pilot causal-signal analysis only. They cannot satisfy the evaluator-disjoint independent confirmation gate.',
     pilot: summarizeTrial(pilot),
     active_other_trial: activeOther ? { status: activeOther.status, design_sealed: true } : null,
     last_cycle: publicCycleStatus(runtime.lastCycle, pilot),
@@ -275,10 +328,16 @@ function ensurePilot(store, { enabled = true, graderModel = DEFAULT_GRADER_MODEL
   const all = store.snapshot()?.cognition?.self_model?.context_trials || [];
   const existing = all.find(item => item.id === PILOT_ID)
     || all.find(item => item.intervention === 'reasoning_self_regulation' && item.study_phase === 'pilot');
-  if (existing) return { state: existing.status === 'active' ? 'collecting_pilot' : 'pilot_closed', trial: existing };
+  if (existing) {
+    const retired = retireLatencyIncompatiblePilot(store, existing);
+    if (retired) return { state: LATENCY_RETIREMENT.state, trial: retired };
+    return { state: existing.status === 'active' ? 'collecting_pilot' : 'pilot_closed', trial: existing };
+  }
   const active = all.find(item => item.status === 'active');
   if (active) return { state: 'waiting_for_active_trial', trial: null, blocking_trial_id: active.id };
   const trial = store.createContextTrial(pilotDesign({ graderModel }));
+  const retired = retireLatencyIncompatiblePilot(store, trial);
+  if (retired) return { state: LATENCY_RETIREMENT.state, trial: retired };
   return { state: 'pilot_created', trial };
 }
 
@@ -358,7 +417,8 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
 
 module.exports = {
   PROTOCOL_VERSION, PILOT_ID, DEFAULT_GRADER_MODEL, DEFAULT_MAX_GRADES_PER_CYCLE,
-  EVALUATOR_ROLES, commitment, evaluatorIds, systemPrompt, gradeSchema, graderManifest,
+  EVALUATOR_ROLES, LATENCY_RETIREMENT, commitment, evaluatorIds, systemPrompt, gradeSchema, graderManifest,
   pilotDesign, parseGrade, gradeRequest, gradeSubmission, summarizeTrial, publicCycleStatus, status,
+  latencyCompatibility, isLatencyRetirement, retireLatencyIncompatiblePilot,
   ensurePilot, terminalPilotState, runCycle,
 };
