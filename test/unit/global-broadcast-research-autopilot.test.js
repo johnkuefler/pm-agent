@@ -196,6 +196,54 @@ test('undelivered broadcast outcomes are terminal exclusions and cannot be repla
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('restart-orphaned broadcast assignments are counted honestly and excluded after grace', async () => {
+  const { dir, store } = await setup();
+  closeReasoningPredecessor(store);
+  const trial = autopilot.ensurePilot(store, { enabled: true }).trial;
+  const assignment = store.contextCondition({
+    surface: 'slack', unitKey: 'restart-orphaned-broadcast', globalBroadcastAvailable: true,
+  });
+  store.runGlobalBroadcast({ query: 'launch evidence coordination', person: 'John', surface: 'slack',
+    trial_id: trial.id, assignment_id: assignment.assignment_id });
+
+  const sealed = store.activeContextTrialsSnapshot()[0].assignment_progress;
+  assert.equal(sealed.delivery_receipts_captured_total, 1);
+  assert.equal(sealed.evidence_captured_total, 0,
+    'a delivery receipt must not be misreported as immutable response evidence');
+  assert.equal(sealed.pending_without_evidence_total, 1);
+
+  const raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id);
+  const assignedAt = new Date(raw.assignments[0].assigned).getTime();
+  let providerCalls = 0;
+  const beforeGrace = await autopilot.runCycle({
+    store, enabled: true,
+    now: new Date(assignedAt + autopilot.STALE_INCOMPLETE_ASSIGNMENT_MS - 1),
+    callProvider: async () => { providerCalls += 1; throw new Error('no evidence is gradeable'); },
+  });
+  assert.equal(beforeGrace.stale_incomplete_assignments_excluded, 0);
+  assert.equal(store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id)
+    .assignments[0].status, 'pending');
+
+  const recovered = await autopilot.runCycle({
+    store, enabled: true,
+    now: new Date(assignedAt + autopilot.STALE_INCOMPLETE_ASSIGNMENT_MS),
+    callProvider: async () => { providerCalls += 1; throw new Error('no evidence is gradeable'); },
+  });
+  assert.equal(providerCalls, 0);
+  assert.equal(recovered.stale_incomplete_assignments_excluded, 1);
+  const after = store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id)
+    .assignments[0];
+  assert.equal(after.status, 'excluded_protocol');
+  assert.equal(after.protocol_exclusion.reason,
+    'stale_incomplete_delivery_after_restart');
+  assert.equal(store.contextTrialGradingQueue({ evaluatorId: autopilot.evaluatorIds()[0] })
+    .assignments.length, 0);
+  assert.ok(store.researchLedgerSnapshot().events.some(event =>
+    event.kind === 'global_broadcast_assignment_excluded'
+      && event.subject_id === assignment.assignment_id));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('Slack runtime captures only direct delivered broadcast responses and sequences the pilot', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.match(server, /globalBroadcastAvailable: isDirect/);

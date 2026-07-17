@@ -13432,8 +13432,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const excludedTotal = assignments.filter(item => item.status !== 'resolved'
       && /excluded|aborted|closed/.test(String(item.status || ''))).length;
     const pendingTotal = Math.max(0, assignments.length - resolvedTotal - excludedTotal);
-    const evidenceCapturedTotal = assignments.filter(item => item.evidence_package || item.public_response
-      || item.outcome || item.intervention_receipt).length;
+    const evidenceCapturedTotal = assignments.filter(item => item.evidence_package).length;
+    const deliveryReceiptTotal = assignments.filter(item => item.intervention_receipt).length;
+    const pendingWithoutEvidenceTotal = assignments.filter(item => item.status === 'pending'
+      && !item.evidence_package).length;
     const targetPerGroup = Number(trial.enrollment_target_per_group || trial.sample_target_per_group || 0);
     const targetTotal = targetPerGroup * (Array.isArray(trial.conditions) ? trial.conditions.length : 0);
     return {
@@ -13453,6 +13455,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         excluded_total: excludedTotal,
         pending_total: pendingTotal,
         evidence_captured_total: evidenceCapturedTotal,
+        delivery_receipts_captured_total: deliveryReceiptTotal,
+        pending_without_evidence_total: pendingWithoutEvidenceTotal,
         grades_received_total: assignments.reduce((total, item) => total
           + (Array.isArray(item.grades) ? item.grades.length : 0), 0),
         target_total: targetTotal,

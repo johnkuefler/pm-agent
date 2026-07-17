@@ -6,6 +6,7 @@ const PROTOCOL_VERSION = 1;
 const PILOT_ID = 'global-broadcast-production-pilot-v1';
 const DEFAULT_GRADER_MODEL = grading.DEFAULT_GRADER_MODEL;
 const DEFAULT_MAX_GRADES_PER_CYCLE = grading.DEFAULT_MAX_GRADES_PER_CYCLE;
+const STALE_INCOMPLETE_ASSIGNMENT_MS = 30 * 60 * 1000;
 const EVALUATOR_ROLES = ['evidence-first', 'failure-first'];
 
 function evaluatorIds(model = DEFAULT_GRADER_MODEL) {
@@ -130,16 +131,33 @@ function manifestMatches(frozen, built) {
 }
 
 async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MODEL,
-  maxGrades = DEFAULT_MAX_GRADES_PER_CYCLE, callProvider } = {}) {
+  maxGrades = DEFAULT_MAX_GRADES_PER_CYCLE, callProvider, now = new Date() } = {}) {
   if (!store) throw new Error('global-broadcast research autopilot requires an intelligence store');
   const ensured = ensurePilot(store, { enabled, graderModel });
   const result = { protocol_version: PROTOCOL_VERSION, state: ensured.state, grades_committed: 0,
-    provider_failures: [], reveal: null };
+    stale_incomplete_assignments_excluded: 0, provider_failures: [], reveal: null };
   if (!enabled || !ensured.trial || ensured.trial.status !== 'active') return result;
   if (typeof callProvider !== 'function') throw new Error('global-broadcast research autopilot requires a grader provider');
-  const raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === ensured.trial.id);
+  let raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === ensured.trial.id);
   if (raw.study_phase !== 'pilot' || raw.automated_pilot_grading?.evidence_scope !== 'model_graded_pilot_only') {
     return { ...result, state: 'manual_grading_required' };
+  }
+  const checkedAt = new Date(now).getTime();
+  if (Number.isFinite(checkedAt)) {
+    const stale = (raw.assignments || []).filter(item => item.status === 'pending'
+      && !item.evidence_package && !item.protocol_exclusion
+      && Number.isFinite(new Date(item.assigned).getTime())
+      && checkedAt - new Date(item.assigned).getTime() >= STALE_INCOMPLETE_ASSIGNMENT_MS);
+    for (const assignment of stale) {
+      const excluded = store.excludeGlobalBroadcastAssignment(assignment.id,
+        'stale_incomplete_delivery_after_restart');
+      if (excluded?.status === 'excluded_protocol') {
+        result.stale_incomplete_assignments_excluded += 1;
+      }
+    }
+    if (stale.length) {
+      raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === ensured.trial.id);
+    }
   }
   const committedGraderModel = raw.automated_pilot_grading.grader_model;
   const frozenRoles = raw.automated_pilot_grading.evaluator_roles || [];
@@ -190,5 +208,6 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
 
 module.exports = {
   PROTOCOL_VERSION, PILOT_ID, DEFAULT_GRADER_MODEL, DEFAULT_MAX_GRADES_PER_CYCLE,
-  EVALUATOR_ROLES, evaluatorIds, pilotDesign, status, ensurePilot, terminalPilotState, runCycle,
+  STALE_INCOMPLETE_ASSIGNMENT_MS, EVALUATOR_ROLES, evaluatorIds, pilotDesign, status,
+  ensurePilot, terminalPilotState, runCycle,
 };
