@@ -206,9 +206,13 @@ test('runtime enables reappraisal only in background-capable production mode', (
   }).enabled, false);
 
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.equal((source.match(/runProfessionalViewpointLifecycleAutopilotRuntime\(\)/g) || []).length, 3,
-    'viewpoint lifecycle should run only on dream capture, background startup, and the background interval');
-  assert.doesNotMatch(source.slice(source.indexOf("app.post('/slack/events'"), source.indexOf('// Dreams')),
+  assert.equal((source.match(/runProfessionalViewpointLifecycleWithPriorityRuntime\(\)/g) || []).length, 1,
+    'dream capture should enter the foreground-aware background lane exactly once');
+  assert.equal((source.match(/runBackgroundIntelligenceRuntime\(\{ trigger: '(?:startup|five-minute-scheduler)' \}\)/g) || []).length, 2,
+    'startup and interval work should share the serialized background scheduler');
+  assert.match(source, /runProfessionalViewpointLifecycleAutopilotRuntime\(\{ post: priorityPost \}\)/,
+    'scheduled viewpoint work must inherit the preemptible provider signal');
+  assert.doesNotMatch(source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams')),
     /runProfessionalViewpointLifecycleAutopilotRuntime/,
     'Slack response handling must never invoke viewpoint reappraisal');
 });

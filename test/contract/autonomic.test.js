@@ -169,7 +169,8 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /channel_id.*thread_root_ts.*message_ts/);
   assert.match(routine, /agreement from two condition-blind OpenAI evaluator roles/);
   assert.match(cowork, /provider-disjoint autopilot[\s\S]*missing readback stays pending/);
-  assert.match(server, /runCommonGroundReviewAutopilotRuntime\(\)/);
+  assert.match(server, /runCommonGroundReviewAutopilotRuntime\(\{ post: priorityPost \}\)/,
+    'common-ground review must run inside the serialized preemptible background lane');
   assert.match(store, /Verified common-ground frame for the current collaborator/);
   assert.match(routine, /prediction-studies\/\{id\}\/subject-queue/);
   assert.match(routes, /prediction-studies\/subject-queue/);

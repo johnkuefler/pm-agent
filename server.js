@@ -3360,6 +3360,7 @@ app.post('/webhook/chat', async (req, res) => {
   const query = finalText.replace(/@?nora/gi, '').trim();
   if (!query) return;
   const interactionStartedAt = Date.now();
+  const interactivePriorityLease = interactivePerformance.beginInteractive('zoom-chat');
 
   console.log(`💬 Chat trigger from ${speaker}: ${query}`);
 
@@ -3403,7 +3404,9 @@ app.post('/webhook/chat', async (req, res) => {
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
 
     const zoomReq = {
-      model: 'claude-opus-4-8', // Opus 4.8; temperature omitted (Opus 4.8 rejects it)
+      // Bounded conversational/status turns use Sonnet for human-speed delivery; substantive
+      // planning and analysis retain Opus. The same policy governs Slack and typed meeting chat.
+      model: slackResponseModel(query),
       max_tokens: 300,
       system: cachedSystem(zoomStable, zoomTail),
       messages: history.slice(), // copy — the tool loop appends turns; don't pollute chat history
@@ -3488,6 +3491,8 @@ app.post('/webhook/chat', async (req, res) => {
         { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
       );
     } catch {}
+  } finally {
+    interactivePriorityLease.release();
   }
 });
 
@@ -3683,11 +3688,10 @@ async function getSlackUserName(userId) {
 
 function slackResponseModel(text, mode = 'normal') {
   const normalized = String(text || '').trim().toLowerCase().replace(/[\u2019']/g, '').replace(/\s+/g, ' ');
-  const fastConversational = mode === 'normal' && normalized.length <= 160
-    && !/https?:\/\//.test(normalized)
-    && (/^(?:whats up|hows it going|how are you|whatd you do today|what did you do today|what have you been up to|anything new(?: from your side)?)[?!.]*$/.test(normalized)
-      || isLightweightSocialSlackMessage(text));
-  return fastConversational ? 'claude-sonnet-4-6' : 'claude-opus-4-8';
+  const deepWork = /\b(analy[sz]e|analysis|strategy|strategic|plan|planning|trade-?offs?|recommend|recommendation|draft|write|rewrite|review|investigate|root cause|compare|prioriti[sz]e|risk assessment|explain|why)\b/.test(normalized);
+  const fastBoundedTurn = mode === 'normal' && normalized.length <= 240
+    && !/https?:\/\//.test(normalized) && !deepWork;
+  return fastBoundedTurn ? 'claude-sonnet-4-6' : 'claude-opus-4-8';
 }
 
 async function settleWithin(promise, timeoutMs, fallback, label = 'optional lookup') {
@@ -5742,9 +5746,14 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   // person's financial replies out of another person's context (see slackSessionKey).
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
   const interactionStartedAt = Date.now();
-  return withSlackSessionLock(sessionKey, () =>
-    handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
-      sourceAttestation, interactionStartedAt));
+  const interactivePriorityLease = interactivePerformance.beginInteractive('slack');
+  try {
+    return await withSlackSessionLock(sessionKey, () =>
+      handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
+        sourceAttestation, interactionStartedAt));
+  } finally {
+    interactivePriorityLease.release();
+  }
 }
 
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
@@ -7885,7 +7894,7 @@ registerDreamRoutes(app, {
         intelligence.createExperiment({ behavior: String(learning), hypothesis: 'Applying this observed learning should improve how future interactions land.', metric: 'positive_rate', review_at: new Date(Date.now() + 14 * 86400000).toISOString() });
       }
     }
-    runProfessionalViewpointLifecycleAutopilotRuntime()
+    runProfessionalViewpointLifecycleWithPriorityRuntime()
       .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
   },
 });
@@ -8572,6 +8581,11 @@ wss.on('connection', async (ws, req) => {
     return;
   }
 
+  // A connected realtime call owns the foreground lane for its full lifetime. Background model
+  // research is preempted now and cannot restart until the call closes plus a short quiet window.
+  const realtimePriorityLease = interactivePerformance.beginInteractive('realtime');
+  ws.once('close', () => realtimePriorityLease.release());
+
   // Store WebSocket references on the session so /mute can send live updates
   if (session) {
     session.openaiWs = openaiWs;
@@ -8937,6 +8951,23 @@ let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
+let _backgroundIntelligenceCycleInFlight = false;
+let _backgroundIntelligenceCycleLast = null;
+
+function backgroundPostWithPriority(post, lease) {
+  return (url, data, config = {}) => post(url, data, { ...config, signal: lease.signal });
+}
+
+function backgroundPriorityDeferred(label, lease) {
+  return {
+    protocol_version: interactivePerformance.PROTOCOL_VERSION,
+    state: 'deferred_for_interactive_priority',
+    label,
+    reason: lease.reason,
+    retry_after_ms: lease.retry_after_ms,
+    at: new Date().toISOString(),
+  };
+}
 
 function tickEndogenousRuntime(now = new Date()) {
   return intelligence.tickEndogenousDynamics({
@@ -9050,6 +9081,8 @@ function professionalViewpointReappraisalRuntimeConfig(env = process.env) {
 
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
+  const interactivePriority = interactivePerformance.prioritySnapshot();
+  const backgroundCycle = _backgroundIntelligenceCycleLast;
   const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig();
   const commonGroundReview = commonGroundReviewAutopilot.status(intelligence, {
     enabled: commonGroundReviewConfig.enabled, model: commonGroundReviewConfig.model,
@@ -9108,6 +9141,8 @@ function researchAutopilotProgramStatus() {
       teammate_perspective_review: teammatePerspectiveReview,
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
       professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+      interactive_priority: interactivePriority,
+      background_intelligence_cycle: backgroundCycle,
     };
   }
   const reasoning = reasoningResearchAutopilot.status(intelligence, {
@@ -9132,6 +9167,8 @@ function researchAutopilotProgramStatus() {
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+    interactive_priority: interactivePriority,
+    background_intelligence_cycle: backgroundCycle,
   };
 }
 
@@ -9307,6 +9344,18 @@ async function runProfessionalViewpointLifecycleAutopilotRuntime({ post = axios.
   const reflection = await runProfessionalViewpointReflectionAutopilotRuntime({ post });
   const reappraisal = await runProfessionalViewpointReappraisalAutopilotRuntime({ post });
   return { reflection, reappraisal };
+}
+
+async function runProfessionalViewpointLifecycleWithPriorityRuntime({ post = axios.post } = {}) {
+  const lease = interactivePerformance.beginBackground('professional-viewpoint-lifecycle');
+  if (!lease.allowed) return backgroundPriorityDeferred('professional-viewpoint-lifecycle', lease);
+  try {
+    return await runProfessionalViewpointLifecycleAutopilotRuntime({
+      post: backgroundPostWithPriority(post, lease),
+    });
+  } finally {
+    lease.release();
+  }
 }
 
 async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
@@ -9736,6 +9785,55 @@ async function runSelfInductionSubjectRuntime(studyId, itemId, { post = axios.po
   }
 }
 
+async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = 'scheduler' } = {}) {
+  if (_backgroundIntelligenceCycleInFlight) {
+    return { protocol_version: interactivePerformance.PROTOCOL_VERSION, state: 'in_flight',
+      trigger, at: new Date().toISOString() };
+  }
+  const lease = interactivePerformance.beginBackground('scheduled-intelligence');
+  if (!lease.allowed) {
+    _backgroundIntelligenceCycleLast = backgroundPriorityDeferred('scheduled-intelligence', lease);
+    return _backgroundIntelligenceCycleLast;
+  }
+  _backgroundIntelligenceCycleInFlight = true;
+  const priorityPost = backgroundPostWithPriority(post, lease);
+  const steps = {};
+  const runStep = async (name, action) => {
+    if (lease.wasPreempted()) return false;
+    try { steps[name] = await action(); }
+    catch (error) { steps[name] = { state: 'failed', error: String(error.message || error).slice(0, 300) }; }
+    return !lease.wasPreempted();
+  };
+  try {
+    try { steps.ecological_expiry = expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
+    catch (error) { steps.ecological_expiry = { state: 'failed', error: String(error.message || error).slice(0, 300) }; }
+    const scheduledSteps = [
+      ['cognitive_initiation_policy_probe', () => runDueCognitiveInitiationPolicyProbeRuntime({ post: priorityPost })],
+      ['cognitive_pulse', () => runCognitivePulseRuntime({ post: priorityPost })],
+      ['research_autopilot', () => runResearchAutopilotRuntime({ post: priorityPost })],
+      ['common_ground_review', () => runCommonGroundReviewAutopilotRuntime({ post: priorityPost })],
+      ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
+      ['professional_viewpoint_lifecycle',
+        () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
+    ];
+    for (const [name, action] of scheduledSteps) {
+      if (!await runStep(name, action)) break;
+    }
+    _backgroundIntelligenceCycleLast = {
+      protocol_version: interactivePerformance.PROTOCOL_VERSION,
+      state: lease.wasPreempted() ? 'preempted_for_interactive_priority' : 'completed',
+      trigger,
+      preempted_by: lease.preemptedBy(),
+      steps,
+      at: new Date().toISOString(),
+    };
+    return _backgroundIntelligenceCycleLast;
+  } finally {
+    lease.release();
+    _backgroundIntelligenceCycleInFlight = false;
+  }
+}
+
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
@@ -9779,31 +9877,13 @@ async function start(options = {}) {
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
       tickEndogenousRuntime();
-      runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));
-      runResearchAutopilotRuntime().catch(error => console.error('Research autopilot failed:', error.message));
-      runCommonGroundReviewAutopilotRuntime()
-        .catch(error => console.error('Common-ground review autopilot failed:', error.message));
-      runTeammatePerspectiveReviewAutopilotRuntime()
-        .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
-      runProfessionalViewpointLifecycleAutopilotRuntime()
-        .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
-      runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
-      try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
-      catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
+      runBackgroundIntelligenceRuntime({ trigger: 'startup' })
+        .catch(error => console.error('Background intelligence cycle failed:', error.message));
       _runtimeIntervals.push(setInterval(() => {
         try { tickEndogenousRuntime(); }
         catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
-        runCognitivePulseRuntime().catch(error => console.error('Cognitive pulse failed:', error.message));
-        runResearchAutopilotRuntime().catch(error => console.error('Research autopilot failed:', error.message));
-        runCommonGroundReviewAutopilotRuntime()
-          .catch(error => console.error('Common-ground review autopilot failed:', error.message));
-        runTeammatePerspectiveReviewAutopilotRuntime()
-          .catch(error => console.error('Teammate-perspective review autopilot failed:', error.message));
-        runProfessionalViewpointLifecycleAutopilotRuntime()
-          .catch(error => console.error('Professional-viewpoint lifecycle failed:', error.message));
-        runDueCognitiveInitiationPolicyProbeRuntime().catch(error => console.error('Cognitive initiation policy probe failed:', error.message));
-        try { expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
-        catch (error) { console.error('Cognitive initiation ecological expiry failed:', error.message); }
+        runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
+          .catch(error => console.error('Background intelligence cycle failed:', error.message));
       }, 5 * 60 * 1000));
       startJobWorker(); // deferred-tool background jobs (ImageGen etc.)
     }
@@ -9859,6 +9939,8 @@ module.exports = {
     professionalViewpointReappraisalRuntimeConfig,
     runProfessionalViewpointReappraisalAutopilotRuntime,
     runProfessionalViewpointLifecycleAutopilotRuntime,
+    runProfessionalViewpointLifecycleWithPriorityRuntime,
+    runBackgroundIntelligenceRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,

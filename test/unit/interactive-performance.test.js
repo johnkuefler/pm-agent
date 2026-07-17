@@ -47,6 +47,36 @@ test('latency evidence is assessed against frozen per-surface budgets without a 
   assert.doesNotMatch(JSON.stringify(summary), /consciousness score/i);
 });
 
+test('foreground interactions preempt one background provider lane and enforce a quiet window', () => {
+  performance.resetPriorityGateForTest();
+  const background = performance.beginBackground('nightly-reflection', { now: 100000 });
+  assert.equal(background.allowed, true);
+  assert.equal(performance.beginBackground('second-job', { now: 100001 }).reason,
+    'background_provider_busy');
+
+  const foreground = performance.beginInteractive('slack', { now: 100010 });
+  assert.equal(background.signal.aborted, true);
+  assert.equal(background.wasPreempted(), true);
+  assert.equal(background.preemptedBy(), 'slack');
+  assert.equal(performance.beginBackground('during-slack', { now: 100011 }).reason,
+    'interactive_active');
+
+  foreground.release({ now: 100020 });
+  background.release();
+  const cooldown = performance.beginBackground('too-soon', { now: 100021 });
+  assert.equal(cooldown.reason, 'interactive_cooldown');
+  const resumed = performance.beginBackground('after-quiet', {
+    now: 100020 + performance.INTERACTIVE_QUIET_WINDOW_MS,
+  });
+  assert.equal(resumed.allowed, true);
+  resumed.release();
+  const snapshot = performance.prioritySnapshot(100020 + performance.INTERACTIVE_QUIET_WINDOW_MS);
+  assert.equal(snapshot.maximum_background_provider_concurrency, 1);
+  assert.equal(snapshot.background_preemptions, 1);
+  assert.equal(snapshot.active_interactions, 0);
+  performance.resetPriorityGateForTest();
+});
+
 test('live server opts into complete Slack trials but never globally enables second-pass monitoring', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.match(server, /contextTrialsEnabled: true, latencyCritical: true/);
@@ -59,6 +89,13 @@ test('live server opts into complete Slack trials but never globally enables sec
     'optional semantic recall must lose quickly to the live reply path');
   assert.match(server, /const volatileIntelligenceContext = intelligenceContext \|\| ''/,
     'changing cognition must stay outside the stable provider-cache prefix');
+  assert.match(server, /beginInteractive\('slack'\)/);
+  assert.match(server, /beginInteractive\('zoom-chat'\)/);
+  assert.match(server, /beginInteractive\('realtime'\)/);
+  assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
+    'background intelligence must be serialized behind the foreground-priority lane');
+  assert.match(server, /model: slackResponseModel\(query\)/,
+    'typed Zoom chat must share the bounded fast-turn model policy');
 });
 
 test('Slack provider cache prefix stays stable while conversation and cognition tails change', () => {
@@ -80,9 +117,26 @@ test('Slack uses a fast Claude path only for bounded conversational turns', asyn
   const { __test } = require('../../server');
   assert.equal(__test.slackResponseModel('whatd you do today'), 'claude-sonnet-4-6');
   assert.equal(__test.slackResponseModel('thanks for your work today'), 'claude-sonnet-4-6');
+  assert.equal(__test.slackResponseModel('what is due tomorrow for me?'), 'claude-sonnet-4-6');
   assert.equal(__test.slackResponseModel('Analyze the launch risks and build a mitigation plan.'),
     'claude-opus-4-8');
+  assert.equal(__test.slackResponseModel('Why did the launch slip?'), 'claude-opus-4-8');
   assert.equal(__test.slackResponseModel('whatd you do today', 'proactive'), 'claude-opus-4-8');
   const fallback = await __test.settleWithin(new Promise(() => {}), 5, [], 'test lookup');
   assert.deepEqual(fallback, []);
+});
+
+test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {
+  performance.resetPriorityGateForTest();
+  const foreground = performance.beginInteractive('realtime');
+  const { __test } = require('../../server');
+  let providerCalls = 0;
+  const result = await __test.runBackgroundIntelligenceRuntime({
+    trigger: 'test', post: async () => { providerCalls += 1; throw new Error('must not run'); },
+  });
+  assert.equal(result.state, 'deferred_for_interactive_priority');
+  assert.equal(result.reason, 'interactive_active');
+  assert.equal(providerCalls, 0);
+  foreground.release();
+  performance.resetPriorityGateForTest();
 });
