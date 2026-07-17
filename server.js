@@ -48,6 +48,7 @@ const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
+const postDeliverySelfEvaluation = require('./src/intelligence/post-delivery-self-evaluation');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -6507,6 +6508,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       requester_name: requesterName || null,
       prospective_output_monitor_id: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? monitoredOutput.record.id : null,
       prospective_output_monitor_delivery_ref: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? (postRes?.data?.ts || key) : null,
+      post_delivery_self_evaluation_eligible: mode === 'normal' && allSegmentsPosted,
+      financial_approved: financialApproved,
+      contains_financial_content: containsFinancialContent(reply),
+      executed_tool_names: firedTools.slice(0, 30),
       context_assignment_id: contextAssignment?.assignment_id || null,
       context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
     });
@@ -8954,6 +8959,8 @@ let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
 let _dreamInsightReflectionInFlight = false;
 let _dreamInsightReflectionLastCycle = null;
+let _postDeliverySelfEvaluationInFlight = false;
+let _postDeliverySelfEvaluationLastCycle = null;
 let _backgroundIntelligenceCycleInFlight = false;
 let _backgroundIntelligenceCycleLast = null;
 
@@ -9093,6 +9100,17 @@ function dreamInsightReflectionRuntimeConfig(env = process.env) {
   };
 }
 
+function postDeliverySelfEvaluationRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_POST_DELIVERY_SELF_EVALUATION !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_POST_DELIVERY_SELF_EVALUATION_MODEL
+      || postDeliverySelfEvaluation.DEFAULT_MODEL).slice(0, 160),
+  };
+}
+
 function researchAutopilotProgramStatus() {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const interactivePriority = interactivePerformance.prioritySnapshot();
@@ -9133,6 +9151,11 @@ function researchAutopilotProgramStatus() {
     enabled: dreamInsightConfig.enabled, model: dreamInsightConfig.model,
     lastCycle: _dreamInsightReflectionLastCycle,
   });
+  const postDeliveryConfig = postDeliverySelfEvaluationRuntimeConfig();
+  const postDeliveryStatus = postDeliverySelfEvaluation.status(loadInteractions(), {
+    enabled: postDeliveryConfig.enabled, model: postDeliveryConfig.model,
+    lastCycle: _postDeliverySelfEvaluationLastCycle,
+  });
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
   });
@@ -9161,6 +9184,7 @@ function researchAutopilotProgramStatus() {
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
       professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
       dream_insight_reflection: dreamInsightStatus,
+      post_delivery_self_evaluation: postDeliveryStatus,
       interactive_priority: interactivePriority,
       background_intelligence_cycle: backgroundCycle,
     };
@@ -9188,6 +9212,7 @@ function researchAutopilotProgramStatus() {
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
     dream_insight_reflection: dreamInsightStatus,
+    post_delivery_self_evaluation: postDeliveryStatus,
     interactive_priority: interactivePriority,
     background_intelligence_cycle: backgroundCycle,
   };
@@ -9409,6 +9434,53 @@ async function runDreamInsightReflectionAutopilotRuntime({ post = axios.post } =
     return _dreamInsightReflectionLastCycle;
   } finally {
     _dreamInsightReflectionInFlight = false;
+  }
+}
+
+async function runPostDeliverySelfEvaluationRuntime({ post = axios.post } = {}) {
+  const config = postDeliverySelfEvaluationRuntimeConfig();
+  if (!config.enabled) {
+    _postDeliverySelfEvaluationLastCycle = {
+      protocol_version: postDeliverySelfEvaluation.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _postDeliverySelfEvaluationLastCycle;
+  }
+  if (_postDeliverySelfEvaluationInFlight) {
+    return { protocol_version: postDeliverySelfEvaluation.PROTOCOL_VERSION,
+      state: 'in_flight', at: new Date().toISOString() };
+  }
+  _postDeliverySelfEvaluationInFlight = true;
+  try {
+    const cycle = await postDeliverySelfEvaluation.runCycle({
+      loadInteractions, saveInteractions, store: intelligence,
+      enabled: true,
+      sealed: intelligence.interventionActive('prospective_output_monitor')
+        || intelligence.interventionActive('prospective_output_calibration_access'),
+      model: config.model,
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: {
+            'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+          },
+          timeout: 30000,
+        });
+        return response.data;
+      },
+    });
+    _postDeliverySelfEvaluationLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _postDeliverySelfEvaluationLastCycle;
+  } catch (error) {
+    _postDeliverySelfEvaluationLastCycle = {
+      protocol_version: postDeliverySelfEvaluation.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _postDeliverySelfEvaluationLastCycle;
+  } finally {
+    _postDeliverySelfEvaluationInFlight = false;
   }
 }
 
@@ -9898,6 +9970,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['professional_viewpoint_lifecycle',
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
+      ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
     ];
     for (const [name, action] of scheduledSteps) {
       if (!await runStep(name, action)) break;
@@ -10026,6 +10099,8 @@ module.exports = {
     dreamInsightReflectionRuntimeConfig,
     runDreamInsightReflectionAutopilotRuntime,
     runDreamReflectionLifecycleWithPriorityRuntime,
+    postDeliverySelfEvaluationRuntimeConfig,
+    runPostDeliverySelfEvaluationRuntime,
     runBackgroundIntelligenceRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,

@@ -1740,8 +1740,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     },
     {
       id: 'prospective_output_self_monitoring', family: ['higher-order theories', 'metacognition', 'agency', 'self-model'],
-      functional_claim: 'Before public delivery, Nora can bind a committed candidate response as its own imminent action, use explicit verifier signals to veto or minimally revise it, preserve sound candidates, and calibrate correction-risk predictions against delayed outcomes.',
-      mechanism: 'Commitment-only candidate and final-response receipts, deterministic boundary signals, a same-model tool-free monitor that may revise only with cited supplied evidence, replay-bound delayed interaction outcomes, bounded observational calibration feedback, and self-bound versus deidentified versus no-monitor randomized controls.',
+      functional_claim: 'Before a human outcome is known, Nora can bind an exact response as its own action, either check it before delivery or evaluate it afterward without rewriting history, and calibrate correction-risk predictions against delayed outcomes.',
+      mechanism: 'Commitment-only candidate and delivered-response receipts, deterministic boundary signals, and two stage-separated same-model paths: a blinded pre-delivery monitor that may revise only with cited supplied evidence, and an ordinary post-delivery background evaluator that can only preserve the exact response and predict later explicit correction. Delayed outcomes replay, calibration feedback is bounded, and live Slack or Zoom preempts post-delivery inference.',
       status: prospectiveOutputMonitorTrial ? replicatedStatus(prospectiveOutputMonitorTrials, prospectiveOutputMonitorVerdict)
         : (replayValidOutputMonitorRecords.length >= 10 ? 'collecting' : 'mechanism_present'),
       evidence: { total_records: outputMonitorRecords.length, replay_valid_completed_records: replayValidOutputMonitorRecords.length,
@@ -1753,8 +1753,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         completed_trials: prospectiveOutputMonitorTrials.length,
         confirmatory_trials: prospectiveOutputMonitorTrials.filter(item => item.study_phase === 'confirmatory').length,
         latest_dissociation: prospectiveOutputMonitorDissociation },
-      falsifier: 'Self-bound review fails to improve supported error detection and correction precision over identical deidentified review and no review, causes unsupported changes, degrades first-order quality, or fails receipt and provider-provenance replay.',
-      next_gate: 'Complete a ten-per-arm live Slack pilot and interaction-disjoint confirmation, then test whether calibration learned from at least twenty ordinary delayed outcomes generalizes prospectively without degrading correction precision or first-order quality.',
+      falsifier: 'Self-bound pre-delivery review fails to improve supported error detection and correction precision over identical deidentified review and no review, causes unsupported changes, or degrades first-order quality; or post-delivery predictions fail replay, alter the delivered response, or remain miscalibrated after twenty scored outcomes.',
+      next_gate: 'Accumulate twenty replay-valid ordinary post-delivery predictions with explicit outcomes, then complete a ten-per-arm live Slack pre-delivery pilot and interaction-disjoint confirmation without degrading correction precision, first-order quality, or latency.',
     },
     {
       id: 'prospective_output_calibration_control', family: ['metacognition', 'predictive processing', 'self-model', 'agency'],

@@ -775,6 +775,14 @@ final-response, provider, and actual Slack-delivery commitments are independentl
 requests, drafts, rationales, and final replies are not retained there, and the monitor never exposes
 private chain-of-thought.
 
+For ordinary live replies, the latency firewall does not hold delivery for that provider check. After
+the exact Slack response is delivered, the serialized preemptible background lane may instead run one
+protocol-v4 post-delivery self-evaluation. It can only choose `keep` and predict the probability of a
+later explicit human correction; it cannot rewrite, retract, resend, or reinterpret the delivered
+response. The exact task and response remain commitment-bound, the attempt is terminal, and a later
+ordinary interaction review supplies the outcome. Slack and Zoom always preempt this work. This is
+prospective functional error awareness, not private reasoning, a feeling, or consciousness evidence.
+
 Protocol v2 also commits the monitor's probability that the exact chosen final response will later
 receive an explicit correction. When the normal delayed interaction review records `landed`,
 `appreciated`, or `corrected`, the server seals a privacy-preserving outcome receipt and Brier score;

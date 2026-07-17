@@ -1028,6 +1028,12 @@ function registerCoworkInstructionsRoute(app) {
     calibration receipts; neutral/ignored reviews remain unscored. After twenty replay-valid ordinary
     outcomes, bounded calibration statistics may inform later probability estimates but never establish
     that a current candidate is correct or that a replaced draft would have failed. During
+    ordinary live operation, no second provider pass may delay delivery. A newly delivered eligible
+    direct Slack reply can receive at most one protocol-v4 post-delivery correction-risk prediction in
+    the serialized preemptible background lane. That pass must preserve the exact delivered response,
+    cannot revise or resend it, is terminal on failure, and yields to Slack and Zoom foreground work.
+    Its later score comes only from the normal interaction review; it is functional prospective
+    self-evaluation, not hidden reasoning, subjective experience, or consciousness evidence. During
     prospective_output_monitor, the initial response stays arm-blind and the review is
     self-bound, identically deidentified, or absent. Never infer the arm or equate correction behavior
     with phenomenal introspection or consciousness. During prospective_output_calibration_access,

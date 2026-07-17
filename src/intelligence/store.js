@@ -1929,6 +1929,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       manifest.calibration_context = record.calibration_context;
     }
     if (Number(record.monitor_protocol_version) >= 3) manifest.calibration_binding = record.calibration_binding;
+    if (Number(record.monitor_protocol_version) >= 4) manifest.observation_stage = record.observation_stage;
     return manifest;
   }
 
@@ -2094,6 +2095,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       || canonicalJson(record.calibration_context) === canonicalJson(expectedCalibrationContext);
     const calibrationBindingVerified = Number(record.monitor_protocol_version) < 3
       || record.calibration_binding === expectedCalibrationBinding;
+    const observationStageVerified = Number(record.monitor_protocol_version) < 4
+      || (['pre_delivery', 'post_delivery'].includes(record.observation_stage)
+        && (record.observation_stage !== 'post_delivery'
+          || (record.decision === 'keep' && record.revision_applied === false
+            && record.final_response_commitment === record.candidate_commitment)));
     const outcomeAudit = outputMonitorOutcomeAudit(record);
     const decisionValid = record.monitor_binding === 'none'
       ? record.decision === 'not_run' && !record.provider_receipt && record.final_response_commitment === record.candidate_commitment
@@ -2109,11 +2115,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       cited_signals_valid: citedSignalsValid, provider_response_unique: providerUnique,
       assignment_binding_verified: assignmentVerified, research_ledger_verified: beganEvent && completedEvent,
       calibration_context_verified: calibrationContextVerified, calibration_binding_verified: calibrationBindingVerified,
+      observation_stage_verified: observationStageVerified,
       outcome_resolution_verified: outcomeAudit.complete_chain_verified,
       decision_chain_verified: decisionValid, delivery_verified: deliveryVerified && record.delivery.delivered === true,
       complete_chain_verified: initialVerified && predecessorVerified && signalVerified && completionVerified
         && citedSignalsValid && providerUnique && assignmentVerified && beganEvent && completedEvent && decisionValid
-        && calibrationContextVerified && calibrationBindingVerified && outcomeAudit.complete_chain_verified && deliveryVerified && record.delivery.delivered === true,
+        && calibrationContextVerified && calibrationBindingVerified && observationStageVerified
+        && outcomeAudit.complete_chain_verified && deliveryVerified && record.delivery.delivered === true,
     };
   }
 
@@ -2149,10 +2157,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const prior = [...(current.cognition.prospective_output_monitor.records || [])].reverse()
         .find(item => item.status === 'completed' && item.completion_commitment && prospectiveOutputMonitorAudit(item).complete_chain_verified) || null;
       const createdAt = clock().toISOString();
+      const observationStage = input.observation_stage === 'post_delivery' ? 'post_delivery' : 'pre_delivery';
       const record = {
         id: input.id || `output-monitor-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         created_at: createdAt, surface: 'slack', context_kind: ['direct', 'proactive'].includes(input.context_kind) ? input.context_kind : 'direct',
-        monitor_protocol_version: 3,
+        monitor_protocol_version: observationStage === 'post_delivery' ? 4 : 3,
+        observation_stage: observationStage,
         calibration_context: calibrationTrial ? JSON.parse(JSON.stringify(assignmentRef.trial.output_calibration_context))
           : outputMonitorCalibrationContext(createdAt, current.cognition),
         calibration_binding: calibrationBinding,
@@ -2206,6 +2216,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         record.predicted_delivered_response_correction_probability = Number(record.monitor_protocol_version) >= 2
           ? clamp01(decision.predicted_delivered_response_correction_probability) : null;
         record.rationale_commitment = prospectiveOutputMonitor.commitment(rationale);
+        if (record.observation_stage === 'post_delivery'
+          && (decision.decision !== 'keep' || decision.revised_response
+            || prospectiveOutputMonitor.commitment(finalResponse) !== record.candidate_commitment)) {
+          throw new Error('post-delivery monitoring can predict correction risk but cannot revise the delivered response');
+        }
         if (decision.decision === 'keep') {
           if (decision.revised_response || prospectiveOutputMonitor.commitment(finalResponse) !== record.candidate_commitment) throw new Error('keep decisions must preserve the committed candidate response');
         } else {
@@ -2384,7 +2399,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const scored = complete.filter(item => item.outcome_resolution?.scoring_status === 'scored');
     const calibrationContext = outputMonitorCalibrationContext();
     return {
-      epistemic_status: 'Commitment-only evidence of candidate-stage same-model checking plus later explicit interaction outcomes. Calibration is observational and selection-biased: it measures correction-risk prediction for the response actually delivered, not whether a replaced draft would have failed. This is functional performance monitoring, not private chain-of-thought, phenomenal introspection, or consciousness.',
+      epistemic_status: 'Commitment-only evidence of pre-delivery checks or post-delivery correction-risk predictions plus later explicit interaction outcomes. Post-delivery records cannot rewrite the response. Calibration is observational and selection-biased: it measures correction-risk prediction for the response actually delivered, not whether a replaced draft would have failed. This is functional performance monitoring, not private chain-of-thought, phenomenal introspection, or consciousness.',
       records,
       report: { total: records.length, replay_valid_completed: complete.length, revisions_applied: complete.filter(item => item.revision_applied).length,
         kept: complete.filter(item => item.decision === 'keep').length, not_run: complete.filter(item => item.decision === 'not_run').length,
