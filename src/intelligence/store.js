@@ -13066,6 +13066,46 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function selfPredictionProgramSnapshot() {
+    if (interventionActive('epistemic_revision_profile_access')) return {
+      experimental_access_sealed: true, studies: [],
+    };
+    return {
+      experimental_access_sealed: false,
+      studies: state.cognition.self_model.prediction_studies.map(study => {
+        const activeEvent = study.events.find(item => ['predicting', 'awaiting_resolution'].includes(item.status));
+        const subject = study.model_control?.subject || null;
+        return {
+          id: study.id,
+          status: study.status,
+          study_phase: study.study_phase,
+          target_construct: study.target_construct || 'general_self_prediction',
+          manifest_version: Number(study.manifest_version) || 1,
+          event_target: study.events.length,
+          active_event_id: activeEvent?.id || null,
+          role_model_control: subject ? {
+            inference_mode: subject.inference_mode,
+            provider: subject.provider,
+            model: subject.model,
+          } : null,
+          report: {
+            resolved: study.events.filter(item => item.status === 'resolved').length,
+            target: study.events.length,
+          },
+          events: activeEvent ? [{
+            id: activeEvent.id,
+            status: activeEvent.status,
+            self_prediction_submitted: Boolean(activeEvent.self_prediction),
+            subject_model_receipt_attested: Boolean(activeEvent.subject_model_receipt),
+            observer_prediction_submitted: Boolean(activeEvent.observer_prediction),
+            yoked_prediction_submitted: Boolean(activeEvent.yoked_prediction),
+            operational_environment_frozen: Boolean(activeEvent.operational_environment_commitment),
+          }] : [],
+        };
+      }),
+    };
+  }
+
   function activeContextTrialsSnapshot() {
     return state.cognition.self_model.context_trials
       .filter(trial => trial.status === 'active')
@@ -22995,7 +23035,8 @@ ${episodes.map(item => {
     empiricalSelfKnowledgeSnapshot,
     createSelfPredictionStudy, submitSelfPrediction, submitModelControlledSelfPrediction,
     recordSelfPredictionSubjectInferenceFailure, attestSelfPredictionSubjectModelReceipt,
-    submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy, selfPredictionStudiesSnapshot,
+    submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy,
+    selfPredictionStudiesSnapshot, selfPredictionProgramSnapshot,
     createMetacognitiveControlStudy, submitMetacognitiveResponse, submitMetacognitiveObserverDecision, resolveMetacognitiveControlItem, abortMetacognitiveControlStudy, metacognitiveControlStudiesSnapshot,
     createEpistemicActionStudy, submitEpistemicActionResponse, submitEpistemicActionObserverDecision, submitEpistemicActionFinalAnswer, resolveEpistemicActionItem, abortEpistemicActionStudy, epistemicActionStudiesSnapshot,
     createEpisodicProspectionStudy, submitEpisodicProspectionResponse, resolveEpisodicProspectionItem, abortEpisodicProspectionStudy, episodicProspectionStudiesSnapshot,

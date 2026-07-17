@@ -139,7 +139,7 @@ function preregistration(store, { now = new Date(), model = subjectRuntime.DEFAU
 }
 
 function status(store, runtime = {}) {
-  const studies = store.selfPredictionStudiesSnapshot({ role: 'subject' }).studies || [];
+  const studies = (runtime.snapshot || store.selfPredictionStudiesSnapshot({ role: 'subject' })).studies || [];
   const pilot = studies.find(study => study.id === PILOT_ID) || null;
   const active = studies.find(study => study.status === 'active') || null;
   return {

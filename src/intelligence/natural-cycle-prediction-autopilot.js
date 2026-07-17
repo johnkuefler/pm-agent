@@ -175,7 +175,7 @@ function activeEvent(study) {
 }
 
 function status(store, runtime = {}) {
-  const snapshot = store.selfPredictionStudiesSnapshot({ role: 'observer' });
+  const snapshot = runtime.snapshot || store.selfPredictionStudiesSnapshot({ role: 'observer' });
   const study = activeNaturalStudy(snapshot);
   const event = activeEvent(study);
   return {
@@ -196,7 +196,8 @@ function status(store, runtime = {}) {
         self_prediction_submitted: event.self_prediction_submitted === true,
         observer_prediction_submitted: event.observer_prediction_submitted === true,
         yoked_prediction_submitted: event.yoked_prediction_submitted === true,
-        operational_environment_frozen: Boolean(event.operational_environment_commitment),
+          operational_environment_frozen: event.operational_environment_frozen === true
+            || Boolean(event.operational_environment_commitment),
       } : null,
     } : null,
     last_cycle: runtime.lastCycle || null,

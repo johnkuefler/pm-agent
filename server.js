@@ -9237,14 +9237,18 @@ function researchAutopilotProgramStatus() {
     enabled: postDeliveryConfig.enabled, model: postDeliveryConfig.model,
     lastCycle: _postDeliverySelfEvaluationLastCycle,
   });
+  const selfPredictionProgram = intelligence.selfPredictionProgramSnapshot();
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
+    snapshot: selfPredictionProgram,
   });
   const selfPredictionSubject = selfPredictionSubjectRuntime.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_subject || null,
+    snapshot: selfPredictionProgram,
   });
   const selfPredictionSequence = selfPredictionStudySequencer.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_sequence || null,
+    snapshot: selfPredictionProgram,
   });
   const activePilots = intelligence.activeContextTrialsSnapshot();
   const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';

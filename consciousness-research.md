@@ -2290,6 +2290,10 @@ a revision-current worker result. Snapshot revision, freshness, capture cost, an
 exposed in response headers. This is a responsiveness boundary, not consciousness evidence: expensive
 audit growth must not make Slack or realtime meeting turns less present.
 
+The public research-autopilot status likewise reads one bounded, role-safe projection of active
+self-prediction progress. It does not recompute the three full subject/observer study audits that the
+subject, observer, and sequencer execution paths still use when they actually act.
+
 Mechanism availability and evidence quantity are separate. `not_implemented` is reserved for a
 genuinely missing required mechanism or substrate interface; an implemented study with zero live
 observations is `mechanism_present`, not absent. The endpoint publishes an `implementation_audit`

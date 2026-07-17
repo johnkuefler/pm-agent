@@ -182,7 +182,7 @@ function activeEvent(study) {
 }
 
 function status(store, runtime = {}) {
-  const study = activeStudy(store.selfPredictionStudiesSnapshot({ role: 'subject' }));
+  const study = activeStudy(runtime.snapshot || store.selfPredictionStudiesSnapshot({ role: 'subject' }));
   const event = activeEvent(study);
   const control = study?.role_model_control || null;
   return {
