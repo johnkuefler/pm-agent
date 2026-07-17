@@ -627,7 +627,10 @@ async function upsertTranscript(botId, ended, transcript) {
 }
 async function listTranscripts() {
   const { rows } = await q(
-    `SELECT bot_id, ended, utterance_count, updated_at FROM ${DB_SCHEMA}.transcripts ORDER BY updated_at DESC`
+    `SELECT bot_id, ended, utterance_count, updated_at,
+       COALESCE(NULLIF(transcript -> -1 ->> 'timestamp', ''),
+         NULLIF(transcript -> -1 ->> 'time', '')) AS last_utterance_at
+     FROM ${DB_SCHEMA}.transcripts ORDER BY updated_at DESC`
   );
   return rows;
 }

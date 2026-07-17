@@ -76,6 +76,21 @@ test('transcript snapshot preserves the most recent utterances under its charact
     reflection.MAX_TRANSCRIPT_CHARS);
 });
 
+test('null-ended Postgres transcripts require a quiet grace before inferred completion', () => {
+  const now = new Date('2026-07-17T17:00:00Z');
+  const docs = [
+    { bot_id: 'still-live', ended: null, last_utterance_at: '2026-07-17T16:45:01Z' },
+    { bot_id: 'quiet-complete', ended: null, last_utterance_at: '2026-07-17T16:20:00Z' },
+    { bot_id: 'authoritative-complete', ended: '2026-07-17T16:55:00Z',
+      last_utterance_at: '2026-07-17T16:54:00Z' },
+  ];
+  const eligible = reflection.eligibleMeetingDocs(docs, [], now);
+  assert.deepEqual(eligible.map(item => item.bot_id),
+    ['authoritative-complete', 'quiet-complete']);
+  assert.equal(eligible[1].reflection_ended_at, '2026-07-17T16:20:00Z');
+  assert.equal(eligible[1].inferred_completion, true);
+});
+
 test('meeting reflection rejects one-speaker, outside-packet, private-state, and overconfident claims', () => {
   const packet = reflection.packetFor(snapshot());
   const oneSpeaker = output();

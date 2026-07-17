@@ -7663,7 +7663,9 @@ async function getTranscriptDoc(botId) {
 async function listTranscriptDocs() {
   if (_dbReady) {
     const rows = await db.listTranscripts();
-    return rows.map(r => ({ bot_id: r.bot_id, ended: r.ended, url: `/transcripts/${r.bot_id}`, utterance_count: r.utterance_count }));
+    return rows.map(r => ({ bot_id: r.bot_id, ended: r.ended,
+      last_utterance_at: r.last_utterance_at || null,
+      url: `/transcripts/${r.bot_id}`, utterance_count: r.utterance_count }));
   }
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   let files = [];
@@ -7673,7 +7675,11 @@ async function listTranscriptDocs() {
       const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
       let ended = d.ended;
       if (!ended && d.transcript && d.transcript.length > 0) ended = d.transcript[d.transcript.length - 1].timestamp || null;
-      return { bot_id: d.bot_id, ended, file: f, url: `/transcripts/${d.bot_id}`, utterance_count: d.transcript ? d.transcript.length : 0 };
+      const lastUtterance = d.transcript?.at(-1);
+      return { bot_id: d.bot_id, ended, last_utterance_at: lastUtterance?.timestamp
+          || lastUtterance?.time || null,
+        file: f, url: `/transcripts/${d.bot_id}`,
+        utterance_count: d.transcript ? d.transcript.length : 0 };
     } catch { return null; }
   }).filter(Boolean);
 }

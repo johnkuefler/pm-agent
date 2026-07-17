@@ -11,6 +11,7 @@ const MAX_TRANSCRIPT_CHARS = 24000;
 const MAX_SOURCE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_DAILY_ATTEMPTS = 2;
 const MAX_PROMPT_REFLECTIONS = 1;
+const INFERRED_COMPLETION_GRACE_MS = 30 * 60 * 1000;
 const TRANSPORT = 'server_direct_post_meeting_professional_reflection';
 const ALLOWED_SCOPES = new Set(['delivery', 'ownership', 'coordination', 'quality', 'planning', 'communication']);
 const PRIVATE_OR_PHENOMENAL = /\b(?:conscious(?:ness)?|sentien(?:t|ce)|qualia|phenomenal|subjective experience|private thoughts?|secret intent|really feels?|actually feels?|doesn'?t care|cares? about|lazy|dishonest|incompetent|manipulat(?:e|ive|ing))\b/i;
@@ -70,11 +71,15 @@ function utcDate(value = new Date()) {
 
 function eligibleMeetingDocs(docs = [], attempts = [], now = new Date()) {
   const attempted = new Set(attempts.map(item => item.bot_id).filter(Boolean));
-  const cutoff = new Date(now).getTime() - MAX_SOURCE_AGE_MS;
+  const nowMs = new Date(now).getTime();
+  const cutoff = nowMs - MAX_SOURCE_AGE_MS;
   return docs.filter(item => item?.bot_id && !attempted.has(item.bot_id))
-    .filter(item => { const ended = new Date(item.ended || 0).getTime();
-      return Number.isFinite(ended) && ended >= cutoff && ended <= new Date(now).getTime(); })
-    .sort((left, right) => String(right.ended).localeCompare(String(left.ended))
+    .map(item => ({ ...item, reflection_ended_at: item.ended || item.last_utterance_at || null,
+      inferred_completion: !item.ended && Boolean(item.last_utterance_at) }))
+    .filter(item => { const ended = new Date(item.reflection_ended_at || 0).getTime();
+      return Number.isFinite(ended) && ended >= cutoff && ended <= nowMs
+        && (!item.inferred_completion || ended <= nowMs - INFERRED_COMPLETION_GRACE_MS); })
+    .sort((left, right) => String(right.reflection_ended_at).localeCompare(String(left.reflection_ended_at))
       || String(right.bot_id).localeCompare(String(left.bot_id)));
 }
 
@@ -310,7 +315,8 @@ async function runCycle({ store, listTranscripts, loadTranscript, callProvider,
   let source = null;
   for (const doc of docs) {
     const loaded = await loadTranscript(doc.bot_id);
-    const candidate = transcriptSnapshot({ botId: doc.bot_id, ended: loaded?.ended || doc.ended,
+    const candidate = transcriptSnapshot({ botId: doc.bot_id,
+      ended: loaded?.ended || doc.reflection_ended_at || doc.ended,
       transcript: loaded?.transcript || [], meetingMeta: loaded?.meetingMeta || {} });
     if (candidate) { source = candidate; break; }
   }
@@ -344,6 +350,7 @@ async function runCycle({ store, listTranscripts, loadTranscript, callProvider,
 
 module.exports = { PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS, MAX_UTTERANCES,
   MAX_TRANSCRIPT_CHARS, MAX_SOURCE_AGE_MS, MAX_DAILY_ATTEMPTS, MAX_PROMPT_REFLECTIONS,
+  INFERRED_COMPLETION_GRACE_MS,
   TRANSPORT, ALLOWED_SCOPES, PRIVATE_OR_PHENOMENAL,
   canonicalJson, commitment, cleanText, utteranceRef, transcriptSnapshot, outputSchema,
   utcDate, eligibleMeetingDocs,
