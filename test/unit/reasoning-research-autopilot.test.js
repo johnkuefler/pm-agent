@@ -9,6 +9,7 @@ const { createIntelligenceStore } = require('../../src/intelligence/store');
 const autopilot = require('../../src/intelligence/reasoning-research-autopilot');
 const reasoning = require('../../src/intelligence/reasoning-self-regulation');
 const provider = require('../../src/intelligence/provider-reasoning-regulation');
+const interactivePerformance = require('../../src/intelligence/interactive-performance');
 
 async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-research-autopilot-'));
@@ -267,7 +268,7 @@ test('autopilot ledger-aborts a pilot that the foreground latency protocol can n
     intervention: 'reasoning_self_regulation',
     surfaces: ['slack'],
     blocked_surfaces: ['slack'],
-    interactive_performance_protocol_version: 3,
+    interactive_performance_protocol_version: interactivePerformance.PROTOCOL_VERSION,
   });
 
   let providerCalls = 0;
@@ -287,7 +288,7 @@ test('autopilot ledger-aborts a pilot that the foreground latency protocol can n
   assert.equal(retired.abort.potential_outcome_dependent_stopping, false);
   assert.equal(retired.abort.flow.assigned, 1);
   assert.ok(retired.abort.evidence.some(item => item.type === 'interactive_performance_protocol'
-    && item.id === 'interactive-performance-v3'));
+    && item.id === `interactive-performance-v${interactivePerformance.PROTOCOL_VERSION}`));
   assert.equal(autopilot.isLatencyRetirement(retired), true);
 
   const status = autopilot.status(store, { enabled: true, lastCycle: result });

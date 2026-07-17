@@ -49,6 +49,7 @@ const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
 const cycleSelfCorrectionReflection = require('./src/intelligence/cycle-self-correction-reflection');
+const meetingProfessionalReflection = require('./src/intelligence/meeting-professional-reflection');
 const selfAuthoredAimReflection = require('./src/intelligence/self-authored-aim-reflection');
 const selfAuthoredAimReappraisal = require('./src/intelligence/self-authored-aim-reappraisal');
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
@@ -9032,6 +9033,8 @@ let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
 let _cycleSelfCorrectionReflectionInFlight = false;
 let _cycleSelfCorrectionReflectionLastCycle = null;
+let _meetingProfessionalReflectionInFlight = false;
+let _meetingProfessionalReflectionLastCycle = null;
 let _selfAuthoredAimReflectionInFlight = false;
 let _selfAuthoredAimReflectionLastCycle = null;
 let _selfAuthoredAimReappraisalInFlight = false;
@@ -9179,6 +9182,14 @@ function cycleSelfCorrectionReflectionRuntimeConfig(env = process.env) {
   };
 }
 
+function meetingProfessionalReflectionRuntimeConfig(env = process.env) {
+  return { enabled: env.NORA_TEST_MODE !== '1'
+      && env.NORA_MEETING_PROFESSIONAL_REFLECTION !== '0'
+      && Boolean(env.ANTHROPIC_API_KEY),
+    model: String(env.NORA_MEETING_PROFESSIONAL_REFLECTION_MODEL
+      || meetingProfessionalReflection.DEFAULT_MODEL).slice(0, 160) };
+}
+
 function selfAuthoredAimReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_SELF_AUTHORED_AIM_REFLECTION !== '0'
@@ -9270,6 +9281,17 @@ function researchAutopilotProgramStatus() {
     last_cycle: _cycleSelfCorrectionReflectionLastCycle,
     scientific_boundary: 'This is replay-bound extraction of an explicitly ordered operational position, contrary observation, and revision from a completed cycle. It is not hidden reasoning, independent validation, emotion, subjective experience, or phenomenal consciousness.',
   };
+  const meetingReflectionConfig = meetingProfessionalReflectionRuntimeConfig();
+  const meetingReflectionStoreStatus = intelligence.meetingProfessionalReflectionSnapshot();
+  const meetingReflectionStatus = {
+    protocol_version: meetingProfessionalReflection.PROTOCOL_VERSION,
+    enabled: meetingReflectionConfig.enabled, model: meetingReflectionConfig.model,
+    background_only: true, transcript_backlog_durable: true,
+    report: meetingReflectionStoreStatus.report,
+    last_attempt: meetingReflectionStoreStatus.attempts.at(-1) || null,
+    last_cycle: _meetingProfessionalReflectionLastCycle,
+    scientific_boundary: 'This is transcript-bound low-confidence professional interpretation with explicit limitations and falsifiers. It is not fact extraction, hidden-state inference, authority, emotion, subjective experience, originality proof, or phenomenal consciousness.',
+  };
   const aimConfig = selfAuthoredAimReflectionRuntimeConfig();
   const aimStatus = selfAuthoredAimReflection.status(loadDreams(), _cache.wants?.items || [], {
     enabled: aimConfig.enabled, model: aimConfig.model,
@@ -9323,6 +9345,7 @@ function researchAutopilotProgramStatus() {
       professional_viewpoint_reflection: professionalViewpointReflectionStatus,
       professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
       cycle_self_correction_reflection: cycleSelfCorrectionStatus,
+      meeting_professional_reflection: meetingReflectionStatus,
       self_authored_aim_reflection: aimStatus,
       self_authored_aim_reappraisal: aimReappraisalStatus,
       dream_insight_reflection: dreamInsightStatus,
@@ -9354,6 +9377,7 @@ function researchAutopilotProgramStatus() {
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
     cycle_self_correction_reflection: cycleSelfCorrectionStatus,
+    meeting_professional_reflection: meetingReflectionStatus,
     self_authored_aim_reflection: aimStatus,
     self_authored_aim_reappraisal: aimReappraisalStatus,
     dream_insight_reflection: dreamInsightStatus,
@@ -9579,6 +9603,40 @@ async function runCycleSelfCorrectionReflectionRuntime({ post = axios.post } = {
   } finally {
     _cycleSelfCorrectionReflectionInFlight = false;
   }
+}
+
+async function runMeetingProfessionalReflectionRuntime({ post = axios.post,
+  listTranscripts = listTranscriptDocs, loadTranscript = getTranscriptDoc } = {}) {
+  const config = meetingProfessionalReflectionRuntimeConfig();
+  if (!config.enabled) {
+    _meetingProfessionalReflectionLastCycle = {
+      protocol_version: meetingProfessionalReflection.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString() };
+    return _meetingProfessionalReflectionLastCycle;
+  }
+  if (_meetingProfessionalReflectionInFlight) return {
+    protocol_version: meetingProfessionalReflection.PROTOCOL_VERSION,
+    state: 'in_flight', at: new Date().toISOString() };
+  _meetingProfessionalReflectionInFlight = true;
+  try {
+    const cycle = await meetingProfessionalReflection.runCycle({ store: intelligence,
+      listTranscripts, loadTranscript, enabled: true, model: config.model,
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: { 'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01' }, timeout: 30000 });
+        return response.data;
+      } });
+    _meetingProfessionalReflectionLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _meetingProfessionalReflectionLastCycle;
+  } catch (error) {
+    _meetingProfessionalReflectionLastCycle = {
+      protocol_version: meetingProfessionalReflection.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString() };
+    return _meetingProfessionalReflectionLastCycle;
+  } finally { _meetingProfessionalReflectionInFlight = false; }
 }
 
 async function runSelfAuthoredAimReflectionAutopilotRuntime({ post = axios.post } = {}) {
@@ -10267,6 +10325,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
       ['cycle_self_correction_reflection',
         () => runCycleSelfCorrectionReflectionRuntime({ post: priorityPost })],
+      ['meeting_professional_reflection',
+        () => runMeetingProfessionalReflectionRuntime({ post: priorityPost })],
       ['self_authored_aim_lifecycle',
         () => runSelfAuthoredAimLifecycleAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
@@ -10403,6 +10463,8 @@ module.exports = {
     runProfessionalViewpointLifecycleWithPriorityRuntime,
     cycleSelfCorrectionReflectionRuntimeConfig,
     runCycleSelfCorrectionReflectionRuntime,
+    meetingProfessionalReflectionRuntimeConfig,
+    runMeetingProfessionalReflectionRuntime,
     selfAuthoredAimReflectionRuntimeConfig,
     runSelfAuthoredAimReflectionAutopilotRuntime,
     selfAuthoredAimReappraisalRuntimeConfig,

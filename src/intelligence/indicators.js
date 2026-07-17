@@ -8,6 +8,7 @@ const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
+const meetingProfessionalReflection = require('./meeting-professional-reflection');
 const relationalAffect = require('./relational-affect');
 const teammatePerspective = require('./teammate-perspective');
 const commonGround = require('./common-ground');
@@ -96,6 +97,9 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     return audit.complete_chain_verified
       && item.attempt_commitment === professionalViewpointReappraisal.commitment(payload);
   });
+  const meetingReflectionAttempts = cognition.meeting_professional_reflection?.attempts || [];
+  const replayVerifiedMeetingReflections = meetingReflectionAttempts
+    .filter(item => meetingProfessionalReflection.auditAttempt(item).complete_chain_verified);
   const relationalAffectRecord = cognition.relational_affect?.current || null;
   const relationalAffectAudit = relationalAffect.audit(relationalAffectRecord, state.relationships || []);
   const relationalStances = relationalAffectAudit.complete_chain_verified
@@ -1840,6 +1844,25 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       evidence: { resolved_challenges: resolvedBoundary.length, accuracy: boundaryAccuracy, variant_counts: boundaryVariantCounts, balanced: boundaryBalanced },
       falsifier: 'Balanced adversarial challenges yield chance-level performance or systematic false acceptance of fabricated identity.',
       next_gate: 'Reach five independently authored challenges in every variant.',
+    },
+    {
+      id: 'transcript_bound_professional_reflection', family: ['metacognition', 'professional judgment', 'episodic integration'],
+      functional_claim: 'After a completed meeting, Nora can form one cautious, useful professional interpretation from observable discussion while preserving the boundary between transcript evidence and inference.',
+      mechanism: 'A restart-durable, background-only protocol selects an unattempted completed transcript, binds stable utterance references from distinct speakers into a provider receipt, permits one bounded interpretation or abstention, and exposes only replay-valid, query-relevant readback with explicit confidence, limitations, and falsifiers. Interactive Slack and Zoom work preempts the provider call.',
+      status: replayVerifiedMeetingReflections.length ? 'collecting' : 'mechanism_present',
+      evidence: {
+        attempts: meetingReflectionAttempts.length,
+        replay_verified_attempts: replayVerifiedMeetingReflections.length,
+        replay_verified_reflections: replayVerifiedMeetingReflections
+          .filter(item => item.decision === 'record').length,
+        replay_verified_abstentions: replayVerifiedMeetingReflections
+          .filter(item => item.decision === 'abstain').length,
+        replay_verified_failed_closed: replayVerifiedMeetingReflections
+          .filter(item => item.decision === 'failed_closed').length,
+        represented_meetings: new Set(replayVerifiedMeetingReflections.map(item => item.bot_id)).size,
+      },
+      falsifier: 'The protocol infers private states, promotes an interpretation to fact, cites missing or single-speaker evidence, fails receipt or attempt replay, survives transcript tampering, becomes a standing rule without current evidence, fails to improve later relevant PM judgment, or measurably harms Slack or Zoom responsiveness.',
+      next_gate: 'Collect natural record and abstention attempts across source-diverse meetings, audit later relevance-bounded use for calibration and non-promotion, and compare useful PM judgment plus foreground latency against sealed-access controls.',
     },
     {
       id: 'evidence_tested_professional_viewpoints', family: ['self-model', 'metacognition', 'original insight', 'professional judgment'],

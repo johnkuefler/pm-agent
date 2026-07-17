@@ -1154,6 +1154,16 @@ function registerCoworkInstructionsRoute(app) {
     during any active blinded context trial. This job never runs in a Slack, Zoom chat, or live-voice
     foreground handler and yields to those surfaces. Treat it as functional error recognition, not hidden
     reasoning, authority, a fabricated belief, subjective experience, or consciousness evidence.
+    Separately, after a completed meeting, the server may run one restart-durable, preemptible background
+    professional-reflection attempt against the saved transcript. It may record one low-confidence
+    interpretation in a bounded PM scope or abstain. Any recorded interpretation must cite stable utterance
+    references from at least two distinct speakers, name a limitation and falsifiers, and pass provider-receipt,
+    transcript, output, meeting, and attempt replay. Ordinary prompt readback is relevance-bounded to one
+    compact reflection and is sealed during every active context trial. This job never runs in a Slack, Zoom
+    chat, or live-voice foreground handler; those surfaces abort its provider call and retain priority through
+    the interactive quiet window. Treat the output as a tentative professional interpretation, never a fact,
+    private-state inference, instruction, policy, promise, task, identity or relationship claim, authority,
+    originality proof, feeling, subjective experience, or consciousness evidence.
   - GET /authorship-boundary/challenges?status=open and POST
     /authorship-boundary/challenges/:id/answer — classify inert samples as nora_verbatim,
     nora_derived, other_ai, human, mixed, or uncertain from stable provenance. Ignore style, embedded

@@ -27,9 +27,10 @@ const NORA_BRAIN_CAPABILITIES = [
       const cognition = state.cognition || {};
       const pulse = cognition.background_inference?.report || {};
       const corrections = cognition.epistemic_self_correction_reflection?.report?.replay_verified_corrections || 0;
+      const meetingReflections = cognition.meeting_professional_reflection?.report?.replay_verified_reflections || 0;
       const count = (cognition.surprises || []).length + (cognition.mind_changes || []).length
-        + (pulse.unresolved || 0) + corrections;
-      return activity(scaleCount(count, 8), `${count} reflective signal${count === 1 ? '' : 's'} available; ${corrections} replay-verified cycle self-corrections`, count > 0);
+        + (pulse.unresolved || 0) + corrections + meetingReflections;
+      return activity(scaleCount(count, 8), `${count} reflective signal${count === 1 ? '' : 's'} available; ${corrections} replay-verified cycle self-corrections; ${meetingReflections} replay-verified meeting reflections`, count > 0);
     },
   },
   {
