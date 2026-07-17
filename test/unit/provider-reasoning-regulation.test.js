@@ -74,8 +74,13 @@ test('production reasoning regulation varies only provider reasoning controls an
   const trial = store.createContextTrial(design());
   assert.deepEqual(trial.conditions, protocol.CONDITIONS);
   assert.equal(trial.sample_target_per_group, 15);
+  let forbiddenEligibilityCalls = 0;
   assert.equal(store.contextCondition({ surface: 'slack', unitKey: 'latency-critical-turn',
-    latencyCritical: true }), null);
+    latencyCritical: true,
+    reasoningSelfRegulationAvailable: () => { forbiddenEligibilityCalls += 1; return true; },
+    professionalViewpointAvailable: () => { forbiddenEligibilityCalls += 1; return true; } }), null);
+  assert.equal(forbiddenEligibilityCalls, 0,
+    'the latency firewall must reject the trial before any eligibility computation');
   assert.equal(store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id).assignments.length, 0,
     'the latency firewall must not enroll an assignment it cannot execute inline');
 

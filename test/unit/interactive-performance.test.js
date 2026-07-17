@@ -37,8 +37,12 @@ test('latency evidence is assessed against frozen per-surface budgets without a 
     at: new Date(now - index * 1000).toISOString(), action: 'response_latency',
     outcome: performance.assess(surface, latency),
   }));
+  traces.push({ at: new Date(now - 5000).toISOString(), action: 'response_latency',
+    outcome: { ...performance.assess('slack', 30000), protocol_version: 2 } });
   const summary = performance.summarize(traces, now);
   assert.equal(summary.samples, 4);
+  assert.equal(summary.excluded_legacy_samples, 1);
+  assert.deepEqual(summary.observed_protocol_versions, { 2: 1, 3: 4 });
   assert.equal(summary.within_budget, 3);
   assert.equal(summary.surfaces.slack.p95_ms, 9000);
   assert.equal(summary.surfaces.slack.gate, 'collecting');

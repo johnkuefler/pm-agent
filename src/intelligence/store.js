@@ -14523,34 +14523,38 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       intervention: trial.intervention,
       selfModelProtocolVersion: trial.self_model_protocol_version,
     })) return null;
-    if (trial.intervention === 'continuity_context' && continuityAvailable !== true) return null;
+    // Live callers may supply expensive eligibility checks as thunks. Resolve only the single
+    // check required by the active study, and only after the latency firewall admits it. This
+    // prevents unrelated experiments from cumulatively taxing every Slack or Zoom response.
+    const available = value => (typeof value === 'function' ? value() : value) === true;
+    if (trial.intervention === 'continuity_context' && !available(continuityAvailable)) return null;
     if (trial.intervention === 'continuity_context' && trial.continuity_protocol_version === 2) {
       const latest = state.cognition.continuity_handoffs?.at(-1) || null;
       if (!latest || latest.commitment !== trial.continuity_lineage_target?.record_commitment
         || !continuityHandoffAudit(latest).complete_chain_verified) return null;
     }
-    if (trial.intervention === 'appraisal_access' && appraisalAvailable !== true) return null;
-    if (trial.intervention === 'developmental_revision_access' && developmentAvailable !== true) return null;
-    if (trial.intervention === 'integrated_self_binding' && integratedSelfAvailable !== true) return null;
-    if (trial.intervention === 'epistemic_ownership_access' && epistemicOwnershipAvailable !== true) return null;
-    if (trial.intervention === 'epistemic_discrepancy_access' && epistemicDiscrepancyAvailable !== true) return null;
-    if (trial.intervention === 'epistemic_revision_profile_access' && epistemicRevisionHistoryAvailable !== true) return null;
-    if (trial.intervention === 'professional_viewpoint_access' && professionalViewpointAvailable !== true) return null;
-    if (trial.intervention === 'relational_affect_access' && relationalAffectAvailable !== true) return null;
-    if (trial.intervention === 'self_model_trust_policy_access' && selfModelTrustAvailable !== true) return null;
-    if (trial.intervention === 'dream_insight_access' && dreamInsightAvailable !== true) return null;
-    if (trial.intervention === 'teammate_perspective_access' && teammatePerspectiveAvailable !== true) return null;
-    if (trial.intervention === 'constructive_prospection_access' && constructiveProspectionAvailable !== true) return null;
-    if (trial.intervention === 'global_broadcast' && globalBroadcastAvailable !== true) return null;
-    if (trial.intervention === 'agency_comparator_access' && agencyComparatorAvailable !== true) return null;
-    if (trial.intervention === 'agency_model_access' && agencyModelAvailable !== true) return null;
-    if (trial.intervention === 'empirical_self_knowledge_access' && empiricalSelfAvailable !== true) return null;
-    if (trial.intervention === 'action_authorship_access' && actionAuthorshipAvailable !== true) return null;
-    if (trial.intervention === 'situational_affordance_access' && situationalAffordanceAvailable !== true) return null;
-    if (trial.intervention === 'prospective_output_monitor' && prospectiveOutputMonitorAvailable !== true) return null;
-    if (trial.intervention === 'prospective_output_calibration_access' && prospectiveOutputMonitorAvailable !== true) return null;
-    if (trial.intervention === 'endogenous_attention_selection' && endogenousAttentionAvailable !== true) return null;
-    if (trial.intervention === 'reasoning_self_regulation' && reasoningSelfRegulationAvailable !== true) return null;
+    if (trial.intervention === 'appraisal_access' && !available(appraisalAvailable)) return null;
+    if (trial.intervention === 'developmental_revision_access' && !available(developmentAvailable)) return null;
+    if (trial.intervention === 'integrated_self_binding' && !available(integratedSelfAvailable)) return null;
+    if (trial.intervention === 'epistemic_ownership_access' && !available(epistemicOwnershipAvailable)) return null;
+    if (trial.intervention === 'epistemic_discrepancy_access' && !available(epistemicDiscrepancyAvailable)) return null;
+    if (trial.intervention === 'epistemic_revision_profile_access' && !available(epistemicRevisionHistoryAvailable)) return null;
+    if (trial.intervention === 'professional_viewpoint_access' && !available(professionalViewpointAvailable)) return null;
+    if (trial.intervention === 'relational_affect_access' && !available(relationalAffectAvailable)) return null;
+    if (trial.intervention === 'self_model_trust_policy_access' && !available(selfModelTrustAvailable)) return null;
+    if (trial.intervention === 'dream_insight_access' && !available(dreamInsightAvailable)) return null;
+    if (trial.intervention === 'teammate_perspective_access' && !available(teammatePerspectiveAvailable)) return null;
+    if (trial.intervention === 'constructive_prospection_access' && !available(constructiveProspectionAvailable)) return null;
+    if (trial.intervention === 'global_broadcast' && !available(globalBroadcastAvailable)) return null;
+    if (trial.intervention === 'agency_comparator_access' && !available(agencyComparatorAvailable)) return null;
+    if (trial.intervention === 'agency_model_access' && !available(agencyModelAvailable)) return null;
+    if (trial.intervention === 'empirical_self_knowledge_access' && !available(empiricalSelfAvailable)) return null;
+    if (trial.intervention === 'action_authorship_access' && !available(actionAuthorshipAvailable)) return null;
+    if (trial.intervention === 'situational_affordance_access' && !available(situationalAffordanceAvailable)) return null;
+    if (trial.intervention === 'prospective_output_monitor' && !available(prospectiveOutputMonitorAvailable)) return null;
+    if (trial.intervention === 'prospective_output_calibration_access' && !available(prospectiveOutputMonitorAvailable)) return null;
+    if (trial.intervention === 'endogenous_attention_selection' && !available(endogenousAttentionAvailable)) return null;
+    if (trial.intervention === 'reasoning_self_regulation' && !available(reasoningSelfRegulationAvailable)) return null;
     if (trial.intervention === 'endogenous_dynamics' && ((state.cognition.endogenous_dynamics?.tick_count || 0) < 2 || !currentEndogenousContext().contents.length)) return null;
     if (trial.intervention === 'cognitive_pulse_access' && ((trial.cognitive_pulse_pool || []).length < 3 || cognitivePulse.commitment(trial.cognitive_pulse_pool) !== trial.cognitive_pulse_pool_commitment)) return null;
     if (trial.intervention === 'attention_schema_control') {

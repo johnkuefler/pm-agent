@@ -42,7 +42,7 @@ function design(ids, overrides = {}) {
 
 test('production prompt construction atomically assigns person-bound relational study packets', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.match(server, /relationalAffectAvailable: intelligence\.relationalAffectAccessAvailable/);
+  assert.match(server, /relationalAffectAvailable: \(\) => intelligence\.relationalAffectAccessAvailable/);
   assert.match(server, /relationalAffectContextForAssignment\(contextAssignment, intelligencePerson\)/);
   assert.match(server, /relationalAffectContext,/);
   assert.ok(server.indexOf('relationalAffectContextForAssignment') < server.indexOf('intelligence.promptContext({'));

@@ -90,7 +90,7 @@ async function recordLifecycleRevision(store, viewpointId) {
 
 test('production prompt construction atomically assigns and delivers professional viewpoint study packets', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.match(server, /professionalViewpointAvailable: intelligence\.professionalViewpointAccessAvailable\(trialConversationText\)/);
+  assert.match(server, /professionalViewpointAvailable: \(\) => intelligence\.professionalViewpointAccessAvailable\(trialConversationText\)/);
   assert.match(server, /professionalViewpointContextForAssignment\(contextAssignment, conversationText\)/);
   assert.match(server, /professionalViewpointContext,/);
   assert.ok(server.indexOf('professionalViewpointContextForAssignment') < server.indexOf('intelligence.promptContext({'));
@@ -117,15 +117,21 @@ test('professional viewpoint access isolates identity binding and fails closed u
 
   const selected = [];
   const tokens = ['integration', 'discovery', 'handoff'];
+  let relevantEligibilityCalls = 0;
   for (let index = 0; index < 5000 && !trial.conditions.every(condition => selected.filter(item => item.assignment.condition === condition).length >= 10); index++) {
     const query = `Give a PM recommendation about ${tokens[index % tokens.length]} risk`;
     const assignment = store.contextCondition({ surface: 'slack', unitKey: `viewpoint-unit-${index}`,
-      professionalViewpointAvailable: store.professionalViewpointAccessAvailable(query) });
+      professionalViewpointAvailable: () => {
+        relevantEligibilityCalls += 1;
+        return store.professionalViewpointAccessAvailable(query);
+      },
+      appraisalAvailable: () => { throw new Error('unrelated eligibility must stay lazy'); } });
     if (!assignment || selected.filter(item => item.assignment.condition === assignment.condition).length >= 10) continue;
     const context = store.professionalViewpointContextForAssignment(assignment, query);
     selected.push({ assignment, context });
   }
   assert.equal(selected.length, 30);
+  assert.ok(relevantEligibilityCalls >= selected.length);
   const bySource = new Map();
   for (const item of selected) {
     const { assignment, context } = item;

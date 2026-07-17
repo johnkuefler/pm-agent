@@ -180,7 +180,12 @@ const NORA_BRAIN_CAPABILITIES = [
       const performance = state.cognition?.responsiveness || {};
       const samples = performance.samples || 0;
       const rate = performance.within_budget_rate || 0;
-      return activity(rate, samples ? `${performance.within_budget || 0}/${samples} responses within channel budget` : 'Awaiting first measured interaction', samples > 0);
+      const legacy = performance.excluded_legacy_samples || 0;
+      const version = performance.protocol?.protocol_version || '?';
+      const legacyNote = legacy ? `; ${legacy} earlier-protocol sample${legacy === 1 ? '' : 's'} excluded` : '';
+      return activity(rate, samples
+        ? `${performance.within_budget || 0}/${samples} protocol-v${version} responses within channel budget${legacyNote}`
+        : `Awaiting first protocol-v${version} interaction${legacyNote}`, samples > 0);
     },
   },
 ];

@@ -79,7 +79,7 @@ function design(revisionId, overrides = {}) {
 
 test('production prompt construction atomically assigns blinded self-model trust policies', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.match(server, /selfModelTrustAvailable: intelligence\.selfModelTrustAccessAvailable\(\)/);
+  assert.match(server, /selfModelTrustAvailable: \(\) => intelligence\.selfModelTrustAccessAvailable\(\)/);
   assert.match(server, /selfModelTrustContextForAssignment\(contextAssignment\)/);
   assert.match(server, /selfModelTrustContext,/);
   assert.ok(server.indexOf('selfModelTrustContextForAssignment')

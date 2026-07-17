@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const interactivePerformance = require('../../src/intelligence/interactive-performance');
 
 test('dashboard summary stays compact and advances with store mutations', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-dashboard-summary-'));
@@ -31,8 +32,7 @@ test('dashboard summary stays compact and advances with store mutations', async 
 
   store.addCommitment({ what: 'Return a compact dashboard quickly', owner: 'Nora' });
   store.recordTrace({ channel: 'meeting', action: 'response_latency', decision: 'within_budget',
-    outcome: { surface: 'realtime', latency_ms: 1400, budget_ms: 2000, within_budget: true,
-      stages: {}, protocol_version: 1 } });
+    outcome: { ...interactivePerformance.assess('realtime', 1400), stages: {} } });
   assert.ok(store.snapshotRevision() > initialRevision);
   const updated = store.dashboardIntelligenceSummary();
   assert.equal(updated.overview.commitments.open, 1);

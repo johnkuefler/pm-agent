@@ -1,6 +1,6 @@
 'use strict';
 
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
@@ -30,7 +30,7 @@ const INLINE_LATENCY_TAXED_INTERVENTIONS = new Set([
 const protocol = Object.freeze({
   protocol_version: PROTOCOL_VERSION,
   prediction: 'Human-facing cognition can stay within channel-specific first-delivery budgets when extra provider-round research is excluded from interactive paths and background inference yields to live work.',
-  intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms, preempt background provider inference, and hold the background lane through a short post-interaction quiet window.',
+  intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, preempt background provider inference, and hold the background lane through a short post-interaction quiet window.',
   controls: 'Scheduled research retains the quarantined interventions through one serialized, preemptible provider lane; ordinary live tool use remains available when the requested work itself requires it.',
   outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger.',
   minimum_samples_per_surface: 20,
@@ -51,6 +51,7 @@ function assess(surface, latencyMs) {
   const budgetMs = BUDGET_MS[surface] || null;
   const measured = Math.max(0, Number(latencyMs) || 0);
   return {
+    protocol_version: PROTOCOL_VERSION,
     surface,
     latency_ms: Math.round(measured),
     budget_ms: budgetMs,
@@ -65,10 +66,19 @@ function percentile(values, fraction) {
 }
 
 function summarize(traces = [], now = Date.now()) {
-  const eligible = traces.filter(item => item?.action === 'response_latency'
+  const measured = traces.filter(item => item?.action === 'response_latency'
     && item.outcome && BUDGET_MS[item.outcome.surface]
     && Number.isFinite(Number(item.outcome.latency_ms))
     && (!item.at || now - new Date(item.at).getTime() <= WINDOW_MS));
+  const eligible = measured.filter(item => Number(item.outcome.protocol_version) === PROTOCOL_VERSION);
+  const protocolVersions = {};
+  for (const item of measured) {
+    const rawVersion = item.outcome.protocol_version;
+    const version = rawVersion !== null && rawVersion !== undefined && rawVersion !== ''
+      && Number.isFinite(Number(rawVersion))
+      ? String(Number(item.outcome.protocol_version)) : 'unversioned';
+    protocolVersions[version] = (protocolVersions[version] || 0) + 1;
+  }
   const surfaces = {};
   for (const surface of Object.keys(BUDGET_MS)) {
     const samples = eligible.filter(item => item.outcome.surface === surface)
@@ -90,6 +100,9 @@ function summarize(traces = [], now = Date.now()) {
   return {
     protocol,
     window_hours: WINDOW_MS / (60 * 60 * 1000),
+    current_protocol_samples: eligible.length,
+    excluded_legacy_samples: measured.length - eligible.length,
+    observed_protocol_versions: protocolVersions,
     samples: sampleCount,
     within_budget: withinCount,
     within_budget_rate: sampleCount ? withinCount / sampleCount : null,
