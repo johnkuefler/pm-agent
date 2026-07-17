@@ -65,6 +65,9 @@ test('subject reflection forms one receipt-bound viewpoint and fails closed unde
   assert.equal(projection.current_verified, true);
   assert.equal(projection.viewpoints.length, 1);
   assert.match(projection.viewpoints[0].rationale, /Falsify if:/);
+  assert.equal(projection.viewpoints[0].source_family, 'automated_work_memory');
+  assert.equal(projection.viewpoints[0].source_family_provenance_verified, true);
+  assert.equal(projection.report.provenance_bound, 1);
   const status = store.professionalViewpointReflectionSnapshot();
   assert.deepEqual(status.report, { total: 1, formed: 1, abstained: 0, replay_verified: 1 });
   const indicator = store.consciousnessResearchStatus().indicators
@@ -76,8 +79,13 @@ test('subject reflection forms one receipt-bound viewpoint and fails closed unde
   assert.equal(reflection.auditReceipt(rawPosition.generation_receipt, {
     topicKey: 'delivery.integration-qa-contingency',
     statement: 'Integration-heavy delivery plans benefit from an explicit QA contingency before launch.',
-    position: rawPosition,
+    position: rawPosition, sourceFamily: 'automated_work_memory',
   }).complete_chain_verified, true);
+  assert.equal(reflection.auditReceipt(rawPosition.generation_receipt, {
+    topicKey: 'delivery.integration-qa-contingency',
+    statement: 'Integration-heavy delivery plans benefit from an explicit QA contingency before launch.',
+    position: rawPosition, sourceFamily: 'slack_work_memory',
+  }).complete_chain_verified, false);
   const tampered = structuredClone(rawPosition.generation_receipt);
   tampered.output.candidate.confidence = 0.7;
   assert.equal(reflection.auditReceipt(tampered, {
@@ -136,6 +144,50 @@ test('formation rejects evidence outside the packet or a single date and project
   })), dream: { id: 'dream-one-context' }, now: NOW });
   assert.throws(() => reflection.normalizeOutput({ ...base, candidate: { ...base.candidate,
     evidence_ids: ['single-0', 'single-1'] } }, singleContextPacket), /two dates or projects/);
+});
+
+test('reflection packets balance evidence channels and preserve legacy receipt verification without upgrading provenance', () => {
+  const crowded = Array.from({ length: 40 }, (_, index) => ({
+    id: `auto-${index}`, added: '2026-07-16', project: `Auto ${index}`, source: 'auto', kind: 'fact',
+    status: 'active', fact: `Automated work record ${index} contains a distinct delivery observation for reflection.`,
+  }));
+  crowded.push(
+    { id: 'meeting-one', added: '2026-07-15', project: 'Meeting Project', source: 'meeting', kind: 'fact', status: 'active',
+      fact: 'A meeting decision exposed a distinct delivery observation for reflection.' },
+    { id: 'slack-one', added: '2026-07-14', project: 'Slack Project', source: 'slack', kind: 'fact', status: 'active',
+      fact: 'A Slack decision exposed another distinct delivery observation for reflection.' },
+  );
+  const selected = reflection.selectEvidence(crowded, NOW, 6);
+  assert.deepEqual([...new Set(selected.map(item => item.provenance_family))].sort(),
+    ['automated_work_memory', 'meeting_work_memory', 'slack_work_memory']);
+
+  const packet = reflection.packetFor({ memories: memories(), dream: { id: 'dream-legacy' }, now: NOW });
+  const output = {
+    decision: 'form', abstention_reason: null,
+    candidate: {
+      topic_key: 'delivery.legacy-compatible',
+      statement: 'Integration-heavy work benefits from an explicit contingency before launch.',
+      polarity: 'supports', confidence: 0.6,
+      rationale: 'Two separate delivery records support keeping this as a bounded working prior.',
+      falsification_criteria: ['Comparable launches repeatedly hold schedule without the contingency.'],
+      evidence_ids: ['memory-qa-july-15', 'memory-qa-july-10'],
+    },
+  };
+  const submission = reflection.submissionFor(packet, modelResponse(
+    reflection.requestFor(packet).request, output, 'msg-legacy-compatible'));
+  const legacyReceipt = structuredClone(submission.receipt);
+  delete legacyReceipt.source_packet.source_family_context;
+  for (const item of legacyReceipt.source_packet.evidence) delete item.provenance_family;
+  for (const item of legacyReceipt.source_packet.current_viewpoints) delete item.source_family;
+  legacyReceipt.source_packet_commitment = reflection.commitment(legacyReceipt.source_packet);
+  legacyReceipt.prompt_protocol_commitment = reflection.buildManifest(
+    legacyReceipt.source_packet, legacyReceipt.model).prompt_protocol_commitment;
+  legacyReceipt.receipt_commitment = reflection.commitment(reflection.receiptPayload(legacyReceipt));
+  assert.equal(reflection.auditReceipt(legacyReceipt, {
+    sourceFamily: reflection.LEGACY_SOURCE_FAMILY,
+  }).complete_chain_verified, true);
+  assert.equal(reflection.sourceFamilyForCandidate(
+    legacyReceipt.source_packet, legacyReceipt.output.candidate), null);
 });
 
 test('runtime enables subject reflection only with a provider credential outside test mode', () => {

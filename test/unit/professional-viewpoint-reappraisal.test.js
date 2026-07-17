@@ -82,7 +82,7 @@ test('background reappraisal revises one current viewpoint append-only with a re
   assert.equal(projection.viewpoints[0].revision_count, 1);
   const status = store.professionalViewpointReappraisalSnapshot();
   assert.deepEqual(status.report, { total: 1, retained: 0, revised: 1, retired: 0,
-    abstained: 0, replay_verified: 1 });
+    abstained: 0, replay_verified: 1, replay_verified_lifecycle_changes: 1 });
   const indicator = store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'evidence_tested_professional_viewpoints');
   assert.equal(indicator.evidence.subject_reappraisal_revisions, 1);
@@ -90,7 +90,7 @@ test('background reappraisal revises one current viewpoint append-only with a re
   const dashboard = store.dashboardIntelligenceSummary();
   assert.equal(dashboard.cognition.reflection.viewpoint_reappraisals, 1);
   assert.equal(dashboard.cognition.reflection.viewpoint_revisions, 1);
-  assert.match(dashboard.brain.reflection.evidence, /1 viewpoint revisions/);
+  assert.match(dashboard.brain.reflection.evidence, /1 replay-verified lifecycle changes/);
 
   const proposition = store.snapshot().cognition.epistemic_ledger.propositions[0];
   const position = proposition.positions.at(-1);

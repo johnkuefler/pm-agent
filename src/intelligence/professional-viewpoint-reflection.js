@@ -8,6 +8,18 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 1200;
 const MAX_PACKET_ITEMS = 36;
 const RECORDED_BY_PREFIX = 'nora-reflection-autopilot:';
+const LEGACY_SOURCE_FAMILY = 'server_direct_recent_work_reflection';
+
+function sourceChannel(value) {
+  const source = cleanText(value, 100).toLowerCase();
+  if (source === 'auto') return 'automated';
+  if (['meeting', 'slack', 'manual', 'system'].includes(source)) return source;
+  return 'other';
+}
+
+function evidenceProvenanceFamily(memory = {}) {
+  return `${sourceChannel(memory.source)}_work_memory`;
+}
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -36,8 +48,24 @@ function sourceSnapshot(memory = {}) {
     project: cleanText(memory.project, 200) || null,
     source: cleanText(memory.source, 100) || null,
     kind: cleanText(memory.kind, 100) || null,
+    provenance_family: evidenceProvenanceFamily(memory),
     fact,
   };
+}
+
+function sourceFamilyForEvidence(evidence = [], evidenceIds = []) {
+  const byId = new Map((evidence || []).map(item => [item?.ref?.id, item]));
+  const selected = [...new Set(evidenceIds.map(id => cleanText(id, 500)).filter(Boolean))]
+    .map(id => byId.get(id)).filter(Boolean);
+  if (selected.length !== new Set(evidenceIds.map(id => cleanText(id, 500)).filter(Boolean)).size
+    || selected.some(item => !item.provenance_family)) return null;
+  const families = [...new Set(selected.map(item => item.provenance_family))].sort();
+  if (families.length === 1) return families[0];
+  return families.length > 1 ? 'cross_channel_work_memory' : null;
+}
+
+function sourceFamilyForCandidate(packet = {}, candidate = {}) {
+  return sourceFamilyForEvidence(packet.evidence || [], candidate.evidence_ids || []);
 }
 
 function selectEvidence(memories = [], now = new Date(), limit = MAX_PACKET_ITEMS) {
@@ -54,27 +82,43 @@ function selectEvidence(memories = [], now = new Date(), limit = MAX_PACKET_ITEM
     if (!unique.has(semanticKey)) unique.set(semanticKey, snapshot);
   }
 
-  const groups = new Map();
+  const projectsByFamily = new Map();
   for (const item of unique.values()) {
+    const family = item.provenance_family;
+    const projects = projectsByFamily.get(family) || new Map();
     const key = String(item.project || 'general').toLowerCase();
-    const values = groups.get(key) || [];
+    const values = projects.get(key) || [];
     values.push(item);
-    groups.set(key, values);
-  }
-  const orderedGroups = [...groups.values()].sort((left, right) => right.length - left.length
-    || String(left[0]?.project || '').localeCompare(String(right[0]?.project || '')));
-  for (const group of orderedGroups) {
-    group.sort((left, right) => String(right.added || '').localeCompare(String(left.added || ''))
-      || left.ref.id.localeCompare(right.ref.id));
+    projects.set(key, values);
+    projectsByFamily.set(family, projects);
   }
 
+  const familyQueues = [...projectsByFamily.entries()].map(([family, projects]) => {
+    const orderedProjects = [...projects.values()].sort((left, right) => right.length - left.length
+      || String(left[0]?.project || '').localeCompare(String(right[0]?.project || '')));
+    for (const project of orderedProjects) {
+      project.sort((left, right) => String(right.added || '').localeCompare(String(left.added || ''))
+        || left.ref.id.localeCompare(right.ref.id));
+    }
+    const queue = [];
+    for (let depth = 0; ; depth += 1) {
+      let added = false;
+      for (const project of orderedProjects) {
+        if (project[depth]) { queue.push(project[depth]); added = true; }
+      }
+      if (!added) break;
+    }
+    return { family, queue };
+  }).sort((left, right) => left.family.localeCompare(right.family));
+
+  // Round-robin across collection channels, then projects, so a large automated feed cannot
+  // crowd Slack or meeting evidence out of Nora's bounded reflection packet.
   const selected = [];
-  // Round-robin across projects prevents one busy account from monopolizing reflection.
   for (let depth = 0; selected.length < limit; depth += 1) {
     let added = false;
-    for (const group of orderedGroups) {
-      if (group[depth]) {
-        selected.push(group[depth]);
+    for (const family of familyQueues) {
+      if (family.queue[depth]) {
+        selected.push(family.queue[depth]);
         added = true;
         if (selected.length >= limit) break;
       }
@@ -127,13 +171,23 @@ function systemPrompt() {
 
 function packetFor({ memories = [], dream = null, currentViewpoints = [], now = new Date() } = {}) {
   const evidence = selectEvidence(memories, now);
+  const representedFamilies = [...new Set(currentViewpoints.map(item => cleanText(item.source_family, 160))
+    .filter(Boolean))].sort();
+  const availableFamilies = [...new Set(evidence.map(item => item.provenance_family).filter(Boolean))].sort();
   return {
     protocol_version: PROTOCOL_VERSION,
     source_dream: dream ? { id: cleanText(dream.id, 500), date: cleanText(dream.date, 20) || null } : null,
     evidence,
+    source_family_context: {
+      represented_families: representedFamilies,
+      available_evidence_families: availableFamilies,
+      currently_unrepresented_evidence_families: availableFamilies
+        .filter(family => !representedFamilies.includes(family)),
+    },
     current_viewpoints: currentViewpoints.map(item => ({
       topic_key: cleanText(item.topic_key, 160), statement: cleanText(item.statement, 900),
       polarity: item.polarity, confidence: Number(item.confidence), status: item.status,
+      source_family: cleanText(item.source_family, 160) || null,
     })).filter(item => item.topic_key && item.statement).slice(0, 10),
   };
 }
@@ -259,7 +313,8 @@ function rationaleForCandidate(candidate) {
   return `${candidate.rationale} Falsify if: ${candidate.falsification_criteria.join('; ')}.`.slice(0, 1200);
 }
 
-function auditReceipt(receipt, { topicKey = null, statement = null, position = null } = {}) {
+function auditReceipt(receipt, { topicKey = null, statement = null, position = null,
+  sourceFamily = null } = {}) {
   const packet = receipt?.source_packet;
   const output = receipt?.output;
   let normalized = null;
@@ -274,6 +329,7 @@ function auditReceipt(receipt, { topicKey = null, statement = null, position = n
     receipt_verified: Boolean(receipt?.receipt_commitment
       && receipt.receipt_commitment === commitment(receiptPayload(receipt))),
     candidate_binding_verified: true,
+    source_family_binding_verified: true,
   };
   if (packet && receipt?.model) {
     checks.prompt_protocol_verified = buildManifest(packet, receipt.model).prompt_protocol_commitment
@@ -287,6 +343,12 @@ function auditReceipt(receipt, { topicKey = null, statement = null, position = n
       && candidate.polarity === position?.polarity && candidate.confidence === Number(position?.confidence)
       && rationaleForCandidate(candidate) === position?.rationale
       && canonicalJson(candidate.evidence_ids) === canonicalJson(evidenceIds));
+  }
+  if (sourceFamily) {
+    const derived = normalized?.candidate ? sourceFamilyForCandidate(packet, normalized.candidate) : null;
+    checks.source_family_binding_verified = derived
+      ? sourceFamily === derived
+      : sourceFamily === LEGACY_SOURCE_FAMILY;
   }
   return { ...checks, complete_chain_verified: Object.values(checks).every(Boolean) };
 }
@@ -327,7 +389,9 @@ async function runCycle({ store, memories = [], dreams = [], enabled = true, mod
 
 module.exports = {
   PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS, MAX_PACKET_ITEMS, RECORDED_BY_PREFIX,
-  canonicalJson, commitment, cleanText, sourceSnapshot, selectEvidence, outputSchema,
+  LEGACY_SOURCE_FAMILY, canonicalJson, commitment, cleanText, sourceChannel,
+  evidenceProvenanceFamily, sourceFamilyForEvidence, sourceFamilyForCandidate,
+  sourceSnapshot, selectEvidence, outputSchema,
   systemPrompt, packetFor, buildManifest, requestFor, responseText, parseJsonObject,
   normalizeOutput, receiptPayload, submissionFor, rationaleForCandidate, auditReceipt, runCycle,
 };

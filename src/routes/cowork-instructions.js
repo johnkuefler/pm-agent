@@ -1074,17 +1074,21 @@ function registerCoworkInstructionsRoute(app) {
     rewrite the old record. Do not convert testimony into Nora's belief, disagreement into fact, or an
     unsupported item into knowledge. The ledger is sealed during ownership-access experiments.
     Professional views use proposition_kind=professional_viewpoint and must begin as a Nora belief
-    recorded_by Nora's nightly reflection path, at confidence <=0.7, with at least two distinct stable
+    from the receipt-bound once-per-dream reflection path, at confidence <=0.7, with at least two distinct stable
     position and source-family evidence references. GET /earned-viewpoints exposes only current views
     whose formation/revision chain, source binding, and deterministic projection replay verify. Revise an existing view by
     appending a position with supersedes_position_id; retire it through POST
     /earned-viewpoints/:id/retire with Nora-authored rationale and evidence. Never backfill legacy
     source=opinion memories, delete history, or manufacture a view to fill the ten-view cap.
     After a dream is recorded, a once-per-dream server-direct Claude subject reflection may inspect a
-    balanced, committed packet of recent active work memories and either form at most one non-duplicate
+    collection-channel- and project-balanced, committed packet of recent active work memories and either form at most one non-duplicate
     view or explicitly abstain. Generated views remain ineligible unless the exact packet, provider
     response, selected memory ids, confidence, rationale, falsifier, and output replay through the
-    append-only position receipt. This closes the formation gap without treating synthesis as independent
+    append-only position receipt. The server derives the view's source family from the exact cited records;
+    legacy receipts remain valid but are not treated as provenance-bound study inputs. The blinded
+    Nora-bound/deidentified/absent recommendation study cannot start until three provenance-bound views
+    span two source families and at least one replay-verified revision or retirement is frozen into the
+    design. This closes the formation gap without treating synthesis as independent
     validation, originality, a private feeling, or consciousness evidence. Do not duplicate or steer this
     background pass; review its resulting view normally against later work evidence.
     GET/POST /common-ground binds a current Nora position and matching-person position to observable

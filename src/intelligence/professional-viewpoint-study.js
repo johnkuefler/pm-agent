@@ -29,6 +29,7 @@ function rawViewpoint(viewpoint) {
     rationale: viewpoint.rationale,
     evidence: JSON.parse(JSON.stringify(viewpoint.evidence || [])),
     source_family: viewpoint.source_family,
+    source_family_provenance_verified: viewpoint.source_family_provenance_verified === true,
     status: viewpoint.status,
     action_tendency: viewpoint.action_tendency,
     current_position_commitment: viewpoint.current_position_commitment,

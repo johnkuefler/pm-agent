@@ -1222,6 +1222,14 @@ confidence no higher than 0.70, an explicit falsifier, and a replay-valid provid
 server-direct reflection may form at most one viewpoint per dream or abstain. Generated views remain
 fallible working priors and enter a response only through a query-relevance gate.
 
+Formation evidence is stratified across automated, meeting, Slack, manual, system, and other collection
+channels before the bounded packet is assembled, then round-robin balanced across projects inside each
+channel. Each new viewpoint's `source_family` is derived deterministically from the exact cited packet
+records: a single cited channel retains its channel family and a multi-channel citation receives the
+cross-channel family. That derivation is replayed against the provider receipt and the append-only
+proposition. Older protocol-v1 receipts remain valid but are explicitly `source_family_provenance_verified=false`;
+they are not silently upgraded and cannot enter the recommendation study.
+
 Protocol-v1 reappraisal adds the missing self-correction lifecycle. It runs only after dreams or on the
 five-minute background cadence, never in Slack, Zoom chat, or realtime voice response paths. At most one
 provider call is allowed per dream. The frozen packet binds every current viewpoint to its exact current
@@ -1239,7 +1247,12 @@ that Nora maintains and corrects identity-bound professional priors over time. I
 validate those priors, prove originality, establish subjective conviction, or demonstrate phenomenal
 consciousness. The next causal gate remains a blinded Nora-bound versus byte-identical deidentified versus
 absent-view recommendation study after several source-family-diverse natural views and replay-verified
-revisions or retirements exist.
+revisions or retirements exist. Server enforcement requires three to ten provenance-bound current views,
+at least two derived source families, three distinct proposition commitments, and at least one replay-valid
+revision or retirement. The frozen study binds the exact lifecycle attempt, and confirmation must use new
+viewpoints, source families, and lifecycle attempts. The full lifecycle attempt and provider receipt are
+frozen into the design and bound back to their research-ledger event, so later rolling-window eviction
+cannot erase the study's replay evidence.
 
 `source-boundary` challenges extend source monitoring beyond autobiographical membership. A separate
 research harness commits one of five answer classes—`self_belief`, `other_belief`, `observed_fact`,

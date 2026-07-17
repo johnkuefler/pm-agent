@@ -49,9 +49,24 @@ function eligibility(proposition) {
     .startsWith(professionalViewpointReflection.RECORDED_BY_PREFIX);
   const reappraisalAuthored = String(position?.recorded_by || '')
     .startsWith(professionalViewpointReappraisal.RECORDED_BY_PREFIX);
+  const formationPosition = (proposition?.positions || []).find(candidate =>
+    String(candidate?.recorded_by || '').startsWith(professionalViewpointReflection.RECORDED_BY_PREFIX));
+  const formationCandidate = formationPosition?.generation_receipt?.output?.candidate || null;
+  const derivedSourceFamily = formationCandidate
+    ? professionalViewpointReflection.sourceFamilyForCandidate(
+      formationPosition.generation_receipt.source_packet, formationCandidate) : null;
+  const formationReceiptAudit = formationPosition
+    ? professionalViewpointReflection.auditReceipt(formationPosition.generation_receipt, {
+      topicKey: proposition?.topic_key, statement: proposition?.statement,
+      position: formationPosition, sourceFamily: proposition?.source_family,
+    }) : null;
+  const sourceFamilyProvenanceVerified = Boolean(derivedSourceFamily
+    && derivedSourceFamily === proposition?.source_family
+    && formationReceiptAudit?.complete_chain_verified);
   const generationReceiptAudit = reflectionAuthored
     ? professionalViewpointReflection.auditReceipt(position?.generation_receipt, {
       topicKey: proposition?.topic_key, statement: proposition?.statement, position,
+      sourceFamily: proposition?.source_family,
     }) : reappraisalAuthored
       ? professionalViewpointReappraisal.auditReceipt(position?.generation_receipt,
         { proposition, position }) : null;
@@ -63,11 +78,14 @@ function eligibility(proposition) {
     nora_authored: Boolean(position && noraAuthored(position.recorded_by)),
     subject_generation_receipt_verified: !reflectionAuthored && !reappraisalAuthored
       || generationReceiptAudit?.complete_chain_verified === true,
+    source_family_binding_verified: !formationPosition || formationReceiptAudit?.complete_chain_verified === true,
     position_evidence_minimum_met: evidence.length >= 2,
     source_family_evidence_minimum_met: sourceEvidence.length >= 2,
   };
   return { eligible: Object.values(checks).every(Boolean), checks, position, evidence,
-    source_evidence: sourceEvidence, generation_receipt_audit: generationReceiptAudit };
+    source_evidence: sourceEvidence, generation_receipt_audit: generationReceiptAudit,
+    formation_receipt_audit: formationReceiptAudit,
+    source_family_provenance_verified: sourceFamilyProvenanceVerified };
 }
 
 function sourceCommitment(proposition) {
@@ -99,6 +117,7 @@ function viewpointFor(proposition) {
     rationale: position.rationale,
     evidence: audit.evidence,
     source_family: proposition.source_family,
+    source_family_provenance_verified: audit.source_family_provenance_verified,
     formed_at: proposition.created,
     updated_at: proposition.updated,
     current_position_id: position.id,
