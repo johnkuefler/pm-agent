@@ -108,6 +108,11 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /preemptConsciousnessResearchStatus\('slack'\)/);
   assert.match(server, /preemptConsciousnessResearchStatus\('zoom-chat'\)/);
   assert.match(server, /preemptConsciousnessResearchStatus\('realtime'\)/);
+  const realtimeHandler = server.slice(server.indexOf("wss.on('connection'"),
+    server.indexOf('// Runtime lifecycle is explicit'));
+  assert.ok(realtimeHandler.indexOf("beginInteractive('realtime')")
+    < realtimeHandler.indexOf('realtimePromptForSession(session)'),
+  'voice priority must begin before prompt assembly and provider handshake');
   const startup = server.slice(server.indexOf('async function start('),
     server.indexOf('async function stop('));
   assert.doesNotMatch(startup, /warmConsciousnessResearchStatus/,

@@ -8608,6 +8608,13 @@ wss.on('connection', async (ws, req) => {
 
   console.log(`🔌 Voice agent WebSocket connected for bot: ${botId}`);
 
+  // Voice owns the foreground from the first authenticated socket event, including prompt
+  // assembly and the OpenAI handshake. Acquiring this later allowed background research to
+  // compete during the most latency-sensitive part of meeting reconnect/startup.
+  const realtimePriorityLease = interactivePerformance.beginInteractive('realtime');
+  intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('realtime');
+  ws.once('close', () => realtimePriorityLease.release());
+
   // Mark this bot as the active session for dashboard controls (mute, proactive,
   // one-on-one). Done at WS-connect time so calendar-auto-joined bots show up in
   // the dashboard the moment they actually join — not when they were scheduled
@@ -8657,12 +8664,6 @@ wss.on('connection', async (ws, req) => {
     ws.close(4003, 'Failed to connect to OpenAI');
     return;
   }
-
-  // A connected realtime call owns the foreground lane for its full lifetime. Background model
-  // research is preempted now and cannot restart until the call closes plus a short quiet window.
-  const realtimePriorityLease = interactivePerformance.beginInteractive('realtime');
-  intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('realtime');
-  ws.once('close', () => realtimePriorityLease.release());
 
   // Store WebSocket references on the session so /mute can send live updates
   if (session) {
