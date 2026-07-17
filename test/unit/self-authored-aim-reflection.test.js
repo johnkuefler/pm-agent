@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const reflection = require('../../src/intelligence/self-authored-aim-reflection');
 const goalAffect = require('../../src/intelligence/goal-affect');
+const aimProgressEvidence = require('../../src/intelligence/aim-progress-evidence');
 const { normalizeWantUpdate } = require('../../src/intelligence/wants');
 
 function fixtureMemories() {
@@ -70,6 +71,20 @@ test('background aim reflection forms one replay-bound professional direction', 
   assert.equal(reflection.receiptVerifiedAim(wants[0]), true);
   assert.equal(goalAffect.verifiedWant(wants[0]), true);
   assert.equal(goalAffect.snapshot(wants, new Date('2026-07-17T08:00:00.000Z')).active_verified_aims, 1);
+  wants[0].progress.push({ at: '2026-08-10T08:00:00.000Z',
+    note: 'An unbound progress claim.', evidence: [] });
+  const unbound = goalAffect.snapshot(wants, new Date('2026-08-10T09:00:00.000Z'));
+  assert.equal(unbound.progressing_aims, 0);
+  assert.equal(unbound.excluded_unbound_progress_entries, 1);
+  const progressMemory = { ...fixtureMemories()[0], added: '2026-08-10' };
+  wants[0].progress.push(aimProgressEvidence.attachReceipt({ at: '2026-08-10T08:30:00.000Z',
+    note: 'A source-bound observation moved the aim.',
+    evidence: [{ type: 'memory', id: progressMemory.id }] }, [progressMemory],
+  new Date('2026-08-10T08:35:00.000Z')));
+  const bound = goalAffect.snapshot(wants, new Date('2026-08-10T09:00:00.000Z'));
+  assert.equal(bound.progressing_aims, 1);
+  assert.equal(bound.source_bound_progress_entries, 1);
+  assert.equal(bound.excluded_unbound_progress_entries, 1);
   const attempt = reflection.reflectionAttempts(dreams)[0].attempt;
   assert.equal(attempt.decision, 'formed');
   assert.equal(reflection.auditAttempt(attempt).complete_chain_verified, true);

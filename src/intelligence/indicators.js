@@ -1722,6 +1722,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       evidence: { current_content_commitment_verified: goalAffectVerified,
         active_verified_aims: goalAffectVerified ? goalAffectRecord.active_verified_aims : 0,
         progressing_aims: goalAffectVerified ? goalAffectRecord.progressing_aims : 0,
+        source_bound_progress_entries: goalAffectVerified ? goalAffectRecord.source_bound_progress_entries : 0,
+        excluded_unbound_progress_entries: goalAffectVerified ? goalAffectRecord.excluded_unbound_progress_entries : 0,
         forming_aims: goalAffectVerified ? goalAffectRecord.forming_aims : 0,
         stalled_aims: goalAffectVerified ? goalAffectRecord.stalled_aims : 0,
         excluded_unverified_aims: goalAffectVerified ? goalAffectRecord.excluded_unverified_aims : 0,

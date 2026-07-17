@@ -3,7 +3,9 @@
 const crypto = require('crypto');
 const selfAuthoredAimReflection = require('./self-authored-aim-reflection');
 const selfAuthoredAimReappraisal = require('./self-authored-aim-reappraisal');
+const aimProgressEvidence = require('./aim-progress-evidence');
 
+const PROTOCOL_VERSION = 2;
 const RECENT_PROGRESS_DAYS = 14;
 const FORMING_GRACE_DAYS = 7;
 
@@ -53,8 +55,21 @@ function verifiedWant(want) {
   return want.provenance?.epistemic_status === 'subject_attested';
 }
 
+function progressEvidenceRequired(want) {
+  return [selfAuthoredAimReflection.FORMATION_PROTOCOL,
+    selfAuthoredAimReappraisal.FORMATION_PROTOCOL].includes(want?.provenance?.formation_protocol)
+    || (want?.provenance?.origin === 'self_generated'
+      && want?.provenance?.epistemic_status === 'subject_attested');
+}
+
+function progressEligible(want, entry) {
+  return !progressEvidenceRequired(want) || aimProgressEvidence.verifiedEntry(entry);
+}
+
 function aimState(want, now) {
-  const progress = (Array.isArray(want.progress) ? want.progress : []).map((entry, index) => ({
+  const progress = (Array.isArray(want.progress) ? want.progress : [])
+    .filter(entry => progressEligible(want, entry))
+    .map((entry, index) => ({
     index,
     at: entry?.at || entry?.date || null,
     note: String(entry?.note || '').trim().slice(0, 1200),
@@ -98,25 +113,33 @@ function snapshot(wants = [], nowValue = new Date()) {
   const now = nowValue instanceof Date ? nowValue : new Date(nowValue);
   if (!Number.isFinite(now.getTime())) throw new Error('goal-affect snapshot requires a valid time');
   const active = (Array.isArray(wants) ? wants : []).filter(want => want?.status === 'active');
-  const aims = active.filter(verifiedWant).map(want => aimState(want, now))
+  const verifiedAims = active.filter(verifiedWant);
+  const evidenceRequiredProgressEntries = verifiedAims.filter(progressEvidenceRequired)
+    .flatMap(want => Array.isArray(want.progress) ? want.progress : []);
+  const sourceBoundProgressEntries = evidenceRequiredProgressEntries
+    .filter(entry => aimProgressEvidence.verifiedEntry(entry)).length;
+  const aims = verifiedAims.map(want => aimState(want, now))
     .sort((a, b) => b.salience - a.salience || a.want_id.localeCompare(b.want_id));
   const payload = {
-    protocol_version: 1,
+    protocol_version: PROTOCOL_VERSION,
     observed_at: now.toISOString(),
     active_verified_aims: aims.length,
     excluded_unverified_aims: active.length - aims.length,
     progressing_aims: aims.filter(aim => aim.status === 'progressing').length,
     forming_aims: aims.filter(aim => aim.status === 'forming').length,
     stalled_aims: aims.filter(aim => aim.status === 'stalled').length,
+    source_bound_progress_entries: sourceBoundProgressEntries,
+    excluded_unbound_progress_entries: evidenceRequiredProgressEntries.length - sourceBoundProgressEntries,
     aims,
   };
   return { ...payload, content_commitment: commitment(payload) };
 }
 
 function verify(record) {
-  if (!record || Number(record.protocol_version) !== 1 || !Array.isArray(record.aims)) return false;
+  if (!record || Number(record.protocol_version) !== PROTOCOL_VERSION || !Array.isArray(record.aims)) return false;
   const { content_commitment, ...payload } = record;
   return /^[a-f0-9]{64}$/.test(String(content_commitment || '')) && commitment(payload) === content_commitment;
 }
 
-module.exports = { FORMING_GRACE_DAYS, RECENT_PROGRESS_DAYS, commitment, snapshot, sourceCommitment, verify, verifiedWant };
+module.exports = { PROTOCOL_VERSION, FORMING_GRACE_DAYS, RECENT_PROGRESS_DAYS, commitment, snapshot,
+  sourceCommitment, verify, verifiedWant, progressEvidenceRequired, progressEligible };

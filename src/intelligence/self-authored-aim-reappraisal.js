@@ -3,6 +3,7 @@
 const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const aimReflection = require('./self-authored-aim-reflection');
+const aimProgressEvidence = require('./aim-progress-evidence');
 const { RECEIPT_BOUND_REAPPRAISAL_PROTOCOL } = require('./wants');
 
 const PROTOCOL_VERSION = 1;
@@ -49,7 +50,13 @@ function evidenceIdsForWant(want = {}) {
 }
 
 function latestSubstantiveDate(want = {}) {
-  const progressDates = (want.progress || []).map(entry => entry?.at || entry?.date)
+  const progressEvidenceRequired = [aimReflection.FORMATION_PROTOCOL, FORMATION_PROTOCOL]
+    .includes(want.provenance?.formation_protocol)
+    || (want.provenance?.origin === 'self_generated'
+      && want.provenance?.epistemic_status === 'subject_attested');
+  const progressDates = (want.progress || [])
+    .filter(entry => !progressEvidenceRequired || aimProgressEvidence.verifiedEntry(entry))
+    .map(entry => entry?.at || entry?.date)
     .filter(Boolean).sort();
   return cleanText(progressDates.at(-1) || want.provenance?.formed_at || want.added, 40) || null;
 }

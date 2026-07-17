@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const goalAffect = require('../../src/intelligence/goal-affect');
+const aimProgressEvidence = require('../../src/intelligence/aim-progress-evidence');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
 function want(id, text, formedAt, progress = [], provenance = {}) {
@@ -18,9 +19,14 @@ function want(id, text, formedAt, progress = [], provenance = {}) {
 }
 
 const now = new Date('2026-07-16T12:00:00.000Z');
+const progressMemory = { id: 'memory-progress', fact: 'Mapped one previously thin active project.',
+  project: 'Client A', added: '2026-07-11', source: 'auto' };
 const wants = [
   want('want-progress', 'Know every active client project', '2026-06-01T12:00:00.000Z', [
-    { date: '2026-07-11', note: 'Mapped one previously thin active project.' },
+    aimProgressEvidence.attachReceipt({ date: '2026-07-11',
+      note: 'Mapped one previously thin active project.',
+      evidence: [{ type: 'memory', id: progressMemory.id }] }, [progressMemory],
+    new Date('2026-07-11T12:00:00.000Z')),
   ]),
   want('want-stalled', 'Earn trust on routine external email', '2026-06-01T12:00:00.000Z'),
   want('want-forming', 'Understand which handoffs lose context', '2026-07-14T12:00:00.000Z'),

@@ -88,10 +88,18 @@ function cleanProgress(value) {
   return (value || []).slice(0, 100).map((entry, index) => {
     if (typeof entry === 'string') return cleanText(entry, `progress[${index}]`, 1000, true);
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(`progress[${index}] is invalid`);
+    const evidence_receipt = entry.evidence_receipt == null ? null : (() => {
+      if (!entry.evidence_receipt || typeof entry.evidence_receipt !== 'object'
+        || Array.isArray(entry.evidence_receipt)) throw new Error(`progress[${index}].evidence_receipt is invalid`);
+      const serialized = JSON.stringify(entry.evidence_receipt);
+      if (serialized.length > 30000) throw new Error(`progress[${index}].evidence_receipt is too large`);
+      return JSON.parse(serialized);
+    })();
     return {
       at: cleanText(entry.at || entry.date, `progress[${index}].at`, 40, true),
       note: cleanText(entry.note, `progress[${index}].note`, 1000, true),
       evidence: cleanEvidence(entry.evidence || []),
+      ...(evidence_receipt ? { evidence_receipt } : {}),
     };
   });
 }

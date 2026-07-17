@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const reappraisal = require('../../src/intelligence/self-authored-aim-reappraisal');
 const goalAffect = require('../../src/intelligence/goal-affect');
+const aimProgressEvidence = require('../../src/intelligence/aim-progress-evidence');
 const { normalizeWantUpdate } = require('../../src/intelligence/wants');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
@@ -250,6 +251,19 @@ test('reappraisal rejects old-only evidence, assignments, phenomenal claims, and
   duplicatePacket.aims.push({ ...duplicatePacket.aims[0], id: 'w-2',
     want: base.replacement.want });
   assert.throws(() => reappraisal.normalizeOutput(base, duplicatePacket), /duplicates another active aim/);
+});
+
+test('receipt-formed aims cannot postpone reappraisal with an unbound progress note', () => {
+  const boundMemory = memories()[1];
+  const base = initialWants()[0];
+  base.provenance.formation_protocol = reappraisal.FORMATION_PROTOCOL;
+  base.progress = [{ at: '2026-07-17T08:00:00.000Z', note: 'Unbound claimed progress.', evidence: [] }];
+  assert.equal(reappraisal.latestSubstantiveDate(base), base.provenance.formed_at);
+  base.progress.push(aimProgressEvidence.attachReceipt({
+    at: '2026-07-17T09:00:00.000Z', note: 'A stored source now binds this progress observation.',
+    evidence: [{ type: 'memory', id: boundMemory.id }],
+  }, [boundMemory], new Date('2026-07-17T09:00:00.000Z')));
+  assert.equal(reappraisal.latestSubstantiveDate(base), '2026-07-17T09:00:00.000Z');
 });
 
 test('runtime keeps aim reappraisal in the serialized preemptible background lane', () => {

@@ -10531,6 +10531,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       : selfAuthoredAimReappraisal.status(dashboardDreams, getWants(), { enabled: true });
     const replayVerifiedAimLifecycleChanges = (aimReappraisalStatus?.report?.revised || 0)
       + (aimReappraisalStatus?.report?.retired || 0);
+    const dashboardGoalAffect = goalAffect.verify(cognition.goal_affect?.current)
+      ? cognition.goal_affect.current : null;
+    const sourceBoundAimProgress = dashboardGoalAffect?.source_bound_progress_entries || 0;
     const cycleSelfCorrectionStatus = cycleSelfCorrectionEvidenceSnapshot();
     const meetingReflectionStatus = meetingProfessionalReflectionSnapshot();
     const insightCandidates = insightReflectionSealed ? []
@@ -10591,9 +10594,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         learning: metric(scaleCount(activeExperiments + (cognition.development || []).length, 10), `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories`, activeExperiments + (cognition.development || []).length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive
-          ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}`
-          : `awaiting first cycle; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle changes`,
-        Boolean(strongestDrive) || replayVerifiedAimLifecycleChanges > 0),
+          ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}; ${sourceBoundAimProgress} source-bound aim progress note${sourceBoundAimProgress === 1 ? '' : 's'}`
+          : `awaiting first cycle; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle changes; ${sourceBoundAimProgress} source-bound aim progress notes`,
+        Boolean(strongestDrive) || replayVerifiedAimLifecycleChanges > 0 || sourceBoundAimProgress > 0),
         experience: metric(experience.length ? terminalExperience / experience.length : 0, `${terminalExperience}/${experience.length} functional moments terminal; replay verification loads with details`, experience.length > 0),
         continuity: metric(scaleCount(handoffs.length, 12), `${handoffs.length} recorded handoffs; replay verification loads with details`, handoffs.length > 0),
         'integrated-self': integratedSelfSealed
@@ -10613,7 +10616,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           aim_reappraisals: aimReappraisalStatus?.report?.attempts || 0,
           aim_revisions: aimReappraisalStatus?.report?.revised || 0,
           aim_retirements: aimReappraisalStatus?.report?.retired || 0,
-          replay_verified_aim_lifecycle_changes: replayVerifiedAimLifecycleChanges },
+          replay_verified_aim_lifecycle_changes: replayVerifiedAimLifecycleChanges,
+          source_bound_aim_progress: sourceBoundAimProgress,
+          excluded_unbound_aim_progress: dashboardGoalAffect?.excluded_unbound_progress_entries || 0 },
         integrated_self: { sealed: integratedSelfSealed, domains: integratedDomains, frame_count: frames.length },
         self_model: { sealed: activeContextTrial && behavioralSelfRevisions.length > 0,
           active_claims: activeClaims, open_probes: openProbes,
@@ -21517,6 +21522,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         progressing_aims: verified ? current.progressing_aims : 0,
         forming_aims: verified ? current.forming_aims : 0,
         stalled_aims: verified ? current.stalled_aims : 0,
+        source_bound_progress_entries: verified ? current.source_bound_progress_entries : 0,
+        excluded_unbound_progress_entries: verified ? current.excluded_unbound_progress_entries : 0,
         excluded_unverified_aims: verified ? current.excluded_unverified_aims : 0 },
     };
   }

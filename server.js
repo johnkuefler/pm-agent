@@ -21,8 +21,10 @@ const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./s
 const { createIntelligenceStore } = require('./src/intelligence/store');
 const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
 const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
-const { normalizeWantUpdate, wantRevisionEvent, verifyWantHistory } = require('./src/intelligence/wants');
+const { normalizeWantUpdate, wantRevisionEvent, verifyWantHistory,
+  RECEIPT_BOUND_FORMATION_PROTOCOL, RECEIPT_BOUND_REAPPRAISAL_PROTOCOL } = require('./src/intelligence/wants');
 const goalAffect = require('./src/intelligence/goal-affect');
+const aimProgressEvidence = require('./src/intelligence/aim-progress-evidence');
 const { auditAutobiographyEvidence, createAutobiographyRevision, initializeAutobiographyRecord, renderAutobiographyPrompt, verifyAutobiographyHistory } = require('./src/intelligence/autobiography');
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
@@ -2293,12 +2295,34 @@ function serializeWantsWrite(work) {
   return run;
 }
 
+function bindVerifiedWantProgress(previousItems, requestedItems, memories, now = new Date()) {
+  const previous = new Map((Array.isArray(previousItems) ? previousItems : [])
+    .map(item => [String(item?.id || ''), item]));
+  return (Array.isArray(requestedItems) ? requestedItems : []).map(item => {
+    const prior = previous.get(String(item?.id || ''));
+    const provenance = prior?.provenance || item?.provenance || {};
+    const evidenceRequired = [RECEIPT_BOUND_FORMATION_PROTOCOL, RECEIPT_BOUND_REAPPRAISAL_PROTOCOL]
+      .includes(provenance.formation_protocol)
+      || (provenance.origin === 'self_generated'
+        && (!provenance.epistemic_status || provenance.epistemic_status === 'subject_attested'));
+    if (!evidenceRequired) return item;
+    if (item?.status !== 'active') return item;
+    const progress = Array.isArray(item?.progress) ? item.progress : [];
+    const priorLength = Array.isArray(prior?.progress) ? prior.progress.length : 0;
+    if (progress.length <= priorLength) return item;
+    return { ...item, progress: progress.map((entry, index) => index < priorLength
+      ? entry : aimProgressEvidence.attachReceipt(entry, memories, now)) };
+  });
+}
+
 async function persistWantsUpdate(items, { updatedBy = 'nora', now = new Date() } = {}) {
   if (!_dbReady) throw new Error('Postgres not active');
   return serializeWantsWrite(async () => {
     const previous = await db.getState('wants');
     const updated_at = new Date(now).toISOString();
-    const rec = { items: normalizeWantUpdate(previous?.items, items, { now: updated_at }), updated_at };
+    const boundItems = bindVerifiedWantProgress(previous?.items, items,
+      loadMemory().filter(memoryIsActive), updated_at);
+    const rec = { items: normalizeWantUpdate(previous?.items, boundItems, { now: updated_at }), updated_at };
     const history = (await db.getState('wants_history')) || [];
     history.push(wantRevisionEvent(previous, rec, updatedBy));
     while (history.length > 40) history.shift();
@@ -10592,6 +10616,7 @@ module.exports = {
     relativeDayLabel,
     buildBotConfig,
     buildSystemPrompt,
+    bindVerifiedWantProgress,
     verifySlackRequest,
     verifySlackSignature,
     intelligenceStore: intelligence,
