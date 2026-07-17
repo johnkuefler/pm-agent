@@ -32,6 +32,8 @@ test('background dream reflection forms one replay-bound candidate and never ret
   let dreams = fixtureDreams();
   let calls = 0;
   const seeds = reflection.seedPacket(dreams);
+  const sourceSeed = seeds.find(seed => seed.dream_id === 'dream-b');
+  const priorSeed = seeds.find(seed => seed.dream_id === 'dream-a');
   const output = {
     decision: 'form', abstention_reason: null,
     candidate: {
@@ -41,7 +43,8 @@ test('background dream reflection forms one replay-bound candidate and never ret
       expected_usefulness: 'This should expose cross-owner launch blockers before a deliverable reaches handoff.',
       falsification_criteria: ['Two launches pass separate checks without late navigation or content blockers.'],
       next_observation: 'Observe the next launch handoff and record whether a joint checkpoint finds a blocker.',
-      source_idea_ids: seeds.map(seed => seed.id),
+      source_dream_idea_id: sourceSeed.id,
+      prior_idea_ids: [priorSeed.id],
     },
   };
   const run = await reflection.runCycle({
@@ -186,7 +189,8 @@ test('reflection rejects sources outside the packet or without date separation',
       expected_usefulness: 'It should surface cross-owner blockers earlier.',
       falsification_criteria: ['Repeated launches show no improvement after a joint checkpoint.'],
       next_observation: 'Observe the next handoff for a late blocker.',
-      source_idea_ids: [packet.idea_seeds[0].id, 'dream-outside:idea:0'],
+      source_dream_idea_id: packet.idea_seeds.find(seed => seed.dream_id === 'dream-b').id,
+      prior_idea_ids: ['dream-outside:idea:0'],
     },
   };
   assert.throws(() => reflection.normalizeOutput(base, packet), /outside the committed packet/);
@@ -195,13 +199,66 @@ test('reflection rejects sources outside the packet or without date separation',
   duplicate.idea_index = 99;
   duplicate.content_commitment = 'not-valid';
   const tampered = { ...packet, idea_seeds: [packet.idea_seeds[0], duplicate] };
-  base.candidate.source_idea_ids = tampered.idea_seeds.map(seed => seed.id);
+  base.candidate.source_dream_idea_id = tampered.idea_seeds[0].id;
+  base.candidate.prior_idea_ids = [tampered.idea_seeds[1].id];
   assert.throws(() => reflection.normalizeOutput(base, tampered), /commitment does not verify|distinct dreams/);
 
-  base.candidate.source_idea_ids = packet.idea_seeds.map(seed => seed.id);
+  base.candidate.source_dream_idea_id = packet.idea_seeds.find(seed => seed.dream_id === 'dream-b').id;
+  base.candidate.prior_idea_ids = [packet.idea_seeds.find(seed => seed.dream_id === 'dream-a').id];
   assert.throws(() => reflection.normalizeOutput(base, {
     ...packet, source_dream: { id: 'dream-new-without-idea', date: '2026-07-16' },
   }), /must bind an idea from the source dream/);
+});
+
+test('protocol v2 makes current-dream and earlier-idea provenance separate schema roles', () => {
+  const dreams = fixtureDreams();
+  const packet = reflection.packetFor({ dreams, sourceDream: dreams[1] });
+  const sourceId = packet.idea_seeds.find(seed => seed.dream_id === 'dream-b').id;
+  const priorId = packet.idea_seeds.find(seed => seed.dream_id === 'dream-a').id;
+  assert.deepEqual(packet.source_binding.required_source_dream_idea_ids, [sourceId]);
+  assert.deepEqual(packet.source_binding.eligible_prior_idea_ids, [priorId]);
+  const schema = reflection.outputSchema(packet);
+  const candidateSchema = schema.properties.candidate.anyOf[0];
+  assert.deepEqual(candidateSchema.properties.source_dream_idea_id.enum, [sourceId]);
+  assert.deepEqual(candidateSchema.properties.prior_idea_ids.items.enum, [priorId]);
+  assert.equal(candidateSchema.properties.source_idea_ids, undefined);
+  const request = reflection.requestFor(packet).request;
+  assert.match(request.system, /structured schema enforces these provenance roles/);
+});
+
+test('protocol v1 generation receipts remain replay-verifiable after the v2 contract', () => {
+  const dreams = fixtureDreams();
+  const currentPacket = reflection.packetFor({ dreams, sourceDream: dreams[1] });
+  const packet = structuredClone(currentPacket);
+  packet.protocol_version = reflection.LEGACY_PROTOCOL_VERSION;
+  delete packet.source_binding;
+  const raw = {
+    decision: 'form', abstention_reason: null,
+    candidate: {
+      statement: 'A joint readiness checkpoint should precede launch handoffs.', scope: 'process',
+      confidence: 0.5, rationale: 'Two exact nightly ideas point to the same process intervention.',
+      expected_usefulness: 'It should surface cross-owner blockers earlier.',
+      falsification_criteria: ['Repeated launches show no improvement after a joint checkpoint.'],
+      next_observation: 'Observe the next handoff for a late blocker.',
+      source_idea_ids: packet.idea_seeds.map(seed => seed.id),
+    },
+  };
+  const output = reflection.normalizeOutput(raw, packet, reflection.LEGACY_PROTOCOL_VERSION);
+  const manifest = reflection.buildManifest(packet, reflection.DEFAULT_MODEL,
+    reflection.LEGACY_PROTOCOL_VERSION);
+  const receipt = {
+    protocol_version: reflection.LEGACY_PROTOCOL_VERSION,
+    source_selection_protocol_version: reflection.SOURCE_SELECTION_PROTOCOL_VERSION,
+    transport: 'server_direct_subject_dream_reflection', provider: 'anthropic',
+    model: reflection.DEFAULT_MODEL, response_id: 'msg-legacy-insight', stop_reason: 'end_turn',
+    prompt_protocol_commitment: manifest.prompt_protocol_commitment,
+    source_packet: packet, source_packet_commitment: manifest.source_packet_commitment,
+    output, output_commitment: reflection.commitment(output),
+    external_reference: { type: 'server_direct_provider_response', id: 'msg-legacy-insight' },
+    input_tokens: 500, output_tokens: 120,
+  };
+  receipt.receipt_commitment = reflection.commitment(reflection.receiptPayload(receipt));
+  assert.equal(reflection.auditReceipt(receipt).complete_chain_verified, true);
 });
 
 test('production runtime keeps insight reflection in the preemptible background lane', () => {

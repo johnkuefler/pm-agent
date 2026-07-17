@@ -295,7 +295,9 @@ function registerCoworkInstructionsRoute(app) {
     that has strictly earlier date-separated support; empty newer dreams do not block it, semantic
     similarity cannot influence selection, and later evidence is excluded from an older source packet.
     It receives that committed packet and current open candidates, then forms at most one candidate
-    or explicitly abstains.
+    or explicitly abstains. Protocol v2 makes provenance structural: a formation must select exactly
+    one schema-allowed idea from the current source dream and one to three schema-allowed ideas from
+    strictly earlier dreams; the server still re-verifies every content commitment and date boundary.
     Formation is accepted only when the provider receipt, packet, selected seed commitments,
     usefulness prediction, falsifier, and next observation replay. Failed calls are terminally
     recorded for that dream rather than retried. Slack, Zoom chat, and realtime calls preempt this
