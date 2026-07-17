@@ -124,7 +124,7 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
         ]);
         if (token === intelligenceLoadToken) renderConsciousnessResearch(research, ledger);
       } else if (name === 'self-model') {
-        const model = await intelligenceJson('/self-model', signal);
+        const model = await intelligenceJson('/self-model?allow_stale=1', signal);
         if (token === intelligenceLoadToken) renderSelfModel(model);
       } else if (name === 'boundary') {
         const values = await Promise.all([

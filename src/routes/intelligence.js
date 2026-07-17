@@ -697,8 +697,22 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, study });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/self-model', requireAuth, (_req, res) => cachedJson(res, 'self-model',
-    () => store.selfModelSnapshot(), { ttlMs: 30000 }));
+  app.get('/self-model', requireAuth, async (req, res) => {
+    try {
+      const snapshot = await researchStatusCache.get({
+        requireCurrentExperimentalAccess: true,
+        requireCurrentRevision: req.query.allow_stale !== '1',
+      });
+      res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
+      res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
+      res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
+      res.set('Server-Timing', `capture;dur=${snapshot.capture_ms.toFixed(1)}, research-worker;dur=${snapshot.compute_ms.toFixed(1)}`);
+      res.set('Cache-Control', 'private, no-store');
+      return res.type('application/json').send(snapshot.self_model_serialized);
+    } catch (error) {
+      return res.status(503).json({ error: 'self-model snapshot unavailable', detail: error.message });
+    }
+  });
   app.get('/self-model/forecast-prior', requireAuth,
     (req, res) => res.json(store.behavioralSelfForecastPriorSnapshot()));
   app.get('/self-model/cycle-calibration', requireAuth,

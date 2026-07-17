@@ -12,4 +12,5 @@ parentPort.postMessage({
   generated_at: workerData.observed_at,
   compute_ms: 180,
   serialized: JSON.stringify({ no_composite_score: true, isolated_worker_fixture: true }),
+  self_model_serialized: JSON.stringify({ isolated_worker_fixture: true }),
 });

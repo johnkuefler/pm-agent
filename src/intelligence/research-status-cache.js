@@ -28,6 +28,8 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
     const revision = store.snapshotRevision();
     const workerData = {
       revision,
+      experimental_access_fingerprint: typeof store.experimentalAccessFingerprint === 'function'
+        ? store.experimentalAccessFingerprint() : null,
       observed_at: observedAt.toISOString(),
       state: store.snapshot(),
       dreams: JSON.parse(JSON.stringify(getDreams() || [])),
@@ -59,11 +61,14 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       };
       worker.once('message', message => {
         if (message?.error) return finish(new Error(message.error));
-        if (!message?.serialized || Number(message.revision) !== Number(workerData.revision)) {
+        if (!message?.serialized || !message?.self_model_serialized
+          || Number(message.revision) !== Number(workerData.revision)) {
           return finish(new Error('research status worker returned an invalid snapshot'));
         }
         current = {
           serialized: message.serialized,
+          self_model_serialized: message.self_model_serialized,
+          experimental_access_fingerprint: workerData.experimental_access_fingerprint,
           revision: workerData.revision,
           generated_at: message.generated_at,
           compute_ms: Number(message.compute_ms) || 0,
@@ -82,13 +87,35 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
     return inFlight;
   }
 
-  async function get() {
+  async function get({ requireCurrentExperimentalAccess = false, requireCurrentRevision = false } = {}) {
     const revision = store.snapshotRevision();
+    const accessFingerprint = typeof store.experimentalAccessFingerprint === 'function'
+      ? store.experimentalAccessFingerprint() : null;
+    const accessChanged = Boolean(current && requireCurrentExperimentalAccess
+      && current.experimental_access_fingerprint !== accessFingerprint);
+    const revisionChanged = Boolean(current && requireCurrentRevision && current.revision !== revision);
+    if (accessChanged || revisionChanged) {
+      const value = await refresh({ force: true });
+      const latestFingerprint = typeof store.experimentalAccessFingerprint === 'function'
+        ? store.experimentalAccessFingerprint() : null;
+      if (requireCurrentExperimentalAccess
+        && value.experimental_access_fingerprint !== latestFingerprint) {
+        throw new Error('experimental access state changed during snapshot generation');
+      }
+      if (requireCurrentRevision && value.revision !== store.snapshotRevision()) {
+        throw new Error('intelligence state changed during snapshot generation');
+      }
+      return { ...value, cache_state: accessChanged ? 'seal-refresh' : 'revision-refresh', stale: false };
+    }
     const ageMs = current ? Date.now() - current.completed_at_ms : Infinity;
     const stale = Boolean(current && (current.revision !== revision || ageMs > maxAgeMs));
     if (!current) {
       const value = await refresh({ force: true });
-      return { ...value, cache_state: 'cold', stale: value.revision !== store.snapshotRevision() };
+      const coldStale = value.revision !== store.snapshotRevision();
+      if (requireCurrentRevision && coldStale) {
+        throw new Error('intelligence state changed during snapshot generation');
+      }
+      return { ...value, cache_state: 'cold', stale: coldStale };
     }
     if (stale && !inFlight && Date.now() - lastRefreshStartedAt >= minRefreshIntervalMs) {
       refresh().catch(() => {});
@@ -106,6 +133,9 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       age_ms: current ? Math.max(0, Date.now() - current.completed_at_ms) : null,
       compute_ms: current?.compute_ms ?? null,
       capture_ms: current?.capture_ms ?? null,
+      experimental_access_current: current ? current.experimental_access_fingerprint === (
+        typeof store.experimentalAccessFingerprint === 'function'
+          ? store.experimentalAccessFingerprint() : null) : null,
     };
   }
 

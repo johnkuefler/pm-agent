@@ -13072,6 +13072,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .map(sealedContextTrialSummary);
   }
 
+  function experimentalAccessFingerprint() {
+    const active = (state.cognition.self_model.context_trials || [])
+      .filter(item => item.status === 'active')
+      .map(item => `context:${item.id}:${item.intervention || 'unknown'}`);
+    for (const key of ['self_inquiry_selection_studies', 'self_induction_studies',
+      'cognitive_initiation_studies', 'cognitive_initiation_policy_studies',
+      'cognitive_self_regulation_studies']) {
+      for (const item of state.cognition[key] || []) {
+        if (item.status === 'active') active.push(`${key}:${item.id}`);
+      }
+    }
+    return crypto.createHash('sha256').update(canonicalJson(active.sort())).digest('hex');
+  }
+
   function selfModelSnapshot() {
     const model = JSON.parse(JSON.stringify(state.cognition.self_model));
     model.claims = state.cognition.self_model.claims.map(item => ({ ...JSON.parse(JSON.stringify(item)), confidence_audit: selfClaimConfidenceAudit(item) }));
@@ -22977,7 +22991,8 @@ ${episodes.map(item => {
     selfInductionProposalReviewQueue, reviewSelfInductionProposals, selfInductionOutcomeReviewQueue, resolveSelfInductionItem,
     abortSelfInductionStudy, selfInductionStudiesSnapshot,
     recordSelfClaim, createSelfProbe, resolveSelfProbe, selfProbeReviewQueue, reviewSelfProbe,
-    selfModelSnapshot, activeContextTrialsSnapshot, empiricalSelfKnowledgeSnapshot,
+    selfModelSnapshot, activeContextTrialsSnapshot, experimentalAccessFingerprint,
+    empiricalSelfKnowledgeSnapshot,
     createSelfPredictionStudy, submitSelfPrediction, submitModelControlledSelfPrediction,
     recordSelfPredictionSubjectInferenceFailure, attestSelfPredictionSubjectModelReceipt,
     submitObserverPrediction, submitYokedObserverPrediction, resolveSelfPredictionEvent, abortSelfPredictionStudy, selfPredictionStudiesSnapshot,

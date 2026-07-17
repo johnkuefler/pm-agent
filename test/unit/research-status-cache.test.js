@@ -36,10 +36,12 @@ test('research status worker preserves the scientific report and refreshes revis
   t.after(() => cache.close());
 
   const expected = store.consciousnessResearchStatus();
+  const expectedSelfModel = store.selfModelSnapshot();
   const cold = await cache.get();
   assert.equal(cold.cache_state, 'cold');
   assert.equal(cold.stale, false);
   assert.deepEqual(JSON.parse(cold.serialized), expected);
+  assert.deepEqual(JSON.parse(cold.self_model_serialized), expectedSelfModel);
   assert.ok(cold.compute_ms >= 0);
   assert.ok(cold.capture_ms >= 0);
 
@@ -49,11 +51,39 @@ test('research status worker preserves the scientific report and refreshes revis
   assert.equal(stale.stale, true);
   assert.notEqual(stale.revision, store.snapshotRevision());
 
-  await cache.refresh();
-  const fresh = await cache.get();
-  assert.equal(fresh.cache_state, 'fresh');
+  const fresh = await cache.get({ requireCurrentRevision: true });
+  assert.equal(fresh.cache_state, 'revision-refresh');
   assert.equal(fresh.revision, store.snapshotRevision());
   assert.deepEqual(JSON.parse(fresh.serialized), store.consciousnessResearchStatus());
+  assert.deepEqual(JSON.parse(fresh.self_model_serialized), store.selfModelSnapshot());
+});
+
+test('self-model cache refreshes instead of crossing an experimental access boundary', async t => {
+  const store = await createStore(t);
+  const cache = createResearchStatusCache({
+    store,
+    now: () => new Date(OBSERVED_AT),
+    minRefreshIntervalMs: 0,
+  });
+  t.after(() => cache.close());
+  await cache.get();
+  const priorFingerprint = store.experimentalAccessFingerprint();
+
+  store.createContextTrial({
+    id: 'cache-seal-boundary-trial',
+    hypothesis: 'A cache must not cross a newly active blinded-study boundary.',
+    outcome_metric: 'first_order_task_quality',
+    surfaces: ['slack'],
+    sample_target_per_group: 2,
+  });
+  assert.notEqual(store.experimentalAccessFingerprint(), priorFingerprint);
+
+  const refreshed = await cache.get({ requireCurrentExperimentalAccess: true });
+  assert.equal(refreshed.cache_state, 'seal-refresh');
+  assert.equal(refreshed.experimental_access_fingerprint, store.experimentalAccessFingerprint());
+  const model = JSON.parse(refreshed.self_model_serialized);
+  assert.equal(model.context_trials.at(-1).design_sealed, true);
+  assert.equal(model.context_trials.at(-1).hypothesis, 'Blinded functional trial');
 });
 
 test('expensive research computation cannot block the main event loop', async t => {
@@ -71,6 +101,7 @@ test('expensive research computation cannot block the main event loop', async t 
   clearInterval(heartbeat);
 
   assert.equal(JSON.parse(snapshot.serialized).isolated_worker_fixture, true);
+  assert.equal(JSON.parse(snapshot.self_model_serialized).isolated_worker_fixture, true);
   assert.ok(heartbeatTicks >= 5,
     `main event-loop heartbeat should continue during worker computation; observed ${heartbeatTicks} ticks`);
 });

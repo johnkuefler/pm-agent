@@ -130,6 +130,8 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /IntersectionObserver/);
   assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
   assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);
+  assert.match(intelligenceJs, /self-model\?allow_stale=1/,
+    'the progressive dashboard must use the worker snapshot rather than force a live audit');
   const initialLoader = intelligenceJs.slice(intelligenceJs.indexOf('async function loadIntelligence()'), intelligenceJs.indexOf('async function loadIntelligenceBench'));
   assert.doesNotMatch(initialLoader, /\/cognition|\/self-model|\/consciousness-research\/status/);
   assert.match(brainJs, /noraBrainVisibilityObserver/);

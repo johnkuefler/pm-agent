@@ -19,12 +19,14 @@ async function main() {
   });
   await store.init();
   const report = store.consciousnessResearchStatus();
+  const selfModel = store.selfModelSnapshot();
   const computeMs = Number(process.hrtime.bigint() - started) / 1e6;
   parentPort.postMessage({
     revision: workerData.revision,
     generated_at: report.generated_at || observedAt.toISOString(),
     compute_ms: computeMs,
     serialized: JSON.stringify(report),
+    self_model_serialized: JSON.stringify(selfModel),
   });
 }
 
