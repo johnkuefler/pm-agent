@@ -59,7 +59,22 @@ test('meeting reflection binds a tentative PM interpretation to distinct speaker
   assert.equal(normalized.reflection.confidence, 0.66);
   assert.equal(normalized.reflection.evidence_refs.length, 2);
   const request = reflection.requestFor(packet).request;
+  assert.deepEqual(request.output_config.format.schema.properties.reflection.anyOf[0]
+    .properties.evidence_refs.items.enum, packet.source.utterances.map(item => item.ref.id));
   const submission = reflection.submissionFor(packet, providerResponse(request));
+  assert.equal(reflection.auditReceipt(submission.receipt).complete_chain_verified, true);
+});
+
+test('protocol-v1 receipts remain replay-valid after citation enums are introduced', () => {
+  const source = snapshot();
+  source.protocol_version = reflection.LEGACY_PROTOCOL_VERSION;
+  const packet = reflection.packetFor(source);
+  packet.protocol_version = reflection.LEGACY_PROTOCOL_VERSION;
+  const request = reflection.requestFor(packet).request;
+  assert.equal(request.output_config.format.schema.properties.reflection.anyOf[0]
+    .properties.evidence_refs.items.enum, undefined);
+  const submission = reflection.submissionFor(packet, providerResponse(request));
+  assert.equal(submission.receipt.protocol_version, reflection.LEGACY_PROTOCOL_VERSION);
   assert.equal(reflection.auditReceipt(submission.receipt).complete_chain_verified, true);
 });
 
