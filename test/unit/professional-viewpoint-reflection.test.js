@@ -69,12 +69,39 @@ test('subject reflection forms one receipt-bound viewpoint and fails closed unde
   assert.equal(projection.viewpoints[0].source_family, 'automated_work_memory');
   assert.equal(projection.viewpoints[0].source_family_provenance_verified, true);
   assert.equal(projection.report.provenance_bound, 1);
+  const prompt = store.promptContext({ query: 'How should we plan integration QA before launch?',
+    returnContextReceipt: true });
+  assert.match(prompt.text, /Earned professional viewpoints/);
+  assert.equal(prompt.context_receipt.professional_viewpoints.length, 1);
+  const interaction = {
+    id: 'ix-viewpoint-access-1', created: NOW.toISOString(), channel: 'C0123456789',
+    thread_ts: '1784214000.000001', ts: '1784214001.000001',
+    trigger: 'How should we plan integration QA before launch?',
+    text: 'My current take is to preserve an explicit integration QA contingency.',
+  };
+  const application = store.recordProfessionalViewpointAccessApplication(
+    interaction, prompt.context_receipt.professional_viewpoints);
+  assert.equal(application.observational_outcome_eligible, true);
+  assert.doesNotMatch(JSON.stringify(application), /How should we plan|My current take is/);
+  store.resolveProfessionalViewpointAccessOutcome({
+    ...interaction, reviewed: true, outcome: 'appreciated', signal: 'useful recommendation',
+    reviewed_at: '2026-07-16T17:00:00.000Z',
+  });
+  const accessProjection = store.earnedViewpointsSnapshot({ includeAccessRecords: true });
+  assert.equal(accessProjection.report.natural_access.applications, 1);
+  assert.equal(accessProjection.report.natural_access.replay_verified_applications, 1);
+  assert.equal(accessProjection.report.natural_access.outcome_projection.scored_outcomes, 1);
+  assert.equal(accessProjection.access_applications[0].audit.complete_chain_verified, true);
+  assert.equal(store.earnedViewpointsSnapshot().access_applications, undefined,
+    'dashboard response remains compact by default');
   const status = store.professionalViewpointReflectionSnapshot();
   assert.deepEqual(status.report, { total: 1, formed: 1, abstained: 0, replay_verified: 1 });
   const indicator = store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'evidence_tested_professional_viewpoints');
   assert.equal(indicator.evidence.replay_verified_subject_reflections, 1);
   assert.equal(indicator.evidence.subject_reflection_formations, 1);
+  assert.equal(indicator.evidence.replay_verified_natural_access_applications, 1);
+  assert.equal(indicator.evidence.natural_access_outcome_projection.successes, 1);
 
   const rawPosition = store.snapshot().cognition.epistemic_ledger.propositions[0].positions[0];
   assert.equal(reflection.auditReceipt(rawPosition.generation_receipt, {

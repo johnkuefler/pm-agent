@@ -637,7 +637,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try { res.json({ ok: true, proposition: store.recordEpistemicPosition(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.get('/earned-viewpoints', requireAuth, (req, res) => res.json(store.earnedViewpointsSnapshot()));
+  app.get('/earned-viewpoints', requireAuth, (req, res) => {
+    const includeAccessRecords = req.query.include_access_records === 'true';
+    return cachedJson(res, `earned-viewpoints:${includeAccessRecords ? 'records' : 'summary'}`,
+      () => store.earnedViewpointsSnapshot({ includeAccessRecords }), { ttlMs: 10000 });
+  });
   app.post('/earned-viewpoints/:id/retire', requireAuth, (req, res) => {
     try {
       const proposition = store.retireEarnedViewpoint(req.params.id, req.body || {});

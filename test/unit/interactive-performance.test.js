@@ -145,6 +145,12 @@ test('live server opts into complete Slack trials but never globally enables sec
     'affective-regulation.js'), 'utf8');
   assert.doesNotMatch(affective, /fetch\(|axios|anthropic|openai/i,
     'affective outcome capture must not add a provider or network call to Slack or Zoom');
+  const viewpointOutcome = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'professional-viewpoint-access-outcome.js'), 'utf8');
+  assert.doesNotMatch(viewpointOutcome, /fetch\(|axios|anthropic|openai/i,
+    'viewpoint access outcome capture must not add a provider or network call to Slack or Zoom');
+  assert.equal((server.match(/captureIntelligenceReceipt: true/g) || []).length, 1,
+    'only Slack requests the small prompt-access receipt; Zoom and realtime stay unchanged');
   const normalSlackDelivery = server.slice(server.indexOf('// Log the interaction for the dream'),
     server.indexOf('registerInteractionRoutes(app'));
   assert.match(normalSlackDelivery, /logInteraction\(\{/,
@@ -152,6 +158,8 @@ test('live server opts into complete Slack trials but never globally enables sec
   const interactionLogger = server.slice(server.indexOf('function logInteraction(entry)'),
     server.indexOf('registerInteractionRoutes(app'));
   assert.match(interactionLogger, /recordAffectiveRegulationApplication\(interaction\)/);
+  assert.match(interactionLogger, /recordProfessionalViewpointAccessApplication\(/,
+    'viewpoint outcome evidence must be captured only in post-delivery interaction logging');
   const store = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
     'store.js'), 'utf8');
   assert.match(store, /context_trials\.some\(item => item\.status === 'active'\)\) return null/,

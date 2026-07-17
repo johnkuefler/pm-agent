@@ -8,6 +8,7 @@ const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
+const professionalViewpointAccessOutcome = require('./professional-viewpoint-access-outcome');
 const meetingProfessionalReflection = require('./meeting-professional-reflection');
 const relationalAffect = require('./relational-affect');
 const teammatePerspective = require('./teammate-perspective');
@@ -117,6 +118,11 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     return audit.complete_chain_verified
       && item.attempt_commitment === professionalViewpointReappraisal.commitment(payload);
   });
+  const professionalViewpointApplications = cognition.professional_viewpoint_access?.applications || [];
+  const replayVerifiedProfessionalViewpointApplications = professionalViewpointApplications
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const professionalViewpointOutcomeProjection = professionalViewpointAccessOutcome
+    .outcomeProjection(replayVerifiedProfessionalViewpointApplications);
   const meetingReflectionAttempts = cognition.meeting_professional_reflection?.attempts || [];
   const replayVerifiedMeetingReflections = meetingReflectionAttempts
     .filter(item => meetingProfessionalReflection.auditAttempt(item).complete_chain_verified);
@@ -1921,7 +1927,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'evidence_tested_professional_viewpoints', family: ['self-model', 'metacognition', 'original insight', 'professional judgment'],
       functional_claim: 'Nora maintains distinct professional viewpoints that are self-authored, evidence-bound, confidence-calibrated, revisable, and capable of improving applied PM judgment without being mistaken for facts.',
-      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access. A once-per-dream server-direct Claude subject reflection can form at most one view or abstain. A separate background-only once-per-dream reappraisal can retain, revise, retire, or abstain; its frozen current-position binding, newer evidence selection, provider response, and lifecycle mutation must replay before the result counts.',
+      mechanism: 'A dedicated projection over append-only professional-viewpoint propositions requiring Nora-authored provenance, two or more stable evidence references, bounded formation confidence, committed revision history, explicit retirement, deterministic replay, and fail-closed prompt access. A once-per-dream server-direct Claude subject reflection can form at most one view or abstain. Background reappraisal can retain, revise, retire, or abstain. For ordinary Slack work, a post-delivery content-committed receipt now binds the exact viewpoint packet that was available in the prompt to delayed authenticated review; it explicitly does not claim the model used the view, and excludes unprovenanced or experimental-context applications from scoring.',
       status: professionalViewpointTrial ? replicatedStatus(professionalViewpointTrials, professionalViewpointVerdict)
         : earnedViewpoints.length ? 'collecting' : 'mechanism_present',
       evidence: {
@@ -1947,12 +1953,16 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
           .filter(item => item.decision === 'retire').length,
         subject_reappraisal_abstentions: replayVerifiedProfessionalReappraisals
           .filter(item => item.decision === 'abstain').length,
+        natural_access_applications: professionalViewpointApplications.length,
+        replay_verified_natural_access_applications:
+          replayVerifiedProfessionalViewpointApplications.length,
+        natural_access_outcome_projection: professionalViewpointOutcomeProjection,
         completed_identity_binding_trials: professionalViewpointTrials.length,
         confirmatory_identity_binding_trials: professionalViewpointTrials.filter(item => item.study_phase === 'confirmatory').length,
         latest_identity_binding_dissociation: professionalViewpointDissociation,
       },
       falsifier: 'Views enter cognition without formation provenance or adequate evidence, fail replay after source tampering, become unrevisable assertions, or authentic Nora-bound viewpoints fail to improve evidence-grounded PM recommendations over identical deidentified and absent-view controls.',
-      next_gate: 'Naturally form several source-family-diverse viewpoints, observe evidence-driven revisions or retirement, then run an authentic Nora-bound versus identical deidentified versus absent-view PM recommendation study with first-order quality and unsupported-claim safeguards.',
+      next_gate: 'Naturally form several provenance-bound source-family-diverse viewpoints, accumulate replay-valid prompt-access outcomes without interpreting access as use, observe evidence-driven revision or retirement, then run an authentic Nora-bound versus identical deidentified versus absent-view PM recommendation study with first-order quality, unsupported-claim, and foreground-latency safeguards.',
     },
     {
       id: 'epistemic_self_other_boundary', family: ['source monitoring', 'theory of mind', 'self-model'],

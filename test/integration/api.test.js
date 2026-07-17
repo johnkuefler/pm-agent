@@ -324,6 +324,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const earnedSnapshot = await request('/earned-viewpoints');
   assert.equal(earnedSnapshot.body.current_verified, true);
   assert.equal(earnedSnapshot.body.viewpoints.some(item => item.viewpoint_id === formedViewpoint.body.proposition.id), true);
+  assert.equal(earnedSnapshot.body.report.natural_access.applications, 0);
+  assert.equal(earnedSnapshot.body.access_applications, undefined);
+  const earnedAccessRecords = await request('/earned-viewpoints?include_access_records=true');
+  assert.ok(Array.isArray(earnedAccessRecords.body.access_applications));
   const retiredViewpoint = await request(`/earned-viewpoints/${formedViewpoint.body.proposition.id}/retire`, { method: 'POST', body: {
     rationale: 'A later comparable observation no longer supports carrying this as a current view.',
     recorded_by: 'nora-nightly-reflection', evidence: [{ type: 'interaction', id: 'integration-viewpoint-reversal-3' }],

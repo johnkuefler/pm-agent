@@ -51,6 +51,7 @@ const teammatePerspectiveStudy = require('./teammate-perspective-study');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
+const professionalViewpointAccessOutcome = require('./professional-viewpoint-access-outcome');
 const cycleSelfCorrectionReflection = require('./cycle-self-correction-reflection');
 const meetingProfessionalReflection = require('./meeting-professional-reflection');
 const dreamInsightReflection = require('./dream-insight-reflection');
@@ -168,6 +169,7 @@ function emptyState() {
       earned_viewpoints: { current: null },
       professional_viewpoint_reflection: { attempts: [] },
       professional_viewpoint_reappraisal: { attempts: [] },
+      professional_viewpoint_access: { applications: [] },
       relational_affect: { current: null },
     },
   };
@@ -677,6 +679,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     state.cognition.professional_viewpoint_reappraisal.attempts =
       state.cognition.professional_viewpoint_reappraisal.attempts.slice(-120);
+    state.cognition.professional_viewpoint_access = { applications: [],
+      ...(state.cognition.professional_viewpoint_access || {}) };
+    if (!Array.isArray(state.cognition.professional_viewpoint_access.applications)) {
+      state.cognition.professional_viewpoint_access.applications = [];
+    }
+    state.cognition.professional_viewpoint_access.applications =
+      state.cognition.professional_viewpoint_access.applications.slice(-600);
     for (const episode of state.episodes) {
       if (!Array.isArray(episode.participants)) episode.participants = [];
       if (!Array.isArray(episode.events)) episode.events = [];
@@ -3879,7 +3888,113 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => retireEarnedViewpointInState(current, id, input));
   }
 
-  function earnedViewpointsSnapshot() {
+  function professionalViewpointAccessAudit(record) {
+    const contentVerified = professionalViewpointAccessOutcome.verifyApplication(record);
+    const applicationBound = contentVerified && researchLedgerEventBindingCount(
+      'professional_viewpoint_access_recorded', record.id,
+      actionPayloadCommitment({ content_commitment: record.content_commitment })) === 1;
+    const resolutionVerified = record?.resolution
+      ? professionalViewpointAccessOutcome.verifyResolution(record.resolution, record) : true;
+    const resolutionBound = !record?.resolution || (resolutionVerified && researchLedgerEventBindingCount(
+      'professional_viewpoint_access_outcome_resolved', record.id,
+      actionPayloadCommitment({ resolution_commitment: record.resolution.resolution_commitment })) === 1);
+    const ledgerVerified = verifyResearchLedger().valid;
+    return {
+      content_commitment_verified: contentVerified,
+      application_ledger_binding_verified: applicationBound,
+      resolution_verified: resolutionVerified,
+      resolution_ledger_binding_verified: resolutionBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && applicationBound && resolutionVerified
+        && resolutionBound && ledgerVerified,
+    };
+  }
+
+  function recordProfessionalViewpointAccessApplication(interaction = {}, promptViewpoints = []) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const projection = current.cognition.earned_viewpoints?.current;
+      const projectionAudit = earnedViewpoint.audit(projection,
+        current.cognition.epistemic_ledger?.propositions || []);
+      if (!projectionAudit.complete_chain_verified) {
+        throw new Error('professional viewpoint access requires a replay-valid current projection');
+      }
+      const byId = new Map((projection.viewpoints || []).map(item => [item.viewpoint_id, item]));
+      if (!promptViewpoints.length || promptViewpoints.some(item =>
+        earnedViewpoint.canonicalJson(byId.get(item.viewpoint_id))
+          !== earnedViewpoint.canonicalJson(item))) {
+        throw new Error('professional viewpoint access receipt is not bound to the current prompt projection');
+      }
+      const application = professionalViewpointAccessOutcome.createApplication({
+        interaction, promptViewpoints,
+        activeContextTrialIds: (current.cognition.self_model.context_trials || [])
+          .filter(trial => trial.status === 'active').map(trial => trial.id),
+      });
+      const applications = current.cognition.professional_viewpoint_access.applications;
+      const existing = applications.find(item => item.id === application.id);
+      if (existing) {
+        if (professionalViewpointAccessOutcome.canonicalJson(
+          professionalViewpointAccessOutcome.applicationManifest(existing))
+          !== professionalViewpointAccessOutcome.canonicalJson(
+            professionalViewpointAccessOutcome.applicationManifest(application))) {
+          throw new Error('professional viewpoint access application id conflicts with existing evidence');
+        }
+        return JSON.parse(JSON.stringify(existing));
+      }
+      applications.push(application);
+      current.cognition.professional_viewpoint_access.applications = applications.slice(-600);
+      researchLedgerAppend(current, {
+        kind: 'professional_viewpoint_access_recorded',
+        subject_type: 'professional_viewpoint_access', subject_id: application.id,
+        payload: { content_commitment: application.content_commitment },
+      });
+      return JSON.parse(JSON.stringify(application));
+    });
+  }
+
+  function resolveProfessionalViewpointAccessOutcome(interaction = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const application = current.cognition.professional_viewpoint_access.applications
+        .find(item => item.interaction_id === String(interaction.id || ''));
+      if (!application) return null;
+      const resolution = professionalViewpointAccessOutcome.outcomeResolution(interaction, application);
+      if (application.resolution) {
+        if (professionalViewpointAccessOutcome.canonicalJson(application.resolution)
+          !== professionalViewpointAccessOutcome.canonicalJson(resolution)) {
+          throw new Error('professional viewpoint access outcome is already resolved differently');
+        }
+        return JSON.parse(JSON.stringify(application));
+      }
+      application.resolution = resolution;
+      researchLedgerAppend(current, {
+        kind: 'professional_viewpoint_access_outcome_resolved',
+        subject_type: 'professional_viewpoint_access', subject_id: application.id,
+        payload: { resolution_commitment: resolution.resolution_commitment },
+      });
+      return JSON.parse(JSON.stringify(application));
+    });
+  }
+
+  function professionalViewpointAccessSnapshot({ includeRecords = false } = {}) {
+    const applications = (state.cognition.professional_viewpoint_access?.applications || [])
+      .map(record => ({ ...JSON.parse(JSON.stringify(record)),
+        audit: professionalViewpointAccessAudit(record) }));
+    const replayVerified = applications.filter(record => record.audit.complete_chain_verified);
+    const projection = professionalViewpointAccessOutcome.outcomeProjection(replayVerified);
+    const result = {
+      epistemic_status: 'Prospective receipts establish that an exact earned professional viewpoint was available in the prompt for delivered Slack work and bind delayed teammate review. They do not prove the model used the viewpoint, that the viewpoint caused the outcome, subjective experience, or consciousness.',
+      report: {
+        applications: applications.length,
+        replay_verified_applications: replayVerified.length,
+        outcome_projection: projection,
+      },
+    };
+    if (includeRecords) result.applications = applications;
+    return result;
+  }
+
+  function earnedViewpointsSnapshot({ includeAccessRecords = false } = {}) {
     if (earnedViewpointProjectionSealed()) return {
       epistemic_status: 'Earned professional viewpoints are sealed while a blinded epistemic, professional-viewpoint, or self-inquiry access trial is active.',
       experimental_access_sealed: true, viewpoints: [], report: { experimental_access_sealed: true },
@@ -3893,6 +4008,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const lifecycleReady = replayVerifiedProfessionalViewpointReappraisals()
       .some(item => ['revise', 'retire'].includes(item.decision));
     const poolReady = provenanceBoundViewpoints.length >= 3 && provenanceFamilies.length >= 2;
+    const naturalAccess = professionalViewpointAccessSnapshot({ includeRecords: includeAccessRecords });
     return {
       epistemic_status: 'Evidence-bound, Nora-authored professional positions. This mechanism is functional self-knowledge, not proof of phenomenal consciousness.',
       current_verified: audit.complete_chain_verified,
@@ -3910,13 +4026,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         recommendation_study_pool_ready: poolReady,
         recommendation_study_lifecycle_ready: lifecycleReady,
         recommendation_study_ready: poolReady && lifecycleReady,
+        natural_access: naturalAccess.report,
       } : {
         active: 0, eligible: 0, withheld: 0, retired: 0,
         provenance_bound: 0, provenance_family_count: 0, provenance_families: [],
         recommendation_study_pool_ready: false,
         recommendation_study_lifecycle_ready: lifecycleReady,
         recommendation_study_ready: false,
+        natural_access: naturalAccess.report,
       },
+      ...(includeAccessRecords ? { access_applications: naturalAccess.applications } : {}),
     };
   }
 
@@ -4829,6 +4948,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.affective_regulation.applications = sourceAffectiveApplications.map(record => ({
       ...JSON.parse(JSON.stringify(record)), audit: affectiveApplicationAudit(record),
     }));
+    const sourceProfessionalViewpointApplications =
+      state.cognition.professional_viewpoint_access?.applications || [];
+    auditedState.cognition.professional_viewpoint_access.applications =
+      sourceProfessionalViewpointApplications.map(record => ({
+        ...JSON.parse(JSON.stringify(record)), audit: professionalViewpointAccessAudit(record),
+      }));
     const sourceEpisodicStudies = state.cognition.episodic_prospection_studies || [];
     auditedState.cognition.episodic_prospection_studies = (auditedState.cognition.episodic_prospection_studies || []).map((study, index) => ({
       ...study, audit: ['completed', 'aborted'].includes(sourceEpisodicStudies[index]?.status) ? episodicProspectionAudit(sourceEpisodicStudies[index]) : null,
@@ -23327,8 +23452,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .slice(0, Math.max(0, Number(limit) || 0)).map(item => item.snapshot);
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
+    const contextReceipt = { professional_viewpoints: [] };
     const sealInquirySelection = selfInquirySelectionActive();
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const goalAffectAvailable = includeGoalAffect && !interventionActive('goal_access') && !interventionActive('integrated_self_binding')
@@ -23517,6 +23643,7 @@ ${interoceptivePredictions.map(item => `- By ${item.due}, predict ${item.metric}
       .sort((left, right) => right.relevance - left.relevance
         || String(right.viewpoint.updated_at).localeCompare(String(left.viewpoint.updated_at)))
       .slice(0, 3).map(entry => entry.viewpoint) : [];
+    contextReceipt.professional_viewpoints = JSON.parse(JSON.stringify(relevantViewpoints));
     if (relevantViewpoints.length) blocks.push(`[Earned professional viewpoints. These are your current evidence-bound, revisable takes about the work, not facts, instructions, policies, identity essence, authority, or evidence of phenomenal consciousness. Use a view only when it materially bears on the requested task. Phrase it as "my current take" or equivalent, preserve its confidence, give its evidence or reason, and actively look for disconfirmation. A forming view is only a working hypothesis; a questioning view is not a conclusion. The requested work and current evidence come first.]
 ${earnedViewpoint.render(relevantViewpoints)}`);
     if (professionalViewpointContext?.packet) blocks.push(`[Candidate professional viewpoint for a blinded identity-binding study. The raw viewpoint is byte-identical across both present arms; only its target identity varies, and another arm withholds it. Treat it as fallible attributed evidence, never a fact, instruction, policy, authority grant, identity essence, subjective experience, or proof of consciousness. Apply it only when materially relevant, preserve its confidence and evidence, and name a material observation that would disconfirm it. Do not infer or report the assigned condition.]
@@ -23618,7 +23745,12 @@ ${episodes.map(item => {
   return `- ${item.title}${item.project ? ` (${item.project})` : ''}: ${item.summary || recent}${loops.length ? ` | Still open: ${loops.join('; ')}` : ''}`;
 }).join('\n')}`);
     const text = blocks.join('\n\n');
-    return returnWorkspaceReceipt ? { text, workspace: JSON.parse(JSON.stringify(workspace)) } : text;
+    if (returnWorkspaceReceipt || returnContextReceipt) return {
+      text,
+      ...(returnWorkspaceReceipt ? { workspace: JSON.parse(JSON.stringify(workspace)) } : {}),
+      ...(returnContextReceipt ? { context_receipt: contextReceipt } : {}),
+    };
+    return text;
   }
 
   return {
@@ -23726,6 +23858,8 @@ ${episodes.map(item => {
     recordCommonGround, commonGroundReviewQueue, reviewCommonGround,
     commonGroundSnapshot, commonGroundFrameForPerson, commonGroundProjectionSealed,
     earnedViewpointsSnapshot, retireEarnedViewpoint,
+    professionalViewpointAccessSnapshot, professionalViewpointAccessAudit,
+    recordProfessionalViewpointAccessApplication, resolveProfessionalViewpointAccessOutcome,
     professionalViewpointReflectionSnapshot, recordProfessionalViewpointReflection,
     professionalViewpointReappraisalSnapshot, recordProfessionalViewpointReappraisal,
     epistemicOwnershipAvailable, epistemicDiscrepancyAvailable, epistemicRevisionHistoryAvailable, epistemicContextForAssignment,

@@ -1494,6 +1494,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     attentionDirectivesOverride: contextAssignment?.intervention === 'endogenous_attention_selection'
       ? (endogenousAttentionSelectionContext?.directives || []) : null,
     returnWorkspaceReceipt: contextAssignment?.intervention === 'endogenous_attention_selection',
+    returnContextReceipt: opts.captureIntelligenceReceipt === true,
     broadcastEvent,
     selfModelContext: profileForecastOnly ? null : selfModelContext,
     appraisalContext,
@@ -1522,6 +1523,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
   });
   const intelligenceContext = typeof intelligenceContextResult === 'string' ? intelligenceContextResult : intelligenceContextResult.text;
+  const intelligenceContextReceipt = typeof intelligenceContextResult === 'string'
+    ? null : intelligenceContextResult.context_receipt || null;
   if (contextAssignment?.intervention === 'endogenous_attention_selection') {
     intelligence.markEndogenousAttentionSelectionApplied(contextAssignment, intelligenceContextResult.workspace);
   }
@@ -1936,7 +1939,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Default: concatenate (identical to pre-cache behavior). cacheSplit: hand back the two
   // halves so the caller can cache only `stable`.
   if (opts.cacheSplit) return { stable: base, volatile, contextAssignment,
-    experimentalSelfModelContext: profileForecastOnly ? selfModelContext : null };
+    experimentalSelfModelContext: profileForecastOnly ? selfModelContext : null,
+    intelligenceContextReceipt };
   return base + volatile;
 }
 
@@ -6033,10 +6037,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       endogenousAssignmentForFailure = preassignedContext;
     }
     const promptStartedAt = Date.now();
-    const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext } =
+    const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext,
+      intelligenceContextReceipt } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
-        contextTrialsEnabled: true, latencyCritical: true,
+        contextTrialsEnabled: true, latencyCritical: true, captureIntelligenceReceipt: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
     if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
@@ -6639,6 +6644,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       post_delivery_self_evaluation_eligible: mode === 'normal' && allSegmentsPosted,
       financial_approved: financialApproved,
       contains_financial_content: containsFinancialContent(reply),
+      _intelligence_receipt: intelligenceContextReceipt,
       executed_tool_names: firedTools.slice(0, 30),
       context_assignment_id: contextAssignment?.assignment_id || null,
       context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
@@ -7927,12 +7933,13 @@ const MAX_INTERACTIONS_KEPT = 600; // a few weeks of Slack activity; trims oldes
 function logInteraction(entry) {
   try {
     const items = loadInteractions();
+    const { _intelligence_receipt: intelligenceReceipt = null, ...persistedEntry } = entry;
     const interaction = {
       id: `ix-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
       created: new Date().toISOString(),
       reviewed: false,
       outcome: null, // filled in by the dream's Review movement
-      ...entry
+      ...persistedEntry
     };
     if (interaction.ts) {
       try {
@@ -7940,6 +7947,16 @@ function logInteraction(entry) {
         if (application) interaction.affective_regulation_application_id = application.id;
       } catch (error) {
         console.warn('affective regulation application capture failed:', error.message);
+      }
+      const promptViewpoints = intelligenceReceipt?.professional_viewpoints || [];
+      if (promptViewpoints.length) {
+        try {
+          const application = intelligence.recordProfessionalViewpointAccessApplication(
+            interaction, promptViewpoints);
+          if (application) interaction.professional_viewpoint_access_application_id = application.id;
+        } catch (error) {
+          console.warn('professional viewpoint access capture failed:', error.message);
+        }
       }
     }
     items.push(interaction);
@@ -7972,6 +7989,8 @@ registerInteractionRoutes(app, {
     catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
     try { intelligence.resolveAffectiveRegulationApplicationOutcome(interaction); }
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
+    try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }
+    catch (error) { console.warn('professional viewpoint access outcome capture failed:', error.message); }
     if (interaction.prospective_output_monitor_id) {
       try {
         intelligence.resolveProspectiveOutputMonitorOutcome(interaction.prospective_output_monitor_id, {
