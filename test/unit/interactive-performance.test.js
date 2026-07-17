@@ -55,4 +55,34 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'slack'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'zoom-chat'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'realtime'/);
+  assert.match(server, /settleWithin\(retrieveSemanticMemories\(convText\), 900/,
+    'optional semantic recall must lose quickly to the live reply path');
+  assert.match(server, /const volatileIntelligenceContext = intelligenceContext \|\| ''/,
+    'changing cognition must stay outside the stable provider-cache prefix');
+});
+
+test('Slack provider cache prefix stays stable while conversation and cognition tails change', () => {
+  const { __test } = require('../../server');
+  const first = __test.buildSystemPrompt('slack', null, null,
+    { source: 'slack', requester: { name: 'John' } },
+    { cacheSplit: true, conversationText: 'what did you do today', semanticMemories: [],
+      latencyCritical: true });
+  const second = __test.buildSystemPrompt('slack', null, null,
+    { source: 'slack', requester: { name: 'Mallory' } },
+    { cacheSplit: true, conversationText: 'what is at risk tomorrow', semanticMemories: [],
+      latencyCritical: true });
+  assert.equal(first.stable, second.stable,
+    'person-, query-, broadcast-, and workspace-specific cognition must not bust the stable cache');
+  assert.notEqual(first.volatile, second.volatile);
+});
+
+test('Slack uses a fast Claude path only for bounded conversational turns', async () => {
+  const { __test } = require('../../server');
+  assert.equal(__test.slackResponseModel('whatd you do today'), 'claude-sonnet-4-6');
+  assert.equal(__test.slackResponseModel('thanks for your work today'), 'claude-sonnet-4-6');
+  assert.equal(__test.slackResponseModel('Analyze the launch risks and build a mitigation plan.'),
+    'claude-opus-4-8');
+  assert.equal(__test.slackResponseModel('whatd you do today', 'proactive'), 'claude-opus-4-8');
+  const fallback = await __test.settleWithin(new Promise(() => {}), 5, [], 'test lookup');
+  assert.deepEqual(fallback, []);
 });

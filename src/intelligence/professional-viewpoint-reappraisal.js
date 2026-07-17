@@ -49,7 +49,14 @@ function viewpointSnapshot(viewpoint = {}) {
 
 function packetFor({ memories = [], dream = null, currentViewpoints = [], now = new Date() } = {}) {
   const evidence = professionalViewpointReflection.selectEvidence(memories, now, MAX_PACKET_ITEMS);
-  const viewpoints = currentViewpoints.map(viewpointSnapshot).filter(Boolean).slice(0, 10);
+  const viewpoints = currentViewpoints.map(viewpointSnapshot).filter(Boolean).slice(0, 10)
+    .map(viewpoint => {
+      const prior = new Set(viewpoint.evidence_ids || []);
+      const updatedDate = /^\d{4}-\d{2}-\d{2}/.exec(String(viewpoint.updated_at || ''))?.[0] || null;
+      const eligibleNewEvidenceIds = evidence.filter(item => !prior.has(item.ref.id)
+        && updatedDate && item.added && item.added >= updatedDate).map(item => item.ref.id);
+      return { ...viewpoint, eligible_new_evidence_ids: eligibleNewEvidenceIds };
+    });
   return {
     protocol_version: PROTOCOL_VERSION,
     source_dream: dream ? { id: cleanText(dream.id, 500), date: cleanText(dream.date, 20) || null } : null,
@@ -85,7 +92,7 @@ function systemPrompt() {
     'Retain means the newer evidence tested the view but does not warrant changing it. Revise means update polarity or confidence proportionally. Retire means the view is no longer useful or adequately supported as a current prior. Otherwise abstain.',
     'Never change the viewpoint statement or topic. Never infer a person\'s character, private thoughts, feelings, pathology, intent, or consciousness.',
     'For revision, change confidence by no more than 0.15, never exceed 0.85, and provide concrete falsification criteria. Increasing confidence requires at least two newly cited records.',
-    'Cite only supplied evidence IDs. Prefer disconfirming evidence over convenient support. If evidence is thin, one-off, unrelated, ambiguous, or not newer, abstain.',
+    'Cite only supplied evidence IDs. Every non-abstaining decision must cite at least one ID listed in that viewpoint\'s eligible_new_evidence_ids. Prefer disconfirming evidence over convenient support. If evidence is thin, one-off, unrelated, ambiguous, or not newer, abstain.',
     'This is subject-side self-correction, not independent validation, originality proof, subjective experience, or evidence of phenomenal consciousness.',
     'Return only JSON matching the requested schema.',
   ].join(' ');
@@ -167,7 +174,9 @@ function normalizeOutput(raw, packet) {
   const newEvidence = evidenceIds.filter(id => !priorEvidence.has(id));
   if (!newEvidence.length) throw new Error('reappraisal requires evidence new to the current position');
   const updatedDate = /^\d{4}-\d{2}-\d{2}/.exec(String(viewpoint.updated_at || ''))?.[0] || null;
+  const eligibleNewEvidence = new Set(viewpoint.eligible_new_evidence_ids || []);
   const postPositionEvidence = selected.filter(item => newEvidence.includes(item.ref.id)
+    && eligibleNewEvidence.has(item.ref.id)
     && updatedDate && item.added && item.added >= updatedDate);
   if (!postPositionEvidence.length) {
     throw new Error('reappraisal requires at least one new evidence record observed on or after the current position update');
@@ -276,9 +285,7 @@ function auditReceipt(receipt, { proposition = null, position = null, retirement
 function eligibleForNewEvidence(packet) {
   return (packet.viewpoints || []).some(viewpoint => {
     const prior = new Set(viewpoint.evidence_ids || []);
-    const updatedDate = /^\d{4}-\d{2}-\d{2}/.exec(String(viewpoint.updated_at || ''))?.[0] || null;
-    return (packet.evidence || []).some(item => !prior.has(item.ref.id)
-      && updatedDate && item.added && item.added >= updatedDate);
+    return (viewpoint.eligible_new_evidence_ids || []).some(id => !prior.has(id));
   });
 }
 

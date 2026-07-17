@@ -170,10 +170,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
+  let researchLedgerVerificationCache = null;
+  const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
+    researchLedgerVerificationCache = null;
     snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -804,9 +807,45 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
-  function verifyResearchLedger(ledger = state.cognition.research_ledger) {
+  function verifyResearchLedger(ledger = state.cognition.research_ledger, { forceFull = false } = {}) {
     const events = Array.isArray(ledger?.events) ? ledger.events : [];
+    const anchors = Array.isArray(ledger?.anchors) ? ledger.anchors : [];
+    const cacheEligible = ledger === state.cognition.research_ledger;
+    const headHash = events.at(-1)?.hash || null;
+    const anchorSignature = anchors.map(anchor => `${anchor.id || ''}:${anchor.head_hash || ''}`).join('|');
+    if (!forceFull && cacheEligible && researchLedgerVerificationCache
+      && researchLedgerVerificationCache.event_count === events.length
+      && researchLedgerVerificationCache.head_hash === headHash
+      && researchLedgerVerificationCache.anchor_signature === anchorSignature) {
+      researchLedgerVerificationStats.cache_hits += 1;
+      return { ...researchLedgerVerificationCache.result,
+        breaks: [...researchLedgerVerificationCache.result.breaks],
+        invalid_anchors: [...researchLedgerVerificationCache.result.invalid_anchors] };
+    }
+    if (!forceFull && cacheEligible && researchLedgerVerificationCache?.result.valid
+      && researchLedgerVerificationCache.event_count + 1 === events.length
+      && researchLedgerVerificationCache.anchor_signature === anchorSignature) {
+      const event = events.at(-1);
+      const { hash, ...base } = event || {};
+      const expectedHash = crypto.createHash('sha256').update(canonicalJson(base)).digest('hex');
+      const valid = event?.index === events.length - 1
+        && (event?.previous_hash || null) === researchLedgerVerificationCache.head_hash
+        && hash === expectedHash;
+      const result = { valid, breaks: valid ? [] : [{ index: events.length - 1, reason: 'incremental_event_mismatch' }],
+        invalid_anchors: [], event_count: events.length, head_hash: headHash };
+      researchLedgerVerificationStats.incremental_checks += 1;
+      const eventBindingCounts = researchLedgerVerificationCache.event_binding_counts || new Map();
+      if (event?.kind && event?.subject_id && event?.payload_commitment) {
+        const bindingKey = `${event.kind}\u0000${event.subject_id}\u0000${event.payload_commitment}`;
+        eventBindingCounts.set(bindingKey, (eventBindingCounts.get(bindingKey) || 0) + 1);
+      }
+      researchLedgerVerificationCache = { event_count: events.length, head_hash: headHash,
+        anchor_signature: anchorSignature, result, event_binding_counts: eventBindingCounts };
+      return { ...result, breaks: [...result.breaks], invalid_anchors: [] };
+    }
+    researchLedgerVerificationStats.full_scans += 1;
     const breaks = [];
+    const eventBindingCounts = new Map();
     let previousHash = null;
     for (let index = 0; index < events.length; index++) {
       const event = events[index];
@@ -815,15 +854,41 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (event?.index !== index) breaks.push({ index, reason: 'index_mismatch' });
       if ((event?.previous_hash || null) !== previousHash) breaks.push({ index, reason: 'previous_hash_mismatch' });
       if (hash !== expectedHash) breaks.push({ index, reason: 'event_hash_mismatch' });
+      if (event?.kind && event?.subject_id && event?.payload_commitment) {
+        const bindingKey = `${event.kind}\u0000${event.subject_id}\u0000${event.payload_commitment}`;
+        eventBindingCounts.set(bindingKey, (eventBindingCounts.get(bindingKey) || 0) + 1);
+      }
       previousHash = hash || null;
     }
     const eventHashes = new Set(events.map(item => item.hash));
-    const invalidAnchors = (ledger?.anchors || []).filter(anchor => anchor.head_hash && !eventHashes.has(anchor.head_hash));
-    return {
+    const invalidAnchors = anchors.filter(anchor => anchor.head_hash && !eventHashes.has(anchor.head_hash));
+    const result = {
       valid: breaks.length === 0 && invalidAnchors.length === 0,
       breaks, invalid_anchors: invalidAnchors.map(item => item.id),
       event_count: events.length, head_hash: events.at(-1)?.hash || null,
     };
+    if (cacheEligible) researchLedgerVerificationCache = { event_count: events.length,
+      head_hash: headHash, anchor_signature: anchorSignature, result,
+      event_binding_counts: eventBindingCounts };
+    return { ...result, breaks: [...result.breaks], invalid_anchors: [...result.invalid_anchors] };
+  }
+
+  function researchLedgerVerificationPerformance() {
+    return { protocol_version: 1, ...researchLedgerVerificationStats,
+      cached_event_count: researchLedgerVerificationCache?.event_count ?? null,
+      cached_head_hash: researchLedgerVerificationCache?.head_hash || null };
+  }
+
+  function researchLedgerEventBindingCount(kind, subjectId, payloadCommitment,
+    ledger = state.cognition.research_ledger) {
+    const key = `${kind}\u0000${subjectId}\u0000${payloadCommitment}`;
+    if (ledger === state.cognition.research_ledger) {
+      const integrity = verifyResearchLedger(ledger);
+      if (!integrity.valid) return 0;
+      return researchLedgerVerificationCache?.event_binding_counts?.get(key) || 0;
+    }
+    return (ledger?.events || []).reduce((count, event) => count + Number(event.kind === kind
+      && event.subject_id === subjectId && event.payload_commitment === payloadCommitment), 0);
   }
 
   function researchLedgerAppend(current, { kind, subject_type, subject_id, payload, at = clock() }) {
@@ -848,7 +913,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function researchLedgerSnapshot() {
     const ledger = JSON.parse(JSON.stringify(state.cognition.research_ledger));
-    const integrity = verifyResearchLedger(ledger);
+    const integrity = verifyResearchLedger(ledger, { forceFull: true });
     return {
       epistemic_status: 'A hash-chained commitment log for the research lifecycle. Internal chaining detects modification and reordering; only externally retained checkpoint receipts can make silent whole-ledger replacement or truncation detectable.',
       events: ledger.events, anchors: ledger.anchors,
@@ -1530,8 +1595,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const selectionVerified = actionPayloadCommitment(actionExecutionSelectionManifest(execution)) === execution.selection_commitment;
     const contentVerified = ['succeeded', 'failed'].includes(execution.status)
       && actionPayloadCommitment(actionExecutionManifest(execution)) === execution.content_commitment;
-    const events = state.cognition.research_ledger?.events || [];
-    const bound = (kind, payload) => events.filter(event => event.kind === kind && event.subject_id === execution.id && event.payload_commitment === actionPayloadCommitment(payload)).length === 1;
+    const bound = (kind, payload) => researchLedgerEventBindingCount(kind, execution.id,
+      actionPayloadCommitment(payload)) === 1;
     const selectionBound = bound('action_execution_selected', { selection_commitment: execution.selection_commitment });
     const queueVerified = execution.status !== 'queued' && !execution.job_id ? true : Boolean(execution.queue_commitment)
       && actionPayloadCommitment({ id: execution.id, job_id: execution.job_id, queued: execution.queued }) === execution.queue_commitment
@@ -1726,10 +1791,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const predecessorVerified = frame.predecessor_id == null
       ? frame.predecessor_commitment == null
       : Boolean(predecessor && predecessor.content_commitment === frame.predecessor_commitment);
-    const events = state.cognition.research_ledger?.events || [];
     const payload = { content_commitment: frame.content_commitment, predecessor_commitment: frame.predecessor_commitment };
-    const ledgerBound = events.filter(event => event.kind === 'situational_affordance_recorded' && event.subject_id === frame.id
-      && event.payload_commitment === actionPayloadCommitment(payload)).length === 1;
+    const ledgerBound = researchLedgerEventBindingCount('situational_affordance_recorded', frame.id,
+      actionPayloadCommitment(payload)) === 1;
     const ledgerVerified = verifyResearchLedger().valid;
     return { content_commitment_verified: contentVerified, predecessor_verified: predecessorVerified,
       ledger_binding_verified: ledgerBound, research_ledger_chain_verified: ledgerVerified,
@@ -9752,6 +9816,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const appraisal = cognition.appraisal || {};
     const calibrationResolved = cognition.calibration?.resolved || 0;
     const responsiveness = interactivePerformance.summarize(state.traces, clock().getTime());
+    const ledgerVerificationPerformance = researchLedgerVerificationPerformance();
     const responseP95 = Object.entries(responsiveness.surfaces)
       .filter(([, value]) => value.p95_ms !== null)
       .map(([surface, value]) => `${surface} p95 ${value.p95_ms}ms`)
@@ -9814,7 +9879,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length,
           viewpoint_reappraisals: viewpointReappraisals.length,
           viewpoint_revisions: viewpointRevisions, viewpoint_retirements: viewpointRetirements },
-        responsiveness,
+        responsiveness: { ...responsiveness,
+          research_ledger_verification: ledgerVerificationPerformance },
       },
     };
   }
@@ -22725,6 +22791,7 @@ ${episodes.map(item => {
     createAuthorshipStudy, abortAuthorshipStudy, authorshipStudiesSnapshot,
     createCounterfactualAgencyExperiment, resolveCounterfactualAgencyExperiment, counterfactualAgencySnapshot, agencyComparatorAccessAvailable, agencyModelTransferAvailable, empiricalSelfKnowledgeAvailable, actionAuthorshipAccessAvailable,
     researchLedgerSnapshot, anchorResearchLedger,
+    researchLedgerVerificationPerformance,
     recordVerifiedExternalSourceAttestation, attestCommitmentSourceFromReadback, externalSourceAttestationsSnapshot,
     researchTransparencyBundle,
     runGlobalBroadcast, globalBroadcastSnapshot, globalBroadcastAccessAvailable,

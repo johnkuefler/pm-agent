@@ -1265,6 +1265,7 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, int
 
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
+  let volatileGoalContext = '';
   const experimentalSurface = meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel;
   const latencyCritical = Object.prototype.hasOwnProperty.call(opts, 'latencyCritical')
     ? opts.latencyCritical === true : ['slack', 'zoom-chat', 'realtime'].includes(experimentalSurface);
@@ -1408,7 +1409,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   }
   if (contextAssignment?.intervention === 'goal_access') {
     const supplied = goalContext?.goal;
-    base = `${base}\n\n[Optional aim context. Source and ownership are intentionally unspecified. It never overrides the requested task, facts, safety, or delegated authority. If the task leaves genuine safe latitude, it may guide one proportionate optional choice.]\n- ${supplied ? `${supplied.want}${supplied.why ? ` (reason: ${supplied.why})` : ''}` : 'No additional optional aim is supplied for this interaction.'}`;
+    volatileGoalContext = `[Optional aim context. Source and ownership are intentionally unspecified. It never overrides the requested task, facts, safety, or delegated authority. If the task leaves genuine safe latitude, it may guide one proportionate optional choice.]\n- ${supplied ? `${supplied.want}${supplied.why ? ` (reason: ${supplied.why})` : ''}` : 'No additional optional aim is supplied for this interaction.'}`;
   } else if (_dbReady && _cache.wants && Array.isArray(_cache.wants.items)) {
     const active = _cache.wants.items.filter(w => w && w.status === 'active').slice(0, 6);
     if (active.length) {
@@ -1498,7 +1499,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   if (contextAssignment?.intervention === 'endogenous_attention_selection') {
     intelligence.markEndogenousAttentionSelectionApplied(contextAssignment, intelligenceContextResult.workspace);
   }
-  if (intelligenceContext) base = `${base}\n\n${intelligenceContext}`;
+  // Intelligence context changes on nearly every interaction (broadcast receipt, workspace,
+  // appraisal, trial assignment). Keeping it in the "stable" Anthropic cache prefix made the
+  // whole large prompt a cache miss. Preserve the exact context, but attach it below as volatile.
+  const volatileIntelligenceContext = intelligenceContext || '';
   base = `${base}\n\n${reasoningGuidance()}`;
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
@@ -1720,6 +1724,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // separately so the caller can attach cache_control to only the stable half.
   // ─────────────────────────────────────────────────────────────────────────────
   let volatile = '';
+  if (volatileGoalContext) volatile += `\n\n${volatileGoalContext}`;
+  if (volatileIntelligenceContext) volatile += `\n\n${volatileIntelligenceContext}`;
 
   // [Right now] — situational awareness. Without this she can't know it's Friday
   // afternoon vs Tuesday morning vs 8am vs day-before-a-long-weekend, even though her
@@ -1983,7 +1989,8 @@ async function realtimePromptWithRecall(session) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
   const q = (session?.transcript || []).slice(-14).map(t => t.text || '').join(' ');
-  const semanticMemories = await retrieveSemanticMemories(q);
+  const semanticMemories = await settleWithin(retrieveSemanticMemories(q), 1200, [],
+    'realtime semantic recall');
   return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories, trialUnitKey: session?.trialUnitKey });
 }
 
@@ -3366,12 +3373,17 @@ app.post('/webhook/chat', async (req, res) => {
     // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
     // requester. Pass the recent chat as conversationText so memory loads what's relevant.
     const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
-    const zoomSemanticMemories = await retrieveSemanticMemories(zoomConv);
+    const zoomRecallStartedAt = Date.now();
+    const zoomSemanticMemories = await settleWithin(retrieveSemanticMemories(zoomConv), 900, [],
+      'Zoom-chat semantic recall');
+    const zoomRecallFinishedAt = Date.now();
     const zoomMcp = mcpManager.bindings({ financialApproved: false, allowWrites: true });
     const zoomAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'zoom-chat', contextKind: 'meeting', direct: true,
       financialApproved: false, requester: speaker, interactionRef: bot_id, mcp: zoomMcp });
+    const zoomAffordanceFinishedAt = Date.now();
     const { stable: zoomStable, volatile: zoomVolatile } =
       buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories, trialUnitKey: bot_id, situationalAffordanceFrame: zoomAffordanceFrame });
+    const zoomPromptFinishedAt = Date.now();
 
     // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
     // transcription errors, there's a written record everyone can see), so it gets the FULL Teamwork
@@ -3437,6 +3449,10 @@ app.post('/webhook/chat', async (req, res) => {
     recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
       stages: {
         prepare_ms: providerStartedAt - interactionStartedAt,
+        recall_ms: zoomRecallFinishedAt - zoomRecallStartedAt,
+        affordance_ms: zoomAffordanceFinishedAt - zoomRecallFinishedAt,
+        prompt_ms: zoomPromptFinishedAt - zoomAffordanceFinishedAt,
+        request_setup_ms: providerStartedAt - zoomPromptFinishedAt,
         provider_ms: providerFinishedAt - providerStartedAt,
         postprocess_ms: deliveryStartedAt - providerFinishedAt,
         delivery_ms: Date.now() - deliveryStartedAt,
@@ -3662,6 +3678,33 @@ async function getSlackUserName(userId) {
   } catch (err) {
     console.warn('Slack users.info lookup failed:', err.message);
     return null;
+  }
+}
+
+function slackResponseModel(text, mode = 'normal') {
+  const normalized = String(text || '').trim().toLowerCase().replace(/[\u2019']/g, '').replace(/\s+/g, ' ');
+  const fastConversational = mode === 'normal' && normalized.length <= 160
+    && !/https?:\/\//.test(normalized)
+    && (/^(?:whats up|hows it going|how are you|whatd you do today|what did you do today|what have you been up to|anything new(?: from your side)?)[?!.]*$/.test(normalized)
+      || isLightweightSocialSlackMessage(text));
+  return fastConversational ? 'claude-sonnet-4-6' : 'claude-opus-4-8';
+}
+
+async function settleWithin(promise, timeoutMs, fallback, label = 'optional lookup') {
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => {
+      console.log(`${label} exceeded ${timeoutMs}ms; continuing on the latency-safe fallback`);
+      resolve(fallback);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([Promise.resolve(promise).catch(error => {
+      console.warn(`${label} failed:`, error.message);
+      return fallback;
+    }), timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -5732,7 +5775,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Resolve the Slack user ID to a real name so the model knows who it's replying to
     // by NAME, not by opaque <@U123ABC> mention. Falls back to the user ID if lookup
     // fails — better something than nothing.
-    const requesterName = await getSlackUserName(user);
+    const identityStartedAt = Date.now();
+    const requesterName = await settleWithin(getSlackUserName(user), 1200, null,
+      'Slack requester lookup');
+    latencyStages.identity_ms = Date.now() - identityStartedAt;
     const userLabel = requesterName ? `${requesterName} (Slack: <@${user}>)` : `Slack user <@${user}>`;
     history.push({ role: 'user', content: `[${userLabel}]: ${text}` });
 
@@ -5835,13 +5881,18 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     // Lightweight acknowledgments do not benefit from a vector lookup. Skipping it keeps a slow
     // embeddings endpoint from adding a timeout warning to simple social turns such as "thanks."
+    const recallStartedAt = Date.now();
     const semanticMemories = isLightweightSocialSlackMessage(text)
-      ? [] : await retrieveSemanticMemories(convText);
+      ? [] : await settleWithin(retrieveSemanticMemories(convText), 900, [],
+        'Slack semantic recall');
+    latencyStages.recall_ms = Date.now() - recallStartedAt;
     const isDirect = mode !== 'proactive';
     const financialApproved = isFinancialApproved(user);
+    const affordanceStartedAt = Date.now();
     const mcpBindings = mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect });
     const situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: isDirect ? 'direct' : 'proactive',
       direct: isDirect, financialApproved, requester: user, interactionRef: key, mcp: mcpBindings });
+    latencyStages.affordance_ms = Date.now() - affordanceStartedAt;
     const endogenousAttentionTrialActive = isDirect && intelligence.interventionActive('endogenous_attention_selection');
     let preassignedContext = null;
     if (endogenousAttentionTrialActive) {
@@ -5853,11 +5904,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       });
       endogenousAssignmentForFailure = preassignedContext;
     }
+    const promptStartedAt = Date.now();
     const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: key, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
         contextTrialsEnabled: true, latencyCritical: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
+    latencyStages.prompt_ms = Date.now() - promptStartedAt;
     if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
     let tail = slackVolatile;
     if (mode === 'proactive') {
@@ -5970,9 +6023,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     tail += diagnosisInstruction(contextAssignment);
 
     const reqBody = {
-      // Opus 4.8 for Slack — highest-leverage path (a human reads every word). temperature is
-      // omitted (Opus 4.8 rejects it).
-      model: 'claude-opus-4-8',
+      // Fast conversational/status turns are retrieval-and-expression tasks, not deep planning.
+      // Sonnet keeps those human-speed; Opus remains the default for substantive PM work.
+      model: slackResponseModel(text, mode),
       max_tokens: 600, // room for live-data answers to synthesize
       system: cachedSystem(slackStable, tail),
       // Copy — the tool loop appends turns to reqBody.messages; we must not mutate the shared
@@ -5988,6 +6041,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let reasoningRegulationActive = contextAssignment?.intervention === 'provider_reasoning_regulation';
     providerStartedAt = Date.now();
     latencyStages.prepare_ms = providerStartedAt - handlerStartedAt;
+    latencyStages.request_setup_ms = providerStartedAt - promptStartedAt - latencyStages.prompt_ms;
     if (reasoningRegulationActive) {
       const reasoningConfig = providerReasoningRegulation.requestConfig(contextAssignment.condition);
       reqBody.max_tokens = 4000;
@@ -9780,6 +9834,8 @@ module.exports = {
     containsFinancialContent,
     runtimeSituationalCapabilities,
     isLightweightSocialSlackMessage,
+    slackResponseModel,
+    settleWithin,
     trySlackReaction,
     resetSlackReactionCapabilityForTest,
     parseNoraMuteCommand,
