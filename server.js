@@ -49,6 +49,7 @@ const professionalViewpointReflection = require('./src/intelligence/professional
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
+const interactivePerformance = require('./src/intelligence/interactive-performance');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -1229,9 +1230,43 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
   }
 }
 
+function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, interactionId = null,
+  trigger = null } = {}) {
+  if (!startedAt || !interactivePerformance.BUDGET_MS[surface]) return null;
+  const assessment = interactivePerformance.assess(surface, Date.now() - startedAt);
+  const boundedStages = Object.fromEntries(Object.entries(stages)
+    .filter(([, value]) => Number.isFinite(Number(value)))
+    .map(([key, value]) => [key, Math.max(0, Math.round(Number(value)))]));
+  try {
+    const trace = intelligence.recordTrace({
+      channel: surface === 'realtime' ? 'meeting' : surface,
+      action: 'response_latency',
+      decision: assessment.within_budget ? 'within_budget' : 'over_budget',
+      confidence: 1,
+      reasons: [
+        `first delivery in ${assessment.latency_ms}ms`,
+        `${surface} budget ${assessment.budget_ms}ms`,
+        ...Object.entries(boundedStages).map(([key, value]) => `${key} ${value}ms`),
+      ],
+      interaction_id: interactionId,
+      preview: trigger ? String(trigger).slice(0, 120) : String(assessment.latency_ms),
+      outcome: { ...assessment, stages: boundedStages,
+        protocol_version: interactivePerformance.PROTOCOL_VERSION },
+    });
+    console.log(`⚡ ${surface} first delivery ${assessment.latency_ms}ms / ${assessment.budget_ms}ms (${assessment.within_budget ? 'within budget' : 'over budget'})`);
+    return trace;
+  } catch (error) {
+    // Telemetry is strictly post-delivery and must never turn a successful response into a failure.
+    console.warn(`interactive latency receipt failed for ${surface}: ${error.message}`);
+    return null;
+  }
+}
+
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
   const experimentalSurface = meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel;
+  const latencyCritical = Object.prototype.hasOwnProperty.call(opts, 'latencyCritical')
+    ? opts.latencyCritical === true : ['slack', 'zoom-chat', 'realtime'].includes(experimentalSurface);
   if (!opts.situationalAffordanceFrame && experimentalSurface === 'realtime') {
     const voiceMcp = mcpManager.bindings({ financialApproved: false, voice: true });
     opts.situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'realtime', contextKind: 'meeting', direct: false,
@@ -1241,9 +1276,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const trialConversationText = (opts.conversationText
     || (transcript ? transcript.slice(-15).map(t => `${t.speaker || ''} ${t.text || ''}`).join(' ') : '')
     || '').toLowerCase();
-  const contextAssignment = Object.prototype.hasOwnProperty.call(opts, 'contextAssignment') ? opts.contextAssignment : opts.trialUnitKey
+  // A caller must opt into the complete assignment lifecycle. Realtime voice and Zoom chat use
+  // the cognition prompt but do not grade/close context assignments, so silently enrolling them
+  // created orphaned trials. Slack opts in below and additionally applies the latency firewall.
+  const contextAssignment = Object.prototype.hasOwnProperty.call(opts, 'contextAssignment') ? opts.contextAssignment
+    : opts.contextTrialsEnabled === true && opts.trialUnitKey
     ? intelligence.contextCondition({
       surface: experimentalSurface, unitKey: opts.trialUnitKey,
+      latencyCritical,
       continuityAvailable: Boolean(_dbReady && currentInnerThreadProjection().record?.content),
       appraisalAvailable: Boolean(intelligence.affectContext()?.label),
       developmentAvailable: intelligence.developmentalRevisionAvailable(),
@@ -3311,6 +3351,7 @@ app.post('/webhook/chat', async (req, res) => {
   // Strip "@nora" or "nora" from the beginning and clean up
   const query = finalText.replace(/@?nora/gi, '').trim();
   if (!query) return;
+  const interactionStartedAt = Date.now();
 
   console.log(`💬 Chat trigger from ${speaker}: ${query}`);
 
@@ -3357,6 +3398,7 @@ app.post('/webhook/chat', async (req, res) => {
     };
     const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
     let response, zoomFired = [];
+    const providerStartedAt = Date.now();
     try {
       ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors, 6, {
         deferredMeta: zoomMcp.meta, origin: { kind: 'zoom_chat', bot_id, requester: speaker }
@@ -3366,6 +3408,7 @@ app.post('/webhook/chat', async (req, res) => {
       delete zoomReq.tools; zoomReq.messages = history.slice();
       response = await axios.post('https://api.anthropic.com/v1/messages', zoomReq, zoomHeaders);
     }
+    const providerFinishedAt = Date.now();
     const wroteLiveZ = zoomFired.some(n => TW_WRITE_Z.has(n));
 
     let reply = (response.data.content || [])
@@ -3384,11 +3427,19 @@ app.post('/webhook/chat', async (req, res) => {
     if (history.length > 20) history.splice(0, 2);
 
     // Send reply back to Zoom chat via Recall.ai
+    const deliveryStartedAt = Date.now();
     await axios.post(
       `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
       { message: reply },
       { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
     );
+    recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
+      stages: {
+        prepare_ms: providerStartedAt - interactionStartedAt,
+        provider_ms: providerFinishedAt - providerStartedAt,
+        postprocess_ms: deliveryStartedAt - providerFinishedAt,
+        delivery_ms: Date.now() - deliveryStartedAt,
+      }, interactionId: bot_id, trigger: query });
 
     // Add Nora's chat reply to transcript
     if (session) {
@@ -4909,7 +4960,10 @@ async function monitorProspectiveSlackOutput({ task, candidate, interactionRef, 
   if (contextAssignment && !monitorInterventions.has(contextAssignment.intervention)) return unmonitored(candidate);
   if (!contextAssignment && [...monitorInterventions].some(intervention => intelligence.interventionActive(intervention))) return unmonitored(candidate);
   const assignment = monitorInterventions.has(contextAssignment?.intervention) ? contextAssignment : null;
-  const enabled = assignment || process.env.NORA_PROSPECTIVE_OUTPUT_MONITOR_ENABLED !== 'false';
+  // The live path never enables a second provider pass globally. A fully bound synthetic/study
+  // assignment can still invoke the mechanism, while deterministic financial and execution-
+  // receipt guards stay active for every ordinary response without another provider round trip.
+  const enabled = Boolean(assignment);
   if (!enabled || mode !== 'direct' || !String(candidate || '').trim()) return unmonitored(candidate);
   const calibrationTrial = assignment?.intervention === 'prospective_output_calibration_access';
   const binding = calibrationTrial ? 'self'
@@ -5643,13 +5697,18 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   // back-and-forth and ask people to re-paste what they'd just said). Per-user scoping also keeps one
   // person's financial replies out of another person's context (see slackSessionKey).
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
+  const interactionStartedAt = Date.now();
   return withSlackSessionLock(sessionKey, () =>
     handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
-      sourceAttestation));
+      sourceAttestation, interactionStartedAt));
 }
 
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
-  sourceAttestation = null) {
+  sourceAttestation = null, interactionStartedAt = Date.now()) {
+  const handlerStartedAt = Date.now();
+  const latencyStages = { queue_ms: handlerStartedAt - interactionStartedAt };
+  let providerStartedAt = null;
+  let providerFinishedAt = null;
   let endogenousAssignmentForFailure = null;
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
@@ -5786,7 +5845,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let preassignedContext = null;
     if (endogenousAttentionTrialActive) {
       const available = intelligence.endogenousAttentionSelectionAvailable({ surface: 'slack', task_prompt: text, query: convText, channel: 'slack', person: requesterName || null });
-      preassignedContext = intelligence.contextCondition({ surface: 'slack', unitKey: key, endogenousAttentionAvailable: available });
+      preassignedContext = intelligence.contextCondition({ surface: 'slack', unitKey: key,
+        endogenousAttentionAvailable: available, latencyCritical: true });
       if (preassignedContext) preassignedContext = await runEndogenousSlackAttentionSelection({
         task: text, query: convText, interactionRef: key, contextAssignment: preassignedContext, person: requesterName || null,
       });
@@ -5795,6 +5855,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: key, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
+        contextTrialsEnabled: true, latencyCritical: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
     let tail = slackVolatile;
@@ -5924,6 +5985,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       'anthropic-version': '2023-06-01'
     } };
     let reasoningRegulationActive = contextAssignment?.intervention === 'provider_reasoning_regulation';
+    providerStartedAt = Date.now();
+    latencyStages.prepare_ms = providerStartedAt - handlerStartedAt;
     if (reasoningRegulationActive) {
       const reasoningConfig = providerReasoningRegulation.requestConfig(contextAssignment.condition);
       reqBody.max_tokens = 4000;
@@ -6042,6 +6105,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
       } else { throw err; }
     }
+    providerFinishedAt = Date.now();
+    latencyStages.provider_ms = providerFinishedAt - providerStartedAt;
 
     let reply = (response.data.content || [])
       .filter(b => b.type === 'text')
@@ -6196,6 +6261,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         reacted = (await trySlackReaction(channel, triggerTs, emoji)).reacted;
       }
       if (reacted) {
+        latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
+        recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+          stages: latencyStages, interactionId: key, trigger: text });
         recordIntrospectiveResponse(`:${emoji}:`);
         recordGoalResponse(`:${emoji}:`, false);
         recordEndogenousAttentionResponse(`:${emoji}:`, false);
@@ -6223,10 +6291,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const candidateSegments = reply.split(/\n?\s*<split>\s*\n?/i).map(segment => segment.trim()).filter(Boolean).slice(0, 3);
     const candidateForMonitor = candidateSegments.join('\n');
     const actionExecutionRecords = intelligence.actionExecutionsById(actionExecutionIds);
+    const monitorStartedAt = Date.now();
     const monitoredOutput = await monitorProspectiveSlackOutput({
       task: text, candidate: candidateForMonitor, interactionRef: key, contextAssignment,
       financialApproved, executedToolNames: firedTools, actionExecutionRecords, mode,
     });
+    latencyStages.monitor_ms = Date.now() - monitorStartedAt;
     reply = monitoredOutput.response;
     if (!financialApproved && containsFinancialContent(reply)) {
       console.warn(`Post-monitor financial scrubber blocked a leak to unapproved user ${user}`);
@@ -6258,6 +6328,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Post reply to Slack (first segment anchors the interaction log)
     let postRes = null;
     let allSegmentsPosted = segments.length > 0;
+    const deliveryStartedAt = Date.now();
     try {
       for (let i = 0; i < segments.length; i++) {
         if (i > 0) await new Promise(r => setTimeout(r, 900 + Math.floor(Math.random() * 900)));
@@ -6270,6 +6341,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         });
         if (!postRes) postRes = res;
         allSegmentsPosted = allSegmentsPosted && res?.data?.ok === true;
+        if (i === 0 && res?.data?.ok === true) {
+          latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
+          latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
+          recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+            stages: latencyStages, interactionId: key, trigger: text });
+        }
       }
     } catch (error) {
       if (reasoningRegulationActive) {
@@ -8582,7 +8659,8 @@ wss.on('connection', async (ws, req) => {
         if (s?.voiceFirstAudioPending && s.voiceTriggerAt) {
           const latencyMs = Date.now() - s.voiceTriggerAt;
           s.voiceFirstAudioPending = false;
-          intelligence.recordTrace({ channel: 'meeting', action: 'response_latency', decision: latencyMs <= 2000 ? 'snappy' : 'slow', confidence: 1, reasons: [`first audio in ${latencyMs}ms`, s.voiceTriggerReason || 'voice turn'], preview: String(latencyMs) });
+          recordInteractiveResponseLatency({ surface: 'realtime', startedAt: s.voiceTriggerAt,
+            interactionId: botId, trigger: s.voiceTriggerReason || 'voice turn' });
           console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
         }
       }

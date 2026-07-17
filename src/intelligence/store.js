@@ -45,6 +45,7 @@ const earnedViewpoint = require('./earned-viewpoint');
 const relationalAffect = require('./relational-affect');
 const relationalAffectStudy = require('./relational-affect-study');
 const teammatePerspective = require('./teammate-perspective');
+const interactivePerformance = require('./interactive-performance');
 const teammatePerspectiveStudy = require('./teammate-perspective-study');
 const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
@@ -9595,6 +9596,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const researchEvents = cognition.research_ledger?.events?.length || 0;
     const appraisal = cognition.appraisal || {};
     const calibrationResolved = cognition.calibration?.resolved || 0;
+    const responsiveness = interactivePerformance.summarize(state.traces, clock().getTime());
+    const responseP95 = Object.entries(responsiveness.surfaces)
+      .filter(([, value]) => value.p95_ms !== null)
+      .map(([surface, value]) => `${surface} p95 ${value.p95_ms}ms`)
+      .join(', ');
+    const responsivenessEvidence = responsiveness.samples
+      ? `${responsiveness.within_budget}/${responsiveness.samples} within budget${responseP95 ? `; ${responseP95}` : ''}`
+      : 'awaiting first measured Slack, Zoom chat, or voice response';
     const scaleCount = (value, saturation) => 1 - Math.exp(-(Number(value) || 0) / saturation * 2.2);
     const metric = (level, evidence, available) => ({ level: clamp01(level), evidence, available: Boolean(available) });
     const integratedDomains = integratedSelfSealed ? 0 : (latestFrame?.integration?.available_domains?.length || 0);
@@ -9631,6 +9640,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         'integrated-self': integratedSelfSealed
           ? metric(0.18, 'authentic frame sealed by an active trial', true)
           : metric(integratedDomains / 6, `${integratedDomains}/6 functional domains bound`, Boolean(latestFrame)),
+        responsiveness: metric(responsiveness.within_budget_rate || 0,
+          responsivenessEvidence, responsiveness.samples > 0),
         research: metric(scaleCount(researchEvents, 40), `${researchEvents} committed research ledger events`, researchEvents > 0),
       },
       cognition: {
@@ -9646,6 +9657,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
         reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
           development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length },
+        responsiveness,
       },
     };
   }
@@ -14147,10 +14159,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return { assignment, created: true };
   }
 
-  function contextCondition({ surface, unitKey, continuityAvailable = false, appraisalAvailable = false, developmentAvailable = false, integratedSelfAvailable = false, epistemicOwnershipAvailable = false, epistemicDiscrepancyAvailable = false, epistemicRevisionHistoryAvailable = false, professionalViewpointAvailable = false, relationalAffectAvailable = false, selfModelTrustAvailable = false, dreamInsightAvailable = false, teammatePerspectiveAvailable = false, constructiveProspectionAvailable = false, globalBroadcastAvailable = false, agencyComparatorAvailable = false, agencyModelAvailable = false, empiricalSelfKnowledgeAvailable: empiricalSelfAvailable = false, actionAuthorshipAvailable = false, situationalAffordanceAvailable = false, prospectiveOutputMonitorAvailable = false, endogenousAttentionAvailable = false, reasoningSelfRegulationAvailable = false } = {}) {
+  function contextCondition({ surface, unitKey, continuityAvailable = false, appraisalAvailable = false, developmentAvailable = false, integratedSelfAvailable = false, epistemicOwnershipAvailable = false, epistemicDiscrepancyAvailable = false, epistemicRevisionHistoryAvailable = false, professionalViewpointAvailable = false, relationalAffectAvailable = false, selfModelTrustAvailable = false, dreamInsightAvailable = false, teammatePerspectiveAvailable = false, constructiveProspectionAvailable = false, globalBroadcastAvailable = false, agencyComparatorAvailable = false, agencyModelAvailable = false, empiricalSelfKnowledgeAvailable: empiricalSelfAvailable = false, actionAuthorshipAvailable = false, situationalAffordanceAvailable = false, prospectiveOutputMonitorAvailable = false, endogenousAttentionAvailable = false, reasoningSelfRegulationAvailable = false, latencyCritical = false } = {}) {
     if (!surface || !unitKey) return null;
     const trial = state.cognition.self_model.context_trials.find(item => item.status === 'active' && item.surfaces.includes(surface));
     if (!trial) return null;
+    if (!interactivePerformance.allowsInlineIntervention({
+      latencyCritical,
+      intervention: trial.intervention,
+      selfModelProtocolVersion: trial.self_model_protocol_version,
+    })) return null;
     if (trial.intervention === 'continuity_context' && continuityAvailable !== true) return null;
     if (trial.intervention === 'continuity_context' && trial.continuity_protocol_version === 2) {
       const latest = state.cognition.continuity_handoffs?.at(-1) || null;

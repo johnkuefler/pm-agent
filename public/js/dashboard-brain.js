@@ -172,6 +172,17 @@ const NORA_BRAIN_CAPABILITIES = [
       return activity(scaleCount(supported || indicators.length, 12), `${indicators.length} indicators, ${supported} currently supported`, indicators.length > 0);
     },
   },
+  {
+    id: 'responsiveness', label: 'Responsiveness', layer: 'applied', x: .84, y: .30,
+    description: 'Measured first-delivery latency on Slack, Zoom chat, and live voice, protected from extra-round research work by Nora\'s cognitive latency firewall.',
+    links: ['attention', 'agency', 'research'],
+    read: state => {
+      const performance = state.cognition?.responsiveness || {};
+      const samples = performance.samples || 0;
+      const rate = performance.within_budget_rate || 0;
+      return activity(rate, samples ? `${performance.within_budget || 0}/${samples} responses within channel budget` : 'Awaiting first measured interaction', samples > 0);
+    },
+  },
 ];
 
 const NORA_BRAIN_CONNECTIONS = NORA_BRAIN_CAPABILITIES.flatMap(source =>

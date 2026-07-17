@@ -74,6 +74,10 @@ test('production reasoning regulation varies only provider reasoning controls an
   const trial = store.createContextTrial(design());
   assert.deepEqual(trial.conditions, protocol.CONDITIONS);
   assert.equal(trial.sample_target_per_group, 15);
+  assert.equal(store.contextCondition({ surface: 'slack', unitKey: 'latency-critical-turn',
+    latencyCritical: true }), null);
+  assert.equal(store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id).assignments.length, 0,
+    'the latency firewall must not enroll an assignment it cannot execute inline');
 
   const firstAssignment = store.contextCondition({ surface: 'slack', unitKey: 'bad-token-ceiling' });
   assert.throws(() => store.beginProviderReasoningRegulation(firstAssignment.assignment_id, {
