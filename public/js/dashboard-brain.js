@@ -37,8 +37,11 @@ const NORA_BRAIN_CAPABILITIES = [
     read: state => {
       const claims = (state.selfModel?.claims || []).filter(item => item.status === 'active' && item.confidence_audit?.complete_chain_verified !== false);
       const probes = (state.selfModel?.probes || []).filter(item => item.status === 'open');
-      const count = claims.length + probes.length;
-      return activity(scaleCount(count, 10), `${claims.length} active claims, ${probes.length} open probes`, count > 0);
+      const behavioral = state.selfModel?.behavioral_self_model || {};
+      if (behavioral.experimental_access_sealed) return activity(.18, `Behavioral profile sealed by an active blinded trial; ${claims.length} active claims, ${probes.length} open probes`, true);
+      const revisions = behavioral.report?.total_revisions || 0;
+      const count = claims.length + probes.length + revisions;
+      return activity(scaleCount(count, 10), `${claims.length} active claims, ${probes.length} open probes, ${revisions} behavioral revisions`, count > 0);
     },
   },
   {
@@ -60,7 +63,8 @@ const NORA_BRAIN_CAPABILITIES = [
       const report = state.agency?.report || {};
       const open = report.open || 0;
       const resolved = report.resolved || 0;
-      return activity(Math.max(scaleCount(open, 5), resolved ? .24 : 0), `${open} open and ${resolved} resolved intentions`, open + resolved > 0);
+      const succeeded = report.succeeded_executions || 0;
+      return activity(Math.max(scaleCount(open, 5), resolved ? .24 : 0, succeeded ? .32 : 0), `${open} open and ${resolved} resolved intentions; ${succeeded} succeeded tool executions`, open + resolved + succeeded > 0);
     },
   },
   {
@@ -71,7 +75,8 @@ const NORA_BRAIN_CAPABILITIES = [
       const report = state.interoception?.report || {};
       const open = report.open_predictions || 0;
       const resolved = report.resolved_predictions || 0;
-      return activity(Math.max(scaleCount(open, 5), resolved ? .28 : 0), `${open} open and ${resolved} resolved predictions`, open + resolved > 0);
+      const cycleForecasts = state.experience?.prospective_self_forecast?.replay_verified_scored || 0;
+      return activity(Math.max(scaleCount(open, 5), resolved ? .28 : 0, cycleForecasts ? .32 : 0), `${open} open and ${resolved} resolved substrate predictions; ${cycleForecasts} scored cycle self-forecasts`, open + resolved + cycleForecasts > 0);
     },
   },
   {
@@ -79,8 +84,10 @@ const NORA_BRAIN_CAPABILITIES = [
     description: 'Promises and due work carried forward separately from ordinary task state.',
     links: ['agency', 'relationships', 'experience'],
     read: state => {
-      const count = (state.commitments || []).length;
-      return activity(scaleCount(count, 8), `${count} open promise${count === 1 ? '' : 's'}`, count > 0);
+      const commitments = state.commitments || [];
+      const open = commitments.filter(item => item.status === 'open').length;
+      const fulfilled = commitments.filter(item => item.status === 'fulfilled').length;
+      return activity(Math.max(scaleCount(open, 8), fulfilled ? .24 : 0), `${open} open and ${fulfilled} fulfilled promises`, open + fulfilled > 0);
     },
   },
   {
@@ -135,7 +142,7 @@ const NORA_BRAIN_CAPABILITIES = [
       const continuity = state.experience?.continuity || {};
       const total = continuity.total || 0;
       const closed = continuity.closed || 0;
-      return activity(total ? closed / total : 0, `${closed}/${total} functional moments closed`, total > 0);
+      return activity(total ? closed / total : 0, `${closed}/${total} functional moments terminal; replay verification loads with details`, total > 0);
     },
   },
   {

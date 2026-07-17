@@ -9884,20 +9884,27 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const probes = cognition.self_model?.probes || [];
     const activeClaims = claims.filter(item => item.status === 'active').length;
     const openProbes = probes.filter(item => item.status === 'open').length;
+    const activeContextTrial = (cognition.self_model?.context_trials || []).some(item => item.status === 'active');
+    const behavioralSelfRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
     const drives = Object.entries(cognition.drives || {}).sort((a, b) => (b[1]?.level || 0) - (a[1]?.level || 0));
     const strongestDrive = drives[0] || null;
     const intentions = cognition.agency?.intentions || [];
     const openIntentions = intentions.filter(item => item.status === 'open').length;
     const resolvedIntentions = intentions.filter(item => item.status === 'resolved').length;
+    const actionExecutions = cognition.agency?.executions || [];
+    const succeededExecutions = actionExecutions.filter(item => item.status === 'succeeded').length;
     const predictions = cognition.interoception?.predictions || [];
     const openPredictions = predictions.filter(item => item.status === 'open').length;
     const resolvedPredictions = predictions.filter(item => item.status === 'resolved').length;
     const openCommitments = state.commitments.filter(item => item.status === 'open').length;
+    const fulfilledCommitments = state.commitments.filter(item => item.status === 'fulfilled').length;
     const activeExperiments = state.experiments.filter(item => item.status === 'active').length;
     const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
       + (relationship.observations || []).filter(item => item.status === 'active').length, 0);
     const experience = cognition.experience_stream || [];
-    const closedExperience = experience.filter(item => item.status === 'closed').length;
+    const terminalExperience = experience.filter(item => item.status !== 'open').length;
+    const cycleSelfForecasts = experience.filter(item => item.self_forecast);
+    const scoredCycleSelfForecasts = cycleSelfForecasts.filter(item => item.self_forecast?.outcome).length;
     const handoffs = cognition.continuity_handoffs || [];
     const frames = cognition.integrated_self?.frames || [];
     const latestFrame = frames.at(-1) || null;
@@ -9907,7 +9914,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const viewpointRetirements = viewpointReappraisals.filter(item => item.decision === 'retire').length;
     const replayVerifiedViewpointLifecycleChanges = replayVerifiedProfessionalViewpointReappraisals(cognition)
       .filter(item => ['revise', 'retire'].includes(item.decision)).length;
-    const currentViewpoints = cognition.earned_viewpoints?.current?.viewpoints || [];
+    const earnedViewpointState = cognition.earned_viewpoints?.current || null;
+    const earnedViewpointProjectionVerified = !earnedViewpointProjectionSealed()
+      && earnedViewpoint.audit(earnedViewpointState, cognition.epistemic_ledger?.propositions || []).complete_chain_verified;
+    const currentViewpoints = earnedViewpointProjectionVerified ? earnedViewpointState?.viewpoints || [] : [];
     const provenanceBoundViewpoints = currentViewpoints
       .filter(item => item.source_family_provenance_verified === true);
     const viewpointSourceFamilies = [...new Set(provenanceBoundViewpoints.map(item => item.source_family))].sort();
@@ -9954,17 +9964,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       },
       brain: {
         attention: metric((workspace.slots || []).length / (workspace.capacity || 7), `${(workspace.slots || []).length}/${workspace.capacity || 7} workspace slots occupied`, (workspace.slots || []).length > 0),
-        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${provenanceBoundViewpoints.length} provenance-bound views across ${viewpointSourceFamilies.length} source families; ${replayVerifiedViewpointLifecycleChanges} replay-verified viewpoint changes; ${insightReflectionSealed ? 'recurring insights sealed' : `${insightCandidates.length} insight candidates from ${insightReflectionStatus?.readiness?.distinct_dates || 0} idea dates`}`, reflectionSignals > 0 || insightReflectionSealed),
-        'self-model': metric(scaleCount(activeClaims + openProbes, 10), `${activeClaims} active claims, ${openProbes} open probes`, activeClaims + openProbes > 0),
+        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${currentViewpoints.length} current views, ${provenanceBoundViewpoints.length} provenance-bound across ${viewpointSourceFamilies.length} source families; ${replayVerifiedViewpointLifecycleChanges} replay-verified viewpoint changes; ${insightReflectionSealed ? 'recurring insights sealed' : `${insightCandidates.length} insight candidates from ${insightReflectionStatus?.readiness?.distinct_dates || 0} idea dates`}`, reflectionSignals > 0 || insightReflectionSealed),
+        'self-model': activeContextTrial && behavioralSelfRevisions.length
+          ? metric(0.18, `Behavioral profile sealed by an active blinded trial; ${activeClaims} active claims, ${openProbes} open probes`, true)
+          : metric(scaleCount(activeClaims + openProbes + behavioralSelfRevisions.length, 10), `${activeClaims} active claims, ${openProbes} open probes, ${behavioralSelfRevisions.length} behavioral revisions`, activeClaims + openProbes + behavioralSelfRevisions.length > 0),
         appraisal: metric(appraisal.updated ? Math.max(0.4, scaleCount(calibrationResolved, 12)) : 0, appraisal.label || 'awaiting first cycle', Boolean(appraisal.updated)),
-        agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions`, openIntentions + resolvedIntentions > 0),
-        forecasting: metric(Math.max(scaleCount(openPredictions, 5), resolvedPredictions ? 0.28 : 0), `${openPredictions} open and ${resolvedPredictions} resolved predictions`, openPredictions + resolvedPredictions > 0),
-        commitments: metric(scaleCount(openCommitments, 8), `${openCommitments} open promise${openCommitments === 1 ? '' : 's'}`, openCommitments > 0),
+        agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0, succeededExecutions ? 0.32 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions; ${succeededExecutions} succeeded tool executions`, openIntentions + resolvedIntentions + succeededExecutions > 0),
+        forecasting: metric(Math.max(scaleCount(openPredictions, 5), resolvedPredictions ? 0.28 : 0, scoredCycleSelfForecasts ? 0.32 : 0), `${openPredictions} open and ${resolvedPredictions} resolved substrate predictions; ${scoredCycleSelfForecasts} scored cycle self-forecasts`, openPredictions + resolvedPredictions + scoredCycleSelfForecasts > 0),
+        commitments: metric(Math.max(scaleCount(openCommitments, 8), fulfilledCommitments ? 0.24 : 0), `${openCommitments} open and ${fulfilledCommitments} fulfilled promises`, openCommitments + fulfilledCommitments > 0),
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
         learning: metric(scaleCount(activeExperiments + (cognition.development || []).length, 10), `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories`, activeExperiments + (cognition.development || []).length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%` : 'awaiting first cycle', Boolean(strongestDrive)),
-        experience: metric(experience.length ? closedExperience / experience.length : 0, `${closedExperience}/${experience.length} functional moments closed`, experience.length > 0),
+        experience: metric(experience.length ? terminalExperience / experience.length : 0, `${terminalExperience}/${experience.length} functional moments terminal; replay verification loads with details`, experience.length > 0),
         continuity: metric(scaleCount(handoffs.length, 12), `${handoffs.length} recorded handoffs; replay verification loads with details`, handoffs.length > 0),
         'integrated-self': integratedSelfSealed
           ? metric(0.18, 'authentic frame sealed by an active trial', true)
@@ -9981,6 +9993,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         motivation: { strongest_name: strongestDriveName, strongest_level: strongestDriveLevel,
           drives: drives.slice(0, 6).map(([name, value]) => ({ name, level: value.level || 0 })) },
         integrated_self: { sealed: integratedSelfSealed, domains: integratedDomains, frame_count: frames.length },
+        self_model: { sealed: activeContextTrial && behavioralSelfRevisions.length > 0,
+          active_claims: activeClaims, open_probes: openProbes,
+          behavioral_revisions: activeContextTrial ? null : behavioralSelfRevisions.length },
+        agency: { open_intentions: openIntentions, resolved_intentions: resolvedIntentions,
+          executions: actionExecutions.length, succeeded_executions: succeededExecutions },
+        forecasting: { open_substrate_predictions: openPredictions,
+          resolved_substrate_predictions: resolvedPredictions,
+          cycle_self_forecasts: cycleSelfForecasts.length, scored_cycle_self_forecasts: scoredCycleSelfForecasts },
         background: { sealed: selfInquirySelectionActive(cognition), tick_count: dynamics.tick_count || 0,
           active_contents: activeContents, accepted_pulses: acceptedPulses, unresolved_pulses: unresolvedPulses,
           top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
