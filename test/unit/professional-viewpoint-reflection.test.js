@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const reflection = require('../../src/intelligence/professional-viewpoint-reflection');
+const earnedViewpoint = require('../../src/intelligence/earned-viewpoint');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
 const NOW = new Date('2026-07-16T16:00:00.000Z');
@@ -99,6 +100,21 @@ test('subject reflection forms one receipt-bound viewpoint and fails closed unde
     callProvider: async () => { calls += 1; throw new Error('must not run'); } });
   assert.equal(duplicate.state, 'dream_already_reflected');
   assert.equal(calls, 0);
+
+  await store.persist();
+  const statePath = path.join(dir, 'state.json');
+  const raw = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  const staleProjection = raw.cognition.earned_viewpoints.current;
+  for (const viewpoint of staleProjection.viewpoints) delete viewpoint.source_family_provenance_verified;
+  const { content_commitment: _oldCommitment, ...stalePayload } = staleProjection;
+  staleProjection.content_commitment = earnedViewpoint.commitment(stalePayload);
+  fs.writeFileSync(statePath, JSON.stringify(raw));
+  const reloaded = createIntelligenceStore({ filePath: statePath, db: {}, isDbReady: () => false,
+    clock: () => new Date(NOW) });
+  await reloaded.init();
+  assert.equal(reloaded.earnedViewpointsSnapshot().current_verified, true);
+  assert.equal(reloaded.earnedViewpointsSnapshot().viewpoints[0].source_family_provenance_verified, true,
+    'hydration deterministically upgrades only the derived projection, never its source proposition');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

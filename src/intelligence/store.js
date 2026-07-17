@@ -656,6 +656,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && !relationalAffect.audit(state.cognition.relational_affect.current, state.relationships).complete_chain_verified) {
       state.cognition.relational_affect.current = null;
     }
+    if (!earnedViewpointProjectionSealed(state.cognition)) {
+      const priorProjection = state.cognition.earned_viewpoints?.current || null;
+      const priorObservedAt = priorProjection?.observed_at;
+      const observedAt = priorObservedAt && Number.isFinite(new Date(priorObservedAt).getTime())
+        ? new Date(priorObservedAt) : clock();
+      state.cognition.earned_viewpoints = state.cognition.earned_viewpoints || { current: null };
+      state.cognition.earned_viewpoints.current = earnedViewpoint.derive(
+        state.cognition.epistemic_ledger?.propositions || [], observedAt);
+    }
   }
 
   async function init() {
