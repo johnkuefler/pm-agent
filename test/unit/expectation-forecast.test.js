@@ -93,3 +93,17 @@ test('EXPECT is preregistered after the self-forecast, resolved in the same cycl
   assert.equal(abandoned.audit.abandonment_commitment_verified, true);
   assert.equal(abandoned.audit.complete_chain_verified, true);
 });
+
+test('EXPECT exposes compact calibration before forecast formation without adding a provider path', () => {
+  const routes = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
+  const routine = fs.readFileSync(path.join(__dirname, '..', '..', 'nora-routine.md'), 'utf8');
+  const instructions = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes',
+    'cowork-instructions.js'), 'utf8');
+  assert.match(routes, /req\.query\.summary === '1'[\s\S]*epistemic_status:[\s\S]*report:/);
+  assert.ok(routine.indexOf('GET /expectations?summary=1')
+    < routine.indexOf('POST /expectations`'),
+  'calibration must be available before the same invocation commits its forecast');
+  assert.match(routine, /historically overconfident scope modestly[\s\S]*toward 0\.5/);
+  assert.match(instructions, /Use calibration only[\s\S]*never as evidence about the current inbox/);
+  assert.doesNotMatch(instructions, /EXPECT[\s\S]{0,500}(?:anthropic|claude|provider call required)/i);
+});

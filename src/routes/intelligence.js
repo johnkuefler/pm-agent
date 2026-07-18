@@ -370,7 +370,14 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
   });
   app.get('/expectations', requireAuth, (req, res) => {
-    try { res.json(store.expectationForecastSnapshot({ scope: req.query.scope || null, since: req.query.since || null })); }
+    try {
+      const snapshot = store.expectationForecastSnapshot({ scope: req.query.scope || null,
+        since: req.query.since || null });
+      if (req.query.summary === '1') return res.json({
+        epistemic_status: snapshot.epistemic_status, report: snapshot.report,
+      });
+      return res.json(snapshot);
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/expectations', requireAuth, async (req, res) => {

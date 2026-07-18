@@ -645,8 +645,10 @@ function registerCoworkInstructionsRoute(app) {
     studies; a directly overlapping self-model or integrated-self intervention seals it. Treat a single
     error as counterevidence, not a stable tendency or an instruction to make the next forecast agree.
     Once that cycle self-forecast is replay-verified and before reading Slack, email, Teamwork, calendar, or
-    meeting sources, POST /expectations commits one source-bounded EXPECT forecast for only the scopes this run
-    will inspect. It reuses the current cowork judgment and never adds a provider call. After perception and
+    meeting sources, GET /expectations?summary=1 exposes compact rolling calibration, then POST /expectations
+    commits one source-bounded EXPECT forecast for only the scopes this run will inspect. Use calibration only
+    to temper probability scale, never as evidence about the current inbox. It reuses the current cowork judgment
+    and never adds a provider call. After perception and
     before cycle closure, POST /expectations/:id/resolve atomically resolves every claim against stable source
     references; connector failures remain unclear rather than false. GET /expectations reports rolling Brier
     calibration by scope. Replay-verified high-confidence misses enter surprise and may support a higher-salience

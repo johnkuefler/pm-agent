@@ -471,12 +471,19 @@ what you intended to submit. This is machine-readable lifecycle self-location, n
 ## Step 0.7: EXPECT — Commit Before Perception
 
 After the cycle self-forecast is replay-verified and the lifecycle is `operational_cycle_active`, but before
-reading Slack, email, Teamwork, calendar, meeting records, or other operational sources, commit one bounded
-world forecast with `POST /expectations`. Send the current `cycle_id`, a concise rationale, and only the scopes
-you will actually inspect this run. Allowed scopes are `slack_inbox`, `email_inbox`, `teamwork_deadlines`,
-`meeting_day`, and `run_shape`; each selected scope contains one to six observable claims with probabilities
-from 0.05 to 0.95. This uses the existing cowork judgment—do not make a separate provider call for EXPECT.
-Do not read a connector first and then backfill its forecast.
+reading Slack, email, Teamwork, calendar, meeting records, or other operational sources, read
+`GET /expectations?summary=1` once. Use only its rolling
+30-day calibration as fallible feedback on probability scale: move a historically overconfident scope modestly
+toward 0.5, leave a collecting scope unadjusted, and never copy an old claim or treat calibration as evidence
+about what is waiting now. If the summary is unavailable, continue with an honest unadjusted forecast rather
+than delaying perception. This is a local state read inside the already-running cowork invocation, not a new
+provider call.
+
+Then commit one bounded world forecast with `POST /expectations`. Send the current `cycle_id`, a concise
+rationale, and only the scopes you will actually inspect this run. Allowed scopes are `slack_inbox`,
+`email_inbox`, `teamwork_deadlines`, `meeting_day`, and `run_shape`; each selected scope contains one to six
+observable claims with probabilities from 0.05 to 0.95. This uses the existing cowork judgment—do not make a
+separate provider call for EXPECT. Do not read a connector first and then backfill its forecast.
 
 After those sources have been checked and before closing the cycle, atomically resolve every committed claim
 with `POST /expectations/:id/resolve`. Each claim needs the exact returned `claim_id`, outcome `true`, `false`,
