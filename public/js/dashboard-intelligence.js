@@ -340,11 +340,14 @@ function renderReadingRoom(report) {
   const progress = totalChunks ? Math.round((completedChunks / totalChunks) * 100) : 0;
   const stateTitle = active ? `Reading chunk ${Math.min(completedChunks + 1, totalChunks)} of ${totalChunks}`
     : latest ? 'Most recent completed encounter' : 'Awaiting Nora\'s selection';
+  const selectionKicker = latest?.selection_mode === 'provider_bound_autonomous'
+    ? 'Provider-bound autonomous selection'
+    : active ? 'Source-bound encounter' : latest ? 'Committed synthesis' : 'Available work';
   target.innerHTML = `<div class="reading-room-layout">
     ${readingRoomBook(source, latest)}
     <div class="reading-session">
       <header class="reading-session-head">
-        <div><span class="brain-detail-kicker">${escHtml(active ? 'Source-bound encounter' : latest ? 'Committed synthesis' : 'Available work')}</span><h3>${escHtml(stateTitle)}</h3></div>
+        <div><span class="brain-detail-kicker">${escHtml(selectionKicker)}</span><h3>${escHtml(stateTitle)}</h3></div>
         <div class="reading-progress"><strong>${progress}%</strong><span>${completedChunks}/${totalChunks} reflected</span></div>
       </header>
       ${latest ? `<div class="reading-intent">

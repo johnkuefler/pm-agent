@@ -90,6 +90,36 @@ test('a reading encounter is sequential, source-bound, quote-bounded, and never 
   assert.match(session.encounter.epistemic_status, /not a persona edit/);
 });
 
+test('autonomous source selection binds the exact provider output without rewriting legacy sessions', () => {
+  const source = reading.createSource({ id: 'reading-source-autonomous1', title: 'The New State',
+    author: 'Mary Parker Follett', source_kind: 'book', source_url: 'https://example.org/new-state.txt',
+    rights_basis: 'public_domain', rights_note: 'Public domain edition.',
+    content_commitment: 'a'.repeat(64), content_chars: 20000,
+    chunk_commitments: ['b'.repeat(64)], admitted_by: 'John' },
+  new Date('2026-07-18T01:00:00Z'));
+  const selection = { source_id: source.id,
+    selection_rationale: 'I want to test whether group process offers more than task coordination.',
+    guiding_questions: ['Where does shared judgment improve project work?'],
+    predicted_influence: 'I may become more precise about when participation improves a decision.' };
+  const session = reading.createSession(source, { id: 'autonomous-reading-session',
+    selected_by: 'Nora', ...selection, selection_provider_receipt: {
+      response_id: 'selection-response-1', provider: 'anthropic', model: 'test-model',
+      request_commitment: 'c'.repeat(64),
+      selection_commitment: reading.commitment(reading.sessionSelectionPayload(selection)),
+    } }, new Date('2026-07-18T02:00:00Z'));
+  assert.equal(session.protocol_version, reading.SESSION_PROTOCOL_VERSION);
+  assert.equal(session.selection_mode, 'provider_bound_autonomous');
+  assert.equal(reading.verifySession(session, source), true);
+  const tampered = structuredClone(session);
+  tampered.selection_rationale = 'A server-authored substitute rationale.';
+  assert.equal(reading.verifySession(tampered, source), false);
+  const explicit = reading.createSession(source, { id: 'explicit-reading-session', selected_by: 'Nora',
+    selection_rationale: selection.selection_rationale, guiding_questions: selection.guiding_questions,
+    predicted_influence: selection.predicted_influence }, new Date('2026-07-18T02:00:00Z'));
+  assert.equal(explicit.protocol_version, reading.PROTOCOL_VERSION);
+  assert.equal(reading.verifySession(explicit, source), true);
+});
+
 test('store ledger-binds reading, quarantines influence during trials, and enforces a daily budget', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reading-store-'));
   const interactions = [];

@@ -22,6 +22,47 @@ test('developmental reading clock limits weekday study to off hours but leaves w
   assert.equal(__test.developmentalReadingClock(new Date('2026-07-18T15:00:00Z')).off_hours, true);
 });
 
+test('off-hours selection lets Nora choose or abstain from metadata before any source text is read', async () => {
+  const source = { id: 'reading-source-runtime', title: 'A Serious Book', author: 'An Author',
+    source_kind: 'book', rights_basis: 'public_domain', chunk_count: 2 };
+  const started = [];
+  const store = {
+    developmentalReadingSnapshot: () => ({ report: { active_sessions: 0 },
+      availability: { state: 'between_encounters' }, sources: [source], sessions: [] }),
+    startReadingSession: (sourceId, input) => {
+      started.push({ sourceId, input });
+      return { id: 'selected-session', source_id: sourceId,
+        selection_mode: 'provider_bound_autonomous' };
+    },
+  };
+  const result = await __test.runDevelopmentalReadingSelectionRuntime({ force: true, store,
+    at: new Date('2026-07-18T15:00:00Z'), post: async (_url, body, config) => {
+      assert.equal(body.model, 'claude-sonnet-4-6');
+      assert.equal(body.temperature, undefined); assert.equal(body.tools, undefined);
+      assert.doesNotMatch(body.messages[0].content, /Quoted source chunk|source content/i);
+      assert.match(body.messages[0].content, /A Serious Book/);
+      assert.equal(config.timeout, 30000);
+      return { data: { id: 'selection-response-runtime', model: 'claude-sonnet-4-6',
+        content: [{ type: 'text', text: JSON.stringify({ decision: 'select', source_id: source.id,
+          selection_rationale: 'I want to examine a view that may complicate my coordination habits.',
+          guiding_questions: ['What would change my current view of coordination?'],
+          predicted_influence: 'I may sharpen when to invite shared judgment.' }) }] } };
+    } });
+  assert.equal(result.selected, true);
+  assert.equal(started.length, 1);
+  assert.equal(started[0].sourceId, source.id);
+  assert.equal(started[0].input.selected_by, 'Nora');
+  assert.match(started[0].input.selection_provider_receipt.request_commitment, /^[a-f0-9]{64}$/);
+  assert.match(started[0].input.selection_provider_receipt.selection_commitment, /^[a-f0-9]{64}$/);
+
+  started.length = 0;
+  const abstained = await __test.runDevelopmentalReadingSelectionRuntime({ force: true, store,
+    post: async () => ({ data: { id: 'selection-abstention', model: 'claude-sonnet-4-6',
+      content: [{ type: 'text', text: '{"decision":"abstain","reason":"Nothing here feels urgent today."}' }] } }) });
+  assert.equal(abstained.selected, false);
+  assert.equal(started.length, 0);
+});
+
 test('one background reading pass commits one source-bound chunk without tools or temperature controls', async () => {
   const item = queueItem(); const committed = []; let calls = 0;
   const result = await __test.runDevelopmentalReadingRuntime({ force: true,

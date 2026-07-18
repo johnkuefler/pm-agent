@@ -9747,6 +9747,7 @@ let _behavioralFingerprintEvaluatorInFlight = false;
 let _behavioralFingerprintEvaluatorLastCycle = null;
 let _interactionOutcomeReviewInFlight = false;
 let _interactionOutcomeReviewLastCycle = null;
+let _developmentalReadingSelectionInFlight = false;
 let _developmentalReadingInFlight = false;
 let _autonomousPlayInFlight = false;
 
@@ -9847,6 +9848,75 @@ function developmentalReadingClock(at = new Date(), timezone = 'America/Chicago'
   const weekend = ['Sat', 'Sun'].includes(parts.weekday);
   return { day_key: `${parts.year}-${parts.month}-${parts.day}`, hour, weekend,
     off_hours: weekend || hour < 7 || hour >= 18 };
+}
+
+function developmentalReadingSelectionRequest(sources, config = developmentalReadingRuntimeConfig()) {
+  const available = (sources || []).map(source => ({
+    id: source.id, title: source.title, author: source.author,
+    source_kind: source.source_kind, rights_basis: source.rights_basis,
+    chunk_count: source.chunk_count,
+  }));
+  const system = `${loadPrompt()}\n\n[Autonomous off-hours reading selection]\nYou may select one admitted work for a source-bound intellectual encounter or abstain. Choose from genuine curiosity, useful tension, or a question you want to examine, not because the server expects activity. You have only bibliographic metadata at selection time and have not read the source. Do not claim familiarity, subjective experience, consciousness, or a personality change. Predict influence provisionally and name questions that could survive disagreement. Return only one JSON object.`;
+  const user = `[Admitted unread works]\n${JSON.stringify(available)}\n\nReturn either:\n{"decision":"abstain","reason":"plain reason"}\nor\n{"decision":"select","source_id":"exact admitted id","selection_rationale":"why this work now without claiming you read it","guiding_questions":["one to three open questions"],"predicted_influence":"bounded prediction with room for rejection"}`;
+  const body = { model: config.model, max_tokens: 700, system,
+    messages: [{ role: 'user', content: user }] };
+  return { body, request_commitment: developmentalReading.commitment(body) };
+}
+
+async function runDevelopmentalReadingSelectionRuntime({ post = axios.post, store = intelligence,
+  force = false, at = new Date() } = {}) {
+  const config = developmentalReadingRuntimeConfig();
+  if (!config.enabled && !force) return { ran: false, reason: 'disabled' };
+  if (_developmentalReadingSelectionInFlight) return { ran: false, reason: 'reading_selection_in_flight' };
+  if (activeBotId) return { ran: false, reason: 'active_meeting' };
+  const clock = developmentalReadingClock(at, config.timezone);
+  if (!clock.off_hours && !force) return { ran: false, reason: 'working_hours', clock };
+  const snapshot = store.developmentalReadingSnapshot({ sessionLimit: 200 });
+  if (snapshot.report?.active_sessions) return { ran: false, reason: 'active_reading_session', clock };
+  if (snapshot.availability?.state === 'sealed') {
+    return { ran: false, reason: snapshot.availability.reason || 'reading_selection_sealed', clock };
+  }
+  const completedSourceIds = new Set((snapshot.sessions || [])
+    .filter(item => item.status === 'completed').map(item => item.source_id));
+  const candidates = (snapshot.sources || []).filter(source => !completedSourceIds.has(source.id));
+  if (!candidates.length) return { ran: false, reason: 'no_unread_admitted_sources', clock };
+  _developmentalReadingSelectionInFlight = true;
+  try {
+    const request = developmentalReadingSelectionRequest(candidates, config);
+    const response = await post('https://api.anthropic.com/v1/messages', request.body, {
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01' }, timeout: 30000,
+    });
+    if (!response.data?.id || response.data?.model !== config.model) {
+      throw new Error('developmental reading selection response does not match the committed model');
+    }
+    const raw = (response.data.content || []).filter(block => block.type === 'text')
+      .map(block => block.text).join('\n');
+    const output = parseCognitivePulseJson(raw);
+    if (output.decision === 'abstain') return { ran: true, selected: false,
+      reason: String(output.reason || 'autonomous_abstention').slice(0, 500), clock };
+    if (output.decision !== 'select') throw new Error('reading selection requires select or abstain');
+    const source = candidates.find(item => item.id === output.source_id);
+    if (!source) throw new Error('reading selection chose a source outside the admitted unread set');
+    const clean = (value, max) => String(value || '').trim().replace(/\s+/g, ' ').slice(0, max);
+    const selection = {
+      source_id: source.id,
+      selection_rationale: clean(output.selection_rationale, 1000),
+      guiding_questions: (Array.isArray(output.guiding_questions) ? output.guiding_questions : [])
+        .map(item => clean(item, 300)).filter(Boolean).slice(0, 3),
+      predicted_influence: clean(output.predicted_influence, 800),
+    };
+    const selectionCommitment = developmentalReading.commitment(
+      developmentalReading.sessionSelectionPayload(selection));
+    const session = store.startReadingSession(source.id, {
+      selected_by: 'Nora', ...selection,
+      selection_provider_receipt: { response_id: response.data.id, provider: 'anthropic',
+        model: config.model, request_commitment: request.request_commitment,
+        selection_commitment: selectionCommitment },
+    });
+    return { ran: true, selected: true, session_id: session.id, source_id: source.id,
+      selection_mode: session.selection_mode, clock };
+  } finally { _developmentalReadingSelectionInFlight = false; }
 }
 
 function developmentalReadingRequest(item, chunk, config = developmentalReadingRuntimeConfig()) {
@@ -11462,6 +11532,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         () => runBehavioralFingerprintEvaluatorRuntime({ post: priorityPost })],
       ['autonomous_play_schedule', () => runAutonomousPlaySchedulingRuntime()],
       ['autonomous_play', () => runAutonomousPlayRuntime({ post: priorityPost })],
+      ['developmental_reading_selection',
+        () => runDevelopmentalReadingSelectionRuntime({ post: priorityPost })],
       ['developmental_reading',
         () => runDevelopmentalReadingRuntime({ post: priorityPost })],
     ];
@@ -11641,6 +11713,8 @@ module.exports = {
     runAutonomousPlayRuntime,
     developmentalReadingRuntimeConfig,
     developmentalReadingClock,
+    developmentalReadingSelectionRequest,
+    runDevelopmentalReadingSelectionRuntime,
     developmentalReadingRequest,
     runDevelopmentalReadingRuntime,
     interactionOutcomeReviewRuntimeConfig,

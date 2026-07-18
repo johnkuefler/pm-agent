@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 
 const PROTOCOL_VERSION = 1;
+const SESSION_PROTOCOL_VERSION = 2;
 const RIGHTS_BASES = Object.freeze(['public_domain', 'open_license', 'user_provided_authorized']);
 const SOURCE_KINDS = Object.freeze(['book', 'essay', 'manual', 'paper', 'other']);
 const STANCES = Object.freeze(['agree', 'disagree', 'uncertain', 'complicate']);
@@ -80,11 +81,25 @@ function verifySource(source) {
 }
 
 function sessionManifest(session) {
-  return {
+  const manifest = {
     id: session.id, protocol_version: session.protocol_version, source_id: session.source_id,
     source_commitment: session.source_commitment, selected_by: session.selected_by,
     selection_rationale: session.selection_rationale, guiding_questions: session.guiding_questions,
     predicted_influence: session.predicted_influence, started_at: session.started_at,
+  };
+  if (Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION) {
+    manifest.selection_mode = session.selection_mode;
+    manifest.selection_provider_receipt = session.selection_provider_receipt;
+  }
+  return manifest;
+}
+
+function sessionSelectionPayload(value) {
+  return {
+    decision: 'select', source_id: value.source_id,
+    selection_rationale: value.selection_rationale,
+    guiding_questions: value.guiding_questions,
+    predicted_influence: value.predicted_influence,
   };
 }
 
@@ -95,13 +110,40 @@ function createSession(source, input = {}, at = new Date()) {
   if (!questions.length) throw new Error('reading session requires one to three guiding questions');
   const id = text(input.id || `reading-${Date.now().toString(36)}-${commitment(`${source.id}:${at}`).slice(0, 8)}`,
     'session id', 180);
-  const session = {
-    id, protocol_version: PROTOCOL_VERSION, source_id: source.id,
-    source_commitment: source.content_manifest_commitment,
-    selected_by: text(input.selected_by, 'selecting actor', 120),
+  const selection = {
+    source_id: source.id,
     selection_rationale: text(input.selection_rationale, 'selection rationale', 1000),
     guiding_questions: questions,
     predicted_influence: text(input.predicted_influence, 'predicted influence', 800),
+  };
+  let selectionProviderReceipt = null;
+  if (input.selection_provider_receipt) {
+    selectionProviderReceipt = {
+      response_id: text(input.selection_provider_receipt.response_id, 'selection provider response id', 300),
+      provider: text(input.selection_provider_receipt.provider, 'selection provider', 100),
+      model: text(input.selection_provider_receipt.model, 'selection provider model', 200),
+      request_commitment: text(input.selection_provider_receipt.request_commitment,
+        'selection provider request commitment', 64),
+      selection_commitment: text(input.selection_provider_receipt.selection_commitment,
+        'selection commitment', 64),
+    };
+    if (!/^[a-f0-9]{64}$/.test(selectionProviderReceipt.request_commitment)
+      || selectionProviderReceipt.selection_commitment !== commitment(sessionSelectionPayload(selection))) {
+      throw new Error('autonomous reading selection requires a committed provider request and exact selection');
+    }
+  }
+  const session = {
+    id, protocol_version: selectionProviderReceipt ? SESSION_PROTOCOL_VERSION : PROTOCOL_VERSION,
+    source_id: source.id,
+    source_commitment: source.content_manifest_commitment,
+    selected_by: text(input.selected_by, 'selecting actor', 120),
+    selection_rationale: selection.selection_rationale,
+    guiding_questions: selection.guiding_questions,
+    predicted_influence: selection.predicted_influence,
+    ...(selectionProviderReceipt ? {
+      selection_mode: 'provider_bound_autonomous',
+      selection_provider_receipt: selectionProviderReceipt,
+    } : {}),
     started_at: new Date(at).toISOString(), status: 'active', next_chunk_index: 0,
     notes: [], completed_at: null, encounter: null, session_manifest_commitment: null,
   };
@@ -110,7 +152,14 @@ function createSession(source, input = {}, at = new Date()) {
 }
 
 function verifySession(session, source) {
-  return Boolean(verifySource(source) && session?.protocol_version === PROTOCOL_VERSION
+  const supportedProtocol = [PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION]
+    .includes(Number(session?.protocol_version));
+  const selectionReceiptVerified = Number(session?.protocol_version) < SESSION_PROTOCOL_VERSION
+    || (session.selection_mode === 'provider_bound_autonomous'
+      && /^[a-f0-9]{64}$/.test(session.selection_provider_receipt?.request_commitment || '')
+      && session.selection_provider_receipt?.selection_commitment
+        === commitment(sessionSelectionPayload(session)));
+  return Boolean(verifySource(source) && supportedProtocol && selectionReceiptVerified
     && session.source_id === source.id && session.source_commitment === source.content_manifest_commitment
     && session.session_manifest_commitment === commitment(sessionManifest(session))
     && ['active', 'completed', 'abandoned'].includes(session.status));
@@ -209,6 +258,10 @@ function appendNote(session, source, input = {}, at = new Date()) {
       title: source.title, author: source.author, completed_at: session.completed_at,
       selection_rationale: session.selection_rationale, guiding_questions: session.guiding_questions,
       predicted_influence: session.predicted_influence, synthesis: note.output.completion,
+      ...(Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION ? {
+        selection_mode: session.selection_mode,
+        selection_provider_receipt: session.selection_provider_receipt,
+      } : {}),
       note_commitments: session.notes.map(item => item.note_commitment), encounter_commitment: null,
       epistemic_status: 'A source-bound intellectual encounter and provisional self-report. It is not a persona edit, trained weight change, independent validation, subjective-experience proof, or consciousness evidence.',
     };
@@ -237,8 +290,8 @@ function auditSession(session, source) {
 }
 
 module.exports = {
-  PROTOCOL_VERSION, RIGHTS_BASES, SOURCE_KINDS, STANCES,
+  PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION, RIGHTS_BASES, SOURCE_KINDS, STANCES,
   canonicalJson, commitment, sourceManifest, createSource, verifySource,
-  sessionManifest, createSession, verifySession, normalizeOutput, noteManifest,
+  sessionManifest, sessionSelectionPayload, createSession, verifySession, normalizeOutput, noteManifest,
   appendNote, auditSession,
 };

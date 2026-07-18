@@ -22934,6 +22934,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (current.cognition.developmental_reading.sessions.some(item => item.status === 'active')) {
         throw new Error('finish the active reading encounter before selecting another source');
       }
+      const selectionResponseId = String(input.selection_provider_receipt?.response_id || '');
+      if (selectionResponseId && current.cognition.developmental_reading.sessions.some(item =>
+        item.selection_provider_receipt?.response_id === selectionResponseId)) {
+        throw new Error('reading selection provider response id has already been used');
+      }
       const source = current.cognition.developmental_reading.sources.find(item => item.id === sourceId);
       if (!source || !readingSourceAudit(source, current.cognition).complete_chain_verified) {
         throw new Error('reading session requires a replay-verified admitted source');

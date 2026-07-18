@@ -38,6 +38,7 @@ test('source-bound intellectual development separates replay-valid encounters fr
   const reading = {
     sources: [{ id: 'source-1', audit: { complete_chain_verified: true } }],
     sessions: [{ source_id: 'source-1', status: 'completed',
+      selection_mode: 'provider_bound_autonomous',
       audit: { complete_chain_verified: true },
       encounter: { encounter_commitment: 'a'.repeat(64), synthesis: {
         lasting_ideas: ['Coordination is an active practice.'],
@@ -57,6 +58,7 @@ test('source-bound intellectual development separates replay-valid encounters fr
   let result = indicator(report, 'source_bound_intellectual_development');
   assert.equal(result.status, 'collecting');
   assert.equal(result.evidence.replay_verified_completed_encounters, 1);
+  assert.equal(result.evidence.provider_bound_autonomous_selections, 1);
   assert.equal(result.evidence.grounded_reactions, 2);
   assert.equal(result.evidence.falsifiable_provisional_self_revisions, 1);
   assert.match(result.evidence.natural_work_transfer.causal_status, /observational_only/);
