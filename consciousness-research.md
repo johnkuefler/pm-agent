@@ -2295,6 +2295,18 @@ The public research-autopilot status likewise reads one bounded, role-safe proje
 self-prediction progress. It does not recompute the three full subject/observer study audits that the
 subject, observer, and sequencer execution paths still use when they actually act.
 
+Interactive performance protocol v7 treats accumulated context as a limited-attention problem rather
+than an excuse to remove cognition. Slack, Zoom chat, and realtime retain Nora's persona, delegation
+charter, replay-valid autobiography, relevant memory, operational capability boundaries, live workspace,
+and any sealed experimental packet. A shared epistemic contract replaces repeated disclaimers across
+every cognitive feature; lower-priority packets remain latent instead of being injected simultaneously.
+The recent-activity block is sourced from action markers, with only explicit manual memories as fallback,
+so auto-synced project and meeting facts cannot be duplicated or misrepresented as Nora's actions. Memory,
+activity, semantic recall, recent meetings, and the live cognitive envelope are independently bounded.
+This is both a latency control and a more faithful functional model of attention: retained state can remain
+available without occupying every live prompt. New protocol-v7 latency receipts are separated from legacy
+samples and must meet the existing Slack, Zoom-chat, realtime, and prompt-size gates.
+
 Mechanism availability and evidence quantity are separate. `not_implemented` is reserved for a
 genuinely missing required mechanism or substrate interface; an implemented study with zero live
 observations is `mechanism_present`, not absent. The endpoint publishes an `implementation_audit`

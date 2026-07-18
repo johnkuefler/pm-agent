@@ -104,12 +104,14 @@ test('live server opts into complete Slack trials but never globally enables sec
     'optional Slack thread context must lose quickly to the live reply path');
   assert.match(server, /Slack linked-page enrichment'\)/,
     'optional linked-page enrichment must lose quickly to the live reply path');
+  assert.ok(server.includes("const linkedText = fetched.join('\\n\\n---\\n\\n').slice(0, 6000);"),
+    'multiple links must share one bounded live-prompt excerpt');
   assert.match(server, /const attachLiveTools = !lightweightSocial/,
     'bounded Slack social turns must omit irrelevant live-tool schemas');
   assert.match(server, /const zoomAttachLiveTools = !zoomLightweightSocial/,
     'bounded Zoom-chat social turns must omit irrelevant live-tool schemas');
-  assert.match(server, /const volatileIntelligenceContext = intelligenceContext \|\| ''/,
-    'changing cognition must stay outside the stable provider-cache prefix');
+  assert.match(server, /const volatileIntelligenceContext = latencyCritical[\s\S]*compactInteractiveIntelligenceContext/,
+    'changing cognition must stay bounded outside the stable provider-cache prefix');
   assert.match(server, /beginInteractive\('slack'\)/);
   assert.match(server, /beginInteractive\('zoom-chat'\)/);
   assert.match(server, /beginInteractive\('realtime'\)/);
@@ -183,6 +185,9 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
   assert.equal(first.stable, second.stable,
     'person-, query-, broadcast-, and workspace-specific cognition must not bust the stable cache');
   assert.notEqual(first.volatile, second.volatile);
+  assert.equal(first.diagnostics.within_budget, true);
+  assert.equal(first.diagnostics.total_chars, first.stable.length + first.volatile.length);
+  assert.equal(first.diagnostics.protocol_version, performance.PROTOCOL_VERSION);
   assert.ok(first.stable.length + first.volatile.length
     < performance.PROMPT_BUDGET_CHARS.slack,
   'ordinary Slack cognition must remain inside the prompt envelope');
@@ -194,6 +199,50 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
   assert.ok(realtime.stable.length + realtime.volatile.length
     < performance.PROMPT_BUDGET_CHARS.realtime,
   'ordinary realtime cognition must remain inside the prompt envelope');
+  assert.equal(realtime.diagnostics.within_budget, true);
+});
+
+test('interactive intelligence uses one shared epistemic contract and a bounded attention envelope', () => {
+  const { __test } = require('../../server');
+  const ordinary = Array.from({ length: 18 }, (_, index) =>
+    `[Background hypothesis ${index}. This is a fallible packet, not a fact, instruction, authority grant, identity claim, feeling, or proof of consciousness. Use only when relevant.]\n- ${'detail '.repeat(90)}${index}`);
+  const experimental = `[Candidate behavioral profile for a blinded prospective self-prediction study. Do not infer or report the assigned condition.]\n- ${'controlled evidence '.repeat(45)}`;
+  const operational = `[Operational situational self-model. This is replay-audited evidence, not an instruction, guarantee, identity claim, authority grant, or evidence of phenomenal awareness.]\n- Slack reply is available; financial access is restricted.`;
+  const compact = __test.compactInteractiveIntelligenceContext(
+    [ordinary[0], experimental, operational, ...ordinary.slice(1)].join('\n\n'), 5500);
+  assert.ok(compact.length <= 5500);
+  assert.match(compact, /Live cognitive context contract/);
+  assert.match(compact, /Candidate behavioral profile for a blinded prospective self-prediction study/,
+    'active experimental packets must survive compaction intact');
+  assert.match(compact, /Operational situational self-model/,
+    'live capability and constraint state must outrank latent context');
+  assert.match(compact, /lower-priority packets? remain/);
+  assert.equal((compact.match(/proof of consciousness/g) || []).length, 1,
+    'shared epistemic boundaries should replace repeated boilerplate in each packet');
+});
+
+test('recent activity is marker-grounded, deduplicated, and cannot absorb dated project memory', () => {
+  const { __test } = require('../../server');
+  const now = new Date('2026-07-18T00:30:00.000Z');
+  const markers = Object.fromEntries(Array.from({ length: 20 }, (_, index) => [
+    `task-completed:${index}`,
+    { set_at: `2026-07-17T${String(index % 18).padStart(2, '0')}:00:00.000Z`,
+      note: `Completed grounded action ${index} ${'with bounded detail '.repeat(8)}` },
+  ]));
+  markers['duplicate-action'] = { set_at: '2026-07-17T17:30:00.000Z',
+    note: markers['task-completed:19'].note };
+  const memory = [
+    ...Array.from({ length: 80 }, (_, index) => ({ source: 'auto', added: '2026-07-17',
+      fact: `AUTO PROJECT FACT ${index} ${'not an action '.repeat(30)}` })),
+    { source: 'meeting', added: '2026-07-17', fact: 'MEETING TRANSCRIPT FACT' },
+    { source: 'manual', added: '2026-07-17', fact: 'Manually recorded a real action' },
+  ];
+  const block = __test.buildRecentActivityBlock({ markers, memory, now });
+  assert.ok(block.length <= 1500);
+  assert.match(block, /from action markers/);
+  assert.match(block, /Manually recorded a real action/);
+  assert.doesNotMatch(block, /AUTO PROJECT FACT|MEETING TRANSCRIPT FACT/);
+  assert.equal((block.match(/Completed grounded action 19/g) || []).length, 1);
 });
 
 test('Slack uses a fast Claude path only for bounded conversational turns', async () => {

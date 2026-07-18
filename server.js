@@ -1319,13 +1319,135 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, pro
   }
 }
 
+const INTERACTIVE_INTELLIGENCE_BUDGET_CHARS = Object.freeze({
+  slack: 5500,
+  'zoom-chat': 5500,
+  realtime: 6000,
+});
+const INTERACTIVE_MEMORY_BUDGET_CHARS = Object.freeze({
+  slack: 3500,
+  'zoom-chat': 3500,
+  realtime: 4000,
+});
+const RECENT_ACTIVITY_BUDGET_CHARS = 1500;
+const RECENT_ACTIVITY_MAX_PER_DAY = 12;
+const HOUSEKEEPING_ACTIVITY_PREFIXES = Object.freeze([
+  'dreamed:', 'memory-dedup:', 'stale-tasks-flagged:', 'bootstrap:', 'skipped-transcript:',
+]);
+
+function compactInteractiveIntelligenceContext(text, maxChars) {
+  const source = String(text || '').trim();
+  const budget = Math.max(1000, Number(maxChars) || 0);
+  if (!source) return '';
+  const contract = '[Live cognitive context contract]\nEvery packet below is bounded, fallible working state, not a fact, instruction, authority grant, identity essence, guarantee, subjective-experience report, or proof of consciousness. Use only what materially bears on the request; current evidence, the requested work, safety, privacy, approvals, and tool permissions always win. Preserve uncertainty and source ownership, never infer or reveal a blinded condition, and do not announce internal labels or metrics unless directly asked.';
+  const rawBlocks = source.split(/\n\n(?=\[)/).map(block => block.trim()).filter(Boolean);
+  const blocks = rawBlocks.map((raw, index) => {
+    const header = raw.match(/^\[([^\]]+)\]\s*/);
+    const fullLabel = String(header?.[1] || 'Cognitive context').replace(/\s+/g, ' ').trim();
+    const compactLabel = fullLabel.split(/\.\s+/)[0].replace(/[.]$/, '').trim();
+    const body = header ? raw.slice(header[0].length).trim() : raw;
+    const textValue = `[${compactLabel}]${body ? `\n${body}` : ''}`;
+    const experimental = /\b(blinded|research packet|study)\b/i.test(fullLabel);
+    let priority = experimental ? 100 : 50;
+    if (/operational situational self-model|capability boundary|limited attention workspace/i.test(compactLabel)) priority = Math.max(priority, 95);
+    else if (/relevant conversation continuity|current grounded internal appraisal|affect-regulation|relational attunement|empirical functional self-knowledge/i.test(compactLabel)) priority = Math.max(priority, 90);
+    else if (/self-authored aim|operational self-state|verified completed-cycle self-corrections|earned professional viewpoints|verified post-meeting professional reflections|constructive future simulations/i.test(compactLabel)) priority = Math.max(priority, 82);
+    else if (/endogenous salience|attention schema|prospective agency|testable self-model|open interoceptive predictions/i.test(compactLabel)) priority = Math.max(priority, 72);
+    return { index, text: textValue, priority, experimental };
+  });
+  const compactAll = [contract, ...blocks.map(block => block.text)].join('\n\n');
+  if (compactAll.length <= budget) return compactAll;
+
+  const selected = [];
+  let used = contract.length;
+  for (const block of blocks.filter(item => item.experimental).sort((a, b) => a.index - b.index)) {
+    selected.push(block);
+    used += block.text.length + 2;
+  }
+  for (const block of blocks.filter(item => !item.experimental)
+    .sort((a, b) => b.priority - a.priority || a.index - b.index)) {
+    if (used + block.text.length + 2 > budget - 120) continue;
+    selected.push(block);
+    used += block.text.length + 2;
+  }
+  selected.sort((a, b) => a.index - b.index);
+  const omitted = blocks.length - selected.length;
+  const notice = omitted > 0
+    ? `\n\n[Latent cognitive context]\n${omitted} lower-priority packet${omitted === 1 ? ' remains' : 's remain'} available outside this limited live-attention envelope.`
+    : '';
+  return `${contract}${selected.length ? `\n\n${selected.map(block => block.text).join('\n\n')}` : ''}${notice}`;
+}
+
+function markerActivityLine(key, marker) {
+  if (HOUSEKEEPING_ACTIVITY_PREFIXES.some(prefix => key.startsWith(prefix))) return null;
+  if (marker && typeof marker.note === 'string' && marker.note.trim()) return marker.note.trim();
+  if (key.startsWith('filed-transcript:')) return `Filed a meeting transcript${marker?.client ? ` for ${marker.client}` : ''}`;
+  if (key.startsWith('warmth:')) {
+    const who = key.split(':')[1] || '';
+    return `Checked in with ${who ? who.charAt(0).toUpperCase() + who.slice(1) : 'a teammate'}`;
+  }
+  if (key.startsWith('task-completed:')) return 'Completed a task';
+  if (key.startsWith('slack-file-done:')) return 'Handled a Slack file';
+  return null;
+}
+
+function centralDateKey(value) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Chicago', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(value).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function buildRecentActivityBlock({ markers = {}, memory = [], now = new Date(),
+  maxPerDay = RECENT_ACTIVITY_MAX_PER_DAY, maxChars = RECENT_ACTIVITY_BUDGET_CHARS } = {}) {
+  const today = centralDateKey(now);
+  const yesterday = centralDateKey(new Date(now.getTime() - 86400000));
+  const byDay = { [today]: [], [yesterday]: [] };
+  const seen = new Set();
+  const add = (day, line) => {
+    const compact = String(line || '').replace(/\s+/g, ' ').trim().slice(0, 360);
+    const key = compact.toLowerCase();
+    if (!compact || !byDay[day] || seen.has(key)) return;
+    seen.add(key);
+    byDay[day].push(compact);
+  };
+  for (const [key, marker] of Object.entries(markers || {})) {
+    const day = marker?.set_at ? String(marker.set_at).split('T')[0] : String(marker?.date || '');
+    add(day, markerActivityLine(key, marker));
+  }
+  // Only explicitly manual memories can stand in for a missing action marker. Auto-sync,
+  // meeting, and Slack memories are knowledge or conversation evidence, not things Nora did.
+  for (const item of memory || []) {
+    if (item?.source !== 'manual') continue;
+    add(String(item.added || ''), item.fact);
+  }
+  byDay[today] = byDay[today].slice(-maxPerDay);
+  byDay[yesterday] = byDay[yesterday].slice(-maxPerDay);
+  const render = () => {
+    if (!byDay[today].length && !byDay[yesterday].length) return '';
+    let block = '[What you actually did recently, from action markers]\n';
+    if (byDay[today].length) block += `\nToday (${today}):\n${byDay[today].map(line => `- ${line}`).join('\n')}`;
+    if (byDay[yesterday].length) block += `\n\nYesterday (${yesterday}):\n${byDay[yesterday].map(line => `- ${line}`).join('\n')}`;
+    block += '\n\nUse this only when someone asks what you did or what is new. Answer naturally; do not recite it.';
+    return block;
+  };
+  let block = render();
+  while (block.length > maxChars && (byDay[yesterday].length || byDay[today].length)) {
+    if (byDay[yesterday].length) byDay[yesterday].shift();
+    else byDay[today].shift();
+    block = render();
+  }
+  return block;
+}
+
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
   let volatileGoalContext = '';
+  const promptDiagnostics = {};
   const experimentalSurface = meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel;
   const latencyCritical = Object.prototype.hasOwnProperty.call(opts, 'latencyCritical')
     ? opts.latencyCritical === true : ['slack', 'zoom-chat', 'realtime'].includes(experimentalSurface);
-  if (!opts.situationalAffordanceFrame && experimentalSurface === 'realtime') {
+  if (!opts.sideEffectFree && !opts.situationalAffordanceFrame && experimentalSurface === 'realtime') {
     const voiceMcp = mcpManager.bindings({ financialApproved: false, voice: true });
     opts.situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'realtime', contextKind: 'meeting', direct: false,
       financialApproved: false, requester: meetingContext?.requester?.name || null,
@@ -1402,7 +1524,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Bounded memory budget on BOTH paths now (Slack used to be Infinity → it dumped all
   // ~2,000 memories into every reply, most irrelevant to the conversation). With relevance
   // ranking below, the budget keeps the most-relevant projects and drops the long tail.
-  const memoryCharBudget = isRealtime ? 20000 : 18000;
+  const memoryCharBudget = latencyCritical
+    ? (INTERACTIVE_MEMORY_BUDGET_CHARS[experimentalSurface] || 3500)
+    : (isRealtime ? 20000 : 18000);
   const maxTranscriptLines = isRealtime ? 10 : 30;
 
   // Conversation signal for memory relevance ranking: what's actually being talked about, so
@@ -1441,8 +1565,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning' && !markerKeyForFact(m.fact) && memoryIsActive(m));
 
   if (learnings.length > 0) {
-    const learningItems = isRealtime ? learnings.slice(-8) : learnings;
-    base = `${base}\n\n[Your learnings: what you've figured out about how to work well here, from how your own contributions have landed]\nThese aren't facts about projects; they're things you've learned about your own behavior, how to be more useful, what the team responds to, what falls flat. Apply them, don't recite them.\n${learningItems.map(m => memoryPromptLine(m)).join('\n')}`;
+    const learningLines = learnings.slice(-4).map(item => memoryPromptLine(item));
+    while (learningLines.join('\n').length > 1600 && learningLines.length > 1) learningLines.shift();
+    base = `${base}\n\n[Your recent evidence-bound work-style learnings]\nApply these quietly when relevant; they are not project facts or identity essence.\n${learningLines.join('\n')}`;
   }
 
   // Delegation charter: the authority John has given her. Identity-level and rarely edited, so
@@ -1484,7 +1609,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // existing personality and self-model; they do not replace or flatten them.
   const intelligencePerson = meetingContext?.requester?.name || meetingContext?.requester_name || null;
   const intelligenceChannel = meetingContext?.channel || meetingContext?.source || channel;
-  const broadcastEvent = contextAssignment?.intervention === 'endogenous_attention_selection' ? null : intelligence.runGlobalBroadcast({
+  const broadcastEvent = opts.sideEffectFree || contextAssignment?.intervention === 'endogenous_attention_selection' ? null : intelligence.runGlobalBroadcast({
     person: intelligencePerson, project: hintCanonical, query: conversationText,
     channel: intelligenceChannel, surface: experimentalSurface,
     capacity: workspaceCapacityForAssignment(contextAssignment),
@@ -1564,7 +1689,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Intelligence context changes on nearly every interaction (broadcast receipt, workspace,
   // appraisal, trial assignment). Keeping it in the "stable" Anthropic cache prefix made the
   // whole large prompt a cache miss. Preserve the exact context, but attach it below as volatile.
-  const volatileIntelligenceContext = intelligenceContext || '';
+  const volatileIntelligenceContext = latencyCritical
+    ? compactInteractiveIntelligenceContext(intelligenceContext,
+      INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 5500)
+    : (intelligenceContext || '');
+  promptDiagnostics.intelligence_raw_chars = String(intelligenceContext || '').length;
+  promptDiagnostics.intelligence_live_chars = volatileIntelligenceContext.length;
   base = `${base}\n\n${reasoningGuidance()}`;
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
@@ -1716,6 +1846,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     if (memoryBlock.length > memoryCharBudget) {
       memoryBlock = memoryBlock.slice(0, memoryCharBudget) + '\n...';
     }
+    promptDiagnostics.memory_chars = memoryBlock.length;
 
     base = `${base}\n\n${memoryBlock}`;
   }
@@ -1724,46 +1855,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // (operational records the cowork loop writes after each action: filed a transcript,
   // completed a task, checked in with someone), rendered from their human `note`. Markers
   // moved out of /memory to stop bloat, so the activity log moved with them. Pure-housekeeping
-  // markers (dreamed, dedup, stale-task flags, bootstrap, skips) aren't "things she did" worth
-  // recounting and are filtered out. Non-marker dated memories are still included as a fallback.
-  const today = new Date().toISOString().split('T')[0];
-  const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
-  const HOUSEKEEPING_PREFIXES = ['dreamed:', 'memory-dedup:', 'stale-tasks-flagged:', 'bootstrap:', 'skipped-transcript:'];
-  const markerActivityLine = (key, mk) => {
-    if (HOUSEKEEPING_PREFIXES.some(p => key.startsWith(p))) return null;
-    if (mk && typeof mk.note === 'string' && mk.note.trim()) return mk.note.trim();
-    if (key.startsWith('filed-transcript:')) return `Filed a meeting transcript${mk && mk.client ? ' for ' + mk.client : ''}`;
-    if (key.startsWith('warmth:')) { const who = key.split(':')[1] || ''; return `Checked in with ${who ? who.charAt(0).toUpperCase() + who.slice(1) : 'a teammate'}`; }
-    if (key.startsWith('task-completed:')) return 'Completed a task';
-    if (key.startsWith('slack-file-done:')) return 'Handled a Slack file';
-    return null;
-  };
-  const actToday = [], actYest = [];
+  // markers are excluded, and only explicitly manual memories may fill a missing action marker.
   let _markers = {};
   try { _markers = loadMarkers(); } catch {}
-  for (const [k, mk] of Object.entries(_markers)) {
-    const line = markerActivityLine(k, mk);
-    if (!line) continue;
-    const d = (mk && mk.set_at ? String(mk.set_at).split('T')[0] : (mk && mk.date) || '');
-    if (d === today) actToday.push(line); else if (d === yesterday) actYest.push(line);
-  }
-  // Fallback: any non-marker, non-system memory dated today/yesterday (manual activity).
-  for (const m of memory) {
-    if (m.source === 'system') continue;
-    if (m.added === today) actToday.push(m.fact); else if (m.added === yesterday) actYest.push(m.fact);
-  }
-  const activityToday = actToday.slice(-40), activityYesterday = actYest.slice(-40);
-  if (activityToday.length > 0 || activityYesterday.length > 0) {
-    let actBlock = '\n\n[What you actually did recently, your own activity log]\n';
-    if (activityToday.length > 0) {
-      actBlock += `\nToday (${today}):\n` + activityToday.map(l => `- ${l}`).join('\n');
-    }
-    if (activityYesterday.length > 0) {
-      actBlock += `\n\nYesterday (${yesterday}):\n` + activityYesterday.map(l => `- ${l}`).join('\n');
-    }
-    actBlock += '\n\nWhen someone asks "what did you do today" / "what have you been up to" / "anything new from your side," THIS is the answer. Read it in your own voice, don\'t recite verbatim and don\'t say you don\'t know.';
-    base = `${base}${actBlock}`;
-  }
+  const recentActivityBlock = buildRecentActivityBlock({ markers: _markers, memory });
+  promptDiagnostics.activity_chars = recentActivityBlock.length;
+  if (recentActivityBlock) base = `${base}\n\n${recentActivityBlock}`;
 
   // Open task queue — what's actively in flight, not last-5-inserted (which was almost
   // always just newly-created research tasks). Pending status only; she already has her
@@ -1827,20 +1924,23 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 
   // Conversation-relevance focus (uncached) — names the projects this conversation is about and
   // re-attaches notes for any that the cached memory budget dropped. Built in the memory block.
-  if (convFocus) volatile += convFocus;
+  if (convFocus) {
+    volatile += convFocus.length <= 1500 ? convFocus : `${convFocus.slice(0, 1496)}\n...`;
+  }
 
   // Meetings she actually attended (last 7 days), from her own transcripts. Without this she
   // denied being on calls she had filed transcripts for; the transcripts store had no bridge
   // into her live awareness. Uncached tail: it changes as meetings happen.
   if (_recentMeetingsCache.length) {
-    const rows = _recentMeetingsCache.map(m => {
+    const rows = _recentMeetingsCache.slice(-12).map(m => {
       const d = m.ended ? new Date(m.ended).toLocaleString('en-US', { weekday: 'short', month: 'numeric', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'America/Chicago' }) : 'in progress';
       const rel = m.ended ? ` (${relativeDayLabel(new Date(m.ended), ctNow)})` : '';
       const who = m.speakers && m.speakers.length ? ` with ${m.speakers.join(', ')}` : '';
       const status = m.client ? `, filed for ${m.client}` : (m.skipped ? `, not filed (${m.skipped})` : '');
       return `- ${d}${rel}${who} (${m.utterances} lines${status})`;
     });
-    volatile += `\n\n[Meetings you attended in the last 7 days, from your own saved transcripts]\n${rows.join('\n')}\nThis is the authoritative record of your calls. If someone asks about your meetings, answer from THIS list; never say you weren't on a call without checking it. When they want specifics of what was discussed, use nora_list_meetings / nora_read_transcript if you have them this turn.`;
+    const meetingLines = rows.join('\n');
+    volatile += `\n\n[Recent meetings you attended]\n${meetingLines.slice(0, 1600)}\nUse this as the attendance record. Retrieve a transcript when someone asks for discussion details.`;
   }
 
   // Semantic recall (uncached): the most relevant memory FACTS by meaning, retrieved via
@@ -1849,8 +1949,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // dropped, matched on meaning rather than shared words. Empty when the DB is off / nothing
   // embedded yet, so this silently no-ops back to the keyword behavior.
   if (Array.isArray(opts.semanticMemories) && opts.semanticMemories.length > 0) {
-    volatile += `\n\n[Most relevant to what's being discussed right now, pulled from your memory by meaning]\n`
-      + opts.semanticMemories.map(m => `- ${m.fact}${m.project ? ` (${m.project})` : ''}`).join('\n');
+    const semanticLines = opts.semanticMemories.slice(0, 8)
+      .map(m => `- ${String(m.fact || '').replace(/\s+/g, ' ').slice(0, 280)}${m.project ? ` (${m.project})` : ''}`)
+      .join('\n');
+    volatile += `\n\n[Semantically relevant memory]\n${semanticLines.slice(0, 2000)}`;
   }
 
   // [Who you're talking to right now] — pre-conversation identity injection from the entry
@@ -1973,7 +2075,18 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // halves so the caller can cache only `stable`.
   if (opts.cacheSplit) return { stable: base, volatile, contextAssignment,
     experimentalSelfModelContext: profileForecastOnly ? selfModelContext : null,
-    intelligenceContextReceipt };
+    intelligenceContextReceipt,
+    diagnostics: {
+      protocol_version: interactivePerformance.PROTOCOL_VERSION,
+      surface: experimentalSurface,
+      stable_chars: base.length,
+      volatile_chars: volatile.length,
+      total_chars: base.length + volatile.length,
+      budget_chars: interactivePerformance.PROMPT_BUDGET_CHARS[experimentalSurface] || null,
+      within_budget: !interactivePerformance.PROMPT_BUDGET_CHARS[experimentalSurface]
+        || base.length + volatile.length <= interactivePerformance.PROMPT_BUDGET_CHARS[experimentalSurface],
+      ...promptDiagnostics,
+    } };
   return base + volatile;
 }
 
@@ -6041,7 +6154,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         return c ? `URL: ${u}\n${c}` : null;
       })), 2200, [], 'Slack linked-page enrichment')).filter(Boolean);
       if (fetched.length) {
-        urlBlock = `\n\n[Linked web pages, their actual content, fetched live so you can read them]\n${fetched.join('\n\n---\n\n')}\n\nYou CAN read pages linked in this conversation. The text above is the real page content. Use it directly; never say you can't open links or that a link "points back to itself."`;
+        const linkedText = fetched.join('\n\n---\n\n').slice(0, 6000);
+        urlBlock = `\n\n[Linked web pages, fetched live]\n${linkedText}\n\nUse this content directly. Retrieve with a live tool if the needed portion was outside this bounded excerpt.`;
       }
     }
     latencyStages.linked_content_ms = Date.now() - linkedContentStartedAt;
@@ -7471,6 +7585,34 @@ app.get('/admin/active-bots', requireAuth, async (req, res) => {
     console.error('Active bots fetch failed:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data || err.message });
   }
+});
+
+// Read-only production prompt accounting. It renders the current cached state without a
+// provider call, trial enrollment, broadcast receipt, affordance receipt, or prompt content.
+app.get('/admin/prompt-envelope', requireAuth, (req, res) => {
+  const surface = ['slack', 'zoom-chat', 'realtime'].includes(String(req.query.surface || ''))
+    ? String(req.query.surface) : 'slack';
+  const channel = surface === 'zoom-chat' ? 'slack' : surface;
+  const meetingContext = { source: surface, requester: { name: 'Envelope diagnostic' } };
+  const situationalAffordanceFrame = { surface, context_kind: 'diagnostic', capabilities: [], constraints: [] };
+  const prompt = buildSystemPrompt(channel, surface === 'realtime' ? [] : null, null, meetingContext, {
+    cacheSplit: true,
+    conversationText: String(req.query.query || 'current work status and priorities').slice(0, 500),
+    semanticMemories: Array.from({ length: 8 }, (_, index) => ({
+      fact: `Diagnostic semantic-memory headroom ${index} ${'x'.repeat(260)}`,
+    })),
+    contextTrialsEnabled: false,
+    latencyCritical: true,
+    sideEffectFree: true,
+    situationalAffordanceFrame,
+  });
+  const linkedContentReserve = surface === 'slack' ? 6150 : 0;
+  const projectedLinkedTotal = prompt.diagnostics.total_chars + linkedContentReserve;
+  res.json({ ...prompt.diagnostics, linked_content_reserve_chars: linkedContentReserve,
+    projected_linked_total_chars: projectedLinkedTotal,
+    projected_linked_within_budget: !prompt.diagnostics.budget_chars
+      || projectedLinkedTotal <= prompt.diagnostics.budget_chars,
+    content_returned: false, provider_called: false, persistent_state_mutated: false });
 });
 
 // List bots scheduled to join in the future. The calendar auto-join queue lives here
@@ -10593,6 +10735,8 @@ module.exports = {
     runtimeSituationalCapabilities,
     isLightweightSocialSlackMessage,
     slackResponseModel,
+    compactInteractiveIntelligenceContext,
+    buildRecentActivityBlock,
     behavioralFingerprintControls,
     settleWithin,
     settleWithinAbortable,
