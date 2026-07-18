@@ -926,6 +926,15 @@ test('public identity and prompt endpoints retain their response contracts', asy
   assert.ok('wants' in self.body);
   assert.ok('inner_thread' in self.body);
   assert.ok('soma' in self.body);
+  const dialsResponse = await fetch(base + '/cognitive-parameters');
+  assert.equal(dialsResponse.status, 200);
+  const dials = await dialsResponse.json();
+  assert.equal(dials.status.parameter_count, 111);
+  assert.equal(dials.status.default_equivalent, true);
+  assert.equal(dials.status.autonomous_tuning_enabled, false);
+  assert.equal(dials.status.integrity.valid, true);
+  assert.equal(dials.current.params.voice.active_window_ms, 45000);
+  assert.equal((await fetch(base + '/cognitive-parameters/history')).status, 401);
 });
 
 test('MCP admin supports secure auth modes without returning credentials or full URLs', async () => {

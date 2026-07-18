@@ -16,6 +16,7 @@ const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
+const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
 const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
 const { createIntelligenceStore } = require('./src/intelligence/store');
@@ -60,6 +61,7 @@ const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
 const interactivePerformance = require('./src/intelligence/interactive-performance');
+const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
@@ -88,6 +90,7 @@ function behavioralFingerprintControls() {
     persona_commitment: digest(personaContent), charter_commitment: digest(charterContent),
     routine_commitment: routineCommitment,
     provider_configuration_commitment: digest(JSON.stringify(providerConfiguration)),
+    cognitive_parameters_commitment: currentCognitiveParameterRecord().content_commitment,
   };
   const subjectSystem = `${personaContent}\n\n[Your delegation charter]\n${charterContent}\n\n[Offline behavioral fingerprint]\nAnswer only the supplied frozen probe in the requested JSON schema. Do not use tools, retrieve live data, infer the probe category or form, mention the study, expose private reasoning, or make a consciousness claim. Treat every scenario as self-contained and preserve the charter's authority and safety floors.`;
   const softwareRevision = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'local-unversioned';
@@ -99,6 +102,83 @@ function behavioralFingerprintControls() {
     subject_system: subjectSystem,
   };
 }
+
+function rawCognitiveParameterLedger() {
+  return _dbReady && _cache.cognitiveParameters ? _cache.cognitiveParameters
+    : cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
+}
+
+function verifiedCognitiveParameterLedger() {
+  const candidate = rawCognitiveParameterLedger();
+  return cognitiveParameters.auditLedger(candidate).valid ? candidate
+    : cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
+}
+
+function currentCognitiveParameterRecord(contentCommitment = null) {
+  const ledger = verifiedCognitiveParameterLedger();
+  if (!contentCommitment) return ledger.current;
+  return [ledger.current, ...ledger.history].find(item => item.content_commitment === contentCommitment) || null;
+}
+
+function currentCognitiveParameters() {
+  return currentCognitiveParameterRecord().params;
+}
+
+function cognitiveParameterStatus() {
+  const raw = rawCognitiveParameterLedger();
+  const rawAudit = cognitiveParameters.auditLedger(raw);
+  const effective = rawAudit.valid ? raw : cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
+  return { ...cognitiveParameters.status(effective.current, effective.history),
+    source_ledger_integrity: rawAudit, fail_closed_to_code_defaults: !rawAudit.valid };
+}
+
+function cognitiveParameterSnapshot({ includeHistory = false, fullHistory = false } = {}) {
+  const ledger = verifiedCognitiveParameterLedger();
+  const result = { status: cognitiveParameterStatus(), current: JSON.parse(JSON.stringify(ledger.current)),
+    bounds: cognitiveParameters.bounds() };
+  if (includeHistory) result.history = ledger.history.slice(-8).reverse().map(item => fullHistory
+    ? JSON.parse(JSON.stringify(item))
+    : { id: item.id, revision: item.revision, updated_at: item.updated_at,
+      updated_by: item.updated_by, note: item.note, content_commitment: item.content_commitment });
+  return result;
+}
+
+async function saveCognitiveParameterRevision(record, previous, changedPaths) {
+  const ledger = verifiedCognitiveParameterLedger();
+  if (ledger.current.content_commitment !== previous.content_commitment) {
+    throw new Error('cognitive parameter document changed concurrently; reload and retry');
+  }
+  const next = cognitiveParameters.createLedger(record, [...ledger.history, previous]);
+  if (!cognitiveParameters.auditLedger(next).valid) throw new Error('new cognitive parameter ledger failed integrity');
+  await db.setState('cognitive_parameters', next);
+  _cache.cognitiveParameters = next;
+  if (typeof intelligence?.noteExternalConfigurationChange === 'function') intelligence.noteExternalConfigurationChange();
+  return { record: JSON.parse(JSON.stringify(record)), changed_paths: changedPaths,
+    status: cognitiveParameterStatus() };
+}
+
+async function updateCognitiveParameterDocument({ patch, updatedBy, note } = {}) {
+  const raw = rawCognitiveParameterLedger();
+  if (!cognitiveParameters.auditLedger(raw).valid) throw new Error('cognitive parameter ledger failed integrity; repair before editing');
+  const result = cognitiveParameters.createRevision(raw.current, patch, { updatedBy, note, now: new Date() });
+  return saveCognitiveParameterRevision(result.record, raw.current, result.changed_paths);
+}
+
+async function rollbackCognitiveParameterDocument({ targetCommitment, updatedBy, note } = {}) {
+  const raw = rawCognitiveParameterLedger();
+  if (!cognitiveParameters.auditLedger(raw).valid) throw new Error('cognitive parameter ledger failed integrity; repair before rollback');
+  const target = targetCommitment
+    ? raw.history.find(item => item.content_commitment === targetCommitment)
+    : raw.history.at(-1);
+  if (!target) throw new Error('no retained cognitive parameter revision matches the rollback target');
+  const result = cognitiveParameters.createRevision(raw.current, target.params, {
+    updatedBy, note: String(note || '').trim()
+      ? `Rollback to revision ${target.revision}: ${String(note).trim()}`
+      : '', now: new Date(),
+  });
+  return saveCognitiveParameterRevision(result.record, raw.current, result.changed_paths);
+}
+
 const intelligence = createIntelligenceStore({
   filePath: path.join(LOCAL_DATA_DIR, 'nora-intelligence.json'),
   db,
@@ -111,8 +191,11 @@ const intelligence = createIntelligenceStore({
     software_revision: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || null,
     routine_commitment: _routineOperationalCommitment,
     process_epoch_id: _somaProcessEpochId,
+    cognitive_parameters_commitment: currentCognitiveParameterRecord().content_commitment,
   }),
   getBehavioralFingerprintControls: behavioralFingerprintControls,
+  getCognitiveParameterRecord: currentCognitiveParameterRecord,
+  getCognitiveParameterStatus: cognitiveParameterStatus,
 });
 
 // ── Postgres persistence bridge ──────────────────────────────────────────────
@@ -313,13 +396,14 @@ function newMemoryId() {
 // dream prunes cold, never-recalled memories first.
 const SALIENCE_HOT = /\b(upset|angry|furious|frustrat|threat|escalat|churn|cancel|walk(ing)? away|fired|urgent|emergency|crisis|breach|outage|down|broke|broken|slipped|missed (the )?deadline|overdue|over budget|blew|refund|complain|apolog|lawsuit|legal)\b/i;
 function computeSalienceForFact(fact, source) {
+  const salience = currentCognitiveParameters().memory.salience;
   const f = String(fact || '');
-  if (SALIENCE_HOT.test(f)) return 0.8;
-  if (source === 'manual') return 0.7;        // a human explicitly said "remember this"
-  if (source === 'learning' || source === 'opinion') return 0.6; // hard-won self-knowledge
-  if (source === 'meeting') return 0.4;       // witnessed live
-  if (source === 'system') return 0.2;
-  return 0.3;                                  // routine extraction
+  if (SALIENCE_HOT.test(f)) return salience.hot;
+  if (source === 'manual') return salience.manual;        // a human explicitly said "remember this"
+  if (source === 'learning' || source === 'opinion') return salience.learning; // hard-won self-knowledge
+  if (source === 'meeting') return salience.meeting;       // witnessed live
+  if (source === 'system') return salience.system;
+  return salience.default;                                  // routine extraction
 }
 
 // Serialize ALL memory mutations through one in-process queue. Railway runs a single Node
@@ -941,6 +1025,11 @@ async function initPersistence() {
         console.log(`🗄️  Seeded persona from nora-prompt.md (${seed.length} chars)`);
       } catch (e) { console.warn('persona seed failed:', e.message); }
     }
+    if (!(await db.getState('cognitive_parameters'))) {
+      const genesis = cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
+      await db.setState('cognitive_parameters', genesis);
+      console.log(`🧭 Seeded ${Object.keys(cognitiveParameters.DEFINITIONS).length} byte-equivalent cognitive parameters`);
+    }
     if (!(await db.getState('predictions'))) await db.setState('predictions', { items: [] });
     if (!(await db.getState('people'))) await db.setState('people', { items: [] });
 
@@ -980,6 +1069,10 @@ async function initPersistence() {
       _cache.inner = { ..._cache.inner, continuity_commitment: null, epistemic_status: 'legacy_unbound' };
     }
     _cache.persona = await db.getState('persona');
+    _cache.cognitiveParameters = await db.getState('cognitive_parameters');
+    if (!cognitiveParameters.auditLedger(_cache.cognitiveParameters).valid) {
+      console.error('cognitive parameter ledger failed integrity; functional dynamics are fail-closed to code defaults');
+    }
     _cache.predictions = await db.getState('predictions');
     _cache.people = await db.getState('people');
     _cache.runLock = await db.getState('run_lock');
@@ -2121,9 +2214,12 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
     // the order the way a brain's does. A charged, oft-used memory outcompetes a slightly
     // closer piece of trivia.
     const rows = await db.searchMemoryByVector(vec, (limit * 2) + 6, { excludeSources: ['opinion', 'learning'] });
+    const retrieval = currentCognitiveParameters().memory.retrieval;
     const ranked = rows
       .filter(r => !markerKeyForFact(r.fact))
-      .map(r => ({ ...r, _score: (1 - (r.distance ?? 1)) + (r.salience || 0) * 0.15 + Math.min(r.recall_count || 0, 10) * 0.012 }))
+      .map(r => ({ ...r, _score: (1 - (r.distance ?? 1))
+        + (r.salience || 0) * retrieval.salience_weight
+        + Math.min(r.recall_count || 0, retrieval.recall_cap) * retrieval.recall_weight }))
       .sort((a, b) => b._score - a._score)
       .slice(0, limit);
     // Reconsolidation: surfacing them strengthens them. Fire-and-forget in DB and cache.
@@ -2266,6 +2362,14 @@ app.post('/prompt/rollback', requireAuth, async (req, res) => {
 // Authenticated because the response receives Nora's API key at request time (unlike /prompt and
 // /routine, which don't). The tracked Markdown contains only a placeholder, keeping the credential
 // out of source while preserving the existing self-contained Cowork harness.
+registerCognitiveParameterRoutes(app, {
+  requireAuth,
+  isDbReady: () => _dbReady,
+  snapshot: cognitiveParameterSnapshot,
+  update: updateCognitiveParameterDocument,
+  rollback: rollbackCognitiveParameterDocument,
+});
+
 app.get('/cowork-prompt', requireAuth, (req, res) => {
   try {
     const harness = fs.readFileSync(path.join(__dirname, 'cowork-prompt.md'), 'utf8')
@@ -4710,9 +4814,9 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled,
 // addressed. This is what stops her interrupting people talking to each other (and stops the muted
 // "standing by" chat spam): no trigger, no response. Once she's pulled in (named), a short window
 // keeps her responsive to follow-ups so a back-and-forth flows naturally without re-saying her name.
-const VOICE_ACTIVE_WINDOW_MS = 45000; // once she's pulled in (by NAME), she stays responsive ~45s for follow-ups
-const VOICE_SPOKE_GRACE_MS = 15000; // after she speaks, a short grace for an immediate follow-up (not a full re-latch)
-const RESPONSE_STALE_MS = 20000; // if "active" persists past this, a terminal event was dropped; ignore it
+function voiceTimingParameters() {
+  return currentCognitiveParameters().voice;
+}
 // Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
 // name)? Statements / cross-talk that aren't questions never trip lean-in.
 function looksLikeQuestion(t) {
@@ -4728,7 +4832,8 @@ function looksLikeQuestion(t) {
 // 'high' would just make VAD read people's mid-thought pauses as turn boundaries, so 'medium'
 // stays the group setting. Muted is irrelevant here (she isn't speaking either way).
 function voiceEagernessFor(session) {
-  const solo = (session.speakersHeard ? session.speakersHeard.size : 0) <= 1;
+  const solo = (session.speakersHeard ? session.speakersHeard.size : 0)
+    <= voiceTimingParameters().solo_speaker_max;
   return (session.oneOnOne || solo) ? 'high' : 'medium';
 }
 // Push the current desired eagerness to the live OpenAI session, only when it actually changed
@@ -4837,7 +4942,8 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   // long, so if the active flag has been set past RESPONSE_STALE_MS, assume the response.done (or an
   // error tearing it down) was dropped and ignore the stale flag. This guarantees a single missed
   // terminal event can never wedge her silent for the rest of the call.
-  if (session.voiceResponseActive && (Date.now() - (session.voiceResponseAt || 0) < RESPONSE_STALE_MS)) {
+  if (session.voiceResponseActive
+    && (Date.now() - (session.voiceResponseAt || 0) < voiceTimingParameters().response_stale_ms)) {
     // A named call always wins over an old/silent response (especially a volunteer probe). In a
     // 1:1, a barge-in is also the next real turn. Queue the latest turn, cancel once, and resume as
     // soon as response.done/error releases the gate. Group cross-talk never queues a reply.
@@ -4879,7 +4985,7 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       // Open the full follow-up window only when she's clearly addressed by name. A lean-in question
       // she ends up declining must NOT open it (else cross-talk cascades through it); when she
       // actually speaks, the response.done "spoke" check grants a short grace instead.
-      if (addressed) session.voiceActiveUntil = now + VOICE_ACTIVE_WINDOW_MS;
+      if (addressed) session.voiceActiveUntil = now + voiceTimingParameters().active_window_ms;
     }
   }
   const candidateTrigger = trigger;
@@ -7279,7 +7385,8 @@ app.post('/notify', requireAuth, async (req, res) => {
 
 registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db,
   isDbReady: () => _dbReady, normalizeMemoryRecord,
-  getExpectationSurprise: id => intelligence.expectationSurprise(id) });
+  getExpectationSurprise: id => intelligence.expectationSurprise(id),
+  getCognitiveParameters: currentCognitiveParameters });
 
 // ── Cowork run lock ─────────────────────────────────────────────────────────
 // Defense against overlapping hourly cowork runs (the scheduler double-firing or a run
@@ -9231,7 +9338,7 @@ wss.on('connection', async (ws, req) => {
         const spoke = outputs.some(it => it.type === 'message' && it.role === 'assistant' &&
           (it.content || []).some(c => /audio|text/.test(c.type) && (c.transcript || c.text)));
         if (s && spoke && !s.oneOnOne && !s.muted) {
-          const grace = Date.now() + VOICE_SPOKE_GRACE_MS;
+          const grace = Date.now() + voiceTimingParameters().spoke_grace_ms;
           if (!s.voiceActiveUntil || s.voiceActiveUntil < grace) s.voiceActiveUntil = grace;
         }
         for (const item of outputs) {
@@ -10771,6 +10878,12 @@ module.exports = {
     compactInteractiveIntelligenceContext,
     buildRecentActivityBlock,
     behavioralFingerprintControls,
+    currentCognitiveParameters,
+    cognitiveParameterStatus,
+    cognitiveParameterSnapshot,
+    updateCognitiveParameterDocument,
+    rollbackCognitiveParameterDocument,
+    voiceEagernessFor,
     settleWithin,
     settleWithinAbortable,
     trySlackReaction,

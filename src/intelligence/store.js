@@ -12,6 +12,7 @@ const epistemicAction = require('./epistemic-action');
 const episodicProspection = require('./episodic-prospection');
 const constructiveProspection = require('./constructive-prospection');
 const expectationForecast = require('./expectation-forecast');
+const cognitiveParameters = require('./cognitive-parameters');
 const proceduralLearning = require('./procedural-learning');
 const exemplarLearning = require('./exemplar-learning');
 const integratedSelf = require('./integrated-self');
@@ -184,6 +185,8 @@ function emptyState() {
 
 function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [],
   getOperationalEnvironment = () => ({}), getBehavioralFingerprintControls = () => null,
+  getCognitiveParameterRecord = () => cognitiveParameters.defaultRecord(),
+  getCognitiveParameterStatus = () => cognitiveParameters.status(cognitiveParameters.defaultRecord(), []),
   getDreams = () => [], getMemory = null, getInteractions = null, initialState = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
@@ -194,6 +197,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
   let procedureSelectionCache = null;
   let exemplarSelectionCache = null;
+
+  function cognitiveParameterRecord(commitment = null) {
+    const record = getCognitiveParameterRecord(commitment);
+    return cognitiveParameters.verifyRecord(record) ? record : cognitiveParameters.defaultRecord();
+  }
+
+  function activeCognitiveParameters() {
+    return cognitiveParameterRecord().params;
+  }
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
@@ -788,6 +800,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function persist() { return enqueuePersistence(); }
   function persistStrict() { return enqueuePersistence({ strict: true }); }
   function snapshotRevision() { return snapshotRevisionValue; }
+  function noteExternalConfigurationChange() {
+    snapshotRevisionValue += 1;
+    procedureSelectionCache = null;
+    exemplarSelectionCache = null;
+    return snapshotRevisionValue;
+  }
 
   function mutate(fn) {
     const result = fn(state);
@@ -2631,7 +2649,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       channel: context.channel || context.surface || 'slack', capacity: 3,
       includeAttentionDirectives: false, attentionDirectiveMode: 'targeted_boost', attentionDirectivesOverride: [],
       includeCognitivePulses: false, includeCandidateManifest: true,
-    }, clock());
+    }, clock(), activeCognitiveParameters());
   }
 
   function endogenousAttentionSelectionAvailable(context = {}) {
@@ -5297,6 +5315,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       dream_insight_evidence: dreamInsightEvidenceSnapshot(),
       aim_reappraisal_evidence: aimReappraisalEvidenceSnapshot(),
       cycle_self_correction_evidence: cycleSelfCorrectionEvidenceSnapshot(),
+      cognitive_parameter_status: getCognitiveParameterStatus(),
     }),
       operational_environment: operationalEnvironmentStatus() };
   }
@@ -5445,7 +5464,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const scoredWorkspace = scoreWorkspace(current, { ...input,
         includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access'),
         includeGoalAffect: input.includeGoalAffect !== false && goalAffectAudit(current.cognition.goal_affect?.current).complete_chain_verified,
-      }, now);
+      }, now, activeCognitiveParameters());
       const experimentalTypes = new Set(['commitment', 'relationship', 'perspective', 'surprise', 'mind_change', 'experiment', 'feedback', 'self_frame']);
       const workspace = protocolV2 ? { ...scoredWorkspace, slots: scoredWorkspace.slots.filter(item => experimentalTypes.has(item.type)) } : scoredWorkspace;
       const eligibleReceipts = consumeBroadcast(workspace.slots, { deliver: true });
@@ -5492,7 +5511,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const workspace = scoreWorkspace(state, { ...input,
       includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access'),
       includeGoalAffect: input.includeGoalAffect !== false && goalAffectAudit().complete_chain_verified,
-    }, input.now ? new Date(input.now) : clock());
+    }, input.now ? new Date(input.now) : clock(), activeCognitiveParameters());
     const experimentalTypes = new Set(['commitment', 'relationship', 'perspective', 'surprise', 'mind_change', 'experiment', 'feedback', 'self_frame']);
     const slots = workspace.slots.filter(item => experimentalTypes.has(item.type));
     return slots.length > 0 && consumeBroadcast(slots, { deliver: true }).filter(receipt => receipt.used).length >= 2;
@@ -5554,8 +5573,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const cognitionInput = { ...input, goal_affect: goalState,
         includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access') };
       recordInteroceptiveObservation(current, input.soma, now);
-      current.cognition.drives = computeDrives(current, cognitionInput, now);
-      current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, cognitionInput, now);
+      current.cognition.drives = computeDrives(current, cognitionInput, now, activeCognitiveParameters());
+      current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, cognitionInput, now, activeCognitiveParameters());
       const previousRegulation = current.cognition.affective_regulation.current;
       const nextRegulation = affectiveRegulation.derive(
         current.cognition.appraisal, current.cognition.drives, now);
@@ -5563,7 +5582,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       current.cognition.affective_regulation.current = nextRegulation;
       refreshEarnedViewpoints(current, now);
       current.cognition.relational_affect.current = relationalAffect.derive(current.relationships, now);
-      current.cognition.workspace = scoreWorkspace(current, cognitionInput, now);
+      current.cognition.workspace = scoreWorkspace(current, cognitionInput, now, activeCognitiveParameters());
       recordAttentionFrame(current, current.cognition.workspace, { kind: input.attention_kind || 'refresh', cycle_id: input.cycle_id || null, now });
       return cognitionPayload(current.cognition);
     });
@@ -10655,6 +10674,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const appraisal = cognition.appraisal || {};
     const calibrationResolved = cognition.calibration?.resolved || 0;
     const responsiveness = interactivePerformance.summarize(state.traces, clock().getTime());
+    const parameterStatus = getCognitiveParameterStatus();
     const ledgerVerificationPerformance = researchLedgerVerificationPerformance();
     const responseP95 = Object.entries(responsiveness.surfaces)
       .filter(([, value]) => value.p95_ms !== null)
@@ -10764,6 +10784,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           selection_actions: cognition.exemplar_learning?.selection_actions?.length || 0,
           selection_passes: verifiedExemplarSelectionPasses,
           retrieval_mode: 'local_bounded_lexical', causal_status: 'observational_exposure_comparison' },
+        cognitive_parameters: { revision: parameterStatus.revision,
+          parameter_count: parameterStatus.parameter_count,
+          default_equivalent: parameterStatus.default_equivalent,
+          changed_parameters: parameterStatus.changed_from_code_default?.length || 0,
+          autonomous_tuning_enabled: parameterStatus.autonomous_tuning_enabled,
+          integrity_verified: parameterStatus.integrity?.valid === true
+            && parameterStatus.source_ledger_integrity?.valid !== false,
+          mechanism: parameterStatus.mechanism },
         reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
           development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length,
           viewpoint_reappraisals: viewpointReappraisals.length,
@@ -23885,7 +23913,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function expectationResolutionPayload(record) {
     return { forecast_id: record.id, cycle_id: record.cycle_id,
       resolved_at: record.resolution?.resolved_at, claims: record.resolution?.claims,
-      score: record.resolution?.score };
+      score: record.resolution?.score,
+      ...(record.resolution?.parameter_binding
+        ? { parameter_binding: record.resolution.parameter_binding } : {}) };
   }
 
   function expectationForecastAudit(record, cognition = state.cognition, cycles = state.cycles) {
@@ -23923,6 +23953,26 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const evidenceBound = !record.resolution || record.resolution.claims.every(item =>
       Array.isArray(item.evidence) && item.evidence.length > 0
       && item.evidence.every(ref => expectationForecast.EVIDENCE_TYPES.has(ref.type) && (ref.id || ref.url)));
+    const parameterBinding = record.resolution?.parameter_binding || null;
+    const boundParameterRecord = parameterBinding
+      ? cognitiveParameterRecord(parameterBinding.content_commitment) : cognitiveParameters.defaultRecord();
+    const parameterBindingVerified = !record.resolution || (!parameterBinding
+      ? true : cognitiveParameters.verifyRecord(boundParameterRecord)
+        && boundParameterRecord.content_commitment === parameterBinding.content_commitment
+        && boundParameterRecord.revision === parameterBinding.revision
+        && boundParameterRecord.params.expectation.high_confidence_miss_threshold
+          === parameterBinding.high_confidence_miss_threshold);
+    const claimById = new Map((record.scopes || []).flatMap(group => (group.claims || [])
+      .map(claim => [claim.id, claim])));
+    const scoresVerified = !record.resolution || record.resolution.claims.every(item => {
+      const claim = claimById.get(item.claim_id);
+      if (!claim) return false;
+      const expected = expectationForecast.scoreClaim(claim, { outcome: item.outcome }, {
+        highConfidenceMissThreshold: parameterBinding?.high_confidence_miss_threshold
+          ?? cognitiveParameters.DEFAULTS.expectation.high_confidence_miss_threshold,
+      });
+      return canonicalJson(expected) === canonicalJson(item.score);
+    });
     const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
     return {
       self_forecast_verified: selfForecastVerified,
@@ -23931,9 +23981,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       creation_commitment_verified: creationVerified,
       resolution_commitment_verified: resolutionVerified, lifecycle_bound: lifecycleBound,
       abandonment_commitment_verified: abandonmentVerified, evidence_bound: evidenceBound,
+      parameter_binding_verified: parameterBindingVerified, claim_scores_verified: scoresVerified,
       research_ledger_chain_verified: ledgerVerified,
       complete_chain_verified: selfForecastVerified && creationVerified && resolutionVerified && abandonmentVerified
-        && lifecycleBound && evidenceBound && ledgerVerified,
+        && lifecycleBound && evidenceBound && parameterBindingVerified && scoresVerified && ledgerVerified,
     };
   }
 
@@ -23995,6 +24046,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const seen = new Set();
       const now = clock();
       const madeAt = new Date(record.made_at).getTime();
+      const parameterRecord = cognitiveParameterRecord();
+      const highConfidenceMissThreshold = parameterRecord.params.expectation.high_confidence_miss_threshold;
       const resolutions = input.claims.map(item => {
         const claimId = String(item?.claim_id || '');
         const claim = byId.get(claimId);
@@ -24010,7 +24063,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (outcome === 'unclear' && !evidence.some(ref => ref.type === 'connector_failure') && !note) {
           throw new Error('an unclear expectation requires connector_failure evidence or an ambiguity note');
         }
-        const score = expectationForecast.scoreClaim(claim, { outcome });
+        const score = expectationForecast.scoreClaim(claim, { outcome }, {
+          highConfidenceMissThreshold,
+        });
         return { claim_id: claim.id, scope: claim.scope, outcome, observed_at: observedAt.toISOString(),
           evidence, note: note.slice(0, 600), score };
       });
@@ -24018,6 +24073,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const mean = key => scored.length ? scored.reduce((sum, item) => sum + item.score[key], 0) / scored.length : null;
       record.resolution = {
         resolved_at: now.toISOString(), claims: resolutions,
+        parameter_binding: { revision: parameterRecord.revision,
+          content_commitment: parameterRecord.content_commitment,
+          high_confidence_miss_threshold: highConfidenceMissThreshold },
         score: { scored: scored.length, unclear: resolutions.length - scored.length,
           brier: mean('brier'), accuracy: scored.length ? scored.filter(item => !item.score.miss).length / scored.length : null,
           high_confidence_misses: scored.filter(item => item.score.high_confidence_miss).length },
@@ -24228,10 +24286,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       current.cognition.recurrent_signals.push(signal);
       current.cognition.recurrent_signals = current.cognition.recurrent_signals.slice(-500);
-      current.cognition.drives = computeDrives(current, input, now);
-      current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, input, now);
+      current.cognition.drives = computeDrives(current, input, now, activeCognitiveParameters());
+      current.cognition.appraisal = computeAppraisal(current, current.cognition.drives, input, now, activeCognitiveParameters());
       let nextWorkspace = activeReentry
-        ? scoreWorkspace(current, { ...input, query: `${input.signal} ${input.query || ''}`, capacity: priorWorkspace.capacity }, now)
+        ? scoreWorkspace(current, { ...input, query: `${input.signal} ${input.query || ''}`, capacity: priorWorkspace.capacity }, now, activeCognitiveParameters())
         : JSON.parse(JSON.stringify(priorWorkspace));
       if (protocolV2 && activeReentry) {
         const keyOf = item => `${item.type}:${item.id}`;
@@ -24579,7 +24637,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const goalAffectAvailable = includeGoalAffect && !interventionActive('goal_access') && !interventionActive('integrated_self_binding')
       && goalAffectAudit().complete_chain_verified;
-    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), includeGoalAffect: goalAffectAvailable, attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock());
+    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), includeGoalAffect: goalAffectAvailable, attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock(), activeCognitiveParameters());
     if (sealInquirySelection || sealContextTrialPulses) workspace.slots = workspace.slots.filter(item => item.type !== 'cognitive_pulse');
     if (sealInquirySelection) workspace.slots = workspace.slots.filter(item => !['self_claim', 'self_probe', 'self_frame'].includes(item.type));
     const globalBroadcastStudy = broadcastEvent?.trial_id && ['multi_consumer_broadcast', 'workspace_packet_only', 'absent_broadcast'].includes(broadcastEvent.delivery_mode);
@@ -24884,7 +24942,8 @@ ${episodes.map(item => {
   }
 
   return {
-    init, snapshot: () => JSON.parse(JSON.stringify(state)), snapshotRevision, dashboardIntelligenceSummary,
+    init, snapshot: () => JSON.parse(JSON.stringify(state)), snapshotRevision,
+    noteExternalConfigurationChange, dashboardIntelligenceSummary,
     persist, persistStrict, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,

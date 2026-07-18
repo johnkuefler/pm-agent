@@ -17,6 +17,7 @@ const behavioralSelfModel = require('./behavioral-self-model');
 const capabilityBoundary = require('./capability-boundary');
 const proceduralLearning = require('./procedural-learning');
 const exemplarLearning = require('./exemplar-learning');
+const cognitiveParameters = require('./cognitive-parameters');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -67,6 +68,8 @@ function evidenceStatus({ samples, minimum, supported, contradicted, causal = fa
 
 function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const cognition = state.cognition || {};
+  const cognitiveParameterStatus = options.cognitive_parameter_status
+    || cognitiveParameters.status(cognitiveParameters.defaultRecord(), []);
   const goalAffectRecord = cognition.goal_affect?.current || null;
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
   const affectiveRegulationRecord = cognition.affective_regulation?.current || null;
@@ -1915,6 +1918,23 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         latest_dissociation: empiricalSelfKnowledgeDissociation },
       falsifier: 'Authentically bound empirical status fails to improve calibrated strategy, checking, delegation, confidence, and self-prediction over status-misbound and claims-only controls while evidence access and first-order quality are preserved.',
       next_gate: 'Complete a ten-per-arm pilot and an indicator- and source-trial-disjoint confirmation with forecasts committed before delayed outcomes.',
+    },
+    {
+      id: 'bounded_cognitive_parameter_plasticity', family: ['learning', 'adaptive control', 'self-model', 'metacognition'],
+      functional_claim: 'Nora can represent the bounded parameters of her own functional dynamics as inspectable, replay-verifiable state while preserving code-owned safety envelopes and known default behavior.',
+      mechanism: 'A cached platform document externalizes drive, appraisal, workspace, memory, expectation, and voice timing constants; every revision is hash-chained, bounded by an immutable code schema, fail-closed to byte-equivalent defaults on corruption, and included in substrate and fingerprint commitments. Autonomous tuning remains disabled until a preregistered mechanical experiment and rollback gate exists.',
+      status: 'mechanism_present',
+      evidence: { revision: cognitiveParameterStatus.revision,
+        parameter_count: cognitiveParameterStatus.parameter_count,
+        default_equivalent: cognitiveParameterStatus.default_equivalent,
+        changed_parameters: cognitiveParameterStatus.changed_from_code_default?.length || 0,
+        document_integrity_verified: cognitiveParameterStatus.integrity?.valid === true,
+        source_ledger_integrity_verified: cognitiveParameterStatus.source_ledger_integrity?.valid !== false,
+        bounds_commitment: cognitiveParameterStatus.bounds_commitment,
+        autonomous_tuning_enabled: cognitiveParameterStatus.autonomous_tuning_enabled,
+        causal_status: 'mechanism_only_no_parameter_experiment' },
+      falsifier: 'Default-document behavior differs from the pre-DIALS golden outputs, an out-of-envelope or unknown parameter affects cognition, a corrupt chain does not fail closed, a parameter edit cannot be replayed or rolled back, live response latency regresses, or tuned parameters fail prospective guarded experiments against the frozen prior values.',
+      next_gate: 'Hold the byte-equivalent baseline stable, then preregister one bounded parameter experiment with a fixed metric, guard metric, evaluation window, automatic rollback, and parameter-access lesion before enabling any Nora-authored edit.',
     },
     {
       id: 'outcome_selected_work_procedures', family: ['learning', 'metacognition', 'adaptive control', 'ecological validity'],

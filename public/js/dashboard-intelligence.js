@@ -195,6 +195,7 @@ function renderCognitionSummary(cognition) {
   const expectationCalibration = forecasting.expectation_calibration_30d || {};
   const procedures = cognition.procedural_learning || {};
   const exemplars = cognition.exemplar_learning || {};
+  const dials = cognition.cognitive_parameters || {};
   const insightLine = reflection.dream_insight_reflection_sealed
     ? 'Recurring insight evidence is sealed by an active blinded study.'
     : `${reflection.dream_idea_seeds || 0} committed dream ideas across ${reflection.dream_idea_dates || 0} dates &middot; ${reflection.dream_insight_reflection_attempts || 0} synthesis attempts (${reflection.replay_verified_dream_insight_attempts || 0} replay-verified) &middot; ${reflection.dream_insight_candidates || 0} open candidates`;
@@ -213,6 +214,8 @@ function renderCognitionSummary(cognition) {
       <div class="intelligence-meta">${procedures.source_bound_outcomes || 0} reviewed interaction outcomes &middot; ${procedures.selection_passes || 0} selection passes / ${procedures.selection_actions || 0} status changes &middot; observational exposure evidence, not proof of causal application</div></div>
     <div class="intelligence-card"><strong>SELECT exemplars: ${exemplars.active || 0}/${exemplars.active_cap || 120} active &middot; ${exemplars.positive || 0} positive / ${exemplars.contrast || 0} contrast &middot; ${exemplars.retired || 0} retired</strong>
       <div class="intelligence-meta">${exemplars.source_bound_outcomes || 0} exposure/control outcomes &middot; ${exemplars.selection_passes || 0} selection passes / ${exemplars.selection_actions || 0} retirements &middot; ${escHtml(String(exemplars.retrieval_mode || 'local bounded lexical').replaceAll('_', ' '))}, no foreground network call</div></div>
+    <div class="intelligence-card"><strong>DIALS: ${dials.parameter_count || 0} bounded parameters &middot; revision ${dials.revision || 'unavailable'}</strong>
+      <div class="intelligence-meta">${dials.integrity_verified ? 'replay-verified document' : 'integrity unavailable'} &middot; ${dials.default_equivalent ? 'byte-equivalent defaults active' : `${dials.changed_parameters || 0} parameters differ from code defaults`} &middot; autonomous tuning ${dials.autonomous_tuning_enabled ? 'enabled by experiment gate' : 'locked'}</div></div>
     <div class="intelligence-card"><strong>Integrated operational self: ${integrated.sealed ? 'sealed by active trial' : `${integrated.domains || 0}/6 domains bound`}</strong>
       <div class="intelligence-meta">${integrated.frame_count || 0} recorded frames &middot; functional self-integration, not phenomenal unity</div></div>
     <div class="intelligence-card"><strong>Between-invocation dynamics: ${background.sealed ? 'sealed by active trial' : `${background.active_contents || 0} active signals`}</strong>

@@ -2,7 +2,8 @@
 
 function registerMemoryRoutes(app, deps) {
   const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady,
-    normalizeMemoryRecord, getExpectationSurprise = () => null } = deps;
+    normalizeMemoryRecord, getExpectationSurprise = () => null,
+    getCognitiveParameters = () => ({ expectation: { surprising_memory_salience_floor: 0.6 } }) } = deps;
 
   // Memory API — view and edit Nora's memory
   app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
@@ -42,7 +43,8 @@ function registerMemoryRoutes(app, deps) {
     const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject,
       added: new Date().toISOString().split('T')[0], source: source || 'manual',
       ...(expectationSurprise ? {
-        salience: Math.max(0.6, Number(req.body.salience) || 0),
+        salience: Math.max(getCognitiveParameters().expectation.surprising_memory_salience_floor,
+          Number(req.body.salience) || 0),
         expectation_surprise: { id: expectationSurprise.id, forecast_id: expectationSurprise.forecast_id,
           claim_id: expectationSurprise.prediction_id, scope: expectationSurprise.scope },
       } : {}) });

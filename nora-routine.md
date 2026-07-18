@@ -1583,7 +1583,7 @@ Pull the full memory: `GET /memory`. Capture the count as `memories_before`. The
 
 3. **Merge fragments.** If a topic is scattered across entries that each hold a piece, `POST /memory` one consolidated entry (best `project` + `source`), then delete the fragment ids via `POST /memory/bulk-delete`.
 
-4. **Prune stale one-offs, using memory dynamics.** Each memory now carries `salience` (how hot it encoded), `recall_count`, `last_recalled`, `valid_until`, and `status`. Prune COLD memories first: old + low salience + never or rarely recalled. PROTECT hot ones: salience >= 0.6, or recall_count >= 3, even when old; those are load-bearing. Mark time-bounded information `expired` when historical context still matters; delete only disposable logistics. Durable facts, relationships, preferences, commitments, and project knowledge stay. When in doubt, keep it.
+4. **Prune stale one-offs, using memory dynamics.** Each memory now carries `salience` (how hot it encoded), `recall_count`, `last_recalled`, `valid_until`, and `status`. Read `GET /cognitive-parameters` once during this background round and use `memory.protection.salience_floor` and `memory.protection.recall_floor`; if that read is unavailable, fail closed to 0.6 and 3. Prune COLD memories first: old + low salience + never or rarely recalled. PROTECT hot ones at or above either floor, even when old; those are load-bearing. Mark time-bounded information `expired` when historical context still matters; delete only disposable logistics. Durable facts, relationships, preferences, commitments, and project knowledge stay. When in doubt, keep it.
 
 Capture the final count as `memories_after`, and tally `duplicates_removed`, `fragments_merged`, `stale_pruned`, `contradictions_resolved` as you go. Keep 3–6 short `examples` of the more interesting merges/prunes for the dream log.
 
@@ -2401,6 +2401,8 @@ Weekly outcome buckets from your interaction log, with `positive_rate` (apprecia
 - Improving or steady: your current learnings are earning their place. Note it and move on.
 - Declining (negative_rate up meaningfully): something you changed is not working. Pull your `source: 'learning'` memories, identify which learning is most likely implicated, and either sharpen it or retire it (delete by id). Cross-check `GET /dreams` for what changed around when the decline started.
 - Small samples lie. Under ~10 reviewed interactions in a week, skip the judgment entirely; never tune on noise.
+
+**DIALS is inspect-only in phase one.** `GET /cognitive-parameters` exposes the current bounded functional configuration, its integrity status, and code-owned limits; authenticated history is at `GET /cognitive-parameters/history`. Do not call `PUT /cognitive-parameters` or `/cognitive-parameters/rollback`, propose a parameter change as if it were self-knowledge, or infer a feeling or identity from a value. Autonomous tuning is code-disabled until a preregistered experiment lifecycle can isolate one parameter family, preserve first-order work quality, and earn a human-reviewed update. A parameter is a functional control setting, not authority, preference, consciousness, or a private mental state.
 
 ### 2. Review the routine itself against the week's reality
 

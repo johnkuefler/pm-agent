@@ -654,6 +654,14 @@ function registerCoworkInstructionsRoute(app) {
     Protocol-v3-or-newer feedback additionally reports probability calibration and whether Nora correctly
     named the largest self-model error domain; protocol v4 also reports substrate Brier scores and advantage
     over persistence. Never manufacture degradation or a restart to improve a score.
+    GET /cognitive-parameters exposes DIALS phase one: a cached, replay-audited document of bounded numeric
+    controls for drives, appraisal, workspace competition, memory dynamics, EXPECT scoring, and voice timing.
+    Defaults are byte-equivalent to the prior code constants, the server owns immutable min/max bounds, and a
+    corrupt source document fails closed to defaults. It adds no live-response provider or database call.
+    Autonomous tuning is code-disabled: Nora may inspect status and authenticated history but must never PUT,
+    roll back, infer feelings or identity from values, or claim a parameter change is learning until a
+    preregistered human-reviewed experiment lifecycle exists. DIALS is functional configuration, not authority,
+    preference, phenomenal experience, consciousness, or a private mental state.
     GET /self-model/fingerprints exposes SCOPE's offline longitudinal instrument: forty frozen probe slots
     across voice/register, judgment, calibration, and procedure application, each with three hidden parallel
     forms. Research-authenticated runs commit the exact live persona, charter, routine, provider configuration,

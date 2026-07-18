@@ -88,7 +88,7 @@ function normalizeOutcome(value) {
   throw new Error('expectation outcomes must be true, false, or unclear');
 }
 
-function scoreClaim(claim, resolution) {
+function scoreClaim(claim, resolution, { highConfidenceMissThreshold = 0.7 } = {}) {
   if (resolution.outcome === 'unclear') return { scored: false, brier: null, predicted: null, miss: false, magnitude: null };
   const actual = resolution.outcome ? 1 : 0;
   const predicted = claim.probability >= 0.5;
@@ -100,7 +100,7 @@ function scoreClaim(claim, resolution) {
     predicted,
     confidence,
     miss,
-    high_confidence_miss: miss && confidence >= 0.7,
+    high_confidence_miss: miss && confidence >= highConfidenceMissThreshold,
     magnitude: Math.abs(claim.probability - actual),
   };
 }

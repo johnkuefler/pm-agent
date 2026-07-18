@@ -169,6 +169,12 @@ test('live server opts into complete Slack trials but never globally enables sec
     'exemplar-learning.js'), 'utf8');
   assert.doesNotMatch(exemplars, /fetch\(|axios|anthropic|openai|pgvector|\bembed(?:ding)?\s*\(/i,
     'exemplar retrieval must stay local and add no provider, embedding, database, or network call');
+  const dials = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'cognitive-parameters.js'), 'utf8');
+  assert.doesNotMatch(dials, /fetch\(|axios|anthropic|openai|pgvector|\bembed(?:ding)?\s*\(|db\./i,
+    'DIALS reads must stay cached and add no provider, embedding, database, or network call');
+  assert.match(server, /function currentCognitiveParameters\(\)[\s\S]*return currentCognitiveParameterRecord\(\)\.params/,
+    'live cognitive computations must read the already-hydrated process-local parameter document');
   assert.equal((server.match(/captureIntelligenceReceipt: true/g) || []).length, 1,
     'only Slack requests the small prompt-access receipt; Zoom and realtime stay unchanged');
   const normalSlackDelivery = server.slice(server.indexOf('// Log the interaction for the dream'),

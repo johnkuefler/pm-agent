@@ -23,7 +23,7 @@ test('indicator registry is explicitly non-aggregable and separates mechanism fr
   assert.equal(report.no_composite_score, true);
   assert.equal(indicator(report, 'multi_consumer_global_broadcast').status, 'mechanism_present');
   assert.equal(indicator(report, 'process_level_metacognition').status, 'not_implemented');
-  for (const id of ['blinded_introspective_access', 'developmental_revision_transfer', 'identity_specific_self_prediction', 'behavioral_metacognitive_control', 'adaptive_epistemic_action', 'episodic_autobiographical_prospection', 'stable_revealed_preferences', 'empirical_self_model_control', 'calibrated_self_model_trust', 'outcome_selected_work_procedures', 'retrieval_conditioned_work_patterns']) {
+  for (const id of ['blinded_introspective_access', 'developmental_revision_transfer', 'identity_specific_self_prediction', 'behavioral_metacognitive_control', 'adaptive_epistemic_action', 'episodic_autobiographical_prospection', 'stable_revealed_preferences', 'empirical_self_model_control', 'calibrated_self_model_trust', 'outcome_selected_work_procedures', 'retrieval_conditioned_work_patterns', 'bounded_cognitive_parameter_plasticity']) {
     assert.equal(indicator(report, id).status, 'mechanism_present', `${id} has a runnable mechanism even before its first live study`);
   }
   assert.deepEqual(report.implementation_audit.unavailable_indicator_ids, ['process_level_metacognition']);

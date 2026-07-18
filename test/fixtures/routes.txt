@@ -239,6 +239,10 @@ GET /prompt
 PUT /prompt
 GET /prompt/history
 POST /prompt/rollback
+GET /cognitive-parameters
+GET /cognitive-parameters/history
+PUT /cognitive-parameters
+POST /cognitive-parameters/rollback
 GET /cowork-prompt
 GET /charter
 PUT /charter

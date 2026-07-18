@@ -268,8 +268,11 @@ function normalizeStateControl(value = {}) {
     ? String(value.behavioral_self_revision_commitment).trim().toLowerCase() : null;
   control.empirical_self_knowledge_commitment = value.empirical_self_knowledge_commitment
     ? String(value.empirical_self_knowledge_commitment).trim().toLowerCase() : null;
+  control.cognitive_parameters_commitment = value.cognitive_parameters_commitment
+    ? String(value.cognitive_parameters_commitment).trim().toLowerCase() : null;
   if (required.some(key => !SHA256.test(control[key]))
-    || [control.behavioral_self_revision_commitment, control.empirical_self_knowledge_commitment]
+    || [control.behavioral_self_revision_commitment, control.empirical_self_knowledge_commitment,
+      control.cognitive_parameters_commitment]
       .some(item => item && !SHA256.test(item))) {
     throw new Error('behavioral fingerprint requires committed persona, charter, routine, and provider configuration state');
   }
