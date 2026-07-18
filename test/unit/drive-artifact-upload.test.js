@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const artifactUpload = require('../../src/integrations/drive-artifact-upload');
+const { registerCoworkInstructionsRoute } = require('../../src/routes/cowork-instructions');
 
 const input = {
   bytes: Buffer.from('real binary bytes\0\1', 'utf8'),
@@ -80,4 +81,16 @@ test('unattended-work instructions expose raw upload, retry, and receipt verific
     assert.match(text, /Idempotency-Key/);
     assert.match(text, /receipt\.request\.sha256/);
   }
+
+  let handler;
+  registerCoworkInstructionsRoute({ get(route, callback) {
+    if (route === '/cowork-instructions') handler = callback;
+  } });
+  let rendered = '';
+  assert.doesNotThrow(() => handler({}, {
+    type() { return this; },
+    send(value) { rendered = value; },
+  }));
+  assert.match(rendered, /\$\{BASE\}\/admin\/drive\/upload-artifact/);
+  assert.match(rendered, /task-\$\{TASK_ID\}-\$\{ARTIFACT_SHA\}/);
 });

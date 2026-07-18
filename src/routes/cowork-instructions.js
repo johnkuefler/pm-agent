@@ -258,13 +258,13 @@ function registerCoworkInstructionsRoute(app) {
 
   Example (reuse the SAME idempotency key when retrying the same artifact):
     ARTIFACT_SHA=$(sha256sum "$ARTIFACT_PATH" | cut -d' ' -f1)
-    curl --fail-with-body -sS -X POST "${BASE}/admin/drive/upload-artifact" \
-      -H "Authorization: Bearer ${KEY}" \
+    curl --fail-with-body -sS -X POST "\${BASE}/admin/drive/upload-artifact" \
+      -H "Authorization: Bearer \${KEY}" \
       -H 'Content-Type: application/octet-stream' \
-      -H "Idempotency-Key: task-${TASK_ID}-${ARTIFACT_SHA}" \
-      -H "X-Nora-Drive-Folder-Id: ${DRIVE_FOLDER_ID}" \
-      -H "X-Nora-Filename: ${FINAL_FILENAME}" \
-      --data-binary "@${ARTIFACT_PATH}" | tee /tmp/nora-drive-upload.json
+      -H "Idempotency-Key: task-\${TASK_ID}-\${ARTIFACT_SHA}" \
+      -H "X-Nora-Drive-Folder-Id: \${DRIVE_FOLDER_ID}" \
+      -H "X-Nora-Filename: \${FINAL_FILENAME}" \
+      --data-binary "@\${ARTIFACT_PATH}" | tee /tmp/nora-drive-upload.json
 
   A successful response contains file.webViewLink and receipt. Do not claim delivery or
   PATCH a task to review_ready unless ok=true, receipt.request.sha256 == ARTIFACT_SHA,
