@@ -79,7 +79,7 @@ test('intelligence grounding augments rather than replaces Nora expressive voice
   const episode = helpers.intelligenceStore.recordEpisodeEvent({ correlation: 'slack:C1:launch', title: 'Launch follow-up', channel: 'slack', actor: 'John', text: 'Can you confirm launch QA?', summary: 'John asked Nora to confirm launch QA.', open_loop: { what: 'Confirm launch QA', owner: 'Nora' } });
   helpers.intelligenceStore.addCommitment({ what: 'Confirm launch QA', owner: 'Nora', episode_id: episode.id });
   const prompt = helpers.buildSystemPrompt('slack', null, null, { channel: 'C1', requester: { name: 'John' } }, { conversationText: 'Where are we on launch QA?' });
-  assert.match(prompt, /Default: talk/i);
+  assert.match(prompt, /default to talking|Default: talk/i);
   assert.match(prompt, /casual, warm, quick/i);
   assert.match(prompt, /Grounding and repair/i);
   assert.match(prompt, /repair it directly/i);

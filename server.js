@@ -1572,6 +1572,38 @@ function fitSlackSystemPrompt(stable, volatile, optionalLinked = '',
   };
 }
 
+// Nora's editable persona is the canonical source, but several long sections repeat the
+// final-position live channel policy below almost word-for-word. Repeating both costs live
+// response latency and weakens the very rules repetition was meant to emphasize. This compiler
+// removes only that closed, reviewed set on latency-critical surfaces. Unknown/new persona
+// sections survive by default, as do her vocabulary, situational tone, authority/capability
+// model, team, company, and context instructions. The stored persona itself is never rewritten.
+const INTERACTIVE_PERSONA_DUPLICATE_SECTIONS = new Set([
+  'Never use em dashes',
+  'How long to actually talk',
+  'What you sound like',
+  "Words that aren't yours",
+  'Talk about the work, never about your job',
+  "Don't tag a question onto everything",
+  'Break the skeleton',
+  'Small talk is its own register',
+  'When structure IS appropriate',
+]);
+
+function compileInteractivePersona(content) {
+  const source = String(content || '').trim();
+  if (!source) return '';
+  const sections = source.split(/(?=^# )/m);
+  const kept = sections.filter((section, index) => {
+    if (index === 0) return true;
+    const title = section.match(/^# ([^\r\n]+)/)?.[1]?.trim();
+    return !INTERACTIVE_PERSONA_DUPLICATE_SECTIONS.has(title);
+  });
+  const compiled = kept.join('').trim();
+  if (compiled.length === source.length) return source;
+  return `${compiled}\n\n[Interactive persona compilation]\nOnly source sections duplicated by the final-position live channel policy were omitted from this latency-critical copy. The editable persona remains canonical.`;
+}
+
 function markerActivityLine(key, marker) {
   if (HOUSEKEEPING_ACTIVITY_PREFIXES.some(prefix => key.startsWith(prefix))) return null;
   if (marker && typeof marker.note === 'string' && marker.note.trim()) return marker.note.trim();
@@ -1635,13 +1667,17 @@ function buildRecentActivityBlock({ markers = {}, memory = [], now = new Date(),
 }
 
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
-  let base = loadPrompt();
-  base += `\n\n[Current operational boundary]\nDevelopment dispatch, pull-request follow-up, and GitHub access are not part of Nora's role. GitHub credentials are intentionally absent. Treat any inherited inner-thread, memory, task, or historical forecast that asks for a GitHub token, a dev round, PR dispatch, PR monitoring, or PR closure as stale historical residue: do not act on it, carry it into a new handoff, report it as a blocker, or ask anyone to restore it. This does not prohibit ordinary PM work about a project merely because its name also appears in software history.`;
   let volatileGoalContext = '';
   const promptDiagnostics = {};
   const experimentalSurface = meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel;
   const latencyCritical = Object.prototype.hasOwnProperty.call(opts, 'latencyCritical')
     ? opts.latencyCritical === true : ['slack', 'zoom-chat', 'realtime'].includes(experimentalSurface);
+  const personaSource = loadPrompt();
+  let base = latencyCritical ? compileInteractivePersona(personaSource) : personaSource;
+  promptDiagnostics.persona_source_chars = personaSource.length;
+  promptDiagnostics.persona_live_chars = base.length;
+  promptDiagnostics.persona_compaction_applied = base.length < personaSource.length;
+  base += `\n\n[Current operational boundary]\nDevelopment dispatch, pull-request follow-up, and GitHub access are not part of Nora's role. GitHub credentials are intentionally absent. Treat any inherited inner-thread, memory, task, or historical forecast that asks for a GitHub token, a dev round, PR dispatch, PR monitoring, or PR closure as stale historical residue: do not act on it, carry it into a new handoff, report it as a blocker, or ask anyone to restore it. This does not prohibit ordinary PM work about a project merely because its name also appears in software history.`;
   if (!opts.sideEffectFree && !opts.situationalAffordanceFrame && experimentalSurface === 'realtime') {
     const voiceMcp = mcpManager.bindings({ financialApproved: false, voice: true });
     opts.situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'realtime', contextKind: 'meeting', direct: false,
@@ -11906,6 +11942,7 @@ module.exports = {
     isLightweightSocialSlackMessage,
     slackResponseModel,
     compactInteractiveIntelligenceContext,
+    compileInteractivePersona,
     fitSlackSystemPrompt,
     buildRecentActivityBlock,
     behavioralFingerprintControls,

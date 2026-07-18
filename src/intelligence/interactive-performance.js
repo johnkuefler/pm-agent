@@ -1,6 +1,6 @@
 'use strict';
 
-const PROTOCOL_VERSION = 7;
+const PROTOCOL_VERSION = 8;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
@@ -10,10 +10,12 @@ const BUDGET_MS = Object.freeze({
 // Prompt growth is measured alongside first delivery so future cognition cannot quietly tax
 // the live path. These are ceilings, not token targets. Protocol v7 additionally prevents
 // accumulated memory and cognitive packets from silently exceeding them in production.
+// Protocol v8 removes source-persona sections already enforced by final-position live policy
+// and tightens these ceilings around the measured compiled envelope.
 const PROMPT_BUDGET_CHARS = Object.freeze({
-  slack: 45000,
-  'zoom-chat': 45000,
-  realtime: 50000,
+  slack: 38000,
+  'zoom-chat': 40000,
+  realtime: 45000,
 });
 const INTERACTIVE_QUIET_WINDOW_MS = 15000;
 const activeInteractiveLeases = new Map();
@@ -38,7 +40,7 @@ const INLINE_LATENCY_TAXED_INTERVENTIONS = new Set([
 const protocol = Object.freeze({
   protocol_version: PROTOCOL_VERSION,
   prediction: 'Human-facing cognition can stay within channel-specific first-delivery and prompt-size budgets when extra provider-round research is excluded from interactive paths and background inference yields to live work.',
-  intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, abort timed-out semantic retrieval, preempt background provider inference including memory embedding backfill, suppress remote prompt refresh during active or just-finished speech, and hold background lanes through a short post-interaction quiet window. Live prompts use a bounded relevance-preserving memory window, a marker-grounded action ledger, one shared epistemic contract, and a limited-attention envelope for accumulated cognitive packets; sealed experimental packets and operational capability constraints outrank latent context.',
+  intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, abort timed-out semantic retrieval, preempt background provider inference including memory embedding backfill, suppress remote prompt refresh during active or just-finished speech, and hold background lanes through a short post-interaction quiet window. Live prompts use a deterministic persona compilation that removes only sections duplicated by final-position channel policy while retaining the editable source document, distinctive vocabulary, situational tone, authority, team, company, and context instructions. They also use a bounded relevance-preserving memory window, marker-grounded action ledger, one shared epistemic contract, and a limited-attention envelope for accumulated cognitive packets; sealed experimental packets and operational capability constraints outrank latent context.',
   controls: 'Scheduled research retains the quarantined interventions through one serialized, preemptible provider lane; ordinary live tool use remains available when the requested work itself requires it.',
   outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger, with the exact live prompt character count and bounded stage timings attached to the same receipt.',
   minimum_samples_per_surface: 20,

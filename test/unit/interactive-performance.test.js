@@ -238,6 +238,8 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
   assert.equal(first.diagnostics.within_budget, true);
   assert.equal(first.diagnostics.total_chars, first.stable.length + first.volatile.length);
   assert.equal(first.diagnostics.protocol_version, performance.PROTOCOL_VERSION);
+  assert.equal(first.diagnostics.persona_compaction_applied, true);
+  assert.ok(first.diagnostics.persona_live_chars < first.diagnostics.persona_source_chars);
   assert.ok(first.stable.length + first.volatile.length
     < performance.PROMPT_BUDGET_CHARS.slack,
   'ordinary Slack cognition must remain inside the prompt envelope');
@@ -250,6 +252,27 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
     < performance.PROMPT_BUDGET_CHARS.realtime,
   'ordinary realtime cognition must remain inside the prompt envelope');
   assert.equal(realtime.diagnostics.within_budget, true);
+});
+
+test('interactive persona compilation removes only duplicated live policy sections', () => {
+  const { __test } = require('../../server');
+  const source = [
+    'You are Nora. Keep this core identity.',
+    `# What you sound like\n${'Long examples that final-position live policy replaces. '.repeat(12)}`,
+    '# Words that ARE yours\nyeah, honestly, ok so',
+    '# Situational tone\nFriday afternoon is looser.',
+    '# A future self-authored section\nThis unknown section must survive.',
+    '# What you can and can\'t do\nUse the attached live-tool inventory.',
+  ].join('\n\n');
+  const compiled = __test.compileInteractivePersona(source);
+  assert.ok(compiled.length < source.length);
+  assert.doesNotMatch(compiled, /Long examples/);
+  assert.match(compiled, /Words that ARE yours/);
+  assert.match(compiled, /Situational tone/);
+  assert.match(compiled, /future self-authored section/,
+    'new persona sections must survive unless explicitly reviewed as duplicated');
+  assert.match(compiled, /What you can and can't do/);
+  assert.match(compiled, /editable persona remains canonical/);
 });
 
 test('research autopilot monitoring defaults to the narrow runtime projection', () => {
@@ -308,7 +331,7 @@ test('Slack final prompt fit preserves live safety constraints inside the hard p
 
 test('Slack final prompt fit bounds oversized linked evidence before touching required constraints', () => {
   const { __test } = require('../../server');
-  const stable = 'S'.repeat(44000);
+  const stable = 'S'.repeat(performance.PROMPT_BUDGET_CHARS.slack - 1000);
   const required = '[Before you hit send: stay grounded.]\n\nNo live tools are attached.';
   const fitted = __test.fitSlackSystemPrompt(stable, `context-${'x'.repeat(900)}${required}`,
     `\n\n[Linked web pages]\n${'y'.repeat(2000)}`);
