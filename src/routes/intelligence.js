@@ -3,7 +3,7 @@
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
   const projectionCacheOptions = { store, getDreams, getWants,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
@@ -270,6 +270,37 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       await store.persistStrict();
       res.json({ ok: true, ...result });
     } catch (error) { res.status(result ? 503 : 400).json({ error: error.message }); }
+  });
+
+  app.get('/developmental-reading', requireAuth, (_req, res) => {
+    try { res.json(store.developmentalReadingSnapshot()); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/developmental-reading/sources', requireAuth, async (req, res) => {
+    if (!readingLibrary) return res.status(503).json({ error: 'developmental reading library is unavailable' });
+    let contentManifest = null;
+    try {
+      const { content, ...metadata } = req.body || {};
+      contentManifest = await readingLibrary.ingest(content);
+      const { created: _created, ...committedManifest } = contentManifest;
+      const source = store.registerReadingSource({ ...metadata, ...committedManifest });
+      res.json({ ok: true, source: { id: source.id, title: source.title, author: source.author,
+        source_kind: source.source_kind, rights_basis: source.rights_basis,
+        content_chars: source.content_chars, chunk_count: source.chunk_commitments.length,
+        content_manifest_commitment: source.content_manifest_commitment } });
+    } catch (error) {
+      if (contentManifest?.created) {
+        try { await readingLibrary.discard(contentManifest); }
+        catch (cleanupError) { console.warn('reading source admission cleanup failed:', cleanupError.message); }
+      }
+      res.status(400).json({ error: error.message });
+    }
+  });
+  app.post('/developmental-reading/sessions', requireAuth, (req, res) => {
+    try {
+      const session = store.startReadingSession(req.body?.source_id, req.body || {});
+      res.json({ ok: true, session });
+    } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
   app.get('/initiative-budgets/:scope', requireAuth, (req, res) => res.json(store.initiativeStatus(req.params.scope)));

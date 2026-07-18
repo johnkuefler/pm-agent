@@ -20,7 +20,7 @@ function assessRoutineContract(routine = {}) {
 }
 
 function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
-  researchAutopilot = null } = {}) {
+  researchAutopilot = null, behavioralFingerprints = null } = {}) {
   const blockers = [];
   if (lock.locked) blockers.push({ kind: 'run_lock', holder: lock.holder || null,
     cycle_id: lock.lifecycle?.cycle_id || null, cycle_status: lock.lifecycle?.cycle_status || null });
@@ -58,6 +58,16 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
         labels: Array.isArray(priority.background_labels) ? priority.background_labels : [] });
     }
   }
+  if (behavioralFingerprints) {
+    const activeRuns = Array.isArray(behavioralFingerprints.runs)
+      ? behavioralFingerprints.runs.filter(run => run.status === 'active') : [];
+    const activeCount = Math.max(Number(behavioralFingerprints.report?.active) || 0,
+      activeRuns.length);
+    if (activeCount > 0) {
+      blockers.push({ kind: 'build_bound_behavioral_fingerprint', count: activeCount,
+        run_ids: activeRuns.map(run => run.id).filter(Boolean) });
+    }
+  }
   return { ready: blockers.length === 0, blockers };
 }
 
@@ -78,15 +88,19 @@ async function checkDeployReadiness({
   if (!apiKey) throw new Error('NORA_API_KEY is required for the deployment readiness check');
   if (typeof fetchImpl !== 'function') throw new Error('deployment readiness check requires fetch');
   const normalizedBase = String(baseUrl).replace(/\/+$/, '');
-  const [lock, activeBots, routine, researchAutopilot] = await Promise.all([
+  const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints] = await Promise.all([
     fetchJson('/run-lock', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/admin/active-bots', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/routine', { baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000 }),
     fetchJson('/consciousness-research/autopilot', {
       baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000,
     }),
+    fetchJson('/self-model/fingerprints', {
+      baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000,
+    }),
   ]);
-  return { ...assessDeployReadiness({ lock, activeBots, routine, researchAutopilot }),
+  return { ...assessDeployReadiness({ lock, activeBots, routine, researchAutopilot,
+    behavioralFingerprints }),
     checked_at: new Date().toISOString(),
     base_url: normalizedBase };
 }

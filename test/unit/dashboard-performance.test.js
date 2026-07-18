@@ -31,6 +31,11 @@ test('dashboard summary stays compact and advances with store mutations', async 
   assert.equal(initial.cognition.cognitive_parameters.default_equivalent, true);
   assert.equal(initial.cognition.cognitive_parameters.autonomous_tuning_enabled, false);
   assert.equal(initial.cognition.cognitive_parameters.integrity_verified, true);
+  assert.deepEqual(initial.cognition.developmental_reading, {
+    sources: 0, active_sessions: 0, completed_encounters: 0, reflected_chunks: 0,
+    provisional_self_revision_candidates: 0, background_only: true,
+    direct_persona_mutation: false, active_title: null,
+  });
   for (const metric of Object.values(initial.brain)) {
     assert.ok(metric.level >= 0 && metric.level <= 1);
     assert.equal(typeof metric.evidence, 'string');

@@ -105,13 +105,16 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'learning', label: 'Learning', layer: 'background', x: .28, y: .75,
-    description: 'Behavior experiments, developmental memories, compact procedures, retrieved work patterns, and DIALS: a bounded replay-audited functional parameter document. Autonomous tuning stays locked until a preregistered experiment can justify it.',
+    description: 'Behavior experiments, developmental memories, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, and DIALS. Reading may earn viewpoints but never directly rewrites the persona.',
     links: ['relationships', 'reflection', 'background'],
     read: state => {
       const experiments = state.experiments || [];
       const active = experiments.filter(item => item.status === 'active').length;
       const development = (state.cognition?.development || []).length;
-      return activity(scaleCount(active + development, 10), `${active} active experiments, ${development} developmental memories`, active + development > 0);
+      const reading = state.cognition?.developmental_reading?.report || {};
+      const encounters = reading.completed_encounters || 0;
+      const readingActive = reading.active_sessions || 0;
+      return activity(scaleCount(active + development + encounters + readingActive, 10), `${active} active experiments, ${development} developmental memories, ${readingActive} active and ${encounters} completed reading encounters`, active + development + encounters + readingActive > 0);
     },
   },
   {

@@ -24,6 +24,7 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
         interactive_priority: { active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0,
           background_provider_in_flight: 0 },
       });
+      if (url.endsWith('/self-model/fingerprints')) return response({ report: { active: 0 }, runs: [] });
       return response({ count: 0, bots: [] });
     } });
   assert.equal(result.ready, true);
@@ -32,6 +33,7 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
     'https://nora.example/admin/active-bots',
     'https://nora.example/consciousness-research/autopilot',
     'https://nora.example/routine', 'https://nora.example/run-lock',
+    'https://nora.example/self-model/fingerprints',
   ]);
   assert.ok(calls.every(item => item.authorization === 'Bearer test-key'));
 });
@@ -75,6 +77,16 @@ test('deployment readiness protects live replies, their quiet window, and backgr
   assert.deepEqual(result.blockers.map(item => item.kind), [
     'interactive_work_in_flight', 'interactive_quiet_window', 'background_provider_in_flight',
   ]);
+});
+
+test('deployment readiness preserves the build bound to an active behavioral fingerprint', () => {
+  const result = assessDeployReadiness({ lock: { locked: false },
+    activeBots: { count: 0, bots: [] }, routine: validRoutine,
+    behavioralFingerprints: { report: { active: 1 },
+      runs: [{ id: 'fingerprint-1', status: 'active' }] } });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.blockers, [{ kind: 'build_bound_behavioral_fingerprint', count: 1,
+    run_ids: ['fingerprint-1'] }]);
 });
 
 test('deployment readiness fails closed when either authoritative probe fails', async () => {

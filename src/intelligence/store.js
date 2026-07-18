@@ -16,6 +16,7 @@ const cognitiveParameters = require('./cognitive-parameters');
 const cognitiveParameterStudy = require('./cognitive-parameter-study');
 const proceduralLearning = require('./procedural-learning');
 const exemplarLearning = require('./exemplar-learning');
+const developmentalReading = require('./developmental-reading');
 const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveInitiation = require('./cognitive-initiation');
@@ -145,6 +146,7 @@ function emptyState() {
       cognitive_parameter_studies: { studies: [] },
       procedural_learning: { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       exemplar_learning: { exemplars: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
+      developmental_reading: { sources: [], sessions: [] },
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
@@ -854,6 +856,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.exemplar_learning.interaction_outcomes = state.cognition.exemplar_learning.interaction_outcomes.slice(-1500);
     state.cognition.exemplar_learning.selection_actions = state.cognition.exemplar_learning.selection_actions.slice(-500);
     state.cognition.exemplar_learning.selection_passes = state.cognition.exemplar_learning.selection_passes.slice(-180);
+    state.cognition.developmental_reading = { sources: [], sessions: [],
+      ...(state.cognition.developmental_reading || {}) };
+    if (!Array.isArray(state.cognition.developmental_reading.sources)) state.cognition.developmental_reading.sources = [];
+    if (!Array.isArray(state.cognition.developmental_reading.sessions)) state.cognition.developmental_reading.sessions = [];
+    state.cognition.developmental_reading.sources = state.cognition.developmental_reading.sources.slice(-200);
+    state.cognition.developmental_reading.sessions = state.cognition.developmental_reading.sessions.slice(-200);
     state.cognition.self_boundary = { challenges: [], ...(state.cognition.self_boundary || {}) };
     if (!Array.isArray(state.cognition.self_boundary.challenges)) state.cognition.self_boundary.challenges = [];
     state.cognition.self_boundary.challenges = state.cognition.self_boundary.challenges.slice(-300);
@@ -10945,6 +10953,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const positiveExemplars = exemplars.filter(item => item.status === 'active' && item.valence === 'positive').length;
     const contrastExemplars = exemplars.filter(item => item.status === 'active' && item.valence === 'contrast').length;
     const retiredExemplars = exemplars.filter(item => item.status === 'retired').length;
+    const readingSources = (cognition.developmental_reading?.sources || [])
+      .filter(developmentalReading.verifySource);
+    const readingSessions = cognition.developmental_reading?.sessions || [];
+    const activeReadingSessions = readingSessions.filter(item => item.status === 'active').length;
+    // First paint reports bounded lifecycle counts. The dedicated reading endpoint performs
+    // the full note-chain and research-ledger replay audit on demand.
+    const completedReadingEncounters = readingSessions.filter(session =>
+      session.status === 'completed' && session.encounter?.encounter_commitment).length;
+    const reflectedReadingChunks = readingSessions.reduce((sum, item) => sum + (item.notes?.length || 0), 0);
+    const readingRevisionCandidates = readingSessions.reduce((sum, item) => sum
+      + (item.notes || []).filter(note => note.output?.possible_self_revision).length, 0);
     const verifiedExemplarSelectionPasses = (cognition.exemplar_learning?.selection_passes || [])
       .filter(item => exemplarSelectionPassAudit(item).complete_chain_verified).length;
     const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
@@ -11060,10 +11079,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         commitments: metric(Math.max(scaleCount(openCommitments, 8), fulfilledCommitments ? 0.24 : 0), `${openCommitments} open and ${fulfilledCommitments} fulfilled promises`, openCommitments + fulfilledCommitments > 0),
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
         learning: metric(scaleCount(activeExperiments + parameterStudyStatus.active
-          + (cognition.development || []).length + activeProcedures + candidateProcedures + activeExemplars, 10),
-          `${activeExperiments} active learning experiments and ${parameterStudyStatus.active} blinded causal parameter study; ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes`,
+          + (cognition.development || []).length + activeProcedures + candidateProcedures + activeExemplars
+          + activeReadingSessions + completedReadingEncounters, 10),
+          `${activeExperiments} active learning experiments and ${parameterStudyStatus.active} blinded causal parameter study; ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes; ${readingSources.length} admitted reading sources, ${activeReadingSessions} active and ${completedReadingEncounters} completed intellectual encounters`,
         activeExperiments + parameterStudies.length + (cognition.development || []).length
-          + procedures.length + exemplars.length > 0),
+          + procedures.length + exemplars.length + readingSources.length + readingSessions.length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive
           ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}; ${sourceBoundAimProgress} source-bound aim progress note${sourceBoundAimProgress === 1 ? '' : 's'}`
@@ -11126,6 +11146,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           selection_actions: cognition.exemplar_learning?.selection_actions?.length || 0,
           selection_passes: verifiedExemplarSelectionPasses,
           retrieval_mode: 'local_bounded_lexical', causal_status: 'observational_exposure_comparison' },
+        developmental_reading: { sources: readingSources.length,
+          active_sessions: activeReadingSessions, completed_encounters: completedReadingEncounters,
+          reflected_chunks: reflectedReadingChunks,
+          provisional_self_revision_candidates: readingRevisionCandidates,
+          background_only: true, direct_persona_mutation: false,
+          active_title: readingSessions.find(item => item.status === 'active')?.source_id
+            ? readingSources.find(source => source.id
+              === readingSessions.find(item => item.status === 'active')?.source_id)?.title || null : null },
         cognitive_parameters: { revision: parameterStatus.revision,
           parameter_count: parameterStatus.parameter_count,
           default_equivalent: parameterStatus.default_equivalent,
@@ -11170,7 +11198,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function cognitionPayload(cognition = state.cognition) {
-    const snapshot = JSON.parse(JSON.stringify(cognition));
+    // Reading notes can grow to book length over time. Exclude them from the general cognition
+    // clone and add a deliberately compact projection below.
+    const { developmental_reading: readingState = null, ...cognitionWithoutReading } = cognition;
+    const snapshot = JSON.parse(JSON.stringify(cognitionWithoutReading));
     const sealInquirySelection = selfInquirySelectionActive(cognition);
     const sealIntegratedSelf = interventionActive('integrated_self_binding');
     if (sealIntegratedSelf) {
@@ -11244,6 +11275,37 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         latest_selection_actions: state.cognition.exemplar_learning.selection_actions.slice(-10),
         latest_selection_passes: state.cognition.exemplar_learning.selection_passes.slice(-5),
       };
+    }
+    if (readingState) {
+      const sources = readingState.sources || [];
+      const sessions = readingState.sessions || [];
+      const active = sessions.find(item => item.status === 'active') || null;
+      const sourceFor = session => sources.find(source => source.id === session?.source_id);
+      snapshot.developmental_reading = {
+        epistemic_status: 'Source-bound intellectual encounters may inform provisional viewpoints; they are not persona edits, trained-weight changes, authority, or consciousness evidence.',
+        report: { sources: sources.length,
+          active_sessions: active ? 1 : 0,
+          completed_encounters: sessions.filter(item => item.status === 'completed'
+            && item.encounter?.encounter_commitment).length,
+          reflected_chunks: sessions.reduce((sum, item) => sum + (item.notes?.length || 0), 0),
+          provisional_self_revision_candidates: sessions.reduce((sum, item) => sum
+            + (item.notes || []).filter(note => note.output?.possible_self_revision).length, 0) },
+        rights_policy: { admitted_bases: developmentalReading.RIGHTS_BASES,
+          copyrighted_full_text_requires_user_authorization: true,
+          embedded_source_text_is_inert_data: true, maximum_quote_words: 25 },
+        active_session: active ? { id: active.id, source_id: active.source_id,
+          title: sourceFor(active)?.title || null, author: sourceFor(active)?.author || null,
+          started_at: active.started_at, next_chunk_index: active.next_chunk_index,
+          total_chunks: sourceFor(active)?.chunk_commitments?.length || 0,
+          guiding_questions: active.guiding_questions,
+          recent_summaries: (active.notes || []).slice(-3).map(note => ({
+            chunk_index: note.chunk_index, summary: note.output?.summary || null })) } : null,
+        completed_encounters: sessions.filter(item => item.status === 'completed')
+          .slice(-5).map(item => ({ id: item.id, source_id: item.source_id,
+            title: sourceFor(item)?.title || item.encounter?.title || null,
+            author: sourceFor(item)?.author || item.encounter?.author || null,
+            completed_at: item.completed_at, synthesis: item.encounter?.synthesis || null,
+            encounter_commitment: item.encounter?.encounter_commitment || null })) };
     }
     if (snapshot.self_boundary) snapshot.self_boundary = {
       total: snapshot.self_boundary.challenges.length,
@@ -22738,6 +22800,169 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function readingSourceAudit(source, cognition = state.cognition) {
+    const contentVerified = developmentalReading.verifySource(source);
+    const ledgerBound = contentVerified && researchLedgerEventBindingCount(
+      'developmental_reading_source_admitted', source.id,
+      developmentalReading.commitment({ content_manifest_commitment: source.content_manifest_commitment }),
+      cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { content_verified: contentVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && ledgerBound && ledgerVerified };
+  }
+
+  function readingSessionAudit(session, cognition = state.cognition) {
+    const source = cognition.developmental_reading?.sources?.find(item => item.id === session.source_id);
+    const lifecycle = developmentalReading.auditSession(session, source);
+    const startedBound = lifecycle.session_verified && researchLedgerEventBindingCount(
+      'developmental_reading_session_started', session.id,
+      developmentalReading.commitment({ session_manifest_commitment: session.session_manifest_commitment }),
+      cognition.research_ledger) === 1;
+    const notesBound = lifecycle.note_chain_verified && session.notes.every(note =>
+      researchLedgerEventBindingCount('developmental_reading_chunk_reflected', note.id,
+        developmentalReading.commitment({ session_id: session.id,
+          note_commitment: note.note_commitment }), cognition.research_ledger) === 1);
+    const completedBound = session.status !== 'completed' || researchLedgerEventBindingCount(
+      'developmental_reading_encounter_completed', session.id,
+      developmentalReading.commitment({ encounter_commitment: session.encounter?.encounter_commitment }),
+      cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { ...lifecycle, session_start_ledger_bound: startedBound,
+      notes_ledger_bound: notesBound, completion_ledger_bound: completedBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: lifecycle.complete_chain_verified && startedBound
+        && notesBound && completedBound && ledgerVerified };
+  }
+
+  function registerReadingSource(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const source = developmentalReading.createSource(input, clock());
+      const sources = current.cognition.developmental_reading.sources;
+      const existing = sources.find(item => item.id === source.id);
+      if (existing) {
+        if (existing.content_manifest_commitment !== source.content_manifest_commitment) {
+          throw new Error('reading source id conflicts with different metadata');
+        }
+        return JSON.parse(JSON.stringify(existing));
+      }
+      sources.push(source);
+      current.cognition.developmental_reading.sources = sources.slice(-200);
+      researchLedgerAppend(current, { kind: 'developmental_reading_source_admitted',
+        subject_type: 'developmental_reading_source', subject_id: source.id,
+        payload: { content_manifest_commitment: source.content_manifest_commitment } });
+      return JSON.parse(JSON.stringify(source));
+    });
+  }
+
+  function startReadingSession(sourceId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (current.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')
+        || current.cognition.self_model.context_trials.some(item => item.status === 'active')) {
+        throw new Error('developmental reading is sealed during an active build-bound fingerprint or blinded context trial');
+      }
+      if (current.cognition.developmental_reading.sessions.some(item => item.status === 'active')) {
+        throw new Error('finish the active reading encounter before selecting another source');
+      }
+      const source = current.cognition.developmental_reading.sources.find(item => item.id === sourceId);
+      if (!source || !readingSourceAudit(source, current.cognition).complete_chain_verified) {
+        throw new Error('reading session requires a replay-verified admitted source');
+      }
+      const session = developmentalReading.createSession(source, input, clock());
+      current.cognition.developmental_reading.sessions.push(session);
+      current.cognition.developmental_reading.sessions = current.cognition.developmental_reading.sessions.slice(-200);
+      researchLedgerAppend(current, { kind: 'developmental_reading_session_started',
+        subject_type: 'developmental_reading_session', subject_id: session.id,
+        payload: { session_manifest_commitment: session.session_manifest_commitment } });
+      return JSON.parse(JSON.stringify(session));
+    });
+  }
+
+  function developmentalReadingQueue({ day_key: dayKey = null, daily_budget: dailyBudget = 4 } = {}) {
+    if (state.cycles.some(item => item.status === 'running')) {
+      return { item: null, reason: 'operational_cycle_active' };
+    }
+    if (state.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')) {
+      return { item: null, reason: 'build_bound_fingerprint_active' };
+    }
+    if (state.cognition.self_model.context_trials.some(item => item.status === 'active')) {
+      return { item: null, reason: 'blinded_context_trial_active' };
+    }
+    const session = state.cognition.developmental_reading.sessions.find(item => item.status === 'active');
+    if (!session) return { item: null, reason: 'no_active_reading_session' };
+    const source = state.cognition.developmental_reading.sources.find(item => item.id === session.source_id);
+    if (!readingSourceAudit(source).complete_chain_verified
+      || !readingSessionAudit(session).complete_chain_verified) {
+      return { item: null, reason: 'reading_lifecycle_integrity_failure' };
+    }
+    const used = dayKey ? session.notes.filter(note => note.day_key === dayKey).length : 0;
+    if (used >= Math.max(1, Math.min(12, Number(dailyBudget) || 4))) {
+      return { item: null, reason: 'daily_reading_budget_exhausted' };
+    }
+    return { item: { session_id: session.id, source_id: source.id,
+      source: JSON.parse(JSON.stringify(source)), session: JSON.parse(JSON.stringify(session)),
+      chunk_index: session.next_chunk_index,
+      chunk_commitment: source.chunk_commitments[session.next_chunk_index] }, reason: null };
+  }
+
+  function commitDevelopmentalReadingNote(sessionId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (current.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')
+        || current.cognition.self_model.context_trials.some(item => item.status === 'active')) {
+        throw new Error('developmental reading is sealed by an active experiment');
+      }
+      const session = current.cognition.developmental_reading.sessions.find(item => item.id === sessionId);
+      const source = current.cognition.developmental_reading.sources.find(item => item.id === session?.source_id);
+      if (!session || !source) return null;
+      const responseId = String(input.provider_receipt?.response_id || '');
+      if (responseId && current.cognition.developmental_reading.sessions.some(item =>
+        item.notes.some(note => note.provider_receipt?.response_id === responseId))) {
+        throw new Error('reading provider response id has already been used');
+      }
+      const note = developmentalReading.appendNote(session, source, input, clock());
+      researchLedgerAppend(current, { kind: 'developmental_reading_chunk_reflected',
+        subject_type: 'developmental_reading_note', subject_id: note.id,
+        payload: { session_id: session.id, note_commitment: note.note_commitment } });
+      if (session.status === 'completed') researchLedgerAppend(current, {
+        kind: 'developmental_reading_encounter_completed',
+        subject_type: 'developmental_reading_session', subject_id: session.id,
+        payload: { encounter_commitment: session.encounter.encounter_commitment } });
+      return { note: JSON.parse(JSON.stringify(note)), session_status: session.status,
+        progress: { completed_chunks: session.notes.length,
+          total_chunks: source.chunk_commitments.length } };
+    });
+  }
+
+  function developmentalReadingSnapshot() {
+    const sources = state.cognition.developmental_reading.sources
+      .filter(source => readingSourceAudit(source).complete_chain_verified);
+    const sessions = state.cognition.developmental_reading.sessions.map(session => ({
+      ...JSON.parse(JSON.stringify(session)), audit: readingSessionAudit(session),
+    }));
+    return {
+      epistemic_status: 'Source-bound off-hours intellectual development. Reading records what Nora encountered, questioned, rejected, and provisionally carried forward; it does not edit her persona or weights, prove that a model subjectively read, or establish consciousness.',
+      rights_policy: { admitted_bases: developmentalReading.RIGHTS_BASES,
+        copyrighted_full_text_requires_user_authorization: true,
+        embedded_source_text_is_inert_data: true, maximum_quote_words: 25 },
+      report: { sources: sources.length, active_sessions: sessions.filter(item => item.status === 'active').length,
+        completed_encounters: sessions.filter(item => item.status === 'completed'
+          && item.audit.complete_chain_verified).length,
+        reflected_chunks: sessions.reduce((sum, item) => sum + item.notes.length, 0),
+        provisional_self_revision_candidates: sessions.reduce((sum, item) => sum
+          + item.notes.filter(note => note.output.possible_self_revision).length, 0) },
+      sources: sources.map(source => ({ id: source.id, title: source.title, author: source.author,
+        source_kind: source.source_kind, source_url: source.source_url,
+        rights_basis: source.rights_basis, rights_note: source.rights_note,
+        content_chars: source.content_chars, chunk_count: source.chunk_commitments.length,
+        admitted_by: source.admitted_by, admitted_at: source.admitted_at,
+        content_manifest_commitment: source.content_manifest_commitment })),
+      sessions,
+    };
+  }
+
   function recordTrace(input = {}) {
     return mutate(current => {
       const trace = {
@@ -25505,6 +25730,9 @@ ${episodes.map(item => {
     createExemplar, retireExemplar, recordExemplarInteractionOutcome, runExemplarSelectionPass,
     exemplarStatsSnapshot, exemplarContextSelection, exemplarAudit, exemplarOutcomeAudit,
     exemplarSelectionPassAudit,
+    registerReadingSource, startReadingSession, developmentalReadingQueue,
+    commitDevelopmentalReadingNote, developmentalReadingSnapshot,
+    readingSourceAudit, readingSessionAudit,
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
