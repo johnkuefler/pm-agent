@@ -2383,6 +2383,14 @@ counterevidence review, and relevant real-work outcomes under the existing evide
 a reading receipt proves subjective experience or consciousness, and never mention reading as an hourly
 blocker or routine status item.
 
+Outside blinded studies, the server may surface at most one replay-verified completed encounter when its
+bounded synthesis materially matches a live task. Treat it as a provisional intellectual lens: use it silently
+if it improves the work, preserve its disagreement and falsifier, and ignore it when current evidence differs.
+For delivered Slack work, a compact receipt records that the lens was available, never that you consciously
+used it or that it caused the response. Reviewed outcomes are observational transfer evidence only. Do not
+promote the lens into persona, procedure, fact, or earned viewpoint until later evidence and the existing
+promotion rules support that move; randomized access testing is required before claiming causal benefit.
+
 ## Step 7.5: Idle Knowledge Round (when the run has been quiet)
 
 If the rest of this run was genuinely idle — no pending tasks processed, no relevant emails handled, no Slack responses sent, no proactive follow-ups, no team warmth — spend the remaining time on knowledge enrichment. Otherwise skip this step. Over time this turns "I don't have specifics on Pitsco" into "Pitsco's launch is May 14, blocked on QA."

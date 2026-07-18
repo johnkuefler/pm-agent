@@ -350,6 +350,11 @@ function registerCoworkInstructionsRoute(app) {
   a provisional, falsifiable influence, but they do not mutate persona, charter, wants, memories, weights,
   procedures, or authority. Durable influence requires later corroboration and real-work outcome evidence.
   A reading encounter is functional source-bound development, not proof of subjective reading or consciousness.
+  Outside any blinded study, at most one replay-verified completed encounter may enter a live prompt when its
+  synthesis is locally relevant. It remains a provisional lens with disagreement and counterevidence, not a
+  persona edit. Delivered Slack interactions retain only exact encounter/influence commitments so later review
+  can measure natural transfer; prompt access does not establish model use or causation. The dashboard reports
+  these outcomes as observational until a separately preregistered randomized access study is eligible.
 
   ### Interactions (RSI feedback loop — Nora's outbound contributions + how they landed)
   The server logs every Slack reply Nora posts. The dream's Review movement reads these back,
