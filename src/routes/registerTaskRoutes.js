@@ -1,5 +1,31 @@
 'use strict';
 
+function cleanTaskResult(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const text = (input, max = 2000) => String(input || '').trim().slice(0, max);
+  const status = text(value.status, 40).toLowerCase() || 'review_ready';
+  const allowedStatuses = new Set(['review_ready', 'completed', 'blocked', 'failed']);
+  if (!allowedStatuses.has(status)) throw new Error('invalid task result status');
+  const deliverables = Array.isArray(value.deliverables) ? value.deliverables.slice(0, 10).map(item => {
+    const url = text(item && item.url, 2000);
+    if (url && !/^https?:\/\//i.test(url)) throw new Error('deliverable URLs must use http or https');
+    return {
+      title: text(item && item.title, 200) || 'Deliverable',
+      url,
+      type: text(item && item.type, 80) || 'document',
+    };
+  }).filter(item => item.url) : [];
+  return {
+    status,
+    summary: text(value.summary, 4000),
+    deliverables,
+    open_items: Array.isArray(value.open_items)
+      ? value.open_items.slice(0, 20).map(item => text(item, 500)).filter(Boolean) : [],
+    completed_by: text(value.completed_by, 120) || 'Nora',
+    reported_at: new Date().toISOString(),
+  };
+}
+
 function registerTaskRoutes(app, deps) {
   const { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun, onTaskCreated, onTaskCompleted } = deps;
 
@@ -20,8 +46,15 @@ function registerTaskRoutes(app, deps) {
     res.json(result);
   });
 
+  app.get('/tasks/:id', requireAuth, (req, res) => {
+    const task = loadTasks().find(t => t.id === req.params.id);
+    if (!task) return res.status(404).json({ error: 'task not found' });
+    res.json(task);
+  });
+
   app.post('/tasks', requireAuth, (req, res) => {
-    const { action, detail, assignee, due, scheduled_for, recurrence } = req.body;
+    const { action, detail, assignee, due, scheduled_for, recurrence,
+      source_channel, source_user, source_external_id, context, metadata } = req.body;
     if (!action) return res.status(400).json({ error: 'action is required' });
     if (recurrence && !isValidRecurrence(recurrence)) {
       return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, or monthly:N:HH:MM' });
@@ -37,7 +70,12 @@ function registerTaskRoutes(app, deps) {
       assignee: assignee || '',
       due: due || '',
       scheduled_for: effectiveScheduledFor,
-      recurrence: recurrence || null
+      recurrence: recurrence || null,
+      source_channel: source_channel || '',
+      source_user: source_user || '',
+      source_external_id: source_external_id || '',
+      context: context || '',
+      metadata: metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : null,
     });
     if (onTaskCreated) onTaskCreated({ id, action, detail: detail || '', assignee: assignee || '', due: due || '', scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
     res.json({ ok: true, id, scheduled_for: effectiveScheduledFor, recurrence: recurrence || null });
@@ -48,6 +86,11 @@ function registerTaskRoutes(app, deps) {
     const task = tasks.find(t => t.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
     if (task.status === 'done') return res.json({ ok: true, already: true, task });
+    try {
+      if (req.body && req.body.result) task.result = cleanTaskResult(req.body.result);
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
     const completedAt = new Date().toISOString();
     // Recurring tasks recycle: same row, next scheduled_for, status back to pending.
     // last_run records the most recent completion for audit.
@@ -71,6 +114,19 @@ function registerTaskRoutes(app, deps) {
   saveTasks(tasks);
   if (onTaskCompleted) onTaskCompleted(task, { recurring: false, completed_at: completedAt });
     console.log('✅ Task completed:', task.id, task.action);
+    res.json({ ok: true, task });
+  });
+
+  app.patch('/tasks/:id/result', requireAuth, (req, res) => {
+    const tasks = loadTasks();
+    const task = tasks.find(t => t.id === req.params.id);
+    if (!task) return res.status(404).json({ error: 'task not found' });
+    try {
+      task.result = cleanTaskResult(req.body && (req.body.result || req.body));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+    saveTasks(tasks);
     res.json({ ok: true, task });
   });
 
@@ -104,4 +160,4 @@ function registerTaskRoutes(app, deps) {
   });
 }
 
-module.exports = { registerTaskRoutes };
+module.exports = { registerTaskRoutes, cleanTaskResult };

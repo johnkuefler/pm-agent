@@ -158,6 +158,26 @@ test('tasks preserve validation, scheduling, filtering, completion, and deletion
   assert.equal(rolled.body.task.status, 'pending');
   assert.ok(rolled.body.rolled_to);
   await request(`/tasks/${recurring.body.id}`, { method: 'DELETE' });
+
+  const artifact = await request('/tasks', { method: 'POST', body: {
+    action: 'build_abm_artifact', detail: 'Build the frozen-evidence brief', assignee: 'Nora',
+    source_channel: 'limelight_abm', source_external_id: 'artifact-assignment-1',
+    context: 'Kizik contact artifact', metadata: { system: 'limelight_abm', run_id: 'run-1' },
+  } });
+  const artifactTask = await request(`/tasks/${artifact.body.id}`);
+  assert.equal(artifactTask.body.source_channel, 'limelight_abm');
+  assert.equal(artifactTask.body.metadata.system, 'limelight_abm');
+  const result = await request(`/tasks/${artifact.body.id}/result`, { method: 'PATCH', body: {
+    status: 'review_ready', summary: 'Built the source-linked brief',
+    deliverables: [{ title: 'Retention friction map', url: 'https://drive.google.com/example', type: 'document' }],
+    open_items: [], completed_by: 'Nora',
+  } });
+  assert.equal(result.body.task.result.status, 'review_ready');
+  assert.equal(result.body.task.result.deliverables[0].url, 'https://drive.google.com/example');
+  const artifactComplete = await request(`/tasks/${artifact.body.id}/complete`, { method: 'PATCH' });
+  assert.equal(artifactComplete.body.task.status, 'done');
+  assert.equal(artifactComplete.body.task.result.status, 'review_ready');
+  await request(`/tasks/${artifact.body.id}`, { method: 'DELETE' });
 });
 
 test('projects support create, duplicate protection, coverage, update, detail, and deletion', async () => {
