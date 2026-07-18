@@ -1416,12 +1416,12 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, pro
 }
 
 const INTERACTIVE_INTELLIGENCE_BUDGET_CHARS = Object.freeze({
-  slack: 3950,
+  slack: 3100,
   'zoom-chat': 4000,
   realtime: 4000,
 });
 const INTERACTIVE_MEMORY_BUDGET_CHARS = Object.freeze({
-  slack: 2500,
+  slack: 1750,
   'zoom-chat': 2500,
   realtime: 3000,
 });
@@ -1474,6 +1474,72 @@ function compactInteractiveIntelligenceContext(text, maxChars) {
     ? `\n\n[Latent cognitive context]\n${omitted} lower-priority packet${omitted === 1 ? ' remains' : 's remain'} available outside this limited live-attention envelope.`
     : '';
   return `${contract}${selected.length ? `\n\n${selected.map(block => block.text).join('\n\n')}` : ''}${notice}`;
+}
+
+function fitSlackSystemPrompt(stable, volatile, optionalLinked = '',
+  maxChars = interactivePerformance.PROMPT_BUDGET_CHARS.slack) {
+  const stableText = String(stable || '');
+  const volatileText = String(volatile || '');
+  const linkedText = String(optionalLinked || '');
+  const budget = Math.max(1000, Number(maxChars)
+    || interactivePerformance.PROMPT_BUDGET_CHARS.slack);
+  const available = Math.max(0, budget - stableText.length);
+  const criticalMarker = '[Before you hit send:';
+  const criticalIndex = volatileText.lastIndexOf(criticalMarker);
+  const originalContext = criticalIndex >= 0
+    ? volatileText.slice(0, criticalIndex) : volatileText;
+  const originalRequired = criticalIndex >= 0
+    ? volatileText.slice(criticalIndex) : '';
+
+  // Recipient-specific safety, tool-boundary, and output-monitor instructions live at the end
+  // of the volatile prompt and are never displaced by optional cognitive or linked-page context.
+  let required = originalRequired;
+  let requiredTruncated = false;
+  if (required.length > available) {
+    requiredTruncated = true;
+    const notice = '[Earlier response constraints omitted to preserve the hard Slack prompt limit.]\n';
+    required = available <= 0
+      ? ''
+      : available > notice.length
+      ? `${notice}${required.slice(-(available - notice.length))}`
+      : required.slice(-available);
+  }
+
+  let remaining = Math.max(0, available - required.length);
+  let linked = linkedText;
+  let linkedContentTruncated = false;
+  if (linked.length > remaining) {
+    linkedContentTruncated = linked.length > 0;
+    linked = linked.slice(0, remaining);
+  }
+  remaining -= linked.length;
+
+  let context = originalContext;
+  let contextCompacted = false;
+  if (context.length > remaining) {
+    contextCompacted = context.length > 0;
+    const omission = '\n\n[Lower-priority live context omitted to preserve the Slack response budget.]\n\n';
+    if (remaining <= 0) {
+      context = '';
+    } else if (remaining <= omission.length) {
+      context = context.slice(-remaining);
+    } else {
+      const contentBudget = remaining - omission.length;
+      const headChars = Math.ceil(contentBudget * 0.6);
+      const tailChars = contentBudget - headChars;
+      context = `${context.slice(0, headChars)}${omission}${tailChars > 0 ? context.slice(-tailChars) : ''}`;
+    }
+  }
+
+  const tail = `${context}${linked}${required}`;
+  return {
+    tail,
+    total_chars: stableText.length + tail.length,
+    within_budget: stableText.length + tail.length <= budget,
+    context_compacted: contextCompacted,
+    linked_content_truncated: linkedContentTruncated,
+    required_constraints_truncated: requiredTruncated,
+  };
 }
 
 function markerActivityLine(key, marker) {
@@ -1980,7 +2046,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // markers are excluded, and only explicitly manual memories may fill a missing action marker.
   let _markers = {};
   try { _markers = loadMarkers(); } catch {}
-  const recentActivityBlock = buildRecentActivityBlock({ markers: _markers, memory });
+  const recentActivityBlock = buildRecentActivityBlock({ markers: _markers, memory,
+    maxChars: experimentalSurface === 'slack' ? 950 : RECENT_ACTIVITY_BUDGET_CHARS });
   promptDiagnostics.activity_chars = recentActivityBlock.length;
   if (recentActivityBlock) base = `${base}\n\n${recentActivityBlock}`;
 
@@ -6300,7 +6367,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         return c ? `URL: ${u}\n${c}` : null;
       })), 2200, [], 'Slack linked-page enrichment')).filter(Boolean);
       if (fetched.length) {
-        const linkedText = fetched.join('\n\n---\n\n').slice(0, 1500);
+        const linkedText = fetched.join('\n\n---\n\n').slice(0, 800);
         urlBlock = `\n\n[Linked web pages, fetched live]\n${linkedText}\n\nUse this content directly. Retrieve with a live tool if the needed portion was outside this bounded excerpt.`;
       }
     }
@@ -6378,9 +6445,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context. Those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
     }
-
-    // Fetched web-page content rides in the uncached tail (per-conversation, would pollute the cache).
-    if (urlBlock) tail += urlBlock;
 
     // Assemble her live tools. Read tools (web_search + Teamwork READ) are available on BOTH
     // direct replies AND proactive interjections — proactive needs them to GROUND what it says
@@ -6476,6 +6540,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
     tail += diagnosisInstruction(contextAssignment);
+    const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
+    tail = fittedSlackPrompt.tail;
+    if (fittedSlackPrompt.context_compacted || fittedSlackPrompt.linked_content_truncated
+      || fittedSlackPrompt.required_constraints_truncated) {
+      console.warn(`Slack prompt fit applied: context_compacted=${fittedSlackPrompt.context_compacted} linked_content_truncated=${fittedSlackPrompt.linked_content_truncated} required_constraints_truncated=${fittedSlackPrompt.required_constraints_truncated}`);
+    }
     const toolSetupFinishedAt = Date.now();
     latencyStages.tool_setup_ms = toolSetupFinishedAt - toolSetupStartedAt;
 
@@ -10962,6 +11032,7 @@ module.exports = {
     isLightweightSocialSlackMessage,
     slackResponseModel,
     compactInteractiveIntelligenceContext,
+    fitSlackSystemPrompt,
     buildRecentActivityBlock,
     behavioralFingerprintControls,
     currentCognitiveParameters,

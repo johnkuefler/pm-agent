@@ -113,7 +113,7 @@ test('live server opts into complete Slack trials but never globally enables sec
     'optional Slack thread context must lose quickly to the live reply path');
   assert.match(server, /Slack linked-page enrichment'\)/,
     'optional linked-page enrichment must lose quickly to the live reply path');
-  assert.ok(server.includes("const linkedText = fetched.join('\\n\\n---\\n\\n').slice(0, 1500);"),
+  assert.ok(server.includes("const linkedText = fetched.join('\\n\\n---\\n\\n').slice(0, 800);"),
     'multiple links must share one bounded live-prompt excerpt');
   assert.match(server, /const attachLiveTools = !lightweightSocial/,
     'bounded Slack social turns must omit irrelevant live-tool schemas');
@@ -150,7 +150,7 @@ test('live server opts into complete Slack trials but never globally enables sec
     'task-specific capability learning must remain a deterministic prompt input');
   assert.match(server, /exemplarsAvailable: mode === 'normal'/,
     'only ordinary Slack replies may opt into local exemplar retrieval');
-  assert.match(server, /slack: 3950/,
+  assert.match(server, /slack: 3100/,
     'Slack keeps explicit headroom below the shared intelligence envelope');
   assert.match(server, /diagnosticLocalExemplars: surface === 'slack'/,
     'read-only production accounting must include the local exemplar prompt shape');
@@ -252,6 +252,44 @@ test('interactive intelligence uses one shared epistemic contract and a bounded 
   assert.match(compact, /lower-priority packets? remain/);
   assert.equal((compact.match(/proof of consciousness/g) || []).length, 1,
     'shared epistemic boundaries should replace repeated boilerplate in each packet');
+});
+
+test('Slack final prompt fit preserves live safety constraints inside the hard provider envelope', () => {
+  const { __test } = require('../../server');
+  const stable = 'S'.repeat(31887);
+  const context = `\n\n[Live cognitive context]\n${'working context '.repeat(900)}`;
+  const required = '[Before you hit send: preserve Nora voice.]'
+    + '\n\nFINANCIAL ACCESS: never disclose restricted figures.'
+    + '\n\nLIVE TOOLS attached to THIS reply: use only listed tools.'
+    + '\n\nDIAGNOSIS: do not reveal blinded conditions.';
+  const linked = `\n\n[Linked web pages, fetched live]\n${'linked evidence '.repeat(80)}`;
+  const fitted = __test.fitSlackSystemPrompt(stable, context + required, linked);
+
+  assert.equal(fitted.within_budget, true);
+  assert.ok(fitted.total_chars <= performance.PROMPT_BUDGET_CHARS.slack);
+  assert.equal(fitted.required_constraints_truncated, false);
+  assert.match(fitted.tail, /Before you hit send: preserve Nora voice/);
+  assert.match(fitted.tail, /FINANCIAL ACCESS: never disclose restricted figures/);
+  assert.match(fitted.tail, /LIVE TOOLS attached to THIS reply/);
+  assert.match(fitted.tail, /DIAGNOSIS: do not reveal blinded conditions/);
+  assert.ok(fitted.tail.endsWith(required),
+    'recipient safety and tool-boundary instructions must remain the final authority');
+  assert.equal(fitted.context_compacted, true);
+});
+
+test('Slack final prompt fit bounds oversized linked evidence before touching required constraints', () => {
+  const { __test } = require('../../server');
+  const stable = 'S'.repeat(44000);
+  const required = '[Before you hit send: stay grounded.]\n\nNo live tools are attached.';
+  const fitted = __test.fitSlackSystemPrompt(stable, `context-${'x'.repeat(900)}${required}`,
+    `\n\n[Linked web pages]\n${'y'.repeat(2000)}`);
+
+  assert.equal(fitted.within_budget, true);
+  assert.equal(fitted.total_chars, performance.PROMPT_BUDGET_CHARS.slack);
+  assert.equal(fitted.linked_content_truncated, true);
+  assert.equal(fitted.context_compacted, true);
+  assert.equal(fitted.required_constraints_truncated, false);
+  assert.ok(fitted.tail.endsWith(required));
 });
 
 test('recent activity is marker-grounded, deduplicated, and cannot absorb dated project memory', () => {
