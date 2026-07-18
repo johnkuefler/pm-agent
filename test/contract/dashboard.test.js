@@ -77,7 +77,8 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(intelligenceJs, /verified cycle self-corrections across/);
   assert.match(intelligenceJs, /replay-verified completed-cycle self-corrections/);
   assert.match(intelligenceJs, /Library:/);
-  assert.match(intelligenceJs, /books inform earned viewpoints, never directly rewrite the persona/);
+  assert.match(intelligenceJs, /observational only until randomized transfer testing/);
+  assert.match(intelligenceJs, /books never directly rewrite the persona/);
 });
 
 test('dashboard declares a real mobile viewport and responsive control patterns', () => {

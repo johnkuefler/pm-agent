@@ -204,8 +204,14 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(interactionLogger, /recordAffectiveRegulationApplication\(interaction\)/);
   assert.match(interactionLogger, /recordProfessionalViewpointAccessApplication\(/,
     'viewpoint outcome evidence must be captured only in post-delivery interaction logging');
+  assert.match(interactionLogger, /developmental_reading_exposures/,
+    'reading transfer exposure must be captured only after a Slack response is delivered');
   const store = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
     'store.js'), 'utf8');
+  const developmentalReading = fs.readFileSync(path.join(__dirname, '..', '..', 'src',
+    'intelligence', 'developmental-reading.js'), 'utf8');
+  assert.doesNotMatch(developmentalReading, /fetch\(|axios|anthropic|openai|pgvector|\bembed(?:ding)?\s*\(|db\./i,
+    'live reading influence selection must stay local and add no provider, embedding, database, or network call');
   assert.match(store, /context_trials\.some\(item => item\.status === 'active'\)\) return null/,
     'capability context must remain sealed during the current blinded context study');
   assert.match(store, /capabilityBoundaryReadCache/,

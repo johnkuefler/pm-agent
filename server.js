@@ -8443,6 +8443,13 @@ function logInteraction(entry) {
       interaction.exemplar_selection = JSON.parse(JSON.stringify(intelligenceReceipt.exemplar_selection));
       interaction.exemplar_exposure_ids = interaction.exemplar_selection.exemplars.map(item => item.id);
     }
+    if (Array.isArray(intelligenceReceipt?.developmental_reading_encounters)
+      && intelligenceReceipt.developmental_reading_encounters.length) {
+      interaction.developmental_reading_exposures = intelligenceReceipt.developmental_reading_encounters
+        .slice(0, 2).map(item => ({ session_id: item.session_id, source_id: item.source_id,
+          encounter_commitment: item.encounter_commitment,
+          influence_commitment: item.influence_commitment }));
+    }
     const cognitiveParameterReceipt = intelligenceReceipt?.cognitive_parameter_assignment || null;
     if (cognitiveParameterReceipt?.study_id && cognitiveParameterReceipt.assignment_id) {
       // Persist only opaque linkage. The condition and applied value remain sealed from the

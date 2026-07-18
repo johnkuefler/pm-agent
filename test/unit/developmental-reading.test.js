@@ -92,9 +92,11 @@ test('a reading encounter is sequential, source-bound, quote-bounded, and never 
 
 test('store ledger-binds reading, pauses it during experiments, and enforces a daily budget', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reading-store-'));
+  const interactions = [];
   const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {},
     isDbReady: () => false, clock: (() => { let tick = 0; return () =>
-      new Date(Date.parse('2026-07-18T02:00:00Z') + tick++ * 1000); })() });
+      new Date(Date.parse('2026-07-18T02:00:00Z') + tick++ * 1000); })(),
+    getInteractions: () => interactions });
   await store.init();
   const source = store.registerReadingSource({ id: 'reading-source-fedcba0987654321',
     title: 'A Public Domain Work', author: 'An Author', source_kind: 'book',
@@ -121,4 +123,24 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
   assert.equal(snapshot.report.completed_encounters, 1);
   assert.equal(snapshot.sessions[0].audit.complete_chain_verified, true);
   assert.equal(snapshot.report.provisional_self_revision_candidates, 2);
+  const prompt = store.promptContext({ query: 'How should we improve coordination on this project?',
+    returnContextReceipt: true });
+  assert.match(prompt.text, /Relevant provisional intellectual influence/);
+  assert.match(prompt.text, /The New State|A Public Domain Work/);
+  assert.equal(prompt.context_receipt.developmental_reading_encounters.length, 1);
+  assert.equal(store.promptContext({ query: 'What is the weather?', returnContextReceipt: true })
+    .context_receipt.developmental_reading_encounters.length, 0);
+  const selectionStarted = performance.now();
+  for (let index = 0; index < 500; index += 1) {
+    store.developmentalReadingInfluenceSnapshot({ query: 'coordination project judgment' });
+  }
+  assert.ok(performance.now() - selectionStarted < 200,
+    'cached reading-lens selection must remain negligible on live surfaces');
+  interactions.push({ reviewed: true, outcome: 'landed',
+    developmental_reading_exposures: prompt.context_receipt.developmental_reading_encounters });
+  const transfer = store.developmentalReadingSnapshot().report.work_transfer;
+  assert.deepEqual({ exposed: transfer.exposed_interactions, reviewed: transfer.reviewed_exposures,
+    positive: transfer.positive_outcomes, corrected: transfer.corrected_outcomes },
+  { exposed: 1, reviewed: 1, positive: 1, corrected: 0 });
+  assert.equal(transfer.causal_status, 'observational_only');
 });

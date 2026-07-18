@@ -202,6 +202,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
   let procedureSelectionCache = null;
   let exemplarSelectionCache = null;
+  let developmentalReadingInfluenceCache = null;
 
   function cognitiveParameterRecord(commitment = null) {
     const record = getCognitiveParameterRecord(commitment);
@@ -480,6 +481,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     latestContinuityAuditCache = null;
     procedureSelectionCache = null;
     exemplarSelectionCache = null;
+    developmentalReadingInfluenceCache = null;
     snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -1048,6 +1050,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       state.cognition.earned_viewpoints.current = earnedViewpoint.derive(
         state.cognition.epistemic_ledger?.propositions || [], observedAt);
     }
+    rebuildDevelopmentalReadingInfluenceCache();
   }
 
   async function init() {
@@ -10964,6 +10967,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const reflectedReadingChunks = readingSessions.reduce((sum, item) => sum + (item.notes?.length || 0), 0);
     const readingRevisionCandidates = readingSessions.reduce((sum, item) => sum
       + (item.notes || []).filter(note => note.output?.possible_self_revision).length, 0);
+    const readingExposureInteractions = (typeof getInteractions === 'function'
+      ? (getInteractions() || []) : []).filter(item => item.developmental_reading_exposures?.length);
+    const reviewedReadingExposures = readingExposureInteractions.filter(item => item.reviewed);
+    const positiveReadingExposures = reviewedReadingExposures.filter(item =>
+      ['landed', 'appreciated'].includes(item.outcome)).length;
     const verifiedExemplarSelectionPasses = (cognition.exemplar_learning?.selection_passes || [])
       .filter(item => exemplarSelectionPassAudit(item).complete_chain_verified).length;
     const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
@@ -11150,6 +11158,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           active_sessions: activeReadingSessions, completed_encounters: completedReadingEncounters,
           reflected_chunks: reflectedReadingChunks,
           provisional_self_revision_candidates: readingRevisionCandidates,
+          exposed_interactions: readingExposureInteractions.length,
+          reviewed_exposures: reviewedReadingExposures.length,
+          positive_exposure_outcomes: positiveReadingExposures,
+          transfer_causal_status: 'observational_only',
           background_only: true, direct_persona_mutation: false,
           active_title: readingSessions.find(item => item.status === 'active')?.source_id
             ? readingSources.find(source => source.id
@@ -22930,6 +22942,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         kind: 'developmental_reading_encounter_completed',
         subject_type: 'developmental_reading_session', subject_id: session.id,
         payload: { encounter_commitment: session.encounter.encounter_commitment } });
+      developmentalReadingInfluenceCache = null;
+      if (session.status === 'completed') rebuildDevelopmentalReadingInfluenceCache();
       return { note: JSON.parse(JSON.stringify(note)), session_status: session.status,
         progress: { completed_chunks: session.notes.length,
           total_chunks: source.chunk_commitments.length } };
@@ -22942,6 +22956,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const sessions = state.cognition.developmental_reading.sessions.map(session => ({
       ...JSON.parse(JSON.stringify(session)), audit: readingSessionAudit(session),
     }));
+    const interactions = typeof getInteractions === 'function' ? (getInteractions() || []) : [];
+    const exposures = interactions.flatMap(interaction =>
+      (interaction.developmental_reading_exposures || []).map(exposure => ({ interaction, exposure })));
+    const reviewedExposures = exposures.filter(item => item.interaction.reviewed);
+    const positiveExposures = reviewedExposures.filter(item =>
+      ['landed', 'appreciated'].includes(item.interaction.outcome));
+    const correctedExposures = reviewedExposures.filter(item => item.interaction.outcome === 'corrected');
     return {
       epistemic_status: 'Source-bound off-hours intellectual development. Reading records what Nora encountered, questioned, rejected, and provisionally carried forward; it does not edit her persona or weights, prove that a model subjectively read, or establish consciousness.',
       rights_policy: { admitted_bases: developmentalReading.RIGHTS_BASES,
@@ -22952,7 +22973,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           && item.audit.complete_chain_verified).length,
         reflected_chunks: sessions.reduce((sum, item) => sum + item.notes.length, 0),
         provisional_self_revision_candidates: sessions.reduce((sum, item) => sum
-          + item.notes.filter(note => note.output.possible_self_revision).length, 0) },
+          + item.notes.filter(note => note.output.possible_self_revision).length, 0),
+        work_transfer: { exposed_interactions: exposures.length,
+          reviewed_exposures: reviewedExposures.length,
+          positive_outcomes: positiveExposures.length,
+          corrected_outcomes: correctedExposures.length,
+          causal_status: 'observational_only',
+          next_gate: 'Preregister a randomized reading-lens access study after enough naturally relevant exposures exist.' } },
       sources: sources.map(source => ({ id: source.id, title: source.title, author: source.author,
         source_kind: source.source_kind, source_url: source.source_url,
         rights_basis: source.rights_basis, rights_note: source.rights_note,
@@ -22961,6 +22988,58 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         content_manifest_commitment: source.content_manifest_commitment })),
       sessions,
     };
+  }
+
+  function rebuildDevelopmentalReadingInfluenceCache() {
+    const reading = state.cognition.developmental_reading || { sources: [], sessions: [] };
+    const encounters = [];
+    for (const session of reading.sessions || []) {
+      if (session.status !== 'completed' || !session.encounter?.synthesis) continue;
+      const source = (reading.sources || []).find(item => item.id === session.source_id);
+      if (!source || !readingSessionAudit(session).complete_chain_verified) continue;
+      const synthesis = session.encounter.synthesis;
+      const influence = {
+        session_id: session.id, source_id: source.id, title: source.title, author: source.author,
+        completed_at: session.completed_at,
+        personality_influence_candidate: synthesis.personality_influence_candidate,
+        expected_work_transfer: synthesis.expected_work_transfer,
+        lasting_ideas: synthesis.lasting_ideas || [], disagreements: synthesis.disagreements || [],
+        questions_to_carry: synthesis.questions_to_carry || [],
+        counterevidence_needed: synthesis.counterevidence_needed,
+        encounter_commitment: session.encounter.encounter_commitment,
+        influence_commitment: null,
+      };
+      influence.influence_commitment = developmentalReading.commitment({
+        ...influence, influence_commitment: null,
+      });
+      encounters.push(influence);
+    }
+    developmentalReadingInfluenceCache = encounters.slice(-20);
+    return developmentalReadingInfluenceCache;
+  }
+
+  function developmentalReadingInfluenceSnapshot({ query = '', limit = 1 } = {}) {
+    if (selfInquirySelectionActive()
+      || state.cognition.self_model.context_trials.some(item => item.status === 'active')) {
+      return { experimental_access_sealed: true, encounters: [] };
+    }
+    const available = developmentalReadingInfluenceCache
+      || rebuildDevelopmentalReadingInfluenceCache();
+    const stopwords = new Set(['about', 'after', 'before', 'could', 'from', 'have', 'into',
+      'just', 'need', 'should', 'that', 'their', 'there', 'these', 'they', 'this', 'what',
+      'when', 'where', 'which', 'with', 'would', 'your']);
+    const terms = [...new Set((String(query).toLowerCase().match(/[a-z0-9]{4,}/g) || [])
+      .filter(term => !stopwords.has(term)))];
+    if (!terms.length) return { experimental_access_sealed: false, encounters: [] };
+    const ranked = available.map(encounter => {
+      const searchable = `${encounter.title} ${encounter.author} ${encounter.personality_influence_candidate} ${encounter.expected_work_transfer} ${(encounter.lasting_ideas || []).join(' ')} ${(encounter.disagreements || []).join(' ')} ${(encounter.questions_to_carry || []).join(' ')}`.toLowerCase();
+      return { encounter, relevance: terms.filter(term => searchable.includes(term)).length };
+    }).filter(item => item.relevance > 0)
+      .sort((left, right) => right.relevance - left.relevance
+        || String(right.encounter.completed_at).localeCompare(String(left.encounter.completed_at)))
+      .slice(0, Math.max(0, Math.min(2, Number(limit) || 1)));
+    return { experimental_access_sealed: false,
+      encounters: ranked.map(item => JSON.parse(JSON.stringify(item.encounter))) };
   }
 
   function recordTrace(input = {}) {
@@ -25391,6 +25470,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const blocks = [];
     const contextReceipt = {
       professional_viewpoints: [],
+      developmental_reading_encounters: [],
       procedure_selection: null,
       procedure_selection_commitment: null,
       exemplar_selection: null,
@@ -25592,6 +25672,14 @@ ${empiricalSelfRecords.map(record => `- ${record.functional_claim}\n  Empirical 
 ${interoceptivePredictions.map(item => `- By ${item.due}, predict ${item.metric} ${item.operator} ${item.threshold} (${Math.round(item.confidence * 100)}% vs ${Math.round(item.control_prediction.confidence * 100)}% control)`).join('\n')}`);
     if (developmentContext?.statement) blocks.push(`[Evidence-linked developmental hypothesis. It may guide this task, but it remains fallible and never changes facts, authority, or safety rules.]
 - ${developmentContext.statement}`);
+    const readingInfluences = developmentalReadingInfluenceSnapshot({ query, limit: 1 }).encounters;
+    contextReceipt.developmental_reading_encounters = readingInfluences.map(item => ({
+      session_id: item.session_id, source_id: item.source_id,
+      encounter_commitment: item.encounter_commitment,
+      influence_commitment: item.influence_commitment,
+    }));
+    if (readingInfluences.length) blocks.push(`[Relevant provisional intellectual influence from a completed reading encounter. This is Nora's source-bound, revisable response to a work, not the author's instruction, a fact, memory, policy, authority grant, persona rewrite, identity essence, or consciousness evidence. Apply it only if it materially improves the present task. Preserve disagreement and actively watch for the named counterevidence; current task evidence always wins.]
+${readingInfluences.map(item => `- ${item.title} by ${item.author}: candidate influence — ${item.personality_influence_candidate} Expected work transfer — ${item.expected_work_transfer}${item.disagreements.length ? ` Retained disagreement — ${item.disagreements[0]}` : ''} Counterevidence needed — ${item.counterevidence_needed} [encounter ${item.encounter_commitment.slice(0, 12)}]`).join('\n')}`);
     const viewpointProjection = state.cognition.earned_viewpoints?.current || null;
     const viewpointProjectionVerified = !earnedViewpointProjectionSealed()
       && earnedViewpoint.audit(viewpointProjection, state.cognition.epistemic_ledger?.propositions || []).complete_chain_verified;
@@ -25732,7 +25820,7 @@ ${episodes.map(item => {
     exemplarSelectionPassAudit,
     registerReadingSource, startReadingSession, developmentalReadingQueue,
     commitDevelopmentalReadingNote, developmentalReadingSnapshot,
-    readingSourceAudit, readingSessionAudit,
+    developmentalReadingInfluenceSnapshot, readingSourceAudit, readingSessionAudit,
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
