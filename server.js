@@ -10113,6 +10113,7 @@ function researchAutopilotRuntimeConfig(env = process.env) {
 
 function developmentalReadingRuntimeConfig(env = process.env) {
   const dailyBudget = Number(env.NORA_DEVELOPMENTAL_READING_DAILY_BUDGET);
+  const timeout = Number(env.NORA_DEVELOPMENTAL_READING_TIMEOUT_MS);
   return {
     enabled: env.NORA_TEST_MODE !== '1' && env.NORA_DEVELOPMENTAL_READING !== '0'
       && Boolean(env.ANTHROPIC_API_KEY),
@@ -10120,6 +10121,8 @@ function developmentalReadingRuntimeConfig(env = process.env) {
     daily_budget: Math.max(1, Math.min(12,
       Number.isFinite(dailyBudget) && dailyBudget > 0 ? Math.round(dailyBudget) : 4)),
     timezone: 'America/Chicago', max_tokens: 1200,
+    provider_timeout_ms: Math.max(30000, Math.min(90000,
+      Number.isFinite(timeout) && timeout > 0 ? Math.round(timeout) : 60000)),
     background_only: true, tools_available: false, direct_persona_mutation: false,
   };
 }
@@ -10172,7 +10175,7 @@ async function runDevelopmentalReadingSelectionRuntime({ post = axios.post, stor
     const request = developmentalReadingSelectionRequest(candidates, config);
     const response = await post('https://api.anthropic.com/v1/messages', request.body, {
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01' }, timeout: 30000,
+        'anthropic-version': '2023-06-01' }, timeout: config.provider_timeout_ms,
     });
     if (!response.data?.id || response.data?.model !== config.model) {
       throw new Error('developmental reading selection response does not match the committed model');
@@ -10239,7 +10242,7 @@ async function runDevelopmentalReadingRuntime({ post = axios.post, store = intel
     const request = developmentalReadingRequest(item, chunk, config);
     const response = await post('https://api.anthropic.com/v1/messages', request.body, {
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01' }, timeout: 30000,
+        'anthropic-version': '2023-06-01' }, timeout: config.provider_timeout_ms,
     });
     if (!response.data?.id || response.data?.model !== config.model) {
       throw new Error('developmental reading provider response does not match the committed model');
@@ -10269,14 +10272,17 @@ function autonomousPlayRuntimeConfig(env = process.env) {
 }
 
 function runAutonomousPlaySchedulingRuntime({ store = intelligence, at = new Date() } = {}) {
+  const reconciliation = typeof store.reconcileAutonomousPlayBuild === 'function'
+    ? store.reconcileAutonomousPlayBuild() : null;
   const plan = store.playroomAutomationPlan(at);
-  if (!plan.due) return { ran: false, ...plan };
+  if (!plan.due) return { ran: false, ...plan, reconciliation };
   const opened = store.openAutonomousPlaySession({
     hidden_seed: crypto.randomBytes(32).toString('hex'), pre_state: plan.pre_state,
     acquisition_context: plan.acquisition_context, at,
   });
   return { ran: true, state: plan.state, session_id: opened.session.id,
-    condition: opened.session.condition, session_status: opened.session.status };
+    condition: opened.session.condition, session_status: opened.session.status,
+    reconciliation };
 }
 
 function autonomousPlaySystemPrompt() {
@@ -10285,7 +10291,7 @@ function autonomousPlaySystemPrompt() {
 
 function autonomousPlayUserPrompt(item) {
   if (item.queue_kind === 'selection') return `[Leisure opportunity]\nObserved functional state: ${JSON.stringify(item.pre_state)}\nAvailable activities: ${item.activities.join(', ')}\nChoose what you actually prefer right now. Quiet is a valid choice.\n\nReturn only:\n${JSON.stringify(item.output_schema)}`;
-  if (item.queue_kind === 'turn') return `[Merge grid]\nBoard rows: ${JSON.stringify(item.board)}\nScore: ${item.score}\nMove count: ${item.move_count}/${item.maximum_moves}\nCurrently legal directions: ${item.legal_directions.join(', ')}\nChoose one to eight moves. You may stop after this turn.\n\nReturn only:\n${JSON.stringify(item.output_schema)}`;
+  if (item.queue_kind === 'turn') return `[Merge grid]\nBoard rows: ${JSON.stringify(item.board)}\nScore: ${item.score}\nMove count: ${item.move_count}/${item.maximum_moves}\nCurrently legal directions: ${item.legal_directions.join(', ')}\nChoose one to eight moves. You may stop after this turn. The directions field must be a JSON array containing only the exact lowercase strings up, right, down, or left.\n\nReturn only:\n${JSON.stringify(item.output_schema)}`;
   return `[Post-activity appraisal]\nActivity: ${item.activity}\nPre-state: ${JSON.stringify(item.pre_state)}\nObserved outcome: ${JSON.stringify(item.outcome)}\nReport a bounded functional appraisal. An insight may be null, and should be null unless a specific thought actually arose.\n\nReturn only:\n${JSON.stringify(item.output_schema)}`;
 }
 

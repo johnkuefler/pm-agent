@@ -40,6 +40,61 @@ test('merge grid is deterministic, power-of-two bounded, and replayable', () => 
   assert.equal(play.auditGame(game, seed).replay_verified, false);
 });
 
+test('merge grid deterministically normalizes harmless provider formatting', () => {
+  const session = play.createSession({ id: 'play-normalized-directions', condition: 'assigned_play',
+    hidden_seed: 'normalized-seed-0123456789abcdef', model_control: MODEL,
+    state_commitment: 'b'.repeat(64), pre_state: PRE, acquisition_context: ACQUISITION },
+  new Date('2026-07-18T23:00:00Z'));
+  const request = play.turnRequest(session);
+  const turn = play.commitTurn(session, { output: { directions: 'LEFT, Up.',
+    continue_playing: true, intention: 'Preserve open cells.', predicted_score_gain: 4 },
+  provider_receipt: receipt(request, 'play-normalized-turn') },
+  new Date('2026-07-18T23:01:00Z'));
+  assert.deepEqual(turn.directions, ['left', 'up']);
+  assert.equal(turn.event_commitments.length, 2);
+  assert.equal(play.auditSession(session).complete_chain_verified, true);
+});
+
+test('a changed software build excludes an unfinished session with a replayable reason', () => {
+  const session = play.createSession({ id: 'play-build-change', condition: 'assigned_play',
+    hidden_seed: 'build-change-seed-0123456789abcdef', model_control: MODEL,
+    state_commitment: 'b'.repeat(64), pre_state: PRE, acquisition_context: ACQUISITION },
+  new Date('2026-07-18T23:00:00Z'));
+  const exclusion = play.excludeSession(session, { reason: 'agent_build_changed',
+    expected_agent_build_commitment: MODEL.agent_build_commitment,
+    observed_agent_build_commitment: 'c'.repeat(64) },
+  new Date('2026-07-18T23:02:00Z'));
+  assert.equal(session.status, 'excluded');
+  assert.match(exclusion.exclusion_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(play.auditSession(session).complete_chain_verified, true);
+  session.exclusion.observed_agent_build_commitment = 'd'.repeat(64);
+  assert.equal(play.auditSession(session).complete_chain_verified, false);
+});
+
+test('the store excludes an old-build session and immediately permits a clean replacement', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-playroom-build-'));
+  let modelControl = MODEL;
+  const store = createIntelligenceStore({ filePath: path.join(directory, 'state.json'),
+    clock: () => new Date('2026-07-19T01:00:00Z'), isDbReady: () => false,
+    getInteractions: () => [], getBehavioralFingerprintControls: () => ({
+      model_control: modelControl, state_control: { persona_commitment: '1'.repeat(64) } }) });
+  await store.init();
+  const opened = store.openAutonomousPlaySession({ id: 'old-build-session',
+    condition: 'assigned_play', hidden_seed: 'old-build-seed-0123456789abcdef',
+    pre_state: PRE, force: true });
+  modelControl = { ...MODEL, agent_build_commitment: 'c'.repeat(64) };
+  const reconciled = store.reconcileAutonomousPlayBuild();
+  assert.equal(reconciled.state, 'excluded_for_agent_build_change');
+  assert.equal(store.playroomSnapshot().recent[0].status, 'excluded');
+  assert.equal(store.playroomSnapshot().recent[0].audit.complete_chain_verified, true);
+  assert.equal(store.playroomAutomationPlan(new Date('2026-07-19T01:00:00Z')).due, true);
+  const replacement = store.openAutonomousPlaySession({ id: 'replacement-build-session',
+    condition: 'assigned_play', hidden_seed: 'replacement-seed-0123456789abcdef',
+    pre_state: PRE, force: true });
+  assert.notEqual(replacement.session.id, opened.session.id);
+  assert.equal(replacement.audit.complete_chain_verified, true);
+});
+
 test('an autonomous choice becomes real play and completes with a bounded functional appraisal', () => {
   const session = play.createSession({ id: 'play-session-choice', condition: 'autonomous_choice',
     hidden_seed: 'choice-seed-0123456789abcdef', model_control: MODEL,

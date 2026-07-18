@@ -115,6 +115,16 @@ function availableMoves(board) {
   return DIRECTIONS.filter(direction => moveBoard(board, direction).changed);
 }
 
+function normalizeDirections(value) {
+  const tokens = Array.isArray(value) ? value
+    : typeof value === 'string' ? value.split(/[\s,|/]+/) : [];
+  const aliases = { u: 'up', r: 'right', d: 'down', l: 'left' };
+  return tokens.map(token => {
+    const normalized = String(token || '').trim().toLowerCase().replace(/[.!;:]+$/g, '');
+    return aliases[normalized] || normalized;
+  }).filter(Boolean).slice(0, 8);
+}
+
 function gameManifest(game) {
   return { kind: game.kind, initial_board_commitment: game.initial_board_commitment,
     seed_commitment: game.seed_commitment, maximum_moves: game.maximum_moves };
@@ -332,7 +342,7 @@ function turnRequest(session) {
 function commitTurn(session, input = {}, at = new Date()) {
   const request = turnRequest(session);
   if (!request) throw new Error('autonomous play session is not ready for a turn');
-  const directions = Array.isArray(input.output?.directions) ? input.output.directions.map(String).slice(0, 8) : [];
+  const directions = normalizeDirections(input.output?.directions);
   if (!directions.length || directions.some(direction => !DIRECTIONS.includes(direction))) {
     throw new Error('autonomous play turn requires one to eight valid directions');
   }
@@ -415,6 +425,29 @@ function commitAppraisal(session, input = {}, at = new Date(), { priorMedianScor
   return appraisal;
 }
 
+function excludeSession(session, input = {}, at = new Date()) {
+  if (!session || ['completed', 'excluded'].includes(session.status)) {
+    throw new Error('autonomous play session cannot be excluded from its current state');
+  }
+  const expectedBuild = String(input.expected_agent_build_commitment || '').trim().toLowerCase();
+  const observedBuild = String(input.observed_agent_build_commitment || '').trim().toLowerCase();
+  if (input.reason !== 'agent_build_changed' || !SHA256.test(expectedBuild)
+    || !SHA256.test(observedBuild) || expectedBuild === observedBuild
+    || expectedBuild !== session.model_control.agent_build_commitment) {
+    throw new Error('autonomous play exclusion requires a verified agent build change');
+  }
+  const exclusion = {
+    reason: 'agent_build_changed', prior_status: session.status,
+    expected_agent_build_commitment: expectedBuild,
+    observed_agent_build_commitment: observedBuild,
+    excluded_at: new Date(at).toISOString(), exclusion_commitment: null,
+  };
+  exclusion.exclusion_commitment = commitment({ ...exclusion, exclusion_commitment: null });
+  session.status = 'excluded'; session.completed_at = exclusion.excluded_at;
+  session.exclusion = exclusion;
+  return exclusion;
+}
+
 function outcomeManifest(session) {
   return { session_id: session.id, condition: session.condition,
     selection_commitment: session.selection.selection_commitment,
@@ -465,13 +498,22 @@ function auditSession(session) {
   const completionVerified = session.status !== 'completed' || Boolean(session.outcome_commitment
     && session.completed_at && session.appraisal && session.functional_aftereffect
     && session.outcome_commitment === commitment(outcomeManifest(session)));
+  const exclusionVerified = session.status !== 'excluded' || Boolean(session.exclusion
+    && session.completed_at === session.exclusion.excluded_at
+    && session.exclusion.reason === 'agent_build_changed'
+    && session.exclusion.expected_agent_build_commitment === session.model_control.agent_build_commitment
+    && SHA256.test(session.exclusion.observed_agent_build_commitment || '')
+    && session.exclusion.observed_agent_build_commitment !== session.model_control.agent_build_commitment
+    && session.exclusion.exclusion_commitment
+      === commitment({ ...session.exclusion, exclusion_commitment: null }));
   return { manifest_verified: manifestVerified, selection_verified: selectionVerified,
     game_manifest_verified: game.manifest_verified, game_replay_verified: game.replay_verified,
     turns_verified: turnsVerified, provider_receipts_verified: providerReceiptsVerified,
     appraisal_verified: appraisalVerified, completion_verified: completionVerified,
+    exclusion_verified: exclusionVerified,
     complete_chain_verified: manifestVerified && selectionVerified && game.manifest_verified
       && game.replay_verified && turnsVerified && providerReceiptsVerified
-      && appraisalVerified && completionVerified };
+      && appraisalVerified && completionVerified && exclusionVerified };
 }
 
 function publicSession(session) {
@@ -490,6 +532,8 @@ function publicSession(session) {
     condition: conditionRevealed ? session.condition : 'sealed_until_completion',
     status: session.status, created_at: session.created_at, started_at: session.started_at,
     completed_at: session.completed_at, pre_state: session.pre_state,
+    exclusion: session.exclusion ? { reason: session.exclusion.reason,
+      prior_status: session.exclusion.prior_status, excluded_at: session.exclusion.excluded_at } : null,
     acquisition_context: session.acquisition_context,
     selection: session.selection ? { activity: session.selection.activity,
       selected_by: conditionRevealed ? session.selection.selected_by : 'sealed_until_completion',
@@ -532,7 +576,8 @@ function snapshot(sessions = [], automation = null) {
       quiet_minutes: QUIET_MINUTES, prompts_and_conditions_sealed_during_sessions: true,
       acquisition_continues_in_isolation_during_unrelated_blinded_trials: true,
       acquisition_continues_in_isolation_during_developmental_reading: true,
-      operational_influence_during_trial_overlap: false },
+      operational_influence_during_trial_overlap: false,
+      agent_build_changes_fail_closed_and_restart_clean: true },
     report: { sessions: valid.length, active: valid.filter(session => !['completed', 'excluded'].includes(session.status)).length,
       completed: completed.length, invalid: sessions.length - valid.length, completed_by_condition: byCondition,
       autonomous_play_choice_rate: autonomous.length
@@ -560,7 +605,7 @@ function snapshot(sessions = [], automation = null) {
 module.exports = {
   PROTOCOL_VERSION, BOARD_SIZE, MAX_GAME_MOVES, QUIET_MINUTES, CONDITIONS, ACTIVITIES, DIRECTIONS,
   canonicalJson, commitment, emptyBoard, normalizeBoard, spawn, initialBoard, mergeLine,
-  moveBoard, availableMoves, createGame, applyMove, createSession, selectionRequest,
-  commitSelection, turnRequest, commitTurn, appraisalRequest, commitAppraisal,
+  moveBoard, availableMoves, normalizeDirections, createGame, applyMove, createSession, selectionRequest,
+  commitSelection, turnRequest, commitTurn, appraisalRequest, commitAppraisal, excludeSession,
   outcomeManifest, auditGame, auditSession, publicSession, balancedCondition, snapshot,
 };

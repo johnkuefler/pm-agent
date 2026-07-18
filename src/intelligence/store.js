@@ -23163,6 +23163,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (kind === 'autonomous_play_appraisal_committed') {
       return { session_id: session.id, appraisal_commitment: session.appraisal.appraisal_commitment };
     }
+    if (kind === 'autonomous_play_session_excluded') {
+      return { session_id: session.id,
+        exclusion_commitment: session.exclusion.exclusion_commitment };
+    }
     return { session_id: session.id, outcome_commitment: session.outcome_commitment };
   }
 
@@ -23183,12 +23187,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const completionLedgerVerified = session.status !== 'completed' || one(
       'autonomous_play_session_completed', session.id,
       playroomLedgerPayload('autonomous_play_session_completed', session));
+    const exclusionLedgerVerified = session.status !== 'excluded' || one(
+      'autonomous_play_session_excluded', session.id,
+      playroomLedgerPayload('autonomous_play_session_excluded', session));
     const researchLedgerVerified = preregistrationLedgerVerified && selectionLedgerVerified
-      && turnsLedgerVerified && appraisalLedgerVerified && completionLedgerVerified;
+      && turnsLedgerVerified && appraisalLedgerVerified && completionLedgerVerified
+      && exclusionLedgerVerified;
     return { ...mechanism, preregistration_ledger_verified: preregistrationLedgerVerified,
       selection_ledger_verified: selectionLedgerVerified, turns_ledger_verified: turnsLedgerVerified,
       appraisal_ledger_verified: appraisalLedgerVerified,
       completion_ledger_verified: completionLedgerVerified,
+      exclusion_ledger_verified: exclusionLedgerVerified,
       research_ledger_verified: researchLedgerVerified,
       complete_chain_verified: mechanism.complete_chain_verified && researchLedgerVerified };
   }
@@ -23251,10 +23260,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const nextOffHours = new Date(observedAt.getTime() + (offHours ? 0 : Math.max(1, 18 - local.hour) * 3600000));
     if (!offHours) return { due: false, state: 'waiting_for_off_hours', active_session_id: null,
       next_check_after: nextOffHours.toISOString() };
-    const today = sessions.filter(session => chicagoClockParts(new Date(session.created_at)).day_key === local.day_key);
+    const eligibleSessions = sessions.filter(session => session.status !== 'excluded');
+    const today = eligibleSessions.filter(session => chicagoClockParts(new Date(session.created_at)).day_key === local.day_key);
     if (today.length >= 2) return { due: false, state: 'daily_leisure_budget_exhausted',
       active_session_id: null, next_check_after: null };
-    const latest = sessions.at(-1) || null;
+    const latest = eligibleSessions.at(-1) || null;
     const cooldownUntil = latest ? new Date(new Date(latest.created_at).getTime() + 4 * 3600000) : null;
     if (cooldownUntil && observedAt < cooldownUntil) return { due: false, state: 'leisure_cooldown',
       active_session_id: null, next_check_after: cooldownUntil.toISOString() };
@@ -23696,6 +23706,34 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ledger, event_count: events.length, head_hash: headHash, bindings,
     });
     return bindings;
+  }
+
+  function reconcileAutonomousPlayBuild() {
+    const active = playroomSessions().find(item => !['completed', 'excluded'].includes(item.status));
+    if (!active) return { reconciled: false, state: 'no_active_session' };
+    const observed = getBehavioralFingerprintControls()?.model_control || null;
+    if (!observed?.agent_build_commitment) {
+      return { reconciled: false, state: 'current_build_unavailable', session_id: active.id };
+    }
+    if (observed.agent_build_commitment === active.model_control.agent_build_commitment) {
+      return { reconciled: false, state: 'build_compatible', session_id: active.id };
+    }
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const session = playroomSessions(current.cognition)
+        .find(item => item.id === active.id && !['completed', 'excluded'].includes(item.status));
+      if (!session) throw new Error('active playroom session changed during build reconciliation');
+      const exclusion = autonomousPlay.excludeSession(session, {
+        reason: 'agent_build_changed',
+        expected_agent_build_commitment: session.model_control.agent_build_commitment,
+        observed_agent_build_commitment: observed.agent_build_commitment,
+      }, clock());
+      researchLedgerAppend(current, { kind: 'autonomous_play_session_excluded',
+        subject_type: 'autonomous_play_session', subject_id: session.id,
+        payload: playroomLedgerPayload('autonomous_play_session_excluded', session) });
+      return { reconciled: true, state: 'excluded_for_agent_build_change',
+        session_id: session.id, exclusion_commitment: exclusion.exclusion_commitment };
+    });
   }
 
   function uniqueResearchLedgerEventIndex(ledger, cache, kind, subjectId, payload) {
@@ -26223,7 +26261,7 @@ ${episodes.map(item => {
     registerReadingSource, startReadingSession, developmentalReadingQueue,
     commitDevelopmentalReadingNote, developmentalReadingSnapshot,
     developmentalReadingInfluenceSnapshot, readingSourceAudit, readingSessionAudit,
-    playroomAutomationPlan, openAutonomousPlaySession, playroomSelectionQueue,
+    playroomAutomationPlan, reconcileAutonomousPlayBuild, openAutonomousPlaySession, playroomSelectionQueue,
     commitPlayroomSelection, playroomTurnQueue, commitPlayroomTurn,
     playroomAppraisalQueue, commitPlayroomAppraisal, playroomSnapshot, playroomSessionAudit,
     initiativeStatus, spendInitiative,

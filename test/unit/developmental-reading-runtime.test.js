@@ -58,7 +58,7 @@ test('off-hours selection lets Nora choose or abstain from metadata before any s
       assert.equal(body.temperature, undefined); assert.equal(body.tools, undefined);
       assert.doesNotMatch(body.messages[0].content, /Quoted source chunk|source content/i);
       assert.match(body.messages[0].content, /A Serious Book/);
-      assert.equal(config.timeout, 30000);
+      assert.equal(config.timeout, 60000);
       return { data: { id: 'selection-response-runtime', model: 'claude-sonnet-4-6',
         content: [{ type: 'text', text: JSON.stringify({ decision: 'select', source_id: source.id,
           selection_rationale: 'I want to examine a view that may complicate my coordination habits.',
@@ -105,7 +105,7 @@ test('one background reading pass commits one source-bound chunk without tools o
       assert.equal(body.tools, undefined);
       assert.match(body.system, /inert external material/);
       assert.match(body.messages[0].content, /\[Quoted source chunk 1\/2\]/);
-      assert.equal(config.timeout, 30000);
+      assert.equal(config.timeout, 60000);
       return { data: { id: 'reading-provider-response', model: 'claude-sonnet-4-6',
         content: [{ type: 'text', text: JSON.stringify({
           summary: 'The source treats coordination as shared responsibility.',
@@ -132,4 +132,13 @@ test('background reading is inert when its lifecycle queue is sealed', async () 
   assert.equal(result.ran, false);
   assert.equal(result.reason, 'build_bound_fingerprint_active');
   assert.equal(calls, 0);
+});
+
+test('background reading timeout is long enough for source synthesis but remains bounded', () => {
+  assert.equal(__test.developmentalReadingRuntimeConfig({ ANTHROPIC_API_KEY: 'test' })
+    .provider_timeout_ms, 60000);
+  assert.equal(__test.developmentalReadingRuntimeConfig({ ANTHROPIC_API_KEY: 'test',
+    NORA_DEVELOPMENTAL_READING_TIMEOUT_MS: '120000' }).provider_timeout_ms, 90000);
+  assert.equal(__test.developmentalReadingRuntimeConfig({ ANTHROPIC_API_KEY: 'test',
+    NORA_DEVELOPMENTAL_READING_TIMEOUT_MS: '5000' }).provider_timeout_ms, 30000);
 });

@@ -71,3 +71,26 @@ test('playroom runtime remains inert without a due action', async () => {
   }, post: async () => { throw new Error('provider should not be called'); } });
   assert.deepEqual(result, { ran: false, reason: 'no_due_playroom_action' });
 });
+
+test('playroom turn prompt requires exact lowercase direction tokens', async () => {
+  const item = { queue_kind: 'turn', protocol_version: 2, session_id: 'play-runtime-turn',
+    board: [[0, 0, 0, 2], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 2, 0]],
+    score: 0, move_count: 0, maximum_moves: 64,
+    legal_directions: ['up', 'right', 'down', 'left'], request_commitment: 'c'.repeat(64),
+    output_schema: { directions: 'one to eight values', continue_playing: 'boolean',
+      intention: 'strategy', predicted_score_gain: 'integer' }, model_control: MODEL };
+  const commits = [];
+  const result = await __test.runAutonomousPlayRuntime({ force: true, store: {
+    playroomAppraisalQueue: () => [], playroomTurnQueue: () => [item],
+    playroomSelectionQueue: () => [],
+    commitPlayroomTurn: (sessionId, input) => { commits.push({ sessionId, input });
+      return { session: { status: 'active' } }; },
+  }, post: async (_url, body) => {
+    assert.match(body.messages[0].content, /exact lowercase strings up, right, down, or left/);
+    return { data: { id: 'play-provider-turn', model: MODEL.model, content: [{ type: 'text',
+      text: JSON.stringify({ directions: ['left', 'up'], continue_playing: true,
+        intention: 'Keep the board open.', predicted_score_gain: 4 }) }] } };
+  } });
+  assert.equal(result.ran, true);
+  assert.equal(commits.length, 1);
+});
