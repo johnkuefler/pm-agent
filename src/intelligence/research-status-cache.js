@@ -8,7 +8,12 @@ const { fork } = require('node:child_process');
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
 
-const PERSISTED_PROJECTION_PROTOCOL_VERSION = 1;
+const PERSISTED_PROJECTION_PROTOCOL_VERSION = 2;
+
+function projectionBuildIdentity(env = process.env) {
+  return String(env.RAILWAY_GIT_COMMIT_SHA || env.GIT_COMMIT_SHA
+    || 'unversioned-local').slice(0, 200);
+}
 
 function boundedNumber(value, fallback, minimum, maximum) {
   const number = Number(value);
@@ -283,6 +288,7 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
 function projectionEnvelopePayload(envelope) {
   return {
     protocol_version: envelope.protocol_version,
+    build_identity: envelope.build_identity,
     projection: envelope.projection,
     serialized: envelope.serialized,
     source_revision: envelope.source_revision,
@@ -308,6 +314,7 @@ function createPersistedProjectionEnvelope(snapshot, projection) {
   }
   const envelope = {
     protocol_version: PERSISTED_PROJECTION_PROTOCOL_VERSION,
+    build_identity: projectionBuildIdentity(),
     projection,
     serialized,
     source_revision: Number.isFinite(Number(snapshot.revision)) ? Number(snapshot.revision) : null,
@@ -321,6 +328,7 @@ function createPersistedProjectionEnvelope(snapshot, projection) {
 
 function verifyPersistedProjectionEnvelope(envelope, projection) {
   if (!envelope || envelope.protocol_version !== PERSISTED_PROJECTION_PROTOCOL_VERSION
+    || envelope.build_identity !== projectionBuildIdentity()
     || envelope.projection !== projection || typeof envelope.serialized !== 'string'
     || envelope.content_commitment !== projectionCommitment(envelope)) return false;
   try { JSON.parse(envelope.serialized); }
@@ -563,6 +571,7 @@ module.exports = {
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MIN_REFRESH_INTERVAL_MS,
   PERSISTED_PROJECTION_PROTOCOL_VERSION,
+  projectionBuildIdentity,
   createLowPriorityResearchProcess,
   createResearchStatusCache,
   createResearchProjectionCache,

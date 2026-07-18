@@ -7,7 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const { createResearchStatusCache, createResearchProjectionCache,
-  createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope } =
+  createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope,
+  PERSISTED_PROJECTION_PROTOCOL_VERSION, projectionBuildIdentity } =
   require('../../src/intelligence/research-status-cache');
 
 const OBSERVED_AT = new Date('2026-07-17T15:00:00.000Z');
@@ -219,8 +220,13 @@ test('verified persisted projections hydrate across restarts without spawning co
     completed_at: new Date().toISOString(),
   }, 'research_status');
   assert.equal(verifyPersistedProjectionEnvelope(envelope, 'research_status'), true);
+  assert.equal(envelope.protocol_version, PERSISTED_PROJECTION_PROTOCOL_VERSION);
+  assert.equal(envelope.build_identity, projectionBuildIdentity());
   const tampered = { ...envelope, serialized: envelope.serialized.replace('true', 'false') };
   assert.equal(verifyPersistedProjectionEnvelope(tampered, 'research_status'), false);
+  const priorBuild = { ...envelope, build_identity: 'prior-build' };
+  assert.equal(verifyPersistedProjectionEnvelope(priorBuild, 'research_status'), false,
+    'a valid snapshot from older code must not survive a deployment');
 
   let workerCreated = false;
   const cache = createResearchProjectionCache({
