@@ -15439,8 +15439,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const evaluatorTolerance = clamp01(input.evaluator_disagreement_tolerance ?? replicatedTrial?.evaluator_disagreement_tolerance ?? 0.2);
       let automatedPilotGrading = null;
       if (input.automated_pilot_grading != null) {
-        if (!['reasoning_self_regulation', 'global_broadcast'].includes(intervention) || studyPhase !== 'pilot' || replicatedTrial) {
-          throw new Error('automated pilot grading is permitted only for initial reasoning_self_regulation or global_broadcast pilots');
+        if (!['reasoning_self_regulation', 'global_broadcast',
+          'self_model_trust_policy_access'].includes(intervention)
+          || studyPhase !== 'pilot' || replicatedTrial) {
+          throw new Error('automated pilot grading is permitted only for an allowlisted initial model-graded pilot');
         }
         const automation = input.automated_pilot_grading;
         const roles = Array.isArray(automation.evaluator_roles) ? automation.evaluator_roles.map(item => ({
@@ -15469,7 +15471,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           evidence_scope: 'model_graded_pilot_only',
           grader_model: String(automation.grader_model).slice(0, 160),
           evaluator_roles: roles,
-          confirmation_policy: 'stop_after_pilot; confirmation requires evaluator-disjoint externally administered grading',
+          confirmation_policy: intervention === 'self_model_trust_policy_access'
+            ? 'stop_after_pilot; confirmation requires source-moment-, interaction-, and evaluator-disjoint externally administered grading'
+            : 'stop_after_pilot; confirmation requires evaluator-disjoint externally administered grading',
         };
       }
       const prospectiveOutcomeMinDelayMinutes = (['constructive_prospection_access', 'agency_model_access', 'empirical_self_knowledge_access'].includes(intervention)
@@ -15779,7 +15783,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     const digest = crypto.createHmac('sha256', trial.seed).update(`${surface}:${unitKey}`).digest();
     const condition = trial.conditions[digest[0] % trial.conditions.length];
-    if (['global_broadcast', 'prospective_output_calibration_access', 'provider_reasoning_regulation', 'reasoning_self_regulation'].includes(trial.intervention)
+    if (['global_broadcast', 'self_model_trust_policy_access',
+      'prospective_output_calibration_access', 'provider_reasoning_regulation',
+      'reasoning_self_regulation'].includes(trial.intervention)
       && trial.assignments.filter(item => item.condition === condition).length >= trial.enrollment_target_per_group) {
       return { assignment: null, created: false, enrollment_closed_for_condition: condition };
     }

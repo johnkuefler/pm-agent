@@ -47,6 +47,7 @@ const reasoningSelfRegulation = require('./src/intelligence/reasoning-self-regul
 const behavioralSelfProfileForecast = require('./src/intelligence/behavioral-self-profile-forecast');
 const reasoningResearchAutopilot = require('./src/intelligence/reasoning-research-autopilot');
 const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
+const selfModelTrustResearchAutopilot = require('./src/intelligence/self-model-trust-research-autopilot');
 const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycle-prediction-autopilot');
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
@@ -10015,7 +10016,7 @@ function researchAutopilotProgramStatus() {
   const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
   if (activePilots.length) {
     return {
-      protocol_version: 2,
+      protocol_version: 3,
       enabled,
       sequential: true,
       scientific_boundary: scientificBoundary,
@@ -10045,15 +10046,22 @@ function researchAutopilotProgramStatus() {
   const globalBroadcast = globalBroadcastResearchAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.global_broadcast || null,
   });
+  const selfModelTrust = selfModelTrustResearchAutopilot.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.self_model_trust || null,
+  });
   return {
-    protocol_version: 2,
+    protocol_version: 3,
     enabled,
     sequential: true,
     scientific_boundary: scientificBoundary,
-    current_stage: globalBroadcast.pilot?.status === 'active' ? 'global_broadcast_pilot'
-      : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'
-        : globalBroadcast.pilot ? 'global_broadcast_pilot_closed' : 'waiting_for_global_broadcast_pilot',
-    studies: { reasoning_self_regulation: reasoning, global_broadcast: globalBroadcast },
+    current_stage: selfModelTrust.pilot?.status === 'active' ? 'self_model_trust_policy_pilot'
+      : globalBroadcast.pilot?.status === 'active' ? 'global_broadcast_pilot'
+        : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'
+          : selfModelTrust.pilot ? 'self_model_trust_policy_pilot_closed'
+            : globalBroadcast.pilot ? 'waiting_for_self_model_trust_policy_pilot'
+              : 'waiting_for_global_broadcast_pilot',
+    studies: { reasoning_self_regulation: reasoning, global_broadcast: globalBroadcast,
+      self_model_trust_policy: selfModelTrust },
     self_prediction_sequence: selfPredictionSequence,
     self_prediction_subject: selfPredictionSubject,
     natural_cycle_prediction: naturalCyclePrediction,
@@ -10628,10 +10636,22 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
         maxGrades: config.maxGrades, callProvider,
       }) : { protocol_version: globalBroadcastResearchAutopilot.PROTOCOL_VERSION,
         state: 'waiting_for_reasoning_pilot', grades_committed: 0, provider_failures: [], reveal: null };
+    const globalBroadcastPilot = intelligence.snapshot().cognition.self_model.context_trials
+      .find(item => item.intervention === 'global_broadcast' && item.study_phase === 'pilot');
+    const selfModelTrust = globalBroadcastPilot
+      && ['completed', 'aborted'].includes(globalBroadcastPilot.status)
+      ? await selfModelTrustResearchAutopilot.runCycle({
+        store: intelligence, enabled: true, graderModel: config.graderModel,
+        maxGrades: config.maxGrades, callProvider,
+      }) : { protocol_version: selfModelTrustResearchAutopilot.PROTOCOL_VERSION,
+        state: 'waiting_for_global_broadcast_pilot', grades_committed: 0,
+        provider_failures: [], reveal: null };
     _researchAutopilotLastCycle = {
-      protocol_version: 2,
-      state: globalBroadcast.state === 'waiting_for_reasoning_pilot' ? reasoning.state : globalBroadcast.state,
-      reasoning, global_broadcast: globalBroadcast,
+      protocol_version: 3,
+      state: selfModelTrust.state === 'waiting_for_global_broadcast_pilot'
+        ? (globalBroadcast.state === 'waiting_for_reasoning_pilot' ? reasoning.state : globalBroadcast.state)
+        : selfModelTrust.state,
+      reasoning, global_broadcast: globalBroadcast, self_model_trust: selfModelTrust,
       self_prediction_sequence: selfPredictionSequence,
       self_prediction_subject: selfPredictionSubject,
       natural_cycle_prediction: naturalCyclePrediction,
