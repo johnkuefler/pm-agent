@@ -8,6 +8,7 @@
     "test:unit": "node --test --test-concurrency=1 test/unit",
     "deploy:check": "node scripts/check-deploy-readiness.js",
     "reading:seed:first": "node scripts/seed-first-reading-source.js",
+    "reading:seed:library": "node scripts/seed-reading-library.js",
     "prepare:metacognitive-study": "node scripts/prepare-metacognitive-study.js",
     "prepare:epistemic-action-study": "node scripts/prepare-epistemic-action-study.js",
     "prepare:episodic-prospection-study": "node scripts/prepare-episodic-prospection-study.js",

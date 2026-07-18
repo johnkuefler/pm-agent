@@ -1300,7 +1300,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       id: 'source_bound_intellectual_development',
       family: ['conceptual change', 'metacognition', 'self-model', 'professional judgment'],
       functional_claim: 'Across a sequential encounter with an authorized external work, Nora can construct source-grounded agreements, disagreements, questions, and falsifiable provisional self-revisions, then transfer a specific reading-derived lens to relevant later PM work beyond matched access to the same source content.',
-      mechanism: 'An off-hours, foreground-preemptible reading lifecycle first lets Nora\'s isolated background model choose from bibliographic metadata or abstain. A selection binds the provider request, exact source, rationale, guiding questions, and predicted influence before source text is read. The lifecycle then commits the authorized source and every ordered chunk before inference. Each constructive response binds a provider request, source chunk, prior note, stance, carried question, and any bounded self-revision with explicit counterevidence. A completed encounter preserves source-versus-self boundaries, expected work transfer, disagreements, and an encounter commitment. Query-relevant readback can expose one replay-verified provisional lens to ordinary work and records exact access receipts; access is not treated as use and positive interaction outcomes remain observational. Build-bound fingerprints seal acquisition. During blinded context trials, acquisition may continue in an isolated background lane, while all source-derived summaries, revisions, syntheses, and prompt influence remain sealed from operational and experimental cognition until closure.',
+      mechanism: 'An off-hours, foreground-preemptible reading lifecycle first lets Nora\'s isolated background model choose from bibliographic metadata or abstain. Protocol-v3 selections freeze the exact metadata-only choice ecology, prove the selected source was among those candidates, and distinguish a provider-bound response from a meaningful multi-source preference opportunity. A selection binds the provider request, exact source, rationale, guiding questions, and predicted influence before source text is read. The lifecycle then commits the authorized source and every ordered chunk before inference. Each constructive response binds a provider request, source chunk, prior note, stance, carried question, and any bounded self-revision with explicit counterevidence. A completed encounter preserves source-versus-self boundaries, expected work transfer, disagreements, and an encounter commitment. Query-relevant readback can expose one replay-verified provisional lens to ordinary work and records exact access receipts; access is not treated as use and positive interaction outcomes remain observational. Build-bound fingerprints seal acquisition. During blinded context trials, acquisition may continue in an isolated background lane, while all source-derived summaries, revisions, syntheses, and prompt influence remain sealed from operational and experimental cognition until closure.',
       status: readingDevelopmentStatus,
       evidence: {
         admitted_sources: (readingState.sources || []).length,
@@ -1311,6 +1311,14 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         replay_verified_sessions: replayVerifiedReadingSessions.length,
         provider_bound_autonomous_selections: replayVerifiedReadingSessions.filter(item =>
           item.selection_mode === 'provider_bound_autonomous').length,
+        choice_ecology_verified_selections: replayVerifiedReadingSessions.filter(item =>
+          item.selection_mode === 'provider_bound_autonomous'
+            && Number(item.protocol_version) >= 3
+            && Array.isArray(item.selection_candidates)).length,
+        meaningful_multi_source_choice_opportunities: replayVerifiedReadingSessions.filter(item =>
+          item.selection_mode === 'provider_bound_autonomous'
+            && Number(item.protocol_version) >= 3
+            && (item.selection_candidates || []).length >= 2).length,
         replay_verified_completed_encounters: completedReadingEncounters.length,
         reflected_chunks: readingNotes.length,
         grounded_reactions: readingReactions.length,

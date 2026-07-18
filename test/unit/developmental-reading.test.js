@@ -107,7 +107,7 @@ test('autonomous source selection binds the exact provider output without rewrit
       request_commitment: 'c'.repeat(64),
       selection_commitment: reading.commitment(reading.sessionSelectionPayload(selection)),
     } }, new Date('2026-07-18T02:00:00Z'));
-  assert.equal(session.protocol_version, reading.SESSION_PROTOCOL_VERSION);
+  assert.equal(session.protocol_version, reading.PROVIDER_BOUND_SESSION_PROTOCOL_VERSION);
   assert.equal(session.selection_mode, 'provider_bound_autonomous');
   assert.equal(reading.verifySession(session, source), true);
   const tampered = structuredClone(session);
@@ -118,6 +118,45 @@ test('autonomous source selection binds the exact provider output without rewrit
     predicted_influence: selection.predicted_influence }, new Date('2026-07-18T02:00:00Z'));
   assert.equal(explicit.protocol_version, reading.PROTOCOL_VERSION);
   assert.equal(reading.verifySession(explicit, source), true);
+});
+
+test('choice-ecology sessions freeze meaningful alternatives without changing legacy receipts', () => {
+  const source = reading.createSource({ id: 'reading-source-choiceeco01', title: 'How We Think',
+    author: 'John Dewey', source_kind: 'book', source_url: 'https://example.org/how-we-think.txt',
+    rights_basis: 'public_domain', rights_note: 'Public domain edition.',
+    content_commitment: 'a'.repeat(64), content_chars: 20000,
+    chunk_commitments: ['b'.repeat(64)], admitted_by: 'John' },
+  new Date('2026-07-18T01:00:00Z'));
+  const selection = { source_id: source.id,
+    selection_rationale: 'I want to examine a theory of reflective inquiry.',
+    guiding_questions: ['What makes reflection corrective rather than circular?'],
+    predicted_influence: 'I may become more explicit about how I test an initial judgment.' };
+  const candidates = [
+    { id: source.id, title: source.title, author: source.author, source_kind: 'book',
+      rights_basis: 'public_domain', chunk_count: 1 },
+    { id: 'reading-source-alternative2', title: 'A Contrasting Work', author: 'Another Author',
+      source_kind: 'book', rights_basis: 'public_domain', chunk_count: 12 },
+  ];
+  const session = reading.createSession(source, { id: 'choice-ecology-session', selected_by: 'Nora',
+    ...selection, selection_candidates: candidates, selection_provider_receipt: {
+      response_id: 'selection-response-choice', provider: 'anthropic', model: 'test-model',
+      request_commitment: 'c'.repeat(64),
+      selection_commitment: reading.commitment(reading.sessionSelectionPayload(selection)),
+      candidate_set_commitment: reading.commitment(candidates),
+    } }, new Date('2026-07-18T02:00:00Z'));
+  assert.equal(session.protocol_version, reading.SESSION_PROTOCOL_VERSION);
+  assert.equal(session.selection_candidates.length, 2);
+  assert.equal(reading.verifySession(session, source), true);
+  const tampered = structuredClone(session);
+  tampered.selection_candidates.pop();
+  assert.equal(reading.verifySession(tampered, source), false);
+  assert.throws(() => reading.createSession(source, { selected_by: 'Nora', ...selection,
+    selection_candidates: candidates.filter(item => item.id !== source.id),
+    selection_provider_receipt: { response_id: 'outside-choice', provider: 'anthropic', model: 'test',
+      request_commitment: 'd'.repeat(64),
+      selection_commitment: reading.commitment(reading.sessionSelectionPayload(selection)),
+      candidate_set_commitment: reading.commitment(candidates.filter(item => item.id !== source.id)) } }),
+  /exact candidate choice ecology/);
 });
 
 test('store ledger-binds reading, quarantines influence during trials, and enforces a daily budget', async () => {

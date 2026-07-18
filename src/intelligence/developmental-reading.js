@@ -3,7 +3,8 @@
 const crypto = require('node:crypto');
 
 const PROTOCOL_VERSION = 1;
-const SESSION_PROTOCOL_VERSION = 2;
+const PROVIDER_BOUND_SESSION_PROTOCOL_VERSION = 2;
+const SESSION_PROTOCOL_VERSION = 3;
 const RIGHTS_BASES = Object.freeze(['public_domain', 'open_license', 'user_provided_authorized']);
 const SOURCE_KINDS = Object.freeze(['book', 'essay', 'manual', 'paper', 'other']);
 const STANCES = Object.freeze(['agree', 'disagree', 'uncertain', 'complicate']);
@@ -87,9 +88,12 @@ function sessionManifest(session) {
     selection_rationale: session.selection_rationale, guiding_questions: session.guiding_questions,
     predicted_influence: session.predicted_influence, started_at: session.started_at,
   };
-  if (Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION) {
+  if (Number(session.protocol_version) >= PROVIDER_BOUND_SESSION_PROTOCOL_VERSION) {
     manifest.selection_mode = session.selection_mode;
     manifest.selection_provider_receipt = session.selection_provider_receipt;
+  }
+  if (Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION) {
+    manifest.selection_candidates = session.selection_candidates;
   }
   return manifest;
 }
@@ -101,6 +105,31 @@ function sessionSelectionPayload(value) {
     guiding_questions: value.guiding_questions,
     predicted_influence: value.predicted_influence,
   };
+}
+
+function selectionCandidateSet(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 60) {
+    throw new Error('autonomous reading choice ecology requires one to sixty candidates');
+  }
+  const seen = new Set();
+  return value.map(candidate => {
+    const normalized = {
+      id: text(candidate?.id, 'selection candidate id', 160),
+      title: text(candidate?.title, 'selection candidate title', 300),
+      author: text(candidate?.author, 'selection candidate author', 240),
+      source_kind: text(candidate?.source_kind, 'selection candidate source kind', 40),
+      rights_basis: text(candidate?.rights_basis, 'selection candidate rights basis', 40),
+      chunk_count: Number(candidate?.chunk_count),
+    };
+    if (seen.has(normalized.id)) throw new Error('autonomous reading choice ecology requires unique candidates');
+    seen.add(normalized.id);
+    if (!SOURCE_KINDS.includes(normalized.source_kind)
+      || !RIGHTS_BASES.includes(normalized.rights_basis)
+      || !Number.isInteger(normalized.chunk_count) || normalized.chunk_count < 1 || normalized.chunk_count > 500) {
+      throw new Error('autonomous reading choice ecology contains invalid metadata');
+    }
+    return normalized;
+  });
 }
 
 function createSession(source, input = {}, at = new Date()) {
@@ -117,6 +146,7 @@ function createSession(source, input = {}, at = new Date()) {
     predicted_influence: text(input.predicted_influence, 'predicted influence', 800),
   };
   let selectionProviderReceipt = null;
+  let selectionCandidates = null;
   if (input.selection_provider_receipt) {
     selectionProviderReceipt = {
       response_id: text(input.selection_provider_receipt.response_id, 'selection provider response id', 300),
@@ -131,9 +161,20 @@ function createSession(source, input = {}, at = new Date()) {
       || selectionProviderReceipt.selection_commitment !== commitment(sessionSelectionPayload(selection))) {
       throw new Error('autonomous reading selection requires a committed provider request and exact selection');
     }
+    if (input.selection_candidates) {
+      selectionCandidates = selectionCandidateSet(input.selection_candidates);
+      selectionProviderReceipt.candidate_set_commitment = text(
+        input.selection_provider_receipt.candidate_set_commitment,
+        'selection candidate set commitment', 64);
+      if (selectionProviderReceipt.candidate_set_commitment !== commitment(selectionCandidates)
+        || !selectionCandidates.some(candidate => candidate.id === source.id)) {
+        throw new Error('autonomous reading selection requires the exact candidate choice ecology');
+      }
+    }
   }
   const session = {
-    id, protocol_version: selectionProviderReceipt ? SESSION_PROTOCOL_VERSION : PROTOCOL_VERSION,
+    id, protocol_version: selectionCandidates ? SESSION_PROTOCOL_VERSION
+      : selectionProviderReceipt ? PROVIDER_BOUND_SESSION_PROTOCOL_VERSION : PROTOCOL_VERSION,
     source_id: source.id,
     source_commitment: source.content_manifest_commitment,
     selected_by: text(input.selected_by, 'selecting actor', 120),
@@ -144,6 +185,7 @@ function createSession(source, input = {}, at = new Date()) {
       selection_mode: 'provider_bound_autonomous',
       selection_provider_receipt: selectionProviderReceipt,
     } : {}),
+    ...(selectionCandidates ? { selection_candidates: selectionCandidates } : {}),
     started_at: new Date(at).toISOString(), status: 'active', next_chunk_index: 0,
     notes: [], completed_at: null, encounter: null, session_manifest_commitment: null,
   };
@@ -152,14 +194,24 @@ function createSession(source, input = {}, at = new Date()) {
 }
 
 function verifySession(session, source) {
-  const supportedProtocol = [PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION]
+  const supportedProtocol = [PROTOCOL_VERSION, PROVIDER_BOUND_SESSION_PROTOCOL_VERSION,
+    SESSION_PROTOCOL_VERSION]
     .includes(Number(session?.protocol_version));
-  const selectionReceiptVerified = Number(session?.protocol_version) < SESSION_PROTOCOL_VERSION
+  const selectionReceiptVerified = Number(session?.protocol_version) < PROVIDER_BOUND_SESSION_PROTOCOL_VERSION
     || (session.selection_mode === 'provider_bound_autonomous'
       && /^[a-f0-9]{64}$/.test(session.selection_provider_receipt?.request_commitment || '')
       && session.selection_provider_receipt?.selection_commitment
         === commitment(sessionSelectionPayload(session)));
+  let choiceEcologyVerified = true;
+  if (Number(session?.protocol_version) >= SESSION_PROTOCOL_VERSION) {
+    try {
+      const candidates = selectionCandidateSet(session.selection_candidates);
+      choiceEcologyVerified = candidates.some(candidate => candidate.id === source.id)
+        && session.selection_provider_receipt?.candidate_set_commitment === commitment(candidates);
+    } catch { choiceEcologyVerified = false; }
+  }
   return Boolean(verifySource(source) && supportedProtocol && selectionReceiptVerified
+    && choiceEcologyVerified
     && session.source_id === source.id && session.source_commitment === source.content_manifest_commitment
     && session.session_manifest_commitment === commitment(sessionManifest(session))
     && ['active', 'completed', 'abandoned'].includes(session.status));
@@ -258,9 +310,12 @@ function appendNote(session, source, input = {}, at = new Date()) {
       title: source.title, author: source.author, completed_at: session.completed_at,
       selection_rationale: session.selection_rationale, guiding_questions: session.guiding_questions,
       predicted_influence: session.predicted_influence, synthesis: note.output.completion,
-      ...(Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION ? {
+      ...(Number(session.protocol_version) >= PROVIDER_BOUND_SESSION_PROTOCOL_VERSION ? {
         selection_mode: session.selection_mode,
         selection_provider_receipt: session.selection_provider_receipt,
+      } : {}),
+      ...(Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION ? {
+        selection_candidates: session.selection_candidates,
       } : {}),
       note_commitments: session.notes.map(item => item.note_commitment), encounter_commitment: null,
       epistemic_status: 'A source-bound intellectual encounter and provisional self-report. It is not a persona edit, trained weight change, independent validation, subjective-experience proof, or consciousness evidence.',
@@ -290,8 +345,10 @@ function auditSession(session, source) {
 }
 
 module.exports = {
-  PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION, RIGHTS_BASES, SOURCE_KINDS, STANCES,
+  PROTOCOL_VERSION, PROVIDER_BOUND_SESSION_PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION,
+  RIGHTS_BASES, SOURCE_KINDS, STANCES,
   canonicalJson, commitment, sourceManifest, createSource, verifySource,
-  sessionManifest, sessionSelectionPayload, createSession, verifySession, normalizeOutput, noteManifest,
+  sessionManifest, sessionSelectionPayload, selectionCandidateSet, createSession, verifySession,
+  normalizeOutput, noteManifest,
   appendNote, auditSession,
 };

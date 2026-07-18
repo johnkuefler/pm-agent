@@ -9851,7 +9851,7 @@ function developmentalReadingClock(at = new Date(), timezone = 'America/Chicago'
 }
 
 function developmentalReadingSelectionRequest(sources, config = developmentalReadingRuntimeConfig()) {
-  const available = (sources || []).map(source => ({
+  const available = (sources || []).slice(0, 60).map(source => ({
     id: source.id, title: source.title, author: source.author,
     source_kind: source.source_kind, rights_basis: source.rights_basis,
     chunk_count: source.chunk_count,
@@ -9860,7 +9860,9 @@ function developmentalReadingSelectionRequest(sources, config = developmentalRea
   const user = `[Admitted unread works]\n${JSON.stringify(available)}\n\nReturn either:\n{"decision":"abstain","reason":"plain reason"}\nor\n{"decision":"select","source_id":"exact admitted id","selection_rationale":"why this work now without claiming you read it","guiding_questions":["one to three open questions"],"predicted_influence":"bounded prediction with room for rejection"}`;
   const body = { model: config.model, max_tokens: 700, system,
     messages: [{ role: 'user', content: user }] };
-  return { body, request_commitment: developmentalReading.commitment(body) };
+  return { body, candidates: available,
+    candidate_set_commitment: developmentalReading.commitment(available),
+    request_commitment: developmentalReading.commitment(body) };
 }
 
 async function runDevelopmentalReadingSelectionRuntime({ post = axios.post, store = intelligence,
@@ -9910,12 +9912,15 @@ async function runDevelopmentalReadingSelectionRuntime({ post = axios.post, stor
       developmentalReading.sessionSelectionPayload(selection));
     const session = store.startReadingSession(source.id, {
       selected_by: 'Nora', ...selection,
+      selection_candidates: request.candidates,
       selection_provider_receipt: { response_id: response.data.id, provider: 'anthropic',
         model: config.model, request_commitment: request.request_commitment,
-        selection_commitment: selectionCommitment },
+        selection_commitment: selectionCommitment,
+        candidate_set_commitment: request.candidate_set_commitment },
     });
     return { ran: true, selected: true, session_id: session.id, source_id: source.id,
-      selection_mode: session.selection_mode, clock };
+      selection_mode: session.selection_mode,
+      candidate_count: session.selection_candidates?.length || 0, clock };
   } finally { _developmentalReadingSelectionInFlight = false; }
 }
 

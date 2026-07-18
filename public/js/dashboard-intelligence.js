@@ -340,15 +340,18 @@ function renderReadingRoom(report) {
   const progress = totalChunks ? Math.round((completedChunks / totalChunks) * 100) : 0;
   const stateTitle = active ? `Reading chunk ${Math.min(completedChunks + 1, totalChunks)} of ${totalChunks}`
     : latest ? 'Most recent completed encounter' : 'Awaiting Nora\'s selection';
+  const candidateCount = latest?.selection_candidates?.length || 0;
   const selectionKicker = latest?.selection_mode === 'provider_bound_autonomous'
-    ? 'Provider-bound autonomous selection'
+    ? candidateCount
+      ? `Provider-bound choice · ${candidateCount} candidate${candidateCount === 1 ? '' : 's'} frozen`
+      : 'Provider-bound autonomous selection'
     : active ? 'Source-bound encounter' : latest ? 'Committed synthesis' : 'Available work';
   target.innerHTML = `<div class="reading-room-layout">
     ${readingRoomBook(source, latest)}
     <div class="reading-session">
       <header class="reading-session-head">
         <div><span class="brain-detail-kicker">${escHtml(selectionKicker)}</span><h3>${escHtml(stateTitle)}</h3></div>
-        <div class="reading-progress"><strong>${progress}%</strong><span>${completedChunks}/${totalChunks} reflected</span></div>
+        <div class="reading-progress"><strong>${progress}%</strong><span>${completedChunks}/${totalChunks} encountered</span></div>
       </header>
       ${latest ? `<div class="reading-intent">
         <div><span>Why this book</span><p>${escHtml(latest.selection_rationale || 'Selection rationale unavailable.')}</p></div>

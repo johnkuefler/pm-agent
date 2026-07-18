@@ -147,6 +147,8 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /\/developmental-reading/);
   assert.match(intelligenceJs, /startReadingRoomPolling/);
   assert.match(intelligenceJs, /Provider-bound autonomous selection/);
+  assert.match(intelligenceJs, /candidate.*frozen/);
+  assert.match(intelligenceJs, /encountered/);
   assert.match(intelligenceJs, /60000/);
   assert.match(html, /id="reading-room-state"/);
   assert.match(html, /data-intelligence-jump="reading-room"/,

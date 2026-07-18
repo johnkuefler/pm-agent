@@ -22,17 +22,34 @@ test('developmental reading clock limits weekday study to off hours but leaves w
   assert.equal(__test.developmentalReadingClock(new Date('2026-07-18T15:00:00Z')).off_hours, true);
 });
 
+test('selection choice ecology is metadata-only and bounded before provider inference', () => {
+  const sources = Array.from({ length: 65 }, (_, index) => ({
+    id: `source-${index}`, title: `Book ${index}`, author: `Author ${index}`,
+    source_kind: 'book', rights_basis: 'public_domain', chunk_count: index + 1,
+    source_url: `https://example.org/${index}`, source_text: `hidden content ${index}`,
+  }));
+  const request = __test.developmentalReadingSelectionRequest(sources);
+  assert.equal(request.candidates.length, 60);
+  assert.equal(request.candidates[0].source_url, undefined);
+  assert.equal(request.candidates[0].source_text, undefined);
+  assert.match(request.candidate_set_commitment, /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(request.body.messages[0].content, /hidden content/);
+});
+
 test('off-hours selection lets Nora choose or abstain from metadata before any source text is read', async () => {
   const source = { id: 'reading-source-runtime', title: 'A Serious Book', author: 'An Author',
     source_kind: 'book', rights_basis: 'public_domain', chunk_count: 2 };
+  const alternative = { id: 'reading-source-alternative', title: 'A Different Book',
+    author: 'Another Author', source_kind: 'book', rights_basis: 'public_domain', chunk_count: 8 };
   const started = [];
   const store = {
     developmentalReadingSnapshot: () => ({ report: { active_sessions: 0 },
-      availability: { state: 'between_encounters' }, sources: [source], sessions: [] }),
+      availability: { state: 'between_encounters' }, sources: [source, alternative], sessions: [] }),
     startReadingSession: (sourceId, input) => {
       started.push({ sourceId, input });
       return { id: 'selected-session', source_id: sourceId,
-        selection_mode: 'provider_bound_autonomous' };
+        selection_mode: 'provider_bound_autonomous',
+        selection_candidates: input.selection_candidates };
     },
   };
   const result = await __test.runDevelopmentalReadingSelectionRuntime({ force: true, store,
@@ -54,6 +71,9 @@ test('off-hours selection lets Nora choose or abstain from metadata before any s
   assert.equal(started[0].input.selected_by, 'Nora');
   assert.match(started[0].input.selection_provider_receipt.request_commitment, /^[a-f0-9]{64}$/);
   assert.match(started[0].input.selection_provider_receipt.selection_commitment, /^[a-f0-9]{64}$/);
+  assert.match(started[0].input.selection_provider_receipt.candidate_set_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(started[0].input.selection_candidates.length, 2);
+  assert.equal(result.candidate_count, 2);
 
   started.length = 0;
   const abstained = await __test.runDevelopmentalReadingSelectionRuntime({ force: true, store,
