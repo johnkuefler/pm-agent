@@ -563,7 +563,9 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       ? 'contradicted' : 'inconclusive';
   const dreamInsightEvidence = options.dream_insight_evidence || {
     total_candidates_and_resolutions: 0, independently_supported: 0,
-    replay_verified_supported: 0, source_dreams: 0, insight_ids: [],
+    replay_verified_supported: 0, prospectively_windowed_candidates_and_resolutions: 0,
+    window_eligible_candidates: 0, legacy_unbounded_candidates_and_resolutions: 0,
+    source_dreams: 0, insight_ids: [],
   };
   const aimReappraisalEvidence = options.aim_reappraisal_evidence || {
     attempts: 0, retained: 0, revised: 0, retired: 0, abstained: 0,
@@ -1245,7 +1247,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'grounded_insight_synthesis', family: ['creative cognition', 'self-model', 'global workspace', 'metacognition'],
       functional_claim: 'Nora can form a recurring, evidence-grounded work synthesis across separate reflection episodes, preserve whether the recorded synthesis is bound to Nora\'s verified lifecycle or identity-withheld, and use it to improve real PM decisions beyond the same raw source ideas.',
-      mechanism: 'Once per new dream, a background-only Claude pass receives a frozen packet of exact content-committed ideas from date-separated reflections and current candidates, then forms at most one recurring actionable insight or explicitly abstains. Protocol v3 separates current-dream and earlier ideas into role-specific arrays; the model selects short schema-bounded ordinals and the server deterministically restores exact committed IDs, preventing brittle long-ID copying without weakening provenance. Its provider packet, response, selected source commitments, usefulness prediction, passive next observation, and falsifier must replay; live Slack or Zoom preempts the pass, and newly earned insight readback is sealed during every active context trial. Later resolution requires stable evidence and separately authenticated review. Replay-valid supported insights can enter ordinary PM context. A three-arm Slack lesion compares Nora-bound synthesis, byte-identical identity-withheld synthesis, and the exact source ideas without synthesis under independent grading.',
+      mechanism: 'Once per new dream, a background-only Claude pass receives a frozen packet of exact content-committed ideas from date-separated reflections and current candidates, then forms at most one recurring actionable insight or explicitly abstains. Protocol v4 preserves v3 role-separated ordinal provenance while also preregistering a fixed passive observation window, a minimum natural-opportunity count, and an operational definition before outcomes exist. The server deterministically restores exact committed source IDs, expands and binds the observation window at formation, rejects favorable early stopping, and requires the committed opportunity minimum for supported or contradicted conclusions. Historical protocol-v1/v2/v3 candidates remain replay-valid and are explicitly reported as legacy unbounded. The provider packet, response, selected source commitments, usefulness prediction, passive next observation, observation plan, and falsifier must replay; live Slack or Zoom preempts the pass, and newly earned insight readback is sealed during every active context trial. Later resolution requires stable evidence and separately authenticated review. Replay-valid supported insights can enter ordinary PM context. A three-arm Slack lesion compares Nora-bound synthesis, byte-identical identity-withheld synthesis, and the exact source ideas without synthesis under independent grading.',
       status: dreamInsightTrial ? replicatedStatus(dreamInsightTrials, dreamInsightVerdict)
         : dreamInsightEvidence.replay_verified_supported > 0 ? 'observational_signal_observed'
           : dreamInsightEvidence.total_candidates_and_resolutions > 0
@@ -1258,8 +1260,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         latest_synthesis_dissociation: dreamInsightDissociation,
         interpretation: 'This tests useful, provenance-calibrated synthesis across recorded episodes. Even support would not prove independent model authorship, human-like originality, subjective creativity, or phenomenal consciousness.',
       },
-      falsifier: 'Source ideas or commitments no longer replay, an ordinal maps outside its frozen role-specific packet, the synthesis was not independently supported, it cannot improve application and decision reframing beyond the exact raw ideas, identity binding distorts utility, provenance is misattributed, active-study prompts receive newly changing insight context, or first-order PM quality degrades.',
-      next_gate: 'Naturally accumulate at least two independently supported source-diverse insights, then complete a ten-per-arm synthesis-versus-sources pilot and an insight- and source-dream-disjoint confirmation.',
+      falsifier: 'Source ideas or commitments no longer replay, an ordinal maps outside its frozen role-specific packet, a prospective result resolves before its committed window or below its opportunity minimum, the synthesis was not independently supported, it cannot improve application and decision reframing beyond the exact raw ideas, identity binding distorts utility, provenance is misattributed, active-study prompts receive newly changing insight context, or first-order PM quality degrades.',
+      next_gate: 'Naturally accumulate at least two independently supported, prospectively windowed, source-diverse insights, then complete a ten-per-arm synthesis-versus-sources pilot and an insight- and source-dream-disjoint confirmation.',
     },
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],

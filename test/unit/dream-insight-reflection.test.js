@@ -40,6 +40,10 @@ test('background dream reflection forms one replay-bound candidate and never ret
       expected_usefulness: 'This should expose cross-owner launch blockers before a deliverable reaches handoff.',
       falsification_criteria: ['Two launches pass separate checks without late navigation or content blockers.'],
       next_observation: 'Observe the next launch handoff and record whether a joint checkpoint finds a blocker.',
+      observation_plan: {
+        window_days: 7, minimum_opportunities: 2,
+        opportunity_definition: 'One naturally occurring launch handoff with a recorded readiness outcome.',
+      },
       source_dream_idea_ordinal: 0,
       prior_idea_ordinals: [0],
     },
@@ -238,13 +242,13 @@ test('protocol v2 makes current-dream and earlier-idea provenance separate schem
     /structured schema enforces these provenance roles/);
 });
 
-test('protocol v3 selects short role-separated ordinals and deterministically restores exact committed IDs', () => {
+test('protocol v3 receipts preserve short role-separated ordinals after prospective plans are introduced', () => {
   const dreams = fixtureDreams();
   const packet = reflection.packetFor({ dreams, sourceDream: dreams[1] });
-  assert.equal(packet.protocol_version, reflection.PROTOCOL_VERSION);
+  packet.protocol_version = reflection.ORDINAL_PROTOCOL_VERSION;
   assert.deepEqual(packet.source_dream_ideas.map(item => item.ordinal), [0]);
   assert.deepEqual(packet.prior_ideas.map(item => item.ordinal), [0]);
-  const schema = reflection.outputSchema(packet);
+  const schema = reflection.outputSchema(packet, reflection.ORDINAL_PROTOCOL_VERSION);
   const candidateSchema = schema.properties.candidate.anyOf[0];
   assert.deepEqual(candidateSchema.properties.source_dream_idea_ordinal.enum, [0]);
   assert.deepEqual(candidateSchema.properties.prior_idea_ordinals.items.enum, [0]);
@@ -257,16 +261,58 @@ test('protocol v3 selects short role-separated ordinals and deterministically re
       falsification_criteria: ['Repeated launches show no improvement after a joint checkpoint.'],
       next_observation: 'Observe the next handoff for a late blocker.',
       source_dream_idea_ordinal: 0, prior_idea_ordinals: [0],
-    } }, packet);
+    } }, packet, reflection.ORDINAL_PROTOCOL_VERSION);
   assert.equal(normalized.candidate.source_dream_idea_id, packet.source_dream_ideas[0].id);
   assert.deepEqual(normalized.candidate.prior_idea_ids, [packet.prior_ideas[0].id]);
-  assert.deepEqual(reflection.normalizeOutput(normalized, packet), normalized,
+  assert.deepEqual(reflection.normalizeOutput(normalized, packet,
+    reflection.ORDINAL_PROTOCOL_VERSION), normalized,
     'normalized ordinal output must remain replay-stable inside a generation receipt');
   assert.throws(() => reflection.normalizeOutput({ ...normalized,
-    candidate: { ...normalized.candidate, source_dream_idea_ordinal: 99 } }, packet),
+    candidate: { ...normalized.candidate, source_dream_idea_ordinal: 99 } }, packet,
+  reflection.ORDINAL_PROTOCOL_VERSION),
   /ordinals must bind/);
-  assert.match(reflection.requestFor(packet).request.system,
+  assert.match(reflection.systemPrompt(reflection.ORDINAL_PROTOCOL_VERSION),
     /Never copy or invent a long source ID/);
+  const manifest = reflection.buildManifest(packet, reflection.DEFAULT_MODEL,
+    reflection.ORDINAL_PROTOCOL_VERSION);
+  const receipt = {
+    protocol_version: reflection.ORDINAL_PROTOCOL_VERSION,
+    source_selection_protocol_version: reflection.SOURCE_SELECTION_PROTOCOL_VERSION,
+    transport: 'server_direct_subject_dream_reflection', provider: 'anthropic',
+    model: reflection.DEFAULT_MODEL, response_id: 'msg-v3-insight', stop_reason: 'end_turn',
+    prompt_protocol_commitment: manifest.prompt_protocol_commitment,
+    source_packet: packet, source_packet_commitment: manifest.source_packet_commitment,
+    output: normalized, output_commitment: reflection.commitment(normalized),
+    external_reference: { type: 'server_direct_provider_response', id: 'msg-v3-insight' },
+    input_tokens: 500, output_tokens: 120,
+  };
+  receipt.receipt_commitment = reflection.commitment(reflection.receiptPayload(receipt));
+  assert.equal(reflection.auditReceipt(receipt).complete_chain_verified, true);
+});
+
+test('protocol v4 binds a prospective passive observation plan before outcomes exist', () => {
+  const dreams = fixtureDreams();
+  const packet = reflection.packetFor({ dreams, sourceDream: dreams[1] });
+  const schema = reflection.outputSchema(packet);
+  const candidateSchema = schema.properties.candidate.anyOf[0];
+  assert.deepEqual(candidateSchema.required.includes('observation_plan'), true);
+  assert.equal(candidateSchema.properties.observation_plan.properties.window_days.minimum, 2);
+  const normalized = reflection.normalizeOutput({ decision: 'form', abstention_reason: null,
+    candidate: {
+      statement: 'A joint readiness checkpoint should precede launch handoffs.', scope: 'process',
+      confidence: 0.5, rationale: 'Two exact nightly ideas point to the same process intervention.',
+      expected_usefulness: 'It should surface cross-owner blockers earlier.',
+      falsification_criteria: ['Repeated launches show no improvement after a joint checkpoint.'],
+      next_observation: 'Observe ordinary launch handoffs for a late blocker.',
+      observation_plan: { window_days: 7, minimum_opportunities: 2,
+        opportunity_definition: 'One naturally occurring launch handoff with a recorded blocker outcome.' },
+      source_dream_idea_ordinal: 0, prior_idea_ordinals: [0],
+    } }, packet);
+  assert.deepEqual(normalized.candidate.observation_plan, {
+    window_days: 7, minimum_opportunities: 2,
+    opportunity_definition: 'One naturally occurring launch handoff with a recorded blocker outcome.',
+  });
+  assert.match(reflection.systemPrompt(), /reject favorable early stopping/);
 });
 
 test('protocol v1 generation receipts remain replay-verifiable after later provenance contracts', () => {

@@ -9,7 +9,7 @@ const { commitment, dreamInsights, insightAudit, validEvidenceRefs } = dreamInsi
 function registerDreamRoutes(app, deps) {
   const { requireAuth, requireEvaluatorAuth = requireAuth, loadDreams, saveDreams,
     listExperiments = () => [], dreamInsightStudyActive = () => false,
-    MAX_DREAMS_KEPT, onDream } = deps;
+    MAX_DREAMS_KEPT, onDream, clock = () => new Date() } = deps;
   const sealed = res => res.status(423).json({
     error: 'dream insight access is sealed during an active blinded synthesis study',
     experimental_access_sealed: true,
@@ -58,7 +58,9 @@ function registerDreamRoutes(app, deps) {
     const dreams = loadDreams();
     const status = String(req.query.status || '').trim();
     const allInsights = dreamInsights(dreams)
-      .map(({ dream, insight }) => ({ ...insight, anchor_dream_id: dream.id, audit: insightAudit(insight, dreams) }))
+      .map(({ dream, insight }) => ({ ...insight, anchor_dream_id: dream.id,
+        resolution_eligibility: dreamInsight.resolutionEligibility(insight, clock()),
+        audit: insightAudit(insight, dreams) }))
       .sort((a, b) => String(b.formed_at).localeCompare(String(a.formed_at)));
     const insights = allInsights.filter(insight => !status || insight.status === status);
     res.json({
@@ -75,6 +77,10 @@ function registerDreamRoutes(app, deps) {
         retired: allInsights.filter(insight => insight.status === 'retired').length,
         integrity_valid: allInsights.filter(insight => insight.audit.complete_chain_verified).length,
         final_evidence_eligible: allInsights.filter(insight => insight.audit.final_evidence_eligible).length,
+        prospectively_windowed: allInsights.filter(insight => insight.audit.observation_plan_present).length,
+        window_eligible_candidates: allInsights.filter(insight => insight.status === 'candidate'
+          && insight.resolution_eligibility.eligible).length,
+        legacy_unbounded: allInsights.filter(insight => insight.audit.observation_protocol === 'legacy_unbounded').length,
       },
     });
   });
@@ -83,7 +89,9 @@ function registerDreamRoutes(app, deps) {
     if (dreamInsightStudyActive()) return sealed(res);
     try {
       const dreams = loadDreams();
-      const { insight, anchor } = dreamInsightFormation.createCandidate({ dreams, input: req.body || {} });
+      const { insight, anchor } = dreamInsightFormation.createCandidate({
+        dreams, input: req.body || {}, now: clock(),
+      });
       saveDreams(dreams);
       res.json({ ok: true, insight: { ...insight, anchor_dream_id: anchor.id, audit: insightAudit(insight, dreams) } });
     } catch (error) { res.status(400).json({ error: error.message }); }
@@ -105,11 +113,34 @@ function registerDreamRoutes(app, deps) {
         || !validEvidenceRefs(body.evidence)) {
         throw new Error('outcome, observation, and stable evidence are required');
       }
+      const now = clock();
+      const eligibility = dreamInsight.resolutionEligibility(found.insight, now, body.outcome);
+      if (!eligibility.eligible) {
+        throw new Error(`dream insight resolution is not eligible: ${eligibility.reason}${eligibility.resolve_not_before
+          ? ` until ${eligibility.resolve_not_before}` : ''}`);
+      }
+      const observationPlan = found.insight.formation_record?.observation_plan || null;
+      const opportunitiesObserved = Number(body.opportunities_observed);
+      if (observationPlan && body.outcome !== 'retired') {
+        if (!Number.isInteger(opportunitiesObserved) || opportunitiesObserved < 0
+          || opportunitiesObserved > 10000) {
+          throw new Error('prospective dream insight resolution requires integer opportunities_observed');
+        }
+        if (['supported', 'contradicted'].includes(body.outcome)
+          && opportunitiesObserved < observationPlan.minimum_opportunities) {
+          throw new Error(`supported or contradicted resolution requires at least ${observationPlan.minimum_opportunities} observed opportunities`);
+        }
+      }
       const resolutionRecord = {
         formation_commitment: found.insight.formation_commitment, outcome: body.outcome,
         observation: String(body.observation).trim().slice(0, 1600), evidence: body.evidence.slice(0, 20),
         confounds: Array.isArray(body.confounds) ? body.confounds.map(String).slice(0, 10) : [],
-        resolved_at: new Date().toISOString(),
+        ...(observationPlan ? {
+          observation_plan_commitment: commitment(observationPlan),
+          ...((body.outcome !== 'retired' || Number.isInteger(opportunitiesObserved))
+            ? { opportunities_observed: opportunitiesObserved } : {}),
+        } : {}),
+        resolved_at: new Date(now).toISOString(),
       };
       found.insight.status = body.outcome === 'retired' ? 'retired' : 'awaiting_independent_review';
       found.insight.resolution_record = resolutionRecord;
@@ -130,10 +161,12 @@ function registerDreamRoutes(app, deps) {
         expected_usefulness: insight.formation_record.expected_usefulness,
         falsification_criteria: insight.formation_record.falsification_criteria,
         next_observation: insight.formation_record.next_observation,
+        observation_plan: insight.formation_record.observation_plan || null,
         subject_observation: {
           observation: insight.resolution_record.observation,
           evidence: insight.resolution_record.evidence,
           confounds: insight.resolution_record.confounds,
+          opportunities_observed: insight.resolution_record.opportunities_observed ?? null,
           resolved_at: insight.resolution_record.resolved_at,
         },
         formation_commitment: insight.formation_commitment,
@@ -162,7 +195,7 @@ function registerDreamRoutes(app, deps) {
         subject_outcome: found.insight.resolution_record.outcome,
         subject_agreement: body.outcome === found.insight.resolution_record.outcome,
         rationale: String(body.rationale).trim().slice(0, 1600), evidence: body.evidence.slice(0, 20),
-        reviewed_at: new Date().toISOString(),
+        reviewed_at: new Date(clock()).toISOString(),
       };
       found.insight.independent_review = review;
       found.insight.independent_review_commitment = commitment(review);
@@ -180,7 +213,7 @@ function registerDreamRoutes(app, deps) {
   app.post('/dreams', requireAuth, (req, res) => {
     if (dreamInsightStudyActive()) return sealed(res);
     const body = req.body || {};
-    const now = new Date().toISOString();
+    const now = new Date(clock()).toISOString();
     const dream = {
       id: body.id || `dream-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
       date: body.date || now.split('T')[0],

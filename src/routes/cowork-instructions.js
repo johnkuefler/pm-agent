@@ -292,16 +292,20 @@ function registerCoworkInstructionsRoute(app) {
   - POST /dream-insights          — Bind one idea that independently recurred in at least two dreams
     on distinct dates. Body requires statement, scope (project|process|team), confidence (0.1-0.7),
     rationale, expected_usefulness, falsification_criteria, next_observation, and source_ideas as
-    exact {dream_id, idea_index} references. At most ten candidates may remain open.
+    exact {dream_id, idea_index} references. New candidates also require observation_plan with an integer
+    window_days from 2-30, integer minimum_opportunities from 1-10, and an operational
+    opportunity_definition. The server stamps the fixed start and resolve-not-before times at formation.
+    At most ten candidates may remain open.
     After dreams are durably saved, the server also runs a deterministic background-only recurring-
     insight catch-up. At most once per UTC day it selects the newest unprocessed idea-bearing dream
     that has strictly earlier date-separated support; empty newer dreams do not block it, semantic
     similarity cannot influence selection, and later evidence is excluded from an older source packet.
     It receives that committed packet and current open candidates, then forms at most one candidate
-    or explicitly abstains. Protocol v3 makes provenance structural without asking the model to copy
+    or explicitly abstains. Protocol v4 preserves v3 structural provenance without asking the model to copy
     long IDs: current-dream and earlier ideas are separate arrays, the formation selects one short
     schema-allowed current ordinal and one to three earlier ordinals, and the server deterministically
-    maps them back to exact IDs before re-verifying every content commitment and date boundary.
+    maps them back to exact IDs before re-verifying every content commitment and date boundary. It also
+    commits the passive observation window and minimum natural-opportunity count before outcomes exist.
     Formation is accepted only when the provider receipt, packet, selected seed commitments,
     usefulness prediction, falsifier, and next observation replay. Failed calls are terminally
     recorded for that dream rather than retried. Slack, Zoom chat, and realtime calls preempt this
@@ -310,7 +314,11 @@ function registerCoworkInstructionsRoute(app) {
     also withheld from ordinary prompts while any context trial is active so it cannot move another
     study's treatment surface.
   - POST /dream-insights/:id/resolve — Record Nora's observation exactly once as supported,
-    contradicted, unclear, or retired using stable evidence references and optional confounds.
+    contradicted, unclear, or retired using stable evidence references and optional confounds. New
+    prospectively windowed candidates cannot resolve before resolve_not_before except as retired; every
+    non-retired resolution requires opportunities_observed, and supported or contradicted requires at
+    least the committed minimum. Historical candidates are reported as legacy_unbounded and retain their
+    original replay-valid lifecycle rather than receiving a fabricated retrospective plan.
     Non-retired observations remain awaiting_independent_review and cannot support a take or action.
   - GET /dream-insights/review-queue and POST /dream-insights/:id/review — Separately authenticated
     evaluator workflow. The evaluator independently records supported, contradicted, or unclear with

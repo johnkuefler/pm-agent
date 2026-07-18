@@ -985,6 +985,8 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
     expected_usefulness: 'Earlier handoff checks could reduce avoidable project stalls.',
     falsification_criteria: ['The next three independently observed gaps occur in unrelated phases.'],
     next_observation: 'Passively classify the phase of the next naturally reported handoff gap.',
+    observation_plan: { window_days: 7, minimum_opportunities: 3,
+      opportunity_definition: 'One naturally reported handoff gap whose delivery phase is recorded.' },
     source_ideas: [{ dream_id: dream.body.dream.id, idea_index: 0 }, { dream_id: laterDream.body.dream.id, idea_index: 0 }],
   } });
   assert.equal(insight.response.status, 200);
@@ -996,30 +998,30 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
     rationale: 'This is an attempted duplicate of the same still-open candidate.',
     expected_usefulness: 'It should not create a second open record.',
     falsification_criteria: ['A duplicate is accepted.'], next_observation: 'No new observation.',
+    observation_plan: { window_days: 7, minimum_opportunities: 3,
+      opportunity_definition: 'One naturally reported handoff gap whose delivery phase is recorded.' },
     source_ideas: [{ dream_id: dream.body.dream.id, idea_index: 0 }, { dream_id: laterDream.body.dream.id, idea_index: 0 }],
   } })).response.status, 400);
-  const resolvedInsight = await request(`/dream-insights/${insight.body.insight.id}/resolve`, { method: 'POST', body: {
+  const earlyResolution = await request(`/dream-insights/${insight.body.insight.id}/resolve`, { method: 'POST', body: {
     outcome: 'supported', observation: 'A later independently recorded handoff gap occurred in the same delivery phase.',
-    evidence: [{ type: 'decision_trace', id: 'handoff-gap-trace-3' }], confounds: ['Small observational sample'],
+    opportunities_observed: 3, evidence: [{ type: 'decision_trace', id: 'handoff-gap-trace-3' }],
+    confounds: ['Small observational sample'],
   } });
-  assert.equal(resolvedInsight.body.insight.status, 'awaiting_independent_review');
-  assert.equal(resolvedInsight.body.insight.audit.resolution_verified, true);
+  assert.equal(earlyResolution.response.status, 400);
+  assert.match(earlyResolution.body.error, /observation_window_open/);
+  const retiredInsight = await request(`/dream-insights/${insight.body.insight.id}/resolve`, { method: 'POST', body: {
+    outcome: 'retired', observation: 'The integration fixture retires this still-open prospective record.',
+    evidence: [{ type: 'decision_trace', id: 'handoff-gap-retirement' }],
+  } });
+  assert.equal(retiredInsight.body.insight.status, 'retired');
+  assert.equal(retiredInsight.body.insight.audit.resolution_verified, true);
   assert.equal((await request('/dream-insights/review-queue')).response.status, 401);
   const insightReviewQueue = await request('/dream-insights/review-queue', { headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' } });
-  assert.equal(insightReviewQueue.body.insights[0].id, insight.body.insight.id);
-  assert.equal(insightReviewQueue.body.insights[0].subject_resolution, undefined);
-  assert.equal(insightReviewQueue.body.insights[0].subject_observation.outcome, undefined);
-  const reviewedInsight = await request(`/dream-insights/${insight.body.insight.id}/review`, { method: 'POST',
-    headers: { 'X-Nora-Evaluator-Key': 'integration-evaluator-a-key' }, body: {
-      outcome: 'supported', rationale: 'The cited trace independently supports the preregistered phase relation.',
-      evidence: [{ type: 'independent_review', id: 'handoff-gap-review-3' }],
-    } });
-  assert.equal(reviewedInsight.body.insight.status, 'independently_supported');
-  assert.equal(reviewedInsight.body.insight.audit.independent_review_verified, true);
-  assert.equal(reviewedInsight.body.insight.audit.final_evidence_eligible, true);
+  assert.equal(insightReviewQueue.body.insights.length, 0);
   const insightReport = (await request('/dream-insights')).body.report;
-  assert.equal(insightReport.independently_supported, 1);
-  assert.equal(insightReport.final_evidence_eligible, 1);
+  assert.equal(insightReport.prospectively_windowed, 1);
+  assert.equal(insightReport.retired, 1);
+  assert.equal(insightReport.final_evidence_eligible, 0);
   assert.equal((await request(`/dreams/${dream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
   const invalidated = (await request('/dream-insights')).body.insights.find(item => item.id === insight.body.insight.id);
   assert.equal(invalidated.audit.source_ideas_verified, false);

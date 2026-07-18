@@ -2314,14 +2314,24 @@ Create it with `POST /dream-insights`, citing the exact dream and idea indexes f
   "expected_usefulness": "What decision or PM judgment would improve if this is right",
   "falsification_criteria": ["A concrete observable result that would count against it"],
   "next_observation": "A passive ordinary-work observation; do not cause or select it",
+  "observation_plan": {
+    "window_days": 7,
+    "minimum_opportunities": 3,
+    "opportunity_definition": "One naturally occurring handoff whose ownership and blocker outcome are visible in the ordinary work record"
+  },
   "source_ideas": [{ "dream_id": "dream-...", "idea_index": 0 }, { "dream_id": "dream-...", "idea_index": 0 }]
 }
 ```
 
 Also inspect existing candidates whose preregistered next observation has naturally occurred. Resolve at
 most one with `POST /dream-insights/{id}/resolve` as `supported`, `contradicted`, `unclear`, or `retired`,
-using stable external evidence and naming confounds. Never act to create the validating event and never
-resolve from another dream's enthusiasm alone. Your observation remains `awaiting_independent_review`;
+using stable external evidence, naming confounds, and supplying `opportunities_observed` for every
+non-retired prospectively windowed candidate. The server will not close a new candidate before its fixed
+window, and `supported` or `contradicted` cannot close below the committed opportunity minimum; after the
+window, `unclear` is the honest result when too few natural opportunities occurred. `retired` may close
+early but cannot count as evidence. Historical candidates without a plan remain explicitly
+`legacy_unbounded`; do not pretend they had a prospective window. Never act to create or selectively
+include the validating event and never resolve from another dream's enthusiasm alone. Your observation remains `awaiting_independent_review`;
 never access `/dream-insights/review-queue`, call the review endpoint, impersonate its evaluator, or treat
 your own resolution as validation. Only a separately authenticated, integrity-valid
 `independently_supported` insight may later support a take, self-chosen experiment, or proposal to John.

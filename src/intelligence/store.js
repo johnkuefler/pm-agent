@@ -1450,6 +1450,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const supported = records.filter(({ insight }) => insight?.status === 'independently_supported');
     const eligible = supported.filter(({ insight }) =>
       dreamInsight.insightAudit(insight, dreams).final_evidence_eligible);
+    const prospective = records.filter(({ insight }) =>
+      dreamInsight.insightAudit(insight, dreams).observation_plan_present);
+    const legacyUnbounded = records.filter(({ insight }) =>
+      dreamInsight.insightAudit(insight, dreams).observation_protocol === 'legacy_unbounded');
+    const windowEligible = prospective.filter(({ insight }) => insight.status === 'candidate'
+      && dreamInsight.resolutionEligibility(insight, clock()).eligible);
     return {
       total_candidates_and_resolutions: records.length,
       independently_supported: supported.length,
@@ -1460,6 +1466,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       replay_verified_synthesis_attempts: reflectionStatus.report.replay_verified,
       synthesis_abstentions: reflectionStatus.report.abstained,
       synthesis_failures: reflectionStatus.report.failed_closed,
+      prospectively_windowed_candidates_and_resolutions: prospective.length,
+      window_eligible_candidates: windowEligible.length,
+      legacy_unbounded_candidates_and_resolutions: legacyUnbounded.length,
       source_dreams: new Set(eligible.flatMap(({ insight }) =>
         (insight.formation_record?.source_ideas || []).map(source => source.dream_id))).size,
       insight_ids: eligible.map(({ insight }) => insight.id),

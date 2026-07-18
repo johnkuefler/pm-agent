@@ -54,6 +54,7 @@ function createCandidate({ dreams = [], input = {}, now = new Date(),
     throw new Error('an open dream insight candidate already has this statement');
   }
   const formedAt = new Date(now).toISOString();
+  const observationPlan = dreamInsight.normalizeObservationPlan(input.observation_plan, formedAt);
   const id = cleanText(input.id, 300)
     || `dream-insight-${new Date(now).getTime()}-${crypto.randomBytes(2).toString('hex')}`;
   if (existing.some(insight => insight.id === id)) throw new Error('dream insight id already exists');
@@ -61,12 +62,14 @@ function createCandidate({ dreams = [], input = {}, now = new Date(),
     id, statement, scope: input.scope, confidence,
     rationale, expected_usefulness: expectedUsefulness,
     falsification_criteria: falsificationCriteria, next_observation: nextObservation,
+    observation_plan: observationPlan,
     source_ideas: sourceIdeas, provenance_claim: cleanText(provenanceClaim, 160), formed_at: formedAt,
     ...(generationReceipt ? { generation_receipt_commitment: generationReceipt.receipt_commitment } : {}),
   };
   const insight = {
     id, statement: formationRecord.statement, scope: formationRecord.scope, confidence,
     status: 'candidate', formed_at: formedAt, formation_record: formationRecord,
+    observation_plan: observationPlan,
     formation_commitment: dreamInsight.commitment(formationRecord),
     ...(generationReceipt ? { generation_receipt: JSON.parse(JSON.stringify(generationReceipt)) } : {}),
     resolution_record: null, resolution_commitment: null,
