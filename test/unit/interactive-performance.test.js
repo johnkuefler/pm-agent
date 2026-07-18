@@ -104,7 +104,7 @@ test('live server opts into complete Slack trials but never globally enables sec
     'optional Slack thread context must lose quickly to the live reply path');
   assert.match(server, /Slack linked-page enrichment'\)/,
     'optional linked-page enrichment must lose quickly to the live reply path');
-  assert.ok(server.includes("const linkedText = fetched.join('\\n\\n---\\n\\n').slice(0, 6000);"),
+  assert.ok(server.includes("const linkedText = fetched.join('\\n\\n---\\n\\n').slice(0, 1500);"),
     'multiple links must share one bounded live-prompt excerpt');
   assert.match(server, /const attachLiveTools = !lightweightSocial/,
     'bounded Slack social turns must omit irrelevant live-tool schemas');

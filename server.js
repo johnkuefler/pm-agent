@@ -1320,14 +1320,14 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, pro
 }
 
 const INTERACTIVE_INTELLIGENCE_BUDGET_CHARS = Object.freeze({
-  slack: 5500,
-  'zoom-chat': 5500,
-  realtime: 6000,
+  slack: 4000,
+  'zoom-chat': 4000,
+  realtime: 4000,
 });
 const INTERACTIVE_MEMORY_BUDGET_CHARS = Object.freeze({
-  slack: 3500,
-  'zoom-chat': 3500,
-  realtime: 4000,
+  slack: 2500,
+  'zoom-chat': 2500,
+  realtime: 3000,
 });
 const RECENT_ACTIVITY_BUDGET_CHARS = 1500;
 const RECENT_ACTIVITY_MAX_PER_DAY = 12;
@@ -1525,7 +1525,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // ~2,000 memories into every reply, most irrelevant to the conversation). With relevance
   // ranking below, the budget keeps the most-relevant projects and drops the long tail.
   const memoryCharBudget = latencyCritical
-    ? (INTERACTIVE_MEMORY_BUDGET_CHARS[experimentalSurface] || 3500)
+    ? (INTERACTIVE_MEMORY_BUDGET_CHARS[experimentalSurface] || 2500)
     : (isRealtime ? 20000 : 18000);
   const maxTranscriptLines = isRealtime ? 10 : 30;
 
@@ -1691,7 +1691,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // whole large prompt a cache miss. Preserve the exact context, but attach it below as volatile.
   const volatileIntelligenceContext = latencyCritical
     ? compactInteractiveIntelligenceContext(intelligenceContext,
-      INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 5500)
+      INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000)
     : (intelligenceContext || '');
   promptDiagnostics.intelligence_raw_chars = String(intelligenceContext || '').length;
   promptDiagnostics.intelligence_live_chars = volatileIntelligenceContext.length;
@@ -1949,10 +1949,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // dropped, matched on meaning rather than shared words. Empty when the DB is off / nothing
   // embedded yet, so this silently no-ops back to the keyword behavior.
   if (Array.isArray(opts.semanticMemories) && opts.semanticMemories.length > 0) {
-    const semanticLines = opts.semanticMemories.slice(0, 8)
-      .map(m => `- ${String(m.fact || '').replace(/\s+/g, ' ').slice(0, 280)}${m.project ? ` (${m.project})` : ''}`)
+    const semanticLines = opts.semanticMemories.slice(0, 6)
+      .map(m => `- ${String(m.fact || '').replace(/\s+/g, ' ').slice(0, 180)}${m.project ? ` (${m.project})` : ''}`)
       .join('\n');
-    volatile += `\n\n[Semantically relevant memory]\n${semanticLines.slice(0, 2000)}`;
+    volatile += `\n\n[Semantically relevant memory]\n${semanticLines.slice(0, 1200)}`;
   }
 
   // [Who you're talking to right now] — pre-conversation identity injection from the entry
@@ -6154,7 +6154,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         return c ? `URL: ${u}\n${c}` : null;
       })), 2200, [], 'Slack linked-page enrichment')).filter(Boolean);
       if (fetched.length) {
-        const linkedText = fetched.join('\n\n---\n\n').slice(0, 6000);
+        const linkedText = fetched.join('\n\n---\n\n').slice(0, 1500);
         urlBlock = `\n\n[Linked web pages, fetched live]\n${linkedText}\n\nUse this content directly. Retrieve with a live tool if the needed portion was outside this bounded excerpt.`;
       }
     }
@@ -7606,7 +7606,7 @@ app.get('/admin/prompt-envelope', requireAuth, (req, res) => {
     sideEffectFree: true,
     situationalAffordanceFrame,
   });
-  const linkedContentReserve = surface === 'slack' ? 6150 : 0;
+  const linkedContentReserve = surface === 'slack' ? 1650 : 0;
   const projectedLinkedTotal = prompt.diagnostics.total_chars + linkedContentReserve;
   res.json({ ...prompt.diagnostics, linked_content_reserve_chars: linkedContentReserve,
     projected_linked_total_chars: projectedLinkedTotal,
