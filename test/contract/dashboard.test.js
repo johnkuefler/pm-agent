@@ -165,3 +165,24 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(brainJs, /noraBrainVisibilityObserver/);
   assert.match(brainJs, /time - noraBrainLastDraw >= 40/);
 });
+
+test('intelligence detail is divided into bounded human-readable views', () => {
+  const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  const intelligenceCss = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
+  const expectedViews = ['overview', 'learning', 'self', 'research', 'history'];
+  const viewButtons = [...html.matchAll(/data-intelligence-view-button="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(viewButtons, expectedViews);
+  assert.match(html, /id="page-intelligence" class="page" data-active-view="overview"/);
+  assert.match(html, /id="intelligence-at-a-glance"/);
+  assert.match(intelligenceJs, /function setIntelligenceView\(name, \{ load = true \} = \{\}\)/);
+  assert.match(intelligenceJs, /intelligenceViews\[view\]\.sections\.forEach/,
+    'switching rooms should load only the selected bounded group');
+  assert.match(intelligenceCss, /#page-intelligence>\[data-intelligence-view\]\{display:none!important\}/);
+
+  const sections = [...html.matchAll(/data-intelligence-view="([^"]+)" data-intelligence-section="([^"]+)"/g)]
+    .map(([, view, section]) => ({ view, section }));
+  assert.equal(sections.length, 16);
+  assert.ok(sections.every(({ view }) => expectedViews.includes(view)));
+  assert.equal(new Set(sections.map(({ section }) => section)).size, sections.length,
+    'every detail section should belong to exactly one room');
+});

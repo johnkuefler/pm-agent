@@ -4,8 +4,28 @@ let intelligenceLoadToken = 0;
 let playroomPollTimer = null;
 let playroomLastBoard = null;
 let readingRoomPollTimer = null;
+let activeIntelligenceView = 'overview';
 const intelligenceLoadedSections = new Set();
 const intelligenceSectionPromises = new Map();
+
+const intelligenceViews = Object.freeze({
+  overview: { title: 'Nora right now',
+    description: 'The few signals that explain her current state and activity.', sections: [] },
+  learning: { title: 'Learning and stimulation',
+    description: 'Books, play, and the functional state shaping what Nora notices and practices.',
+    sections: ['reading-room', 'playroom', 'cognition'] },
+  self: { title: 'Self and behavior',
+    description: 'What Nora claims about herself and whether those claims predict observable behavior.',
+    sections: ['self-model', 'attention', 'agency', 'interoception', 'experience'] },
+  research: { title: 'Research evidence',
+    description: 'Blinded studies, boundary tests, falsifiers, and integrity receipts.',
+    sections: ['research', 'boundary'] },
+  history: { title: 'History and follow-through',
+    description: 'Promises, cycles, relationships, experiments, and recent decisions over time.',
+    sections: ['orientation', 'commitments', 'episodes', 'relationships', 'experiments', 'traces'] },
+});
+const intelligenceSectionViews = Object.fromEntries(Object.entries(intelligenceViews)
+  .flatMap(([view, config]) => config.sections.map(section => [section, view])));
 
 const intelligenceSectionTargets = {
   cognition: ['cognition-state'], 'reading-room': ['reading-room-state'], playroom: ['playroom-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
@@ -19,6 +39,27 @@ async function intelligenceJson(path, signal) {
   const response = await api(path, { signal });
   if (!response.ok) throw new Error(`${path} returned ${response.status}`);
   return response.json();
+}
+
+function setIntelligenceView(name, { load = true } = {}) {
+  const view = intelligenceViews[name] ? name : 'overview';
+  activeIntelligenceView = view;
+  const page = document.getElementById('page-intelligence');
+  if (!page) return;
+  page.dataset.activeView = view;
+  page.querySelectorAll('[data-intelligence-view-button]').forEach(button => {
+    const active = button.dataset.intelligenceViewButton === view;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  const title = document.getElementById('intelligence-view-title');
+  const description = document.getElementById('intelligence-view-description');
+  if (title) title.textContent = intelligenceViews[view].title;
+  if (description) description.textContent = intelligenceViews[view].description;
+  if (load && page.classList.contains('active')) {
+    intelligenceViews[view].sections.forEach(section =>
+      loadIntelligenceSection(section, intelligenceLoadToken));
+  }
 }
 
 function resetIntelligenceSection(name) {
@@ -79,16 +120,19 @@ async function loadIntelligence() {
   document.getElementById('intelligence-stats').innerHTML = '<div class="intelligence-loading-state"><span>Loading Nora\'s current functional state.</span></div>';
   document.getElementById('bench-status').textContent = 'Evaluation status loading independently.';
   document.getElementById('brain-stage')?.classList.add('brain-loading');
+  setIntelligenceView(activeIntelligenceView, { load: false });
 
   try {
     const summary = await intelligenceJson('/intelligence/dashboard-summary', intelligenceAbortController.signal);
     if (token !== intelligenceLoadToken) return;
     const overview = summary.overview || {};
     document.getElementById('intelligence-stats').innerHTML = [
-      ['Open promises', overview.commitments?.open || 0], ['Episodes', overview.episodes || 0],
-      ['People learned', overview.relationships || 0], ['Active experiments', overview.experiments?.active || 0],
-      ['Experience moments', overview.experience_moments || 0], ['Decision traces', overview.traces || 0],
+      ['Open promises', overview.commitments?.open || 0],
+      ['Active experiments', overview.experiments?.active || 0],
+      ['Experience moments', overview.experience_moments || 0],
+      ['People learned', overview.relationships || 0],
     ].map(([label, value]) => `<div class="intelligence-stat"><strong>${value}</strong><span>${label}</span></div>`).join('');
+    renderIntelligenceGlance(summary);
     renderNoraBrain({ dashboard: summary });
     renderCognitionSummary(summary.cognition || {});
     intelligenceLoadedSections.add('cognition');
@@ -105,6 +149,7 @@ async function loadIntelligence() {
 function openIntelligenceSection(name) {
   if (!intelligenceSectionTargets[name]) return;
   showTab('intelligence');
+  setIntelligenceView(intelligenceSectionViews[name] || 'overview', { load: false });
   const token = intelligenceLoadToken;
   requestAnimationFrame(() => {
     const section = document.querySelector(`[data-intelligence-section="${name}"]`);
@@ -127,7 +172,8 @@ async function loadIntelligenceBench(token) {
 
 function observeIntelligenceSections(token) {
   if (!('IntersectionObserver' in window)) {
-    Object.keys(intelligenceSectionTargets).filter(name => name !== 'cognition').forEach(name => loadIntelligenceSection(name, token));
+    intelligenceViews[activeIntelligenceView].sections
+      .filter(name => name !== 'cognition').forEach(name => loadIntelligenceSection(name, token));
     return;
   }
   intelligenceSectionObserver = new IntersectionObserver(entries => {
@@ -136,9 +182,10 @@ function observeIntelligenceSections(token) {
       loadIntelligenceSection(entry.target.dataset.intelligenceSection, token);
     });
   }, { rootMargin: '240px 0px', threshold: 0.01 });
-  document.querySelectorAll('[data-intelligence-section]').forEach(section => {
-    if (section.dataset.intelligenceSection !== 'cognition') intelligenceSectionObserver.observe(section);
-  });
+  document.querySelectorAll(`#page-intelligence > [data-intelligence-view="${activeIntelligenceView}"][data-intelligence-section]`)
+    .forEach(section => {
+      if (section.dataset.intelligenceSection !== 'cognition') intelligenceSectionObserver.observe(section);
+    });
 }
 
 async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
@@ -487,6 +534,44 @@ function renderPlayroomError() {
   const live = document.getElementById('playroom-live-state');
   if (live) live.textContent = 'Connection interrupted';
   if (target) target.innerHTML = `<div class="playroom-error"><div><strong>Playroom state is temporarily unavailable.</strong><p>The experiment remains on Railway and will continue without this view.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('playroom')">Retry</button></div></div>`;
+}
+
+function renderIntelligenceGlance(summary = {}) {
+  const target = document.getElementById('intelligence-at-a-glance');
+  if (!target) return;
+  const overview = summary.overview || {};
+  const cognition = summary.cognition || {};
+  const workspace = cognition.workspace || {};
+  const appraisal = cognition.appraisal || {};
+  const motivation = cognition.motivation || {};
+  const reading = cognition.developmental_reading || {};
+  const play = cognition.autonomous_play || {};
+  const firstFocus = String(workspace.items?.[0] || 'No single issue is dominating attention.')
+    .replace(/^Expectation violation:\s*/i, '');
+  const stateName = appraisal.label || 'Awaiting a current appraisal';
+  const driveName = motivation.strongest_name
+    ? `${motivation.strongest_name} is the strongest active drive` : 'No dominant drive yet';
+  const learningNow = [
+    reading.active_title ? `Reading ${reading.active_title}` : null,
+    play.active_sessions ? 'A play session is active' : null,
+  ].filter(Boolean);
+  target.innerHTML = `
+    <article class="intelligence-glance-item intelligence-glance-primary">
+      <span>Current state</span><strong>${escHtml(stateName)}</strong>
+      <p>${escHtml(driveName)}.</p>
+    </article>
+    <article class="intelligence-glance-item">
+      <span>What has attention</span><strong>${workspace.used || 0} of ${workspace.capacity || 7} slots occupied</strong>
+      <p>${escHtml(firstFocus)}${workspace.suppressed ? ` ${workspace.suppressed} lower-priority signals remain latent.` : ''}</p>
+    </article>
+    <article class="intelligence-glance-item">
+      <span>Off-hours development</span><strong>${learningNow.length ? 'Active now' : 'Quiet right now'}</strong>
+      <p>${escHtml(learningNow.join('. ') || 'No reading or play session is active.')}</p>
+    </article>
+    <article class="intelligence-glance-item">
+      <span>Follow-through</span><strong>${overview.commitments?.open || 0} open promises</strong>
+      <p>${overview.experiments?.active || 0} active experiment${overview.experiments?.active === 1 ? '' : 's'}. ${overview.cycles?.running || 0} operational run${overview.cycles?.running === 1 ? '' : 's'} in progress.</p>
+    </article>`;
 }
 
 function renderCognitionSummary(cognition) {

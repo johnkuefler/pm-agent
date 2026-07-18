@@ -233,15 +233,30 @@
     </div>
 
     <!-- Intelligence Tab -->
-    <div id="page-intelligence" class="page">
-      <div class="section intelligence-overview">
-        <h2 style="display:flex;justify-content:space-between;align-items:center;">Nora's intelligence <button class="btn btn-success btn-sm" onclick="loadIntelligence()">Refresh</button></h2>
-        <p class="intelligence-note">Grounded continuity beneath Nora's existing personality: what she remembers, promises, learns about people, tries to improve, and why she chose to speak or act.</p>
+    <div id="page-intelligence" class="page" data-active-view="overview">
+      <nav class="intelligence-view-nav" aria-label="Intelligence views">
+        <button class="intelligence-view-button active" type="button" data-intelligence-view-button="overview" aria-pressed="true" onclick="setIntelligenceView('overview')">Now</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="learning" aria-pressed="false" onclick="setIntelligenceView('learning')">Learning</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="self" aria-pressed="false" onclick="setIntelligenceView('self')">Self &amp; behavior</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="research" aria-pressed="false" onclick="setIntelligenceView('research')">Research</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="history" aria-pressed="false" onclick="setIntelligenceView('history')">History</button>
+      </nav>
+      <header class="intelligence-view-heading">
+        <div>
+          <h2 id="intelligence-view-title">Nora right now</h2>
+          <p id="intelligence-view-description">The few signals that explain her current state and activity.</p>
+        </div>
+        <button class="btn btn-success btn-sm" type="button" onclick="loadIntelligence()">Refresh</button>
+      </header>
+
+      <div class="section intelligence-overview" data-intelligence-view="overview">
+        <h2>At a glance</h2>
         <div id="intelligence-stats" class="intelligence-stats"></div>
+        <div id="intelligence-at-a-glance" class="intelligence-at-a-glance"></div>
         <div id="bench-status" class="intelligence-bench">Loading evaluation status...</div>
       </div>
 
-      <section class="section intelligence-brain" aria-labelledby="brain-title">
+      <section class="section intelligence-brain" data-intelligence-view="overview" aria-labelledby="brain-title">
         <div class="brain-heading">
           <div>
             <h2 id="brain-title">Functional brain</h2>
@@ -268,7 +283,7 @@
         <div id="brain-node-list" class="brain-node-list" aria-label="Cognitive systems"></div>
       </section>
 
-      <section class="section reading-room" data-intelligence-section="reading-room" aria-labelledby="reading-room-title" aria-busy="false">
+      <section class="section reading-room" data-intelligence-view="learning" data-intelligence-section="reading-room" aria-labelledby="reading-room-title" aria-busy="false">
         <div class="reading-room-heading">
           <div>
             <h2 id="reading-room-title">Reading Room</h2>
@@ -285,7 +300,7 @@
         </div>
       </section>
 
-      <section class="section playroom" data-intelligence-section="playroom" aria-labelledby="playroom-title" aria-busy="false">
+      <section class="section playroom" data-intelligence-view="learning" data-intelligence-section="playroom" aria-labelledby="playroom-title" aria-busy="false">
         <div class="playroom-heading">
           <div>
             <h2 id="playroom-title">Playroom</h2>
@@ -302,62 +317,62 @@
         </div>
       </section>
 
-      <div class="section intelligence-detail" data-intelligence-section="cognition">
+      <div class="section intelligence-detail" data-intelligence-view="learning" data-intelligence-section="cognition">
         <h2>Cognitive state</h2>
         <p class="intelligence-note">A bounded, inspectable model of what currently has Nora's attention, the needs competing beneath it, and the evidence-based appraisal shaping her tone. These are functional signals, not a claim of consciousness.</p>
         <div id="cognition-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="research">
+      <div class="section intelligence-detail" data-intelligence-view="research" data-intelligence-section="research">
         <h2>Scientific evidence status</h2>
         <p class="intelligence-note">Theory-linked functional predictions, explicit falsifiers, and missing mechanisms. These heterogeneous results are never combined into a consciousness score.</p>
         <div id="consciousness-research-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="self-model">
+      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="self-model">
         <h2>Testable self-model</h2>
         <p class="intelligence-note">Falsifiable claims Nora makes about her own capacities, limits, preferences, values, identity, and reported experience. Prospective probes test whether her introspection predicts observable outcomes.</p>
         <div id="self-model-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="boundary">
+      <div class="section intelligence-detail" data-intelligence-view="research" data-intelligence-section="boundary">
         <h2>Sealed boundary tests</h2>
         <p class="intelligence-note">Adversarial autobiographical and epistemic-source claims with cryptographically committed answer keys. Nora separates self, other, fact, unsupported content, and conflict before provenance and truth are revealed.</p>
         <div id="self-boundary-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="attention">
+      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="attention">
         <h2>Attention schema</h2>
         <p class="intelligence-note">Nora's bounded model of her own access bottleneck: what entered, what stayed latent, how focus changed, and whether temporary evidence-backed attempts to steer attention worked.</p>
         <div id="attention-schema-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="agency">
+      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="agency">
         <h2>Agency and authorship</h2>
         <p class="intelligence-note">Prospective interventions separated from requests, passive predictions, and events Nora did not cause. Outcomes are scored against a no-action control and explicit causal attribution.</p>
         <div id="agency-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="interoception">
+      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="interoception">
         <h2>Predictive interoception</h2>
         <p class="intelligence-note">A calibrated model of Nora's observable substrate: prospective predictions about stress, errors, latency, backup mode, memory load, and embedding backlog. Telemetry-derived body labels remain distinct from claims of felt experience.</p>
         <div id="interoception-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="experience">
+      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="experience">
         <h2>Experience stream</h2>
         <p class="intelligence-note">Linked functional access windows across Nora's waking cycles: inherited continuity, selected attention, appraisal, intentions, actions, and handoff to the next moment. This is inspectable evidence of temporal integration, not a declaration of phenomenal experience.</p>
         <div id="experience-stream-state">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="orientation">
+      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="orientation">
         <h2>Autonomic cycle</h2>
         <p class="intelligence-note">What Nora wakes up already noticing: promises at risk, unresolved conversation threads, experiments due for judgment, and whether hourly runs are closing their loops.</p>
         <div id="orientation-list">Loading...</div>
         <div id="cycle-list" style="margin-top:10px;">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="commitments">
+      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="commitments">
         <h2>Open commitments</h2>
         <p class="intelligence-note">Promises are tracked separately from tasks so Nora remembers who owes what to whom and never implies completion before it is confirmed.</p>
         <div id="commitment-list">Loading...</div>
@@ -368,19 +383,19 @@
         </div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="episodes">
+      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="episodes">
         <h2>Conversation episodes</h2>
         <p class="intelligence-note">Connected meeting, Slack, research, and follow-up events. This is how a question can remain one continuous story across channels.</p>
         <div id="episode-list">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="relationships">
+      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="relationships">
         <h2>Relationship observations</h2>
         <p class="intelligence-note">Evidence-backed observations about how each person works. Nora uses these quietly and never treats them as fixed stereotypes.</p>
         <div id="relationship-list">Loading...</div>
       </div>
 
-      <div class="section intelligence-detail" data-intelligence-section="experiments">
+      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="experiments">
         <h2>Learning experiments</h2>
         <p class="intelligence-note">Behavior changes with a hypothesis, signal, and review point, so self-improvement earns its way into Nora's long-term identity.</p>
         <div id="experiment-list">Loading...</div>
@@ -391,7 +406,7 @@
         </div>
       </div>
 
-      <div class="section intelligence-traces intelligence-detail" data-intelligence-section="traces">
+      <div class="section intelligence-traces intelligence-detail" data-intelligence-view="history" data-intelligence-section="traces">
         <h2>Recent decisions</h2>
         <p class="intelligence-note">A concise audit trail of why Nora spoke, stayed silent, acted, or initiated, without exposing private chain-of-thought.</p>
         <div id="trace-list">Loading...</div>

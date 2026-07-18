@@ -20,7 +20,7 @@
       routine: ['Routine', 'Edit the ordered work Nora performs during each scheduled session.'],
       charter: ['Charter', 'Define what Nora may decide, commit to, or escalate on your behalf.'],
       self: ['Self', 'Understand Nora\'s system state, continuity, wants, autobiography, and persona.'],
-      intelligence: ['Intelligence', 'Inspect Nora\'s commitments, continuity, relationship learning, experiments, and decision traces.'],
+      intelligence: ['Intelligence', 'See what Nora is doing now, then open learning, self-model, research, or history only when you need it.'],
       admin: ['Administration', 'Monitor connections, bots, access controls, calendar automation, and sync health.']
     };
 
