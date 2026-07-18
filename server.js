@@ -1631,12 +1631,6 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
     includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
-    includeProcedureCandidates: experimentalSurface === 'slack' && opts.procedureCandidatesAvailable === true
-      && !contextAssignment && !opts.sideEffectFree,
-    procedureSelectionKey: opts.trialUnitKey || conversationText,
-    includeExemplars: experimentalSurface === 'slack' && opts.exemplarsAvailable === true
-      && !contextAssignment && (!opts.sideEffectFree || opts.diagnosticLocalExemplars === true),
-    exemplarSelectionKey: opts.trialUnitKey || conversationText,
   });
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
   const profileForecastOnly = contextAssignment?.intervention === 'self_model_access'
@@ -1656,6 +1650,12 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     project: hintCanonical,
     query: conversationText,
     channel: intelligenceChannel,
+    includeProcedureCandidates: experimentalSurface === 'slack' && opts.procedureCandidatesAvailable === true
+      && !contextAssignment && !opts.sideEffectFree,
+    procedureSelectionKey: opts.trialUnitKey || conversationText,
+    includeExemplars: experimentalSurface === 'slack' && opts.exemplarsAvailable === true
+      && !contextAssignment && (!opts.sideEffectFree || opts.diagnosticLocalExemplars === true),
+    exemplarSelectionKey: opts.trialUnitKey || conversationText,
     capacity: workspaceCapacityForAssignment(contextAssignment),
     includeHigherOrderMonitor: higherOrderMonitorEnabled(contextAssignment),
     includeAttentionDirectives: higherOrderMonitorEnabled(contextAssignment),

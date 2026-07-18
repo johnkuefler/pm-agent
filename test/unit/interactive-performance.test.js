@@ -149,6 +149,10 @@ test('live server opts into complete Slack trials but never globally enables sec
     'read-only prompt accounting must retain a content-free local selection receipt');
   assert.match(server, /exemplar_selection_count = intelligenceContextReceipt\?\.exemplar_selection/,
     'prompt accounting must expose a content-free local selection count');
+  const promptContextCall = server.slice(server.indexOf('const intelligenceContextResult = intelligence.promptContext({'),
+    server.indexOf("const intelligenceContext = typeof intelligenceContextResult"));
+  assert.match(promptContextCall, /includeExemplars: experimentalSurface === 'slack'/,
+    'local exemplar selection must be wired into prompt context rather than an unrelated subsystem');
   const boundary = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
     'capability-boundary.js'), 'utf8');
   assert.doesNotMatch(boundary, /fetch\(|axios|anthropic|openai/i,
