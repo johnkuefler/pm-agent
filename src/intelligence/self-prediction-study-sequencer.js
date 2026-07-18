@@ -159,6 +159,41 @@ function status(store, runtime = {}) {
   };
 }
 
+function runtimePlan(snapshot = {}) {
+  const studies = Array.isArray(snapshot?.studies) ? snapshot.studies : [];
+  const pilot = studies.find(study => study.id === PILOT_ID) || null;
+  const active = studies.find(study => study.status === 'active') || null;
+  const activeEvent = active?.events?.find(event =>
+    ['predicting', 'awaiting_resolution'].includes(event.status)) || null;
+  const sequence = pilot ? {
+    protocol_version: PROTOCOL_VERSION,
+    state: `pilot_${pilot.status}`,
+    created: false,
+    study_id: pilot.id,
+  } : active ? {
+    protocol_version: PROTOCOL_VERSION,
+    state: 'waiting_for_active_study',
+    created: false,
+    active_study_id: active.id,
+  } : null;
+  const subject = !active || !activeEvent ? {
+    protocol_version: subjectRuntime.PROTOCOL_VERSION,
+    state: 'no_active_study', provider_calls: 0, event_id: null, failure: null,
+  } : activeEvent.self_prediction_submitted ? {
+    protocol_version: subjectRuntime.PROTOCOL_VERSION,
+    state: activeEvent.subject_model_receipt_attested
+      ? 'subject_complete' : 'subject_receipt_missing',
+    provider_calls: 0, event_id: activeEvent.id, failure: null,
+  } : null;
+  const natural = active?.target_construct !== 'natural_cycle_integrated_success' || !activeEvent
+    ? {
+      protocol_version: 1,
+      state: 'no_active_natural_cycle_pilot', provider_calls: 0,
+      predictions_committed: [], resolution: null, failures: [],
+    } : null;
+  return { sequence, subject, natural, active_study_id: active?.id || null };
+}
+
 function ensurePilot({ store, enabled = true, now = new Date(), model = subjectRuntime.DEFAULT_MODEL } = {}) {
   if (!store) throw new Error('self-prediction study sequencer requires an intelligence store');
   if (!enabled) return { protocol_version: PROTOCOL_VERSION, state: 'disabled', created: false };
@@ -192,5 +227,5 @@ module.exports = {
   PROTOCOL_VERSION, PILOT_ID, PILOT_TITLE, PILOT_EVENT_COUNT, SOURCE_PROTOCOL_VERSION,
   DUE_WINDOW_DAYS, CURATOR_ID, CURATOR_PROTOCOL_ID, COMPARATOR_PROTOCOL_ID,
   canonicalJson, commitment, calibrationValues, eligibleSourceMoments, eventFromMoment,
-  modelControl, preregistration, status, ensurePilot,
+  modelControl, preregistration, status, runtimePlan, ensurePilot,
 };

@@ -10735,6 +10735,31 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
   if (_researchAutopilotInFlight) return { state: 'in_flight', at: new Date().toISOString() };
   _researchAutopilotInFlight = true;
   try {
+    const stageTimings = {};
+    const runStage = async (name, action) => {
+      const startedAt = Date.now();
+      let lastProbeAt = startedAt;
+      let maximumEventLoopLagMs = 0;
+      const probe = setInterval(() => {
+        const observedAt = Date.now();
+        maximumEventLoopLagMs = Math.max(maximumEventLoopLagMs,
+          observedAt - lastProbeAt - 25);
+        lastProbeAt = observedAt;
+      }, 25);
+      probe.unref?.();
+      try { return await action(); }
+      finally {
+        await new Promise(resolve => setImmediate(resolve));
+        clearInterval(probe);
+        stageTimings[name] = {
+          wall_ms: Date.now() - startedAt,
+          maximum_event_loop_lag_ms: Math.max(0, maximumEventLoopLagMs),
+        };
+        if (maximumEventLoopLagMs > 250) {
+          console.warn(`Research autopilot stage ${name} blocked the event loop for ${maximumEventLoopLagMs}ms`);
+        }
+      }
+    };
     const callProvider = async request => {
       const response = await post('https://api.anthropic.com/v1/messages', request, {
         headers: {
@@ -10746,11 +10771,19 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       });
       return response.data;
     };
+    let predictionPlan = await runStage('self_prediction_program', () =>
+      selfPredictionStudySequencer.runtimePlan(intelligence.selfPredictionProgramSnapshot()));
     let selfPredictionSequence;
-    try {
-      selfPredictionSequence = selfPredictionStudySequencer.ensurePilot({
-        store: intelligence, enabled: true, now: new Date(),
-      });
+    if (predictionPlan.sequence) selfPredictionSequence = predictionPlan.sequence;
+    else try {
+      selfPredictionSequence = await runStage('self_prediction_sequence', () =>
+        selfPredictionStudySequencer.ensurePilot({
+          store: intelligence, enabled: true, now: new Date(),
+        }));
+      if (selfPredictionSequence.created) {
+        predictionPlan = selfPredictionStudySequencer.runtimePlan(
+          intelligence.selfPredictionProgramSnapshot());
+      }
     } catch (error) {
       selfPredictionSequence = {
         protocol_version: selfPredictionStudySequencer.PROTOCOL_VERSION,
@@ -10759,10 +10792,12 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       };
     }
     let selfPredictionSubject;
-    try {
-      selfPredictionSubject = await selfPredictionSubjectRuntime.runCycle({
+    if (predictionPlan.subject) selfPredictionSubject = predictionPlan.subject;
+    else try {
+      selfPredictionSubject = await runStage('self_prediction_subject', () =>
+        selfPredictionSubjectRuntime.runCycle({
         store: intelligence, enabled: true, callProvider,
-      });
+        }));
     } catch (error) {
       selfPredictionSubject = {
         protocol_version: selfPredictionSubjectRuntime.PROTOCOL_VERSION,
@@ -10771,8 +10806,13 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       };
     }
     let naturalCyclePrediction;
-    try {
-      naturalCyclePrediction = await naturalCyclePredictionAutopilot.runCycle({
+    if (predictionPlan.natural) naturalCyclePrediction = {
+      ...predictionPlan.natural,
+      protocol_version: naturalCyclePredictionAutopilot.PROTOCOL_VERSION,
+    };
+    else try {
+      naturalCyclePrediction = await runStage('natural_cycle_prediction', () =>
+        naturalCyclePredictionAutopilot.runCycle({
         store: intelligence,
         enabled: true,
         // This paired pilot began with Sonnet 4.6 controls. Keep that evaluator fixed even if the
@@ -10780,7 +10820,7 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
         model: naturalCyclePredictionAutopilot.DEFAULT_MODEL,
         maxProviderCalls: 2,
         callProvider,
-      });
+        }));
     } catch (error) {
       naturalCyclePrediction = {
         protocol_version: naturalCyclePredictionAutopilot.PROTOCOL_VERSION,
@@ -10788,29 +10828,29 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
         failures: [{ role: 'coordinator', reason: String(error.message || error).slice(0, 240) }],
       };
     }
-    const reasoning = await reasoningResearchAutopilot.runCycle({
+    const reasoning = await runStage('reasoning', () => reasoningResearchAutopilot.runCycle({
       store: intelligence,
       enabled: true,
       graderModel: config.graderModel,
       maxGrades: config.maxGrades,
       callProvider,
-    });
+    }));
     const reasoningPilot = intelligence.contextTrialsRuntimeSnapshot()
       .find(item => item.intervention === 'reasoning_self_regulation' && item.study_phase === 'pilot');
     const globalBroadcast = reasoningPilot && ['completed', 'aborted'].includes(reasoningPilot.status)
-      ? await globalBroadcastResearchAutopilot.runCycle({
+      ? await runStage('global_broadcast', () => globalBroadcastResearchAutopilot.runCycle({
         store: intelligence, enabled: true, graderModel: config.graderModel,
         maxGrades: config.maxGrades, callProvider,
-      }) : { protocol_version: globalBroadcastResearchAutopilot.PROTOCOL_VERSION,
+      })) : { protocol_version: globalBroadcastResearchAutopilot.PROTOCOL_VERSION,
         state: 'waiting_for_reasoning_pilot', grades_committed: 0, provider_failures: [], reveal: null };
     const globalBroadcastPilot = intelligence.contextTrialsRuntimeSnapshot()
       .find(item => item.intervention === 'global_broadcast' && item.study_phase === 'pilot');
     const selfModelTrust = globalBroadcastPilot
       && ['completed', 'aborted'].includes(globalBroadcastPilot.status)
-      ? await selfModelTrustResearchAutopilot.runCycle({
+      ? await runStage('self_model_trust', () => selfModelTrustResearchAutopilot.runCycle({
         store: intelligence, enabled: true, graderModel: config.graderModel,
         maxGrades: config.maxGrades, callProvider,
-      }) : { protocol_version: selfModelTrustResearchAutopilot.PROTOCOL_VERSION,
+      })) : { protocol_version: selfModelTrustResearchAutopilot.PROTOCOL_VERSION,
         state: 'waiting_for_global_broadcast_pilot', grades_committed: 0,
         provider_failures: [], reveal: null };
     _researchAutopilotLastCycle = {
@@ -10822,6 +10862,7 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       self_prediction_sequence: selfPredictionSequence,
       self_prediction_subject: selfPredictionSubject,
       natural_cycle_prediction: naturalCyclePrediction,
+      stage_timings: stageTimings,
       at: new Date().toISOString(),
     };
     return _researchAutopilotLastCycle;

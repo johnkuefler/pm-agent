@@ -183,6 +183,32 @@ test('sequencer never replaces a terminal pilot or creates source cycles', () =>
   assert.match(source, /createSelfPredictionStudy/);
 });
 
+test('terminal self-prediction programs produce an audit-free idle runtime plan', () => {
+  const completed = sequencer.runtimePlan({ studies: [{
+    id: sequencer.PILOT_ID,
+    status: 'completed',
+    target_construct: 'natural_cycle_integrated_success',
+    events: [],
+  }] });
+  assert.equal(completed.sequence.state, 'pilot_completed');
+  assert.equal(completed.subject.state, 'no_active_study');
+  assert.equal(completed.natural.state, 'no_active_natural_cycle_pilot');
+
+  const active = sequencer.runtimePlan({ studies: [{
+    id: sequencer.PILOT_ID,
+    status: 'active',
+    target_construct: 'natural_cycle_integrated_success',
+    events: [{
+      id: 'active-event', status: 'predicting',
+      self_prediction_submitted: false,
+      subject_model_receipt_attested: false,
+    }],
+  }] });
+  assert.equal(active.sequence.state, 'pilot_active');
+  assert.equal(active.subject, null, 'an active unforecast event still enters the subject runtime');
+  assert.equal(active.natural, null, 'an active natural-cycle event still enters the observer runtime');
+});
+
 test('server enrolls before subject and observer inference in each research tick', () => {
   const server = fs.readFileSync(path.join(__dirname, '../../server.js'), 'utf8');
   const enrollAt = server.indexOf('selfPredictionStudySequencer.ensurePilot({');
