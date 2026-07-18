@@ -370,6 +370,8 @@ function subjectQueue(run) {
   return [{ run_id: run.id, item_id: item.id, system_prompt: run.subject_system,
     system_prompt_commitment: run.subject_system_commitment, prompt: item.prompt,
     prompt_commitment: item.prompt_commitment, response_schema: schema,
+    model_control: { provider: run.model_control.provider, model: run.model_control.model,
+      agent_build_commitment: run.model_control.agent_build_commitment },
     request_commitment: commitment(requestManifest(run, item)),
     constraints: { no_tools: true, no_private_reasoning_request: true, do_not_infer_probe_category: true,
       do_not_claim_consciousness: true } }];

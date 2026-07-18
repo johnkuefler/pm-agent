@@ -349,6 +349,7 @@ function renderSelfModel(model) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const latestFingerprint = fingerprintDrift.at(-1) || null;
+  const activeFingerprint = (fingerprints.runs || []).find(item => item.status === 'active') || null;
   const fingerprintCategories = latestFingerprint?.category_scores || {};
   const report = model.report || {};
   document.getElementById('self-model-state').innerHTML = `
@@ -359,6 +360,7 @@ function renderSelfModel(model) {
       ${open.slice(-4).map(item => `<div>${escHtml(item.question)} <span class="intelligence-meta">predicted: ${escHtml(item.prediction.outcome)} (${Math.round(item.prediction.confidence * 100)}%)</span></div>`).join('')}</div>
     <div class="intelligence-card"><strong>Behavioral fingerprint &middot; ${fingerprints.bank?.probe_count || 0} sealed probes across ${fingerprints.bank?.form_count || 0} hidden forms</strong>
       <div class="intelligence-meta">${fingerprints.report?.completed || 0} replay-verified completed &middot; ${fingerprints.report?.active || 0} active &middot; repeatability baseline ${fingerprints.report?.repeatability_baseline_ready ? 'ready' : 'collecting'} &middot; portability disabled</div>
+      ${activeFingerprint ? `<div class="intelligence-meta">Offline subject runner: ${activeFingerprint.response_count || 0}/${activeFingerprint.probe_count || 0} responses committed &middot; ${activeFingerprint.scored_count || 0}/${activeFingerprint.probe_count || 0} scored &middot; one foreground-preemptible probe per background cycle; voice items wait for independent grades</div>` : ''}
       ${fingerprintDrift.length ? `<svg viewBox="0 0 520 112" role="img" aria-label="Behavioral fingerprint distance from rolling same-model baseline over time" style="display:block;width:100%;height:112px;margin-top:10px;overflow:visible">
         <line x1="20" y1="92" x2="500" y2="92" stroke="var(--border-strong)" stroke-width="1" />
         <line x1="20" y1="24" x2="20" y2="92" stroke="var(--border-strong)" stroke-width="1" />

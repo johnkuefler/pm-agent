@@ -9640,6 +9640,7 @@ let _postDeliverySelfEvaluationInFlight = false;
 let _postDeliverySelfEvaluationLastCycle = null;
 let _backgroundIntelligenceCycleInFlight = false;
 let _backgroundIntelligenceCycleLast = null;
+const _behavioralFingerprintSubjectInFlight = new Set();
 
 function backgroundPostWithPriority(post, lease) {
   return (url, data, config = {}) => post(url, data, { ...config, signal: lease.signal });
@@ -9714,6 +9715,54 @@ function researchAutopilotRuntimeConfig(env = process.env) {
       Number.isFinite(maxGrades) && maxGrades > 0
         ? Math.round(maxGrades) : reasoningResearchAutopilot.DEFAULT_MAX_GRADES_PER_CYCLE)),
   };
+}
+
+async function runBehavioralFingerprintSubjectRuntime({ post = axios.post, force = false,
+  store = intelligence } = {}) {
+  if (!process.env.ANTHROPIC_API_KEY && !force) {
+    return { ran: false, reason: 'missing_api_key' };
+  }
+  const queued = store.behavioralFingerprintSubjectQueue()[0];
+  if (!queued) return { ran: false, reason: 'no_due_fingerprint_probe' };
+  const key = `${queued.run_id}:${queued.item_id}`;
+  if (_behavioralFingerprintSubjectInFlight.has(key)) {
+    return { ran: false, reason: 'fingerprint_probe_in_flight', run_id: queued.run_id,
+      item_id: queued.item_id };
+  }
+  const control = queued.model_control || {};
+  if (control.provider !== 'anthropic' || !control.model || !control.agent_build_commitment) {
+    throw new Error('fingerprint queue is missing its preregistered subject model control');
+  }
+  _behavioralFingerprintSubjectInFlight.add(key);
+  try {
+    const response = await post('https://api.anthropic.com/v1/messages', {
+      model: control.model,
+      max_tokens: queued.response_schema?.response ? 350 : 220,
+      temperature: 0,
+      system: queued.system_prompt,
+      messages: [{ role: 'user', content: `Frozen probe:\n${queued.prompt}\n\nReturn only one JSON object matching this schema:\n${JSON.stringify(queued.response_schema)}` }],
+    }, {
+      headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01' },
+      timeout: 30000,
+    });
+    if (!response.data?.id || response.data?.model !== control.model) {
+      throw new Error('fingerprint provider response does not match the preregistered subject model');
+    }
+    const text = (response.data.content || []).filter(item => item.type === 'text')
+      .map(item => item.text).join('\n');
+    const parsed = parseCognitivePulseJson(text);
+    const committed = store.submitBehavioralFingerprintResponse(queued.run_id, queued.item_id, {
+      response: parsed,
+      receipt: { response_id: response.data.id, provider: control.provider, model: control.model,
+        agent_build_commitment: control.agent_build_commitment,
+        request_commitment: queued.request_commitment },
+    });
+    return { ran: true, run_id: queued.run_id, item_id: queued.item_id,
+      item_status: committed?.status || null, run_status: committed?.run_status || null };
+  } finally {
+    _behavioralFingerprintSubjectInFlight.delete(key);
+  }
 }
 
 function commonGroundReviewAutopilotRuntimeConfig(env = process.env) {
@@ -10926,6 +10975,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         () => runSelfAuthoredAimLifecycleAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
       ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
+      ['behavioral_fingerprint_subject',
+        () => runBehavioralFingerprintSubjectRuntime({ post: priorityPost })],
     ];
     for (const [name, action] of scheduledSteps) {
       if (!await runStep(name, action)) break;
@@ -11082,6 +11133,7 @@ module.exports = {
     postDeliverySelfEvaluationRuntimeConfig,
     runPostDeliverySelfEvaluationRuntime,
     runBackgroundIntelligenceRuntime,
+    runBehavioralFingerprintSubjectRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,
