@@ -1713,7 +1713,11 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
 ### Movement 3.25 — Replay, update, and model uncertainty
 
-1. **Prediction error.** Read `GET /cognition` after resolving due predictions. High-confidence misses
+1. **Prediction error.** Read `GET /cognition` after resolving due predictions. This full replay-audited
+   projection is computed in a preemptible low-priority process and may return a stale snapshot or 503
+   while it refreshes. Never loop on it or delay Slack/Zoom; honor `X-Nora-Snapshot-Stale` and
+   `Retry-After`, and use the targeted expectation/prediction endpoint when current evidence is required.
+   High-confidence misses
    appear as surprises and open change-of-mind entries. Treat surprise as an attention signal, not
    automatic truth. When evidence supports a revised view, `POST /cognition/mind-changes` with the old
    belief and confidence, new belief and confidence, reason, and source evidence. It is healthy to say

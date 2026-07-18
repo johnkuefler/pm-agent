@@ -9,6 +9,7 @@ function run(input, send) {
   }
 
   send({
+    projection: input.projection,
     revision: input.revision,
     generated_at: input.observed_at,
     compute_ms: 1000,

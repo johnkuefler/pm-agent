@@ -304,7 +304,7 @@ function projectionCommitment(envelope) {
 
 function createPersistedProjectionEnvelope(snapshot, projection) {
   const serialized = String(snapshot?.serialized || '');
-  if (!['research_status', 'self_model'].includes(projection) || !serialized) {
+  if (!['research_status', 'self_model', 'cognition'].includes(projection) || !serialized) {
     throw new Error('persisted research projection requires a supported projection and serialized value');
   }
   JSON.parse(serialized);
@@ -341,6 +341,7 @@ function verifyPersistedProjectionEnvelope(envelope, projection,
 }
 
 function createResearchProjectionCache({ projection, store, getDreams = () => [], getWants = () => [],
+  getPredictions = () => [],
   now = () => new Date(), maxAgeMs = 60 * 60 * 1000,
   minRefreshIntervalMs = 15 * 60 * 1000,
   workerPath = path.join(__dirname, 'research-status-worker.js'),
@@ -348,8 +349,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     { cpuDutyCycle: true }),
   shouldDeferRefresh = () => false, loadPersisted = async () => null,
   savePersisted = async () => {} } = {}) {
-  if (!['research_status', 'self_model'].includes(projection)) {
-    throw new Error('research projection cache requires research_status or self_model');
+  if (!['research_status', 'self_model', 'cognition'].includes(projection)) {
+    throw new Error('research projection cache requires research_status, self_model, or cognition');
   }
   if (!store || typeof store.snapshot !== 'function' || typeof store.snapshotRevision !== 'function') {
     throw new Error('research projection cache requires a snapshot-capable intelligence store');
@@ -428,6 +429,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       state: store.snapshot(),
       dreams: JSON.parse(JSON.stringify(getDreams() || [])),
       wants: JSON.parse(JSON.stringify(getWants() || [])),
+      predictions: projection === 'cognition'
+        ? JSON.parse(JSON.stringify(getPredictions() || [])) : [],
       operational_environment: typeof store.operationalEnvironmentSnapshot === 'function'
         ? store.operationalEnvironmentSnapshot() : {},
     };

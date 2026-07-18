@@ -19,11 +19,15 @@ async function build(workerInput) {
   });
   await store.init();
   const projection = workerInput.projection || 'combined';
-  if (!['combined', 'research_status', 'self_model'].includes(projection)) {
+  if (!['combined', 'research_status', 'self_model', 'cognition'].includes(projection)) {
     throw new Error(`unsupported research projection: ${projection}`);
   }
-  const report = projection === 'self_model' ? null : store.consciousnessResearchStatus();
-  const selfModel = projection === 'research_status' ? null : store.selfModelSnapshot();
+  const report = ['combined', 'research_status'].includes(projection)
+    ? store.consciousnessResearchStatus() : null;
+  const selfModel = ['combined', 'self_model'].includes(projection)
+    ? store.selfModelSnapshot() : null;
+  const cognition = projection === 'cognition'
+    ? store.cognitionSnapshot(workerInput.predictions || []) : null;
   const computeMs = Number(process.hrtime.bigint() - started) / 1e6;
   return {
     projection,
@@ -32,6 +36,7 @@ async function build(workerInput) {
     compute_ms: computeMs,
     ...(report ? { serialized: JSON.stringify(report) } : {}),
     ...(selfModel ? { self_model_serialized: JSON.stringify(selfModel) } : {}),
+    ...(cognition ? { serialized: JSON.stringify(cognition) } : {}),
   };
 }
 

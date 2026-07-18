@@ -5,7 +5,7 @@ const { createResearchProjectionCache } = require('../intelligence/research-stat
 
 function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
-  const projectionCacheOptions = { store, getDreams, getWants,
+  const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
   const researchStatusCache = createResearchProjectionCache({ ...projectionCacheOptions,
     projection: 'research_status',
@@ -15,6 +15,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     projection: 'self_model',
     loadPersisted: () => loadResearchProjection('self_model'),
     savePersisted: envelope => saveResearchProjection('self_model', envelope) });
+  const cognitionCache = createResearchProjectionCache({ ...projectionCacheOptions,
+    projection: 'cognition',
+    loadPersisted: () => loadResearchProjection('cognition'),
+    savePersisted: envelope => saveResearchProjection('cognition', envelope) });
   function projectionHeaders(res, snapshot) {
     res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
     res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
@@ -466,8 +470,22 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
-  app.get('/cognition', requireAuth, (_req, res) => cachedJson(res, 'cognition',
-    () => store.cognitionSnapshot(getPredictions()), { ttlMs: 10000 }));
+  app.get('/cognition', requireAuth, async (req, res) => {
+    if (process.env.NORA_TEST_MODE === '1') return cachedJson(res, 'cognition',
+      () => store.cognitionSnapshot(getPredictions()), { ttlMs: 10000 });
+    try {
+      const snapshot = await cognitionCache.get({
+        requireCurrentExperimentalAccess: true,
+        requireCurrentRevision: req.query.require_current === '1',
+        waitForCold: false,
+      });
+      projectionHeaders(res, snapshot);
+      return res.type('application/json').send(snapshot.serialized);
+    } catch (error) {
+      if (error.code === 'cold_projection_refreshing') res.set('Retry-After', '5');
+      return res.status(503).json({ error: 'cognition snapshot unavailable', detail: error.message });
+    }
+  });
   app.get('/affective-regulation', requireAuth, (req, res) => {
     const includeRecords = req.query.include_records === 'true';
     return cachedJson(res, `affective-regulation:${includeRecords ? 'records' : 'summary'}`,
@@ -649,6 +667,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/consciousness-research/status', requireAuth, async (_req, res) => {
+    if (process.env.NORA_TEST_MODE === '1') return res.json(store.consciousnessResearchStatus());
     try {
       const snapshot = await researchStatusCache.get({ waitForCold: false });
       projectionHeaders(res, snapshot);
@@ -1366,15 +1385,19 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   return {
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
+    warmCognition: () => cognitionCache.refresh({ force: true }),
     preemptConsciousnessResearchStatus: surface => {
       const report = researchStatusCache.preempt(surface);
       const selfModel = selfModelCache.preempt(surface);
-      return report || selfModel;
+      const cognition = cognitionCache.preempt(surface);
+      return report || selfModel || cognition;
     },
     consciousnessResearchStatusCache: () => ({
       research_status: researchStatusCache.status(), self_model: selfModelCache.status(),
+      cognition: cognitionCache.status(),
     }),
-    close: async () => { await Promise.all([researchStatusCache.close(), selfModelCache.close()]); },
+    close: async () => { await Promise.all([researchStatusCache.close(), selfModelCache.close(),
+      cognitionCache.close()]); },
   };
 }
 

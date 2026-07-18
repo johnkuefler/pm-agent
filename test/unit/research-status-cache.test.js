@@ -210,6 +210,36 @@ test('independent projection workers do not rebuild the unrelated dashboard proj
   assert.equal(Object.hasOwn(selfModel, 'self_model_serialized'), false);
 });
 
+test('full cognition is projected in an isolated worker with prediction calibration intact', async t => {
+  const store = await createStore(t);
+  const predictions = [{ id: 'prediction-1', outcome: 'right', confidence: 0.8 }];
+  const cache = createResearchProjectionCache({
+    projection: 'cognition', store, getPredictions: () => predictions,
+    now: () => new Date(OBSERVED_AT), minRefreshIntervalMs: 0,
+  });
+  t.after(() => cache.close());
+  const snapshot = await cache.get();
+  assert.deepEqual(JSON.parse(snapshot.serialized), store.cognitionSnapshot(predictions));
+  assert.equal(snapshot.isolation, 'low_priority_child_process');
+  assert.equal(snapshot.priority, 19);
+});
+
+test('CPU-heavy cognition projection cannot starve the interactive event loop', async t => {
+  const store = await createStore(t);
+  const cache = createResearchProjectionCache({
+    projection: 'cognition', store,
+    workerPath: path.join(__dirname, '..', 'fixtures', 'research-status-spin-worker.js'),
+  });
+  t.after(() => cache.close());
+  let heartbeatTicks = 0;
+  const heartbeat = setInterval(() => { heartbeatTicks += 1; }, 10);
+  const snapshot = await cache.get();
+  clearInterval(heartbeat);
+  assert.equal(JSON.parse(snapshot.serialized).isolated_worker_fixture, true);
+  assert.ok(heartbeatTicks >= 5,
+    `main event-loop heartbeat should continue during cognition projection; observed ${heartbeatTicks}`);
+});
+
 test('verified persisted projections hydrate across restarts without spawning computation', async t => {
   const store = await createStore(t);
   const envelope = createPersistedProjectionEnvelope({
@@ -241,6 +271,19 @@ test('verified persisted projections hydrate across restarts without spawning co
   assert.equal(snapshot.cpu_budget.mode, 'no_compute_restart_hydration');
   assert.equal(workerCreated, false);
   assert.deepEqual(JSON.parse(snapshot.serialized), store.consciousnessResearchStatus());
+});
+
+test('cognition projections use the same tamper-evident restart envelope', async t => {
+  const store = await createStore(t);
+  const envelope = createPersistedProjectionEnvelope({
+    serialized: JSON.stringify(store.cognitionSnapshot([])),
+    revision: store.snapshotRevision(),
+    experimental_access_fingerprint: store.experimentalAccessFingerprint(),
+    generated_at: OBSERVED_AT.toISOString(), completed_at: new Date().toISOString(),
+  }, 'cognition');
+  assert.equal(verifyPersistedProjectionEnvelope(envelope, 'cognition'), true);
+  const tampered = { ...envelope, serialized: `${envelope.serialized} ` };
+  assert.equal(verifyPersistedProjectionEnvelope(tampered, 'cognition'), false);
 });
 
 test('an access-safe prior-build projection returns immediately while refresh is deferred', async t => {
@@ -290,6 +333,8 @@ test('HTTP projections expose the low-priority isolation receipt for production 
   assert.match(routes, /X-Nora-Compute-CPU-Budget/);
   assert.match(routes, /projection: 'research_status'/);
   assert.match(routes, /projection: 'self_model'/);
+  assert.match(routes, /projection: 'cognition'/);
+  assert.match(routes, /requireCurrentExperimentalAccess: true/);
   assert.match(routes, /waitForCold: false/);
   assert.match(routes, /Retry-After/);
 });
