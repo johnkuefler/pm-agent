@@ -285,6 +285,28 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, forecast });
     } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
   });
+  app.get('/expectations', requireAuth, (req, res) => {
+    try { res.json(store.expectationForecastSnapshot({ scope: req.query.scope || null, since: req.query.since || null })); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/expectations', requireAuth, async (req, res) => {
+    let forecast = null;
+    try {
+      forecast = store.createExpectationForecast(req.body?.cycle_id, req.body || {});
+      if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
+      await store.persistStrict();
+      res.json({ ok: true, forecast });
+    } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
+  });
+  app.post('/expectations/:id/resolve', requireAuth, async (req, res) => {
+    let forecast = null;
+    try {
+      forecast = store.resolveExpectationForecast(req.params.id, req.body || {});
+      if (!forecast) return res.status(404).json({ error: 'expectation forecast not found' });
+      await store.persistStrict();
+      res.json({ ok: true, forecast });
+    } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
+  });
   app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
     try {
       const authoritativeInputs = getCognitiveInputs();

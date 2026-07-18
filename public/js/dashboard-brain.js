@@ -72,7 +72,7 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'forecasting', label: 'Forecasting', layer: 'focused', x: .80, y: .63,
-    description: 'Calibrated predictions about Nora\'s observable substrate, errors, load, and fallback behavior.',
+    description: 'Committed predictions about Nora\'s observable substrate and what she expects to encounter in work sources before she reads them.',
     links: ['agency', 'self-model', 'commitments'],
     read: state => {
       const report = state.interoception?.report || {};

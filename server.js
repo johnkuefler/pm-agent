@@ -7261,7 +7261,9 @@ app.post('/notify', requireAuth, async (req, res) => {
   }
 });
 
-registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady: () => _dbReady, normalizeMemoryRecord });
+registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db,
+  isDbReady: () => _dbReady, normalizeMemoryRecord,
+  getExpectationSurprise: id => intelligence.expectationSurprise(id) });
 
 // ── Cowork run lock ─────────────────────────────────────────────────────────
 // Defense against overlapping hourly cowork runs (the scheduler double-firing or a run

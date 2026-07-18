@@ -34,6 +34,9 @@ POST /intelligence/cycles
 POST /intelligence/cycles/:id/reenter
 POST /intelligence/cycles/:id/self-forecast
 POST /intelligence/cycles/:id/self-forecast/revision
+GET /expectations
+POST /expectations
+POST /expectations/:id/resolve
 PATCH /intelligence/cycles/:id/complete
 GET /cognition
 GET /affective-regulation

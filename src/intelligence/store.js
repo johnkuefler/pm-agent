@@ -11,6 +11,7 @@ const { consumeBroadcast, consumers: broadcastConsumers } = require('./broadcast
 const epistemicAction = require('./epistemic-action');
 const episodicProspection = require('./episodic-prospection');
 const constructiveProspection = require('./constructive-prospection');
+const expectationForecast = require('./expectation-forecast');
 const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveInitiation = require('./cognitive-initiation');
@@ -136,6 +137,7 @@ function emptyState() {
       prospective_output_monitor: { records: [] },
       endogenous_attention: { selections: [] },
       interoception: { observations: [], predictions: [] },
+      expectations: { forecasts: [] },
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
@@ -536,6 +538,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (!Array.isArray(state.cognition.interoception.predictions)) state.cognition.interoception.predictions = [];
     state.cognition.interoception.observations = state.cognition.interoception.observations.slice(-300);
     state.cognition.interoception.predictions = state.cognition.interoception.predictions.slice(-300);
+    state.cognition.expectations = { forecasts: [], ...(state.cognition.expectations || {}) };
+    if (!Array.isArray(state.cognition.expectations.forecasts)) state.cognition.expectations.forecasts = [];
+    state.cognition.expectations.forecasts = state.cognition.expectations.forecasts.slice(-500);
     state.cognition.self_boundary = { challenges: [], ...(state.cognition.self_boundary || {}) };
     if (!Array.isArray(state.cognition.self_boundary.challenges)) state.cognition.self_boundary.challenges = [];
     state.cognition.self_boundary.challenges = state.cognition.self_boundary.challenges.slice(-300);
@@ -10515,6 +10520,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const predictions = cognition.interoception?.predictions || [];
     const openPredictions = predictions.filter(item => item.status === 'open').length;
     const resolvedPredictions = predictions.filter(item => item.status === 'resolved').length;
+    const expectationForecasts = cognition.expectations?.forecasts || [];
+    const openExpectations = expectationForecasts.filter(item => item.status === 'open').length;
+    const resolvedExpectations = expectationForecasts.filter(item => item.status === 'resolved').length;
+    // First paint stays bounded: detailed GET /expectations can replay-audit the full retained history,
+    // while the dashboard verifies only the latest twelve lifecycle records.
+    const expectationAuditWindow = expectationForecasts.slice(-12);
+    const recentResolvedExpectations = expectationAuditWindow.filter(item => item.status === 'resolved').length;
+    const replayVerifiedExpectations = expectationAuditWindow.filter(item => item.status === 'resolved'
+      && expectationForecastAudit(item).complete_chain_verified).length;
+    const expectationCalibration = expectationForecast.summarize(expectationForecasts,
+      new Date(clock().getTime() - 30 * 86400000).toISOString()).overall;
     const openCommitments = state.commitments.filter(item => item.status === 'open').length;
     const fulfilledCommitments = state.commitments.filter(item => item.status === 'fulfilled').length;
     const activeExperiments = state.experiments.filter(item => item.status === 'active').length;
@@ -10605,7 +10621,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           : metric(scaleCount(activeClaims + openProbes + behavioralSelfRevisions.length + completedFingerprints.length, 10), `${activeClaims} active claims, ${openProbes} open probes, ${behavioralSelfRevisions.length} behavioral revisions; ${completedFingerprints.length} offline fingerprint runs${fingerprintBaselineReady ? ', repeatability baseline ready' : ''}`, activeClaims + openProbes + behavioralSelfRevisions.length + completedFingerprints.length > 0),
         appraisal: metric(appraisal.updated ? Math.max(0.4, scaleCount(calibrationResolved, 12)) : 0, appraisal.label || 'awaiting first cycle', Boolean(appraisal.updated)),
         agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0, succeededExecutions ? 0.32 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions; ${succeededExecutions} succeeded tool executions`, openIntentions + resolvedIntentions + succeededExecutions > 0),
-        forecasting: metric(Math.max(scaleCount(openPredictions, 5), resolvedPredictions ? 0.28 : 0, scoredCycleSelfForecasts ? 0.32 : 0), `${openPredictions} open and ${resolvedPredictions} resolved substrate predictions; ${scoredCycleSelfForecasts} scored cycle self-forecasts`, openPredictions + resolvedPredictions + scoredCycleSelfForecasts > 0),
+        forecasting: metric(Math.max(scaleCount(openPredictions + openExpectations, 5), resolvedPredictions ? 0.28 : 0,
+          scoredCycleSelfForecasts ? 0.32 : 0, replayVerifiedExpectations ? 0.4 : 0),
+        `${openPredictions} open and ${resolvedPredictions} resolved substrate predictions; ${scoredCycleSelfForecasts} scored cycle self-forecasts; ${openExpectations} open and ${replayVerifiedExpectations}/${recentResolvedExpectations} recent world forecasts replay-verified (${resolvedExpectations} total resolved)${expectationCalibration.n ? `; 30d Brier ${expectationCalibration.brier.toFixed(3)}, ${expectationCalibration.direction}` : '; collecting'}`,
+        openPredictions + resolvedPredictions + scoredCycleSelfForecasts + openExpectations + resolvedExpectations > 0),
         commitments: metric(Math.max(scaleCount(openCommitments, 8), fulfilledCommitments ? 0.24 : 0), `${openCommitments} open and ${fulfilledCommitments} fulfilled promises`, openCommitments + fulfilledCommitments > 0),
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
         learning: metric(scaleCount(activeExperiments + (cognition.development || []).length, 10), `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories`, activeExperiments + (cognition.development || []).length > 0),
@@ -10648,7 +10667,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           executions: actionExecutions.length, succeeded_executions: succeededExecutions },
         forecasting: { open_substrate_predictions: openPredictions,
           resolved_substrate_predictions: resolvedPredictions,
-          cycle_self_forecasts: cycleSelfForecasts.length, scored_cycle_self_forecasts: scoredCycleSelfForecasts },
+          cycle_self_forecasts: cycleSelfForecasts.length, scored_cycle_self_forecasts: scoredCycleSelfForecasts,
+          open_expectation_forecasts: openExpectations, resolved_expectation_forecasts: resolvedExpectations,
+          replay_verified_expectation_forecasts: replayVerifiedExpectations,
+          expectation_replay_audit_window: expectationAuditWindow.length,
+          expectation_recent_resolved_forecasts: recentResolvedExpectations,
+          expectation_calibration_30d: expectationCalibration,
+          expectation_collection_ready: expectationCalibration.n >= 40 },
         background: { sealed: selfInquirySelectionActive(cognition), tick_count: dynamics.tick_count || 0,
           active_contents: activeContents, accepted_pulses: acceptedPulses, unresolved_pulses: unresolvedPulses,
           top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
@@ -10732,6 +10757,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       observation_count: snapshot.interoception.observations.length,
       prediction_count: snapshot.interoception.predictions.length,
     };
+    if (snapshot.expectations) {
+      const expectationSnapshot = expectationForecastSnapshot();
+      snapshot.expectations = { report: expectationSnapshot.report,
+        open_forecasts: expectationSnapshot.forecasts.filter(item => item.status === 'open').slice(-3) };
+    }
     if (snapshot.self_boundary) snapshot.self_boundary = {
       total: snapshot.self_boundary.challenges.length,
       open: snapshot.self_boundary.challenges.filter(item => item.status === 'open').length,
@@ -22848,6 +22878,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         researchLedgerAppend(current, { kind: 'orphan_cycle_gap_recorded', subject_type: 'intelligence_cycle', subject_id: cycle.id,
           payload: { recovery } });
       }
+      const openExpectation = current.cognition.expectations?.forecasts?.find(item =>
+        item.cycle_id === cycle.id && item.status === 'open');
+      if (openExpectation) {
+        openExpectation.status = 'abandoned';
+        openExpectation.abandonment = { reason: recovery.reason, at: recovery.recovered_at };
+        openExpectation.abandonment_commitment = expectationForecast.commitment({
+          forecast_id: openExpectation.id, cycle_id: cycle.id, ...openExpectation.abandonment,
+        });
+        researchLedgerAppend(current, { kind: 'expectation_forecast_abandoned', subject_type: 'expectation_forecast',
+          subject_id: openExpectation.id, payload: { abandonment_commitment: openExpectation.abandonment_commitment }, at });
+      }
       recovered.push({ cycle_id: cycle.id, moment_id: moment?.id || null, legacy: Number(moment?.lifecycle_protocol_version) !== 2 });
     }
     return recovered;
@@ -23149,6 +23190,201 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return { ...JSON.parse(JSON.stringify(latest)), audit };
   }
 
+  function expectationCreationPayload(record) {
+    return {
+      id: record.id, protocol_version: record.protocol_version, cycle_id: record.cycle_id,
+      moment_id: record.moment_id, run_lock_holder: record.run_lock_holder, made_at: record.made_at,
+      self_forecast_id: record.self_forecast_id, self_forecast_commitment: record.self_forecast_commitment,
+      scopes: record.scopes, rationale: record.rationale, producer: record.producer,
+    };
+  }
+
+  function expectationResolutionPayload(record) {
+    return { forecast_id: record.id, cycle_id: record.cycle_id,
+      resolved_at: record.resolution?.resolved_at, claims: record.resolution?.claims,
+      score: record.resolution?.score };
+  }
+
+  function expectationForecastAudit(record, cognition = state.cognition, cycles = state.cycles) {
+    if (!record) return { complete_chain_verified: false, reason: 'missing_expectation_forecast' };
+    const cycle = cycles.find(item => item.id === record.cycle_id);
+    const moment = cognition.experience_stream?.find(item => item.id === record.moment_id && item.cycle_id === record.cycle_id);
+    const selfForecastPreregistrationVerified = Boolean(moment?.self_forecast)
+      && moment.self_forecast.id === record.self_forecast_id
+      && moment.self_forecast.forecast_commitment === record.self_forecast_commitment
+      && researchLedgerEventBindingCount('experience_self_forecast_preregistered', record.self_forecast_id,
+        expectationForecast.commitment({ forecast_commitment: record.self_forecast_commitment }), cognition.research_ledger) === 1;
+    const selfForecastLifecycleVerified = Boolean(moment?.self_forecast)
+      && cycleSelfForecastAudit(moment.self_forecast, moment, cognition, cycles).complete_chain_verified;
+    const selfForecastVerified = selfForecastPreregistrationVerified
+      && (record.status === 'abandoned' || selfForecastLifecycleVerified);
+    const creationCommitment = expectationForecast.commitment(expectationCreationPayload(record));
+    const creationVerified = record.creation_commitment === creationCommitment
+      && researchLedgerEventBindingCount('expectation_forecast_committed', record.id,
+        expectationForecast.commitment({ creation_commitment: creationCommitment }), cognition.research_ledger) === 1;
+    const resolutionCommitment = record.resolution
+      ? expectationForecast.commitment(expectationResolutionPayload(record)) : null;
+    const resolutionVerified = !record.resolution || (record.resolution_commitment === resolutionCommitment
+      && researchLedgerEventBindingCount('expectation_forecast_resolved', record.id,
+        expectationForecast.commitment({ resolution_commitment: resolutionCommitment }), cognition.research_ledger) === 1);
+    const abandonmentPayload = record.abandonment ? {
+      forecast_id: record.id, cycle_id: record.cycle_id, ...record.abandonment,
+    } : null;
+    const abandonmentVerified = record.status !== 'abandoned' || (record.abandonment_commitment
+      === expectationForecast.commitment(abandonmentPayload)
+      && researchLedgerEventBindingCount('expectation_forecast_abandoned', record.id,
+        expectationForecast.commitment({ abandonment_commitment: record.abandonment_commitment }), cognition.research_ledger) === 1);
+    const lifecycleBound = Boolean(cycle && moment && cycle.run_lock_holder === record.run_lock_holder
+      && new Date(record.made_at).getTime() >= new Date(cycle.started).getTime()
+      && (!record.resolution || new Date(record.resolution.resolved_at).getTime() <= new Date(cycle.finished || clock()).getTime()));
+    const evidenceBound = !record.resolution || record.resolution.claims.every(item =>
+      Array.isArray(item.evidence) && item.evidence.length > 0
+      && item.evidence.every(ref => expectationForecast.EVIDENCE_TYPES.has(ref.type) && (ref.id || ref.url)));
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return {
+      self_forecast_verified: selfForecastVerified,
+      self_forecast_preregistration_verified: selfForecastPreregistrationVerified,
+      self_forecast_lifecycle_verified: selfForecastLifecycleVerified,
+      creation_commitment_verified: creationVerified,
+      resolution_commitment_verified: resolutionVerified, lifecycle_bound: lifecycleBound,
+      abandonment_commitment_verified: abandonmentVerified, evidence_bound: evidenceBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: selfForecastVerified && creationVerified && resolutionVerified && abandonmentVerified
+        && lifecycleBound && evidenceBound && ledgerVerified,
+    };
+  }
+
+  function createExpectationForecast(cycleId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const cycle = current.cycles.find(item => item.id === cycleId);
+      if (!cycle) return null;
+      if (cycle.status !== 'running') throw new Error('expectations require a running intelligence cycle');
+      const moment = current.cognition.experience_stream.find(item => item.id === cycle.experience_moment_id
+        && item.cycle_id === cycle.id && item.status === 'open');
+      if (!moment) throw new Error('expectations require the cycle open experience moment');
+      if (!moment.self_forecast || !cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles).complete_chain_verified) {
+        throw new Error('expectations require a replay-verified cycle self-forecast before perception');
+      }
+      if (current.cognition.expectations.forecasts.some(item => item.cycle_id === cycle.id)) {
+        throw new Error('this intelligence cycle already has an expectation forecast');
+      }
+      const now = clock();
+      const id = input.id || `expect-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      let claimIndex = 0;
+      const scopes = expectationForecast.normalizeClaims(input.scopes, () => `${id}-claim-${++claimIndex}`);
+      const rationale = String(input.rationale || '').trim();
+      if (!rationale) throw new Error('expectation forecast rationale is required');
+      const record = {
+        id, protocol_version: expectationForecast.PROTOCOL_VERSION, cycle_id: cycle.id, moment_id: moment.id,
+        run_lock_holder: cycle.run_lock_holder, made_at: now.toISOString(), scopes,
+        self_forecast_id: moment.self_forecast.id,
+        self_forecast_commitment: moment.self_forecast.forecast_commitment,
+        rationale: rationale.slice(0, 1200), producer: {
+          kind: String(input.producer?.kind || 'cowork_cycle').slice(0, 100),
+          model: input.producer?.model ? String(input.producer.model).slice(0, 160) : null,
+        }, status: 'open', resolution: null, resolution_commitment: null,
+      };
+      record.creation_commitment = expectationForecast.commitment(expectationCreationPayload(record));
+      current.cognition.expectations.forecasts.push(record);
+      current.cognition.expectations.forecasts = current.cognition.expectations.forecasts.slice(-500);
+      researchLedgerAppend(current, { kind: 'expectation_forecast_committed', subject_type: 'expectation_forecast',
+        subject_id: record.id, payload: { creation_commitment: record.creation_commitment }, at: now });
+      return { ...JSON.parse(JSON.stringify(record)), audit: expectationForecastAudit(record, current.cognition, current.cycles) };
+    });
+  }
+
+  function resolveExpectationForecast(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const record = current.cognition.expectations.forecasts.find(item => item.id === id);
+      if (!record) return null;
+      if (record.status !== 'open' || record.resolution) throw new Error('expectation forecast is already resolved');
+      const cycle = current.cycles.find(item => item.id === record.cycle_id);
+      if (!cycle || cycle.status !== 'running' || cycle.run_lock_holder !== record.run_lock_holder) {
+        throw new Error('expectation resolution requires its original running cycle and run-lock binding');
+      }
+      const expectedClaims = record.scopes.flatMap(group => group.claims.map(claim => ({ ...claim, scope: group.scope })));
+      if (!Array.isArray(input.claims) || input.claims.length !== expectedClaims.length) {
+        throw new Error('expectation resolution must atomically resolve every committed claim');
+      }
+      const byId = new Map(expectedClaims.map(item => [item.id, item]));
+      const seen = new Set();
+      const now = clock();
+      const madeAt = new Date(record.made_at).getTime();
+      const resolutions = input.claims.map(item => {
+        const claimId = String(item?.claim_id || '');
+        const claim = byId.get(claimId);
+        if (!claim || seen.has(claimId)) throw new Error('expectation resolution contains a missing, unknown, or duplicate claim_id');
+        seen.add(claimId);
+        const outcome = expectationForecast.normalizeOutcome(item.outcome);
+        const observedAt = item.observed_at ? new Date(item.observed_at) : now;
+        if (!Number.isFinite(observedAt.getTime()) || observedAt.getTime() <= madeAt || observedAt.getTime() > now.getTime()) {
+          throw new Error('expectation observed_at must follow commitment and not be in the future');
+        }
+        const evidence = expectationForecast.normalizeEvidence(item.evidence);
+        const note = String(item.note || '').trim();
+        if (outcome === 'unclear' && !evidence.some(ref => ref.type === 'connector_failure') && !note) {
+          throw new Error('an unclear expectation requires connector_failure evidence or an ambiguity note');
+        }
+        const score = expectationForecast.scoreClaim(claim, { outcome });
+        return { claim_id: claim.id, scope: claim.scope, outcome, observed_at: observedAt.toISOString(),
+          evidence, note: note.slice(0, 600), score };
+      });
+      const scored = resolutions.filter(item => item.score.scored);
+      const mean = key => scored.length ? scored.reduce((sum, item) => sum + item.score[key], 0) / scored.length : null;
+      record.resolution = {
+        resolved_at: now.toISOString(), claims: resolutions,
+        score: { scored: scored.length, unclear: resolutions.length - scored.length,
+          brier: mean('brier'), accuracy: scored.length ? scored.filter(item => !item.score.miss).length / scored.length : null,
+          high_confidence_misses: scored.filter(item => item.score.high_confidence_miss).length },
+      };
+      record.status = 'resolved';
+      record.resolution_commitment = expectationForecast.commitment(expectationResolutionPayload(record));
+      researchLedgerAppend(current, { kind: 'expectation_forecast_resolved', subject_type: 'expectation_forecast',
+        subject_id: record.id, payload: { resolution_commitment: record.resolution_commitment }, at: now });
+      for (const resolution of scored.filter(item => item.score.high_confidence_miss)) {
+        const claim = byId.get(resolution.claim_id);
+        current.cognition.surprises.push({
+          id: `surprise-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          origin: 'expectation_forecast', forecast_id: record.id, prediction_id: resolution.claim_id,
+          scope: resolution.scope, expectation: claim.claim, outcome: resolution.outcome,
+          magnitude: resolution.score.magnitude, evidence: resolution.evidence,
+          source_bound: true, replay_verified: true, at: now.toISOString(), status: 'unreviewed',
+        });
+      }
+      current.cognition.surprises = current.cognition.surprises.slice(-300);
+      return { ...JSON.parse(JSON.stringify(record)), audit: expectationForecastAudit(record, current.cognition, current.cycles) };
+    });
+  }
+
+  function expectationForecastSnapshot({ scope = null, since = null } = {}) {
+    const sinceMs = since ? new Date(since).getTime() : null;
+    if (since && !Number.isFinite(sinceMs)) throw new Error('since must be a valid date');
+    if (scope && !expectationForecast.SCOPES.has(scope)) throw new Error('invalid expectation scope');
+    const forecasts = state.cognition.expectations.forecasts.filter(item =>
+      (!scope || item.scopes.some(group => group.scope === scope))
+      && (!sinceMs || new Date(item.made_at).getTime() >= sinceMs));
+    const rollingSince = new Date(clock().getTime() - 30 * 86400000).toISOString();
+    const rolling = expectationForecast.summarize(state.cognition.expectations.forecasts, rollingSince);
+    return {
+      epistemic_status: 'Prospectively committed, cycle-bound expectations about observable work sources. Resolutions are source-cited and replay-audited, but citations are not independent proof and this is not evidence of phenomenal consciousness.',
+      forecasts: forecasts.map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: expectationForecastAudit(item) })),
+      report: { total: forecasts.length, open: forecasts.filter(item => item.status === 'open').length,
+        resolved: forecasts.filter(item => item.status === 'resolved').length,
+        replay_verified_resolved: forecasts.filter(item => item.status === 'resolved' && expectationForecastAudit(item).complete_chain_verified).length,
+        rolling_30_day: rolling, collection_gate: { minimum_scored_claims: 40, ready: rolling.overall.n >= 40 } },
+    };
+  }
+
+  function expectationSurprise(id) {
+    const surprise = state.cognition.surprises.find(item => item.id === id && item.origin === 'expectation_forecast');
+    if (!surprise) return null;
+    const forecast = state.cognition.expectations.forecasts.find(item => item.id === surprise.forecast_id);
+    if (!forecast || !expectationForecastAudit(forecast).complete_chain_verified) return null;
+    return JSON.parse(JSON.stringify(surprise));
+  }
+
   function startCycle(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -23365,6 +23601,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const cycle = current.cycles.find(item => item.id === id);
       if (!cycle) return null;
       if (cycle.status !== 'running') throw new Error('intelligence cycle already closed');
+      const openExpectation = current.cognition.expectations.forecasts.find(item => item.cycle_id === cycle.id && item.status === 'open');
+      if (openExpectation) throw new Error(`resolve expectation forecast ${openExpectation.id} before closing this intelligence cycle`);
       const finishedAt = input.finished ? new Date(input.finished) : clock();
       if (!Number.isFinite(finishedAt.getTime()) || finishedAt < new Date(cycle.started) || finishedAt > clock()) {
         throw new Error('cycle completion time must follow its start and not be in the future');
@@ -23960,6 +24198,8 @@ ${episodes.map(item => {
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
+    createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
+    expectationForecastAudit, expectationSurprise,
     recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,

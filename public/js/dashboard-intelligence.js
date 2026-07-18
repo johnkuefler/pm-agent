@@ -191,6 +191,8 @@ function renderCognitionSummary(cognition) {
   const integrated = cognition.integrated_self || {};
   const background = cognition.background || {};
   const reflection = cognition.reflection || {};
+  const forecasting = cognition.forecasting || {};
+  const expectationCalibration = forecasting.expectation_calibration_30d || {};
   const insightLine = reflection.dream_insight_reflection_sealed
     ? 'Recurring insight evidence is sealed by an active blinded study.'
     : `${reflection.dream_idea_seeds || 0} committed dream ideas across ${reflection.dream_idea_dates || 0} dates &middot; ${reflection.dream_insight_reflection_attempts || 0} synthesis attempts (${reflection.replay_verified_dream_insight_attempts || 0} replay-verified) &middot; ${reflection.dream_insight_candidates || 0} open candidates`;
@@ -203,6 +205,8 @@ function renderCognitionSummary(cognition) {
     <div class="intelligence-card"><strong>Motivation</strong><div>${motivation.strongest_name ? `${escHtml(motivation.strongest_name)} ${Math.round((motivation.strongest_level || 0) * 100)}%` : 'Awaiting first cycle'}</div></div>
     <div class="intelligence-card"><strong>Appraisal: ${escHtml(appraisal.label || 'awaiting first cycle')}</strong>
       <div class="intelligence-meta">${appraisal.calibration_resolved || 0} resolved predictions${appraisal.brier != null ? ` &middot; Brier ${Number(appraisal.brier).toFixed(3)}` : ''}</div></div>
+    <div class="intelligence-card"><strong>EXPECT: ${forecasting.open_expectation_forecasts || 0} open &middot; ${forecasting.replay_verified_expectation_forecasts || 0}/${forecasting.expectation_recent_resolved_forecasts || 0} recent replay-verified &middot; ${forecasting.resolved_expectation_forecasts || 0} total resolved</strong>
+      <div class="intelligence-meta">${expectationCalibration.n || 0}/40 scored source-bound claims${expectationCalibration.brier != null ? ` &middot; 30-day Brier ${Number(expectationCalibration.brier).toFixed(3)} &middot; ${escHtml(String(expectationCalibration.direction || 'collecting').replaceAll('_', ' '))}` : ' &middot; collecting calibration evidence'} &middot; forecasts are committed before perception</div></div>
     <div class="intelligence-card"><strong>Integrated operational self: ${integrated.sealed ? 'sealed by active trial' : `${integrated.domains || 0}/6 domains bound`}</strong>
       <div class="intelligence-meta">${integrated.frame_count || 0} recorded frames &middot; functional self-integration, not phenomenal unity</div></div>
     <div class="intelligence-card"><strong>Between-invocation dynamics: ${background.sealed ? 'sealed by active trial' : `${background.active_contents || 0} active signals`}</strong>

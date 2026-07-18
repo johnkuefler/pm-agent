@@ -1,7 +1,8 @@
 'use strict';
 
 function registerMemoryRoutes(app, deps) {
-  const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady, normalizeMemoryRecord } = deps;
+  const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady,
+    normalizeMemoryRecord, getExpectationSurprise = () => null } = deps;
 
   // Memory API — view and edit Nora's memory
   app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
@@ -33,7 +34,18 @@ function registerMemoryRoutes(app, deps) {
     // Memory CAN contain financial content. Distribution is gated at the live handler's
     // output side. Memory is the source of truth; output is where the approval check happens.
     const canonicalProject = project ? ensureProject(project) : '';
-    const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject, added: new Date().toISOString().split('T')[0], source: source || 'manual' });
+    const expectationSurprise = req.body.expectation_surprise_id
+      ? getExpectationSurprise(req.body.expectation_surprise_id) : null;
+    if (req.body.expectation_surprise_id && !expectationSurprise) {
+      return res.status(400).json({ error: 'expectation_surprise_id must reference a replay-verified source-bound EXPECT miss' });
+    }
+    const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject,
+      added: new Date().toISOString().split('T')[0], source: source || 'manual',
+      ...(expectationSurprise ? {
+        salience: Math.max(0.6, Number(req.body.salience) || 0),
+        expectation_surprise: { id: expectationSurprise.id, forecast_id: expectationSurprise.forecast_id,
+          claim_id: expectationSurprise.prediction_id, scope: expectationSurprise.scope },
+      } : {}) });
     const { memory } = await mutateMemory(m => { m.push(entry); });
     if (canonicalProject) bumpProjectActivity(canonicalProject);
     console.log('🧠 Memory added:', fact);

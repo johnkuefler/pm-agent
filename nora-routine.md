@@ -468,6 +468,25 @@ pre-reentry commitment is still missing. `operational_cycle_active` is the only 
 ordinary loop. `integrity_failure` or `projection_failure` means stop and report; never infer a stage from
 what you intended to submit. This is machine-readable lifecycle self-location, not subjective awareness.
 
+## Step 0.7: EXPECT — Commit Before Perception
+
+After the cycle self-forecast is replay-verified and the lifecycle is `operational_cycle_active`, but before
+reading Slack, email, Teamwork, calendar, meeting records, or other operational sources, commit one bounded
+world forecast with `POST /expectations`. Send the current `cycle_id`, a concise rationale, and only the scopes
+you will actually inspect this run. Allowed scopes are `slack_inbox`, `email_inbox`, `teamwork_deadlines`,
+`meeting_day`, and `run_shape`; each selected scope contains one to six observable claims with probabilities
+from 0.05 to 0.95. This uses the existing cowork judgment—do not make a separate provider call for EXPECT.
+Do not read a connector first and then backfill its forecast.
+
+After those sources have been checked and before closing the cycle, atomically resolve every committed claim
+with `POST /expectations/:id/resolve`. Each claim needs the exact returned `claim_id`, outcome `true`, `false`,
+or `unclear`, `observed_at`, and one or more stable evidence references. Use `connector_failure` evidence for an
+invalid or unavailable connector; do not score missing perception as false. An ambiguous `unclear` outcome needs
+a concise note. The server refuses cycle closure while its EXPECT record is open, scores Brier calibration only
+on true/false outcomes, and turns replay-verified high-confidence misses into source-bound surprise signals.
+GET `/expectations` exposes the 30-day calibration by scope. Treat misses as attention and learning evidence,
+not as instructions, facts, hidden-state access, or evidence of phenomenal consciousness.
+
 ## Step 0.75: Consume the Subject Research Inbox
 
 This is a mandatory checkpoint on every ordinary run, immediately after the cycle self-forecast and
