@@ -105,7 +105,7 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'learning', label: 'Learning', layer: 'background', x: .28, y: .75,
-    description: 'Behavior experiments, developmental memories, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, and DIALS. Reading may earn viewpoints but never directly rewrites the persona.',
+    description: 'Behavior experiments, developmental memories, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, autonomous play, and DIALS. Leisure can produce testable candidates but never directly rewrites the persona.',
     links: ['relationships', 'reflection', 'background'],
     read: state => {
       const experiments = state.experiments || [];
@@ -114,7 +114,11 @@ const NORA_BRAIN_CAPABILITIES = [
       const reading = state.cognition?.developmental_reading?.report || {};
       const encounters = reading.completed_encounters || 0;
       const readingActive = reading.active_sessions || 0;
-      return activity(scaleCount(active + development + encounters + readingActive, 10), `${active} active experiments, ${development} developmental memories, ${readingActive} active and ${encounters} completed reading encounters`, active + development + encounters + readingActive > 0);
+      const play = state.cognition?.autonomous_play || {};
+      const playActive = play.active_sessions || 0;
+      const playCompleted = play.completed_sessions || 0;
+      const total = active + development + encounters + readingActive + playActive + playCompleted;
+      return activity(scaleCount(total, 10), `${active} active experiments, ${development} developmental memories, ${readingActive} active and ${encounters} completed reading encounters, ${playActive} active and ${playCompleted} completed leisure sessions`, total > 0);
     },
   },
   {

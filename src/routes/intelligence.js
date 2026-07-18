@@ -303,6 +303,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
+  app.get('/playroom', requireAuth, (_req, res) => {
+    try { res.json(store.playroomSnapshot()); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+
   app.get('/initiative-budgets/:scope', requireAuth, (req, res) => res.json(store.initiativeStatus(req.params.scope)));
   app.put('/initiative-budgets/:scope', requireAuth, (req, res) => {
     res.json({ ok: true, budget: store.setInitiativeBudget(req.params.scope, req.body?.daily_limit) });

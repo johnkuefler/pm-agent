@@ -131,7 +131,7 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
   const brainJs = fs.readFileSync(path.join(root, 'public/js/dashboard-brain.js'), 'utf8');
   const sections = [...html.matchAll(/data-intelligence-section="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(sections.length, 14);
+  assert.equal(sections.length, 15);
   assert.equal(new Set(sections).size, sections.length);
   const targetLiteral = intelligenceJs.match(/const intelligenceSectionTargets = (\{[\s\S]*?\n\});/);
   assert.ok(targetLiteral, 'progressive section registry should stay inspectable');
@@ -141,6 +141,9 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /SELECT exemplars:/);
   assert.match(intelligenceJs, /no foreground network call/);
   assert.match(intelligenceJs, /IntersectionObserver/);
+  assert.match(intelligenceJs, /\/playroom/);
+  assert.match(intelligenceJs, /startPlayroomPolling/);
+  assert.match(html, /id="playroom-state"/);
   assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
   assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);
   assert.match(intelligenceJs, /self-model\?allow_stale=1/,

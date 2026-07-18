@@ -37,6 +37,7 @@ POST /exemplars/selection-pass
 GET /developmental-reading
 POST /developmental-reading/sources
 POST /developmental-reading/sessions
+GET /playroom
 GET /initiative-budgets/:scope
 PUT /initiative-budgets/:scope
 POST /initiative-budgets/:scope/spend

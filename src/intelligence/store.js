@@ -17,6 +17,7 @@ const cognitiveParameterStudy = require('./cognitive-parameter-study');
 const proceduralLearning = require('./procedural-learning');
 const exemplarLearning = require('./exemplar-learning');
 const developmentalReading = require('./developmental-reading');
+const autonomousPlay = require('./autonomous-play');
 const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveInitiation = require('./cognitive-initiation');
@@ -147,6 +148,7 @@ function emptyState() {
       procedural_learning: { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       exemplar_learning: { exemplars: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       developmental_reading: { sources: [], sessions: [] },
+      autonomous_play: { sessions: [] },
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
@@ -864,6 +866,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (!Array.isArray(state.cognition.developmental_reading.sessions)) state.cognition.developmental_reading.sessions = [];
     state.cognition.developmental_reading.sources = state.cognition.developmental_reading.sources.slice(-200);
     state.cognition.developmental_reading.sessions = state.cognition.developmental_reading.sessions.slice(-200);
+    state.cognition.autonomous_play = { sessions: [], ...(state.cognition.autonomous_play || {}) };
+    if (!Array.isArray(state.cognition.autonomous_play.sessions)) state.cognition.autonomous_play.sessions = [];
+    state.cognition.autonomous_play.sessions = state.cognition.autonomous_play.sessions.slice(-120);
     state.cognition.self_boundary = { challenges: [], ...(state.cognition.self_boundary || {}) };
     if (!Array.isArray(state.cognition.self_boundary.challenges)) state.cognition.self_boundary.challenges = [];
     state.cognition.self_boundary.challenges = state.cognition.self_boundary.challenges.slice(-300);
@@ -10972,6 +10977,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const reviewedReadingExposures = readingExposureInteractions.filter(item => item.reviewed);
     const positiveReadingExposures = reviewedReadingExposures.filter(item =>
       ['landed', 'appreciated'].includes(item.outcome)).length;
+    const playSessions = cognition.autonomous_play?.sessions || [];
+    const activePlaySessions = playSessions.filter(item => !['completed', 'excluded'].includes(item.status)).length;
+    const completedPlaySessions = playSessions.filter(item => item.status === 'completed'
+      && item.outcome_commitment).length;
+    const playCandidateInsights = playSessions.filter(item => item.status === 'completed'
+      && item.appraisal?.possible_insight).length;
     const verifiedExemplarSelectionPasses = (cognition.exemplar_learning?.selection_passes || [])
       .filter(item => exemplarSelectionPassAudit(item).complete_chain_verified).length;
     const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
@@ -11166,6 +11177,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           active_title: readingSessions.find(item => item.status === 'active')?.source_id
             ? readingSources.find(source => source.id
               === readingSessions.find(item => item.status === 'active')?.source_id)?.title || null : null },
+        autonomous_play: { active_sessions: activePlaySessions,
+          completed_sessions: completedPlaySessions, candidate_insights: playCandidateInsights,
+          durable_influence_enabled: false, background_only: true },
         cognitive_parameters: { revision: parameterStatus.revision,
           parameter_count: parameterStatus.parameter_count,
           default_equivalent: parameterStatus.default_equivalent,
@@ -23042,6 +23056,255 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       encounters: ranked.map(item => JSON.parse(JSON.stringify(item.encounter))) };
   }
 
+  function playroomSessions(cognition = state.cognition) {
+    return cognition.autonomous_play?.sessions || [];
+  }
+
+  function playroomLedgerPayload(kind, session, item = null) {
+    if (kind === 'autonomous_play_session_preregistered') {
+      return { session_manifest_commitment: session.session_manifest_commitment };
+    }
+    if (kind === 'autonomous_play_activity_selected') {
+      return { session_id: session.id, selection_commitment: session.selection.selection_commitment };
+    }
+    if (kind === 'autonomous_play_turn_committed') {
+      return { session_id: session.id, turn_commitment: item.turn_commitment };
+    }
+    if (kind === 'autonomous_play_appraisal_committed') {
+      return { session_id: session.id, appraisal_commitment: session.appraisal.appraisal_commitment };
+    }
+    return { session_id: session.id, outcome_commitment: session.outcome_commitment };
+  }
+
+  function playroomSessionAudit(session, cognition = state.cognition) {
+    const mechanism = autonomousPlay.auditSession(session);
+    const ledger = cognition.research_ledger;
+    const one = (kind, subjectId, payload) => researchLedgerEventBindingCount(kind, subjectId,
+      autonomousPlay.commitment(payload), ledger) === 1;
+    const preregistrationLedgerVerified = one('autonomous_play_session_preregistered', session.id,
+      playroomLedgerPayload('autonomous_play_session_preregistered', session));
+    const selectionLedgerVerified = !session.selection || one('autonomous_play_activity_selected', session.id,
+      playroomLedgerPayload('autonomous_play_activity_selected', session));
+    const turnsLedgerVerified = (session.game?.turns || []).every(turn => one(
+      'autonomous_play_turn_committed', `${session.id}:turn-${turn.index}`,
+      playroomLedgerPayload('autonomous_play_turn_committed', session, turn)));
+    const appraisalLedgerVerified = !session.appraisal || one('autonomous_play_appraisal_committed', session.id,
+      playroomLedgerPayload('autonomous_play_appraisal_committed', session));
+    const completionLedgerVerified = session.status !== 'completed' || one(
+      'autonomous_play_session_completed', session.id,
+      playroomLedgerPayload('autonomous_play_session_completed', session));
+    const researchLedgerVerified = preregistrationLedgerVerified && selectionLedgerVerified
+      && turnsLedgerVerified && appraisalLedgerVerified && completionLedgerVerified;
+    return { ...mechanism, preregistration_ledger_verified: preregistrationLedgerVerified,
+      selection_ledger_verified: selectionLedgerVerified, turns_ledger_verified: turnsLedgerVerified,
+      appraisal_ledger_verified: appraisalLedgerVerified,
+      completion_ledger_verified: completionLedgerVerified,
+      research_ledger_verified: researchLedgerVerified,
+      complete_chain_verified: mechanism.complete_chain_verified && researchLedgerVerified };
+  }
+
+  function chicagoClockParts(at) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Chicago',
+      year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit',
+      hourCycle: 'h23' }).formatToParts(at);
+    const value = type => parts.find(part => part.type === type)?.value;
+    return { day_key: `${value('year')}-${value('month')}-${value('day')}`,
+      weekday: value('weekday'), hour: Number(value('hour')) };
+  }
+
+  function playroomAutomationPlan(now = clock()) {
+    const observedAt = new Date(now);
+    if (!Number.isFinite(observedAt.getTime())) throw new Error('playroom automation requires a valid clock');
+    const sessions = playroomSessions();
+    const active = sessions.find(session => !['completed', 'excluded'].includes(session.status));
+    if (active) return { due: false, state: 'active_session', active_session_id: active.id,
+      next_check_after: null };
+    if (state.cycles.some(cycle => cycle.status === 'running')) {
+      return { due: false, state: 'deferred_for_operational_cycle', active_session_id: null,
+        next_check_after: null };
+    }
+    if (state.cognition.self_model.behavioral_fingerprints.runs.some(run => run.status === 'active')) {
+      return { due: false, state: 'sealed_by_build_bound_fingerprint', active_session_id: null,
+        next_check_after: null };
+    }
+    if (state.cognition.self_model.context_trials.some(trial => trial.status === 'active')) {
+      return { due: false, state: 'sealed_by_blinded_context_trial', active_session_id: null,
+        next_check_after: null };
+    }
+    if (state.cognition.developmental_reading.sessions.some(session => session.status === 'active')) {
+      return { due: false, state: 'reading_encounter_active', active_session_id: null,
+        next_check_after: null };
+    }
+    const local = chicagoClockParts(observedAt);
+    const offHours = ['Sat', 'Sun'].includes(local.weekday) || local.hour < 7 || local.hour >= 18;
+    const nextOffHours = new Date(observedAt.getTime() + (offHours ? 0 : Math.max(1, 18 - local.hour) * 3600000));
+    if (!offHours) return { due: false, state: 'waiting_for_off_hours', active_session_id: null,
+      next_check_after: nextOffHours.toISOString() };
+    const today = sessions.filter(session => chicagoClockParts(new Date(session.created_at)).day_key === local.day_key);
+    if (today.length >= 2) return { due: false, state: 'daily_leisure_budget_exhausted',
+      active_session_id: null, next_check_after: null };
+    const latest = sessions.at(-1) || null;
+    const cooldownUntil = latest ? new Date(new Date(latest.created_at).getTime() + 4 * 3600000) : null;
+    if (cooldownUntil && observedAt < cooldownUntil) return { due: false, state: 'leisure_cooldown',
+      active_session_id: null, next_check_after: cooldownUntil.toISOString() };
+    const interactionTimes = (typeof getInteractions === 'function' ? (getInteractions() || []).slice(-200) : [])
+      .map(item => item.at || item.timestamp || item.created_at || item.date)
+      .map(value => new Date(value).getTime()).filter(Number.isFinite);
+    const latestInteractionAt = interactionTimes.length ? Math.max(...interactionTimes) : null;
+    const idleMinutes = latestInteractionAt == null ? 1440
+      : Math.max(0, Math.round((observedAt.getTime() - latestInteractionAt) / 60000));
+    if (idleMinutes < 30) return { due: false, state: 'recent_interactive_activity',
+      active_session_id: null,
+      next_check_after: new Date((latestInteractionAt || observedAt.getTime()) + 30 * 60000).toISOString() };
+    const noveltyMinutes = latest ? Math.max(0,
+      Math.round((observedAt.getTime() - new Date(latest.created_at).getTime()) / 60000)) : 1440;
+    const preState = { stimulation_deficit: Math.max(0, Math.min(1, (idleMinutes - 20) / 120)),
+      novelty_deficit: Math.max(0, Math.min(1, noveltyMinutes / 480)), idle_minutes: idleMinutes,
+      operational_load: 0, observed_at: observedAt.toISOString() };
+    return { due: true, state: 'leisure_opportunity_due', active_session_id: null,
+      next_check_after: null, pre_state: preState };
+  }
+
+  function openAutonomousPlaySession(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const plan = playroomAutomationPlan(input.at || clock());
+      if (!input.force && !plan.due) throw new Error(`playroom session is not due: ${plan.state}`);
+      if (playroomSessions(current.cognition).some(session => !['completed', 'excluded'].includes(session.status))) {
+        throw new Error('finish the active playroom session before opening another');
+      }
+      const controls = getBehavioralFingerprintControls();
+      if (!controls?.model_control || !controls?.state_control) {
+        throw new Error('playroom requires exact model, build, and state controls');
+      }
+      const hiddenSeed = String(input.hidden_seed || '');
+      const condition = input.condition || autonomousPlay.balancedCondition(
+        playroomSessions(current.cognition), hiddenSeed);
+      const preState = input.pre_state || plan.pre_state;
+      const session = autonomousPlay.createSession({ id: input.id, condition, hidden_seed: hiddenSeed,
+        model_control: controls.model_control,
+        state_commitment: autonomousPlay.commitment({ state_control: controls.state_control, pre_state: preState }),
+        pre_state: preState }, input.at || clock());
+      current.cognition.autonomous_play.sessions.push(session);
+      current.cognition.autonomous_play.sessions = current.cognition.autonomous_play.sessions.slice(-120);
+      researchLedgerAppend(current, { kind: 'autonomous_play_session_preregistered',
+        subject_type: 'autonomous_play_session', subject_id: session.id,
+        payload: playroomLedgerPayload('autonomous_play_session_preregistered', session) });
+      if (session.selection) researchLedgerAppend(current, { kind: 'autonomous_play_activity_selected',
+        subject_type: 'autonomous_play_session', subject_id: session.id,
+        payload: playroomLedgerPayload('autonomous_play_activity_selected', session) });
+      return { session: autonomousPlay.publicSession(session), audit: playroomSessionAudit(session, current.cognition) };
+    });
+  }
+
+  function playroomProviderResponseIds(cognition = state.cognition) {
+    const ids = [];
+    for (const session of playroomSessions(cognition)) {
+      if (session.selection?.provider_receipt?.response_id) ids.push(session.selection.provider_receipt.response_id);
+      for (const turn of session.game?.turns || []) {
+        if (turn.provider_receipt?.response_id) ids.push(turn.provider_receipt.response_id);
+      }
+      if (session.appraisal?.provider_receipt?.response_id) ids.push(session.appraisal.provider_receipt.response_id);
+    }
+    return ids;
+  }
+
+  function playroomSelectionQueue() {
+    const session = playroomSessions().find(item => item.status === 'awaiting_selection');
+    if (!session || !playroomSessionAudit(session).complete_chain_verified) return [];
+    const request = autonomousPlay.selectionRequest(session);
+    return request ? [{ ...request, queue_kind: 'selection', model_control: session.model_control }] : [];
+  }
+
+  function commitPlayroomSelection(sessionId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const session = playroomSessions(current.cognition).find(item => item.id === sessionId);
+      if (!session) return null;
+      const responseId = String(input.provider_receipt?.response_id || '');
+      if (responseId && playroomProviderResponseIds(current.cognition).includes(responseId)) {
+        throw new Error('playroom provider response id has already been used');
+      }
+      const selection = autonomousPlay.commitSelection(session, input, clock());
+      researchLedgerAppend(current, { kind: 'autonomous_play_activity_selected',
+        subject_type: 'autonomous_play_session', subject_id: session.id,
+        payload: playroomLedgerPayload('autonomous_play_activity_selected', session) });
+      return { selection: JSON.parse(JSON.stringify(selection)), session: autonomousPlay.publicSession(session) };
+    });
+  }
+
+  function playroomTurnQueue() {
+    const session = playroomSessions().find(item => item.status === 'active');
+    if (!session || !playroomSessionAudit(session).complete_chain_verified) return [];
+    const request = autonomousPlay.turnRequest(session);
+    return request ? [{ ...request, queue_kind: 'turn', model_control: session.model_control }] : [];
+  }
+
+  function commitPlayroomTurn(sessionId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const session = playroomSessions(current.cognition).find(item => item.id === sessionId);
+      if (!session) return null;
+      const responseId = String(input.provider_receipt?.response_id || '');
+      if (responseId && playroomProviderResponseIds(current.cognition).includes(responseId)) {
+        throw new Error('playroom provider response id has already been used');
+      }
+      const turn = autonomousPlay.commitTurn(session, input, clock());
+      researchLedgerAppend(current, { kind: 'autonomous_play_turn_committed',
+        subject_type: 'autonomous_play_turn', subject_id: `${session.id}:turn-${turn.index}`,
+        payload: playroomLedgerPayload('autonomous_play_turn_committed', session, turn) });
+      return { turn: JSON.parse(JSON.stringify(turn)), session: autonomousPlay.publicSession(session) };
+    });
+  }
+
+  function playroomAppraisalQueue(at = clock()) {
+    const session = playroomSessions().find(item => ['awaiting_appraisal', 'incubating'].includes(item.status));
+    if (!session || !playroomSessionAudit(session).complete_chain_verified) return [];
+    const request = autonomousPlay.appraisalRequest(session, at);
+    return request ? [{ ...request, queue_kind: 'appraisal', model_control: session.model_control }] : [];
+  }
+
+  function commitPlayroomAppraisal(sessionId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const sessions = playroomSessions(current.cognition);
+      const session = sessions.find(item => item.id === sessionId);
+      if (!session) return null;
+      const responseId = String(input.provider_receipt?.response_id || '');
+      if (responseId && playroomProviderResponseIds(current.cognition).includes(responseId)) {
+        throw new Error('playroom provider response id has already been used');
+      }
+      const priorScores = sessions.filter(item => item.id !== session.id && item.status === 'completed'
+        && item.game && playroomSessionAudit(item, current.cognition).complete_chain_verified)
+        .map(item => item.game.score).sort((left, right) => left - right);
+      const priorMedianScore = priorScores.length ? priorScores[Math.floor(priorScores.length / 2)] : 0;
+      const appraisal = autonomousPlay.commitAppraisal(session, input, clock(), { priorMedianScore });
+      researchLedgerAppend(current, { kind: 'autonomous_play_appraisal_committed',
+        subject_type: 'autonomous_play_session', subject_id: session.id,
+        payload: playroomLedgerPayload('autonomous_play_appraisal_committed', session) });
+      researchLedgerAppend(current, { kind: 'autonomous_play_session_completed',
+        subject_type: 'autonomous_play_session', subject_id: session.id,
+        payload: playroomLedgerPayload('autonomous_play_session_completed', session) });
+      return { appraisal: JSON.parse(JSON.stringify(appraisal)), session: autonomousPlay.publicSession(session),
+        audit: playroomSessionAudit(session, current.cognition) };
+    });
+  }
+
+  function playroomSnapshot() {
+    const sessions = playroomSessions();
+    const verified = sessions.filter(session => playroomSessionAudit(session).complete_chain_verified);
+    const result = autonomousPlay.snapshot(verified, playroomAutomationPlan());
+    const enhance = visible => {
+      if (!visible) return null;
+      const source = sessions.find(session => session.id === visible.id);
+      return { ...visible, audit: source ? playroomSessionAudit(source) : visible.audit };
+    };
+    result.current = enhance(result.current);
+    result.recent = result.recent.map(enhance);
+    result.report.invalid = sessions.length - verified.length;
+    return result;
+  }
+
   function recordTrace(input = {}) {
     return mutate(current => {
       const trace = {
@@ -25821,6 +26084,9 @@ ${episodes.map(item => {
     registerReadingSource, startReadingSession, developmentalReadingQueue,
     commitDevelopmentalReadingNote, developmentalReadingSnapshot,
     developmentalReadingInfluenceSnapshot, readingSourceAudit, readingSessionAudit,
+    playroomAutomationPlan, openAutonomousPlaySession, playroomSelectionQueue,
+    commitPlayroomSelection, playroomTurnQueue, commitPlayroomTurn,
+    playroomAppraisalQueue, commitPlayroomAppraisal, playroomSnapshot, playroomSessionAudit,
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,

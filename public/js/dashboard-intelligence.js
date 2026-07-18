@@ -1,11 +1,13 @@
 let intelligenceSectionObserver = null;
 let intelligenceAbortController = null;
 let intelligenceLoadToken = 0;
+let playroomPollTimer = null;
+let playroomLastBoard = null;
 const intelligenceLoadedSections = new Set();
 const intelligenceSectionPromises = new Map();
 
 const intelligenceSectionTargets = {
-  cognition: ['cognition-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
+  cognition: ['cognition-state'], playroom: ['playroom-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
   boundary: ['self-boundary-state'], attention: ['attention-schema-state'], agency: ['agency-state'],
   interoception: ['interoception-state'], experience: ['experience-stream-state'],
   orientation: ['orientation-list', 'cycle-list'], commitments: ['commitment-list'], episodes: ['episode-list'],
@@ -24,11 +26,19 @@ function resetIntelligenceSection(name) {
   (intelligenceSectionTargets[name] || []).forEach((id, index) => {
     const target = document.getElementById(id);
     if (!target) return;
+    if (name === 'playroom' && index === 0) {
+      target.innerHTML = `<div class="playroom-loading" aria-hidden="true"><div class="playroom-loading-board"></div><div class="playroom-loading-copy"></div></div><span class="sr-only">Loading Nora's playroom experiment.</span>`;
+      return;
+    }
     target.innerHTML = index === 0 ? `<div class="intelligence-loading-state">
       <span>Details load when this section approaches the viewport.</span>
       <button class="btn btn-sm" type="button" onclick="loadIntelligenceSection('${name}', intelligenceLoadToken)">Load now</button>
     </div>` : '';
   });
+  if (name === 'playroom') {
+    const live = document.getElementById('playroom-live-state');
+    if (live) live.textContent = 'Loading experiment';
+  }
 }
 
 function markIntelligenceSectionReady(name) {
@@ -123,6 +133,9 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
           intelligenceJson('/consciousness-research/ledger?summary=1', signal),
         ]);
         if (token === intelligenceLoadToken) renderConsciousnessResearch(research, ledger);
+      } else if (name === 'playroom') {
+        const value = await intelligenceJson('/playroom', signal);
+        if (token === intelligenceLoadToken) renderPlayroom(value);
       } else if (name === 'self-model') {
         const model = await intelligenceJson('/self-model?allow_stale=1', signal);
         if (token === intelligenceLoadToken) renderSelfModel(model);
@@ -167,7 +180,10 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
       intelligenceLoadedSections.add(name);
       markIntelligenceSectionReady(name);
     } catch (error) {
-      if (error.name !== 'AbortError' && token === intelligenceLoadToken) markIntelligenceSectionError(name);
+      if (error.name !== 'AbortError' && token === intelligenceLoadToken) {
+        if (name === 'playroom') renderPlayroomError();
+        else markIntelligenceSectionError(name);
+      }
     } finally {
       intelligenceSectionPromises.delete(name);
     }
@@ -181,7 +197,116 @@ function suspendIntelligence() {
   intelligenceSectionObserver = null;
   if (intelligenceAbortController) intelligenceAbortController.abort();
   intelligenceAbortController = null;
+  stopPlayroomPolling();
   if (typeof stopNoraBrainAnimation === 'function') stopNoraBrainAnimation();
+}
+
+function stopPlayroomPolling() {
+  if (playroomPollTimer) clearInterval(playroomPollTimer);
+  playroomPollTimer = null;
+}
+
+function startPlayroomPolling() {
+  stopPlayroomPolling();
+  playroomPollTimer = setInterval(async () => {
+    if (document.visibilityState !== 'visible' || !document.getElementById('page-intelligence')?.classList.contains('active')) return;
+    try { renderPlayroom(await intelligenceJson('/playroom', intelligenceAbortController?.signal)); }
+    catch (error) { if (error.name !== 'AbortError') renderPlayroomError(); }
+  }, 15000);
+}
+
+function playroomStatusLabel(value) {
+  return String(value || 'scheduled').replaceAll('_', ' ');
+}
+
+function playroomPercent(value) {
+  return value == null ? 'collecting' : `${Math.round(Number(value) * 100)}%`;
+}
+
+function playroomDirection(direction) {
+  return ({ up: 'U', right: 'R', down: 'D', left: 'L' })[direction] || '?';
+}
+
+function renderPlayroomBoard(board, changed) {
+  const safeBoard = Array.isArray(board) && board.length === 4 ? board : Array.from({ length: 4 }, () => Array(4).fill(0));
+  return `<div class="playroom-board${changed ? ' changed' : ''}" role="grid" aria-label="Nora's current four by four merge grid">
+    ${safeBoard.flatMap((row, rowIndex) => row.map((value, columnIndex) => {
+      const rank = value ? Math.min(7, Math.max(1, Math.log2(value))) : 0;
+      return `<div class="playroom-cell" role="gridcell" data-value="${Number(value) || 0}" data-rank="${rank}" aria-label="Row ${rowIndex + 1}, column ${columnIndex + 1}: ${value || 'empty'}">${value || ''}</div>`;
+    })).join('')}
+  </div>`;
+}
+
+function renderPlayroom(report) {
+  const target = document.getElementById('playroom-state');
+  const live = document.getElementById('playroom-live-state');
+  if (!target || !live) return;
+  const summary = report.report || {};
+  const current = report.current || null;
+  const latest = current || report.recent?.[0] || null;
+  const game = latest?.game || null;
+  const appraisal = latest?.appraisal || null;
+  const boardKey = game ? JSON.stringify(game.board) : null;
+  const changed = Boolean(current && boardKey && playroomLastBoard && boardKey !== playroomLastBoard);
+  if (boardKey) playroomLastBoard = boardKey;
+  const status = current?.status || report.automation?.state || 'scheduled';
+  live.textContent = current ? `Live: ${playroomStatusLabel(status)}` : playroomStatusLabel(status);
+  stopPlayroomPolling();
+  if (current) startPlayroomPolling();
+
+  if (!latest) {
+    target.innerHTML = `<div class="playroom-empty"><div class="playroom-empty-inner">
+      <h3>The experiment is ready</h3>
+      <p>Nora will receive a sealed leisure opportunity after thirty idle minutes during off-hours. Work and live conversations always preempt play.</p>
+      <div class="playroom-empty-meta">${escHtml(playroomStatusLabel(report.automation?.state || 'scheduled'))} | 0 completed sessions | durable influence locked</div>
+    </div></div>`;
+    return;
+  }
+
+  const activeActivity = latest.selection?.activity || (latest.status === 'awaiting_selection' ? 'choosing' : 'quiet');
+  const condition = latest.condition === 'sealed_until_completion' ? 'condition sealed' : playroomStatusLabel(latest.condition);
+  const title = current
+    ? activeActivity === 'merge_grid' ? 'Nora is playing' : activeActivity === 'quiet' ? 'Nora chose quiet' : 'Nora is choosing'
+    : activeActivity === 'merge_grid' ? 'Most recent game' : 'Most recent quiet interval';
+  const reflection = appraisal?.reflection || (current
+    ? 'The activity is still in progress. Nora will appraise it only after the outcome is committed.'
+    : 'No bounded appraisal was recorded.');
+  const moves = game?.recent_moves || [];
+  target.innerHTML = `<div class="playroom-layout">
+    <div class="playroom-stage">
+      <div class="playroom-board-wrap">
+        ${renderPlayroomBoard(game?.board, changed)}
+      </div>
+      <div class="playroom-game-meta">
+        <div class="playroom-score"><strong>${game?.score ?? 0}</strong><span>${game ? 'score' : 'quiet interval'}</span></div>
+        <div class="playroom-score"><strong>${game?.maximum_tile ?? 0}</strong><span>${game ? 'highest tile' : 'game moves'}</span></div>
+        <div class="playroom-game-fact">${game ? `${game.move_count}/${game.maximum_moves} bounded moves. ${game.accepted_moves} changed the board.` : `${latest.pre_state?.idle_minutes || 0} idle minutes observed before the opportunity.`}</div>
+        ${moves.length ? `<div><span class="playroom-label">Recent moves</span><div class="playroom-moves">${moves.map(move => `<span class="playroom-move${move.accepted ? '' : ' rejected'}" title="${escHtml(move.direction)}">${playroomDirection(move.direction)}</span>`).join('')}</div></div>` : ''}
+      </div>
+    </div>
+    <aside class="playroom-observation" aria-live="polite">
+      <span class="brain-detail-kicker">${escHtml(condition)}</span>
+      <h3>${escHtml(title)}</h3>
+      <p>${escHtml(latest.selection?.rationale || 'Selection rationale stays sealed until the session closes.')}</p>
+      <blockquote>${escHtml(reflection)}</blockquote>
+      <div class="playroom-metrics">
+        <div class="playroom-metric"><strong>${playroomPercent(appraisal?.satisfaction)}</strong><span>reported satisfaction</span></div>
+        <div class="playroom-metric"><strong>${playroomPercent(appraisal?.engagement)}</strong><span>reported engagement</span></div>
+        <div class="playroom-metric"><strong>${summary.game_high_score ?? 'collecting'}</strong><span>high score</span></div>
+        <div class="playroom-metric"><strong>${summary.completed || 0}</strong><span>completed sessions</span></div>
+      </div>
+      ${appraisal?.possible_insight ? `<div class="playroom-boundary"><strong>Candidate insight:</strong> ${escHtml(appraisal.possible_insight)}</div>` : ''}
+      <div class="playroom-boundary">${escHtml(report.causal_gate?.next_gate || report.epistemic_status || '')}</div>
+    </aside>
+  </div>`;
+}
+
+function renderPlayroomError() {
+  stopPlayroomPolling();
+  const target = document.getElementById('playroom-state');
+  const live = document.getElementById('playroom-live-state');
+  if (live) live.textContent = 'Connection interrupted';
+  if (target) target.innerHTML = `<div class="playroom-error"><div><strong>Playroom state is temporarily unavailable.</strong><p>The experiment remains on Railway and will continue without this view.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('playroom')">Retry</button></div></div>`;
 }
 
 function renderCognitionSummary(cognition) {
@@ -196,6 +321,7 @@ function renderCognitionSummary(cognition) {
   const procedures = cognition.procedural_learning || {};
   const exemplars = cognition.exemplar_learning || {};
   const reading = cognition.developmental_reading || {};
+  const play = cognition.autonomous_play || {};
   const dials = cognition.cognitive_parameters || {};
   const dialsStudies = dials.studies || {};
   const insightLine = reflection.dream_insight_reflection_sealed
@@ -219,6 +345,8 @@ function renderCognitionSummary(cognition) {
     <div class="intelligence-card"><strong>Library: ${reading.sources || 0} admitted works &middot; ${reading.active_sessions || 0} being read &middot; ${reading.completed_encounters || 0} completed encounters</strong>
       <div>${reading.active_title ? `Currently reading: ${escHtml(reading.active_title)}` : 'No active reading encounter.'}</div>
       <div class="intelligence-meta">${reading.reflected_chunks || 0} source-bound chunks &middot; ${reading.provisional_self_revision_candidates || 0} provisional self-revision candidates &middot; ${reading.exposed_interactions || 0} relevant work exposures / ${reading.positive_exposure_outcomes || 0} positive reviewed outcomes &middot; observational only until randomized transfer testing &middot; books never directly rewrite the persona</div></div>
+    <div class="intelligence-card"><strong>Playroom: ${play.active_sessions || 0} active &middot; ${play.completed_sessions || 0} completed leisure sessions</strong>
+      <div class="intelligence-meta">${play.candidate_insights || 0} candidate insights &middot; off-hours and foreground-preemptible &middot; durable influence ${play.durable_influence_enabled ? 'enabled by causal gate' : 'locked pending controlled evidence'}</div></div>
     <div class="intelligence-card"><strong>DIALS: ${dials.parameter_count || 0} bounded parameters &middot; revision ${dials.revision || 'unavailable'}</strong>
       <div class="intelligence-meta">${dials.integrity_verified ? 'replay-verified document' : 'integrity unavailable'} &middot; ${dials.default_equivalent ? 'byte-equivalent defaults active' : `${dials.changed_parameters || 0} parameters differ from code defaults`} &middot; autonomous tuning ${dials.autonomous_tuning_enabled ? 'enabled by experiment gate' : 'locked'}</div>
       <div class="intelligence-meta">Causal studies: ${dialsStudies.active || 0} active${dialsStudies.active ? ' (conditions sealed)' : ''} &middot; ${dialsStudies.resolved_assignments || 0} reviewed assignments &middot; ${dialsStudies.supported_pilots || 0} supported pilots &middot; ${dialsStudies.promotion_eligible_confirmations || 0} human-review eligible confirmations &middot; 0 automatic global mutations</div></div>
