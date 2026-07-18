@@ -53,7 +53,7 @@ function pilotDesign({ graderModel = DEFAULT_GRADER_MODEL } = {}) {
 }
 
 function relevantTrials(store) {
-  return (store.snapshot()?.cognition?.self_model?.context_trials || [])
+  return grading.contextTrials(store)
     .filter(trial => trial.intervention === 'global_broadcast');
 }
 
@@ -61,7 +61,7 @@ function status(store, runtime = {}) {
   const trials = relevantTrials(store);
   const pilot = trials.find(item => item.id === PILOT_ID)
     || trials.find(item => item.study_phase === 'pilot') || null;
-  const activeOther = (store.snapshot()?.cognition?.self_model?.context_trials || [])
+  const activeOther = grading.contextTrials(store)
     .find(item => item.status === 'active' && item.id !== pilot?.id) || null;
   return {
     protocol_version: PROTOCOL_VERSION,
@@ -77,7 +77,7 @@ function status(store, runtime = {}) {
 
 function ensurePilot(store, { enabled = true, graderModel = DEFAULT_GRADER_MODEL } = {}) {
   if (!enabled) return { state: 'disabled', trial: null };
-  const all = store.snapshot()?.cognition?.self_model?.context_trials || [];
+  const all = grading.contextTrials(store);
   const existing = all.find(item => item.id === PILOT_ID)
     || all.find(item => item.intervention === 'global_broadcast' && item.study_phase === 'pilot');
   if (existing) return { state: existing.status === 'active' ? 'collecting_pilot' : 'pilot_closed', trial: existing };
@@ -138,7 +138,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
     stale_incomplete_assignments_excluded: 0, provider_failures: [], reveal: null };
   if (!enabled || !ensured.trial || ensured.trial.status !== 'active') return result;
   if (typeof callProvider !== 'function') throw new Error('global-broadcast research autopilot requires a grader provider');
-  let raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === ensured.trial.id);
+  let raw = grading.contextTrials(store).find(item => item.id === ensured.trial.id);
   if (raw.study_phase !== 'pilot' || raw.automated_pilot_grading?.evidence_scope !== 'model_graded_pilot_only') {
     return { ...result, state: 'manual_grading_required' };
   }
@@ -156,7 +156,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
       }
     }
     if (stale.length) {
-      raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === ensured.trial.id);
+      raw = grading.contextTrials(store).find(item => item.id === ensured.trial.id);
     }
   }
   const committedGraderModel = raw.automated_pilot_grading.grader_model;
@@ -191,9 +191,11 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
     }
     if (result.grades_committed >= gradeLimit) break;
   }
-  const latestSnapshot = store.snapshot();
-  const latest = latestSnapshot.cognition.self_model.context_trials.find(item => item.id === raw.id);
-  const terminal = terminalPilotState(latest, latestSnapshot.cognition);
+  const latest = grading.contextTrials(store).find(item => item.id === raw.id);
+  const events = typeof store.globalBroadcastEventsRuntimeSnapshot === 'function'
+    ? store.globalBroadcastEventsRuntimeSnapshot()
+    : store.snapshot()?.cognition?.global_broadcast?.events || [];
+  const terminal = terminalPilotState(latest, { global_broadcast: { events } });
   result.terminal_state = terminal;
   if (terminal.ready) {
     result.reveal = store.evaluateContextTrial(latest.id, { reveal: true });

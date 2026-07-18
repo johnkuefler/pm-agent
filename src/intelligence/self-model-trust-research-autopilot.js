@@ -64,7 +64,7 @@ function pilotDesign({ graderModel = DEFAULT_GRADER_MODEL, revisionId } = {}) {
 }
 
 function relevantTrials(store) {
-  return (store.snapshot()?.cognition?.self_model?.context_trials || [])
+  return grading.contextTrials(store)
     .filter(trial => trial.intervention === 'self_model_trust_policy_access');
 }
 
@@ -77,7 +77,9 @@ function naturalEvidenceGate(store, profile = null) {
     return { ready: false, state: 'waiting_for_replay_valid_trust_policy', eligible_outcomes: 0 };
   }
   const sourceIds = [...new Set((revision.source_moment_ids || []).map(String))];
-  const moments = store.snapshot()?.cognition?.experience_stream || [];
+  const moments = typeof store.experienceForecastOutcomesRuntimeSnapshot === 'function'
+    ? store.experienceForecastOutcomesRuntimeSnapshot({ ids: sourceIds })
+    : store.snapshot()?.cognition?.experience_stream || [];
   const byId = new Map(moments.map(moment => [String(moment.id), moment]));
   const sources = sourceIds.map(id => byId.get(id)).filter(Boolean);
   const eligible = sources.filter(moment => Number(moment.self_forecast?.protocol_version) >= 7
@@ -121,7 +123,7 @@ function status(store, runtime = {}) {
   const trials = relevantTrials(store);
   const pilot = trials.find(item => item.id === PILOT_ID)
     || trials.find(item => item.study_phase === 'pilot') || null;
-  const activeOther = (store.snapshot()?.cognition?.self_model?.context_trials || [])
+  const activeOther = grading.contextTrials(store)
     .find(item => item.status === 'active' && item.id !== pilot?.id) || null;
   return {
     protocol_version: PROTOCOL_VERSION,
@@ -137,7 +139,7 @@ function status(store, runtime = {}) {
 
 function ensurePilot(store, { enabled = true, graderModel = DEFAULT_GRADER_MODEL } = {}) {
   if (!enabled) return { state: 'disabled', trial: null };
-  const all = store.snapshot()?.cognition?.self_model?.context_trials || [];
+  const all = grading.contextTrials(store);
   const existing = all.find(item => item.id === PILOT_ID)
     || all.find(item => item.intervention === 'self_model_trust_policy_access'
       && item.study_phase === 'pilot');
@@ -208,7 +210,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
   if (typeof callProvider !== 'function') {
     throw new Error('self-model trust research autopilot requires a grader provider');
   }
-  let raw = store.snapshot().cognition.self_model.context_trials
+  let raw = grading.contextTrials(store)
     .find(item => item.id === ensured.trial.id);
   if (raw.study_phase !== 'pilot'
     || raw.automated_pilot_grading?.evidence_scope !== 'model_graded_pilot_only') {
@@ -228,7 +230,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
       }
     }
     if (stale.length) {
-      raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === raw.id);
+      raw = grading.contextTrials(store).find(item => item.id === raw.id);
     }
   }
   const committedGraderModel = raw.automated_pilot_grading.grader_model;
@@ -272,7 +274,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
     }
     if (result.grades_committed >= gradeLimit) break;
   }
-  const latest = store.snapshot().cognition.self_model.context_trials
+  const latest = grading.contextTrials(store)
     .find(item => item.id === raw.id);
   const terminal = terminalPilotState(latest);
   result.terminal_state = terminal;

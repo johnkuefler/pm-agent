@@ -5847,6 +5847,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  // Internal scheduler view. Unlike snapshot(), this does not clone the entire intelligence
+  // state just to inspect the small broadcast event ledger used by the research autopilot.
+  // It is deliberately not routed to a public endpoint; experimental reveal still goes through
+  // evaluateContextTrial and its existing integrity checks.
+  function globalBroadcastEventsRuntimeSnapshot() {
+    return JSON.parse(JSON.stringify(state.cognition.global_broadcast?.events || []));
+  }
+
   function recordNaturalAffectiveTransition(current, previous, next, now) {
     const transitions = current.cognition.affective_regulation.transitions;
     const changed = !transitions.length || !previous || previous.mode !== next.mode
@@ -14281,6 +14289,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return state.cognition.self_model.context_trials
       .filter(trial => trial.status === 'active')
       .map(sealedContextTrialSummary);
+  }
+
+  // Internal scheduler view. Research coordinators need sealed trial records, but a full
+  // snapshot() deep-copy grows with every other memory system and can block live delivery.
+  // Mutations and reveals continue to use the integrity-verifying store methods.
+  function contextTrialsRuntimeSnapshot() {
+    return JSON.parse(JSON.stringify(state.cognition.self_model.context_trials || []));
   }
 
   function experimentalAccessFingerprint() {
@@ -25100,6 +25115,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .slice(0, Math.max(0, Number(limit) || 0)).map(item => item.snapshot);
   }
 
+  // The trust-policy gate reads only frozen forecast outcomes for known source moments. This
+  // bounded projection omits large start/closure snapshots and unrelated experience records.
+  function experienceForecastOutcomesRuntimeSnapshot({ ids = [] } = {}) {
+    const wanted = new Set((ids || []).map(String));
+    return (state.cognition.experience_stream || [])
+      .filter(moment => wanted.has(String(moment.id)))
+      .map(moment => ({
+        id: moment.id,
+        self_forecast: moment.self_forecast ? JSON.parse(JSON.stringify(moment.self_forecast)) : null,
+      }));
+  }
+
   function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
     const contextReceipt = {
@@ -25460,7 +25487,7 @@ ${episodes.map(item => {
     submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,
     gradeBehavioralFingerprintVoice, abortBehavioralFingerprintRun,
     behavioralFingerprintSnapshot, behavioralFingerprintAudit,
-    experienceMomentAudit, experienceStreamSnapshot,
+    experienceMomentAudit, experienceStreamSnapshot, experienceForecastOutcomesRuntimeSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionAuditPerformance,
     continuityProjectionRecovery, continuityProjectionRepair,
@@ -25503,7 +25530,8 @@ ${episodes.map(item => {
     selfInductionProposalReviewQueue, reviewSelfInductionProposals, selfInductionOutcomeReviewQueue, resolveSelfInductionItem,
     abortSelfInductionStudy, selfInductionStudiesSnapshot,
     recordSelfClaim, createSelfProbe, resolveSelfProbe, selfProbeReviewQueue, reviewSelfProbe,
-    selfModelSnapshot, activeContextTrialsSnapshot, experimentalAccessFingerprint,
+    selfModelSnapshot, activeContextTrialsSnapshot, contextTrialsRuntimeSnapshot,
+    experimentalAccessFingerprint,
     empiricalSelfKnowledgeSnapshot,
     createSelfPredictionStudy, submitSelfPrediction, submitModelControlledSelfPrediction,
     recordSelfPredictionSubjectInferenceFailure, attestSelfPredictionSubjectModelReceipt,
@@ -25573,7 +25601,8 @@ ${episodes.map(item => {
     researchLedgerVerificationPerformance,
     recordVerifiedExternalSourceAttestation, attestCommitmentSourceFromReadback, externalSourceAttestationsSnapshot,
     researchTransparencyBundle,
-    runGlobalBroadcast, globalBroadcastSnapshot, globalBroadcastAccessAvailable,
+    runGlobalBroadcast, globalBroadcastSnapshot, globalBroadcastEventsRuntimeSnapshot,
+    globalBroadcastAccessAvailable,
   };
 }
 

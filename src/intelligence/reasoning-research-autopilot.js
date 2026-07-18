@@ -200,8 +200,15 @@ function gradeSubmission(queueItem, response, options = {}) {
   };
 }
 
+function contextTrials(store) {
+  if (typeof store.contextTrialsRuntimeSnapshot === 'function') {
+    return store.contextTrialsRuntimeSnapshot();
+  }
+  return store.snapshot()?.cognition?.self_model?.context_trials || [];
+}
+
 function relevantTrials(store) {
-  return (store.snapshot()?.cognition?.self_model?.context_trials || [])
+  return contextTrials(store)
     .filter(trial => trial.intervention === 'reasoning_self_regulation');
 }
 
@@ -242,7 +249,7 @@ function retireLatencyIncompatiblePilot(store, trial) {
     explanation: `Interactive performance protocol v${interactivePerformance.PROTOCOL_VERSION} forbids ${trial.intervention} on every preregistered surface because it adds forecast provider calls and expanded generation before first delivery. Continuing enrollment would violate the foreground latency policy. This lifecycle decision does not depend on outcome values; partial outcomes will not be revealed or analyzed.`,
     evidence: LATENCY_RETIREMENT.evidence,
   });
-  return store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id) || null;
+  return contextTrials(store).find(item => item.id === trial.id) || null;
 }
 
 function summarizeTrial(trial) {
@@ -308,7 +315,7 @@ function status(store, runtime = {}) {
   const trials = relevantTrials(store);
   const pilot = trials.find(item => item.id === PILOT_ID)
     || trials.find(item => item.study_phase === 'pilot') || null;
-  const activeOther = (store.snapshot()?.cognition?.self_model?.context_trials || [])
+  const activeOther = contextTrials(store)
     .find(item => item.status === 'active' && item.id !== pilot?.id) || null;
   return {
     protocol_version: PROTOCOL_VERSION,
@@ -325,7 +332,7 @@ function status(store, runtime = {}) {
 
 function ensurePilot(store, { enabled = true, graderModel = DEFAULT_GRADER_MODEL } = {}) {
   if (!enabled) return { state: 'disabled', trial: null };
-  const all = store.snapshot()?.cognition?.self_model?.context_trials || [];
+  const all = contextTrials(store);
   const existing = all.find(item => item.id === PILOT_ID)
     || all.find(item => item.intervention === 'reasoning_self_regulation' && item.study_phase === 'pilot');
   if (existing) {
@@ -366,7 +373,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
     provider_failures: [], reveal: null };
   if (!enabled || !ensured.trial || ensured.trial.status !== 'active') return result;
   if (typeof callProvider !== 'function') throw new Error('research autopilot requires a grader provider');
-  const raw = store.snapshot().cognition.self_model.context_trials.find(item => item.id === ensured.trial.id);
+  const raw = contextTrials(store).find(item => item.id === ensured.trial.id);
   if (raw.study_phase !== 'pilot' || raw.automated_pilot_grading?.evidence_scope !== 'model_graded_pilot_only') {
     return { ...result, state: 'manual_grading_required' };
   }
@@ -401,7 +408,7 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
     }
     if (result.grades_committed >= Math.max(0, Number(maxGrades) || 0)) break;
   }
-  const latest = store.snapshot().cognition.self_model.context_trials.find(item => item.id === raw.id);
+  const latest = contextTrials(store).find(item => item.id === raw.id);
   const terminal = terminalPilotState(latest);
   result.terminal_state = terminal;
   if (terminal.ready) {
@@ -420,5 +427,5 @@ module.exports = {
   EVALUATOR_ROLES, LATENCY_RETIREMENT, commitment, evaluatorIds, systemPrompt, gradeSchema, graderManifest,
   pilotDesign, parseGrade, gradeRequest, gradeSubmission, summarizeTrial, publicCycleStatus, status,
   latencyCompatibility, isLatencyRetirement, retireLatencyIncompatiblePilot,
-  ensurePilot, terminalPilotState, runCycle,
+  contextTrials, ensurePilot, terminalPilotState, runCycle,
 };

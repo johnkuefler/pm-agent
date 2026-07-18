@@ -10795,7 +10795,7 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
       maxGrades: config.maxGrades,
       callProvider,
     });
-    const reasoningPilot = intelligence.snapshot().cognition.self_model.context_trials
+    const reasoningPilot = intelligence.contextTrialsRuntimeSnapshot()
       .find(item => item.intervention === 'reasoning_self_regulation' && item.study_phase === 'pilot');
     const globalBroadcast = reasoningPilot && ['completed', 'aborted'].includes(reasoningPilot.status)
       ? await globalBroadcastResearchAutopilot.runCycle({
@@ -10803,7 +10803,7 @@ async function runResearchAutopilotRuntime({ post = axios.post } = {}) {
         maxGrades: config.maxGrades, callProvider,
       }) : { protocol_version: globalBroadcastResearchAutopilot.PROTOCOL_VERSION,
         state: 'waiting_for_reasoning_pilot', grades_committed: 0, provider_failures: [], reveal: null };
-    const globalBroadcastPilot = intelligence.snapshot().cognition.self_model.context_trials
+    const globalBroadcastPilot = intelligence.contextTrialsRuntimeSnapshot()
       .find(item => item.intervention === 'global_broadcast' && item.study_phase === 'pilot');
     const selfModelTrust = globalBroadcastPilot
       && ['completed', 'aborted'].includes(globalBroadcastPilot.status)
