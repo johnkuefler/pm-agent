@@ -1322,7 +1322,7 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, pro
 }
 
 const INTERACTIVE_INTELLIGENCE_BUDGET_CHARS = Object.freeze({
-  slack: 4000,
+  slack: 3950,
   'zoom-chat': 4000,
   realtime: 4000,
 });
@@ -1635,7 +1635,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       && !contextAssignment && !opts.sideEffectFree,
     procedureSelectionKey: opts.trialUnitKey || conversationText,
     includeExemplars: experimentalSurface === 'slack' && opts.exemplarsAvailable === true
-      && !contextAssignment && !opts.sideEffectFree,
+      && !contextAssignment && (!opts.sideEffectFree || opts.diagnosticLocalExemplars === true),
     exemplarSelectionKey: opts.trialUnitKey || conversationText,
   });
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
@@ -7620,6 +7620,8 @@ app.get('/admin/prompt-envelope', requireAuth, (req, res) => {
     contextTrialsEnabled: false,
     latencyCritical: true,
     sideEffectFree: true,
+    exemplarsAvailable: surface === 'slack',
+    diagnosticLocalExemplars: surface === 'slack',
     situationalAffordanceFrame,
   });
   const linkedContentReserve = surface === 'slack' ? 1650 : 0;

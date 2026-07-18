@@ -141,6 +141,10 @@ test('live server opts into complete Slack trials but never globally enables sec
     'task-specific capability learning must remain a deterministic prompt input');
   assert.match(server, /exemplarsAvailable: mode === 'normal'/,
     'only ordinary Slack replies may opt into local exemplar retrieval');
+  assert.match(server, /slack: 3950/,
+    'Slack keeps explicit headroom below the shared intelligence envelope');
+  assert.match(server, /diagnosticLocalExemplars: surface === 'slack'/,
+    'read-only production accounting must include the local exemplar prompt shape');
   const boundary = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
     'capability-boundary.js'), 'utf8');
   assert.doesNotMatch(boundary, /fetch\(|axios|anthropic|openai/i,
