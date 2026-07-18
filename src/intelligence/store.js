@@ -10957,8 +10957,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     // while the dashboard verifies only the latest twelve lifecycle records.
     const expectationAuditWindow = expectationForecasts.slice(-12);
     const recentResolvedExpectations = expectationAuditWindow.filter(item => item.status === 'resolved').length;
+    const expectationAuditCache = new Map();
     const replayVerifiedExpectationRecords = expectationAuditWindow.filter(item => item.status === 'resolved'
-      && expectationForecastAudit(item).complete_chain_verified);
+      && expectationForecastAudit(item, cognition, state.cycles, expectationAuditCache).complete_chain_verified);
     const replayVerifiedExpectations = replayVerifiedExpectationRecords.length;
     const expectationCalibration = expectationForecast.summarize(replayVerifiedExpectationRecords,
       new Date(clock().getTime() - 30 * 86400000).toISOString()).overall;
@@ -23638,18 +23639,40 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   const experienceLedgerAuditCacheKey = Symbol('experience-ledger-integrity');
+  const experienceLedgerEventIndexCacheKey = Symbol('experience-ledger-event-index');
+
+  function researchLedgerEventIndex(ledger, cache) {
+    const events = ledger?.events || [];
+    const cached = cache.get(experienceLedgerEventIndexCacheKey);
+    const headHash = events.at(-1)?.hash || null;
+    if (cached && cached.ledger === ledger && cached.event_count === events.length
+      && cached.head_hash === headHash) return cached.bindings;
+    const bindings = new Map();
+    events.forEach((event, index) => {
+      const key = `${event.kind}\u0000${event.subject_id}\u0000${event.payload_commitment}`;
+      const matches = bindings.get(key);
+      if (matches) matches.push(index);
+      else bindings.set(key, [index]);
+    });
+    cache.set(experienceLedgerEventIndexCacheKey, {
+      ledger, event_count: events.length, head_hash: headHash, bindings,
+    });
+    return bindings;
+  }
+
+  function uniqueResearchLedgerEventIndex(ledger, cache, kind, subjectId, payload) {
+    const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const matches = researchLedgerEventIndex(ledger, cache)
+      .get(`${kind}\u0000${subjectId}\u0000${payloadCommitment}`) || [];
+    return matches.length === 1 ? matches[0] : -1;
+  }
 
   function cycleSelfForecastAudit(record, moment, cognition = state.cognition, cycles = state.cycles,
     cache = new Map(), visited = new Set()) {
     if (!record || !moment) return { complete_chain_verified: false, reason: 'missing_forecast_or_moment' };
     const ledger = cognition.research_ledger || { events: [] };
-    const eventIndex = (kind, subjectId, payload) => {
-      const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
-      const matches = (ledger.events || []).map((event, index) => ({ event, index }))
-        .filter(item => item.event.kind === kind && item.event.subject_id === subjectId
-          && item.event.payload_commitment === payloadCommitment);
-      return matches.length === 1 ? matches[0].index : -1;
-    };
+    const eventIndex = (kind, subjectId, payload) =>
+      uniqueResearchLedgerEventIndex(ledger, cache, kind, subjectId, payload);
     const eventBound = (kind, subjectId, payload) => eventIndex(kind, subjectId, payload) >= 0;
     const manifestVerified = [1, 2, 3, 4, 5, 6, 7].includes(Number(record.protocol_version)) && record.cycle_id === moment.cycle_id
       && record.moment_id === moment.id
@@ -23888,11 +23911,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const researchLedgerChainVerified = cache.has(experienceLedgerAuditCacheKey)
       ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
     cache.set(experienceLedgerAuditCacheKey, researchLedgerChainVerified);
-    const eventBound = (kind, payload) => {
-      const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
-      return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === moment.id
-        && event.payload_commitment === payloadCommitment).length === 1;
-    };
+    const eventBound = (kind, payload) =>
+      uniqueResearchLedgerEventIndex(ledger, cache, kind, moment.id, payload) >= 0;
     if (Number(moment.lifecycle_protocol_version) !== 2) {
       const legacyGapPayload = { id: moment.id, cycle_id: moment.cycle_id, predecessor_id: moment.predecessor_id || null,
         started: moment.started, finished: moment.finished, status: moment.status, recovery: moment.closure?.recovery || null };
@@ -24156,8 +24176,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const priorRevision = revisions.find(item => Number(item.revision_index) === Number(revision.revision_index) - 1);
     const ledger = cognition.research_ledger || { events: [] };
     const payloadCommitment = payload => crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
-    const eventBound = (kind, subjectId, payload) => (ledger.events || []).filter(event => event.kind === kind
-      && event.subject_id === subjectId && event.payload_commitment === payloadCommitment(payload)).length === 1;
+    const eventBound = (kind, subjectId, payload) =>
+      uniqueResearchLedgerEventIndex(ledger, cache, kind, subjectId, payload) >= 0;
     const retainedEdge = retainedIndex === 0 && Number(revision.revision_index) > 0 && !priorRevision
       && (ledger.events || []).some(event => event.kind === 'behavioral_self_model_revised'
         && event.payload_commitment === payloadCommitment({ revision_commitment: revision.prior_revision_commitment }));
@@ -25072,7 +25092,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         ? { parameter_binding: record.resolution.parameter_binding } : {}) };
   }
 
-  function expectationForecastAudit(record, cognition = state.cognition, cycles = state.cycles) {
+  function expectationForecastAudit(record, cognition = state.cognition, cycles = state.cycles,
+    cache = new Map()) {
     if (!record) return { complete_chain_verified: false, reason: 'missing_expectation_forecast' };
     const cycle = cycles.find(item => item.id === record.cycle_id);
     const moment = cognition.experience_stream?.find(item => item.id === record.moment_id && item.cycle_id === record.cycle_id);
@@ -25082,7 +25103,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && researchLedgerEventBindingCount('experience_self_forecast_preregistered', record.self_forecast_id,
         expectationForecast.commitment({ forecast_commitment: record.self_forecast_commitment }), cognition.research_ledger) === 1;
     const selfForecastLifecycleVerified = Boolean(moment?.self_forecast)
-      && cycleSelfForecastAudit(moment.self_forecast, moment, cognition, cycles).complete_chain_verified;
+      && cycleSelfForecastAudit(moment.self_forecast, moment, cognition, cycles, cache).complete_chain_verified;
     const selfForecastVerified = selfForecastPreregistrationVerified
       && (record.status === 'abandoned' || selfForecastLifecycleVerified);
     const creationCommitment = expectationForecast.commitment(expectationCreationPayload(record));
@@ -25262,9 +25283,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && (!sinceMs || new Date(item.made_at).getTime() >= sinceMs));
     const rollingSince = new Date(clock().getTime() - 30 * 86400000).toISOString();
     const rollingSinceMs = new Date(rollingSince).getTime();
+    const expectationAuditCache = new Map();
+    const audit = item => expectationForecastAudit(item, state.cognition, state.cycles,
+      expectationAuditCache);
     const replayVerifiedResolved = state.cognition.expectations.forecasts.filter(item =>
       item.status === 'resolved' && new Date(item.made_at).getTime() >= rollingSinceMs
-      && expectationForecastAudit(item).complete_chain_verified);
+      && audit(item).complete_chain_verified);
     const rolling = expectationForecast.summarize(replayVerifiedResolved, rollingSince);
     const verifiedForecastIds = new Set(replayVerifiedResolved.map(item => item.id));
     const replayVerifiedSurprises = state.cognition.surprises.filter(item =>
@@ -25273,10 +25297,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       replayVerifiedSurprises, rolling);
     return {
       epistemic_status: 'Prospectively committed, cycle-bound expectations about observable work sources. Resolutions are source-cited and replay-audited, but citations are not independent proof and this is not evidence of phenomenal consciousness.',
-      forecasts: forecasts.map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: expectationForecastAudit(item) })),
+      forecasts: forecasts.map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: audit(item) })),
       report: { total: forecasts.length, open: forecasts.filter(item => item.status === 'open').length,
         resolved: forecasts.filter(item => item.status === 'resolved').length,
-        replay_verified_resolved: forecasts.filter(item => item.status === 'resolved' && expectationForecastAudit(item).complete_chain_verified).length,
+        replay_verified_resolved: forecasts.filter(item => item.status === 'resolved'
+          && audit(item).complete_chain_verified).length,
         rolling_30_day: rolling, collection_gate: collectionGate },
     };
   }

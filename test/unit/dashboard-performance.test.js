@@ -3,17 +3,19 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { performance } = require('node:perf_hooks');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const interactivePerformance = require('../../src/intelligence/interactive-performance');
 
 test('dashboard summary stays compact and advances with store mutations', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-dashboard-summary-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  let now = new Date('2026-07-17T00:00:00.000Z');
   const store = createIntelligenceStore({
     filePath: path.join(dir, 'state.json'),
     db: {},
     isDbReady: () => false,
-    clock: () => new Date('2026-07-17T00:00:00.000Z'),
+    clock: () => new Date(now),
   });
   await store.init();
 
@@ -90,4 +92,35 @@ test('dashboard summary stays compact and advances with store mutations', async 
   assert.equal(updated.cognition.responsiveness.surfaces.realtime.p95_ms, 1400);
   assert.equal(updated.cognition.responsiveness.continuity_projection_audit.protocol_version, 1);
   assert.equal(typeof updated.cognition.responsiveness.continuity_projection_audit.cache_hits, 'number');
+
+  for (let index = 0; index < 12; index += 1) {
+    const evidenceCycle = store.startCycle({ id: `dashboard-expectation-${index}`,
+      holder: 'nora', run_lock_holder: `run-dashboard-${index}` });
+    store.preregisterCycleSelfForecast(evidenceCycle.cycle.id, {
+      predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.7,
+      confidence: 0.6, rationale: 'The dashboard projection should remain bounded as evidence accumulates.',
+      evidence: [{ type: 'intelligence_cycle', id: evidenceCycle.cycle.id }],
+    });
+    const expectation = store.createExpectationForecast(evidenceCycle.cycle.id, {
+      rationale: 'Commit one observable run-shape expectation for the bounded projection test.',
+      scopes: [{ scope: 'run_shape', claims: [{
+        claim: 'The test cycle closes after its expectation is resolved', probability: 0.8,
+      }] }],
+    });
+    now = new Date(now.getTime() + 1000);
+    store.resolveExpectationForecast(expectation.id, { claims: [{
+      claim_id: expectation.scopes[0].claims[0].id, outcome: true,
+      evidence: [{ type: 'run_observation', id: `dashboard-expectation-evidence-${index}` }],
+    }] });
+    store.completeCycle(evidenceCycle.cycle.id, {
+      summary: 'Closed the bounded dashboard expectation lifecycle.', actions: [],
+    });
+    now = new Date(now.getTime() + 1000);
+  }
+  const projectionStarted = performance.now();
+  const evidenceRich = store.dashboardIntelligenceSummary();
+  const projectionMs = performance.now() - projectionStarted;
+  assert.equal(evidenceRich.cognition.forecasting.replay_verified_expectation_forecasts, 12);
+  assert.ok(projectionMs < 750,
+    `dashboard projection should share replay work across its audit window (observed ${projectionMs.toFixed(1)}ms)`);
 });
