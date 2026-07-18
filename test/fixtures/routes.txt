@@ -23,6 +23,12 @@ POST /learning-experiments
 POST /learning-experiments/choose
 POST /learning-experiments/:id/sample
 POST /learning-experiments/:id/evaluate
+GET /procedures
+GET /procedures/stats
+POST /procedures
+POST /procedures/:id/activate
+POST /procedures/:id/retire
+POST /procedures/selection-pass
 GET /initiative-budgets/:scope
 PUT /initiative-budgets/:scope
 POST /initiative-budgets/:scope/spend

@@ -169,6 +169,52 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json({ ok: true, experiment });
   });
 
+  app.get('/procedures', requireAuth, (req, res) => {
+    try {
+      const snapshot = store.procedureStatsSnapshot({ includeRecords: true });
+      if (req.query.status) snapshot.procedures = snapshot.procedures.filter(item => item.status === req.query.status);
+      res.json(snapshot);
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/procedures/stats', requireAuth, (_req, res) => {
+    try { res.json(store.procedureStatsSnapshot({ includeRecords: false })); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/procedures', requireAuth, async (req, res) => {
+    let procedure = null;
+    try {
+      procedure = store.createProcedure(req.body || {});
+      await store.persistStrict();
+      res.json({ ok: true, procedure });
+    } catch (error) { res.status(procedure ? 503 : 400).json({ error: error.message }); }
+  });
+  app.post('/procedures/:id/activate', requireResearchAuth, async (req, res) => {
+    let procedure = null;
+    try {
+      procedure = store.changeProcedureStatus(req.params.id, 'active', { ...(req.body || {}), actor: 'human' });
+      if (!procedure) return res.status(404).json({ error: 'procedure not found' });
+      await store.persistStrict();
+      res.json({ ok: true, procedure });
+    } catch (error) { res.status(procedure ? 503 : 400).json({ error: error.message }); }
+  });
+  app.post('/procedures/:id/retire', requireResearchAuth, async (req, res) => {
+    let procedure = null;
+    try {
+      procedure = store.changeProcedureStatus(req.params.id, 'retired', { ...(req.body || {}), actor: 'human' });
+      if (!procedure) return res.status(404).json({ error: 'procedure not found' });
+      await store.persistStrict();
+      res.json({ ok: true, procedure });
+    } catch (error) { res.status(procedure ? 503 : 400).json({ error: error.message }); }
+  });
+  app.post('/procedures/selection-pass', requireAuth, async (req, res) => {
+    let result = null;
+    try {
+      result = store.runProcedureSelectionPass(req.body || {});
+      await store.persistStrict();
+      res.json({ ok: true, ...result });
+    } catch (error) { res.status(result ? 503 : 400).json({ error: error.message }); }
+  });
+
   app.get('/initiative-budgets/:scope', requireAuth, (req, res) => res.json(store.initiativeStatus(req.params.scope)));
   app.put('/initiative-budgets/:scope', requireAuth, (req, res) => {
     res.json({ ok: true, budget: store.setInitiativeBudget(req.params.scope, req.body?.daily_limit) });

@@ -105,6 +105,8 @@ const intelligence = createIntelligenceStore({
   isDbReady: () => _dbReady,
   getWants: () => (_cache.wants?.items || []),
   getDreams: () => loadDreams(),
+  getMemory: () => loadMemory(),
+  getInteractions: () => loadInteractions(),
   getOperationalEnvironment: () => ({
     software_revision: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || null,
     routine_commitment: _routineOperationalCommitment,
@@ -1350,6 +1352,7 @@ function compactInteractiveIntelligenceContext(text, maxChars) {
     const experimental = /\b(blinded|research packet|study)\b/i.test(fullLabel);
     let priority = experimental ? 100 : 50;
     if (/operational situational self-model|capability boundary|limited attention workspace/i.test(compactLabel)) priority = Math.max(priority, 95);
+    else if (/selected work procedures/i.test(compactLabel)) priority = Math.max(priority, 92);
     else if (/relevant conversation continuity|current grounded internal appraisal|affect-regulation|relational attunement|empirical functional self-knowledge/i.test(compactLabel)) priority = Math.max(priority, 90);
     else if (/self-authored aim|operational self-state|verified completed-cycle self-corrections|earned professional viewpoints|verified post-meeting professional reflections|constructive future simulations/i.test(compactLabel)) priority = Math.max(priority, 82);
     else if (/endogenous salience|attention schema|prospective agency|testable self-model|open interoceptive predictions/i.test(compactLabel)) priority = Math.max(priority, 72);
@@ -1557,7 +1560,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // prompts. They predate evidence references, bounded formation confidence, Nora-authored
   // provenance, and revision commitments. Current professional views enter through the
   // replay-verified earned-viewpoint ledger in the intelligence prompt context.
-  const learnings = allMemory.filter(m => m.source === 'learning' && memoryIsActive(m));
+  const procedureLearningIds = new Set(intelligence.activeProcedureSourceLearningIds());
+  const learnings = allMemory.filter(m => m.source === 'learning' && memoryIsActive(m)
+    && !procedureLearningIds.has(m.id));
   // Exclude operational markers (Filed transcript X, Dreamed on Y, Sent warmth to Z…) from
   // the knowledge block — they're idempotency bookkeeping, not things to reference in
   // conversation. They live in /markers now; this filter catches any not-yet-migrated
@@ -1625,6 +1630,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
     includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
+    includeProcedureCandidates: experimentalSurface === 'slack' && opts.procedureCandidatesAvailable === true
+      && !contextAssignment && !opts.sideEffectFree,
+    procedureSelectionKey: opts.trialUnitKey || conversationText,
   });
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
   const profileForecastOnly = contextAssignment?.intervention === 'self_model_access'
@@ -6210,6 +6218,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       intelligenceContextReceipt } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
+        procedureCandidatesAvailable: mode === 'normal',
         contextTrialsEnabled: true, latencyCritical: true, captureIntelligenceReceipt: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
@@ -8140,6 +8149,10 @@ function logInteraction(entry) {
       outcome: null, // filled in by the dream's Review movement
       ...persistedEntry
     };
+    if (intelligenceReceipt?.procedure_selection) {
+      interaction.procedure_selection = JSON.parse(JSON.stringify(intelligenceReceipt.procedure_selection));
+      interaction.procedure_exposure_ids = interaction.procedure_selection.procedures.map(item => item.id);
+    }
     if (interaction.ts) {
       try {
         const application = intelligence.recordAffectiveRegulationApplication(interaction);
@@ -8186,6 +8199,8 @@ registerInteractionRoutes(app, {
   onOutcome: interaction => {
     try { intelligence.syncCapabilityBoundaryOutcomes([interaction]); }
     catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
+    try { intelligence.recordProcedureInteractionOutcome(interaction); }
+    catch (error) { console.warn('procedure outcome capture failed:', error.message); }
     try { intelligence.resolveAffectiveRegulationApplicationOutcome(interaction); }
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
     try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }

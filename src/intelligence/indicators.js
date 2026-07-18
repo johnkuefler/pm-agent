@@ -15,6 +15,7 @@ const teammatePerspective = require('./teammate-perspective');
 const commonGround = require('./common-ground');
 const behavioralSelfModel = require('./behavioral-self-model');
 const capabilityBoundary = require('./capability-boundary');
+const proceduralLearning = require('./procedural-learning');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -736,6 +737,24 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     : capabilityBoundaryProjection.scored_records < capabilityBoundary.MIN_DIRECTIONAL_SAMPLES ? 'collecting'
       : capabilityBoundaryFamilies.some(item => item.status !== 'collecting')
         ? 'observational_signal_observed' : 'collecting';
+  const procedureRecords = cognition.procedural_learning?.procedures || [];
+  const replayValidProcedures = procedureRecords
+    .filter(item => proceduralLearning.verifyProcedure(item) && item.audit?.complete_chain_verified === true);
+  const procedureOutcomeRecords = cognition.procedural_learning?.interaction_outcomes || [];
+  const replayValidProcedureOutcomes = procedureOutcomeRecords
+    .filter(item => proceduralLearning.verifyInteractionOutcome(item) && item.audit?.complete_chain_verified === true);
+  const decisiveProcedureOutcomes = replayValidProcedureOutcomes.filter(item => item.decisive === true);
+  const procedureSelectionPasses = cognition.procedural_learning?.selection_passes || [];
+  const replayValidProcedureSelectionPasses = procedureSelectionPasses
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const replayValidSelectionPassIds = new Set(replayValidProcedureSelectionPasses.map(item => item.id));
+  const measuredProcedureActions = replayValidProcedures.flatMap(item => item.status_history || [])
+    .filter(action => action.selection_pass_id && replayValidSelectionPassIds.has(action.selection_pass_id)
+      && ['measured_promotion', 'measured_underperformance', 'variant_winner',
+        'variant_did_not_win', 'variant_displaced_parent', 'active_cap_competition'].includes(action.reason));
+  const procedureSelectionStatus = !replayValidProcedures.length ? 'mechanism_present'
+    : measuredProcedureActions.length ? 'observational_signal_observed'
+      : 'collecting';
   const prospectiveOutputMonitorTrials = completedTrials(cognition, 'prospective_output_monitor');
   const prospectiveOutputMonitorTrial = prospectiveOutputMonitorTrials.at(-1) || null;
   const prospectiveOutputMonitorDissociation = prospectiveOutputMonitorTrial?.evaluation?.prospective_output_monitor_dissociation || null;
@@ -1867,6 +1886,31 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         latest_dissociation: empiricalSelfKnowledgeDissociation },
       falsifier: 'Authentically bound empirical status fails to improve calibrated strategy, checking, delegation, confidence, and self-prediction over status-misbound and claims-only controls while evidence access and first-order quality are preserved.',
       next_gate: 'Complete a ten-per-arm pilot and an indicator- and source-trial-disjoint confirmation with forecasts committed before delayed outcomes.',
+    },
+    {
+      id: 'outcome_selected_work_procedures', family: ['learning', 'metacognition', 'adaptive control', 'ecological validity'],
+      functional_claim: 'Nora can maintain competing compact work procedures and provisionally select among them using source-bound outcomes from ordinary work.',
+      mechanism: 'A replay-bound candidate, active, and retired procedure lifecycle performs deterministic context matching, bounded candidate exploration, same-task-family unexposed control comparison, uncertainty-gated promotion or retirement, immutable retirement, and one-procedure prompt exposure without a foreground provider or network call.',
+      status: procedureSelectionStatus,
+      evidence: {
+        recorded_procedures: procedureRecords.length,
+        replay_verified_procedures: replayValidProcedures.length,
+        candidates: replayValidProcedures.filter(item => item.status === 'candidate').length,
+        active: replayValidProcedures.filter(item => item.status === 'active').length,
+        retired: replayValidProcedures.filter(item => item.status === 'retired').length,
+        recorded_outcomes: procedureOutcomeRecords.length,
+        replay_verified_outcomes: replayValidProcedureOutcomes.length,
+        decisive_outcomes: decisiveProcedureOutcomes.length,
+        exposed_decisive_outcomes: decisiveProcedureOutcomes.filter(item => item.procedure_ids.length > 0).length,
+        unexposed_decisive_controls: decisiveProcedureOutcomes.filter(item => item.procedure_ids.length === 0).length,
+        replay_verified_selection_passes: replayValidProcedureSelectionPasses.length,
+        measured_selection_actions: measuredProcedureActions.length,
+        active_cap: proceduralLearning.MAX_ACTIVE,
+        causal_status: 'observational_exposure_comparison',
+        interpretation: 'Exposure is not proof that the model applied the procedure, and measured selection is not a randomized causal effect.',
+      },
+      falsifier: 'Procedure records fail replay, candidate exploration is not deterministic and bounded, selection lacks same-family controls or uncertainty gates, retired procedures re-enter prompts, source evidence is rewritten, foreground latency regresses, or selected exposure fails to predict better reviewed outcomes out of sample.',
+      next_gate: 'Accumulate interaction-disjoint natural exposures and controls, then preregister a randomized relevant-procedure versus byte-identical deidentified-procedure versus absent-procedure Slack lesion with independent task-quality, correction, evidence-access, and latency grading.',
     },
     {
       id: 'counterfactual_self_model', family: ['agency', 'counterfactual self-model', 'metacognition'],

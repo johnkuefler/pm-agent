@@ -539,6 +539,18 @@ function registerCoworkInstructionsRoute(app) {
     low-risk, reversible behavior experiments from her wants, takes, predictions, decision evidence,
     or an exact GET /dream-idea-seeds spark. It requires a rationale and source_refs and cannot alter
     authority, trust, approval, or safety gates. Dream sources are server-verified and source-audited.
+  - GET /procedures and GET /procedures/stats expose SELECT's replay-bound population of compact work
+    procedures. POST /procedures creates a candidate from exact learning/interaction evidence; it does not
+    activate it. Relevant active procedures and bounded Slack-only candidate exploration are selected
+    deterministically into the uncached prompt tail, and the exact server receipt is attached to the logged
+    interaction. This adds no provider or network call. Reviewed outcomes create source-bound exposure records;
+    neutral remains unscored. POST /procedures/selection-pass may provisionally promote only after eight
+    decisive candidate exposures plus twelve unexposed same-task-family controls, and retires only on confident
+    upper-bound underperformance. Exposure is not proof of application or causation. The twelve-active cap,
+    immutable retirement, weekly variant limit, alternating parent/variant exposure, and evidence/status ledger
+    are server-enforced. Direct human activation or retirement is research-key-only; ordinary API callers cannot
+    claim human provenance or bypass measured gates. Procedures never override current evidence, requested work, safety, privacy, approvals,
+    or delegated authority, and are not identity essence, feelings, or evidence of phenomenal consciousness.
   - GET /preference-studies/:id/queue and POST /preference-studies/:id/items/:itemId/choice â€” answer
     one concealed, hypothetical low-risk choice at a time. The options never authorize execution.
     Respect not_before, choose the present preference honestly, and never inspect queued family/variant

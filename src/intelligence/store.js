@@ -12,6 +12,7 @@ const epistemicAction = require('./epistemic-action');
 const episodicProspection = require('./episodic-prospection');
 const constructiveProspection = require('./constructive-prospection');
 const expectationForecast = require('./expectation-forecast');
+const proceduralLearning = require('./procedural-learning');
 const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveInitiation = require('./cognitive-initiation');
@@ -138,6 +139,7 @@ function emptyState() {
       endogenous_attention: { selections: [] },
       interoception: { observations: [], predictions: [] },
       expectations: { forecasts: [] },
+      procedural_learning: { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
@@ -180,7 +182,7 @@ function emptyState() {
 
 function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [],
   getOperationalEnvironment = () => ({}), getBehavioralFingerprintControls = () => null,
-  getDreams = () => [], initialState = null }) {
+  getDreams = () => [], getMemory = null, getInteractions = null, initialState = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
@@ -188,12 +190,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
   let latestContinuityAuditCache = null;
   const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
+  let procedureSelectionCache = null;
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
     latestContinuityAuditCache = null;
+    procedureSelectionCache = null;
     snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -541,6 +545,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.expectations = { forecasts: [], ...(state.cognition.expectations || {}) };
     if (!Array.isArray(state.cognition.expectations.forecasts)) state.cognition.expectations.forecasts = [];
     state.cognition.expectations.forecasts = state.cognition.expectations.forecasts.slice(-500);
+    state.cognition.procedural_learning = { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [],
+      ...(state.cognition.procedural_learning || {}) };
+    for (const key of ['procedures', 'interaction_outcomes', 'selection_actions', 'selection_passes']) {
+      if (!Array.isArray(state.cognition.procedural_learning[key])) state.cognition.procedural_learning[key] = [];
+    }
+    state.cognition.procedural_learning.procedures = state.cognition.procedural_learning.procedures.slice(-300);
+    state.cognition.procedural_learning.interaction_outcomes = state.cognition.procedural_learning.interaction_outcomes.slice(-1500);
+    state.cognition.procedural_learning.selection_actions = state.cognition.procedural_learning.selection_actions.slice(-500);
+    state.cognition.procedural_learning.selection_passes = state.cognition.procedural_learning.selection_passes.slice(-180);
     state.cognition.self_boundary = { challenges: [], ...(state.cognition.self_boundary || {}) };
     if (!Array.isArray(state.cognition.self_boundary.challenges)) state.cognition.self_boundary.challenges = [];
     state.cognition.self_boundary.challenges = state.cognition.self_boundary.challenges.slice(-300);
@@ -4993,6 +5006,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.capability_boundaries.records =
       (auditedState.cognition.capability_boundaries?.records || []).map((record, index) => ({
         ...record, audit: capabilityBoundaryAudit(sourceCapabilityBoundaryRecords[index]),
+      }));
+    const sourceProcedures = state.cognition.procedural_learning?.procedures || [];
+    auditedState.cognition.procedural_learning.procedures =
+      (auditedState.cognition.procedural_learning?.procedures || []).map((record, index) => ({
+        ...record, audit: procedureAudit(sourceProcedures[index]),
+      }));
+    const sourceProcedureOutcomes = state.cognition.procedural_learning?.interaction_outcomes || [];
+    auditedState.cognition.procedural_learning.interaction_outcomes =
+      (auditedState.cognition.procedural_learning?.interaction_outcomes || []).map((record, index) => ({
+        ...record, audit: procedureOutcomeAudit(sourceProcedureOutcomes[index]),
+      }));
+    const sourceProcedureSelectionPasses = state.cognition.procedural_learning?.selection_passes || [];
+    auditedState.cognition.procedural_learning.selection_passes =
+      (auditedState.cognition.procedural_learning?.selection_passes || []).map((record, index) => ({
+        ...record, audit: procedureSelectionPassAudit(sourceProcedureSelectionPasses[index]),
       }));
     const sourceOutputMonitorRecords = state.cognition.prospective_output_monitor?.records || [];
     auditedState.cognition.prospective_output_monitor.records = (auditedState.cognition.prospective_output_monitor?.records || []).map((record, index) => ({
@@ -10534,6 +10562,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const openCommitments = state.commitments.filter(item => item.status === 'open').length;
     const fulfilledCommitments = state.commitments.filter(item => item.status === 'fulfilled').length;
     const activeExperiments = state.experiments.filter(item => item.status === 'active').length;
+    const procedures = (cognition.procedural_learning?.procedures || []).filter(proceduralLearning.verifyProcedure);
+    const procedureOutcomes = (cognition.procedural_learning?.interaction_outcomes || [])
+      .filter(proceduralLearning.verifyInteractionOutcome);
+    const activeProcedures = procedures.filter(item => item.status === 'active').length;
+    const candidateProcedures = procedures.filter(item => item.status === 'candidate').length;
+    const retiredProcedures = procedures.filter(item => item.status === 'retired').length;
+    const verifiedProcedureSelectionPasses = (cognition.procedural_learning?.selection_passes || [])
+      .filter(item => procedureSelectionPassAudit(item).complete_chain_verified).length;
     const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
       + (relationship.observations || []).filter(item => item.status === 'active').length, 0);
     const experience = cognition.experience_stream || [];
@@ -10627,7 +10663,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         openPredictions + resolvedPredictions + scoredCycleSelfForecasts + openExpectations + resolvedExpectations > 0),
         commitments: metric(Math.max(scaleCount(openCommitments, 8), fulfilledCommitments ? 0.24 : 0), `${openCommitments} open and ${fulfilledCommitments} fulfilled promises`, openCommitments + fulfilledCommitments > 0),
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
-        learning: metric(scaleCount(activeExperiments + (cognition.development || []).length, 10), `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories`, activeExperiments + (cognition.development || []).length > 0),
+        learning: metric(scaleCount(activeExperiments + (cognition.development || []).length + activeProcedures + candidateProcedures, 10),
+          `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound interaction outcomes`,
+        activeExperiments + (cognition.development || []).length + procedures.length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive
           ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}; ${sourceBoundAimProgress} source-bound aim progress note${sourceBoundAimProgress === 1 ? '' : 's'}`
@@ -10677,6 +10715,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         background: { sealed: selfInquirySelectionActive(cognition), tick_count: dynamics.tick_count || 0,
           active_contents: activeContents, accepted_pulses: acceptedPulses, unresolved_pulses: unresolvedPulses,
           top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
+        procedural_learning: { active: activeProcedures, candidate: candidateProcedures,
+          retired: retiredProcedures, source_bound_outcomes: procedureOutcomes.length,
+          active_cap: proceduralLearning.MAX_ACTIVE,
+          selection_actions: cognition.procedural_learning?.selection_actions?.length || 0,
+          selection_passes: verifiedProcedureSelectionPasses,
+          causal_status: 'observational_exposure_comparison' },
         reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
           development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length,
           viewpoint_reappraisals: viewpointReappraisals.length,
@@ -10761,6 +10805,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const expectationSnapshot = expectationForecastSnapshot();
       snapshot.expectations = { report: expectationSnapshot.report,
         open_forecasts: expectationSnapshot.forecasts.filter(item => item.status === 'open').slice(-3) };
+    }
+    if (snapshot.procedural_learning) {
+      const procedures = state.cognition.procedural_learning.procedures.filter(proceduralLearning.verifyProcedure);
+      snapshot.procedural_learning = {
+        active: procedures.filter(item => item.status === 'active').length,
+        candidate: procedures.filter(item => item.status === 'candidate').length,
+        retired: procedures.filter(item => item.status === 'retired').length,
+        outcome_count: state.cognition.procedural_learning.interaction_outcomes
+          .filter(proceduralLearning.verifyInteractionOutcome).length,
+        latest_selection_actions: state.cognition.procedural_learning.selection_actions.slice(-10),
+        latest_selection_passes: state.cognition.procedural_learning.selection_passes.slice(-5),
+      };
     }
     if (snapshot.self_boundary) snapshot.self_boundary = {
       total: snapshot.self_boundary.challenges.length,
@@ -21583,6 +21639,334 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function procedureStatusActionManifest(action) {
+    return { id: action.id, procedure_id: action.procedure_id, from_status: action.from_status,
+      to_status: action.to_status, actor: action.actor, note: action.note, reason: action.reason,
+      evidence: action.evidence, selection_pass_id: action.selection_pass_id, at: action.at };
+  }
+
+  function procedureOutcomeAudit(record, cognition = state.cognition) {
+    if (!proceduralLearning.verifyInteractionOutcome(record)) return { complete_chain_verified: false, reason: 'invalid_outcome_commitment' };
+    const source = cognition.capability_boundaries?.records?.find(item => item.id === record.source_outcome_id
+      && item.content_commitment === record.source_outcome_commitment);
+    const sourceVerified = Boolean(source) && capabilityBoundaryAudit(source).complete_chain_verified;
+    const procedureBindingsVerified = record.procedure_bindings.every(binding => {
+      const procedure = cognition.procedural_learning?.procedures?.find(item => item.id === binding.id);
+      return procedure && procedure.creation_commitment === binding.content_commitment
+        && proceduralLearning.verifyProcedure(procedure);
+    });
+    const ledgerBound = researchLedgerEventBindingCount('procedural_interaction_outcome_recorded', record.id,
+      proceduralLearning.commitment({ content_commitment: record.content_commitment }), cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { content_commitment_verified: true, source_outcome_verified: sourceVerified,
+      procedure_bindings_verified: procedureBindingsVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: sourceVerified && procedureBindingsVerified && ledgerBound && ledgerVerified };
+  }
+
+  function procedureAudit(record, cognition = state.cognition) {
+    if (!proceduralLearning.verifyProcedure(record)) return { complete_chain_verified: false, reason: 'invalid_procedure_creation' };
+    const creationBound = researchLedgerEventBindingCount('procedure_created', record.id,
+      proceduralLearning.commitment({ creation_commitment: record.creation_commitment }), cognition.research_ledger) === 1;
+    const history = Array.isArray(record.status_history) ? record.status_history : [];
+    const historyVerified = history.every(action => action.content_commitment
+      === proceduralLearning.commitment(procedureStatusActionManifest(action))
+      && researchLedgerEventBindingCount('procedure_status_changed', action.id,
+        proceduralLearning.commitment({ content_commitment: action.content_commitment }), cognition.research_ledger) === 1);
+    const terminalVerified = !history.length || (record.status === history.at(-1).to_status
+      && (record.status !== 'active' || record.activated_at === history.at(-1).at)
+      && (record.status !== 'retired' || record.retired_at === history.at(-1).at));
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { creation_commitment_verified: true, creation_ledger_binding_verified: creationBound,
+      status_history_verified: historyVerified, terminal_status_verified: terminalVerified,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: creationBound && historyVerified && terminalVerified && ledgerVerified };
+  }
+
+  function procedureSelectionPassAudit(pass, cognition = state.cognition) {
+    if (!pass?.content_commitment) return { complete_chain_verified: false, reason: 'missing_selection_pass' };
+    const manifest = JSON.parse(JSON.stringify(pass));
+    delete manifest.content_commitment; delete manifest.audit;
+    const contentVerified = pass.content_commitment === proceduralLearning.commitment(manifest);
+    const ledgerBound = researchLedgerEventBindingCount('procedure_selection_pass_completed', pass.id,
+      proceduralLearning.commitment({ content_commitment: pass.content_commitment }), cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { content_commitment_verified: contentVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && ledgerBound && ledgerVerified };
+  }
+
+  function createProcedure(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const now = clock();
+      let normalizedInput = { ...input };
+      if (input.origin?.type === 'learning' && typeof getMemory === 'function') {
+        const learning = getMemory().find(item => item.id === input.origin.id && item.source === 'learning'
+          && (!item.status || item.status === 'active'));
+        if (!learning) throw new Error('procedure learning origin must reference an active learning memory');
+      }
+      if (Array.isArray(input.source_refs) && typeof getInteractions === 'function') {
+        const interactions = getInteractions();
+        for (const ref of input.source_refs.filter(item => item?.type === 'interaction')) {
+          const interaction = interactions.find(item => item.id === ref.id && item.reviewed === true
+            && proceduralLearning.OBSERVED_OUTCOMES.has(item.outcome));
+          if (!interaction) throw new Error(`procedure interaction source is not reviewed: ${ref.id}`);
+        }
+      }
+      if (input.variant_of) {
+        const parent = current.cognition.procedural_learning.procedures.find(item => item.id === input.variant_of);
+        if (!parent || parent.status !== 'active' || !procedureAudit(parent, current.cognition).complete_chain_verified) {
+          throw new Error('a procedure variant requires a replay-verified active parent');
+        }
+        const recentVariant = current.cognition.procedural_learning.procedures.find(item => item.variant_of
+          && now.getTime() - new Date(item.created).getTime() < 7 * 86400000);
+        if (recentVariant) throw new Error('at most one procedure variant may be created per seven days');
+        normalizedInput = { ...normalizedInput, condition_txt: parent.condition_txt,
+          task_families: parent.task_families, variant_of: parent.id };
+      }
+      const record = proceduralLearning.createRecord(normalizedInput, now);
+      if (current.cognition.procedural_learning.procedures.some(item => item.id === record.id)) {
+        throw new Error('procedure id already exists');
+      }
+      current.cognition.procedural_learning.procedures.push(record);
+      current.cognition.procedural_learning.procedures = current.cognition.procedural_learning.procedures.slice(-300);
+      researchLedgerAppend(current, { kind: 'procedure_created', subject_type: 'work_procedure', subject_id: record.id,
+        payload: { creation_commitment: record.creation_commitment }, at: now });
+      return { ...JSON.parse(JSON.stringify(record)), audit: procedureAudit(record, current.cognition) };
+    });
+  }
+
+  function applyProcedureStatus(current, record, toStatus, input = {}) {
+    if (!['active', 'retired'].includes(toStatus)) throw new Error('procedure status must be active or retired');
+    if (record.status === toStatus) throw new Error(`procedure is already ${toStatus}`);
+    if (record.status === 'retired' && toStatus === 'active') throw new Error('retired procedures are immutable; create a variant instead');
+    const note = String(input.note || '').trim();
+    if (!note) throw new Error('procedure status changes require a note');
+    if (toStatus === 'active') {
+      const activeCount = current.cognition.procedural_learning.procedures.filter(item => item.status === 'active').length;
+      if (activeCount >= proceduralLearning.MAX_ACTIVE) throw new Error('active procedure cap reached');
+    }
+    const now = clock();
+    const action = {
+      id: `procedure-action-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      procedure_id: record.id, from_status: record.status, to_status: toStatus,
+      actor: String(input.actor || 'nora').slice(0, 100), note: note.slice(0, 1200),
+      reason: String(input.reason || 'manual_review').slice(0, 300),
+      evidence: Array.isArray(input.evidence) ? input.evidence.slice(0, 12) : [],
+      selection_pass_id: input.selection_pass_id || null, at: now.toISOString(),
+    };
+    action.content_commitment = proceduralLearning.commitment(procedureStatusActionManifest(action));
+    record.status = toStatus;
+    if (toStatus === 'active') {
+      record.activated_at = action.at; record.retired_at = null; record.retired_reason = null;
+    } else {
+      record.retired_at = action.at; record.retired_reason = action.note;
+    }
+    record.status_history.push(action);
+    record.status_history = record.status_history.slice(-30);
+    current.cognition.procedural_learning.selection_actions.push(action);
+    current.cognition.procedural_learning.selection_actions = current.cognition.procedural_learning.selection_actions.slice(-500);
+    researchLedgerAppend(current, { kind: 'procedure_status_changed', subject_type: 'procedure_status_action',
+      subject_id: action.id, payload: { content_commitment: action.content_commitment }, at: now });
+    return action;
+  }
+
+  function changeProcedureStatus(id, toStatus, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const record = current.cognition.procedural_learning.procedures.find(item => item.id === id);
+      if (!record) return null;
+      if (!procedureAudit(record, current.cognition).complete_chain_verified) throw new Error('procedure failed replay audit');
+      const actor = String(input.actor || 'nora').toLowerCase();
+      if (actor !== 'human') {
+        const outcomes = current.cognition.procedural_learning.interaction_outcomes
+          .filter(item => procedureOutcomeAudit(item, current.cognition).complete_chain_verified);
+        const projection = proceduralLearning.decisionProjection(record, outcomes);
+        if (toStatus === 'active' && projection.recommendation !== 'promote') {
+          throw new Error('Nora may activate a candidate only after the measured promotion gate passes');
+        }
+        if (toStatus === 'retired' && projection.recommendation !== 'retire') {
+          throw new Error('Nora may retire an active procedure only after the measured retirement gate passes');
+        }
+      }
+      applyProcedureStatus(current, record, toStatus, { ...input, actor });
+      return { ...JSON.parse(JSON.stringify(record)), audit: procedureAudit(record, current.cognition) };
+    });
+  }
+
+  function recordProcedureInteractionOutcome(interaction = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const sourceCandidate = capabilityBoundary.recordFromInteraction(interaction);
+      if (!sourceCandidate) return { added: false, outcome: null, reason: 'ineligible_interaction' };
+      const source = current.cognition.capability_boundaries.records.find(item => item.id === sourceCandidate.id
+        && item.content_commitment === sourceCandidate.content_commitment);
+      if (!source || !capabilityBoundaryAudit(source).complete_chain_verified) {
+        throw new Error('sync the interaction into the capability outcome ledger before procedure learning');
+      }
+      const selection = interaction.procedure_selection || null;
+      if (selection) {
+        if (!proceduralLearning.verifySelectionReceipt(selection)) throw new Error('procedure selection receipt failed integrity');
+        if (selection.task_family !== source.task_family) throw new Error('procedure selection task family does not match the reviewed interaction');
+        for (const binding of selection.procedures) {
+          const procedure = current.cognition.procedural_learning.procedures.find(item => item.id === binding.id);
+          if (!procedure || procedure.creation_commitment !== binding.content_commitment
+            || !procedureAudit(procedure, current.cognition).complete_chain_verified) {
+            throw new Error('procedure selection references an invalid procedure binding');
+          }
+        }
+      }
+      const candidate = proceduralLearning.createInteractionOutcome(source, selection);
+      const existing = current.cognition.procedural_learning.interaction_outcomes.find(item => item.id === candidate.id);
+      if (existing) {
+        if (proceduralLearning.canonicalJson(existing) !== proceduralLearning.canonicalJson(candidate)
+          || !procedureOutcomeAudit(existing, current.cognition).complete_chain_verified) {
+          throw new Error('interaction already has a different or invalid procedure outcome');
+        }
+        return { added: false, outcome: { ...JSON.parse(JSON.stringify(existing)), audit: procedureOutcomeAudit(existing, current.cognition) } };
+      }
+      current.cognition.procedural_learning.interaction_outcomes.push(candidate);
+      current.cognition.procedural_learning.interaction_outcomes = current.cognition.procedural_learning.interaction_outcomes.slice(-1500);
+      researchLedgerAppend(current, { kind: 'procedural_interaction_outcome_recorded',
+        subject_type: 'procedural_interaction_outcome', subject_id: candidate.id,
+        payload: { content_commitment: candidate.content_commitment }, at: clock() });
+      return { added: true, outcome: { ...JSON.parse(JSON.stringify(candidate)), audit: procedureOutcomeAudit(candidate, current.cognition) } };
+    });
+  }
+
+  function verifiedProcedureOutcomes(cognition = state.cognition) {
+    return (cognition.procedural_learning?.interaction_outcomes || [])
+      .filter(item => procedureOutcomeAudit(item, cognition).complete_chain_verified);
+  }
+
+  function procedureContextSelection({ query = '', selectionKey = '', includeCandidates = true, now = clock() } = {}) {
+    if (!procedureSelectionCache || procedureSelectionCache.revision !== snapshotRevisionValue) {
+      const procedures = state.cognition.procedural_learning.procedures
+        .filter(item => procedureAudit(item).complete_chain_verified);
+      const outcomes = state.cognition.procedural_learning.interaction_outcomes
+        .filter(proceduralLearning.verifyInteractionOutcome);
+      procedureSelectionCache = {
+        revision: snapshotRevisionValue,
+        procedures,
+        // The hot path verifies local commitments but does not recursively replay every historical source.
+        // Full source replay remains available through GET /procedures and GET /procedures/stats.
+        outcomes,
+        selection_index: proceduralLearning.buildSelectionIndex(procedures, outcomes, now, { preverified: true }),
+      };
+    }
+    return proceduralLearning.select(procedureSelectionCache.procedures, procedureSelectionCache.outcomes,
+      { query, selectionKey, includeCandidates, now, maxProcedures: proceduralLearning.MAX_PROMPT_PROCEDURES,
+        selectionIndex: procedureSelectionCache.selection_index });
+  }
+
+  function activeProcedureSourceLearningIds() {
+    if (!procedureSelectionCache || procedureSelectionCache.revision !== snapshotRevisionValue) {
+      const procedures = state.cognition.procedural_learning.procedures
+        .filter(item => procedureAudit(item).complete_chain_verified);
+      const outcomes = state.cognition.procedural_learning.interaction_outcomes
+        .filter(proceduralLearning.verifyInteractionOutcome);
+      procedureSelectionCache = {
+        revision: snapshotRevisionValue,
+        procedures, outcomes,
+        selection_index: proceduralLearning.buildSelectionIndex(procedures, outcomes, clock(), { preverified: true }),
+      };
+    }
+    return procedureSelectionCache.procedures
+      .filter(item => item.origin?.type === 'learning')
+      .map(item => item.origin.id);
+  }
+
+  function procedureStatsSnapshot({ includeRecords = true } = {}) {
+    const procedures = state.cognition.procedural_learning.procedures
+      .filter(item => procedureAudit(item).complete_chain_verified);
+    const outcomes = verifiedProcedureOutcomes();
+    const projections = procedures.map(record => proceduralLearning.decisionProjection(record, outcomes));
+    const controlRows = outcomes.filter(item => item.decisive && item.procedure_ids.length === 0);
+    const controlSuccesses = controlRows.filter(item => item.success).length;
+    const overallControl = wilsonInterval(controlSuccesses, controlRows.length);
+    return {
+      epistemic_status: 'Source-bound observational selection over procedures exposed in real Slack work. Exposure is not proof of application or causation; promotion remains provisional until a randomized access trial. Procedures are behavior guidance, not facts, authority, identity essence, feelings, or evidence of phenomenal consciousness.',
+      report: {
+        total: procedures.length, candidate: procedures.filter(item => item.status === 'candidate').length,
+        active: procedures.filter(item => item.status === 'active').length,
+        retired: procedures.filter(item => item.status === 'retired').length,
+        replay_verified_outcomes: outcomes.length, unexposed_control_samples: controlRows.length,
+        unexposed_control_interval: overallControl,
+        ready_to_promote: projections.filter(item => item.recommendation === 'promote').length,
+        ready_to_retire: projections.filter(item => item.recommendation === 'retire').length,
+        active_cap: proceduralLearning.MAX_ACTIVE,
+      },
+      projections,
+      selection_actions: JSON.parse(JSON.stringify(state.cognition.procedural_learning.selection_actions.slice(-30))),
+      selection_passes: state.cognition.procedural_learning.selection_passes.slice(-30).map(pass =>
+        ({ ...JSON.parse(JSON.stringify(pass)), audit: procedureSelectionPassAudit(pass) })),
+      ...(includeRecords ? { procedures: procedures.map(record => ({ ...JSON.parse(JSON.stringify(record)),
+        stats: proceduralLearning.procedureStats(record, outcomes),
+        audit: procedureAudit(record) })) } : {}),
+    };
+  }
+
+  function runProcedureSelectionPass(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const note = String(input.note || '').trim();
+      if (!note) throw new Error('procedure selection pass requires a note');
+      const passId = input.id || `procedure-pass-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const outcomes = current.cognition.procedural_learning.interaction_outcomes
+        .filter(item => procedureOutcomeAudit(item, current.cognition).complete_chain_verified);
+      const procedures = current.cognition.procedural_learning.procedures
+        .filter(item => procedureAudit(item, current.cognition).complete_chain_verified);
+      const actions = [];
+      const handled = new Set();
+      for (const variant of procedures.filter(item => item.status === 'candidate' && item.variant_of)) {
+        const parent = procedures.find(item => item.id === variant.variant_of && item.status === 'active');
+        if (!parent) continue;
+        const projection = proceduralLearning.variantProjection(variant, parent, outcomes);
+        if (projection.recommendation === 'promote_variant') {
+          actions.push(applyProcedureStatus(current, parent, 'retired', { actor: 'selection_pass', note: `Variant ${variant.id} won its alternating exposure comparison. ${note}`, reason: 'variant_displaced_parent', selection_pass_id: passId }));
+          actions.push(applyProcedureStatus(current, variant, 'active', { actor: 'selection_pass', note: `Promoted after outperforming parent ${parent.id}. ${note}`, reason: 'variant_winner', selection_pass_id: passId }));
+          handled.add(parent.id); handled.add(variant.id);
+        } else if (projection.recommendation === 'retain_parent') {
+          actions.push(applyProcedureStatus(current, variant, 'retired', { actor: 'selection_pass', note: `Parent ${parent.id} retained after alternating exposure. ${note}`, reason: 'variant_did_not_win', selection_pass_id: passId }));
+          handled.add(variant.id);
+        }
+      }
+      for (const record of procedures.filter(item => !handled.has(item.id))) {
+        const projection = proceduralLearning.decisionProjection(record, outcomes);
+        if (projection.recommendation === 'retire' && record.status === 'active') {
+          actions.push(applyProcedureStatus(current, record, 'retired', { actor: 'selection_pass', note: `Confidently underperformed unexposed same-family controls. ${note}`, reason: 'measured_underperformance', selection_pass_id: passId }));
+          handled.add(record.id);
+        }
+      }
+      for (const record of procedures.filter(item => item.status === 'candidate' && !item.variant_of && !handled.has(item.id))) {
+        const projection = proceduralLearning.decisionProjection(record, outcomes);
+        if (projection.recommendation !== 'promote') continue;
+        const active = procedures.filter(item => item.status === 'active');
+        if (active.length >= proceduralLearning.MAX_ACTIVE) {
+          const weakest = active.map(item => ({ item, fitness: proceduralLearning.fitness(item, outcomes, clock()) }))
+            .sort((a, b) => a.fitness - b.fitness)[0];
+          const candidateFitness = proceduralLearning.fitness(record, outcomes, clock());
+          if (!weakest || candidateFitness <= weakest.fitness + 0.05) continue;
+          actions.push(applyProcedureStatus(current, weakest.item, 'retired', { actor: 'selection_pass', note: `Displaced by fitter candidate ${record.id}. ${note}`, reason: 'active_cap_competition', selection_pass_id: passId }));
+        }
+        actions.push(applyProcedureStatus(current, record, 'active', { actor: 'selection_pass', note: `Cleared the provisional promotion gate against unexposed same-family controls. ${note}`, reason: 'measured_promotion', selection_pass_id: passId }));
+        handled.add(record.id);
+      }
+      const pass = { id: passId, protocol_version: 1, note: note.slice(0, 1200),
+        evidence: Array.isArray(input.evidence) ? input.evidence.slice(0, 12) : [],
+        action_ids: actions.map(item => item.id), created_at: clock().toISOString() };
+      pass.content_commitment = proceduralLearning.commitment(pass);
+      current.cognition.procedural_learning.selection_passes.push(pass);
+      current.cognition.procedural_learning.selection_passes = current.cognition.procedural_learning.selection_passes.slice(-180);
+      researchLedgerAppend(current, { kind: 'procedure_selection_pass_completed', subject_type: 'procedure_selection_pass',
+        subject_id: pass.id, payload: { content_commitment: pass.content_commitment } });
+      return { pass, actions: JSON.parse(JSON.stringify(actions)),
+        report: { considered: procedures.length, changed: actions.length,
+          active: current.cognition.procedural_learning.procedures.filter(item => item.status === 'active').length } };
+    });
+  }
+
   function recordTrace(input = {}) {
     return mutate(current => {
       const trace = {
@@ -23889,9 +24273,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .slice(0, Math.max(0, Number(limit) || 0)).map(item => item.snapshot);
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
-    const contextReceipt = { professional_viewpoints: [] };
+    const contextReceipt = { professional_viewpoints: [], procedure_selection: null };
     const sealInquirySelection = selfInquirySelectionActive();
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const goalAffectAvailable = includeGoalAffect && !interventionActive('goal_access') && !interventionActive('integrated_self_binding')
@@ -23901,6 +24285,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (sealInquirySelection) workspace.slots = workspace.slots.filter(item => !['self_claim', 'self_probe', 'self_frame'].includes(item.type));
     const globalBroadcastStudy = broadcastEvent?.trial_id && ['multi_consumer_broadcast', 'workspace_packet_only', 'absent_broadcast'].includes(broadcastEvent.delivery_mode);
     if (globalBroadcastStudy) workspace.slots = broadcastEvent.packet_visible ? JSON.parse(JSON.stringify(broadcastEvent.packet?.slots || [])) : [];
+    const procedureSelection = procedureContextSelection({ query, selectionKey: procedureSelectionKey || query,
+      includeCandidates: includeProcedureCandidates && !globalBroadcastStudy });
+    contextReceipt.procedure_selection = procedureSelection.receipt;
+    if (procedureSelection.records.length) blocks.push(proceduralLearning.render(procedureSelection.records));
     const broadcastOutputs = sealInquirySelection ? [] : (broadcastEvent?.receipts || []).filter(item => item.used && item.output);
     if (broadcastOutputs.length) blocks.push(`[Independent consumers of globally available content. These specialist outputs are advisory consequences of the selected workspace, never new facts or authority.]
 ${broadcastOutputs.map(item => `- ${item.consumer}: ${item.output.cue} Proposed action: ${item.output.proposed_action}.`).join('\n')}`);
@@ -24196,7 +24584,12 @@ ${episodes.map(item => {
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
-    recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment, initiativeStatus, spendInitiative,
+    recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment,
+    createProcedure, changeProcedureStatus, recordProcedureInteractionOutcome, runProcedureSelectionPass,
+    procedureStatsSnapshot, procedureContextSelection, procedureAudit, procedureOutcomeAudit,
+    procedureSelectionPassAudit,
+    activeProcedureSourceLearningIds,
+    initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
     expectationForecastAudit, expectationSurprise,
