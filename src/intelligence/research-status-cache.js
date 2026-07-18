@@ -1,16 +1,43 @@
 'use strict';
 
 const path = require('node:path');
-const { Worker } = require('node:worker_threads');
+const os = require('node:os');
+const { fork } = require('node:child_process');
 
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
+
+function createLowPriorityResearchProcess(workerPath, workerData) {
+  const child = fork(workerPath, [], {
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    serialization: 'advanced',
+    windowsHide: true,
+    execArgv: [],
+    env: { ...process.env, NORA_RESEARCH_STATUS_CHILD: '1' },
+  });
+  try {
+    os.setPriority(child.pid, os.constants.priority.PRIORITY_LOW);
+  } catch (error) {
+    child.kill();
+    throw new Error(`research status priority isolation unavailable: ${error.message}`);
+  }
+  child.research_isolation = 'low_priority_child_process';
+  child.research_priority = os.getPriority(child.pid);
+  child.terminate = async () => {
+    if (child.exitCode == null && child.signalCode == null) child.kill();
+    return child.exitCode;
+  };
+  child.send(workerData, error => {
+    if (error) child.emit('error', error);
+  });
+  return child;
+}
 
 function createResearchStatusCache({ store, getDreams = () => [], getWants = () => [],
   now = () => new Date(), maxAgeMs = DEFAULT_MAX_AGE_MS,
   minRefreshIntervalMs = DEFAULT_MIN_REFRESH_INTERVAL_MS,
   workerPath = path.join(__dirname, 'research-status-worker.js'),
-  createWorker = options => new Worker(workerPath, options),
+  createWorker = options => createLowPriorityResearchProcess(workerPath, options.workerData),
   shouldDeferRefresh = () => false } = {}) {
   if (!store || typeof store.snapshot !== 'function' || typeof store.snapshotRevision !== 'function') {
     throw new Error('research status cache requires a snapshot-capable intelligence store');
@@ -87,6 +114,9 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
           generated_at: message.generated_at,
           compute_ms: Number(message.compute_ms) || 0,
           capture_ms,
+          isolation: worker.research_isolation || 'injected_worker',
+          priority: Number.isFinite(Number(worker.research_priority))
+            ? Number(worker.research_priority) : null,
           completed_at_ms: Date.now(),
         };
         return finish(null, current);
@@ -154,6 +184,8 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       age_ms: current ? Math.max(0, Date.now() - current.completed_at_ms) : null,
       compute_ms: current?.compute_ms ?? null,
       capture_ms: current?.capture_ms ?? null,
+      isolation: current?.isolation || null,
+      priority: current?.priority ?? null,
       experimental_access_current: current ? current.experimental_access_fingerprint === (
         typeof store.experimentalAccessFingerprint === 'function'
           ? store.experimentalAccessFingerprint() : null) : null,
@@ -187,5 +219,6 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
 module.exports = {
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MIN_REFRESH_INTERVAL_MS,
+  createLowPriorityResearchProcess,
   createResearchStatusCache,
 };

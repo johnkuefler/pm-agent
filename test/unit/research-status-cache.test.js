@@ -44,6 +44,8 @@ test('research status worker preserves the scientific report and refreshes revis
   assert.deepEqual(JSON.parse(cold.self_model_serialized), expectedSelfModel);
   assert.ok(cold.compute_ms >= 0);
   assert.ok(cold.capture_ms >= 0);
+  assert.equal(cold.isolation, 'low_priority_child_process');
+  assert.equal(cold.priority, 19);
 
   store.addCommitment({ what: 'Keep live conversations responsive', owner: 'Nora' });
   const stale = await cache.get();
@@ -102,6 +104,8 @@ test('expensive research computation cannot block the main event loop', async t 
 
   assert.equal(JSON.parse(snapshot.serialized).isolated_worker_fixture, true);
   assert.equal(JSON.parse(snapshot.self_model_serialized).isolated_worker_fixture, true);
+  assert.equal(snapshot.isolation, 'low_priority_child_process');
+  assert.equal(snapshot.priority, 19);
   assert.ok(heartbeatTicks >= 5,
     `main event-loop heartbeat should continue during worker computation; observed ${heartbeatTicks} ticks`);
 });
@@ -178,4 +182,10 @@ test('active trial summary avoids the full self-model audit without changing sea
     store.selfModelSnapshot().context_trials.filter(item => item.status === 'active'));
   assert.equal(store.activeContextTrialsSnapshot()[0].hypothesis, 'Blinded functional trial');
   assert.equal(store.activeContextTrialsSnapshot()[0].assignment_progress.target_total, 4);
+});
+
+test('HTTP projections expose the low-priority isolation receipt for production verification', () => {
+  const routes = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
+  assert.match(routes, /X-Nora-Compute-Isolation/);
+  assert.match(routes, /X-Nora-Compute-Priority/);
 });

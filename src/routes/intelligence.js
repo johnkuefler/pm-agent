@@ -598,6 +598,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
       res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
       res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
+      res.set('X-Nora-Compute-Isolation', snapshot.isolation || 'unknown');
+      if (snapshot.priority != null) res.set('X-Nora-Compute-Priority', String(snapshot.priority));
       res.set('Server-Timing', `capture;dur=${snapshot.capture_ms.toFixed(1)}, research-worker;dur=${snapshot.compute_ms.toFixed(1)}`);
       res.set('Cache-Control', 'private, no-store');
       return res.type('application/json').send(snapshot.serialized);
@@ -828,6 +830,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
       res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
       res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
+      res.set('X-Nora-Compute-Isolation', snapshot.isolation || 'unknown');
+      if (snapshot.priority != null) res.set('X-Nora-Compute-Priority', String(snapshot.priority));
       res.set('Server-Timing', `capture;dur=${snapshot.capture_ms.toFixed(1)}, research-worker;dur=${snapshot.compute_ms.toFixed(1)}`);
       res.set('Cache-Control', 'private, no-store');
       return res.type('application/json').send(snapshot.self_model_serialized);
