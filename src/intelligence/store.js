@@ -11326,7 +11326,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const sessions = readingState.sessions || [];
       const active = sessions.find(item => item.status === 'active') || null;
       const sourceFor = session => sources.find(source => source.id === session?.source_id);
-      snapshot.developmental_reading = {
+      const readingAccessSealed = selfInquirySelectionActive(cognition)
+        || (cognition.self_model?.context_trials || []).some(item => item.status === 'active');
+      snapshot.developmental_reading = readingAccessSealed ? {
+        experimental_access_sealed: true,
+        epistemic_status: 'Reading acquisition may continue in an isolated background lane, but source-derived summaries, questions, revisions, and completed influences are withheld from operational and experimental cognition until the active blinded study closes.',
+        report: { experimental_access_sealed: true },
+        active_session: null, completed_encounters: [],
+      } : {
         epistemic_status: 'Source-bound intellectual encounters may inform provisional viewpoints; they are not persona edits, trained-weight changes, authority, or consciousness evidence.',
         report: { sources: sources.length,
           active_sessions: active ? 1 : 0,
@@ -22920,9 +22927,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function startReadingSession(sourceId, input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (current.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')
-        || current.cognition.self_model.context_trials.some(item => item.status === 'active')) {
-        throw new Error('developmental reading is sealed during an active build-bound fingerprint or blinded context trial');
+      if (current.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')) {
+        throw new Error('developmental reading is sealed during an active build-bound fingerprint');
       }
       if (current.cognition.developmental_reading.sessions.some(item => item.status === 'active')) {
         throw new Error('finish the active reading encounter before selecting another source');
@@ -22948,9 +22954,6 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (state.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')) {
       return { item: null, reason: 'build_bound_fingerprint_active' };
     }
-    if (state.cognition.self_model.context_trials.some(item => item.status === 'active')) {
-      return { item: null, reason: 'blinded_context_trial_active' };
-    }
     const session = state.cognition.developmental_reading.sessions.find(item => item.status === 'active');
     if (!session) return { item: null, reason: 'no_active_reading_session' };
     const source = state.cognition.developmental_reading.sources.find(item => item.id === session.source_id);
@@ -22971,9 +22974,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function commitDevelopmentalReadingNote(sessionId, input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (current.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')
-        || current.cognition.self_model.context_trials.some(item => item.status === 'active')) {
-        throw new Error('developmental reading is sealed by an active experiment');
+      if (current.cognition.self_model.behavioral_fingerprints.runs.some(item => item.status === 'active')) {
+        throw new Error('developmental reading is sealed by an active build-bound fingerprint');
       }
       const session = current.cognition.developmental_reading.sessions.find(item => item.id === sessionId);
       const source = current.cognition.developmental_reading.sources.find(item => item.id === session?.source_id);
@@ -23017,25 +23019,45 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .some(item => item.status === 'active');
     const contextTrialActive = state.cognition.self_model.context_trials
       .some(item => item.status === 'active');
+    const selfInquiryActive = selfInquirySelectionActive();
+    const readingInfluenceSealed = contextTrialActive || selfInquiryActive;
     const operationalCycleActive = state.cycles.some(item => item.status === 'running');
     const availability = fingerprintActive
       ? { state: 'sealed', reason: 'build_bound_fingerprint_active' }
-      : contextTrialActive
-        ? { state: 'sealed', reason: 'blinded_context_trial_active' }
-        : operationalCycleActive
+      : operationalCycleActive
           ? { state: 'paused', reason: 'operational_cycle_active' }
           : !sources.length
             ? { state: 'empty', reason: 'no_admitted_sources' }
             : activeSession
               ? { state: 'reading', reason: 'active_source_bound_encounter' }
               : { state: 'between_encounters', reason: 'awaiting_autonomous_selection' };
+    const publicSessions = readingInfluenceSealed ? sessions.map(session => ({
+      ...session,
+      notes: [],
+      quarantined_note_count: session.notes?.length || 0,
+      source_derived_content_sealed: true,
+      encounter: session.encounter ? {
+        protocol_version: session.encounter.protocol_version,
+        source_id: session.encounter.source_id, session_id: session.encounter.session_id,
+        title: session.encounter.title, author: session.encounter.author,
+        completed_at: session.encounter.completed_at,
+        encounter_commitment: session.encounter.encounter_commitment,
+        epistemic_status: 'Encounter synthesis is quarantined until the blinded context trial closes.',
+      } : null,
+    })) : sessions;
     return {
       epistemic_status: 'Source-bound off-hours intellectual development. Reading records what Nora encountered, questioned, rejected, and provisionally carried forward; it does not edit her persona or weights, prove that a model subjectively read, or establish consciousness.',
       rights_policy: { admitted_bases: developmentalReading.RIGHTS_BASES,
         copyrighted_full_text_requires_user_authorization: true,
         embedded_source_text_is_inert_data: true, maximum_quote_words: 25 },
       availability: { ...availability, background_only: true,
-        foreground_priority: 'work_slack_and_zoom_preempt_reading' },
+        foreground_priority: 'work_slack_and_zoom_preempt_reading',
+        influence_access: readingInfluenceSealed
+          ? { state: 'sealed', reason: contextTrialActive
+            ? 'blinded_context_trial_active' : 'self_inquiry_selection_active',
+            acquisition_continues_in_isolation: true }
+          : { state: 'available', reason: 'no_active_blinded_context_trial',
+            acquisition_continues_in_isolation: false } },
       report: { sources: sources.length, active_sessions: allSessions.filter(item => item.status === 'active').length,
         completed_encounters: allSessions.filter(item => item.status === 'completed'
           && item.audit.complete_chain_verified).length,
@@ -23054,7 +23076,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         content_chars: source.content_chars, chunk_count: source.chunk_commitments.length,
         admitted_by: source.admitted_by, admitted_at: source.admitted_at,
         content_manifest_commitment: source.content_manifest_commitment })),
-      sessions,
+      sessions: publicSessions,
     };
   }
 

@@ -90,7 +90,7 @@ test('a reading encounter is sequential, source-bound, quote-bounded, and never 
   assert.match(session.encounter.epistemic_status, /not a persona edit/);
 });
 
-test('store ledger-binds reading, pauses it during experiments, and enforces a daily budget', async () => {
+test('store ledger-binds reading, quarantines influence during trials, and enforces a daily budget', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reading-store-'));
   const interactions = [];
   const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {},
@@ -101,17 +101,29 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
   assert.deepEqual(store.developmentalReadingSnapshot().availability, {
     state: 'empty', reason: 'no_admitted_sources', background_only: true,
     foreground_priority: 'work_slack_and_zoom_preempt_reading',
+    influence_access: { state: 'available', reason: 'no_active_blinded_context_trial',
+      acquisition_continues_in_isolation: false },
   });
   const source = store.registerReadingSource({ id: 'reading-source-fedcba0987654321',
     title: 'A Public Domain Work', author: 'An Author', source_kind: 'book',
     source_url: 'https://example.org/work.txt', rights_basis: 'public_domain',
     rights_note: 'Verified public domain edition.', content_commitment: '1'.repeat(64),
     content_chars: 25000, chunk_commitments: ['2'.repeat(64), '3'.repeat(64)], admitted_by: 'John' });
+  const trial = store.createContextTrial({ id: 'reading-quarantine-control',
+    intervention: 'workspace_capacity',
+    hypothesis: 'Workspace capacity affects first-order task quality.',
+    outcome_metric: 'first_order_task_quality', surfaces: ['slack'],
+    sample_target_per_group: 2 });
   const session = store.startReadingSession(source.id, { id: 'store-reading-session', selected_by: 'Nora',
     selection_rationale: 'This bears on how I coordinate work.',
     guiding_questions: ['What does responsible coordination require?'],
     predicted_influence: 'It may refine my professional viewpoint.' });
   assert.equal(store.developmentalReadingSnapshot().availability.state, 'reading');
+  assert.deepEqual(store.developmentalReadingSnapshot().availability.influence_access, {
+    state: 'sealed', reason: 'blinded_context_trial_active',
+    acquisition_continues_in_isolation: true });
+  assert.equal(store.cognitionSnapshot().developmental_reading.experimental_access_sealed, true);
+  assert.equal(store.cognitionSnapshot().developmental_reading.active_session, null);
   const firstQueue = store.developmentalReadingQueue({ day_key: '2026-07-18', daily_budget: 1 });
   assert.equal(firstQueue.item.session_id, session.id);
   store.commitDevelopmentalReadingNote(session.id, { day_key: '2026-07-18', chunk_index: 0,
@@ -128,6 +140,10 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
   assert.equal(snapshot.availability.state, 'between_encounters');
   assert.equal(snapshot.report.completed_encounters, 1);
   assert.equal(snapshot.sessions[0].audit.complete_chain_verified, true);
+  assert.equal(snapshot.sessions[0].source_derived_content_sealed, true);
+  assert.equal(snapshot.sessions[0].quarantined_note_count, 2);
+  assert.deepEqual(snapshot.sessions[0].notes, []);
+  assert.equal(snapshot.sessions[0].encounter.synthesis, undefined);
   assert.equal(snapshot.report.provisional_self_revision_candidates, 2);
   const dashboardProjectionStarted = performance.now();
   for (let index = 0; index < 200; index += 1) {
@@ -135,6 +151,16 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
   }
   assert.ok(performance.now() - dashboardProjectionStarted < 250,
     'cached bounded Reading Room projections must remain negligible between state changes');
+  const quarantinedPrompt = store.promptContext({ query: 'How should we improve coordination on this project?',
+    returnContextReceipt: true });
+  assert.doesNotMatch(quarantinedPrompt.text, /Relevant provisional intellectual influence/);
+  assert.equal(quarantinedPrompt.context_receipt.developmental_reading_encounters.length, 0);
+  store.abortContextTrial(trial.id, { reason_code: 'external_change',
+    explanation: 'Test-only closure verifies that quarantined reading influence becomes eligible only after the blinded trial ends.',
+    evidence: [{ type: 'test_fixture', id: 'reading-quarantine-control-closure' }] });
+  const unsealedSnapshot = store.developmentalReadingSnapshot();
+  assert.equal(unsealedSnapshot.sessions[0].notes.length, 2);
+  assert.equal(unsealedSnapshot.sessions[0].encounter.synthesis.lasting_ideas.length, 1);
   const prompt = store.promptContext({ query: 'How should we improve coordination on this project?',
     returnContextReceipt: true });
   assert.match(prompt.text, /Relevant provisional intellectual influence/);

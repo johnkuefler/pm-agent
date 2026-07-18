@@ -240,11 +240,14 @@ function readingRoomStatus(availability = {}) {
     reading: 'Reading now', sealed: 'Sealed by active study', paused: 'Work has priority',
     empty: 'Library awaiting a source', between_encounters: 'Between books',
   };
-  return labels[availability.state] || String(availability.state || 'Library ready').replaceAll('_', ' ');
+  const label = labels[availability.state] || String(availability.state || 'Library ready').replaceAll('_', ' ');
+  return availability.influence_access?.state === 'sealed' && availability.state !== 'sealed'
+    ? `${label} · influence sealed` : label;
 }
 
 function readingRoomBook(source, session) {
-  const completed = session?.notes?.length || 0;
+  const completed = Math.max(session?.notes?.length || 0, session?.next_chunk_index || 0,
+    session?.quarantined_note_count || 0);
   const total = source?.chunk_count || 0;
   return `<article class="reading-book" aria-label="${escHtml(source?.title || 'No admitted book')}">
     <div class="reading-book-rule" aria-hidden="true"></div>
@@ -260,7 +263,8 @@ function readingRoomBook(source, session) {
   </article>`;
 }
 
-function readingRoomLatestNote(note) {
+function readingRoomLatestNote(note, { quarantined = false, count = 0 } = {}) {
+  if (quarantined) return `<div class="reading-note-empty"><strong>${count} source-bound reflection${count === 1 ? '' : 's'} quarantined.</strong><p>Reading may continue, but summaries, questions, revisions, and synthesis stay outside Nora's operational and experimental cognition until the blinded study closes.</p></div>`;
   if (!note) return `<div class="reading-note-empty"><strong>No reflection committed yet.</strong><p>Nora has selected the work and will record her first grounded reaction after reading the next source chunk.</p></div>`;
   const output = note.output || {};
   const reactions = output.reactions || [];
@@ -300,6 +304,7 @@ function renderReadingRoom(report) {
   const source = sources.find(item => item.id === latest?.source_id) || sources.at(-1) || null;
   const latestNote = latest?.notes?.at(-1) || null;
   const availability = report.availability || {};
+  const quarantined = availability.influence_access?.state === 'sealed';
   const summary = report.report || {};
   const transfer = summary.work_transfer || {};
   live.textContent = readingRoomStatus(availability);
@@ -317,7 +322,8 @@ function renderReadingRoom(report) {
   }
 
   const totalChunks = source.chunk_count || 0;
-  const completedChunks = latest?.notes?.length || 0;
+  const completedChunks = Math.max(latest?.notes?.length || 0, latest?.next_chunk_index || 0,
+    latest?.quarantined_note_count || 0);
   const progress = totalChunks ? Math.round((completedChunks / totalChunks) * 100) : 0;
   const stateTitle = active ? `Reading chunk ${Math.min(completedChunks + 1, totalChunks)} of ${totalChunks}`
     : latest ? 'Most recent completed encounter' : 'Awaiting Nora\'s selection';
@@ -332,7 +338,7 @@ function renderReadingRoom(report) {
         <div><span>Why this book</span><p>${escHtml(latest.selection_rationale || 'Selection rationale unavailable.')}</p></div>
         <div><span>Questions Nora brought in</span><ol>${(latest.guiding_questions || []).map(question => `<li>${escHtml(question)}</li>`).join('')}</ol></div>
         <div><span>Predicted influence</span><p>${escHtml(latest.predicted_influence || 'No prediction recorded.')}</p></div>
-      </div>${readingRoomLatestNote(latestNote)}${readingRoomSynthesis(latest)}` : `<div class="reading-note-empty"><strong>This work is admitted and waiting.</strong><p>Nora will choose a source-bound encounter off-hours after active experiments and operational work release the background lane.</p></div>`}
+      </div>${readingRoomLatestNote(latestNote, { quarantined, count: latest?.quarantined_note_count || 0 })}${quarantined ? '' : readingRoomSynthesis(latest)}` : `<div class="reading-note-empty"><strong>This work is admitted and waiting.</strong><p>Nora can choose a source-bound encounter off-hours after operational work releases the background lane. Blinded studies quarantine influence without stopping acquisition.</p></div>`}
     </div>
   </div>
   <footer class="reading-evidence">
