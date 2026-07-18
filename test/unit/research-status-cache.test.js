@@ -243,6 +243,46 @@ test('verified persisted projections hydrate across restarts without spawning co
   assert.deepEqual(JSON.parse(snapshot.serialized), store.consciousnessResearchStatus());
 });
 
+test('an access-safe prior-build projection returns immediately while refresh is deferred', async t => {
+  const store = await createStore(t);
+  const envelope = createPersistedProjectionEnvelope({
+    serialized: JSON.stringify(store.consciousnessResearchStatus()),
+    revision: store.snapshotRevision(),
+    experimental_access_fingerprint: store.experimentalAccessFingerprint(),
+    generated_at: OBSERVED_AT.toISOString(), completed_at: new Date().toISOString(),
+    build_identity: 'prior-build',
+  }, 'research_status');
+  assert.equal(verifyPersistedProjectionEnvelope(envelope, 'research_status'), false);
+  assert.equal(verifyPersistedProjectionEnvelope(envelope, 'research_status', {
+    requireCurrentBuild: false,
+  }), true);
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store, loadPersisted: async () => envelope,
+    shouldDeferRefresh: () => true,
+    createWorker: () => { throw new Error('deferred refresh must not create a worker'); },
+  });
+  t.after(() => cache.close());
+  const snapshot = await cache.get({ waitForCold: false });
+  assert.equal(snapshot.cache_state, 'stale-build-refreshing');
+  assert.equal(snapshot.stale, true);
+  assert.equal(snapshot.build_stale, true);
+  assert.deepEqual(JSON.parse(snapshot.serialized), store.consciousnessResearchStatus());
+});
+
+test('cold HTTP-style reads fail fast while isolated projection generation continues', async t => {
+  const store = await createStore(t);
+  let workerCreated = false;
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store, loadPersisted: async () => null,
+    createWorker: () => { workerCreated = true; throw new Error('synthetic worker start'); },
+  });
+  t.after(() => cache.close());
+  await assert.rejects(cache.get({ waitForCold: false }), error =>
+    error.code === 'cold_projection_refreshing');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(workerCreated, true);
+});
+
 test('HTTP projections expose the low-priority isolation receipt for production verification', () => {
   const routes = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
   assert.match(routes, /X-Nora-Compute-Isolation/);
@@ -250,4 +290,6 @@ test('HTTP projections expose the low-priority isolation receipt for production 
   assert.match(routes, /X-Nora-Compute-CPU-Budget/);
   assert.match(routes, /projection: 'research_status'/);
   assert.match(routes, /projection: 'self_model'/);
+  assert.match(routes, /waitForCold: false/);
+  assert.match(routes, /Retry-After/);
 });

@@ -314,7 +314,7 @@ function createPersistedProjectionEnvelope(snapshot, projection) {
   }
   const envelope = {
     protocol_version: PERSISTED_PROJECTION_PROTOCOL_VERSION,
-    build_identity: projectionBuildIdentity(),
+    build_identity: snapshot.build_identity || projectionBuildIdentity(),
     projection,
     serialized,
     source_revision: Number.isFinite(Number(snapshot.revision)) ? Number(snapshot.revision) : null,
@@ -326,9 +326,13 @@ function createPersistedProjectionEnvelope(snapshot, projection) {
   return envelope;
 }
 
-function verifyPersistedProjectionEnvelope(envelope, projection) {
-  if (!envelope || envelope.protocol_version !== PERSISTED_PROJECTION_PROTOCOL_VERSION
-    || envelope.build_identity !== projectionBuildIdentity()
+function verifyPersistedProjectionEnvelope(envelope, projection,
+  { requireCurrentBuild = true, allowLegacyProtocol = false } = {}) {
+  const protocolValid = envelope?.protocol_version === PERSISTED_PROJECTION_PROTOCOL_VERSION
+    || (allowLegacyProtocol && envelope?.protocol_version === 1);
+  const buildValid = !requireCurrentBuild
+    || envelope?.build_identity === projectionBuildIdentity();
+  if (!envelope || !protocolValid || !buildValid
     || envelope.projection !== projection || typeof envelope.serialized !== 'string'
     || envelope.content_commitment !== projectionCommitment(envelope)) return false;
   try { JSON.parse(envelope.serialized); }
@@ -373,10 +377,19 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     if (hydrationAttempted) return current;
     if (hydrationPromise) return hydrationPromise;
     hydrationPromise = Promise.resolve().then(loadPersisted).then(envelope => {
-      if (!verifyPersistedProjectionEnvelope(envelope, projection)) return null;
+      const currentBuildVerified = verifyPersistedProjectionEnvelope(envelope, projection);
+      const staleBuildVerified = !currentBuildVerified && verifyPersistedProjectionEnvelope(
+        envelope, projection, { requireCurrentBuild: false, allowLegacyProtocol: true });
+      const currentAccessFingerprint = typeof store.experimentalAccessFingerprint === 'function'
+        ? store.experimentalAccessFingerprint() : null;
+      const staleBuildAccessSafe = staleBuildVerified
+        && envelope.source_access_fingerprint === currentAccessFingerprint;
+      if (!currentBuildVerified && !staleBuildAccessSafe) return null;
       const completedAtMs = new Date(envelope.completed_at).getTime();
       current = {
         serialized: envelope.serialized,
+        build_identity: envelope.build_identity || null,
+        build_stale: !currentBuildVerified,
         experimental_access_fingerprint: envelope.source_access_fingerprint,
         revision: envelope.source_revision,
         generated_at: envelope.generated_at,
@@ -449,6 +462,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
         }
         current = {
           serialized: message[serializedField],
+          build_identity: projectionBuildIdentity(),
+          build_stale: false,
           experimental_access_fingerprint: workerData.experimental_access_fingerprint,
           revision: workerData.revision,
           generated_at: message.generated_at,
@@ -488,7 +503,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     return inFlight;
   }
 
-  async function get({ requireCurrentExperimentalAccess = false, requireCurrentRevision = false } = {}) {
+  async function get({ requireCurrentExperimentalAccess = false, requireCurrentRevision = false,
+    waitForCold = true } = {}) {
     await hydrate();
     const revision = store.snapshotRevision();
     const accessFingerprint = typeof store.experimentalAccessFingerprint === 'function'
@@ -496,7 +512,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     const accessChanged = Boolean(current && requireCurrentExperimentalAccess
       && current.experimental_access_fingerprint !== accessFingerprint);
     const revisionChanged = Boolean(current && current.revision !== revision);
-    if (accessChanged || (requireCurrentRevision && revisionChanged)) {
+    const buildChanged = current?.build_stale === true;
+    if (accessChanged || (requireCurrentRevision && (revisionChanged || buildChanged))) {
       const value = await refresh({ force: true });
       const latestFingerprint = typeof store.experimentalAccessFingerprint === 'function'
         ? store.experimentalAccessFingerprint() : null;
@@ -510,17 +527,26 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       return { ...value, cache_state: accessChanged ? 'seal-refresh' : 'revision-refresh', stale: false };
     }
     if (!current) {
+      if (!waitForCold) {
+        if (!inFlight && !shouldDeferRefresh()) refresh({ force: true }).catch(() => {});
+        const error = new Error(`${projection} cold projection refresh in progress`);
+        error.code = 'cold_projection_refreshing';
+        throw error;
+      }
       const value = await refresh({ force: true });
       return { ...value, cache_state: 'cold', stale: value.revision !== store.snapshotRevision() };
     }
     const ageMs = Date.now() - current.completed_at_ms;
     const ageExpired = ageMs > maxAgeMs;
     const stale = revisionChanged || ageExpired;
-    if (ageExpired && !inFlight && !shouldDeferRefresh()
+    if ((buildChanged || ageExpired) && !inFlight && !shouldDeferRefresh()
       && Date.now() - lastRefreshStartedAt >= minRefreshIntervalMs) {
-      refresh().catch(() => {});
+      refresh({ force: buildChanged }).catch(() => {});
     }
-    return { ...current, cache_state: current.persisted ? 'persisted' : (stale ? 'stale' : 'fresh'), stale };
+    return { ...current,
+      cache_state: buildChanged ? 'stale-build-refreshing'
+        : current.persisted ? 'persisted' : (stale ? 'stale' : 'fresh'),
+      stale: stale || buildChanged };
   }
 
   function status() {
@@ -531,6 +557,9 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       revision: current?.revision ?? null,
       current_revision: store.snapshotRevision(),
       generated_at: current?.generated_at || null,
+      build_identity: current?.build_identity || null,
+      current_build_identity: projectionBuildIdentity(),
+      build_stale: current?.build_stale || false,
       age_ms: current ? Math.max(0, Date.now() - current.completed_at_ms) : null,
       compute_ms: current?.compute_ms ?? null,
       capture_ms: current?.capture_ms ?? null,

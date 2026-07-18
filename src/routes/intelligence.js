@@ -650,10 +650,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/consciousness-research/status', requireAuth, async (_req, res) => {
     try {
-      const snapshot = await researchStatusCache.get();
+      const snapshot = await researchStatusCache.get({ waitForCold: false });
       projectionHeaders(res, snapshot);
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
+      if (error.code === 'cold_projection_refreshing') res.set('Retry-After', '5');
       return res.status(503).json({ error: 'research status snapshot unavailable', detail: error.message });
     }
   });
