@@ -148,6 +148,11 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /startReadingRoomPolling/);
   assert.match(intelligenceJs, /60000/);
   assert.match(html, /id="reading-room-state"/);
+  assert.match(html, /data-intelligence-jump="reading-room"/,
+    'developmental reading should be directly discoverable from the workspace navigation');
+  assert.match(intelligenceJs, /function openIntelligenceSection\(name\)/);
+  assert.match(intelligenceJs, /loadIntelligenceSection\(name, token\)/,
+    'an explicit section jump should load its bounded endpoint without waiting for viewport discovery');
   assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
   assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);
   assert.match(intelligenceJs, /self-model\?allow_stale=1/,

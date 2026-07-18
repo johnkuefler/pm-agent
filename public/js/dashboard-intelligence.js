@@ -102,6 +102,19 @@ async function loadIntelligence() {
   }
 }
 
+function openIntelligenceSection(name) {
+  if (!intelligenceSectionTargets[name]) return;
+  showTab('intelligence');
+  const token = intelligenceLoadToken;
+  requestAnimationFrame(() => {
+    const section = document.querySelector(`[data-intelligence-section="${name}"]`);
+    if (!section) return;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    section.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+    loadIntelligenceSection(name, token);
+  });
+}
+
 async function loadIntelligenceBench(token) {
   try {
     const bench = await intelligenceJson('/nora-bench', intelligenceAbortController?.signal);
