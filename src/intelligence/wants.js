@@ -4,6 +4,9 @@ const STATUSES = new Set(['active', 'completed', 'retired']);
 const ORIGINS = new Set(['self_generated', 'user_suggested', 'system_seed', 'unknown']);
 const RECEIPT_BOUND_FORMATION_PROTOCOL = 'server_direct_subject_aim_reflection_v1';
 const RECEIPT_BOUND_REAPPRAISAL_PROTOCOL = 'server_direct_subject_aim_reappraisal_v1';
+const HISTORY_PROTOCOL_VERSION = 2;
+const HASH_PROTOCOL = 'canonical_json_sha256_v2';
+const LEGACY_ARCHIVE_PROTOCOL = 'legacy_wants_history_archive_v1';
 
 function cleanText(value, name, max, required = false) {
   if (value == null && !required) return '';
@@ -104,8 +107,18 @@ function cleanProgress(value) {
   });
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).filter(key => value[key] !== undefined).sort()
+      .map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+  }
+  const encoded = JSON.stringify(value);
+  return encoded === undefined ? 'null' : encoded;
+}
+
 function stableHash(value) {
-  return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
 
 function normalizeWantUpdate(previousItems, requestedItems, options = {}) {
@@ -167,31 +180,171 @@ function normalizeWantUpdate(previousItems, requestedItems, options = {}) {
   return items;
 }
 
-function wantRevisionEvent(previousRecord, nextRecord, actor = 'nora') {
+function eventPayload(event = {}) {
+  const value = JSON.parse(JSON.stringify(event || {}));
+  delete value.event_commitment;
+  return value;
+}
+
+function wantRevisionEvent(previousRecord, nextRecord, actor = 'nora', options = {}) {
   const previousHash = previousRecord ? stableHash(previousRecord) : null;
   const recordHash = stableHash(nextRecord);
-  return {
-    at: nextRecord.updated_at,
+  const event = {
+    protocol_version: HISTORY_PROTOCOL_VERSION,
+    hash_protocol: HASH_PROTOCOL,
+    at: cleanText(options.at || nextRecord.updated_at, 'event.at', 40, true),
     actor: cleanText(String(actor), 'actor', 100, true),
     previous_hash: previousHash,
     record_hash: recordHash,
     active_ids: nextRecord.items.filter(item => item.status === 'active').map(item => item.id),
     record: nextRecord,
+    ...(options.checkpoint ? { checkpoint: JSON.parse(JSON.stringify(options.checkpoint)) } : {}),
   };
+  event.event_commitment = stableHash(eventPayload(event));
+  return event;
 }
 
 function verifyWantHistory(events, currentRecord) {
   if (!Array.isArray(events)) return { valid: false, reason: 'history_not_array' };
+  if (!events.length) {
+    return currentRecord ? { valid: false, reason: 'current_record_without_history' }
+      : { valid: true, events: 0, head: null, protocol_version: HISTORY_PROTOCOL_VERSION,
+        hash_protocol: HASH_PROTOCOL, complete_chain_verified: true };
+  }
   for (let i = 0; i < events.length; i += 1) {
     const event = events[i];
-    if (!event?.record || stableHash(event.record) !== event.record_hash) return { valid: false, reason: 'record_hash_mismatch', index: i };
+    if (event?.protocol_version !== HISTORY_PROTOCOL_VERSION || event?.hash_protocol !== HASH_PROTOCOL) {
+      return { valid: false, reason: 'unsupported_event_protocol', index: i };
+    }
+    if (!event.event_commitment || stableHash(eventPayload(event)) !== event.event_commitment) {
+      return { valid: false, reason: 'event_commitment_mismatch', index: i };
+    }
+    if (!event?.record || !Array.isArray(event.record.items)) {
+      return { valid: false, reason: 'record_shape_invalid', index: i };
+    }
+    if (stableHash(event.record) !== event.record_hash) return { valid: false, reason: 'record_hash_mismatch', index: i };
+    const activeIds = event.record.items.filter(item => item.status === 'active').map(item => item.id);
+    if (canonicalJson(activeIds) !== canonicalJson(event.active_ids || [])) {
+      return { valid: false, reason: 'active_ids_mismatch', index: i };
+    }
+    if (i === 0 && event.previous_hash !== null) return { valid: false, reason: 'genesis_previous_hash_present', index: i };
     if (i > 0 && event.previous_hash !== events[i - 1].record_hash) return { valid: false, reason: 'chain_mismatch', index: i };
   }
   if (events.length && currentRecord && events[events.length - 1].record_hash !== stableHash(currentRecord)) {
     return { valid: false, reason: 'current_record_mismatch' };
   }
-  return { valid: true, events: events.length, head: events.length ? events[events.length - 1].record_hash : null };
+  return { valid: true, events: events.length, head: events[events.length - 1].record_hash,
+    protocol_version: HISTORY_PROTOCOL_VERSION, hash_protocol: HASH_PROTOCOL,
+    complete_chain_verified: true };
+}
+
+function archivePayload(archive = {}) {
+  const value = JSON.parse(JSON.stringify(archive || {}));
+  delete value.archive_commitment;
+  return value;
+}
+
+function legacyArchiveSource(events, currentRecord, integrity) {
+  return { events: JSON.parse(JSON.stringify(events || [])),
+    current_record: currentRecord ? JSON.parse(JSON.stringify(currentRecord)) : null,
+    integrity_at_archival: JSON.parse(JSON.stringify(integrity || {})) };
+}
+
+function createLegacyWantHistoryArchive(events, currentRecord, integrity, now = new Date()) {
+  const source = legacyArchiveSource(events, currentRecord, integrity);
+  const archive = {
+    protocol: LEGACY_ARCHIVE_PROTOCOL,
+    archived_at: new Date(now).toISOString(),
+    source_commitment: stableHash(source),
+    legacy_event_count: Array.isArray(events) ? events.length : 0,
+    integrity_at_archival: source.integrity_at_archival,
+    legacy_events: source.events,
+    current_record: source.current_record,
+  };
+  archive.archive_commitment = stableHash(archivePayload(archive));
+  return archive;
+}
+
+function auditLegacyWantHistoryArchive(archive) {
+  const source = legacyArchiveSource(archive?.legacy_events, archive?.current_record,
+    archive?.integrity_at_archival);
+  const checks = {
+    protocol_verified: archive?.protocol === LEGACY_ARCHIVE_PROTOCOL,
+    source_commitment_verified: Boolean(archive?.source_commitment
+      && archive.source_commitment === stableHash(source)),
+    archive_commitment_verified: Boolean(archive?.archive_commitment
+      && archive.archive_commitment === stableHash(archivePayload(archive))),
+    event_count_verified: Number(archive?.legacy_event_count) === source.events.length,
+  };
+  return { ...checks, complete_archive_verified: Object.values(checks).every(Boolean),
+    source_history_replay_verified: Boolean(archive?.integrity_at_archival?.valid) };
+}
+
+function migrateLegacyWantHistory(events, currentRecord, archives = [], now = new Date()) {
+  const history = Array.isArray(events) ? events : [];
+  if (!Array.isArray(archives)) throw new Error('wants history archives must be an array');
+  const existingAudit = verifyWantHistory(history, currentRecord);
+  if (existingAudit.valid) return { migrated: false, history, archives, integrity: existingAudit };
+  if (!currentRecord || !Array.isArray(currentRecord.items)) {
+    throw new Error('cannot checkpoint wants history without a current record');
+  }
+  if (history.some(event => event?.protocol_version === HISTORY_PROTOCOL_VERSION
+    || event?.hash_protocol === HASH_PROTOCOL)) {
+    throw new Error(`canonical wants history failed integrity: ${existingAudit.reason}`);
+  }
+  const integrityAtArchival = {
+    valid: false,
+    reason: existingAudit.reason,
+    ...(Number.isInteger(existingAudit.index) ? { index: existingAudit.index } : {}),
+    epistemic_status: history.length
+      ? 'legacy_hash_chain_not_replay_verified' : 'preledger_state_not_replay_verified',
+  };
+  const source = legacyArchiveSource(history, currentRecord, integrityAtArchival);
+  const sourceCommitment = stableHash(source);
+  let archive = archives.find(item => item?.source_commitment === sourceCommitment) || null;
+  if (archive && !auditLegacyWantHistoryArchive(archive).complete_archive_verified) {
+    throw new Error('matching legacy wants archive failed integrity');
+  }
+  const nextArchives = archives.slice();
+  if (!archive) {
+    archive = createLegacyWantHistoryArchive(history, currentRecord, integrityAtArchival, now);
+    nextArchives.push(archive);
+  }
+  const checkpoint = {
+    kind: 'legacy_unverified_state_checkpoint_v1',
+    legacy_archive_commitment: archive.archive_commitment,
+    legacy_source_commitment: archive.source_commitment,
+    legacy_event_count: history.length,
+    source_integrity_at_migration: integrityAtArchival,
+    epistemic_status: 'current_state_committed_without_retroactive_source_verification',
+  };
+  const checkpointEvent = wantRevisionEvent(null, currentRecord,
+    'system:canonical-wants-ledger-migration', { at: new Date(now).toISOString(), checkpoint });
+  const nextHistory = [checkpointEvent];
+  return { migrated: true, history: nextHistory, archives: nextArchives,
+    archive, integrity: verifyWantHistory(nextHistory, currentRecord) };
+}
+
+function compactWantHistory(events, currentRecord, { maxEvents = 40, now = new Date() } = {}) {
+  const history = Array.isArray(events) ? events : [];
+  if (history.length < maxEvents) return { compacted: false, history };
+  const audit = verifyWantHistory(history, currentRecord);
+  if (!audit.valid) throw new Error(`cannot compact invalid wants history: ${audit.reason}`);
+  const checkpoint = {
+    kind: 'bounded_verified_chain_checkpoint_v1',
+    prior_event_count: history.length,
+    prior_head: audit.head,
+    prior_chain_commitment: stableHash(history),
+    prior_chain_audit_commitment: stableHash(audit),
+    epistemic_status: 'prior_verified_chain_content_compacted_to_commitment',
+  };
+  const event = wantRevisionEvent(null, currentRecord, 'system:wants-ledger-compaction',
+    { at: new Date(now).toISOString(), checkpoint });
+  return { compacted: true, history: [event], checkpoint };
 }
 
 module.exports = { RECEIPT_BOUND_FORMATION_PROTOCOL, RECEIPT_BOUND_REAPPRAISAL_PROTOCOL,
-  normalizeWantUpdate, stableHash, wantRevisionEvent, verifyWantHistory };
+  HISTORY_PROTOCOL_VERSION, HASH_PROTOCOL, LEGACY_ARCHIVE_PROTOCOL, canonicalJson,
+  normalizeWantUpdate, stableHash, eventPayload, wantRevisionEvent, verifyWantHistory,
+  archivePayload, createLegacyWantHistoryArchive, auditLegacyWantHistoryArchive,
+  migrateLegacyWantHistory, compactWantHistory };

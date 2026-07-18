@@ -51,9 +51,11 @@ test('goal affect classifies only provenance-valid self-authored aims and commit
 test('verified aim progress and neglect feed appraisal, drives, attention, and a public audit', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-goal-affect-'));
   let liveWants = JSON.parse(JSON.stringify(wants));
+  let ledgerIntegrity = { valid: true, complete_chain_verified: true, head: 'a'.repeat(64) };
   const store = createIntelligenceStore({
     filePath: path.join(dir, 'state.json'), db: {}, isDbReady: () => false, clock: () => now,
     getWants: () => liveWants,
+    getWantHistoryIntegrity: () => ledgerIntegrity,
   });
   await store.init();
   store.refreshCognition({ wants });
@@ -69,9 +71,15 @@ test('verified aim progress and neglect feed appraisal, drives, attention, and a
   assert.equal(publicState.report.current_verified, true);
   assert.equal(publicState.current.audit.content_commitment_verified, true);
   assert.equal(publicState.current.audit.source_replay_verified, true);
+  assert.equal(publicState.current.audit.want_history_verified, true);
   const indicator = store.consciousnessResearchStatus().indicators.find(item => item.id === 'self_authored_goal_affect');
   assert.equal(indicator.status, 'mechanism_present');
   assert.equal(indicator.evidence.current_content_commitment_verified, true);
+  ledgerIntegrity = { valid: false, complete_chain_verified: false,
+    reason: 'record_hash_mismatch' };
+  assert.equal(store.goalAffectSnapshot().report.current_verified, false);
+  assert.doesNotMatch(store.promptContext({ query: 'external email trust', capacity: 7 }), /Self-authored aim state selected into attention/);
+  ledgerIntegrity = { valid: true, complete_chain_verified: true, head: 'b'.repeat(64) };
   liveWants = liveWants.map(item => item.id === 'want-stalled' ? { ...item, want: 'A rewritten aim' } : item);
   assert.equal(store.goalAffectSnapshot().report.current_verified, false);
   assert.doesNotMatch(store.promptContext({ query: 'external email trust', capacity: 7 }), /Self-authored aim state selected into attention/);

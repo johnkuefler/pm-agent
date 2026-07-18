@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalizeWantUpdate, stableHash, wantRevisionEvent, verifyWantHistory } = require('../../src/intelligence/wants');
+const { normalizeWantUpdate, stableHash, wantRevisionEvent, verifyWantHistory,
+  auditLegacyWantHistoryArchive, migrateLegacyWantHistory, compactWantHistory } = require('../../src/intelligence/wants');
 
 const now = '2026-07-12T12:00:00.000Z';
 const formed = {
@@ -62,6 +63,65 @@ test('revision events bind consecutive records by hash', () => {
   const tampered = structuredClone(event);
   tampered.record.items[0].want = 'tampered';
   assert.equal(verifyWantHistory([genesis, tampered], second).valid, false);
+});
+
+test('canonical hashes survive JSONB-style object key reordering', () => {
+  const left = { items: [{ id: 'w-1', want: 'Notice recurring ownership gaps',
+    provenance: { origin: 'self_generated', evidence: [{ type: 'memory', id: 'm-1' }] } }],
+  updated_at: now };
+  const reordered = { updated_at: now, items: [{ provenance: {
+    evidence: [{ id: 'm-1', type: 'memory' }], origin: 'self_generated' },
+  want: 'Notice recurring ownership gaps', id: 'w-1' }] };
+  assert.equal(stableHash(left), stableHash(reordered));
+});
+
+test('legacy hash failures become an explicit unverified archive and canonical checkpoint', () => {
+  const current = { items: [{ id: 'w-old', want: 'Know the account', why: 'Be useful',
+    status: 'active', progress: [], provenance: { origin: 'unknown', evidence: [],
+      formation_context: 'Legacy want predating provenance capture.',
+      formed_at: '2026-01-01', epistemic_status: 'legacy_unverified' } }], updated_at: now };
+  const legacyEvents = [{ at: now, actor: 'nora', previous_hash: 'a'.repeat(64),
+    record_hash: 'b'.repeat(64), active_ids: ['w-old'], record: current }];
+  const migrated = migrateLegacyWantHistory(legacyEvents, current, [], new Date(now));
+  assert.equal(migrated.migrated, true);
+  assert.equal(migrated.integrity.valid, true);
+  assert.equal(migrated.history[0].checkpoint.kind, 'legacy_unverified_state_checkpoint_v1');
+  assert.equal(migrated.history[0].record.items[0].provenance.epistemic_status, 'legacy_unverified');
+  assert.equal(migrated.archives.length, 1);
+  assert.equal(auditLegacyWantHistoryArchive(migrated.archives[0]).complete_archive_verified, true);
+  const tampered = structuredClone(migrated.archives[0]);
+  tampered.legacy_events[0].active_ids = [];
+  assert.equal(auditLegacyWantHistoryArchive(tampered).complete_archive_verified, false);
+});
+
+test('canonical history corruption fails closed instead of being checkpointed away', () => {
+  const first = { items: normalizeWantUpdate([], [formed], { now }), updated_at: now };
+  const event = wantRevisionEvent(null, first, 'nora');
+  event.record.items[0].want = 'tampered';
+  assert.throws(() => migrateLegacyWantHistory([event], first, [], new Date(now)),
+    /canonical wants history failed integrity/);
+});
+
+test('bounded compaction commits the verified prior chain and keeps future appends valid', () => {
+  let current = { items: normalizeWantUpdate([], [formed], { now }), updated_at: now };
+  const history = [wantRevisionEvent(null, current, 'nora')];
+  for (let i = 1; i < 3; i += 1) {
+    const at = `2026-07-${12 + i}T12:00:00.000Z`;
+    const next = { items: normalizeWantUpdate(current.items, current.items, { now: at }), updated_at: at };
+    history.push(wantRevisionEvent(current, next, 'nora'));
+    current = next;
+  }
+  const compacted = compactWantHistory(history, current, { maxEvents: 3,
+    now: new Date('2026-07-15T12:00:00.000Z') });
+  assert.equal(compacted.compacted, true);
+  assert.equal(compacted.history.length, 1);
+  assert.equal(compacted.history[0].checkpoint.prior_event_count, 3);
+  assert.equal(verifyWantHistory(compacted.history, current).valid, true);
+  const nextAt = '2026-07-16T12:00:00.000Z';
+  const next = { items: normalizeWantUpdate(current.items, current.items, { now: nextAt }),
+    updated_at: nextAt };
+  const appended = [...compacted.history, wantRevisionEvent(current, next, 'nora')];
+  assert.equal(verifyWantHistory(appended, next).valid, true);
 });
 
 test('legacy date-based progress migrates without breaking append-only history', () => {

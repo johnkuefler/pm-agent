@@ -190,6 +190,8 @@ function emptyState() {
 }
 
 function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [],
+  getWantHistoryIntegrity = () => ({ valid: true, complete_chain_verified: true,
+    epistemic_status: 'ephemeral_in_memory_source' }),
   getOperationalEnvironment = () => ({}), getBehavioralFingerprintControls = () => null,
   getCognitiveParameterRecord = () => cognitiveParameters.defaultRecord(),
   getCognitiveParameterStatus = () => cognitiveParameters.status(cognitiveParameters.defaultRecord(), []),
@@ -22250,10 +22252,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         sourceReplayVerified = replay.content_commitment === record.content_commitment;
       } catch {}
     }
+    let wantHistory = null;
+    try { wantHistory = getWantHistoryIntegrity(); } catch { wantHistory = null; }
+    const wantHistoryVerified = Boolean(wantHistory?.valid
+      && wantHistory?.complete_chain_verified !== false);
     return {
       content_commitment_verified: contentVerified,
       source_replay_verified: sourceReplayVerified,
-      complete_chain_verified: contentVerified && sourceReplayVerified,
+      want_history_verified: wantHistoryVerified,
+      want_history_head: wantHistory?.head || null,
+      complete_chain_verified: contentVerified && sourceReplayVerified && wantHistoryVerified,
     };
   }
 

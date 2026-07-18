@@ -23,7 +23,8 @@ const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./s
 const { createIntelligenceStore } = require('./src/intelligence/store');
 const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
 const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
-const { normalizeWantUpdate, wantRevisionEvent, verifyWantHistory,
+const { normalizeWantUpdate, stableHash: stableWantHash, wantRevisionEvent, verifyWantHistory,
+  auditLegacyWantHistoryArchive, migrateLegacyWantHistory, compactWantHistory,
   RECEIPT_BOUND_FORMATION_PROTOCOL, RECEIPT_BOUND_REAPPRAISAL_PROTOCOL } = require('./src/intelligence/wants');
 const goalAffect = require('./src/intelligence/goal-affect');
 const aimProgressEvidence = require('./src/intelligence/aim-progress-evidence');
@@ -198,6 +199,8 @@ const intelligence = createIntelligenceStore({
   db,
   isDbReady: () => _dbReady,
   getWants: () => (_cache.wants?.items || []),
+  getWantHistoryIntegrity: () => (_cache.wantsHistoryIntegrity
+    || { valid: false, complete_chain_verified: false, reason: 'wants_ledger_not_hydrated' }),
   getDreams: () => loadDreams(),
   getMemory: () => loadMemory(),
   getInteractions: () => loadInteractions(),
@@ -1086,6 +1089,8 @@ async function initPersistence() {
       }
     }
     _cache.wants = await db.getState('wants');
+    const wantsLedger = await ensureWantsHistoryIntegrity({ currentRecord: _cache.wants });
+    _cache.wants = wantsLedger.current;
     _cache.inner = await db.getState('inner_thread');
     if (_cache.inner && !_cache.inner.continuity_commitment && !_cache.inner.epistemic_status) {
       _cache.inner = { ..._cache.inner, continuity_commitment: null, epistemic_status: 'legacy_unbound' };
@@ -2661,15 +2666,70 @@ app.get('/self/wants/history', requireResearchAuth, async (req, res) => {
   try {
     const history = (await db.getState('wants_history')) || [];
     const current = await db.getState('wants');
-    res.json({ integrity: verifyWantHistory(history, current), events: history });
+    const legacyArchives = (await db.getState('wants_history_legacy_archives')) || [];
+    const archiveSummaries = legacyArchives.map(archive => ({
+      protocol: archive.protocol,
+      archived_at: archive.archived_at,
+      source_commitment: archive.source_commitment,
+      archive_commitment: archive.archive_commitment,
+      legacy_event_count: archive.legacy_event_count,
+      integrity_at_archival: archive.integrity_at_archival,
+      audit: auditLegacyWantHistoryArchive(archive),
+    }));
+    res.json({ integrity: verifyWantHistory(history, current), events: history,
+      legacy_archives: req.query.include_legacy === '1' ? legacyArchives : archiveSummaries });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 let _wantsWriteTail = Promise.resolve();
+const MAX_WANTS_HISTORY_EVENTS = 40;
 function serializeWantsWrite(work) {
   const run = _wantsWriteTail.then(work, work);
   _wantsWriteTail = run.catch(() => {});
   return run;
+}
+
+async function ensureWantsHistoryIntegrity({ currentRecord = null, now = new Date() } = {}) {
+  let current = currentRecord || await db.getState('wants');
+  let history = (await db.getState('wants_history')) || [];
+  const archives = (await db.getState('wants_history_legacy_archives')) || [];
+  const audit = verifyWantHistory(history, current);
+  if (audit.valid) {
+    _cache.wantsHistoryIntegrity = audit;
+    return { current, history, archives, integrity: audit,
+      migrated: false, recovered: false };
+  }
+
+  // History is written before its materialized projection. A process exit between those two
+  // writes is recoverable only when the canonical event chain itself still verifies.
+  const chainAudit = verifyWantHistory(history, null);
+  if (history.length && chainAudit.valid) {
+    const committed = history.at(-1).record;
+    if (!current || stableWantHash(current) !== history.at(-1).record_hash) {
+      await db.setState('wants', committed);
+      _cache.wants = committed;
+      console.warn(`Recovered wants projection from canonical ledger head ${chainAudit.head}`);
+      const integrity = verifyWantHistory(history, committed);
+      _cache.wantsHistoryIntegrity = integrity;
+      return { current: committed, history, archives,
+        integrity, migrated: false, recovered: true };
+    }
+  }
+
+  // The pre-v2 ledger used JSON.stringify hashes. Postgres JSONB reordered object keys, making
+  // those hashes non-replayable. Preserve the exact legacy material in a committed archive and
+  // start a canonical checkpoint without changing or promoting any legacy want provenance.
+  const migration = migrateLegacyWantHistory(history, current, archives, now);
+  if (!migration.migrated) return { current, ...migration, recovered: false };
+  if (migration.archives.length !== archives.length) {
+    await db.setState('wants_history_legacy_archives', migration.archives);
+  }
+  await db.setState('wants_history', migration.history);
+  history = migration.history;
+  _cache.wantsHistoryIntegrity = migration.integrity;
+  console.warn(`Checkpointed ${migration.archive.legacy_event_count} non-replayable legacy wants events; legacy wants remain unverified`);
+  return { current, history, archives: migration.archives, integrity: migration.integrity,
+    migrated: true, recovered: false };
 }
 
 function bindVerifiedWantProgress(previousItems, requestedItems, memories, now = new Date()) {
@@ -2695,17 +2755,21 @@ function bindVerifiedWantProgress(previousItems, requestedItems, memories, now =
 async function persistWantsUpdate(items, { updatedBy = 'nora', now = new Date() } = {}) {
   if (!_dbReady) throw new Error('Postgres not active');
   return serializeWantsWrite(async () => {
-    const previous = await db.getState('wants');
     const updated_at = new Date(now).toISOString();
+    const ledger = await ensureWantsHistoryIntegrity({ now: updated_at });
+    const previous = ledger.current;
     const boundItems = bindVerifiedWantProgress(previous?.items, items,
       loadMemory().filter(memoryIsActive), updated_at);
     const rec = { items: normalizeWantUpdate(previous?.items, boundItems, { now: updated_at }), updated_at };
-    const history = (await db.getState('wants_history')) || [];
+    let history = ledger.history;
+    const compacted = compactWantHistory(history, previous,
+      { maxEvents: MAX_WANTS_HISTORY_EVENTS, now: updated_at });
+    history = compacted.history;
     history.push(wantRevisionEvent(previous, rec, updatedBy));
-    while (history.length > 40) history.shift();
     await db.setState('wants_history', history);
     await db.setState('wants', rec);
     _cache.wants = rec;
+    _cache.wantsHistoryIntegrity = verifyWantHistory(history, rec);
     return rec;
   });
 }
