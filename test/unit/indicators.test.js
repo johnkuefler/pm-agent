@@ -3,7 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { buildIndicatorReport, evidenceStatus } = require('../../src/intelligence/indicators');
+const { buildIndicatorReport, evidenceStatus, SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL,
+  SELF_MODEL_TRUST_NATURAL_ANALYSIS_COMMITMENT } = require('../../src/intelligence/indicators');
 
 function indicator(report, id) {
   return report.indicators.find(item => item.id === id);
@@ -255,6 +256,67 @@ test('prospective cycle self-prediction collects immediately and requires advant
 
   report = buildIndicatorReport(stateWith({ experience_stream: Array.from({ length: 20 }, (_, index) => moment(index, -0.1)) }));
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');
+});
+
+function trustControlledMoment(index, { operational = 0.9, raw = 0.8, baseline = 0.9,
+  eligible = true, replayValid = true } = {}) {
+  return {
+    id: `trust-controlled-${index}`,
+    status: 'closed',
+    self_forecast: {
+      protocol_version: 7,
+      forecast: { behavioral_self_prior_use: { disposition: 'applied' } },
+      metacognitive_adjudication: { source: 'historical_baseline' },
+      outcome: {
+        operational_metacognitive_score: { composite: operational },
+        metacognitive_score: { composite: raw },
+        baseline_metacognitive_score: { composite: baseline },
+        operational_metacognitive_minus_raw: operational - raw,
+        operational_metacognitive_minus_baseline: operational - baseline,
+        operational_metacognitive_baseline_comparison_eligible: eligible,
+      },
+    },
+    audit: { evidence_eligible: replayValid, self_forecast: {
+      complete_chain_verified: replayValid,
+      behavioral_self_prior_verified: replayValid,
+      behavioral_self_prior_excludes_immediate_predecessor: replayValid,
+      behavioral_self_prior_use_verified: replayValid,
+      behavioral_self_trust_policy_verified: replayValid,
+      metacognitive_adjudication_verified: replayValid,
+    } },
+  };
+}
+
+test('calibrated self-distrust earns only observational support after its frozen natural gate', () => {
+  const commitment = crypto.createHash('sha256')
+    .update(JSON.stringify(SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL)).digest('hex');
+  assert.equal(SELF_MODEL_TRUST_NATURAL_ANALYSIS_COMMITMENT, commitment);
+
+  let moments = Array.from({ length: 19 }, (_, index) => trustControlledMoment(index));
+  let result = indicator(buildIndicatorReport(stateWith({ experience_stream: moments })),
+    'calibrated_self_model_trust');
+  assert.equal(result.status, 'collecting');
+  assert.equal(result.evidence.metacognitive_control_baseline_eligible, 19);
+
+  moments = [...moments, trustControlledMoment(19)];
+  result = indicator(buildIndicatorReport(stateWith({ experience_stream: moments })),
+    'calibrated_self_model_trust');
+  assert.equal(result.status, 'observational_signal_observed');
+  assert.equal(result.evidence.natural_analysis_protocol_commitment, commitment);
+  assert.ok(Math.abs(result.evidence.mean_operational_minus_raw - 0.1) < 1e-12);
+  assert.equal(result.evidence.mean_operational_minus_baseline, 0);
+  assert.match(result.next_gate, /After every older active context trial closes/);
+
+  moments[0] = trustControlledMoment(0, { replayValid: false });
+  result = indicator(buildIndicatorReport(stateWith({ experience_stream: moments })),
+    'calibrated_self_model_trust');
+  assert.equal(result.status, 'collecting', 'tampered lifecycles add no evidence');
+
+  moments = Array.from({ length: 20 }, (_, index) => trustControlledMoment(index,
+    { operational: 0.75, raw: 0.8, baseline: 0.75 }));
+  result = indicator(buildIndicatorReport(stateWith({ experience_stream: moments })),
+    'calibrated_self_model_trust');
+  assert.equal(result.status, 'observational_signal_contradicted');
 });
 
 test('DIALS evidence status advances only from blinded pilot to disjoint confirmation', () => {

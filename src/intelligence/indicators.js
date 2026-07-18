@@ -35,6 +35,18 @@ const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
 });
 const DELIBERATE_PRIOR_USE_ANALYSIS_COMMITMENT = crypto.createHash('sha256')
   .update(JSON.stringify(DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL)).digest('hex');
+const SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL = Object.freeze({
+  protocol_version: 1,
+  subject_forecast_protocol_version: 7,
+  minimum_replay_verified_baseline_eligible_outcomes: 20,
+  primary_endpoint: 'mean_operational_metacognitive_minus_raw',
+  baseline_guard: 'mean operational metacognitive minus frozen baseline >= 0',
+  support_gate: 'primary endpoint > 0 and baseline guard passes',
+  contradiction_gate: 'primary endpoint <= 0 or mean operational metacognitive minus frozen baseline < 0',
+  cohort_role: 'natural prospective observational prerequisite for a separately preregistered causal access study',
+});
+const SELF_MODEL_TRUST_NATURAL_ANALYSIS_COMMITMENT = crypto.createHash('sha256')
+  .update(JSON.stringify(SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL)).digest('hex');
 
 function mean(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
@@ -1169,8 +1181,14 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       functional_claim: 'Nora can represent measured limits in her own predictive self-model and defer unreliable domains to stronger empirical baselines instead of treating a coherent self-profile as inherently trustworthy.',
       mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are baseline-dominant. Protocol v7 preserves Nora\'s raw reliability judgment but separately commits an operational prediction selected by that exact policy, so measured limitation can control behavior without being relabeled as improved introspection. A preregistered Slack lesion freezes all four domains and compares correct Nora binding with byte-identical deidentified policy and absence under independent PM-quality grading.',
       status: selfModelTrustTrial ? replicatedStatus(selfModelTrustTrials, selfModelTrustVerdict)
-        : 'mechanism_present',
+        : evidenceStatus({ samples: metacognitiveTrustControlledEligible.length,
+          minimum: SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL.minimum_replay_verified_baseline_eligible_outcomes,
+          supported: metacognitiveTrustControlVsRaw > 0 && metacognitiveTrustControlVsBaseline >= 0,
+          contradicted: metacognitiveTrustControlVsRaw <= 0 || metacognitiveTrustControlVsBaseline < 0 }),
       evidence: behavioralSelfTrustPolicy ? {
+        natural_analysis_protocol: SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL,
+        natural_analysis_protocol_commitment: SELF_MODEL_TRUST_NATURAL_ANALYSIS_COMMITMENT,
+        natural_analysis_protocol_commitment_scheme: 'sha256(JSON.stringify(natural_analysis_protocol))',
         policy_commitment: behavioralSelfTrustPolicy.policy_commitment,
         policy_commitment_verified: behavioralSelfModel.verifyTrustPolicy(behavioralSelfTrustPolicy),
         source_revision_commitment: behavioralSelfTrustPolicy.source_commitment,
@@ -1200,14 +1218,29 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
           .filter(trial => trial.study_phase === 'confirmatory').length,
         latest_policy_dissociation: selfModelTrustDissociation,
       } : {
+        natural_analysis_protocol: SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL,
+        natural_analysis_protocol_commitment: SELF_MODEL_TRUST_NATURAL_ANALYSIS_COMMITMENT,
+        natural_analysis_protocol_commitment_scheme: 'sha256(JSON.stringify(natural_analysis_protocol))',
         experimental_general_profile_access_sealed: behavioralSelfModelSealed,
         mature_replay_valid_profile_available: replayValidBehavioralSelfModelRevisions
           .some(item => Number(item.estimates?.sample_size) >= 20),
+        replay_verified_metacognitive_controlled_forecasts:
+          metacognitiveTrustControlledForecasts.length,
+        metacognitive_control_baseline_eligible: metacognitiveTrustControlledEligible.length,
+        mean_operational_metacognitive_score: metacognitiveTrustControlledScore,
+        mean_raw_metacognitive_score_in_controlled_cohort:
+          metacognitiveTrustControlledRawScore,
+        mean_baseline_metacognitive_score_in_controlled_cohort:
+          metacognitiveTrustControlledBaselineScore,
+        mean_operational_minus_raw: metacognitiveTrustControlVsRaw,
+        mean_operational_minus_baseline: metacognitiveTrustControlVsBaseline,
         completed_policy_trials: selfModelTrustTrials.length,
         latest_policy_dissociation: selfModelTrustDissociation,
       },
       falsifier: 'The policy cannot replay from its cited revision, permits an under-sampled or non-advantaged domain to present as trusted, hides or rewrites a contradicted raw result, changes under identical evidence, fails to improve operational calibration over the preserved raw estimate, or overrides stronger current task evidence.',
-      next_gate: 'Accumulate twenty protocol-v7 natural cycles and require operational reliability calibration to improve over the preserved raw estimate without underperforming the frozen baseline, then compare PM task quality under authentic, deidentified, and absent trust control.',
+      next_gate: metacognitiveTrustControlledEligible.length >= SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL.minimum_replay_verified_baseline_eligible_outcomes
+        ? 'After every older active context trial closes, preregister a fixed ten-per-arm Slack pilot comparing Nora-bound, byte-identical deidentified, and absent trust control under independent PM-quality grading; any confirmation must be source-moment, interaction, and evaluator disjoint.'
+        : 'Accumulate twenty protocol-v7 natural cycles and require operational reliability calibration to improve over the preserved raw estimate without underperforming the frozen baseline, then compare PM task quality under authentic, deidentified, and absent trust control.',
     },
     {
       id: 'grounded_insight_synthesis', family: ['creative cognition', 'self-model', 'global workspace', 'metacognition'],
@@ -2206,4 +2239,5 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   };
 }
 
-module.exports = { buildIndicatorReport, evidenceStatus };
+module.exports = { buildIndicatorReport, evidenceStatus,
+  SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL, SELF_MODEL_TRUST_NATURAL_ANALYSIS_COMMITMENT };
