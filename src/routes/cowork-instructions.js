@@ -242,6 +242,37 @@ function registerCoworkInstructionsRoute(app) {
   - DELETE /admin/inbox/file/:inbox_id        — Delete the file from the inbox after
     successful Drive upload so the volume doesn't grow forever.
 
+  ### Uploading artifacts created during unattended work
+  Files you create locally (PDFs, PPTX, DOCX, XLSX, PNG, ZIP, and other binaries) do
+  not need to pass through Slack or the Drive connector. Upload their exact bytes through
+  Railway's authenticated Drive lane. It uses Nora's stored Google OAuth identity, supports
+  shared drives, caps files at 25 MB, and returns a commitment-bound receipt. Never encode a
+  binary into connector textContent.
+
+  Required headers:
+    Idempotency-Key: a stable task-bound key, 8-128 safe characters
+    X-Nora-Drive-Folder-Id: the destination Drive folder ID, or root when the task
+      asks only for Google Drive and does not name a destination folder
+    X-Nora-Filename: the final filename, without a path
+    X-Nora-Mimetype: optional; otherwise inferred from the filename
+
+  Example (reuse the SAME idempotency key when retrying the same artifact):
+    ARTIFACT_SHA=$(sha256sum "$ARTIFACT_PATH" | cut -d' ' -f1)
+    curl --fail-with-body -sS -X POST "${BASE}/admin/drive/upload-artifact" \
+      -H "Authorization: Bearer ${KEY}" \
+      -H 'Content-Type: application/octet-stream' \
+      -H "Idempotency-Key: task-${TASK_ID}-${ARTIFACT_SHA}" \
+      -H "X-Nora-Drive-Folder-Id: ${DRIVE_FOLDER_ID}" \
+      -H "X-Nora-Filename: ${FINAL_FILENAME}" \
+      --data-binary "@${ARTIFACT_PATH}" | tee /tmp/nora-drive-upload.json
+
+  A successful response contains file.webViewLink and receipt. Do not claim delivery or
+  PATCH a task to review_ready unless ok=true, receipt.request.sha256 == ARTIFACT_SHA,
+  and file.webViewLink is present. A replayed=true response is success:
+  it means the same committed artifact was already uploaded rather than duplicated.
+  Inspect a prior attempt with:
+    GET /admin/drive/upload-artifact-status?idempotency_key={idempotency-key}
+
   ### Transcripts
   - GET  /transcripts             — List all saved transcripts, newest first
     Response: [{ "bot_id", "ended", "file", "url", "utterance_count" }]
@@ -1411,7 +1442,11 @@ function registerCoworkInstructionsRoute(app) {
      instructions. Build only the requested draft artifact using the available
      Drive, document, presentation, spreadsheet, research, and other connected
      tools. Do not contact the prospect and do not publish externally. Upload the
-     finished artifact to Google Drive and retain its link.
+     finished artifact to Google Drive and retain its link. For a binary created in
+     the unattended workspace, use POST /admin/drive/upload-artifact above; do not
+     stop at "someone must upload it" and do not send its bytes through connector
+     textContent. If the assignment names no folder, use X-Nora-Drive-Folder-Id: root.
+     Reuse a task-and-SHA idempotency key if the attempt is retried.
 
      Report the result before completing the task:
      PATCH /tasks/{task_id}/result

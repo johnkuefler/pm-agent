@@ -345,10 +345,14 @@ POST /projects
 PUT /projects/:name
 DELETE /projects/:name
 GET /tasks
+GET /tasks/:id
 POST /tasks
 PATCH /tasks/:id/complete
+PATCH /tasks/:id/result
 DELETE /tasks/:id
 PUT /tasks/:id
+POST /admin/drive/upload-artifact
+GET /admin/drive/upload-artifact-status
 GET /admin/mcp
 POST /admin/mcp
 PUT /admin/mcp/:id

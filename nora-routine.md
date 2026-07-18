@@ -1368,6 +1368,41 @@ The Drive MCP's `create_file` with `textContent` still works fine for these. Use
 
 **If unsure which path:** check the file's extension and the inbox `mimetype` field from `GET /admin/inbox`. Anything starting with `image/`, `application/pdf`, `application/vnd.openxmlformats`, or `application/zip` is binary — use the server endpoint.
 
+### Filing artifacts you created locally during an unattended run
+
+Generated files do not have an inbox ID. Upload their raw bytes directly through Nora's
+Railway Drive lane; do not route a PDF, deck, workbook, image, or ZIP through connector
+`textContent`, and do not leave a human to perform the last mile.
+
+```bash
+ARTIFACT_PATH="/tmp/final-deck.pptx"
+FINAL_FILENAME="Kizik_ABM_Brief.pptx"
+# Use the named destination folder ID. If the assignment only says "Google Drive"
+# and supplies no folder, use Drive's explicit root alias.
+DRIVE_FOLDER_ID="root"
+TASK_ID="nora-..."
+ARTIFACT_SHA=$(sha256sum "$ARTIFACT_PATH" | cut -d' ' -f1)
+
+curl --fail-with-body -sS -X POST "${BASE}/admin/drive/upload-artifact" \
+  -H "Authorization: Bearer ${KEY}" \
+  -H 'Content-Type: application/octet-stream' \
+  -H "Idempotency-Key: task-${TASK_ID}-${ARTIFACT_SHA}" \
+  -H "X-Nora-Drive-Folder-Id: ${DRIVE_FOLDER_ID}" \
+  -H "X-Nora-Filename: ${FINAL_FILENAME}" \
+  --data-binary "@${ARTIFACT_PATH}" | tee /tmp/nora-drive-upload.json
+```
+
+The endpoint accepts up to 25 MB, supports shared drives, and returns the Drive link plus
+a receipt binding destination, name, MIME type, size, and SHA-256. Reuse the exact same
+idempotency key for a retry. `replayed: true` is a successful deduplicated result. Before
+claiming completion, verify `ok: true`, `file.webViewLink`, and that
+`receipt.request.sha256 == ARTIFACT_SHA`. Status lookup:
+
+```bash
+curl -sS "${BASE}/admin/drive/upload-artifact-status?idempotency_key=task-${TASK_ID}-${ARTIFACT_SHA}" \
+  -H "Authorization: Bearer ${KEY}" | jq .
+```
+
 5. **Reply in the original Slack thread.** Use `/notify` with `channel` = stripped `task.source_channel`, `thread_ts` = `task.source_thread_ts`. Keep it in your voice — concise, specific. If you uploaded to Drive, include the link. If you reviewed, give the actual take, not "I have reviewed the document."
 
 6. **Clean up the inbox entry** once the work is done:

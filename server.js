@@ -70,9 +70,11 @@ const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
 const interactivePerformance = require('./src/intelligence/interactive-performance');
 const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
+const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const app = express();
 const server = http.createServer(app);
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
+const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   ? path.join(LOCAL_DATA_DIR, 'reading-library')
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
@@ -1067,6 +1069,8 @@ async function initPersistence() {
     _cache.dreams = await db.loadAllDreams();
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
+    _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
+      await db.getState('drive_artifact_uploads'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -6064,6 +6068,37 @@ app.delete('/admin/inbox/file/:inboxId', requireAuth, (req, res) => {
 // Nora's OAuth refresh token (collected during /calendar/connect, now also scoped
 // for drive.file). One round trip, real bytes, no MCP intermediary.
 
+let driveArtifactUploadQueue = Promise.resolve();
+
+function loadDriveArtifactUploads() {
+  if (_dbReady) return driveArtifactUpload.normalizeLedger(_cache.driveArtifactUploads);
+  if (_cache.driveArtifactUploads) return driveArtifactUpload.normalizeLedger(_cache.driveArtifactUploads);
+  try {
+    _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
+      JSON.parse(fs.readFileSync(DRIVE_ARTIFACT_UPLOADS_PATH, 'utf8')));
+  } catch (_) {
+    _cache.driveArtifactUploads = driveArtifactUpload.emptyLedger();
+  }
+  return _cache.driveArtifactUploads;
+}
+
+async function saveDriveArtifactUploads(value) {
+  const ledger = driveArtifactUpload.pruneLedger(value);
+  if (_dbReady) await db.setState('drive_artifact_uploads', ledger);
+  else {
+    fs.mkdirSync(path.dirname(DRIVE_ARTIFACT_UPLOADS_PATH), { recursive: true });
+    fs.writeFileSync(DRIVE_ARTIFACT_UPLOADS_PATH, JSON.stringify(ledger, null, 2));
+  }
+  _cache.driveArtifactUploads = ledger;
+  return ledger;
+}
+
+function serializeDriveArtifactUpload(work) {
+  const operation = driveArtifactUploadQueue.then(work, work);
+  driveArtifactUploadQueue = operation.catch(() => {});
+  return operation;
+}
+
 // Refresh-token-to-access-token with a tiny in-memory cache to avoid re-minting on
 // every call (access tokens last ~1 hour; we conservatively cache for 50 min).
 let googleAccessTokenCache = null;
@@ -6092,10 +6127,14 @@ async function getGoogleAccessToken() {
   return r.data.access_token;
 }
 
-async function driveMultipartUpload({ bytes, name, parentId, mimetype }) {
+async function driveMultipartUpload({ bytes, name, parentId, mimetype, requestCommitment = null }) {
   const accessToken = await getGoogleAccessToken();
   const boundary = '------NORABOUNDARY' + crypto.randomBytes(8).toString('hex');
-  const metadata = JSON.stringify({ name, parents: parentId ? [parentId] : undefined });
+  const metadata = JSON.stringify({
+    name,
+    parents: parentId ? [parentId] : undefined,
+    appProperties: requestCommitment ? { noraRequestCommitment: requestCommitment } : undefined,
+  });
   const body = Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n`, 'utf8'),
     Buffer.from(`--${boundary}\r\nContent-Type: ${mimetype || 'application/octet-stream'}\r\n\r\n`, 'utf8'),
@@ -6117,6 +6156,23 @@ async function driveMultipartUpload({ bytes, name, parentId, mimetype }) {
     }
   );
   return r.data;
+}
+
+async function driveFindArtifactByCommitment({ requestCommitment, parentId }) {
+  const accessToken = await getGoogleAccessToken();
+  const q = `'${parentId}' in parents and trashed = false and appProperties has { key='noraRequestCommitment' and value='${requestCommitment}' }`;
+  const r = await axios.get('https://www.googleapis.com/drive/v3/files', {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    params: {
+      q,
+      spaces: 'drive',
+      pageSize: 2,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      fields: 'files(id,name,webViewLink,mimeType,parents)',
+    },
+  });
+  return Array.isArray(r.data?.files) ? r.data.files[0] || null : null;
 }
 
 // POST /admin/inbox/file/:inboxId/upload-to-drive
@@ -7822,6 +7878,135 @@ registerTaskRoutes(app, {
       intelligence.recordEpisodeEvent({ correlation, channel: 'task', kind: 'commitment_fulfilled', actor: 'Nora', text: task.action, at: meta.completed_at });
     }
   },
+});
+
+// POST /admin/drive/upload-artifact
+// Raw, bounded binary upload for artifacts Nora creates during unattended work. The
+// request commitment is also written into Drive appProperties, so a retry can recover
+// a provider success that happened just before a worker or server interruption.
+app.post('/admin/drive/upload-artifact', requireAuth,
+  express.raw({ type: 'application/octet-stream', limit: driveArtifactUpload.MAX_ARTIFACT_BYTES }),
+  async (req, res) => {
+    let prepared;
+    try {
+      prepared = driveArtifactUpload.prepareArtifactRequest({
+        bytes: req.body,
+        idempotencyKey: req.get('Idempotency-Key'),
+        filename: req.get('X-Nora-Filename'),
+        parentFolderId: req.get('X-Nora-Drive-Folder-Id'),
+        mimetype: req.get('X-Nora-Mimetype'),
+      });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    try {
+      const result = await serializeDriveArtifactUpload(async () => {
+        let ledger = loadDriveArtifactUploads();
+        let record = ledger.records.find(item => item.idempotency_key === prepared.idempotency_key);
+        const priorState = record?.state || null;
+        if (record && record.request_commitment !== prepared.request_commitment) {
+          return { status: 409, body: { error: 'idempotency key is already bound to different artifact bytes or destination' } };
+        }
+        if (record?.state === 'completed') {
+          const audit = driveArtifactUpload.auditReceipt(record.receipt);
+          if (!audit.valid) {
+            return { status: 500, body: { error: `stored upload receipt failed integrity: ${audit.reason}` } };
+          }
+          return { status: 200, body: { ok: true, replayed: true, file: record.receipt.file, receipt: record.receipt } };
+        }
+
+        const now = new Date().toISOString();
+        if (!record) {
+          record = {
+            idempotency_key: prepared.idempotency_key,
+            request: prepared.request,
+            request_commitment: prepared.request_commitment,
+            state: 'pending',
+            attempts: 1,
+            created_at: now,
+            updated_at: now,
+          };
+          ledger = { ...ledger, records: [...ledger.records, record] };
+          await saveDriveArtifactUploads(ledger);
+        } else if (record.state === 'retryable') {
+          record = { ...record, state: 'pending', attempts: Number(record.attempts || 0) + 1,
+            updated_at: now, last_error: null };
+          ledger = { ...ledger, records: ledger.records.map(item =>
+            item.idempotency_key === record.idempotency_key ? record : item) };
+          await saveDriveArtifactUploads(ledger);
+        }
+
+        let existing;
+        try {
+          existing = await driveFindArtifactByCommitment({
+            requestCommitment: prepared.request_commitment,
+            parentId: prepared.request.parent_folder_id,
+          });
+        } catch (error) {
+          const detail = error.response?.data || error.message;
+          record = { ...record, state: 'retryable', last_error: detail, updated_at: new Date().toISOString() };
+          await saveDriveArtifactUploads({ ...ledger, records: ledger.records.map(item =>
+            item.idempotency_key === record.idempotency_key ? record : item) });
+          throw error;
+        }
+
+        // A pending record can only survive a process interruption. If Drive has no
+        // committed file for it, do not silently create a possible duplicate.
+        if (!existing && priorState === 'pending') {
+          return { status: 409, body: { error: 'prior upload outcome is unresolved; no duplicate was created',
+            idempotency_key: prepared.idempotency_key, request_commitment: prepared.request_commitment } };
+        }
+
+        let driveFile = existing;
+        if (!driveFile) {
+          try {
+            driveFile = await driveMultipartUpload({
+              bytes: req.body,
+              name: prepared.request.filename,
+              parentId: prepared.request.parent_folder_id,
+              mimetype: prepared.request.mimetype,
+              requestCommitment: prepared.request_commitment,
+            });
+          } catch (error) {
+            const detail = error.response?.data || error.message;
+            record = { ...record, state: 'retryable', last_error: detail, updated_at: new Date().toISOString() };
+            await saveDriveArtifactUploads({ ...ledger, records: ledger.records.map(item =>
+              item.idempotency_key === record.idempotency_key ? record : item) });
+            throw error;
+          }
+        }
+
+        const receipt = driveArtifactUpload.createReceipt(prepared, driveFile,
+          { recovered: Boolean(existing) });
+        record = { ...record, state: 'completed', receipt, updated_at: receipt.completed_at };
+        await saveDriveArtifactUploads({ ...ledger, records: ledger.records.map(item =>
+          item.idempotency_key === record.idempotency_key ? record : item) });
+        return { status: 200, body: { ok: true, replayed: Boolean(existing), file: receipt.file, receipt } };
+      });
+      return res.status(result.status).json(result.body);
+    } catch (error) {
+      const detail = error.response?.data || error.message;
+      console.error('Drive artifact upload failed:', detail);
+      return res.status(error.response?.status || 503).json({ error: detail });
+    }
+  });
+
+app.get('/admin/drive/upload-artifact-status', requireAuth, (req, res) => {
+  let key;
+  try {
+    key = driveArtifactUpload.validateIdempotencyKey(req.query.idempotency_key);
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+  try {
+    const record = loadDriveArtifactUploads().records.find(item => item.idempotency_key === key);
+    if (!record) return res.status(404).json({ error: 'upload record not found' });
+    const audit = record.receipt ? driveArtifactUpload.auditReceipt(record.receipt) : null;
+    return res.json({ ...record, receipt_audit: audit });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
 });
 
 // Cancel/remove a Recall bot regardless of state. leave_call is for bots already in

@@ -107,6 +107,25 @@ test('authentication protects APIs and dashboard independently', async () => {
   assert.match(forgedSubjectProposal.body.error, /generated server-side/);
 });
 
+test('unattended Drive artifact lane requires auth and validates bytes before Google access', async () => {
+  const unauthenticated = await fetch(base + '/admin/drive/upload-artifact', {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: 'bytes',
+  });
+  assert.equal(unauthenticated.status, 401);
+
+  const invalid = await request('/admin/drive/upload-artifact', {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: '',
+  });
+  assert.equal(invalid.response.status, 400);
+  assert.match(invalid.body.error, /raw bytes|cannot be empty/);
+
+  const missingMetadata = await request('/admin/drive/upload-artifact', {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: 'real bytes',
+  });
+  assert.equal(missingMetadata.response.status, 400);
+  assert.match(missingMetadata.body.error, /Filename|Idempotency-Key|Folder/);
+});
+
 test('memory supports create, update, list, bulk delete, and JSON persistence', async () => {
   const created = await request('/memory', { method: 'POST', body: { fact: 'Integration fact', source: 'test', kind: 'inference', confidence: 0.62, source_ref: { channel: 'test', id: 'source-1' } } });
   assert.equal(created.response.status, 200);
