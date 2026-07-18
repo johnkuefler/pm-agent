@@ -431,10 +431,12 @@ function renderPlayroom(report) {
   if (current) startPlayroomPolling();
 
   if (!latest) {
+    const isolated = report.automation?.acquisition_mode?.startsWith('isolated_');
     target.innerHTML = `<div class="playroom-empty"><div class="playroom-empty-inner">
       <h3>The experiment is ready</h3>
       <p>Nora will receive a sealed leisure opportunity after thirty idle minutes during off-hours. Work and live conversations always preempt play.</p>
       <div class="playroom-empty-meta">${escHtml(playroomStatusLabel(report.automation?.state || 'scheduled'))} | 0 completed sessions | durable influence locked</div>
+      ${isolated ? '<div class="playroom-boundary"><strong>Isolation active:</strong> concurrent reading or blinded-study material cannot enter the game, and play cannot enter Nora\'s work, mood, or personality.</div>' : ''}
     </div></div>`;
     return;
   }
@@ -448,6 +450,7 @@ function renderPlayroom(report) {
     ? 'The activity is still in progress. Nora will appraise it only after the outcome is committed.'
     : 'No bounded appraisal was recorded.');
   const moves = game?.recent_moves || [];
+  const isolated = latest.acquisition_context?.mode?.startsWith('isolated_');
   target.innerHTML = `<div class="playroom-layout">
     <div class="playroom-stage">
       <div class="playroom-board-wrap">
@@ -472,6 +475,7 @@ function renderPlayroom(report) {
         <div class="playroom-metric"><strong>${summary.completed || 0}</strong><span>completed sessions</span></div>
       </div>
       ${appraisal?.possible_insight ? `<div class="playroom-boundary"><strong>Candidate insight:</strong> ${escHtml(appraisal.possible_insight)}</div>` : ''}
+      ${isolated ? '<div class="playroom-boundary"><strong>Acquired in isolation:</strong> no operational context, live memory, reading notes, tools, or prompt influence crossed the experimental boundary.</div>' : ''}
       <div class="playroom-boundary">${escHtml(report.causal_gate?.next_gate || report.epistemic_status || '')}</div>
     </aside>
   </div>`;

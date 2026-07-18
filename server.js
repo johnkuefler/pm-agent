@@ -10272,7 +10272,8 @@ function runAutonomousPlaySchedulingRuntime({ store = intelligence, at = new Dat
   const plan = store.playroomAutomationPlan(at);
   if (!plan.due) return { ran: false, ...plan };
   const opened = store.openAutonomousPlaySession({
-    hidden_seed: crypto.randomBytes(32).toString('hex'), pre_state: plan.pre_state, at,
+    hidden_seed: crypto.randomBytes(32).toString('hex'), pre_state: plan.pre_state,
+    acquisition_context: plan.acquisition_context, at,
   });
   return { ran: true, state: plan.state, session_id: opened.session.id,
     condition: opened.session.condition, session_status: opened.session.status };

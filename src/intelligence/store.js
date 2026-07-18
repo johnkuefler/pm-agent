@@ -23202,6 +23202,34 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       weekday: value('weekday'), hour: Number(value('hour')) };
   }
 
+  function playroomAcquisitionContext(cognition = state.cognition) {
+    const activeContextTrials = cognition.self_model.context_trials
+      .filter(trial => trial.status === 'active');
+    const activeReadingSessions = cognition.developmental_reading.sessions
+      .filter(session => session.status === 'active');
+    return {
+      mode: activeContextTrials.length
+        ? 'isolated_during_blinded_context_trial'
+        : activeReadingSessions.length ? 'isolated_during_developmental_reading'
+          : 'ordinary_off_hours',
+      blinded_context_trial_active_at_preregistration: activeContextTrials.length > 0,
+      developmental_reading_active_at_preregistration: activeReadingSessions.length > 0,
+      context_trial_overlap_commitment: autonomousPlay.commitment(activeContextTrials
+        .map(trial => ({ id: trial.id, status: 'active',
+          design_commitment: trial.design_commitment || null }))
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))),
+      reading_overlap_commitment: autonomousPlay.commitment(activeReadingSessions
+        .map(session => ({ id: session.id, status: 'active',
+          session_manifest_commitment: session.session_manifest_commitment || null }))
+        .sort((left, right) => String(left.id).localeCompare(String(right.id)))),
+      operational_context_access: false,
+      live_memory_access: false,
+      tool_access: false,
+      source_derived_reading_access: false,
+      prompt_influence_during_overlap: false,
+    };
+  }
+
   function playroomAutomationPlan(now = clock()) {
     const observedAt = new Date(now);
     if (!Number.isFinite(observedAt.getTime())) throw new Error('playroom automation requires a valid clock');
@@ -23217,14 +23245,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return { due: false, state: 'sealed_by_build_bound_fingerprint', active_session_id: null,
         next_check_after: null };
     }
-    if (state.cognition.self_model.context_trials.some(trial => trial.status === 'active')) {
-      return { due: false, state: 'sealed_by_blinded_context_trial', active_session_id: null,
-        next_check_after: null };
-    }
-    if (state.cognition.developmental_reading.sessions.some(session => session.status === 'active')) {
-      return { due: false, state: 'reading_encounter_active', active_session_id: null,
-        next_check_after: null };
-    }
+    const acquisitionContext = playroomAcquisitionContext();
     const local = chicagoClockParts(observedAt);
     const offHours = ['Sat', 'Sun'].includes(local.weekday) || local.hour < 7 || local.hour >= 18;
     const nextOffHours = new Date(observedAt.getTime() + (offHours ? 0 : Math.max(1, 18 - local.hour) * 3600000));
@@ -23252,7 +23273,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       novelty_deficit: Math.max(0, Math.min(1, noveltyMinutes / 480)), idle_minutes: idleMinutes,
       operational_load: 0, observed_at: observedAt.toISOString() };
     return { due: true, state: 'leisure_opportunity_due', active_session_id: null,
-      next_check_after: null, pre_state: preState };
+      next_check_after: null, pre_state: preState,
+      acquisition_mode: acquisitionContext.mode, acquisition_context: acquisitionContext };
   }
 
   function openAutonomousPlaySession(input = {}) {
@@ -23274,7 +23296,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const session = autonomousPlay.createSession({ id: input.id, condition, hidden_seed: hiddenSeed,
         model_control: controls.model_control,
         state_commitment: autonomousPlay.commitment({ state_control: controls.state_control, pre_state: preState }),
-        pre_state: preState }, input.at || clock());
+        pre_state: preState,
+        acquisition_context: input.acquisition_context || plan.acquisition_context
+          || playroomAcquisitionContext(current.cognition) },
+      input.at || clock());
       current.cognition.autonomous_play.sessions.push(session);
       current.cognition.autonomous_play.sessions = current.cognition.autonomous_play.sessions.slice(-120);
       researchLedgerAppend(current, { kind: 'autonomous_play_session_preregistered',

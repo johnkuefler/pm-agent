@@ -13,13 +13,21 @@ test('playroom scheduler opens only a due, server-seeded session', () => {
   const inputs = [];
   const result = __test.runAutonomousPlaySchedulingRuntime({ at: new Date('2026-07-19T01:00:00Z'),
     store: { playroomAutomationPlan: () => ({ due: true, state: 'leisure_opportunity_due',
-      pre_state: { stimulation_deficit: 0.7 } }),
+      pre_state: { stimulation_deficit: 0.7 }, acquisition_context: {
+        mode: 'ordinary_off_hours', blinded_context_trial_active_at_preregistration: false,
+        developmental_reading_active_at_preregistration: false,
+        context_trial_overlap_commitment: 'c'.repeat(64),
+        reading_overlap_commitment: 'd'.repeat(64), operational_context_access: false,
+        live_memory_access: false, tool_access: false, source_derived_reading_access: false,
+        prompt_influence_during_overlap: false,
+      } }),
     openAutonomousPlaySession: input => { inputs.push(input); return { session: {
       id: 'play-runtime-1', condition: 'assigned_play', status: 'active' } }; } } });
   assert.equal(result.ran, true);
   assert.equal(inputs.length, 1);
   assert.match(inputs[0].hidden_seed, /^[a-f0-9]{64}$/);
   assert.equal(inputs[0].pre_state.stimulation_deficit, 0.7);
+  assert.equal(inputs[0].acquisition_context.mode, 'ordinary_off_hours');
 });
 
 test('playroom provider runtime commits one bounded Nora selection without tools', async () => {
@@ -63,4 +71,3 @@ test('playroom runtime remains inert without a due action', async () => {
   }, post: async () => { throw new Error('provider should not be called'); } });
   assert.deepEqual(result, { ran: false, reason: 'no_due_playroom_action' });
 });
-

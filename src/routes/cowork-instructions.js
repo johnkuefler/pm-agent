@@ -900,15 +900,17 @@ function registerCoworkInstructionsRoute(app) {
     exclusions, never invisible retries. Model grades remain pilot-only, and confirmation must use new
     interaction units and evaluator-disjoint external grading. While any pilot is active,
     GET /consciousness-research/autopilot exposes only an anonymous preregistration and aggregate progress.
-  - Interactive performance protocol v7 keeps Nora's personality, charter, replay-valid autobiography,
+  - Interactive performance protocol v8 keeps Nora's personality, charter, replay-valid autobiography,
     relevant memory, operational capabilities, selected workspace, and sealed study packet on live surfaces,
     while rendering accumulated cognition through one shared epistemic contract and a bounded attention
     envelope. Action history comes from markers; auto-synced project, meeting, and Slack memories are not
     Nora actions and must never be copied into that block merely because they are recent. Lower-priority
     cognition remains latent and retrievable. Do not expand Slack, Zoom-chat, or realtime memory/activity/
     cognitive budgets, bypass compaction, or add a live provider round without a new versioned latency protocol.
-    Protocol-v7 receipts must meet the 8s Slack, 6s Zoom-chat, 2s realtime, 45K Slack/Zoom-chat prompt, and 50K
-    realtime prompt gates; responsive presence is a hard constraint on every intelligence experiment.
+    Protocol-v8 receipts must meet the 8s Slack, 6s Zoom-chat, 2s realtime, 38K Slack, 40K Zoom-chat, and 45K
+    realtime prompt gates. The live persona compiler removes only source sections duplicated by final-position
+    channel policy; the full editable persona remains canonical. Responsive presence is a hard constraint on
+    every intelligence experiment.
   - GET /cognitive-initiation-studies exposes only blinded progress while an allocation study is active.
     Research-authenticated creation either freezes independently resolved source pulses or preregisters an
     empty prospective-consecutive cohort. In prospective mode every eligible same-model pulse is enrolled,

@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const BOARD_SIZE = 4;
 const MAX_GAME_MOVES = 64;
 const QUIET_MINUTES = 15;
@@ -171,12 +171,45 @@ function normalizePreState(value = {}) {
     operational_load: metric('operational_load'), observed_at: new Date(value.observed_at).toISOString() };
 }
 
+function normalizeAcquisitionContext(value = {}) {
+  const blinded = value.blinded_context_trial_active_at_preregistration === true;
+  const reading = value.developmental_reading_active_at_preregistration === true;
+  const overlapCommitment = String(value.context_trial_overlap_commitment || '').trim().toLowerCase();
+  const readingOverlapCommitment = String(value.reading_overlap_commitment || '').trim().toLowerCase();
+  if (!SHA256.test(overlapCommitment) || !SHA256.test(readingOverlapCommitment)) {
+    throw new Error('autonomous play requires a committed acquisition context');
+  }
+  const expectedMode = blinded ? 'isolated_during_blinded_context_trial'
+    : reading ? 'isolated_during_developmental_reading' : 'ordinary_off_hours';
+  if (String(value.mode || '') !== expectedMode
+    || value.operational_context_access !== false
+    || value.live_memory_access !== false
+    || value.tool_access !== false
+    || value.source_derived_reading_access !== false
+    || value.prompt_influence_during_overlap !== false) {
+    throw new Error('autonomous play acquisition context violates the isolation policy');
+  }
+  return {
+    mode: expectedMode,
+    blinded_context_trial_active_at_preregistration: blinded,
+    developmental_reading_active_at_preregistration: reading,
+    context_trial_overlap_commitment: overlapCommitment,
+    reading_overlap_commitment: readingOverlapCommitment,
+    operational_context_access: false,
+    live_memory_access: false,
+    tool_access: false,
+    source_derived_reading_access: false,
+    prompt_influence_during_overlap: false,
+  };
+}
+
 function sessionManifest(session) {
   return {
     id: session.id, protocol_version: session.protocol_version, condition: session.condition,
     condition_assignment_commitment: session.condition_assignment_commitment,
     available_activities: session.available_activities, model_control: session.model_control,
     state_commitment: session.state_commitment, pre_state: session.pre_state,
+    acquisition_context: session.acquisition_context,
     hidden_seed_commitment: session.hidden_seed_commitment, created_at: session.created_at,
     maximum_game_moves: session.maximum_game_moves, quiet_minutes: session.quiet_minutes,
   };
@@ -206,6 +239,7 @@ function createSession(input = {}, at = new Date()) {
     condition_assignment_commitment: commitment({ condition, hidden_seed_commitment: commitment(hiddenSeed) }),
     available_activities: [...ACTIVITIES], model_control: normalizeModelControl(input.model_control),
     state_commitment: stateCommitment, pre_state: normalizePreState(input.pre_state),
+    acquisition_context: normalizeAcquisitionContext(input.acquisition_context),
     hidden_seed: hiddenSeed, hidden_seed_commitment: commitment(hiddenSeed),
     created_at: createdAt.toISOString(), started_at: null, completed_at: null,
     maximum_game_moves: MAX_GAME_MOVES, quiet_minutes: QUIET_MINUTES,
@@ -456,6 +490,7 @@ function publicSession(session) {
     condition: conditionRevealed ? session.condition : 'sealed_until_completion',
     status: session.status, created_at: session.created_at, started_at: session.started_at,
     completed_at: session.completed_at, pre_state: session.pre_state,
+    acquisition_context: session.acquisition_context,
     selection: session.selection ? { activity: session.selection.activity,
       selected_by: conditionRevealed ? session.selection.selected_by : 'sealed_until_completion',
       rationale: conditionRevealed ? session.selection.rationale : null,
@@ -494,7 +529,10 @@ function snapshot(sessions = [], automation = null) {
     epistemic_status: 'A replay-audited causal pilot of Nora choosing, playing, learning from, and appraising bounded leisure. Functional satisfaction and preference are observable model behavior, not proof of felt experience or consciousness.',
     protocol: { version: PROTOCOL_VERSION, conditions: [...CONDITIONS], activities: [...ACTIVITIES],
       game: 'deterministic merge grid', maximum_game_moves: MAX_GAME_MOVES,
-      quiet_minutes: QUIET_MINUTES, prompts_and_conditions_sealed_during_sessions: true },
+      quiet_minutes: QUIET_MINUTES, prompts_and_conditions_sealed_during_sessions: true,
+      acquisition_continues_in_isolation_during_unrelated_blinded_trials: true,
+      acquisition_continues_in_isolation_during_developmental_reading: true,
+      operational_influence_during_trial_overlap: false },
     report: { sessions: valid.length, active: valid.filter(session => !['completed', 'excluded'].includes(session.status)).length,
       completed: completed.length, invalid: sessions.length - valid.length, completed_by_condition: byCondition,
       autonomous_play_choice_rate: autonomous.length

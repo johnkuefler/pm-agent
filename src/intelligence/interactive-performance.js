@@ -8,8 +8,8 @@ const BUDGET_MS = Object.freeze({
   realtime: 2000,
 });
 // Prompt growth is measured alongside first delivery so future cognition cannot quietly tax
-// the live path. These are ceilings, not token targets. Protocol v7 additionally prevents
-// accumulated memory and cognitive packets from silently exceeding them in production.
+// the live path. These are ceilings, not token targets. Protocol v7 prevented accumulated
+// memory and cognitive packets from silently exceeding them in production.
 // Protocol v8 removes source-persona sections already enforced by final-position live policy
 // and tightens these ceilings around the measured compiled envelope.
 const PROMPT_BUDGET_CHARS = Object.freeze({

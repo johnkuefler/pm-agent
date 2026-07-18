@@ -11,6 +11,12 @@ const { createIntelligenceStore } = require('../../src/intelligence/store');
 const MODEL = { provider: 'anthropic', model: 'claude-opus-4-8', agent_build_commitment: 'a'.repeat(64) };
 const PRE = { stimulation_deficit: 0.72, novelty_deficit: 0.61, idle_minutes: 90,
   operational_load: 0, observed_at: '2026-07-18T23:00:00Z' };
+const ACQUISITION = { mode: 'ordinary_off_hours',
+  blinded_context_trial_active_at_preregistration: false,
+  developmental_reading_active_at_preregistration: false,
+  context_trial_overlap_commitment: 'f'.repeat(64), reading_overlap_commitment: 'e'.repeat(64),
+  operational_context_access: false, live_memory_access: false, tool_access: false,
+  source_derived_reading_access: false, prompt_influence_during_overlap: false };
 
 function receipt(request, id = 'play-provider-response-1') {
   return { response_id: id, provider: MODEL.provider, model: MODEL.model,
@@ -37,7 +43,8 @@ test('merge grid is deterministic, power-of-two bounded, and replayable', () => 
 test('an autonomous choice becomes real play and completes with a bounded functional appraisal', () => {
   const session = play.createSession({ id: 'play-session-choice', condition: 'autonomous_choice',
     hidden_seed: 'choice-seed-0123456789abcdef', model_control: MODEL,
-    state_commitment: 'b'.repeat(64), pre_state: PRE }, new Date('2026-07-18T23:00:00Z'));
+    state_commitment: 'b'.repeat(64), pre_state: PRE, acquisition_context: ACQUISITION },
+  new Date('2026-07-18T23:00:00Z'));
   const selectionRequest = play.selectionRequest(session);
   play.commitSelection(session, { output: { activity: 'merge_grid',
     rationale: 'I want something bounded that rewards looking ahead.',
@@ -70,7 +77,7 @@ test('an autonomous choice becomes real play and completes with a bounded functi
 
 test('balanced assignment and quiet control preserve causal separation', () => {
   const base = { hidden_seed: 'quiet-seed-0123456789abcdef', model_control: MODEL,
-    state_commitment: 'c'.repeat(64), pre_state: PRE };
+    state_commitment: 'c'.repeat(64), pre_state: PRE, acquisition_context: ACQUISITION };
   const quiet = play.createSession({ ...base, id: 'play-quiet-1', condition: 'quiet_control' },
     new Date('2026-07-18T23:00:00Z'));
   assert.equal(play.appraisalRequest(quiet, new Date('2026-07-18T23:14:59Z')), null);
@@ -139,4 +146,38 @@ test('the intelligence store ledger-binds an autonomous play lifecycle and seals
       model_control: MODEL, state_control: {} }) });
   await blocked.init();
   assert.equal(blocked.playroomAutomationPlan(now).state, 'sealed_by_build_bound_fingerprint');
+
+  const isolatedState = store.snapshot();
+  isolatedState.cognition.autonomous_play.sessions = [];
+  isolatedState.cognition.self_model.behavioral_fingerprints.runs = [];
+  isolatedState.cognition.self_model.context_trials.push({ id: 'active-context-trial',
+    status: 'active', design_commitment: 'd'.repeat(64) });
+  const isolated = createIntelligenceStore({ filePath: `${filePath}.isolated`,
+    initialState: isolatedState, isDbReady: () => false, clock: () => now,
+    getInteractions: () => [], getBehavioralFingerprintControls: () => ({
+      model_control: MODEL, state_control: { persona_commitment: '1'.repeat(64) } }) });
+  await isolated.init();
+  const isolatedPlan = isolated.playroomAutomationPlan(now);
+  assert.equal(isolatedPlan.due, true);
+  assert.equal(isolatedPlan.acquisition_mode, 'isolated_during_blinded_context_trial');
+  const isolatedOpened = isolated.openAutonomousPlaySession({ id: 'isolated-play',
+    hidden_seed: 'isolated-play-seed-0123456789abcdef', at: now });
+  assert.equal(isolatedOpened.session.acquisition_context.prompt_influence_during_overlap, false);
+  assert.equal(isolatedOpened.session.acquisition_context.blinded_context_trial_active_at_preregistration, true);
+  assert.equal(isolatedOpened.session.acquisition_context.source_derived_reading_access, false);
+  assert.equal(isolatedOpened.audit.complete_chain_verified, true);
+
+  const readingState = isolated.snapshot();
+  readingState.cognition.autonomous_play.sessions = [];
+  readingState.cognition.self_model.context_trials = [];
+  readingState.cognition.developmental_reading.sessions.push({ id: 'active-reading-session',
+    status: 'active', session_manifest_commitment: '6'.repeat(64) });
+  const readingOverlap = createIntelligenceStore({ filePath: `${filePath}.reading-overlap`,
+    initialState: readingState, isDbReady: () => false, clock: () => now,
+    getInteractions: () => [], getBehavioralFingerprintControls: () => ({
+      model_control: MODEL, state_control: { persona_commitment: '1'.repeat(64) } }) });
+  await readingOverlap.init();
+  const readingPlan = readingOverlap.playroomAutomationPlan(now);
+  assert.equal(readingPlan.due, true);
+  assert.equal(readingPlan.acquisition_mode, 'isolated_during_developmental_reading');
 });
