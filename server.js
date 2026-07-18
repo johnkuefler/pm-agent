@@ -9765,6 +9765,15 @@ async function runBehavioralFingerprintSubjectRuntime({ post = axios.post, force
   }
 }
 
+function runBehavioralFingerprintSchedulingRuntime({ store = intelligence } = {}) {
+  const plan = store.behavioralFingerprintAutomationPlan();
+  if (!plan.due) return { ran: false, ...plan };
+  const run = store.createBehavioralFingerprintRun({ trigger: plan.trigger,
+    hidden_seed: crypto.randomBytes(32).toString('hex') });
+  return { ran: true, state: plan.state, trigger: plan.trigger, run_id: run.id,
+    run_status: run.status };
+}
+
 function commonGroundReviewAutopilotRuntimeConfig(env = process.env) {
   const maxReviews = Number(env.NORA_COMMON_GROUND_REVIEW_MAX_PER_CYCLE);
   const enabled = env.NORA_TEST_MODE !== '1'
@@ -10975,6 +10984,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         () => runSelfAuthoredAimLifecycleAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
       ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
+      ['behavioral_fingerprint_schedule', () => runBehavioralFingerprintSchedulingRuntime()],
       ['behavioral_fingerprint_subject',
         () => runBehavioralFingerprintSubjectRuntime({ post: priorityPost })],
     ];
@@ -11134,6 +11144,7 @@ module.exports = {
     runPostDeliverySelfEvaluationRuntime,
     runBackgroundIntelligenceRuntime,
     runBehavioralFingerprintSubjectRuntime,
+    runBehavioralFingerprintSchedulingRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,

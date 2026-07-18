@@ -197,4 +197,22 @@ test('fingerprint enrollment fails closed across an active blinded context trial
   await store.init();
   assert.throws(() => store.createBehavioralFingerprintRun({ hidden_seed: 'sealed-hidden-seed-123' }),
     /sealed during an active blinded context trial/);
+  assert.equal(store.behavioralFingerprintAutomationPlan().state,
+    'deferred_for_blinded_context_trial');
+});
+
+test('fingerprint automation schedules an initial baseline only when experimental access is clear', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-fingerprint-automation-'));
+  const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {},
+    isDbReady: () => false, clock: () => new Date('2026-07-18T09:00:00.000Z'),
+    getBehavioralFingerprintControls: () => ({ model_control: MODEL, state_control: STATE,
+      subject_system: SUBJECT_SYSTEM }) });
+  await store.init();
+  const plan = store.behavioralFingerprintAutomationPlan();
+  assert.equal(plan.due, true);
+  assert.equal(plan.state, 'initial_baseline_due');
+  assert.equal(plan.trigger, 'monthly');
+  store.createBehavioralFingerprintRun({ id: 'automation-active', trigger: plan.trigger,
+    hidden_seed: 'automation-hidden-seed-123' });
+  assert.equal(store.behavioralFingerprintAutomationPlan().state, 'active_run');
 });

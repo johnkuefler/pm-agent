@@ -72,3 +72,29 @@ test('offline fingerprint runner rejects a provider/model mismatch before state 
   /does not match/);
   assert.equal(submissions, 0);
 });
+
+test('fingerprint scheduler creates only a server-seeded run when the store says it is due', () => {
+  const created = [];
+  const result = __test.runBehavioralFingerprintSchedulingRuntime({ store: {
+    behavioralFingerprintAutomationPlan: () => ({ due: true,
+      state: 'initial_baseline_due', trigger: 'monthly' }),
+    createBehavioralFingerprintRun: input => { created.push(input); return { id: 'scheduled-run', status: 'active' }; },
+  } });
+  assert.equal(result.ran, true);
+  assert.equal(result.run_id, 'scheduled-run');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].trigger, 'monthly');
+  assert.match(created[0].hidden_seed, /^[a-f0-9]{64}$/);
+});
+
+test('fingerprint scheduler preserves a sealed defer without creating a run', () => {
+  let created = 0;
+  const result = __test.runBehavioralFingerprintSchedulingRuntime({ store: {
+    behavioralFingerprintAutomationPlan: () => ({ due: false,
+      state: 'deferred_for_blinded_context_trial', active_run_id: null, next_check_after: null }),
+    createBehavioralFingerprintRun: () => { created += 1; },
+  } });
+  assert.equal(result.ran, false);
+  assert.equal(result.state, 'deferred_for_blinded_context_trial');
+  assert.equal(created, 0);
+});

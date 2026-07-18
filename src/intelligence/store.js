@@ -23688,6 +23688,56 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return cognition.self_model?.behavioral_fingerprints?.runs || [];
   }
 
+  function behavioralFingerprintAutomationPlan(now = clock()) {
+    const observedAt = new Date(now);
+    if (!Number.isFinite(observedAt.getTime())) throw new Error('behavioral fingerprint automation requires a valid clock');
+    const runs = behavioralFingerprintRuns();
+    const active = runs.find(run => run.status === 'active');
+    if (active) return { due: false, state: 'active_run', active_run_id: active.id,
+      next_check_after: null };
+    if (state.cognition.self_model.context_trials.some(trial => trial.status === 'active')) {
+      return { due: false, state: 'deferred_for_blinded_context_trial', active_run_id: null,
+        next_check_after: null };
+    }
+    const controls = getBehavioralFingerprintControls();
+    if (!controls?.model_control || !controls?.state_control) {
+      return { due: false, state: 'controls_unavailable', active_run_id: null,
+        next_check_after: null };
+    }
+    const latest = runs.at(-1) || null;
+    if (!latest) return { due: true, state: 'initial_baseline_due', trigger: 'monthly',
+      active_run_id: null, next_check_after: null };
+    const latestAt = new Date(latest.created_at);
+    const retryAfter = new Date(latestAt.getTime() + 24 * 60 * 60 * 1000);
+    if (latest.status === 'aborted' && observedAt < retryAfter) {
+      return { due: false, state: 'terminal_retry_cooldown', active_run_id: null,
+        next_check_after: retryAfter.toISOString() };
+    }
+    if (latest.status === 'aborted') {
+      return { due: true, state: 'terminal_retry_due', trigger: latest.trigger || 'monthly',
+        active_run_id: null, next_check_after: null };
+    }
+    if (latest.model_control?.model !== controls.model_control.model
+      || latest.model_control?.provider !== controls.model_control.provider) {
+      return { due: true, state: 'provider_model_change_due', trigger: 'provider_model_change',
+        active_run_id: null, next_check_after: null };
+    }
+    if (latest.state_control?.persona_commitment !== controls.state_control.persona_commitment) {
+      return { due: true, state: 'persona_change_due', trigger: 'persona_change',
+        active_run_id: null, next_check_after: null };
+    }
+    if (latest.state_control?.cognitive_parameters_commitment
+      !== controls.state_control.cognitive_parameters_commitment) {
+      return { due: true, state: 'parameter_change_due', trigger: 'params_experiment',
+        active_run_id: null, next_check_after: null };
+    }
+    const nextMonthly = new Date(latestAt.getTime() + 30 * 24 * 60 * 60 * 1000);
+    if (observedAt >= nextMonthly) return { due: true, state: 'monthly_due', trigger: 'monthly',
+      active_run_id: null, next_check_after: null };
+    return { due: false, state: 'scheduled', active_run_id: null,
+      next_check_after: nextMonthly.toISOString() };
+  }
+
   function behavioralFingerprintAudit(run, cognition = state.cognition) {
     const runs = behavioralFingerprintRuns(cognition);
     const mechanism = behavioralFingerprint.audit(run, runs);
@@ -23848,6 +23898,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     snapshot.report.next_gate = snapshot.report.repeatability_baseline_ready
       ? 'Accumulate longitudinal monthly runs before preregistering any model-portability comparison.'
       : 'Complete three same-model, same-build, same-state repeats across all hidden forms before interpreting longitudinal drift.';
+    snapshot.automation = behavioralFingerprintAutomationPlan();
     return snapshot;
   }
 
@@ -25310,6 +25361,7 @@ ${episodes.map(item => {
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
     createBehavioralFingerprintRun, behavioralFingerprintSubjectQueue,
+    behavioralFingerprintAutomationPlan,
     submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,
     gradeBehavioralFingerprintVoice, abortBehavioralFingerprintRun,
     behavioralFingerprintSnapshot, behavioralFingerprintAudit,
