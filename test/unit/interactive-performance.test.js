@@ -145,6 +145,8 @@ test('live server opts into complete Slack trials but never globally enables sec
     'Slack keeps explicit headroom below the shared intelligence envelope');
   assert.match(server, /diagnosticLocalExemplars: surface === 'slack'/,
     'read-only production accounting must include the local exemplar prompt shape');
+  assert.match(server, /captureIntelligenceReceipt: surface === 'slack'/,
+    'read-only prompt accounting must retain a content-free local selection receipt');
   assert.match(server, /exemplar_selection_count = intelligenceContextReceipt\?\.exemplar_selection/,
     'prompt accounting must expose a content-free local selection count');
   const boundary = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',

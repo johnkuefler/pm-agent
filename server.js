@@ -7624,6 +7624,7 @@ app.get('/admin/prompt-envelope', requireAuth, (req, res) => {
     sideEffectFree: true,
     exemplarsAvailable: surface === 'slack',
     diagnosticLocalExemplars: surface === 'slack',
+    captureIntelligenceReceipt: surface === 'slack',
     situationalAffordanceFrame,
   });
   const linkedContentReserve = surface === 'slack' ? 1650 : 0;
