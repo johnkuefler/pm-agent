@@ -1707,6 +1707,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     : (intelligenceContext || '');
   promptDiagnostics.intelligence_raw_chars = String(intelligenceContext || '').length;
   promptDiagnostics.intelligence_live_chars = volatileIntelligenceContext.length;
+  promptDiagnostics.intelligence_budget_chars = INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000;
+  promptDiagnostics.exemplar_selection_count = intelligenceContextReceipt?.exemplar_selection?.exemplars?.length || 0;
   base = `${base}\n\n${reasoningGuidance()}`;
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
