@@ -140,6 +140,15 @@ test('live server opts into complete Slack trials but never globally enables sec
     'CPU-heavy research status must remain lazy during restart recovery');
   assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
     'background intelligence must be serialized behind the foreground-priority lane');
+  const autopilotStatus = server.slice(server.indexOf('function researchAutopilotProgramStatus'),
+    server.indexOf('async function runResearchAutopilotRuntime'));
+  assert.ok(autopilotStatus.indexOf('const activePilots = intelligence.activeContextTrialsSnapshot()')
+    < autopilotStatus.indexOf('const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig()'),
+  'default status must return the narrow sealed projection before historical reflection audits');
+  const intelligenceRoutes = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes',
+    'intelligence.js'), 'utf8');
+  assert.match(intelligenceRoutes, /getResearchAutopilotStatus\(\{ detail: req\.query\.detail \}\)/,
+    'exhaustive status must require an explicit diagnostic detail request');
   assert.match(server, /model: slackResponseModel\(query\)/,
     'typed Zoom chat must share the bounded fast-turn model policy');
   assert.match(server, /beginBackground\('memory-embedding-backfill'\)/,
@@ -217,6 +226,8 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
       latencyCritical: true });
   assert.equal(first.stable, second.stable,
     'person-, query-, broadcast-, and workspace-specific cognition must not bust the stable cache');
+  assert.match(first.stable, /GitHub credentials are intentionally absent/,
+    'live surfaces must reject stale continuity that tries to resurrect the removed dev role');
   assert.notEqual(first.volatile, second.volatile);
   assert.equal(first.diagnostics.within_budget, true);
   assert.equal(first.diagnostics.total_chars, first.stable.length + first.volatile.length);
@@ -233,6 +244,18 @@ test('Slack provider cache prefix stays stable while conversation and cognition 
     < performance.PROMPT_BUDGET_CHARS.realtime,
   'ordinary realtime cognition must remain inside the prompt envelope');
   assert.equal(realtime.diagnostics.within_budget, true);
+});
+
+test('research autopilot monitoring defaults to the narrow runtime projection', () => {
+  const { __test } = require('../../server');
+  const runtime = __test.researchAutopilotProgramStatus();
+  assert.equal(runtime.status_detail, 'runtime');
+  assert.equal(Object.hasOwn(runtime, 'meeting_professional_reflection'), false);
+  assert.equal(Object.hasOwn(runtime, 'cycle_self_correction_reflection'), false);
+  const full = __test.researchAutopilotProgramStatus({ detail: 'full' });
+  assert.equal(full.status_detail, 'full');
+  assert.equal(Object.hasOwn(full, 'meeting_professional_reflection'), true);
+  assert.equal(Object.hasOwn(full, 'cycle_self_correction_reflection'), true);
 });
 
 test('interactive intelligence uses one shared epistemic contract and a bounded attention envelope', () => {

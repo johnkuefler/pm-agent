@@ -13,6 +13,10 @@ const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.j
 test('Nora has no development-dispatch capability', () => {
   assert.doesNotMatch(routine, /dev[ -]dispatch|dev-task dispatcher|development@limelightmarketing\.com/i);
   assert.doesNotMatch(server, /\/admin\/github-token|process\.env\.(?:GH_TOKEN|GITHUB_TOKEN)/);
+  assert.match(server, /GitHub credentials are intentionally absent/);
+  assert.match(cowork, /GitHub credentials are intentionally absent/);
+  assert.match(server, /do not act on it, carry it into a new handoff, report it as a blocker/);
+  assert.match(cowork, /do not act on it, carry it into a new handoff, report it as a blocker/);
   assert.equal(fs.existsSync(path.join(root, '.claude/agents/dev-dispatch.md')), false);
   assert.equal(fs.existsSync(path.join(root, 'dev-agent/CLAUDE.md')), false);
 });

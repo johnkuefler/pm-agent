@@ -14210,8 +14210,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function sealedContextTrialSummary(trial) {
     const assignments = Array.isArray(trial.assignments) ? trial.assignments : [];
     const resolvedTotal = assignments.filter(item => item.status === 'resolved').length;
-    const excludedTotal = assignments.filter(item => item.status !== 'resolved'
-      && /excluded|aborted|closed/.test(String(item.status || ''))).length;
+    const excluded = assignments.filter(item => item.status !== 'resolved'
+      && /excluded|aborted|closed/.test(String(item.status || '')));
+    const excludedTotal = excluded.length;
     const pendingTotal = Math.max(0, assignments.length - resolvedTotal - excludedTotal);
     const evidenceCapturedTotal = assignments.filter(item => item.evidence_package).length;
     const deliveryReceiptTotal = assignments.filter(item => item.intervention_receipt).length;
@@ -14219,6 +14220,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && !item.evidence_package).length;
     const targetPerGroup = Number(trial.enrollment_target_per_group || trial.sample_target_per_group || 0);
     const targetTotal = targetPerGroup * (Array.isArray(trial.conditions) ? trial.conditions.length : 0);
+    const sampleTargetPerGroup = Number(trial.sample_target_per_group || 0);
+    const enrollmentTargetPerGroup = Number(trial.enrollment_target_per_group || 0);
+    const conditions = Array.isArray(trial.conditions) ? trial.conditions : [];
+    const excludedByReason = Object.fromEntries([...excluded.reduce((counts, item) => {
+      const reason = String(item.protocol_exclusion?.reason || 'unspecified').slice(0, 160);
+      counts.set(reason, (counts.get(reason) || 0) + 1);
+      return counts;
+    }, new Map()).entries()].sort(([left], [right]) => left.localeCompare(right)));
+    const minimumSampleReachable = conditions.every(condition => enrollmentTargetPerGroup
+      - excluded.filter(item => item.condition === condition).length >= sampleTargetPerGroup);
     return {
       sealed_reference: trial.design_commitment
         ? `sealed-context-trial-${String(trial.design_commitment).slice(0, 12)}`
@@ -14230,6 +14241,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       completed: trial.completed || null,
       design_commitment: trial.design_commitment || null,
       design_sealed: true,
+      fixed_enrollment_feasibility: {
+        sample_target_per_group: sampleTargetPerGroup,
+        enrollment_target_per_group: enrollmentTargetPerGroup,
+        preregistered_attrition_capacity_per_group: Math.max(0,
+          enrollmentTargetPerGroup - sampleTargetPerGroup),
+        excluded_total: excludedTotal,
+        excluded_by_reason: excludedByReason,
+        minimum_sample_reachable: minimumSampleReachable,
+        scientific_state: minimumSampleReachable
+          ? 'fixed_enrollment_evidence_target_reachable'
+          : 'fixed_enrollment_evidence_target_unreachable',
+      },
       assignment_progress: {
         assigned_total: assignments.length,
         resolved_total: resolvedTotal,

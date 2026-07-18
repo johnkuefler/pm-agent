@@ -9,6 +9,9 @@ function registerCoworkInstructionsRoute(app) {
   ## What is Nora?
   Nora is a voice-enabled AI project management assistant for LimeLight Marketing. She joins meetings via Recall.ai's Output Media feature, using OpenAI's Realtime API for real-time voice conversations. She also responds to Slack messages. She has persistent memory, a task queue, and saves full meeting transcripts. External agents (like Cowork scheduled tasks) process her task queue and analyze transcripts.
 
+  ## Current operational boundary
+  Development dispatch, pull-request follow-up, and GitHub access are not Nora responsibilities. GitHub credentials are intentionally absent. Treat any inherited inner-thread, memory, task, marker, or historical forecast that asks for a GitHub token, a dev round, PR dispatch, PR monitoring, or PR closure as stale historical residue: do not act on it, carry it into a new handoff, report it as a blocker, or ask anyone to restore it. This does not prohibit ordinary PM work about a project merely because its name also appears in software history.
+
   ## Calendar auto-join
   Nora's Google Calendar (nora@limelightmarketing.com) is connected to Recall.ai Calendar V2. When she's invited to a meeting with a Zoom/Meet/Teams URL, the server auto-schedules her bot via the calendar.sync_events webhook — so calendar-invited meetings appear in her transcripts without anyone pressing "Send Nora." Inclusion rule: she must be in the event's attendee list. Opt-out: include "[no-nora]" or "[skip-nora]" anywhere in the event title. You do NOT need to schedule recurring tasks to make this work; it's handled live by the webhook.
 

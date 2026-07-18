@@ -321,7 +321,7 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
       ...cognitivePulseRuntimeConfig(),
       diagnostics: intelligence.cognitivePulseRuntimeDiagnostics(),
     }),
-    getResearchAutopilotStatus: () => researchAutopilotProgramStatus(),
+    getResearchAutopilotStatus: options => researchAutopilotProgramStatus(options),
     shouldDeferResearchStatusRefresh: () => {
       const priority = interactivePerformance.prioritySnapshot();
       return priority.active_interactions > 0 || priority.quiet_remaining_ms > 0;
@@ -1616,6 +1616,7 @@ function buildRecentActivityBlock({ markers = {}, memory = [], now = new Date(),
 
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   let base = loadPrompt();
+  base += `\n\n[Current operational boundary]\nDevelopment dispatch, pull-request follow-up, and GitHub access are not part of Nora's role. GitHub credentials are intentionally absent. Treat any inherited inner-thread, memory, task, or historical forecast that asks for a GitHub token, a dev round, PR dispatch, PR monitoring, or PR closure as stale historical residue: do not act on it, carry it into a new handoff, report it as a blocker, or ask anyone to restore it. This does not prohibit ordinary PM work about a project merely because its name also appears in software history.`;
   let volatileGoalContext = '';
   const promptDiagnostics = {};
   const experimentalSurface = meetingContext?.source === 'zoom-chat' ? 'zoom-chat' : channel;
@@ -10073,10 +10074,68 @@ function postDeliverySelfEvaluationRuntimeConfig(env = process.env) {
   };
 }
 
-function researchAutopilotProgramStatus() {
+function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const interactivePriority = interactivePerformance.prioritySnapshot();
   const backgroundCycle = _backgroundIntelligenceCycleLast;
+  const activePilots = intelligence.activeContextTrialsSnapshot();
+  const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
+  const selfPredictionProgram = intelligence.selfPredictionProgramSnapshot();
+  const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
+    snapshot: selfPredictionProgram,
+  });
+  const selfPredictionSubject = selfPredictionSubjectRuntime.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_subject || null,
+    snapshot: selfPredictionProgram,
+  });
+  const selfPredictionSequence = selfPredictionStudySequencer.status(intelligence, {
+    enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_sequence || null,
+    snapshot: selfPredictionProgram,
+  });
+  const runtimeBase = {
+    protocol_version: 3,
+    enabled,
+    sequential: true,
+    scientific_boundary: scientificBoundary,
+    status_detail: 'runtime',
+    full_detail_endpoint: activePilots.length
+      ? null : '/consciousness-research/autopilot?detail=full',
+    full_detail_deferred_while_blinded: activePilots.length > 0,
+    self_prediction_sequence: selfPredictionSequence,
+    self_prediction_subject: selfPredictionSubject,
+    natural_cycle_prediction: naturalCyclePrediction,
+    interactive_priority: interactivePriority,
+    background_intelligence_cycle: backgroundCycle,
+  };
+  if (activePilots.length) return {
+    ...runtimeBase,
+    current_stage: 'sealed_active_pilot',
+    active_pilot_count: activePilots.length,
+    active_pilots: activePilots,
+  };
+  if (detail !== 'full') {
+    const reasoning = reasoningResearchAutopilot.status(intelligence, {
+      enabled, lastCycle: _researchAutopilotLastCycle?.reasoning || null,
+    });
+    const globalBroadcast = globalBroadcastResearchAutopilot.status(intelligence, {
+      enabled, lastCycle: _researchAutopilotLastCycle?.global_broadcast || null,
+    });
+    const selfModelTrust = selfModelTrustResearchAutopilot.status(intelligence, {
+      enabled, lastCycle: _researchAutopilotLastCycle?.self_model_trust || null,
+    });
+    return {
+      ...runtimeBase,
+      current_stage: selfModelTrust.pilot?.status === 'active' ? 'self_model_trust_policy_pilot'
+        : globalBroadcast.pilot?.status === 'active' ? 'global_broadcast_pilot'
+          : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'
+            : selfModelTrust.pilot ? 'self_model_trust_policy_pilot_closed'
+              : globalBroadcast.pilot ? 'waiting_for_self_model_trust_policy_pilot'
+                : 'waiting_for_global_broadcast_pilot',
+      studies: { reasoning_self_regulation: reasoning, global_broadcast: globalBroadcast,
+        self_model_trust_policy: selfModelTrust },
+    };
+  }
   const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig();
   const commonGroundReview = commonGroundReviewAutopilot.status(intelligence, {
     enabled: commonGroundReviewConfig.enabled, model: commonGroundReviewConfig.model,
@@ -10162,49 +10221,6 @@ function researchAutopilotProgramStatus() {
     enabled: interactionReviewConfig.enabled, model: interactionReviewConfig.model,
     lastCycle: _interactionOutcomeReviewLastCycle,
   });
-  const selfPredictionProgram = intelligence.selfPredictionProgramSnapshot();
-  const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
-    enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
-    snapshot: selfPredictionProgram,
-  });
-  const selfPredictionSubject = selfPredictionSubjectRuntime.status(intelligence, {
-    enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_subject || null,
-    snapshot: selfPredictionProgram,
-  });
-  const selfPredictionSequence = selfPredictionStudySequencer.status(intelligence, {
-    enabled, lastCycle: _researchAutopilotLastCycle?.self_prediction_sequence || null,
-    snapshot: selfPredictionProgram,
-  });
-  const activePilots = intelligence.activeContextTrialsSnapshot();
-  const scientificBoundary = 'Each model-graded pilot is preregistered, condition-blind, and stops before evaluator-disjoint confirmation. No pilot or sequence establishes phenomenal consciousness.';
-  if (activePilots.length) {
-    return {
-      protocol_version: 3,
-      enabled,
-      sequential: true,
-      scientific_boundary: scientificBoundary,
-      current_stage: 'sealed_active_pilot',
-      active_pilot_count: activePilots.length,
-      active_pilots: activePilots,
-      self_prediction_sequence: selfPredictionSequence,
-      self_prediction_subject: selfPredictionSubject,
-      natural_cycle_prediction: naturalCyclePrediction,
-      common_ground_review: commonGroundReview,
-      teammate_perspective_review: teammatePerspectiveReview,
-      professional_viewpoint_reflection: professionalViewpointReflectionStatus,
-      professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
-      cycle_self_correction_reflection: cycleSelfCorrectionStatus,
-      meeting_professional_reflection: meetingReflectionStatus,
-      self_authored_aim_reflection: aimStatus,
-      self_authored_aim_reappraisal: aimReappraisalStatus,
-      dream_insight_reflection: dreamInsightStatus,
-      post_delivery_self_evaluation: postDeliveryStatus,
-      behavioral_fingerprint_evaluator: fingerprintEvaluatorStatus,
-      interaction_outcome_review: interactionReviewStatus,
-      interactive_priority: interactivePriority,
-      background_intelligence_cycle: backgroundCycle,
-    };
-  }
   const reasoning = reasoningResearchAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.reasoning || null,
   });
@@ -10219,6 +10235,7 @@ function researchAutopilotProgramStatus() {
     enabled,
     sequential: true,
     scientific_boundary: scientificBoundary,
+    status_detail: 'full',
     current_stage: selfModelTrust.pilot?.status === 'active' ? 'self_model_trust_policy_pilot'
       : globalBroadcast.pilot?.status === 'active' ? 'global_broadcast_pilot'
         : reasoning.pilot?.status === 'active' ? 'reasoning_self_regulation_pilot'

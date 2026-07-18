@@ -215,6 +215,13 @@ test('undelivered broadcast outcomes are terminal exclusions and cannot be repla
     'fixed_enrollment_evidence_target_unreachable');
   assert.deepEqual(publicStatus.pilot.fixed_enrollment_feasibility.excluded_by_reason,
     { public_delivery_failed: 1 });
+  const sealedFeasibility = store.activeContextTrialsSnapshot()[0].fixed_enrollment_feasibility;
+  assert.equal(sealedFeasibility.minimum_sample_reachable, false);
+  assert.equal(sealedFeasibility.scientific_state,
+    'fixed_enrollment_evidence_target_unreachable');
+  assert.deepEqual(sealedFeasibility.excluded_by_reason, { public_delivery_failed: 1 });
+  assert.equal(Object.hasOwn(sealedFeasibility, 'excluded_by_condition'), false,
+    'the sealed projection must not leak condition-level attrition');
   const lateRetry = store.recordGlobalBroadcastResponse(first.assignment_id, {
     task_prompt: 'Retry', public_response: 'Retry', delivered: true,
   });

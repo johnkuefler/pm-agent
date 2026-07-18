@@ -839,6 +839,7 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(visibleRecurrenceTrial.id, undefined);
   assert.equal(visibleRecurrenceTrial.assignment_progress.assigned_total, 1);
   const sealedAutopilot = (await request('/consciousness-research/autopilot')).body;
+  assert.equal(sealedAutopilot.status_detail, 'runtime');
   assert.equal(sealedAutopilot.current_stage, 'sealed_active_pilot');
   assert.ok(sealedAutopilot.active_pilot_count >= 1);
   assert.ok(sealedAutopilot.active_pilots.every(item => item.design_sealed === true));

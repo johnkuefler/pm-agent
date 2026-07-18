@@ -1323,7 +1323,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     return evaluate();
   });
   app.get('/consciousness-research/autopilot', requireAuth, (req, res) => {
-    try { res.json(getResearchAutopilotStatus()); }
+    try { res.json(getResearchAutopilotStatus({ detail: req.query.detail })); }
     catch (error) { res.status(500).json({ error: error.message }); }
   });
   return {
