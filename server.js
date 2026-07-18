@@ -326,6 +326,10 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
       const priority = interactivePerformance.prioritySnapshot();
       return priority.active_interactions > 0 || priority.quiet_remaining_ms > 0;
     },
+    loadResearchProjection: projection => db.isReady()
+      ? db.getState(`research_projection_${projection}_v1`) : null,
+    saveResearchProjection: (projection, envelope) => db.isReady()
+      ? db.setState(`research_projection_${projection}_v1`, envelope) : null,
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: currentCognitiveInputs,
 });

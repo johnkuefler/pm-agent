@@ -6,7 +6,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
-const { createResearchStatusCache } = require('../../src/intelligence/research-status-cache');
+const { createResearchStatusCache, createResearchProjectionCache,
+  createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope } =
+  require('../../src/intelligence/research-status-cache');
 
 const OBSERVED_AT = new Date('2026-07-17T15:00:00.000Z');
 
@@ -184,8 +186,62 @@ test('active trial summary avoids the full self-model audit without changing sea
   assert.equal(store.activeContextTrialsSnapshot()[0].assignment_progress.target_total, 4);
 });
 
+test('independent projection workers do not rebuild the unrelated dashboard projection', async t => {
+  const store = await createStore(t);
+  const reportCache = createResearchProjectionCache({
+    projection: 'research_status', store, now: () => new Date(OBSERVED_AT),
+    minRefreshIntervalMs: 0,
+  });
+  const selfModelCache = createResearchProjectionCache({
+    projection: 'self_model', store, now: () => new Date(OBSERVED_AT),
+    minRefreshIntervalMs: 0,
+  });
+  t.after(() => Promise.all([reportCache.close(), selfModelCache.close()]));
+
+  const report = await reportCache.get();
+  assert.deepEqual(JSON.parse(report.serialized), store.consciousnessResearchStatus());
+  assert.equal(Object.hasOwn(report, 'self_model_serialized'), false);
+  assert.equal(selfModelCache.status().ready, false,
+    'loading the research report must not spend CPU building the self-model');
+
+  const selfModel = await selfModelCache.get();
+  assert.deepEqual(JSON.parse(selfModel.serialized), store.selfModelSnapshot());
+  assert.equal(Object.hasOwn(selfModel, 'self_model_serialized'), false);
+});
+
+test('verified persisted projections hydrate across restarts without spawning computation', async t => {
+  const store = await createStore(t);
+  const envelope = createPersistedProjectionEnvelope({
+    serialized: JSON.stringify(store.consciousnessResearchStatus()),
+    revision: store.snapshotRevision(),
+    experimental_access_fingerprint: store.experimentalAccessFingerprint(),
+    generated_at: OBSERVED_AT.toISOString(),
+    completed_at: new Date().toISOString(),
+  }, 'research_status');
+  assert.equal(verifyPersistedProjectionEnvelope(envelope, 'research_status'), true);
+  const tampered = { ...envelope, serialized: envelope.serialized.replace('true', 'false') };
+  assert.equal(verifyPersistedProjectionEnvelope(tampered, 'research_status'), false);
+
+  let workerCreated = false;
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store,
+    loadPersisted: async () => envelope,
+    createWorker: () => { workerCreated = true; throw new Error('worker should not start'); },
+  });
+  t.after(() => cache.close());
+  const snapshot = await cache.get();
+  assert.equal(snapshot.cache_state, 'persisted');
+  assert.equal(snapshot.isolation, 'persisted_verified_projection');
+  assert.equal(snapshot.cpu_budget.mode, 'no_compute_restart_hydration');
+  assert.equal(workerCreated, false);
+  assert.deepEqual(JSON.parse(snapshot.serialized), store.consciousnessResearchStatus());
+});
+
 test('HTTP projections expose the low-priority isolation receipt for production verification', () => {
   const routes = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
   assert.match(routes, /X-Nora-Compute-Isolation/);
   assert.match(routes, /X-Nora-Compute-Priority/);
+  assert.match(routes, /X-Nora-Compute-CPU-Budget/);
+  assert.match(routes, /projection: 'research_status'/);
+  assert.match(routes, /projection: 'self_model'/);
 });

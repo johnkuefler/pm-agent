@@ -18,15 +18,20 @@ async function build(workerInput) {
     initialState: workerInput.state,
   });
   await store.init();
-  const report = store.consciousnessResearchStatus();
-  const selfModel = store.selfModelSnapshot();
+  const projection = workerInput.projection || 'combined';
+  if (!['combined', 'research_status', 'self_model'].includes(projection)) {
+    throw new Error(`unsupported research projection: ${projection}`);
+  }
+  const report = projection === 'self_model' ? null : store.consciousnessResearchStatus();
+  const selfModel = projection === 'research_status' ? null : store.selfModelSnapshot();
   const computeMs = Number(process.hrtime.bigint() - started) / 1e6;
   return {
+    projection,
     revision: workerInput.revision,
-    generated_at: report.generated_at || observedAt.toISOString(),
+    generated_at: report?.generated_at || observedAt.toISOString(),
     compute_ms: computeMs,
-    serialized: JSON.stringify(report),
-    self_model_serialized: JSON.stringify(selfModel),
+    ...(report ? { serialized: JSON.stringify(report) } : {}),
+    ...(selfModel ? { self_model_serialized: JSON.stringify(selfModel) } : {}),
   };
 }
 

@@ -1,12 +1,31 @@
 'use strict';
 
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
-const { createResearchStatusCache } = require('../intelligence/research-status-cache');
+const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
-  const researchStatusCache = createResearchStatusCache({ store, getDreams, getWants,
-    shouldDeferRefresh: shouldDeferResearchStatusRefresh });
+  const projectionCacheOptions = { store, getDreams, getWants,
+    shouldDeferRefresh: shouldDeferResearchStatusRefresh };
+  const researchStatusCache = createResearchProjectionCache({ ...projectionCacheOptions,
+    projection: 'research_status',
+    loadPersisted: () => loadResearchProjection('research_status'),
+    savePersisted: envelope => saveResearchProjection('research_status', envelope) });
+  const selfModelCache = createResearchProjectionCache({ ...projectionCacheOptions,
+    projection: 'self_model',
+    loadPersisted: () => loadResearchProjection('self_model'),
+    savePersisted: envelope => saveResearchProjection('self_model', envelope) });
+  function projectionHeaders(res, snapshot) {
+    res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
+    res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
+    res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
+    res.set('X-Nora-Snapshot-Age-Ms', String(Math.max(0, Date.now() - snapshot.completed_at_ms)));
+    res.set('X-Nora-Compute-Isolation', snapshot.isolation || 'unknown');
+    if (snapshot.priority != null) res.set('X-Nora-Compute-Priority', String(snapshot.priority));
+    if (snapshot.cpu_budget?.mode) res.set('X-Nora-Compute-CPU-Budget', snapshot.cpu_budget.mode);
+    res.set('Server-Timing', `capture;dur=${Number(snapshot.capture_ms || 0).toFixed(1)}, projection-worker;dur=${Number(snapshot.compute_ms || 0).toFixed(1)}`);
+    res.set('Cache-Control', 'private, no-store');
+  }
   function cachedJson(res, key, build, { ttlMs = 15000, project = value => value } = {}) {
     const revision = typeof store.snapshotRevision === 'function' ? store.snapshotRevision() : null;
     const now = Date.now();
@@ -595,13 +614,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.get('/consciousness-research/status', requireAuth, async (_req, res) => {
     try {
       const snapshot = await researchStatusCache.get();
-      res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
-      res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
-      res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
-      res.set('X-Nora-Compute-Isolation', snapshot.isolation || 'unknown');
-      if (snapshot.priority != null) res.set('X-Nora-Compute-Priority', String(snapshot.priority));
-      res.set('Server-Timing', `capture;dur=${snapshot.capture_ms.toFixed(1)}, research-worker;dur=${snapshot.compute_ms.toFixed(1)}`);
-      res.set('Cache-Control', 'private, no-store');
+      projectionHeaders(res, snapshot);
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
       return res.status(503).json({ error: 'research status snapshot unavailable', detail: error.message });
@@ -823,18 +836,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/self-model', requireAuth, async (req, res) => {
     try {
-      const snapshot = await researchStatusCache.get({
+      const snapshot = await selfModelCache.get({
         requireCurrentExperimentalAccess: true,
         requireCurrentRevision: req.query.allow_stale !== '1',
       });
-      res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
-      res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
-      res.set('X-Nora-Snapshot-Stale', snapshot.stale ? '1' : '0');
-      res.set('X-Nora-Compute-Isolation', snapshot.isolation || 'unknown');
-      if (snapshot.priority != null) res.set('X-Nora-Compute-Priority', String(snapshot.priority));
-      res.set('Server-Timing', `capture;dur=${snapshot.capture_ms.toFixed(1)}, research-worker;dur=${snapshot.compute_ms.toFixed(1)}`);
-      res.set('Cache-Control', 'private, no-store');
-      return res.type('application/json').send(snapshot.self_model_serialized);
+      projectionHeaders(res, snapshot);
+      return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
       return res.status(503).json({ error: 'self-model snapshot unavailable', detail: error.message });
     }
@@ -1321,9 +1328,15 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   return {
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
-    preemptConsciousnessResearchStatus: surface => researchStatusCache.preempt(surface),
-    consciousnessResearchStatusCache: () => researchStatusCache.status(),
-    close: () => researchStatusCache.close(),
+    preemptConsciousnessResearchStatus: surface => {
+      const report = researchStatusCache.preempt(surface);
+      const selfModel = selfModelCache.preempt(surface);
+      return report || selfModel;
+    },
+    consciousnessResearchStatusCache: () => ({
+      research_status: researchStatusCache.status(), self_model: selfModelCache.status(),
+    }),
+    close: async () => { await Promise.all([researchStatusCache.close(), selfModelCache.close()]); },
   };
 }
 

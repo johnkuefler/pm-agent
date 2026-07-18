@@ -2,12 +2,63 @@
 
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 const { fork } = require('node:child_process');
 
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
 
-function createLowPriorityResearchProcess(workerPath, workerData) {
+const PERSISTED_PROJECTION_PROTOCOL_VERSION = 1;
+
+function boundedNumber(value, fallback, minimum, maximum) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, number)) : fallback;
+}
+
+function configureCpuDutyCycle(child, env = process.env) {
+  if (process.platform === 'win32') {
+    return { mode: 'priority_only_windows', burst_ms: null, period_ms: null, release: () => {} };
+  }
+  const periodMs = boundedNumber(env.NORA_RESEARCH_CPU_PERIOD_MS, 200, 100, 1000);
+  const burstMs = Math.min(periodMs / 2,
+    boundedNumber(env.NORA_RESEARCH_CPU_BURST_MS, 20, 5, 50));
+  let timer = null;
+  let released = false;
+  let stopped = false;
+  const schedule = (fn, delay) => {
+    timer = setTimeout(fn, delay);
+    timer.unref?.();
+  };
+  const resume = () => {
+    if (released || child.exitCode != null || child.signalCode != null) return;
+    try { child.kill('SIGCONT'); stopped = false; } catch { return; }
+    schedule(stop, burstMs);
+  };
+  const stop = () => {
+    if (released || child.exitCode != null || child.signalCode != null) return;
+    try { child.kill('SIGSTOP'); stopped = true; } catch { return; }
+    schedule(resume, periodMs - burstMs);
+  };
+  try {
+    child.kill('SIGSTOP');
+    stopped = true;
+    schedule(resume, periodMs - burstMs);
+  } catch (error) {
+    throw new Error(`research status CPU duty-cycle isolation unavailable: ${error.message}`);
+  }
+  return {
+    mode: 'low_priority_duty_cycle', burst_ms: burstMs, period_ms: periodMs,
+    release: () => {
+      released = true;
+      if (timer) clearTimeout(timer);
+      if (stopped && child.exitCode == null && child.signalCode == null) {
+        try { child.kill('SIGCONT'); } catch { /* process may have exited */ }
+      }
+    },
+  };
+}
+
+function createLowPriorityResearchProcess(workerPath, workerData, { cpuDutyCycle = false } = {}) {
   const child = fork(workerPath, [], {
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     serialization: 'advanced',
@@ -21,9 +72,19 @@ function createLowPriorityResearchProcess(workerPath, workerData) {
     child.kill();
     throw new Error(`research status priority isolation unavailable: ${error.message}`);
   }
+  let cpuBudget = { mode: 'priority_only', burst_ms: null, period_ms: null, release: () => {} };
+  if (cpuDutyCycle) {
+    try { cpuBudget = configureCpuDutyCycle(child); }
+    catch (error) { child.kill(); throw error; }
+  }
   child.research_isolation = 'low_priority_child_process';
   child.research_priority = os.getPriority(child.pid);
+  child.research_cpu_budget = {
+    mode: cpuBudget.mode, burst_ms: cpuBudget.burst_ms, period_ms: cpuBudget.period_ms,
+  };
+  child.research_release_cpu_budget = cpuBudget.release;
   child.terminate = async () => {
+    child.research_release_cpu_budget?.();
     if (child.exitCode == null && child.signalCode == null) child.kill();
     return child.exitCode;
   };
@@ -96,6 +157,7 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
+        worker.research_release_cpu_budget?.();
         worker.removeAllListeners();
         if (activeWorker === worker) activeWorker = null;
         if (error) reject(error); else resolve(value);
@@ -117,6 +179,7 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
           isolation: worker.research_isolation || 'injected_worker',
           priority: Number.isFinite(Number(worker.research_priority))
             ? Number(worker.research_priority) : null,
+          cpu_budget: worker.research_cpu_budget || null,
           completed_at_ms: Date.now(),
         };
         return finish(null, current);
@@ -186,6 +249,7 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
       capture_ms: current?.capture_ms ?? null,
       isolation: current?.isolation || null,
       priority: current?.priority ?? null,
+      cpu_budget: current?.cpu_budget || null,
       experimental_access_current: current ? current.experimental_access_fingerprint === (
         typeof store.experimentalAccessFingerprint === 'function'
           ? store.experimentalAccessFingerprint() : null) : null,
@@ -216,9 +280,292 @@ function createResearchStatusCache({ store, getDreams = () => [], getWants = () 
   return { get, refresh, status, preempt, close };
 }
 
+function projectionEnvelopePayload(envelope) {
+  return {
+    protocol_version: envelope.protocol_version,
+    projection: envelope.projection,
+    serialized: envelope.serialized,
+    source_revision: envelope.source_revision,
+    source_access_fingerprint: envelope.source_access_fingerprint,
+    generated_at: envelope.generated_at,
+    completed_at: envelope.completed_at,
+  };
+}
+
+function projectionCommitment(envelope) {
+  return crypto.createHash('sha256').update(JSON.stringify(projectionEnvelopePayload(envelope))).digest('hex');
+}
+
+function createPersistedProjectionEnvelope(snapshot, projection) {
+  const serialized = String(snapshot?.serialized || '');
+  if (!['research_status', 'self_model'].includes(projection) || !serialized) {
+    throw new Error('persisted research projection requires a supported projection and serialized value');
+  }
+  JSON.parse(serialized);
+  const completedAt = snapshot.completed_at || new Date(snapshot.completed_at_ms || Date.now()).toISOString();
+  if (!Number.isFinite(new Date(completedAt).getTime())) {
+    throw new Error('persisted research projection requires a valid completion time');
+  }
+  const envelope = {
+    protocol_version: PERSISTED_PROJECTION_PROTOCOL_VERSION,
+    projection,
+    serialized,
+    source_revision: Number.isFinite(Number(snapshot.revision)) ? Number(snapshot.revision) : null,
+    source_access_fingerprint: snapshot.experimental_access_fingerprint || null,
+    generated_at: snapshot.generated_at || completedAt,
+    completed_at: completedAt,
+  };
+  envelope.content_commitment = projectionCommitment(envelope);
+  return envelope;
+}
+
+function verifyPersistedProjectionEnvelope(envelope, projection) {
+  if (!envelope || envelope.protocol_version !== PERSISTED_PROJECTION_PROTOCOL_VERSION
+    || envelope.projection !== projection || typeof envelope.serialized !== 'string'
+    || envelope.content_commitment !== projectionCommitment(envelope)) return false;
+  try { JSON.parse(envelope.serialized); }
+  catch { return false; }
+  return Number.isFinite(new Date(envelope.completed_at).getTime());
+}
+
+function createResearchProjectionCache({ projection, store, getDreams = () => [], getWants = () => [],
+  now = () => new Date(), maxAgeMs = 60 * 60 * 1000,
+  minRefreshIntervalMs = 15 * 60 * 1000,
+  workerPath = path.join(__dirname, 'research-status-worker.js'),
+  createWorker = options => createLowPriorityResearchProcess(workerPath, options.workerData,
+    { cpuDutyCycle: true }),
+  shouldDeferRefresh = () => false, loadPersisted = async () => null,
+  savePersisted = async () => {} } = {}) {
+  if (!['research_status', 'self_model'].includes(projection)) {
+    throw new Error('research projection cache requires research_status or self_model');
+  }
+  if (!store || typeof store.snapshot !== 'function' || typeof store.snapshotRevision !== 'function') {
+    throw new Error('research projection cache requires a snapshot-capable intelligence store');
+  }
+  const serializedField = projection === 'self_model' ? 'self_model_serialized' : 'serialized';
+  let current = null;
+  let inFlight = null;
+  let activeWorker = null;
+  let hydrationPromise = null;
+  let hydrationAttempted = false;
+  let lastRefreshStartedAt = 0;
+  let preemptions = 0;
+  let lastPreemption = null;
+  let lastPersistenceError = null;
+  const persistenceWrites = new Set();
+  const workerPreemptions = new WeakMap();
+
+  function deferredError() {
+    const error = new Error(`${projection} refresh deferred for interactive priority`);
+    error.code = 'interactive_priority_deferred';
+    return error;
+  }
+
+  async function hydrate() {
+    if (hydrationAttempted) return current;
+    if (hydrationPromise) return hydrationPromise;
+    hydrationPromise = Promise.resolve().then(loadPersisted).then(envelope => {
+      if (!verifyPersistedProjectionEnvelope(envelope, projection)) return null;
+      const completedAtMs = new Date(envelope.completed_at).getTime();
+      current = {
+        serialized: envelope.serialized,
+        experimental_access_fingerprint: envelope.source_access_fingerprint,
+        revision: envelope.source_revision,
+        generated_at: envelope.generated_at,
+        compute_ms: 0,
+        capture_ms: 0,
+        isolation: 'persisted_verified_projection',
+        priority: null,
+        cpu_budget: { mode: 'no_compute_restart_hydration', burst_ms: 0, period_ms: 0 },
+        completed_at_ms: completedAtMs,
+        persisted: true,
+      };
+      return current;
+    }).catch(error => {
+      lastPersistenceError = `hydrate: ${String(error.message || error).slice(0, 300)}`;
+      return null;
+    }).finally(() => {
+      hydrationAttempted = true;
+      hydrationPromise = null;
+    });
+    return hydrationPromise;
+  }
+
+  function capture() {
+    const observedAt = now();
+    if (!(observedAt instanceof Date) || !Number.isFinite(observedAt.getTime())) {
+      throw new Error('research projection cache requires a valid clock');
+    }
+    const started = process.hrtime.bigint();
+    const revision = store.snapshotRevision();
+    const workerData = {
+      projection,
+      revision,
+      experimental_access_fingerprint: typeof store.experimentalAccessFingerprint === 'function'
+        ? store.experimentalAccessFingerprint() : null,
+      observed_at: observedAt.toISOString(),
+      state: store.snapshot(),
+      dreams: JSON.parse(JSON.stringify(getDreams() || [])),
+      wants: JSON.parse(JSON.stringify(getWants() || [])),
+      operational_environment: typeof store.operationalEnvironmentSnapshot === 'function'
+        ? store.operationalEnvironmentSnapshot() : {},
+    };
+    return { workerData, capture_ms: Number(process.hrtime.bigint() - started) / 1e6 };
+  }
+
+  async function refresh({ force = false } = {}) {
+    await hydrate();
+    if (inFlight) return inFlight;
+    if (shouldDeferRefresh()) throw deferredError();
+    const startedAt = Date.now();
+    if (!force && current && startedAt - lastRefreshStartedAt < minRefreshIntervalMs) return current;
+    lastRefreshStartedAt = startedAt;
+    const { workerData, capture_ms } = capture();
+    const operation = new Promise((resolve, reject) => {
+      const worker = createWorker({ workerData });
+      activeWorker = worker;
+      let settled = false;
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        worker.research_release_cpu_budget?.();
+        worker.removeAllListeners();
+        if (activeWorker === worker) activeWorker = null;
+        if (error) reject(error); else resolve(value);
+      };
+      worker.once('message', message => {
+        if (message?.error) return finish(new Error(message.error));
+        if (message?.projection !== projection || !message?.[serializedField]
+          || Number(message.revision) !== Number(workerData.revision)) {
+          return finish(new Error('research projection worker returned an invalid snapshot'));
+        }
+        current = {
+          serialized: message[serializedField],
+          experimental_access_fingerprint: workerData.experimental_access_fingerprint,
+          revision: workerData.revision,
+          generated_at: message.generated_at,
+          compute_ms: Number(message.compute_ms) || 0,
+          capture_ms,
+          isolation: worker.research_isolation || 'injected_worker',
+          priority: Number.isFinite(Number(worker.research_priority)) ? Number(worker.research_priority) : null,
+          cpu_budget: worker.research_cpu_budget || null,
+          completed_at_ms: Date.now(),
+          persisted: false,
+        };
+        try {
+          const envelope = createPersistedProjectionEnvelope(current, projection);
+          const write = Promise.resolve().then(() => savePersisted(envelope)).catch(error => {
+            lastPersistenceError = `save: ${String(error.message || error).slice(0, 300)}`;
+          }).finally(() => persistenceWrites.delete(write));
+          persistenceWrites.add(write);
+        } catch (error) {
+          lastPersistenceError = `serialize: ${String(error.message || error).slice(0, 300)}`;
+        }
+        return finish(null, current);
+      });
+      worker.once('error', error => finish(error));
+      worker.once('exit', code => {
+        const preemptedBy = workerPreemptions.get(worker);
+        if (!settled && preemptedBy) {
+          const error = new Error(`${projection} worker preempted by ${preemptedBy}`);
+          error.code = 'interactive_preemption';
+          return finish(error);
+        }
+        if (!settled) finish(new Error(code === 0
+          ? `${projection} worker exited before returning a snapshot`
+          : `${projection} worker exited with code ${code}`));
+      });
+    });
+    inFlight = operation.finally(() => { inFlight = null; });
+    return inFlight;
+  }
+
+  async function get({ requireCurrentExperimentalAccess = false, requireCurrentRevision = false } = {}) {
+    await hydrate();
+    const revision = store.snapshotRevision();
+    const accessFingerprint = typeof store.experimentalAccessFingerprint === 'function'
+      ? store.experimentalAccessFingerprint() : null;
+    const accessChanged = Boolean(current && requireCurrentExperimentalAccess
+      && current.experimental_access_fingerprint !== accessFingerprint);
+    const revisionChanged = Boolean(current && current.revision !== revision);
+    if (accessChanged || (requireCurrentRevision && revisionChanged)) {
+      const value = await refresh({ force: true });
+      const latestFingerprint = typeof store.experimentalAccessFingerprint === 'function'
+        ? store.experimentalAccessFingerprint() : null;
+      if (requireCurrentExperimentalAccess
+        && value.experimental_access_fingerprint !== latestFingerprint) {
+        throw new Error('experimental access state changed during projection generation');
+      }
+      if (requireCurrentRevision && value.revision !== store.snapshotRevision()) {
+        throw new Error('intelligence state changed during projection generation');
+      }
+      return { ...value, cache_state: accessChanged ? 'seal-refresh' : 'revision-refresh', stale: false };
+    }
+    if (!current) {
+      const value = await refresh({ force: true });
+      return { ...value, cache_state: 'cold', stale: value.revision !== store.snapshotRevision() };
+    }
+    const ageMs = Date.now() - current.completed_at_ms;
+    const ageExpired = ageMs > maxAgeMs;
+    const stale = revisionChanged || ageExpired;
+    if (ageExpired && !inFlight && !shouldDeferRefresh()
+      && Date.now() - lastRefreshStartedAt >= minRefreshIntervalMs) {
+      refresh().catch(() => {});
+    }
+    return { ...current, cache_state: current.persisted ? 'persisted' : (stale ? 'stale' : 'fresh'), stale };
+  }
+
+  function status() {
+    return {
+      projection,
+      ready: Boolean(current),
+      in_flight: Boolean(inFlight),
+      revision: current?.revision ?? null,
+      current_revision: store.snapshotRevision(),
+      generated_at: current?.generated_at || null,
+      age_ms: current ? Math.max(0, Date.now() - current.completed_at_ms) : null,
+      compute_ms: current?.compute_ms ?? null,
+      capture_ms: current?.capture_ms ?? null,
+      isolation: current?.isolation || null,
+      priority: current?.priority ?? null,
+      cpu_budget: current?.cpu_budget || null,
+      persisted: current?.persisted || false,
+      persistence_error: lastPersistenceError,
+      preemptions,
+      last_preemption: lastPreemption,
+    };
+  }
+
+  function preempt(reason = 'interactive') {
+    const worker = activeWorker;
+    if (!worker) return false;
+    const boundedReason = String(reason || 'interactive').slice(0, 80);
+    workerPreemptions.set(worker, boundedReason);
+    preemptions += 1;
+    lastPreemption = { reason: boundedReason, at: new Date().toISOString() };
+    worker.terminate().catch(() => {});
+    return true;
+  }
+
+  async function close() {
+    const worker = activeWorker;
+    if (worker && typeof worker.terminate === 'function') {
+      try { await worker.terminate(); } catch { /* worker may have completed concurrently */ }
+    }
+    try { await inFlight; } catch { /* worker failure already surfaced */ }
+    await Promise.allSettled([...persistenceWrites]);
+  }
+
+  return { get, refresh, status, preempt, close, hydrate };
+}
+
 module.exports = {
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MIN_REFRESH_INTERVAL_MS,
+  PERSISTED_PROJECTION_PROTOCOL_VERSION,
   createLowPriorityResearchProcess,
   createResearchStatusCache,
+  createResearchProjectionCache,
+  createPersistedProjectionEnvelope,
+  verifyPersistedProjectionEnvelope,
 };
