@@ -98,6 +98,10 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
       new Date(Date.parse('2026-07-18T02:00:00Z') + tick++ * 1000); })(),
     getInteractions: () => interactions });
   await store.init();
+  assert.deepEqual(store.developmentalReadingSnapshot().availability, {
+    state: 'empty', reason: 'no_admitted_sources', background_only: true,
+    foreground_priority: 'work_slack_and_zoom_preempt_reading',
+  });
   const source = store.registerReadingSource({ id: 'reading-source-fedcba0987654321',
     title: 'A Public Domain Work', author: 'An Author', source_kind: 'book',
     source_url: 'https://example.org/work.txt', rights_basis: 'public_domain',
@@ -107,6 +111,7 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
     selection_rationale: 'This bears on how I coordinate work.',
     guiding_questions: ['What does responsible coordination require?'],
     predicted_influence: 'It may refine my professional viewpoint.' });
+  assert.equal(store.developmentalReadingSnapshot().availability.state, 'reading');
   const firstQueue = store.developmentalReadingQueue({ day_key: '2026-07-18', daily_budget: 1 });
   assert.equal(firstQueue.item.session_id, session.id);
   store.commitDevelopmentalReadingNote(session.id, { day_key: '2026-07-18', chunk_index: 0,
@@ -120,9 +125,16 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
       response_id: 'store-reading-response-2', provider: 'anthropic', model: 'test-model',
       request_commitment: '5'.repeat(64) } });
   const snapshot = store.developmentalReadingSnapshot();
+  assert.equal(snapshot.availability.state, 'between_encounters');
   assert.equal(snapshot.report.completed_encounters, 1);
   assert.equal(snapshot.sessions[0].audit.complete_chain_verified, true);
   assert.equal(snapshot.report.provisional_self_revision_candidates, 2);
+  const dashboardProjectionStarted = performance.now();
+  for (let index = 0; index < 200; index += 1) {
+    assert.equal(store.developmentalReadingSnapshot({ sessionLimit: 8 }).sessions.length, 1);
+  }
+  assert.ok(performance.now() - dashboardProjectionStarted < 250,
+    'cached bounded Reading Room projections must remain negligible between state changes');
   const prompt = store.promptContext({ query: 'How should we improve coordination on this project?',
     returnContextReceipt: true });
   assert.match(prompt.text, /Relevant provisional intellectual influence/);

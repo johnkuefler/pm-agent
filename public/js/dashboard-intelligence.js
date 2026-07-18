@@ -3,11 +3,12 @@ let intelligenceAbortController = null;
 let intelligenceLoadToken = 0;
 let playroomPollTimer = null;
 let playroomLastBoard = null;
+let readingRoomPollTimer = null;
 const intelligenceLoadedSections = new Set();
 const intelligenceSectionPromises = new Map();
 
 const intelligenceSectionTargets = {
-  cognition: ['cognition-state'], playroom: ['playroom-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
+  cognition: ['cognition-state'], 'reading-room': ['reading-room-state'], playroom: ['playroom-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
   boundary: ['self-boundary-state'], attention: ['attention-schema-state'], agency: ['agency-state'],
   interoception: ['interoception-state'], experience: ['experience-stream-state'],
   orientation: ['orientation-list', 'cycle-list'], commitments: ['commitment-list'], episodes: ['episode-list'],
@@ -26,6 +27,10 @@ function resetIntelligenceSection(name) {
   (intelligenceSectionTargets[name] || []).forEach((id, index) => {
     const target = document.getElementById(id);
     if (!target) return;
+    if (name === 'reading-room' && index === 0) {
+      target.innerHTML = `<div class="reading-room-loading" aria-hidden="true"><div class="reading-room-loading-book"></div><div class="reading-room-loading-notes"></div></div><span class="sr-only">Loading Nora's developmental reading record.</span>`;
+      return;
+    }
     if (name === 'playroom' && index === 0) {
       target.innerHTML = `<div class="playroom-loading" aria-hidden="true"><div class="playroom-loading-board"></div><div class="playroom-loading-copy"></div></div><span class="sr-only">Loading Nora's playroom experiment.</span>`;
       return;
@@ -38,6 +43,10 @@ function resetIntelligenceSection(name) {
   if (name === 'playroom') {
     const live = document.getElementById('playroom-live-state');
     if (live) live.textContent = 'Loading experiment';
+  }
+  if (name === 'reading-room') {
+    const live = document.getElementById('reading-room-live-state');
+    if (live) live.textContent = 'Loading library';
   }
 }
 
@@ -133,6 +142,9 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
           intelligenceJson('/consciousness-research/ledger?summary=1', signal),
         ]);
         if (token === intelligenceLoadToken) renderConsciousnessResearch(research, ledger);
+      } else if (name === 'reading-room') {
+        const value = await intelligenceJson('/developmental-reading?limit=8', signal);
+        if (token === intelligenceLoadToken) renderReadingRoom(value);
       } else if (name === 'playroom') {
         const value = await intelligenceJson('/playroom', signal);
         if (token === intelligenceLoadToken) renderPlayroom(value);
@@ -181,7 +193,8 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
       markIntelligenceSectionReady(name);
     } catch (error) {
       if (error.name !== 'AbortError' && token === intelligenceLoadToken) {
-        if (name === 'playroom') renderPlayroomError();
+        if (name === 'reading-room') renderReadingRoomError();
+        else if (name === 'playroom') renderPlayroomError();
         else markIntelligenceSectionError(name);
       }
     } finally {
@@ -197,8 +210,146 @@ function suspendIntelligence() {
   intelligenceSectionObserver = null;
   if (intelligenceAbortController) intelligenceAbortController.abort();
   intelligenceAbortController = null;
+  stopReadingRoomPolling();
   stopPlayroomPolling();
   if (typeof stopNoraBrainAnimation === 'function') stopNoraBrainAnimation();
+}
+
+function stopReadingRoomPolling() {
+  if (readingRoomPollTimer) clearInterval(readingRoomPollTimer);
+  readingRoomPollTimer = null;
+}
+
+function startReadingRoomPolling() {
+  stopReadingRoomPolling();
+  readingRoomPollTimer = setInterval(async () => {
+    if (document.visibilityState !== 'visible' || !document.getElementById('page-intelligence')?.classList.contains('active')) return;
+    try { renderReadingRoom(await intelligenceJson('/developmental-reading?limit=8', intelligenceAbortController?.signal)); }
+    catch (error) { if (error.name !== 'AbortError') renderReadingRoomError(); }
+  }, 60000);
+}
+
+function readingRoomDate(value) {
+  if (!value) return 'date unavailable';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'date unavailable' : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function readingRoomStatus(availability = {}) {
+  const labels = {
+    reading: 'Reading now', sealed: 'Sealed by active study', paused: 'Work has priority',
+    empty: 'Library awaiting a source', between_encounters: 'Between books',
+  };
+  return labels[availability.state] || String(availability.state || 'Library ready').replaceAll('_', ' ');
+}
+
+function readingRoomBook(source, session) {
+  const completed = session?.notes?.length || 0;
+  const total = source?.chunk_count || 0;
+  return `<article class="reading-book" aria-label="${escHtml(source?.title || 'No admitted book')}">
+    <div class="reading-book-rule" aria-hidden="true"></div>
+    <span class="reading-book-kicker">${escHtml(source?.source_kind || 'library')}</span>
+    <h3>${escHtml(source?.title || 'Awaiting the first admitted work')}</h3>
+    <p>${escHtml(source?.author || 'A verified public-domain or authorized source will appear here.')}</p>
+    <dl class="reading-book-facts">
+      <div><dt>Progress</dt><dd>${total ? `${completed} of ${total} chunks` : 'Not started'}</dd></div>
+      <div><dt>Rights</dt><dd>${escHtml(String(source?.rights_basis || 'pending').replaceAll('_', ' '))}</dd></div>
+      <div><dt>Admitted</dt><dd>${source ? readingRoomDate(source.admitted_at) : 'Pending'}</dd></div>
+    </dl>
+    ${source?.source_url ? `<a class="reading-source-link" href="${escHtml(source.source_url)}" target="_blank" rel="noopener noreferrer">Open verified source</a>` : ''}
+  </article>`;
+}
+
+function readingRoomLatestNote(note) {
+  if (!note) return `<div class="reading-note-empty"><strong>No reflection committed yet.</strong><p>Nora has selected the work and will record her first grounded reaction after reading the next source chunk.</p></div>`;
+  const output = note.output || {};
+  const reactions = output.reactions || [];
+  return `<div class="reading-note">
+    <div class="reading-note-head"><span>Latest source-bound reflection</span><time>${readingRoomDate(note.recorded_at)}</time></div>
+    <h4>${escHtml(output.summary || 'Reflection committed')}</h4>
+    <div class="reading-reactions">${reactions.map(reaction => `<article class="reading-reaction">
+      <span class="reading-stance" data-stance="${escHtml(reaction.stance || 'uncertain')}">${escHtml(reaction.stance || 'uncertain')}</span>
+      <strong>${escHtml(reaction.idea || '')}</strong>
+      ${reaction.source_quote ? `<q>${escHtml(reaction.source_quote)}</q>` : ''}
+      <p>${escHtml(reaction.reflection || '')}</p>
+    </article>`).join('')}</div>
+    ${(output.questions || []).length ? `<div class="reading-carried"><span>Questions carried forward</span><ol>${output.questions.map(question => `<li>${escHtml(question)}</li>`).join('')}</ol></div>` : ''}
+    ${output.possible_self_revision ? `<div class="reading-revision"><span>Provisional self-revision</span><p><strong>Before:</strong> ${escHtml(output.possible_self_revision.before)}</p><p><strong>Candidate:</strong> ${escHtml(output.possible_self_revision.after)}</p><p><strong>Could be wrong if:</strong> ${escHtml(output.possible_self_revision.falsifier)}</p></div>` : ''}
+  </div>`;
+}
+
+function readingRoomSynthesis(session) {
+  const synthesis = session?.encounter?.synthesis;
+  if (!synthesis) return '';
+  return `<section class="reading-synthesis">
+    <div><span>What lasted</span>${(synthesis.lasting_ideas || []).map(idea => `<p>${escHtml(idea)}</p>`).join('')}</div>
+    <div><span>Questions still open</span>${(synthesis.questions_to_carry || []).map(question => `<p>${escHtml(question)}</p>`).join('')}</div>
+    <div class="reading-synthesis-wide"><span>Expected work transfer</span><p>${escHtml(synthesis.expected_work_transfer || 'No work-transfer claim recorded.')}</p></div>
+    <div class="reading-synthesis-wide"><span>Personality candidate, not a persona edit</span><p>${escHtml(synthesis.personality_influence_candidate || 'No durable influence candidate recorded.')}</p><small>Counterevidence needed: ${escHtml(synthesis.counterevidence_needed || 'not recorded')}</small></div>
+  </section>`;
+}
+
+function renderReadingRoom(report) {
+  const target = document.getElementById('reading-room-state');
+  const live = document.getElementById('reading-room-live-state');
+  if (!target || !live) return;
+  const sources = report.sources || [];
+  const sessions = report.sessions || [];
+  const active = sessions.find(item => item.status === 'active') || null;
+  const latest = active || [...sessions].reverse().find(item => item.status === 'completed') || null;
+  const source = sources.find(item => item.id === latest?.source_id) || sources.at(-1) || null;
+  const latestNote = latest?.notes?.at(-1) || null;
+  const availability = report.availability || {};
+  const summary = report.report || {};
+  const transfer = summary.work_transfer || {};
+  live.textContent = readingRoomStatus(availability);
+  stopReadingRoomPolling();
+  if (active) startReadingRoomPolling();
+
+  if (!source) {
+    target.innerHTML = `<div class="reading-room-empty"><div>
+      <span class="brain-detail-kicker">Source admission required</span>
+      <h3>The shelves are ready</h3>
+      <p>No verified work has been admitted to Nora's library yet. Full text is accepted only when it is public domain, openly licensed, or explicitly authorized.</p>
+      <div class="reading-room-empty-meta">0 sources &middot; 0 encounters &middot; direct persona mutation locked</div>
+    </div></div>`;
+    return;
+  }
+
+  const totalChunks = source.chunk_count || 0;
+  const completedChunks = latest?.notes?.length || 0;
+  const progress = totalChunks ? Math.round((completedChunks / totalChunks) * 100) : 0;
+  const stateTitle = active ? `Reading chunk ${Math.min(completedChunks + 1, totalChunks)} of ${totalChunks}`
+    : latest ? 'Most recent completed encounter' : 'Awaiting Nora\'s selection';
+  target.innerHTML = `<div class="reading-room-layout">
+    ${readingRoomBook(source, latest)}
+    <div class="reading-session">
+      <header class="reading-session-head">
+        <div><span class="brain-detail-kicker">${escHtml(active ? 'Source-bound encounter' : latest ? 'Committed synthesis' : 'Available work')}</span><h3>${escHtml(stateTitle)}</h3></div>
+        <div class="reading-progress"><strong>${progress}%</strong><span>${completedChunks}/${totalChunks} reflected</span></div>
+      </header>
+      ${latest ? `<div class="reading-intent">
+        <div><span>Why this book</span><p>${escHtml(latest.selection_rationale || 'Selection rationale unavailable.')}</p></div>
+        <div><span>Questions Nora brought in</span><ol>${(latest.guiding_questions || []).map(question => `<li>${escHtml(question)}</li>`).join('')}</ol></div>
+        <div><span>Predicted influence</span><p>${escHtml(latest.predicted_influence || 'No prediction recorded.')}</p></div>
+      </div>${readingRoomLatestNote(latestNote)}${readingRoomSynthesis(latest)}` : `<div class="reading-note-empty"><strong>This work is admitted and waiting.</strong><p>Nora will choose a source-bound encounter off-hours after active experiments and operational work release the background lane.</p></div>`}
+    </div>
+  </div>
+  <footer class="reading-evidence">
+    <div><strong>${summary.sources || 0}</strong><span>admitted works</span></div>
+    <div><strong>${summary.reflected_chunks || 0}</strong><span>reflected chunks</span></div>
+    <div><strong>${summary.completed_encounters || 0}</strong><span>completed encounters</span></div>
+    <div><strong>${transfer.exposed_interactions || 0}</strong><span>work exposures</span></div>
+    <p>${escHtml(transfer.next_gate || report.epistemic_status || '')}</p>
+  </footer>`;
+}
+
+function renderReadingRoomError() {
+  stopReadingRoomPolling();
+  const target = document.getElementById('reading-room-state');
+  const live = document.getElementById('reading-room-live-state');
+  if (live) live.textContent = 'Connection interrupted';
+  if (target) target.innerHTML = `<div class="reading-room-error"><div><strong>The reading ledger is temporarily unavailable.</strong><p>Nora's source and reflection records remain intact on Railway.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('reading-room')">Retry</button></div></div>`;
 }
 
 function stopPlayroomPolling() {

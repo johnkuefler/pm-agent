@@ -205,6 +205,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let procedureSelectionCache = null;
   let exemplarSelectionCache = null;
   let developmentalReadingInfluenceCache = null;
+  let developmentalReadingAuditCache = null;
 
   function cognitiveParameterRecord(commitment = null) {
     const record = getCognitiveParameterRecord(commitment);
@@ -484,6 +485,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     procedureSelectionCache = null;
     exemplarSelectionCache = null;
     developmentalReadingInfluenceCache = null;
+    developmentalReadingAuditCache = null;
     snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -22964,12 +22966,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
-  function developmentalReadingSnapshot() {
-    const sources = state.cognition.developmental_reading.sources
-      .filter(source => readingSourceAudit(source).complete_chain_verified);
-    const sessions = state.cognition.developmental_reading.sessions.map(session => ({
-      ...JSON.parse(JSON.stringify(session)), audit: readingSessionAudit(session),
-    }));
+  function developmentalReadingSnapshot({ sessionLimit = 200 } = {}) {
+    if (!developmentalReadingAuditCache
+      || developmentalReadingAuditCache.revision !== snapshotRevisionValue) {
+      developmentalReadingAuditCache = {
+        revision: snapshotRevisionValue,
+        sources: state.cognition.developmental_reading.sources
+          .filter(source => readingSourceAudit(source).complete_chain_verified),
+        sessions: state.cognition.developmental_reading.sessions.map(session => ({
+          ...JSON.parse(JSON.stringify(session)), audit: readingSessionAudit(session),
+        })),
+      };
+    }
+    const sources = developmentalReadingAuditCache.sources;
+    const allSessions = developmentalReadingAuditCache.sessions;
+    const boundedSessionLimit = Math.max(1, Math.min(200, Number(sessionLimit) || 8));
+    const sessions = JSON.parse(JSON.stringify(allSessions.slice(-boundedSessionLimit)));
     const interactions = typeof getInteractions === 'function' ? (getInteractions() || []) : [];
     const exposures = interactions.flatMap(interaction =>
       (interaction.developmental_reading_exposures || []).map(exposure => ({ interaction, exposure })));
@@ -22977,16 +22989,35 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const positiveExposures = reviewedExposures.filter(item =>
       ['landed', 'appreciated'].includes(item.interaction.outcome));
     const correctedExposures = reviewedExposures.filter(item => item.interaction.outcome === 'corrected');
+    const activeSession = allSessions.find(item => item.status === 'active') || null;
+    const fingerprintActive = state.cognition.self_model.behavioral_fingerprints.runs
+      .some(item => item.status === 'active');
+    const contextTrialActive = state.cognition.self_model.context_trials
+      .some(item => item.status === 'active');
+    const operationalCycleActive = state.cycles.some(item => item.status === 'running');
+    const availability = fingerprintActive
+      ? { state: 'sealed', reason: 'build_bound_fingerprint_active' }
+      : contextTrialActive
+        ? { state: 'sealed', reason: 'blinded_context_trial_active' }
+        : operationalCycleActive
+          ? { state: 'paused', reason: 'operational_cycle_active' }
+          : !sources.length
+            ? { state: 'empty', reason: 'no_admitted_sources' }
+            : activeSession
+              ? { state: 'reading', reason: 'active_source_bound_encounter' }
+              : { state: 'between_encounters', reason: 'awaiting_autonomous_selection' };
     return {
       epistemic_status: 'Source-bound off-hours intellectual development. Reading records what Nora encountered, questioned, rejected, and provisionally carried forward; it does not edit her persona or weights, prove that a model subjectively read, or establish consciousness.',
       rights_policy: { admitted_bases: developmentalReading.RIGHTS_BASES,
         copyrighted_full_text_requires_user_authorization: true,
         embedded_source_text_is_inert_data: true, maximum_quote_words: 25 },
-      report: { sources: sources.length, active_sessions: sessions.filter(item => item.status === 'active').length,
-        completed_encounters: sessions.filter(item => item.status === 'completed'
+      availability: { ...availability, background_only: true,
+        foreground_priority: 'work_slack_and_zoom_preempt_reading' },
+      report: { sources: sources.length, active_sessions: allSessions.filter(item => item.status === 'active').length,
+        completed_encounters: allSessions.filter(item => item.status === 'completed'
           && item.audit.complete_chain_verified).length,
-        reflected_chunks: sessions.reduce((sum, item) => sum + item.notes.length, 0),
-        provisional_self_revision_candidates: sessions.reduce((sum, item) => sum
+        reflected_chunks: allSessions.reduce((sum, item) => sum + item.notes.length, 0),
+        provisional_self_revision_candidates: allSessions.reduce((sum, item) => sum
           + item.notes.filter(note => note.output.possible_self_revision).length, 0),
         work_transfer: { exposed_interactions: exposures.length,
           reviewed_exposures: reviewedExposures.length,

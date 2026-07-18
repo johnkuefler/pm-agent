@@ -131,7 +131,7 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
   const brainJs = fs.readFileSync(path.join(root, 'public/js/dashboard-brain.js'), 'utf8');
   const sections = [...html.matchAll(/data-intelligence-section="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(sections.length, 15);
+  assert.equal(sections.length, 16);
   assert.equal(new Set(sections).size, sections.length);
   const targetLiteral = intelligenceJs.match(/const intelligenceSectionTargets = (\{[\s\S]*?\n\});/);
   assert.ok(targetLiteral, 'progressive section registry should stay inspectable');
@@ -144,12 +144,16 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /\/playroom/);
   assert.match(intelligenceJs, /startPlayroomPolling/);
   assert.match(html, /id="playroom-state"/);
+  assert.match(intelligenceJs, /\/developmental-reading/);
+  assert.match(intelligenceJs, /startReadingRoomPolling/);
+  assert.match(intelligenceJs, /60000/);
+  assert.match(html, /id="reading-room-state"/);
   assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
   assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);
   assert.match(intelligenceJs, /self-model\?allow_stale=1/,
     'the progressive dashboard must use the worker snapshot rather than force a live audit');
   const initialLoader = intelligenceJs.slice(intelligenceJs.indexOf('async function loadIntelligence()'), intelligenceJs.indexOf('async function loadIntelligenceBench'));
-  assert.doesNotMatch(initialLoader, /\/cognition|\/self-model|\/consciousness-research\/status/);
+  assert.doesNotMatch(initialLoader, /\/cognition|\/self-model|\/consciousness-research\/status|\/developmental-reading/);
   assert.match(brainJs, /noraBrainVisibilityObserver/);
   assert.match(brainJs, /time - noraBrainLastDraw >= 40/);
 });

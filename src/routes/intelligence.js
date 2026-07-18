@@ -272,8 +272,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(result ? 503 : 400).json({ error: error.message }); }
   });
 
-  app.get('/developmental-reading', requireAuth, (_req, res) => {
-    try { res.json(store.developmentalReadingSnapshot()); }
+  app.get('/developmental-reading', requireAuth, (req, res) => {
+    const sessionLimit = Math.max(1, Math.min(20, Number(req.query?.limit) || 8));
+    try { res.json(store.developmentalReadingSnapshot({ sessionLimit })); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/developmental-reading/sources', requireAuth, async (req, res) => {

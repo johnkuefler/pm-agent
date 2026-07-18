@@ -10,9 +10,12 @@ function harness({ withLibrary = true, rejectSource = false } = {}) {
   for (const method of ['get', 'post', 'put', 'patch', 'delete']) {
     app[method] = (path, ...handlers) => routes.set(`${method.toUpperCase()} ${path}`, handlers.at(-1));
   }
-  const calls = { ingest: [], source: [], session: [], discard: [] };
+  const calls = { ingest: [], source: [], session: [], discard: [], snapshot: [] };
   const store = new Proxy({
-    developmentalReadingSnapshot: () => ({ report: { sources: 1, active_sessions: 0 } }),
+    developmentalReadingSnapshot: options => {
+      calls.snapshot.push(options);
+      return { report: { sources: 1, active_sessions: 0 } };
+    },
     registerReadingSource: input => {
       calls.source.push(input);
       if (rejectSource) throw new Error('metadata rejected');
@@ -48,6 +51,9 @@ test('reading routes expose bounded state and keep admitted source text out of c
   const { invoke, calls } = harness();
   const snapshot = await invoke('GET', '/developmental-reading');
   assert.equal(snapshot.body.report.sources, 1);
+  assert.deepEqual(calls.snapshot[0], { sessionLimit: 8 });
+  await invoke('GET', '/developmental-reading', { query: { limit: '500' } });
+  assert.deepEqual(calls.snapshot[1], { sessionLimit: 20 });
 
   const content = 'source text '.repeat(60);
   const admitted = await invoke('POST', '/developmental-reading/sources', { body: {
