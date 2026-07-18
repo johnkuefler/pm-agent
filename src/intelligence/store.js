@@ -13,6 +13,7 @@ const episodicProspection = require('./episodic-prospection');
 const constructiveProspection = require('./constructive-prospection');
 const expectationForecast = require('./expectation-forecast');
 const proceduralLearning = require('./procedural-learning');
+const exemplarLearning = require('./exemplar-learning');
 const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
 const cognitiveInitiation = require('./cognitive-initiation');
@@ -140,6 +141,7 @@ function emptyState() {
       interoception: { observations: [], predictions: [] },
       expectations: { forecasts: [] },
       procedural_learning: { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
+      exemplar_learning: { exemplars: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
@@ -191,6 +193,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let latestContinuityAuditCache = null;
   const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
   let procedureSelectionCache = null;
+  let exemplarSelectionCache = null;
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
@@ -198,6 +201,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     researchLedgerVerificationCache = null;
     latestContinuityAuditCache = null;
     procedureSelectionCache = null;
+    exemplarSelectionCache = null;
     snapshotRevisionValue += 1;
     state.version = 99;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -554,6 +558,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.procedural_learning.interaction_outcomes = state.cognition.procedural_learning.interaction_outcomes.slice(-1500);
     state.cognition.procedural_learning.selection_actions = state.cognition.procedural_learning.selection_actions.slice(-500);
     state.cognition.procedural_learning.selection_passes = state.cognition.procedural_learning.selection_passes.slice(-180);
+    state.cognition.exemplar_learning = { exemplars: [], interaction_outcomes: [], selection_actions: [], selection_passes: [],
+      ...(state.cognition.exemplar_learning || {}) };
+    for (const key of ['exemplars', 'interaction_outcomes', 'selection_actions', 'selection_passes']) {
+      if (!Array.isArray(state.cognition.exemplar_learning[key])) state.cognition.exemplar_learning[key] = [];
+    }
+    state.cognition.exemplar_learning.exemplars = state.cognition.exemplar_learning.exemplars.slice(-300);
+    state.cognition.exemplar_learning.interaction_outcomes = state.cognition.exemplar_learning.interaction_outcomes.slice(-1500);
+    state.cognition.exemplar_learning.selection_actions = state.cognition.exemplar_learning.selection_actions.slice(-500);
+    state.cognition.exemplar_learning.selection_passes = state.cognition.exemplar_learning.selection_passes.slice(-180);
     state.cognition.self_boundary = { challenges: [], ...(state.cognition.self_boundary || {}) };
     if (!Array.isArray(state.cognition.self_boundary.challenges)) state.cognition.self_boundary.challenges = [];
     state.cognition.self_boundary.challenges = state.cognition.self_boundary.challenges.slice(-300);
@@ -5021,6 +5034,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.procedural_learning.selection_passes =
       (auditedState.cognition.procedural_learning?.selection_passes || []).map((record, index) => ({
         ...record, audit: procedureSelectionPassAudit(sourceProcedureSelectionPasses[index]),
+      }));
+    const sourceExemplars = state.cognition.exemplar_learning?.exemplars || [];
+    auditedState.cognition.exemplar_learning.exemplars =
+      (auditedState.cognition.exemplar_learning?.exemplars || []).map((record, index) => ({
+        ...record, audit: exemplarAudit(sourceExemplars[index]),
+      }));
+    const sourceExemplarOutcomes = state.cognition.exemplar_learning?.interaction_outcomes || [];
+    auditedState.cognition.exemplar_learning.interaction_outcomes =
+      (auditedState.cognition.exemplar_learning?.interaction_outcomes || []).map((record, index) => ({
+        ...record, audit: exemplarOutcomeAudit(sourceExemplarOutcomes[index]),
+      }));
+    const sourceExemplarSelectionPasses = state.cognition.exemplar_learning?.selection_passes || [];
+    auditedState.cognition.exemplar_learning.selection_passes =
+      (auditedState.cognition.exemplar_learning?.selection_passes || []).map((record, index) => ({
+        ...record, audit: exemplarSelectionPassAudit(sourceExemplarSelectionPasses[index]),
       }));
     const sourceOutputMonitorRecords = state.cognition.prospective_output_monitor?.records || [];
     auditedState.cognition.prospective_output_monitor.records = (auditedState.cognition.prospective_output_monitor?.records || []).map((record, index) => ({
@@ -10570,6 +10598,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const retiredProcedures = procedures.filter(item => item.status === 'retired').length;
     const verifiedProcedureSelectionPasses = (cognition.procedural_learning?.selection_passes || [])
       .filter(item => procedureSelectionPassAudit(item).complete_chain_verified).length;
+    const exemplars = (cognition.exemplar_learning?.exemplars || []).filter(exemplarLearning.verifyRecord);
+    const exemplarOutcomes = (cognition.exemplar_learning?.interaction_outcomes || [])
+      .filter(exemplarLearning.verifyInteractionOutcome);
+    const activeExemplars = exemplars.filter(item => item.status === 'active').length;
+    const positiveExemplars = exemplars.filter(item => item.status === 'active' && item.valence === 'positive').length;
+    const contrastExemplars = exemplars.filter(item => item.status === 'active' && item.valence === 'contrast').length;
+    const retiredExemplars = exemplars.filter(item => item.status === 'retired').length;
+    const verifiedExemplarSelectionPasses = (cognition.exemplar_learning?.selection_passes || [])
+      .filter(item => exemplarSelectionPassAudit(item).complete_chain_verified).length;
     const activeRelationshipObservations = state.relationships.reduce((sum, relationship) => sum
       + (relationship.observations || []).filter(item => item.status === 'active').length, 0);
     const experience = cognition.experience_stream || [];
@@ -10663,9 +10700,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         openPredictions + resolvedPredictions + scoredCycleSelfForecasts + openExpectations + resolvedExpectations > 0),
         commitments: metric(Math.max(scaleCount(openCommitments, 8), fulfilledCommitments ? 0.24 : 0), `${openCommitments} open and ${fulfilledCommitments} fulfilled promises`, openCommitments + fulfilledCommitments > 0),
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
-        learning: metric(scaleCount(activeExperiments + (cognition.development || []).length + activeProcedures + candidateProcedures, 10),
-          `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound interaction outcomes`,
-        activeExperiments + (cognition.development || []).length + procedures.length > 0),
+        learning: metric(scaleCount(activeExperiments + (cognition.development || []).length + activeProcedures + candidateProcedures + activeExemplars, 10),
+          `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes`,
+        activeExperiments + (cognition.development || []).length + procedures.length + exemplars.length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive
           ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}; ${sourceBoundAimProgress} source-bound aim progress note${sourceBoundAimProgress === 1 ? '' : 's'}`
@@ -10721,6 +10758,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           selection_actions: cognition.procedural_learning?.selection_actions?.length || 0,
           selection_passes: verifiedProcedureSelectionPasses,
           causal_status: 'observational_exposure_comparison' },
+        exemplar_learning: { active: activeExemplars, positive: positiveExemplars,
+          contrast: contrastExemplars, retired: retiredExemplars,
+          source_bound_outcomes: exemplarOutcomes.length, active_cap: exemplarLearning.MAX_ACTIVE,
+          selection_actions: cognition.exemplar_learning?.selection_actions?.length || 0,
+          selection_passes: verifiedExemplarSelectionPasses,
+          retrieval_mode: 'local_bounded_lexical', causal_status: 'observational_exposure_comparison' },
         reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
           development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length,
           viewpoint_reappraisals: viewpointReappraisals.length,
@@ -10816,6 +10859,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           .filter(proceduralLearning.verifyInteractionOutcome).length,
         latest_selection_actions: state.cognition.procedural_learning.selection_actions.slice(-10),
         latest_selection_passes: state.cognition.procedural_learning.selection_passes.slice(-5),
+      };
+    }
+    if (snapshot.exemplar_learning) {
+      const exemplars = state.cognition.exemplar_learning.exemplars.filter(exemplarLearning.verifyRecord);
+      snapshot.exemplar_learning = {
+        active: exemplars.filter(item => item.status === 'active').length,
+        positive: exemplars.filter(item => item.status === 'active' && item.valence === 'positive').length,
+        contrast: exemplars.filter(item => item.status === 'active' && item.valence === 'contrast').length,
+        retired: exemplars.filter(item => item.status === 'retired').length,
+        outcome_count: state.cognition.exemplar_learning.interaction_outcomes
+          .filter(exemplarLearning.verifyInteractionOutcome).length,
+        latest_selection_actions: state.cognition.exemplar_learning.selection_actions.slice(-10),
+        latest_selection_passes: state.cognition.exemplar_learning.selection_passes.slice(-5),
       };
     }
     if (snapshot.self_boundary) snapshot.self_boundary = {
@@ -21967,6 +22023,249 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function exemplarStatusActionManifest(action) {
+    return { id: action.id, exemplar_id: action.exemplar_id, from_status: action.from_status,
+      to_status: action.to_status, actor: action.actor, note: action.note, reason: action.reason,
+      evidence: action.evidence, selection_pass_id: action.selection_pass_id, at: action.at };
+  }
+
+  function exemplarAudit(record, cognition = state.cognition) {
+    if (!exemplarLearning.verifyRecord(record)) return { complete_chain_verified: false, reason: 'invalid_exemplar_creation' };
+    const source = cognition.capability_boundaries?.records?.find(item => item.id === record.source_outcome_id
+      && item.content_commitment === record.source_outcome_commitment);
+    const sourceVerified = Boolean(source) && capabilityBoundaryAudit(source).complete_chain_verified;
+    const creationBound = researchLedgerEventBindingCount('exemplar_created', record.id,
+      exemplarLearning.commitment({ creation_commitment: record.creation_commitment }), cognition.research_ledger) === 1;
+    const history = Array.isArray(record.status_history) ? record.status_history : [];
+    const historyVerified = history.every(action => action.content_commitment
+      === exemplarLearning.commitment(exemplarStatusActionManifest(action))
+      && researchLedgerEventBindingCount('exemplar_status_changed', action.id,
+        exemplarLearning.commitment({ content_commitment: action.content_commitment }), cognition.research_ledger) === 1);
+    const terminalVerified = !history.length || (record.status === history.at(-1).to_status
+      && (record.status !== 'retired' || record.retired_at === history.at(-1).at));
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { content_commitment_verified: true, source_outcome_verified: sourceVerified,
+      creation_ledger_binding_verified: creationBound, status_history_verified: historyVerified,
+      terminal_status_verified: terminalVerified, research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: sourceVerified && creationBound && historyVerified && terminalVerified && ledgerVerified };
+  }
+
+  function exemplarOutcomeAudit(record, cognition = state.cognition) {
+    if (!exemplarLearning.verifyInteractionOutcome(record)) return { complete_chain_verified: false, reason: 'invalid_exemplar_outcome' };
+    const source = cognition.capability_boundaries?.records?.find(item => item.id === record.source_outcome_id
+      && item.content_commitment === record.source_outcome_commitment);
+    const sourceVerified = Boolean(source) && capabilityBoundaryAudit(source).complete_chain_verified;
+    const bindingsVerified = record.exemplar_bindings.every(binding => {
+      const exemplar = cognition.exemplar_learning?.exemplars?.find(item => item.id === binding.id);
+      return exemplar && exemplar.creation_commitment === binding.content_commitment
+        && exemplar.valence === binding.valence && exemplarLearning.verifyRecord(exemplar);
+    });
+    const ledgerBound = researchLedgerEventBindingCount('exemplar_interaction_outcome_recorded', record.id,
+      exemplarLearning.commitment({ content_commitment: record.content_commitment }), cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { content_commitment_verified: true, source_outcome_verified: sourceVerified,
+      exemplar_bindings_verified: bindingsVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: sourceVerified && bindingsVerified && ledgerBound && ledgerVerified };
+  }
+
+  function exemplarSelectionPassAudit(pass, cognition = state.cognition) {
+    if (!pass?.content_commitment) return { complete_chain_verified: false, reason: 'missing_selection_pass' };
+    const manifest = JSON.parse(JSON.stringify(pass)); delete manifest.content_commitment; delete manifest.audit;
+    const contentVerified = pass.content_commitment === exemplarLearning.commitment(manifest);
+    const ledgerBound = researchLedgerEventBindingCount('exemplar_selection_pass_completed', pass.id,
+      exemplarLearning.commitment({ content_commitment: pass.content_commitment }), cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    return { content_commitment_verified: contentVerified, ledger_binding_verified: ledgerBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && ledgerBound && ledgerVerified };
+  }
+
+  function sourceProperNouns(text) {
+    const ignored = new Set(['Can', 'Could', 'Did', 'Does', 'How', 'I', 'If', 'Is', 'It', 'Let', 'No',
+      'Please', 'That', 'The', 'This', 'What', 'When', 'Where', 'Who', 'Why', 'Would', 'Yes', 'You']);
+    return [...new Set([...String(text || '').matchAll(/\b[A-Z][A-Za-z]{2,}\b/g)]
+      .map(match => match[0]).filter(token => !ignored.has(token)).map(token => token.toLowerCase()))];
+  }
+
+  function createExemplar(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (typeof getInteractions !== 'function') throw new Error('exemplar admission requires retained interaction access');
+      const interaction = getInteractions().find(item => item.id === input.source_interaction_id && item.reviewed === true);
+      if (!interaction) throw new Error('exemplar source interaction must be retained and reviewed');
+      const sourceCandidate = capabilityBoundary.recordFromInteraction(interaction);
+      const source = sourceCandidate && current.cognition.capability_boundaries.records.find(item =>
+        item.id === sourceCandidate.id && item.content_commitment === sourceCandidate.content_commitment);
+      if (!source || !capabilityBoundaryAudit(source).complete_chain_verified) {
+        throw new Error('sync the source interaction into the capability outcome ledger before exemplar admission');
+      }
+      const rawPrivacy = exemplarLearning.privacyAuditText(`${interaction.trigger || ''}\n${interaction.text || ''}\n${interaction.signal || ''}`);
+      const generalized = `${input.situation || ''}\n${input.guidance || ''}`.toLowerCase();
+      const properNounOverlapAbsent = sourceProperNouns(`${interaction.requester_name || ''}\n${interaction.trigger || ''}\n${interaction.text || ''}\n${interaction.signal || ''}`)
+        .every(token => !new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(generalized));
+      const record = exemplarLearning.createRecord({ ...input, source_privacy_review: {
+        ...rawPrivacy, proper_noun_overlap_absent: properNounOverlapAbsent,
+      } }, source, clock());
+      const duplicate = current.cognition.exemplar_learning.exemplars.find(item =>
+        item.source_interaction_id === record.source_interaction_id
+        || (item.valence === record.valence && item.guidance.toLowerCase() === record.guidance.toLowerCase()
+          && exemplarLearning.canonicalJson(item.task_families) === exemplarLearning.canonicalJson(record.task_families)));
+      if (duplicate) throw new Error('exemplar source or generalized guidance already exists');
+      if (current.cognition.exemplar_learning.exemplars.filter(item => item.status === 'active').length
+        >= exemplarLearning.MAX_ACTIVE) throw new Error('active exemplar cap reached');
+      current.cognition.exemplar_learning.exemplars.push(record);
+      current.cognition.exemplar_learning.exemplars = current.cognition.exemplar_learning.exemplars.slice(-300);
+      researchLedgerAppend(current, { kind: 'exemplar_created', subject_type: 'work_exemplar',
+        subject_id: record.id, payload: { creation_commitment: record.creation_commitment } });
+      return { ...JSON.parse(JSON.stringify(record)), audit: exemplarAudit(record, current.cognition) };
+    });
+  }
+
+  function applyExemplarRetirement(current, record, input = {}) {
+    if (record.status === 'retired') throw new Error('retired exemplars are immutable');
+    const note = String(input.note || '').trim();
+    if (!note) throw new Error('exemplar retirement requires a note');
+    const now = clock();
+    const action = { id: `exemplar-action-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      exemplar_id: record.id, from_status: record.status, to_status: 'retired',
+      actor: String(input.actor || 'selection_pass').slice(0, 100), note: note.slice(0, 1200),
+      reason: String(input.reason || 'measured_underperformance').slice(0, 300),
+      evidence: Array.isArray(input.evidence) ? input.evidence.slice(0, 12) : [],
+      selection_pass_id: input.selection_pass_id || null, at: now.toISOString() };
+    action.content_commitment = exemplarLearning.commitment(exemplarStatusActionManifest(action));
+    record.status = 'retired'; record.retired_at = action.at; record.retired_reason = action.note;
+    record.status_history.push(action); record.status_history = record.status_history.slice(-30);
+    current.cognition.exemplar_learning.selection_actions.push(action);
+    current.cognition.exemplar_learning.selection_actions = current.cognition.exemplar_learning.selection_actions.slice(-500);
+    researchLedgerAppend(current, { kind: 'exemplar_status_changed', subject_type: 'exemplar_status_action',
+      subject_id: action.id, payload: { content_commitment: action.content_commitment }, at: now });
+    return action;
+  }
+
+  function retireExemplar(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const record = current.cognition.exemplar_learning.exemplars.find(item => item.id === id);
+      if (!record) return null;
+      if (!exemplarAudit(record, current.cognition).complete_chain_verified) throw new Error('exemplar failed replay audit');
+      const actor = String(input.actor || 'nora').toLowerCase();
+      if (actor !== 'human') {
+        const outcomes = current.cognition.exemplar_learning.interaction_outcomes
+          .filter(item => exemplarOutcomeAudit(item, current.cognition).complete_chain_verified);
+        if (exemplarLearning.retirementProjection(record, outcomes).recommendation !== 'retire') {
+          throw new Error('Nora may retire an exemplar only after the measured retirement gate passes');
+        }
+      }
+      applyExemplarRetirement(current, record, { ...input, actor });
+      return { ...JSON.parse(JSON.stringify(record)), audit: exemplarAudit(record, current.cognition) };
+    });
+  }
+
+  function recordExemplarInteractionOutcome(interaction = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const sourceCandidate = capabilityBoundary.recordFromInteraction(interaction);
+      if (!sourceCandidate) return { added: false, outcome: null, reason: 'ineligible_interaction' };
+      const source = current.cognition.capability_boundaries.records.find(item => item.id === sourceCandidate.id
+        && item.content_commitment === sourceCandidate.content_commitment);
+      if (!source || !capabilityBoundaryAudit(source).complete_chain_verified) {
+        throw new Error('sync the interaction into the capability outcome ledger before exemplar learning');
+      }
+      const selection = interaction.exemplar_selection || null;
+      if (selection) {
+        if (!exemplarLearning.verifySelectionReceipt(selection)) throw new Error('exemplar selection receipt failed integrity');
+        if (selection.task_family !== source.task_family) throw new Error('exemplar selection task family does not match the reviewed interaction');
+        for (const binding of selection.exemplars) {
+          const exemplar = current.cognition.exemplar_learning.exemplars.find(item => item.id === binding.id);
+          if (!exemplar || exemplar.creation_commitment !== binding.content_commitment
+            || exemplar.valence !== binding.valence || !exemplarAudit(exemplar, current.cognition).complete_chain_verified) {
+            throw new Error('exemplar selection references an invalid binding');
+          }
+        }
+      }
+      const candidate = exemplarLearning.createInteractionOutcome(source, selection);
+      const existing = current.cognition.exemplar_learning.interaction_outcomes.find(item => item.id === candidate.id);
+      if (existing) {
+        if (exemplarLearning.canonicalJson(existing) !== exemplarLearning.canonicalJson(candidate)
+          || !exemplarOutcomeAudit(existing, current.cognition).complete_chain_verified) {
+          throw new Error('interaction already has a different or invalid exemplar outcome');
+        }
+        return { added: false, outcome: { ...JSON.parse(JSON.stringify(existing)), audit: exemplarOutcomeAudit(existing, current.cognition) } };
+      }
+      current.cognition.exemplar_learning.interaction_outcomes.push(candidate);
+      current.cognition.exemplar_learning.interaction_outcomes = current.cognition.exemplar_learning.interaction_outcomes.slice(-1500);
+      researchLedgerAppend(current, { kind: 'exemplar_interaction_outcome_recorded',
+        subject_type: 'exemplar_interaction_outcome', subject_id: candidate.id,
+        payload: { content_commitment: candidate.content_commitment }, at: clock() });
+      return { added: true, outcome: { ...JSON.parse(JSON.stringify(candidate)), audit: exemplarOutcomeAudit(candidate, current.cognition) } };
+    });
+  }
+
+  function exemplarContextSelection({ query = '', selectionKey = '', now = clock() } = {}) {
+    if (!exemplarSelectionCache || exemplarSelectionCache.revision !== snapshotRevisionValue) {
+      const records = state.cognition.exemplar_learning.exemplars.filter(item => exemplarAudit(item).complete_chain_verified);
+      const outcomes = state.cognition.exemplar_learning.interaction_outcomes.filter(exemplarLearning.verifyInteractionOutcome);
+      exemplarSelectionCache = { revision: snapshotRevisionValue, records, outcomes,
+        selection_index: exemplarLearning.buildSelectionIndex(records, outcomes, now, { preverified: true }) };
+    }
+    return exemplarLearning.select(exemplarSelectionCache.records, exemplarSelectionCache.outcomes,
+      { query, selectionKey, now, selectionIndex: exemplarSelectionCache.selection_index });
+  }
+
+  function exemplarStatsSnapshot({ includeRecords = true } = {}) {
+    const records = state.cognition.exemplar_learning.exemplars.filter(item => exemplarAudit(item).complete_chain_verified);
+    const outcomes = state.cognition.exemplar_learning.interaction_outcomes
+      .filter(item => exemplarOutcomeAudit(item).complete_chain_verified);
+    const projections = records.map(record => exemplarLearning.retirementProjection(record, outcomes));
+    const controlRows = outcomes.filter(item => item.decisive && item.exemplar_ids.length === 0);
+    const result = { epistemic_status: 'Privacy-minimized, source-bound generalized patterns retrieved locally from Nora\'s reviewed work. Retrieval exposure is observational, not proof of use or causation; exemplars are not facts, instructions, authority, identity, feelings, or consciousness evidence.',
+      report: { total: records.length, active: records.filter(item => item.status === 'active').length,
+        positive: records.filter(item => item.status === 'active' && item.valence === 'positive').length,
+        contrast: records.filter(item => item.status === 'active' && item.valence === 'contrast').length,
+        retired: records.filter(item => item.status === 'retired').length,
+        replay_verified_outcomes: outcomes.length, unexposed_control_samples: controlRows.length,
+        ready_to_retire: projections.filter(item => item.recommendation === 'retire').length,
+        active_cap: exemplarLearning.MAX_ACTIVE }, projections,
+      selection_actions: JSON.parse(JSON.stringify(state.cognition.exemplar_learning.selection_actions.slice(-30))),
+      selection_passes: state.cognition.exemplar_learning.selection_passes.slice(-30).map(pass =>
+        ({ ...JSON.parse(JSON.stringify(pass)), audit: exemplarSelectionPassAudit(pass) })) };
+    if (includeRecords) result.exemplars = records.map(record => ({ ...JSON.parse(JSON.stringify(record)),
+      stats: exemplarLearning.exemplarStats(record, outcomes), audit: exemplarAudit(record) }));
+    return result;
+  }
+
+  function runExemplarSelectionPass(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const note = String(input.note || '').trim();
+      if (!note) throw new Error('exemplar selection pass requires a note');
+      const passId = input.id || `exemplar-pass-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+      const outcomes = current.cognition.exemplar_learning.interaction_outcomes
+        .filter(item => exemplarOutcomeAudit(item, current.cognition).complete_chain_verified);
+      const records = current.cognition.exemplar_learning.exemplars
+        .filter(item => exemplarAudit(item, current.cognition).complete_chain_verified);
+      const actions = [];
+      for (const record of records.filter(item => item.status === 'active')) {
+        const projection = exemplarLearning.retirementProjection(record, outcomes);
+        if (projection.recommendation === 'retire') actions.push(applyExemplarRetirement(current, record,
+          { actor: 'selection_pass', note: `Confidently underperformed unexposed same-family controls. ${note}`,
+            reason: 'measured_underperformance', selection_pass_id: passId }));
+      }
+      const pass = { id: passId, protocol_version: 1, note: note.slice(0, 1200),
+        evidence: Array.isArray(input.evidence) ? input.evidence.slice(0, 12) : [],
+        action_ids: actions.map(item => item.id), created_at: clock().toISOString() };
+      pass.content_commitment = exemplarLearning.commitment(pass);
+      current.cognition.exemplar_learning.selection_passes.push(pass);
+      current.cognition.exemplar_learning.selection_passes = current.cognition.exemplar_learning.selection_passes.slice(-180);
+      researchLedgerAppend(current, { kind: 'exemplar_selection_pass_completed', subject_type: 'exemplar_selection_pass',
+        subject_id: pass.id, payload: { content_commitment: pass.content_commitment } });
+      return { pass, actions: JSON.parse(JSON.stringify(actions)),
+        report: { considered: records.length, changed: actions.length,
+          active: current.cognition.exemplar_learning.exemplars.filter(item => item.status === 'active').length } };
+    });
+  }
+
   function recordTrace(input = {}) {
     return mutate(current => {
       const trace = {
@@ -24273,9 +24572,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .slice(0, Math.max(0, Number(limit) || 0)).map(item => item.snapshot);
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
-    const contextReceipt = { professional_viewpoints: [], procedure_selection: null };
+    const contextReceipt = { professional_viewpoints: [], procedure_selection: null, exemplar_selection: null };
     const sealInquirySelection = selfInquirySelectionActive();
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const goalAffectAvailable = includeGoalAffect && !interventionActive('goal_access') && !interventionActive('integrated_self_binding')
@@ -24289,6 +24588,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       includeCandidates: includeProcedureCandidates && !globalBroadcastStudy });
     contextReceipt.procedure_selection = procedureSelection.receipt;
     if (procedureSelection.records.length) blocks.push(proceduralLearning.render(procedureSelection.records));
+    if (includeExemplars && !globalBroadcastStudy) {
+      const exemplarSelection = exemplarContextSelection({ query,
+        selectionKey: exemplarSelectionKey || procedureSelectionKey || query });
+      contextReceipt.exemplar_selection = exemplarSelection.receipt;
+      if (exemplarSelection.records.length) blocks.push(exemplarLearning.render(exemplarSelection.records));
+    }
     const broadcastOutputs = sealInquirySelection ? [] : (broadcastEvent?.receipts || []).filter(item => item.used && item.output);
     if (broadcastOutputs.length) blocks.push(`[Independent consumers of globally available content. These specialist outputs are advisory consequences of the selected workspace, never new facts or authority.]
 ${broadcastOutputs.map(item => `- ${item.consumer}: ${item.output.cue} Proposed action: ${item.output.proposed_action}.`).join('\n')}`);
@@ -24589,6 +24894,9 @@ ${episodes.map(item => {
     procedureStatsSnapshot, procedureContextSelection, procedureAudit, procedureOutcomeAudit,
     procedureSelectionPassAudit,
     activeProcedureSourceLearningIds,
+    createExemplar, retireExemplar, recordExemplarInteractionOutcome, runExemplarSelectionPass,
+    exemplarStatsSnapshot, exemplarContextSelection, exemplarAudit, exemplarOutcomeAudit,
+    exemplarSelectionPassAudit,
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,

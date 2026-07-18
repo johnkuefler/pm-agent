@@ -139,6 +139,8 @@ test('live server opts into complete Slack trials but never globally enables sec
     'remote prompt enrichment must stay off an active or just-finished spoken turn');
   assert.match(server, /capabilityBoundaryContext\(\s*trialConversationText, opts\.situationalAffordanceFrame \|\| null\)/,
     'task-specific capability learning must remain a deterministic prompt input');
+  assert.match(server, /exemplarsAvailable: mode === 'normal'/,
+    'only ordinary Slack replies may opt into local exemplar retrieval');
   const boundary = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
     'capability-boundary.js'), 'utf8');
   assert.doesNotMatch(boundary, /fetch\(|axios|anthropic|openai/i,
@@ -151,6 +153,10 @@ test('live server opts into complete Slack trials but never globally enables sec
     'professional-viewpoint-access-outcome.js'), 'utf8');
   assert.doesNotMatch(viewpointOutcome, /fetch\(|axios|anthropic|openai/i,
     'viewpoint access outcome capture must not add a provider or network call to Slack or Zoom');
+  const exemplars = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'exemplar-learning.js'), 'utf8');
+  assert.doesNotMatch(exemplars, /fetch\(|axios|anthropic|openai|pgvector|\bembed(?:ding)?\s*\(/i,
+    'exemplar retrieval must stay local and add no provider, embedding, database, or network call');
   assert.equal((server.match(/captureIntelligenceReceipt: true/g) || []).length, 1,
     'only Slack requests the small prompt-access receipt; Zoom and realtime stay unchanged');
   const normalSlackDelivery = server.slice(server.indexOf('// Log the interaction for the dream'),

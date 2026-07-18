@@ -1353,6 +1353,7 @@ function compactInteractiveIntelligenceContext(text, maxChars) {
     let priority = experimental ? 100 : 50;
     if (/operational situational self-model|capability boundary|limited attention workspace/i.test(compactLabel)) priority = Math.max(priority, 95);
     else if (/selected work procedures/i.test(compactLabel)) priority = Math.max(priority, 92);
+    else if (/relevant past work patterns/i.test(compactLabel)) priority = Math.max(priority, 91);
     else if (/relevant conversation continuity|current grounded internal appraisal|affect-regulation|relational attunement|empirical functional self-knowledge/i.test(compactLabel)) priority = Math.max(priority, 90);
     else if (/self-authored aim|operational self-state|verified completed-cycle self-corrections|earned professional viewpoints|verified post-meeting professional reflections|constructive future simulations/i.test(compactLabel)) priority = Math.max(priority, 82);
     else if (/endogenous salience|attention schema|prospective agency|testable self-model|open interoceptive predictions/i.test(compactLabel)) priority = Math.max(priority, 72);
@@ -1633,6 +1634,9 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeProcedureCandidates: experimentalSurface === 'slack' && opts.procedureCandidatesAvailable === true
       && !contextAssignment && !opts.sideEffectFree,
     procedureSelectionKey: opts.trialUnitKey || conversationText,
+    includeExemplars: experimentalSurface === 'slack' && opts.exemplarsAvailable === true
+      && !contextAssignment && !opts.sideEffectFree,
+    exemplarSelectionKey: opts.trialUnitKey || conversationText,
   });
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
   const profileForecastOnly = contextAssignment?.intervention === 'self_model_access'
@@ -6219,6 +6223,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
         procedureCandidatesAvailable: mode === 'normal',
+        exemplarsAvailable: mode === 'normal',
         contextTrialsEnabled: true, latencyCritical: true, captureIntelligenceReceipt: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
@@ -8153,6 +8158,10 @@ function logInteraction(entry) {
       interaction.procedure_selection = JSON.parse(JSON.stringify(intelligenceReceipt.procedure_selection));
       interaction.procedure_exposure_ids = interaction.procedure_selection.procedures.map(item => item.id);
     }
+    if (intelligenceReceipt?.exemplar_selection) {
+      interaction.exemplar_selection = JSON.parse(JSON.stringify(intelligenceReceipt.exemplar_selection));
+      interaction.exemplar_exposure_ids = interaction.exemplar_selection.exemplars.map(item => item.id);
+    }
     if (interaction.ts) {
       try {
         const application = intelligence.recordAffectiveRegulationApplication(interaction);
@@ -8201,6 +8210,8 @@ registerInteractionRoutes(app, {
     catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
     try { intelligence.recordProcedureInteractionOutcome(interaction); }
     catch (error) { console.warn('procedure outcome capture failed:', error.message); }
+    try { intelligence.recordExemplarInteractionOutcome(interaction); }
+    catch (error) { console.warn('exemplar outcome capture failed:', error.message); }
     try { intelligence.resolveAffectiveRegulationApplicationOutcome(interaction); }
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
     try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }

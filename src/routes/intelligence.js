@@ -215,6 +215,44 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(result ? 503 : 400).json({ error: error.message }); }
   });
 
+  app.get('/exemplars', requireAuth, (req, res) => {
+    try {
+      const snapshot = store.exemplarStatsSnapshot({ includeRecords: true });
+      if (req.query.status) snapshot.exemplars = snapshot.exemplars.filter(item => item.status === req.query.status);
+      if (req.query.valence) snapshot.exemplars = snapshot.exemplars.filter(item => item.valence === req.query.valence);
+      res.json(snapshot);
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/exemplars/stats', requireAuth, (_req, res) => {
+    try { res.json(store.exemplarStatsSnapshot({ includeRecords: false })); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/exemplars', requireAuth, async (req, res) => {
+    let exemplar = null;
+    try {
+      exemplar = store.createExemplar(req.body || {});
+      await store.persistStrict();
+      res.json({ ok: true, exemplar });
+    } catch (error) { res.status(exemplar ? 503 : 400).json({ error: error.message }); }
+  });
+  app.post('/exemplars/:id/retire', requireResearchAuth, async (req, res) => {
+    let exemplar = null;
+    try {
+      exemplar = store.retireExemplar(req.params.id, { ...(req.body || {}), actor: 'human' });
+      if (!exemplar) return res.status(404).json({ error: 'exemplar not found' });
+      await store.persistStrict();
+      res.json({ ok: true, exemplar });
+    } catch (error) { res.status(exemplar ? 503 : 400).json({ error: error.message }); }
+  });
+  app.post('/exemplars/selection-pass', requireAuth, async (req, res) => {
+    let result = null;
+    try {
+      result = store.runExemplarSelectionPass(req.body || {});
+      await store.persistStrict();
+      res.json({ ok: true, ...result });
+    } catch (error) { res.status(result ? 503 : 400).json({ error: error.message }); }
+  });
+
   app.get('/initiative-budgets/:scope', requireAuth, (req, res) => res.json(store.initiativeStatus(req.params.scope)));
   app.put('/initiative-budgets/:scope', requireAuth, (req, res) => {
     res.json({ ok: true, budget: store.setInitiativeBudget(req.params.scope, req.body?.daily_limit) });

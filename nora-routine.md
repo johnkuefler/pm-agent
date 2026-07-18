@@ -1647,9 +1647,16 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
 6. **Distill learnings (the payoff).** Look across the outcomes — this dream's plus the recent reviewed history (`GET /interactions?reviewed=true&since=<~30 days ago>`). Ask, via a Claude pass:
 
-   > "Across how Nora's Slack contributions have landed, what 1–3 things is she learning about her OWN behavior — how to be more useful here? Look for repeatable patterns: message shapes that consistently get acted on vs. ignored, where she's too long or too short, when a proactive chime-in helps vs. annoys, what framing the team responds to. Each learning must be: (a) grounded in 2–3+ interactions (not one bad day), (b) actionable and behavioral, (c) about her own conduct, not about the work. Reward usefulness/correctness, never mere approval. Output JSON: `[{ \"learning\": \"...\", \"condition_txt\": \"when this applies, max 80 chars\", \"action_txt\": \"what to do, max 120 chars\", \"task_families\": [\"one or more supported families\"], \"interaction_ids\": [\"exact reviewed interaction ids\"] }]`. Supported families: action_execution, planning_analysis, writing_synthesis, project_status_retrieval, meeting_memory_retrieval, external_research, social_interaction, general_coordination."
+   > "Across how Nora's Slack contributions have landed, what 1–3 things is she learning about her OWN behavior — how to be more useful here? Look for repeatable patterns: message shapes that consistently get acted on vs. ignored, where she's too long or too short, when a proactive chime-in helps vs. annoys, what framing the team responds to. Each learning must be: (a) grounded in 2–3+ interactions (not one bad day), (b) actionable and behavioral, (c) about her own conduct, not about the work. Reward usefulness/correctness, never mere approval. Also nominate at most two single reviewed moments as retrieval exemplars only when one response offers a clearly reusable generalized shape or one correction offers a concrete miss to avoid. Output JSON: `{ \"learnings\": [{ \"learning\": \"...\", \"condition_txt\": \"when this applies, max 80 chars\", \"action_txt\": \"what to do, max 120 chars\", \"task_families\": [\"one or more supported families\"], \"interaction_ids\": [\"exact reviewed interaction ids\"] }], \"exemplars\": [{ \"source_interaction_id\": \"exact reviewed id\", \"situation\": \"generic lowercase situation, max 120 chars\", \"guidance\": \"generic behavioral guidance, max 100 chars\", \"task_families\": [\"one or more supported families\"] }] }`. Exemplar text must contain no person, client, project, URL, email, financial detail, stable identifier, quoted response, or correcting-person name. Do not nominate neutral moments. Supported families: action_execution, planning_analysis, writing_synthesis, project_status_retrieval, meeting_memory_retrieval, external_research, social_interaction, general_coordination."
 
    Save each as `POST /memory { "fact": "<learning>", "source": "learning", "kind": "learning", "confidence": 0.75, "source_ref": { ... } }`, then use the returned memory id to create one candidate with `POST /procedures`: `{ "condition_txt": "...", "action_txt": "...", "task_families": [...], "origin": { "type": "learning", "id": "<memory id>" }, "source_refs": [{ "type": "interaction", "id": "<exact reviewed id>" }, ...] }`. Once linked, the prose learning is withheld from live prompts and the compact candidate receives bounded Slack exploration instead; do not manually activate it. Also create a measurable trial with `POST /learning-experiments { "behavior": "<learning as an action>", "hypothesis": "<what outcome should improve>", "metric": "positive_rate", "review_at": "<about 14 days out>" }`. Reviewed interaction outcomes automatically become samples. A learning does not become permanent just because it sounds wise; evaluate it, then retain, revise, or retire it.
+
+   For each valid exemplar nomination, call `POST /exemplars` with the exact object above. The server derives
+   positive versus contrast from the immutable reviewed outcome, binds the source outcome, and rejects raw-source
+   or generalized text containing financials, locators, stable identifiers, embedded instructions, or source proper
+   nouns. Never soften a correction into a positive example, promote a neutral moment, quote the response, or add
+   a name to contrast guidance. Live retrieval is a bounded local lookup; it adds no embedding, provider, or network
+   call and exposes at most one positive plus one contrast pattern.
 
 6.5. **Run SELECT after reviewed outcomes are written.** Fetch `GET /procedures/stats`. If at least one
    procedure exists, call `POST /procedures/selection-pass` once with a concise note describing the outcome
@@ -1662,6 +1669,11 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    through `POST /procedures` with `variant_of`, a changed `action_txt`, origin/evidence, and no changed condition.
    Parent and variant alternate exposure and need ten decisive samples each before selection. Retired procedures
    remain immutable; create a new evidence-bound variant rather than rewriting history.
+
+   Also fetch `GET /exemplars/stats` and, when exemplars exist, call `POST /exemplars/selection-pass` once.
+   The server retires an exemplar only after ten decisive exposures plus twelve unexposed same-family controls
+   and confident upper-bound underperformance. Retrieval exposure is not proof the model used the exemplar.
+   Never rewrite an admitted exemplar or relabel an outcome; retired exemplars remain replay-visible and immutable.
 
 7. **Choose your own experiments when genuine curiosity earns one.** You do not need to wait for
    John or a dream-generated learning to assign every trial. You may originate a behavior experiment

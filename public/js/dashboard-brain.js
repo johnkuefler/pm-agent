@@ -105,7 +105,7 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'learning', label: 'Learning', layer: 'background', x: .28, y: .75,
-    description: 'Behavior experiments, developmental memories, and compact work procedures competing for durable influence through reviewed outcomes.',
+    description: 'Behavior experiments, developmental memories, compact procedures, and retrieved positive/contrast work patterns evolving through reviewed outcomes.',
     links: ['relationships', 'reflection', 'background'],
     read: state => {
       const experiments = state.experiments || [];

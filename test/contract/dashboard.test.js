@@ -133,6 +133,8 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   const targetNames = Object.keys(vm.runInNewContext(`(${targetLiteral[1]})`));
   assert.deepEqual(targetNames.sort(), sections.sort(), 'every dashboard section should have one matching loader key');
   assert.match(intelligenceJs, /intelligence\/dashboard-summary/);
+  assert.match(intelligenceJs, /SELECT exemplars:/);
+  assert.match(intelligenceJs, /no foreground network call/);
   assert.match(intelligenceJs, /IntersectionObserver/);
   assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
   assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);

@@ -29,6 +29,11 @@ POST /procedures
 POST /procedures/:id/activate
 POST /procedures/:id/retire
 POST /procedures/selection-pass
+GET /exemplars
+GET /exemplars/stats
+POST /exemplars
+POST /exemplars/:id/retire
+POST /exemplars/selection-pass
 GET /initiative-budgets/:scope
 PUT /initiative-budgets/:scope
 POST /initiative-budgets/:scope/spend

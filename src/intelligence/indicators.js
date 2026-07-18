@@ -16,6 +16,7 @@ const commonGround = require('./common-ground');
 const behavioralSelfModel = require('./behavioral-self-model');
 const capabilityBoundary = require('./capability-boundary');
 const proceduralLearning = require('./procedural-learning');
+const exemplarLearning = require('./exemplar-learning');
 
 const DELIBERATE_PRIOR_USE_ANALYSIS_PROTOCOL = Object.freeze({
   protocol_version: 1,
@@ -755,6 +756,34 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const procedureSelectionStatus = !replayValidProcedures.length ? 'mechanism_present'
     : measuredProcedureActions.length ? 'observational_signal_observed'
       : 'collecting';
+  const exemplarRecords = cognition.exemplar_learning?.exemplars || [];
+  const replayValidExemplars = exemplarRecords
+    .filter(item => exemplarLearning.verifyRecord(item) && item.audit?.complete_chain_verified === true);
+  const exemplarOutcomeRecords = cognition.exemplar_learning?.interaction_outcomes || [];
+  const replayValidExemplarOutcomes = exemplarOutcomeRecords
+    .filter(item => exemplarLearning.verifyInteractionOutcome(item) && item.audit?.complete_chain_verified === true);
+  const decisiveExemplarOutcomes = replayValidExemplarOutcomes.filter(item => item.decisive === true);
+  const exemplarSelectionPasses = cognition.exemplar_learning?.selection_passes || [];
+  const replayValidExemplarSelectionPasses = exemplarSelectionPasses
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const replayValidExemplarPassIds = new Set(replayValidExemplarSelectionPasses.map(item => item.id));
+  const measuredExemplarRetirements = replayValidExemplars.flatMap(item => item.status_history || [])
+    .filter(action => action.reason === 'measured_underperformance'
+      && replayValidExemplarPassIds.has(action.selection_pass_id));
+  const exemplarProjections = replayValidExemplars.map(record => ({ record,
+    observed: exemplarLearning.exemplarStats(record, replayValidExemplarOutcomes),
+    control: exemplarLearning.controlStats(record, replayValidExemplarOutcomes) }));
+  const adequatelySampledExemplars = exemplarProjections.filter(item =>
+    item.observed.decisive_samples >= exemplarLearning.MIN_RETIREMENT_SAMPLES
+      && item.control.decisive_samples >= exemplarLearning.MIN_CONTROL_SAMPLES);
+  const exemplarObservedAdvantage = adequatelySampledExemplars.some(item =>
+    item.observed.interval?.estimate >= item.control.interval?.estimate + 0.05
+      && item.observed.interval?.lower >= Math.max(0.5, item.control.interval?.estimate - 0.05));
+  const exemplarSelectionStatus = !replayValidExemplars.length ? 'mechanism_present'
+    : !adequatelySampledExemplars.length ? 'collecting'
+      : exemplarObservedAdvantage ? 'observational_signal_observed'
+        : measuredExemplarRetirements.length ? 'observational_signal_contradicted'
+          : 'observationally_inconclusive';
   const prospectiveOutputMonitorTrials = completedTrials(cognition, 'prospective_output_monitor');
   const prospectiveOutputMonitorTrial = prospectiveOutputMonitorTrials.at(-1) || null;
   const prospectiveOutputMonitorDissociation = prospectiveOutputMonitorTrial?.evaluation?.prospective_output_monitor_dissociation || null;
@@ -1911,6 +1940,34 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       },
       falsifier: 'Procedure records fail replay, candidate exploration is not deterministic and bounded, selection lacks same-family controls or uncertainty gates, retired procedures re-enter prompts, source evidence is rewritten, foreground latency regresses, or selected exposure fails to predict better reviewed outcomes out of sample.',
       next_gate: 'Accumulate interaction-disjoint natural exposures and controls, then preregister a randomized relevant-procedure versus byte-identical deidentified-procedure versus absent-procedure Slack lesion with independent task-quality, correction, evidence-access, and latency grading.',
+    },
+    {
+      id: 'retrieval_conditioned_work_patterns', family: ['learning', 'episodic conditioning', 'adaptive control', 'ecological validity'],
+      functional_claim: 'Nora can use privacy-minimized positive and contrast patterns from her own reviewed work to condition later relevant responses without slowing the foreground interaction.',
+      mechanism: 'Reviewed Slack outcomes admit only generalized, source-bound exemplars after deterministic financial, locator, identifier, proper-noun, and embedded-instruction floors; a bounded local matcher exposes at most one positive and one contrast with an exact receipt, while exposure outcomes and same-family unexposed controls govern immutable retirement.',
+      status: exemplarSelectionStatus,
+      evidence: {
+        recorded_exemplars: exemplarRecords.length,
+        replay_verified_exemplars: replayValidExemplars.length,
+        active_positive: replayValidExemplars.filter(item => item.status === 'active' && item.valence === 'positive').length,
+        active_contrast: replayValidExemplars.filter(item => item.status === 'active' && item.valence === 'contrast').length,
+        retired: replayValidExemplars.filter(item => item.status === 'retired').length,
+        privacy_floor_passed: replayValidExemplars.filter(item => item.privacy_review?.passed
+          && item.privacy_review?.source_content_stored === false).length,
+        recorded_outcomes: exemplarOutcomeRecords.length,
+        replay_verified_outcomes: replayValidExemplarOutcomes.length,
+        decisive_outcomes: decisiveExemplarOutcomes.length,
+        exposed_decisive_outcomes: decisiveExemplarOutcomes.filter(item => item.exemplar_ids.length > 0).length,
+        unexposed_decisive_controls: decisiveExemplarOutcomes.filter(item => item.exemplar_ids.length === 0).length,
+        adequately_sampled_exemplars: adequatelySampledExemplars.length,
+        measured_retirements: measuredExemplarRetirements.length,
+        replay_verified_selection_passes: replayValidExemplarSelectionPasses.length,
+        live_retrieval: 'deterministic_local_no_network',
+        causal_status: 'observational_exposure_comparison',
+        interpretation: 'Retrieval exposure does not prove use and does not identify a causal effect.',
+      },
+      falsifier: 'An exemplar fails source replay or privacy minimization, raw or identifying content enters the prompt, retrieval adds foreground network work or breaches a response envelope, irrelevant patterns dominate selection, contrast examples name a correcting person, or adequately sampled retrieval does not predict improved reviewed outcomes over same-family controls.',
+      next_gate: 'Accumulate interaction-disjoint natural exposures and controls, then preregister authentic relevant retrieval versus same-count shuffled generalized patterns versus absent retrieval with independent task-quality, correction, evidence-access, privacy, and latency grading.',
     },
     {
       id: 'counterfactual_self_model', family: ['agency', 'counterfactual self-model', 'metacognition'],
