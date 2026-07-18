@@ -23829,6 +23829,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       active_run_id: null, next_check_after: null };
     const latestAt = new Date(latest.created_at);
     const retryAfter = new Date(latestAt.getTime() + 24 * 60 * 60 * 1000);
+    if (latest.status === 'aborted'
+      && String(latest.abort?.reason || '').startsWith('provider_transport_incompatibility:')) {
+      return { due: true, state: 'provider_transport_retry_due',
+        trigger: latest.trigger || 'monthly', active_run_id: null, next_check_after: null };
+    }
     if (latest.status === 'aborted' && observedAt < retryAfter) {
       return { due: false, state: 'terminal_retry_cooldown', active_run_id: null,
         next_check_after: retryAfter.toISOString() };

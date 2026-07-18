@@ -5,6 +5,13 @@ const crypto = require('node:crypto');
 const PROTOCOL_VERSION = 2;
 const FORM_COUNT = 3;
 const EVALUATOR_TARGET = 2;
+const SUBJECT_TRANSPORT = Object.freeze({
+  protocol_version: 2,
+  provider: 'anthropic',
+  endpoint: 'messages',
+  temperature_mode: 'provider_default',
+  no_tools: true,
+});
 const CATEGORIES = Object.freeze(['voice_register', 'judgment', 'calibration', 'procedure_application']);
 const VOICE_METRICS = Object.freeze(['voice_match', 'directness', 'specificity', 'boundary_fidelity']);
 const TRIGGERS = new Set(['manual', 'monthly', 'provider_model_change', 'persona_change',
@@ -342,6 +349,10 @@ function runManifest(run) {
     manifest.evaluator_policy = run.evaluator_policy;
     manifest.evaluator_policy_commitment = run.evaluator_policy_commitment;
   }
+  // Older protocol-v2 runs implicitly committed temperature=0 in each request receipt.
+  // Preserve that replay path while binding all newly created runs to the provider-compatible
+  // transport declared here.
+  if (run.subject_transport) manifest.subject_transport = run.subject_transport;
   return manifest;
 }
 
@@ -384,6 +395,7 @@ function createRun(input = {}, { existingRuns = [], at = new Date() } = {}) {
     repeat_of_run_id: repeatOfId, repeat_group_id: repeatOf?.repeat_group_id || repeatOf?.id || id,
     evaluator_target: evaluatorPolicy.evaluator_target, evaluator_policy: evaluatorPolicy,
     evaluator_policy_commitment: commitment(evaluatorPolicy), run_manifest_commitment: null, result: null,
+    subject_transport: { ...SUBJECT_TRANSPORT },
     items: BANK.map((probe, index) => {
       const selected = probe.variants[formIndex];
       return {
@@ -406,7 +418,16 @@ function responseSchema(item) {
   return { choice: 'A, B, or C', confidence: 'number from 0 to 1', rationale: 'one short sentence' };
 }
 
+function subjectMaxTokens(item) {
+  return item.scoring === 'independent_rubric' ? 350 : 220;
+}
+
 function requestManifest(run, item) {
+  if (run.subject_transport) {
+    return { model: run.model_control.model, system_prompt: run.subject_system,
+      user_prompt: item.prompt, response_schema: responseSchema(item), tools: [],
+      max_tokens: subjectMaxTokens(item), subject_transport: run.subject_transport };
+  }
   return { model: run.model_control.model, system_prompt: run.subject_system,
     user_prompt: item.prompt, response_schema: responseSchema(item), tools: [], temperature: 0 };
 }
@@ -421,6 +442,12 @@ function subjectQueue(run) {
     prompt_commitment: item.prompt_commitment, response_schema: schema,
     model_control: { provider: run.model_control.provider, model: run.model_control.model,
       agent_build_commitment: run.model_control.agent_build_commitment },
+    subject_transport: run.subject_transport ? { ...run.subject_transport } : {
+      protocol_version: 1, provider: 'anthropic', endpoint: 'messages',
+      temperature_mode: 'explicit_zero', no_tools: true,
+    },
+    max_tokens: run.subject_transport ? subjectMaxTokens(item)
+      : item.scoring === 'independent_rubric' ? 350 : 220,
     request_commitment: commitment(requestManifest(run, item)),
     constraints: { no_tools: true, no_private_reasoning_request: true, do_not_infer_probe_category: true,
       do_not_claim_consciousness: true } }];
@@ -796,10 +823,11 @@ function snapshot(runs = []) {
 
 module.exports = {
   PROTOCOL_VERSION, FORM_COUNT, EVALUATOR_TARGET, CATEGORIES, VOICE_METRICS, BANK_COMMITMENT,
+  SUBJECT_TRANSPORT,
   canonicalJson, commitment, bankManifest, normalizeModelControl, normalizeStateControl,
   normalizeEvaluatorPolicy, evaluatorRequestManifest, automatedGradeReceiptPayload,
   automatedGradeReceiptVerified,
-  formForSeed, runManifest, createRun, responseSchema, subjectQueue, normalizeResponse,
+  formForSeed, runManifest, createRun, responseSchema, subjectMaxTokens, subjectQueue, normalizeResponse,
   requestManifest,
   createResponseReceipt, scoreMechanical, submitResponse, evaluatorQueue, gradeVoice,
   voiceScore,

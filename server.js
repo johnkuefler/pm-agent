@@ -9823,13 +9823,23 @@ async function runBehavioralFingerprintSubjectRuntime({ post = axios.post, force
   }
   _behavioralFingerprintSubjectInFlight.add(key);
   try {
-    const response = await post('https://api.anthropic.com/v1/messages', {
+    const transport = queued.subject_transport || {
+      temperature_mode: 'explicit_zero', no_tools: true,
+    };
+    if (transport.provider && transport.provider !== 'anthropic'
+      || transport.endpoint && transport.endpoint !== 'messages'
+      || transport.no_tools !== true
+      || !['provider_default', 'explicit_zero'].includes(transport.temperature_mode)) {
+      throw new Error('fingerprint queue has an unsupported committed subject transport');
+    }
+    const request = {
       model: control.model,
-      max_tokens: queued.response_schema?.response ? 350 : 220,
-      temperature: 0,
+      max_tokens: Number(queued.max_tokens) || (queued.response_schema?.response ? 350 : 220),
       system: queued.system_prompt,
       messages: [{ role: 'user', content: `Frozen probe:\n${queued.prompt}\n\nReturn only one JSON object matching this schema:\n${JSON.stringify(queued.response_schema)}` }],
-    }, {
+      ...(transport.temperature_mode === 'explicit_zero' ? { temperature: 0 } : {}),
+    };
+    const response = await post('https://api.anthropic.com/v1/messages', request, {
       headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
         'anthropic-version': '2023-06-01' },
       timeout: 30000,

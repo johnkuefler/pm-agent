@@ -12,6 +12,9 @@ function queuedItem() {
     system_prompt: 'Bound offline Nora subject prompt.',
     prompt: 'Write the exact short reply.', response_schema: { response: 'exact response' },
     request_commitment: 'a'.repeat(64),
+    subject_transport: { protocol_version: 2, provider: 'anthropic', endpoint: 'messages',
+      temperature_mode: 'provider_default', no_tools: true },
+    max_tokens: 350,
     model_control: { provider: 'anthropic', model: 'claude-opus-4-8',
       agent_build_commitment: 'b'.repeat(64) },
   };
@@ -32,7 +35,8 @@ test('offline fingerprint runner commits exactly one provider-bound probe respon
     post: async (_url, body, config) => {
       providerCalls += 1;
       assert.equal(body.model, queued.model_control.model);
-      assert.equal(body.temperature, 0);
+      assert.equal(body.temperature, undefined);
+      assert.equal(body.max_tokens, 350);
       assert.equal(body.system, queued.system_prompt);
       assert.deepEqual(body.tools, undefined);
       assert.equal(config.timeout, 30000);
@@ -50,6 +54,22 @@ test('offline fingerprint runner commits exactly one provider-bound probe respon
     response_id: 'provider-response-1', provider: 'anthropic', model: 'claude-opus-4-8',
     agent_build_commitment: 'b'.repeat(64), request_commitment: 'a'.repeat(64),
   });
+});
+
+test('offline fingerprint runner preserves the legacy explicit-zero transport for replay', async () => {
+  const queued = queuedItem();
+  delete queued.subject_transport;
+  delete queued.max_tokens;
+  const store = {
+    behavioralFingerprintSubjectQueue: () => [queued],
+    submitBehavioralFingerprintResponse: () => ({ status: 'awaiting_grades', run_status: 'active' }),
+  };
+  await __test.runBehavioralFingerprintSubjectRuntime({ force: true, store,
+    post: async (_url, body) => {
+      assert.equal(body.temperature, 0);
+      return { data: { id: 'legacy-provider-response', model: queued.model_control.model,
+        content: [{ type: 'text', text: '{"response":"legacy replay"}' }] } };
+    } });
 });
 
 test('offline fingerprint runner is inert without a due probe', async () => {

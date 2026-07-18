@@ -62,6 +62,11 @@ test('offline run hides prompts publicly, binds exact provider state, and replay
   assert.equal(fingerprint.subjectQueue(run).length, 1);
   assert.equal(fingerprint.publicRun(run).prompt, undefined);
   const firstQueued = fingerprint.subjectQueue(run)[0];
+  assert.equal(firstQueued.subject_transport.temperature_mode, 'provider_default');
+  assert.equal(firstQueued.max_tokens, 350);
+  assert.equal(fingerprint.requestManifest(run, run.items[0]).temperature, undefined);
+  assert.equal(fingerprint.requestManifest(run, run.items[0]).subject_transport.temperature_mode,
+    'provider_default');
   assert.throws(() => fingerprint.submitResponse(run, firstQueued.item_id, {
     response: { response: 'unbound output' },
     receipt: { response_id: 'missing-request-binding', ...MODEL },
@@ -225,4 +230,22 @@ test('fingerprint automation schedules an initial baseline only when experimenta
   store.createBehavioralFingerprintRun({ id: 'automation-active', trigger: plan.trigger,
     hidden_seed: 'automation-hidden-seed-123' });
   assert.equal(store.behavioralFingerprintAutomationPlan().state, 'active_run');
+});
+
+test('fingerprint automation immediately retries an explicitly aborted incompatible provider transport', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-fingerprint-transport-retry-'));
+  const store = createIntelligenceStore({ filePath: path.join(dir, 'state.json'), db: {},
+    isDbReady: () => false, clock: () => new Date('2026-07-18T09:00:00.000Z'),
+    getBehavioralFingerprintControls: () => ({ model_control: MODEL, state_control: STATE,
+      subject_system: SUBJECT_SYSTEM }) });
+  await store.init();
+  const run = store.createBehavioralFingerprintRun({ id: 'incompatible-transport', trigger: 'monthly',
+    hidden_seed: 'incompatible-hidden-seed' });
+  store.abortBehavioralFingerprintRun(run.id, {
+    reason: 'provider_transport_incompatibility: temperature is deprecated for the frozen subject model',
+  });
+  const plan = store.behavioralFingerprintAutomationPlan();
+  assert.equal(plan.due, true);
+  assert.equal(plan.state, 'provider_transport_retry_due');
+  assert.equal(plan.trigger, 'monthly');
 });
