@@ -92,6 +92,39 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       : cognitiveParameterStudies.active > 0 ? 'collecting'
         : cognitiveParameterStudies.completed > 0 ? 'causally_tested_inconclusive'
           : 'mechanism_present';
+  const readingState = cognition.developmental_reading || { sources: [], sessions: [] };
+  const replayVerifiedReadingSources = (readingState.sources || [])
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const replayVerifiedReadingSessions = (readingState.sessions || [])
+    .filter(item => item.audit?.complete_chain_verified === true);
+  const completedReadingEncounters = replayVerifiedReadingSessions.filter(item =>
+    item.status === 'completed' && item.encounter?.encounter_commitment
+      && item.encounter?.synthesis);
+  const readingNotes = replayVerifiedReadingSessions.flatMap(item => item.notes || []);
+  const readingReactions = readingNotes.flatMap(item => item.output?.reactions || []);
+  const readingRevisions = readingNotes.map(item => item.output?.possible_self_revision)
+    .filter(item => item?.falsifier);
+  const readingStanceCounts = Object.fromEntries(['agree', 'disagree', 'uncertain', 'complicate']
+    .map(stance => [stance, readingReactions.filter(item => item.stance === stance).length]));
+  const readingTransfer = options.developmental_reading_evidence || {};
+  const readingExposedInteractions = Math.max(0,
+    Number(readingTransfer.exposed_interactions) || 0);
+  const readingReviewedExposures = Math.max(0,
+    Number(readingTransfer.reviewed_exposures) || 0);
+  const readingPositiveOutcomes = Math.max(0,
+    Number(readingTransfer.positive_outcomes) || 0);
+  const readingCorrectedOutcomes = Math.max(0,
+    Number(readingTransfer.corrected_outcomes) || 0);
+  const readingPositiveRate = readingReviewedExposures
+    ? readingPositiveOutcomes / readingReviewedExposures : null;
+  const readingCorrectionRate = readingReviewedExposures
+    ? readingCorrectedOutcomes / readingReviewedExposures : null;
+  const readingDevelopmentStatus = !replayVerifiedReadingSources.length
+    && !replayVerifiedReadingSessions.length ? 'mechanism_present'
+    : readingReviewedExposures < 20 ? 'collecting'
+      : evidenceStatus({ samples: readingReviewedExposures, minimum: 20,
+        supported: readingPositiveRate >= 0.6 && readingCorrectionRate <= 0.15,
+        contradicted: readingPositiveRate <= 0.3 || readingCorrectionRate >= 0.35 });
   const goalAffectRecord = cognition.goal_affect?.current || null;
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
   const affectiveRegulationRecord = cognition.affective_regulation?.current || null;
@@ -1262,6 +1295,49 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       },
       falsifier: 'Source ideas or commitments no longer replay, an ordinal maps outside its frozen role-specific packet, a prospective result resolves before its committed window or below its opportunity minimum, the synthesis was not independently supported, it cannot improve application and decision reframing beyond the exact raw ideas, identity binding distorts utility, provenance is misattributed, active-study prompts receive newly changing insight context, or first-order PM quality degrades.',
       next_gate: 'Naturally accumulate at least two independently supported, prospectively windowed, source-diverse insights, then complete a ten-per-arm synthesis-versus-sources pilot and an insight- and source-dream-disjoint confirmation.',
+    },
+    {
+      id: 'source_bound_intellectual_development',
+      family: ['conceptual change', 'metacognition', 'self-model', 'professional judgment'],
+      functional_claim: 'Across a sequential encounter with an authorized external work, Nora can construct source-grounded agreements, disagreements, questions, and falsifiable provisional self-revisions, then transfer a specific reading-derived lens to relevant later PM work beyond matched access to the same source content.',
+      mechanism: 'An off-hours, foreground-preemptible reading lifecycle commits the authorized source and every ordered chunk before inference. Each constructive response binds a provider request, source chunk, prior note, stance, carried question, and any bounded self-revision with explicit counterevidence. A completed encounter preserves source-versus-self boundaries, expected work transfer, disagreements, and an encounter commitment. Query-relevant readback can expose one replay-verified provisional lens to ordinary work and records exact access receipts; access is not treated as use, positive interaction outcomes remain observational, and reading is sealed during fingerprints and blinded context trials.',
+      status: readingDevelopmentStatus,
+      evidence: {
+        admitted_sources: (readingState.sources || []).length,
+        replay_verified_sources: replayVerifiedReadingSources.length,
+        represented_sources: new Set(completedReadingEncounters
+          .map(item => item.source_id)).size,
+        total_sessions: (readingState.sessions || []).length,
+        replay_verified_sessions: replayVerifiedReadingSessions.length,
+        replay_verified_completed_encounters: completedReadingEncounters.length,
+        reflected_chunks: readingNotes.length,
+        grounded_reactions: readingReactions.length,
+        stance_counts: readingStanceCounts,
+        falsifiable_provisional_self_revisions: readingRevisions.length,
+        completed_encounters_with_counterevidence: completedReadingEncounters.filter(item =>
+          item.encounter.synthesis?.counterevidence_needed).length,
+        natural_work_transfer: {
+          exposed_interactions: readingExposedInteractions,
+          reviewed_exposures: readingReviewedExposures,
+          positive_outcomes: readingPositiveOutcomes,
+          corrected_outcomes: readingCorrectedOutcomes,
+          positive_outcome_rate: readingPositiveRate,
+          correction_rate: readingCorrectionRate,
+          causal_status: 'observational_only; prompt access does not establish use or attribution',
+        },
+        causal_transfer_trials: 0,
+        scientific_basis: {
+          constructive_engagement: 'Self-generated explanation and integration are stronger learning candidates than passive exposure, but generated text alone is not evidence of durable learning.',
+          constructive_engagement_reference: 'Chi & Wylie (2014), ICAP, doi:10.1080/00461520.2014.965823; van Peppen et al. (2018), doi:10.3389/feduc.2018.00100.',
+          transfer_specificity: 'Transfer must be reported separately by content, task, context, time interval, and functional outcome rather than as one vague far-transfer score.',
+          transfer_specificity_reference: 'Barnett & Ceci (2002), doi:10.1037/0033-2909.128.4.612.',
+        },
+        interpretation: 'This indicator tests replay-valid conceptual development and later work transfer. It does not show trained-weight change, prove that the model subjectively read, establish a human-like personality, or provide evidence of phenomenal consciousness.',
+      },
+      falsifier: 'The source, ordered note chain, or encounter no longer replays; reactions are ungrounded paraphrase or merely echo the author; provisional revisions omit counterevidence or overwrite source/self boundaries; relevant later work shows no independently graded advantage over byte-identical deidentified synthesis and raw-source controls; unsupported claims, correction rate, or foreground latency worsen.',
+      next_gate: completedReadingEncounters.length
+        ? 'Accumulate at least twenty naturally relevant replay-bound exposures without interpreting access as use, then preregister source-, task-, interaction-, and evaluator-disjoint PM transfer tests comparing Nora-bound synthesis, byte-identical deidentified synthesis, and matched raw-source-only access. Grade decision quality, actionability, unsupported claims, corrections, and foreground latency separately.'
+        : 'Complete the first replay-verified encounter with grounded stance diversity, carried questions, explicit counterevidence, and a bounded provisional revision; then observe only naturally relevant work-transfer opportunities before preregistering causal access tests.',
     },
     {
       id: 'prospective_self_model_reliability_awareness', family: ['higher-order theories', 'self-model', 'metacognition', 'predictive processing'],

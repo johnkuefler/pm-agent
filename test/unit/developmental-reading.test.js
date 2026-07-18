@@ -155,4 +155,12 @@ test('store ledger-binds reading, pauses it during experiments, and enforces a d
     positive: transfer.positive_outcomes, corrected: transfer.corrected_outcomes },
   { exposed: 1, reviewed: 1, positive: 1, corrected: 0 });
   assert.equal(transfer.causal_status, 'observational_only');
+  const researchIndicator = store.consciousnessResearchStatus().indicators.find(item =>
+    item.id === 'source_bound_intellectual_development');
+  assert.equal(researchIndicator.status, 'collecting');
+  assert.equal(researchIndicator.evidence.replay_verified_sources, 1);
+  assert.equal(researchIndicator.evidence.replay_verified_completed_encounters, 1);
+  assert.equal(researchIndicator.evidence.natural_work_transfer.reviewed_exposures, 1);
+  assert.match(researchIndicator.evidence.natural_work_transfer.causal_status,
+    /prompt access does not establish use/);
 });

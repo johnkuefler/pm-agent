@@ -5265,6 +5265,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.development = (state.cognition.development || []).map(record => ({
       ...JSON.parse(JSON.stringify(record)), audit: developmentalRevisionAudit(record),
     }));
+    const readingAuditProjection = developmentalReadingAuditedRecords();
+    auditedState.cognition.developmental_reading.sources = JSON.parse(JSON.stringify(
+      readingAuditProjection.sources));
+    auditedState.cognition.developmental_reading.sessions = JSON.parse(JSON.stringify(
+      readingAuditProjection.sessions));
     const experienceAuditCache = new Map();
     auditedState.cognition.experience_stream = (state.cognition.experience_stream || []).map(record => ({
       ...JSON.parse(JSON.stringify(record)), audit: experienceMomentAudit(record, state.cognition, state.cycles, experienceAuditCache),
@@ -5613,12 +5618,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const allowed = new Set(options.context_trial_ids);
       auditedState.cognition.self_model.context_trials = auditedState.cognition.self_model.context_trials.filter(trial => allowed.has(trial.id));
     }
+    const readingExposureRecords = (typeof getInteractions === 'function'
+      ? (getInteractions() || []) : []).flatMap(interaction =>
+      (interaction.developmental_reading_exposures || []).map(exposure => ({ interaction, exposure })));
+    const reviewedReadingExposures = readingExposureRecords.filter(item => item.interaction.reviewed);
     return { ...buildIndicatorReport(auditedState, clock(), {
       dream_insight_evidence: dreamInsightEvidenceSnapshot(),
       aim_reappraisal_evidence: aimReappraisalEvidenceSnapshot(),
       cycle_self_correction_evidence: cycleSelfCorrectionEvidenceSnapshot(),
       cognitive_parameter_status: getCognitiveParameterStatus(),
       cognitive_parameter_studies: cognitiveParameterStudiesSnapshot().report,
+      developmental_reading_evidence: {
+        exposed_interactions: readingExposureRecords.length,
+        reviewed_exposures: reviewedReadingExposures.length,
+        positive_outcomes: reviewedReadingExposures.filter(item =>
+          ['landed', 'appreciated'].includes(item.interaction.outcome)).length,
+        corrected_outcomes: reviewedReadingExposures.filter(item =>
+          item.interaction.outcome === 'corrected').length,
+      },
     }),
       operational_environment: operationalEnvironmentStatus() };
   }
@@ -22863,6 +22880,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && notesBound && completedBound && ledgerVerified };
   }
 
+  function developmentalReadingAuditedRecords() {
+    if (!developmentalReadingAuditCache
+      || developmentalReadingAuditCache.revision !== snapshotRevisionValue) {
+      developmentalReadingAuditCache = {
+        revision: snapshotRevisionValue,
+        sources: state.cognition.developmental_reading.sources.map(source => ({
+          ...JSON.parse(JSON.stringify(source)), audit: readingSourceAudit(source),
+        })),
+        sessions: state.cognition.developmental_reading.sessions.map(session => ({
+          ...JSON.parse(JSON.stringify(session)), audit: readingSessionAudit(session),
+        })),
+      };
+    }
+    return developmentalReadingAuditCache;
+  }
+
   function registerReadingSource(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -22967,19 +23000,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function developmentalReadingSnapshot({ sessionLimit = 200 } = {}) {
-    if (!developmentalReadingAuditCache
-      || developmentalReadingAuditCache.revision !== snapshotRevisionValue) {
-      developmentalReadingAuditCache = {
-        revision: snapshotRevisionValue,
-        sources: state.cognition.developmental_reading.sources
-          .filter(source => readingSourceAudit(source).complete_chain_verified),
-        sessions: state.cognition.developmental_reading.sessions.map(session => ({
-          ...JSON.parse(JSON.stringify(session)), audit: readingSessionAudit(session),
-        })),
-      };
-    }
-    const sources = developmentalReadingAuditCache.sources;
-    const allSessions = developmentalReadingAuditCache.sessions;
+    const auditedReading = developmentalReadingAuditedRecords();
+    const sources = auditedReading.sources.filter(source => source.audit.complete_chain_verified);
+    const allSessions = auditedReading.sessions;
     const boundedSessionLimit = Math.max(1, Math.min(200, Number(sessionLimit) || 8));
     const sessions = JSON.parse(JSON.stringify(allSessions.slice(-boundedSessionLimit)));
     const interactions = typeof getInteractions === 'function' ? (getInteractions() || []) : [];

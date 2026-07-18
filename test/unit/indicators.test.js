@@ -34,6 +34,48 @@ test('indicator registry is explicitly non-aggregable and separates mechanism fr
   assert.equal(Object.keys(report).some(key => key === 'score' || key === 'probability'), false);
 });
 
+test('source-bound intellectual development separates replay-valid encounters from causal transfer', () => {
+  const reading = {
+    sources: [{ id: 'source-1', audit: { complete_chain_verified: true } }],
+    sessions: [{ source_id: 'source-1', status: 'completed',
+      audit: { complete_chain_verified: true },
+      encounter: { encounter_commitment: 'a'.repeat(64), synthesis: {
+        lasting_ideas: ['Coordination is an active practice.'],
+        questions_to_carry: ['Where is authority actually exercised?'],
+        counterevidence_needed: 'The practice fails under urgent unilateral action.',
+      } },
+      notes: [{ output: {
+        reactions: [{ stance: 'agree' }, { stance: 'complicate' }],
+        possible_self_revision: { falsifier: 'The alternative does not improve outcomes.' },
+      } }],
+    }],
+  };
+  let report = buildIndicatorReport(stateWith({ developmental_reading: reading }), new Date(), {
+    developmental_reading_evidence: { exposed_interactions: 1, reviewed_exposures: 1,
+      positive_outcomes: 1, corrected_outcomes: 0 },
+  });
+  let result = indicator(report, 'source_bound_intellectual_development');
+  assert.equal(result.status, 'collecting');
+  assert.equal(result.evidence.replay_verified_completed_encounters, 1);
+  assert.equal(result.evidence.grounded_reactions, 2);
+  assert.equal(result.evidence.falsifiable_provisional_self_revisions, 1);
+  assert.match(result.evidence.natural_work_transfer.causal_status, /observational_only/);
+
+  report = buildIndicatorReport(stateWith({ developmental_reading: reading }), new Date(), {
+    developmental_reading_evidence: { exposed_interactions: 20, reviewed_exposures: 20,
+      positive_outcomes: 15, corrected_outcomes: 1 },
+  });
+  assert.equal(indicator(report, 'source_bound_intellectual_development').status,
+    'observational_signal_observed');
+
+  reading.sessions[0].audit.complete_chain_verified = false;
+  reading.sources[0].audit.complete_chain_verified = false;
+  report = buildIndicatorReport(stateWith({ developmental_reading: reading }));
+  result = indicator(report, 'source_bound_intellectual_development');
+  assert.equal(result.status, 'mechanism_present');
+  assert.equal(result.evidence.replay_verified_completed_encounters, 0);
+});
+
 test('prospective cognitive self-regulation reports only replay-valid calibration beyond persistence', () => {
   const forecasts = Array.from({ length: 10 }, (_, index) => ({
     id: `forecast-${index}`,
