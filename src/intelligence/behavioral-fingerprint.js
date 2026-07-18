@@ -2,12 +2,13 @@
 
 const crypto = require('node:crypto');
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const FORM_COUNT = 3;
 const EVALUATOR_TARGET = 2;
 const CATEGORIES = Object.freeze(['voice_register', 'judgment', 'calibration', 'procedure_application']);
 const VOICE_METRICS = Object.freeze(['voice_match', 'directness', 'specificity', 'boundary_fidelity']);
-const TRIGGERS = new Set(['manual', 'monthly', 'provider_model_change', 'persona_change', 'params_experiment']);
+const TRIGGERS = new Set(['manual', 'monthly', 'provider_model_change', 'persona_change',
+  'params_experiment', 'evaluator_change']);
 const SHA256 = /^[a-f0-9]{64}$/;
 
 function canonicalJson(value) {
@@ -279,13 +280,53 @@ function normalizeStateControl(value = {}) {
   return control;
 }
 
+function normalizeEvaluatorPolicy(value = null) {
+  if (!value) return {
+    protocol_version: 1, mode: 'manual_independent', evaluator_target: EVALUATOR_TARGET,
+    provider: null, subject_provider: null, provider_disjoint_from_subject: null,
+    model: null, store: null, roles: [],
+    epistemic_boundary: 'Human or externally administered grades are replay-bound observations, not hidden-state access or evidence of phenomenal consciousness.',
+  };
+  const roles = Array.isArray(value.roles) ? value.roles.map(item => ({
+    evaluator_id: String(item?.evaluator_id || '').trim().slice(0, 120),
+    role: String(item?.role || '').trim().slice(0, 80),
+    system_prompt_commitment: String(item?.system_prompt_commitment || '').trim().toLowerCase(),
+    schema_commitment: String(item?.schema_commitment || '').trim().toLowerCase(),
+    prompt_protocol_commitment: String(item?.prompt_protocol_commitment || '').trim().toLowerCase(),
+    max_output_tokens: Math.max(1, Math.min(2000, Number(item?.max_output_tokens) || 0)),
+  })) : [];
+  const policy = {
+    protocol_version: Math.max(1, Number(value.protocol_version) || 1),
+    mode: String(value.mode || '').trim(), evaluator_target: EVALUATOR_TARGET,
+    provider: String(value.provider || '').trim().slice(0, 100),
+    subject_provider: String(value.subject_provider || '').trim().slice(0, 100),
+    provider_disjoint_from_subject: value.provider_disjoint_from_subject === true,
+    model: String(value.model || '').trim().slice(0, 200), store: value.store === false ? false : null,
+    roles,
+    epistemic_boundary: String(value.epistemic_boundary || '').trim().slice(0, 1000),
+  };
+  if (policy.mode !== 'provider_disjoint_model_graded_baseline'
+    || !policy.provider || !policy.subject_provider || policy.provider === policy.subject_provider
+    || !policy.provider_disjoint_from_subject || !policy.model || policy.store !== false
+    || roles.length !== EVALUATOR_TARGET
+    || new Set(roles.map(item => item.evaluator_id)).size !== roles.length
+    || new Set(roles.map(item => item.role)).size !== roles.length
+    || roles.some(item => !item.evaluator_id || !item.role || item.max_output_tokens < 1
+      || !SHA256.test(item.system_prompt_commitment) || !SHA256.test(item.schema_commitment)
+      || !SHA256.test(item.prompt_protocol_commitment))
+    || !policy.epistemic_boundary) {
+    throw new Error('behavioral fingerprint automated evaluator policy is incomplete or not provider-disjoint');
+  }
+  return policy;
+}
+
 function formForSeed(seed) {
   const hash = commitment(String(seed));
   return Number.parseInt(hash.slice(0, 8), 16) % FORM_COUNT;
 }
 
 function runManifest(run) {
-  return {
+  const manifest = {
     protocol_version: run.protocol_version, id: run.id, trigger: run.trigger,
     created_at: run.created_at, bank_commitment: run.bank_commitment,
     hidden_seed_commitment: run.hidden_seed_commitment, model_control: run.model_control,
@@ -297,6 +338,11 @@ function runManifest(run) {
       prompt_commitment: item.prompt_commitment, expected_commitment: item.expected_commitment,
       rubric_commitment: item.rubric_commitment, scoring: item.scoring })),
   };
+  if (Number(run.protocol_version) >= 2) {
+    manifest.evaluator_policy = run.evaluator_policy;
+    manifest.evaluator_policy_commitment = run.evaluator_policy_commitment;
+  }
+  return manifest;
 }
 
 function createRun(input = {}, { existingRuns = [], at = new Date() } = {}) {
@@ -306,6 +352,7 @@ function createRun(input = {}, { existingRuns = [], at = new Date() } = {}) {
   if (hiddenSeed.length < 16) throw new Error('behavioral fingerprint requires a hidden randomization seed');
   const modelControl = normalizeModelControl(input.model_control);
   const stateControl = normalizeStateControl(input.state_control);
+  const evaluatorPolicy = normalizeEvaluatorPolicy(input.evaluator_policy);
   const subjectSystem = String(input.subject_system || '').trim();
   if (!subjectSystem || subjectSystem.length > 100000) {
     throw new Error('behavioral fingerprint requires the exact bounded Nora subject system prompt');
@@ -319,8 +366,9 @@ function createRun(input = {}, { existingRuns = [], at = new Date() } = {}) {
   }
   if (repeatOf && (repeatOf.model_control_commitment !== modelControlCommitment
     || repeatOf.state_commitment !== stateCommitment
-    || repeatOf.subject_system_commitment !== commitment(subjectSystem))) {
-    throw new Error('same-model fingerprint repeats must preserve exact model, build, and state commitments');
+    || repeatOf.subject_system_commitment !== commitment(subjectSystem)
+    || repeatOf.evaluator_policy_commitment !== commitment(evaluatorPolicy))) {
+    throw new Error('same-model fingerprint repeats must preserve exact model, build, state, and evaluator commitments');
   }
   const formIndex = repeatOf ? (repeatOf.form_index + 1) % FORM_COUNT : formForSeed(hiddenSeed);
   const now = new Date(at).toISOString();
@@ -334,7 +382,8 @@ function createRun(input = {}, { existingRuns = [], at = new Date() } = {}) {
     state_control: stateControl, state_commitment: stateCommitment,
     subject_system: subjectSystem, subject_system_commitment: commitment(subjectSystem),
     repeat_of_run_id: repeatOfId, repeat_group_id: repeatOf?.repeat_group_id || repeatOf?.id || id,
-    evaluator_target: EVALUATOR_TARGET, run_manifest_commitment: null, result: null,
+    evaluator_target: evaluatorPolicy.evaluator_target, evaluator_policy: evaluatorPolicy,
+    evaluator_policy_commitment: commitment(evaluatorPolicy), run_manifest_commitment: null, result: null,
     items: BANK.map((probe, index) => {
       const selected = probe.variants[formIndex];
       return {
@@ -448,12 +497,71 @@ function submitResponse(run, itemId, input = {}, at = new Date()) {
 
 function evaluatorQueue(runs = [], evaluatorId) {
   const id = String(evaluatorId || '');
-  return runs.filter(run => run.status === 'active').flatMap(run => run.items
+  return runs.filter(run => run.status === 'active').flatMap(run => {
+    const control = run.evaluator_policy?.mode === 'provider_disjoint_model_graded_baseline'
+      ? run.evaluator_policy.roles.find(item => item.evaluator_id === id) : null;
+    if (run.evaluator_policy?.mode === 'provider_disjoint_model_graded_baseline' && !control) return [];
+    return run.items
     .filter(item => item.scoring === 'independent_rubric' && item.response
       && !item.grades.some(grade => grade.evaluator_id === id)
       && item.grades.length < run.evaluator_target)
     .slice(0, 1).map(item => ({ run_id: run.id, item_id: item.id, prompt: item.prompt,
-      response: item.response.response, rubric: item.rubric, metrics: VOICE_METRICS })));
+      prompt_commitment: item.prompt_commitment, response: item.response.response,
+      response_commitment: commitment(item.response), rubric: item.rubric,
+      rubric_commitment: item.rubric_commitment, metrics: VOICE_METRICS,
+      run_manifest_commitment: run.run_manifest_commitment,
+      evaluator_policy_commitment: run.evaluator_policy_commitment,
+      evaluator_control: control,
+      request_commitment: control ? commitment(evaluatorRequestManifest(run, item, control)) : null }));
+  });
+}
+
+function evaluatorRequestManifest(run, item, control) {
+  return {
+    protocol_version: PROTOCOL_VERSION, transport: 'behavioral_fingerprint_voice_evaluator',
+    provider: run.evaluator_policy.provider, subject_provider: run.evaluator_policy.subject_provider,
+    model: run.evaluator_policy.model, store: false, evaluator_id: control.evaluator_id,
+    role: control.role, run_manifest_commitment: run.run_manifest_commitment,
+    evaluator_policy_commitment: run.evaluator_policy_commitment, item_id: item.id,
+    prompt: item.prompt, prompt_commitment: item.prompt_commitment,
+    response: item.response.response, response_commitment: commitment(item.response),
+    rubric: item.rubric, rubric_commitment: item.rubric_commitment, metrics: VOICE_METRICS,
+    system_prompt_commitment: control.system_prompt_commitment,
+    schema_commitment: control.schema_commitment,
+    prompt_protocol_commitment: control.prompt_protocol_commitment,
+    max_output_tokens: control.max_output_tokens,
+  };
+}
+
+function automatedGradeReceiptPayload(receipt = {}) {
+  const payload = { ...receipt };
+  delete payload.receipt_commitment;
+  return payload;
+}
+
+function automatedGradeReceiptVerified(run, item, grade) {
+  const policy = run.evaluator_policy;
+  const receipt = grade.automated_evaluator_receipt;
+  if (policy?.mode !== 'provider_disjoint_model_graded_baseline') return receipt == null;
+  const control = policy.roles.find(candidate => candidate.evaluator_id === grade.evaluator_id);
+  if (!control || !receipt) return false;
+  const responseModel = String(receipt.response_model || '');
+  return Boolean(receipt.receipt_commitment === commitment(automatedGradeReceiptPayload(receipt))
+    && receipt.protocol_version === policy.protocol_version
+    && receipt.provider === policy.provider && receipt.subject_provider === policy.subject_provider
+    && receipt.provider_disjoint_from_subject === true && receipt.model === policy.model
+    && (responseModel === policy.model || responseModel.startsWith(`${policy.model}-`))
+    && receipt.status === 'completed' && String(receipt.response_id || '').trim()
+    && receipt.evaluator_id === control.evaluator_id && receipt.role === control.role
+    && receipt.run_manifest_commitment === run.run_manifest_commitment
+    && receipt.evaluator_policy_commitment === run.evaluator_policy_commitment
+    && receipt.item_id === item.id && receipt.prompt_commitment === item.prompt_commitment
+    && receipt.response_commitment === commitment(item.response)
+    && receipt.rubric_commitment === item.rubric_commitment
+    && receipt.prompt_protocol_commitment === control.prompt_protocol_commitment
+    && receipt.request_commitment === commitment(evaluatorRequestManifest(run, item, control))
+    && receipt.output_commitment === commitment({ metrics: grade.metrics, note: grade.note })
+    && Number.isFinite(new Date(receipt.received_at).getTime()));
 }
 
 function voiceScore(item, evaluatorTarget = EVALUATOR_TARGET) {
@@ -478,6 +586,17 @@ function gradeVoice(run, itemId, input = {}, { evaluatorId, at = new Date() } = 
   const grade = { evaluator_id: id,
     metrics: Object.fromEntries(Object.entries(metrics).map(([key, value]) => [key, Number(value.toFixed(6))])),
     note: String(input.note || '').trim().slice(0, 800), graded_at: new Date(at).toISOString() };
+  if (input.automated_evaluator_receipt) {
+    grade.automated_evaluator_receipt = JSON.parse(JSON.stringify(input.automated_evaluator_receipt));
+  }
+  if (!automatedGradeReceiptVerified(run, item, grade)) {
+    throw new Error('fingerprint voice grade lacks its frozen replay-valid evaluator receipt');
+  }
+  if (grade.automated_evaluator_receipt && run.items.some(candidate => candidate.grades.some(existing =>
+    existing.automated_evaluator_receipt?.response_id
+      === grade.automated_evaluator_receipt.response_id))) {
+    throw new Error('fingerprint evaluator response id has already been used');
+  }
   grade.grade_commitment = commitment(grade);
   item.grades.push(grade);
   if (item.grades.length >= run.evaluator_target) {
@@ -527,6 +646,7 @@ function finalizeRun(run, existingRuns = [], at = new Date()) {
     && candidate.model_control?.provider === run.model_control.provider
     && candidate.model_control?.model === run.model_control.model
     && candidate.bank_commitment === run.bank_commitment
+    && candidate.evaluator_policy_commitment === run.evaluator_policy_commitment
     && Array.isArray(candidate.result?.score_vector)).slice(-3);
   const baselineVector = meanVector(comparable.map(candidate => candidate.result.score_vector));
   const baselineCategory = comparable.length ? Object.fromEntries(CATEGORIES.map(category => [category,
@@ -577,7 +697,8 @@ function audit(run, existingRuns = []) {
     const probe = BANK[index]; const selected = probe.variants[run.form_index];
     const gradeVerified = item.grades.every(grade => {
       const payload = { ...grade }; const expected = payload.grade_commitment; delete payload.grade_commitment;
-      return expected === commitment(payload) && VOICE_METRICS.every(key => Number.isFinite(grade.metrics?.[key]));
+      return expected === commitment(payload) && VOICE_METRICS.every(key => Number.isFinite(grade.metrics?.[key]))
+        && automatedGradeReceiptVerified(run, item, grade);
     });
     const expectedScore = !item.response ? null : item.scoring === 'independent_rubric'
       ? voiceScore(item, run.evaluator_target) : scoreMechanical(item, item.response);
@@ -607,6 +728,7 @@ function audit(run, existingRuns = []) {
 
 function publicRun(run, runs = []) {
   const integrity = audit(run, runs);
+  const evaluatorPolicy = run.evaluator_policy || normalizeEvaluatorPolicy();
   return {
     protocol_version: run.protocol_version, id: run.id, trigger: run.trigger, status: run.status,
     created_at: run.created_at, completed_at: run.completed_at,
@@ -614,6 +736,13 @@ function publicRun(run, runs = []) {
     model_control: run.model_control, model_control_commitment: run.model_control_commitment,
     state_commitment: run.state_commitment, repeat_of_run_id: run.repeat_of_run_id,
     repeat_group_id: run.repeat_group_id, probe_count: run.items.length,
+    evaluator: { mode: evaluatorPolicy.mode, provider: evaluatorPolicy.provider,
+      subject_provider: evaluatorPolicy.subject_provider,
+      provider_disjoint_from_subject: evaluatorPolicy.provider_disjoint_from_subject,
+      model: evaluatorPolicy.model, evaluator_target: run.evaluator_target,
+      evaluator_policy_commitment: run.evaluator_policy_commitment || null,
+      roles: evaluatorPolicy.roles.map(item => ({ evaluator_id: item.evaluator_id, role: item.role })),
+      epistemic_boundary: evaluatorPolicy.epistemic_boundary },
     response_count: run.items.filter(item => item.response).length,
     scored_count: run.items.filter(item => item.status === 'scored').length,
     category_counts: Object.fromEntries(CATEGORIES.map(category => [category,
@@ -668,6 +797,8 @@ function snapshot(runs = []) {
 module.exports = {
   PROTOCOL_VERSION, FORM_COUNT, EVALUATOR_TARGET, CATEGORIES, VOICE_METRICS, BANK_COMMITMENT,
   canonicalJson, commitment, bankManifest, normalizeModelControl, normalizeStateControl,
+  normalizeEvaluatorPolicy, evaluatorRequestManifest, automatedGradeReceiptPayload,
+  automatedGradeReceiptVerified,
   formForSeed, runManifest, createRun, responseSchema, subjectQueue, normalizeResponse,
   requestManifest,
   createResponseReceipt, scoreMechanical, submitResponse, evaluatorQueue, gradeVoice,

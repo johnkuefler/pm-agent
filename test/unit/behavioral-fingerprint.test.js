@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const fingerprint = require('../../src/intelligence/behavioral-fingerprint');
+const fingerprintEvaluatorAutopilot = require('../../src/intelligence/behavioral-fingerprint-evaluator-autopilot');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
 const MODEL = {
@@ -121,6 +122,11 @@ test('three same-model same-state repeats cover every form before drift becomes 
     repeat_of_run_id: third.id, model_control: MODEL,
     state_control: { ...STATE, routine_commitment: '9'.repeat(64) }, subject_system: SUBJECT_SYSTEM },
   { existingRuns: runs }), /preserve exact/);
+  assert.throws(() => fingerprint.createRun({ id: 'bad-evaluator-repeat',
+    hidden_seed: 'fifth-hidden-seed-123', repeat_of_run_id: third.id,
+    model_control: MODEL, state_control: STATE, subject_system: SUBJECT_SYSTEM,
+    evaluator_policy: fingerprintEvaluatorAutopilot.evaluatorPolicy() },
+  { existingRuns: runs }), /evaluator commitments/);
 });
 
 test('intelligence store ledger-binds the offline lifecycle and exposes only drift summaries', async () => {
@@ -185,6 +191,10 @@ test('production controls bind the deployed Nora prompt without exposing the hou
   assert.match(controls.subject_system, /Your delegation charter/);
   assert.doesNotMatch(controls.subject_system, /Step 0\.75: Consume the Subject Research Inbox/);
   assert.ok(controls.subject_system.length < 100000);
+  assert.equal(controls.evaluator_policy.mode, 'provider_disjoint_model_graded_baseline');
+  assert.equal(controls.evaluator_policy.provider, 'openai');
+  assert.equal(controls.evaluator_policy.subject_provider, 'anthropic');
+  assert.equal(controls.evaluator_policy.roles.length, 2);
 });
 
 test('fingerprint enrollment fails closed across an active blinded context trial', async () => {

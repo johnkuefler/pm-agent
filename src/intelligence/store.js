@@ -23797,6 +23797,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return { due: true, state: 'provider_model_change_due', trigger: 'provider_model_change',
         active_run_id: null, next_check_after: null };
     }
+    const currentEvaluatorPolicyCommitment = behavioralFingerprint.commitment(
+      behavioralFingerprint.normalizeEvaluatorPolicy(controls.evaluator_policy));
+    if (latest.evaluator_policy_commitment !== currentEvaluatorPolicyCommitment) {
+      return { due: true, state: 'evaluator_change_due', trigger: 'evaluator_change',
+        active_run_id: null, next_check_after: null };
+    }
     if (latest.state_control?.persona_commitment !== controls.state_control.persona_commitment) {
       return { due: true, state: 'persona_change_due', trigger: 'persona_change',
         active_run_id: null, next_check_after: null };
@@ -23818,7 +23824,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const mechanism = behavioralFingerprint.audit(run, runs);
     const createdPayload = { run_manifest_commitment: run.run_manifest_commitment,
       bank_commitment: run.bank_commitment, model_control_commitment: run.model_control_commitment,
-      state_commitment: run.state_commitment };
+      state_commitment: run.state_commitment,
+      ...(Number(run.protocol_version) >= 2
+        ? { evaluator_policy_commitment: run.evaluator_policy_commitment } : {}) };
     const creationBound = researchLedgerEventBindingCount('behavioral_fingerprint_preregistered',
       run.id, behavioralFingerprint.commitment(createdPayload), cognition.research_ledger) === 1;
     const responseBindings = run.items.filter(item => item.response_receipt).every(item => {
@@ -23842,7 +23850,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const lifecycleVerified = mechanism.complete_chain_verified && creationBound && responseBindings
       && gradeBindings && terminalBound && ledgerVerified;
     return { ...mechanism, preregistration_ledger_bound: creationBound,
-      response_receipts_ledger_bound: responseBindings, independent_grades_ledger_bound: gradeBindings,
+      response_receipts_ledger_bound: responseBindings, voice_grades_ledger_bound: gradeBindings,
+      independent_grades_ledger_bound: gradeBindings,
       terminal_event_ledger_bound: terminalBound, research_ledger_chain_verified: ledgerVerified,
       lifecycle_verified: lifecycleVerified,
       complete_chain_verified: run.status === 'completed' && lifecycleVerified };
@@ -23871,7 +23880,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       const run = behavioralFingerprint.createRun({ ...input,
         model_control: controls.model_control, state_control: controls.state_control,
-        subject_system: controls.subject_system },
+        subject_system: controls.subject_system,
+        evaluator_policy: controls.evaluator_policy },
       { existingRuns: runs, at: clock() });
       runs.push(run);
       current.cognition.self_model.behavioral_fingerprints.runs = runs.slice(-30);
@@ -23879,7 +23889,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_type: 'behavioral_fingerprint_run', subject_id: run.id,
         payload: { run_manifest_commitment: run.run_manifest_commitment,
           bank_commitment: run.bank_commitment, model_control_commitment: run.model_control_commitment,
-          state_commitment: run.state_commitment } });
+          state_commitment: run.state_commitment,
+          evaluator_policy_commitment: run.evaluator_policy_commitment } });
       return behavioralFingerprint.publicRun(run, runs);
     });
   }

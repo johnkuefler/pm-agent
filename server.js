@@ -59,6 +59,7 @@ const selfAuthoredAimReflection = require('./src/intelligence/self-authored-aim-
 const selfAuthoredAimReappraisal = require('./src/intelligence/self-authored-aim-reappraisal');
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
 const postDeliverySelfEvaluation = require('./src/intelligence/post-delivery-self-evaluation');
+const behavioralFingerprintEvaluatorAutopilot = require('./src/intelligence/behavioral-fingerprint-evaluator-autopilot');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -83,6 +84,8 @@ function behavioralFingerprintControls() {
   })();
   const providerConfiguration = {
     fingerprint_subject: { provider: 'anthropic', model: 'claude-opus-4-8' },
+    fingerprint_evaluator: { provider: 'openai',
+      model: behavioralFingerprintEvaluatorAutopilot.DEFAULT_MODEL },
     live_surfaces: { slack_short: 'claude-sonnet-4-6', slack_deep: 'claude-opus-4-8',
       zoom_chat: 'claude-opus-4-8', realtime_voice: 'claude-opus-4-8' },
     interactive_latency_budgets_ms: interactivePerformance.BUDGET_MS,
@@ -102,6 +105,7 @@ function behavioralFingerprintControls() {
         provider_configuration_commitment: stateControl.provider_configuration_commitment })) },
     state_control: stateControl,
     subject_system: subjectSystem,
+    evaluator_policy: behavioralFingerprintEvaluatorAutopilot.evaluatorPolicy(),
   };
 }
 
@@ -9674,6 +9678,8 @@ let _postDeliverySelfEvaluationLastCycle = null;
 let _backgroundIntelligenceCycleInFlight = false;
 let _backgroundIntelligenceCycleLast = null;
 const _behavioralFingerprintSubjectInFlight = new Set();
+let _behavioralFingerprintEvaluatorInFlight = false;
+let _behavioralFingerprintEvaluatorLastCycle = null;
 
 function backgroundPostWithPriority(post, lease) {
   return (url, data, config = {}) => post(url, data, { ...config, signal: lease.signal });
@@ -9805,6 +9811,48 @@ function runBehavioralFingerprintSchedulingRuntime({ store = intelligence } = {}
     hidden_seed: crypto.randomBytes(32).toString('hex') });
   return { ran: true, state: plan.state, trigger: plan.trigger, run_id: run.id,
     run_status: run.status };
+}
+
+function behavioralFingerprintEvaluatorRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_BEHAVIORAL_FINGERPRINT_EVALUATOR !== '0'
+    && Boolean(env.OPENAI_API_KEY);
+  return {
+    enabled,
+    model: behavioralFingerprintEvaluatorAutopilot.DEFAULT_MODEL,
+    maximum_grades_per_cycle: 1,
+    reason: enabled ? 'provider_credential_default'
+      : !env.OPENAI_API_KEY ? 'missing_api_key' : 'explicitly_disabled',
+  };
+}
+
+async function runBehavioralFingerprintEvaluatorRuntime({ post = axios.post,
+  store = intelligence } = {}) {
+  const config = behavioralFingerprintEvaluatorRuntimeConfig();
+  if (!config.enabled) return { protocol_version: behavioralFingerprintEvaluatorAutopilot.PROTOCOL_VERSION,
+    state: 'disabled', grades_committed: 0, provider_failures: [], reason: config.reason };
+  if (_behavioralFingerprintEvaluatorInFlight) return {
+    protocol_version: behavioralFingerprintEvaluatorAutopilot.PROTOCOL_VERSION,
+    state: 'in_flight', grades_committed: 0, provider_failures: [],
+  };
+  _behavioralFingerprintEvaluatorInFlight = true;
+  try {
+    const callProvider = async request => {
+      const response = await post('https://api.openai.com/v1/responses', request, {
+        headers: { 'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+        timeout: 30000,
+      });
+      return response.data;
+    };
+    _behavioralFingerprintEvaluatorLastCycle =
+      await behavioralFingerprintEvaluatorAutopilot.runCycle({
+        store, enabled: true, maxGrades: 1, callProvider,
+      });
+    return _behavioralFingerprintEvaluatorLastCycle;
+  } finally {
+    _behavioralFingerprintEvaluatorInFlight = false;
+  }
 }
 
 function commonGroundReviewAutopilotRuntimeConfig(env = process.env) {
@@ -9999,6 +10047,11 @@ function researchAutopilotProgramStatus() {
     enabled: postDeliveryConfig.enabled, model: postDeliveryConfig.model,
     lastCycle: _postDeliverySelfEvaluationLastCycle,
   });
+  const fingerprintEvaluatorConfig = behavioralFingerprintEvaluatorRuntimeConfig();
+  const fingerprintEvaluatorStatus = behavioralFingerprintEvaluatorAutopilot.status(intelligence, {
+    enabled: fingerprintEvaluatorConfig.enabled, model: fingerprintEvaluatorConfig.model,
+    lastCycle: _behavioralFingerprintEvaluatorLastCycle,
+  });
   const selfPredictionProgram = intelligence.selfPredictionProgramSnapshot();
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
@@ -10036,6 +10089,7 @@ function researchAutopilotProgramStatus() {
       self_authored_aim_reappraisal: aimReappraisalStatus,
       dream_insight_reflection: dreamInsightStatus,
       post_delivery_self_evaluation: postDeliveryStatus,
+      behavioral_fingerprint_evaluator: fingerprintEvaluatorStatus,
       interactive_priority: interactivePriority,
       background_intelligence_cycle: backgroundCycle,
     };
@@ -10075,6 +10129,7 @@ function researchAutopilotProgramStatus() {
     self_authored_aim_reappraisal: aimReappraisalStatus,
     dream_insight_reflection: dreamInsightStatus,
     post_delivery_self_evaluation: postDeliveryStatus,
+    behavioral_fingerprint_evaluator: fingerprintEvaluatorStatus,
     interactive_priority: interactivePriority,
     background_intelligence_cycle: backgroundCycle,
   };
@@ -11039,6 +11094,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['behavioral_fingerprint_schedule', () => runBehavioralFingerprintSchedulingRuntime()],
       ['behavioral_fingerprint_subject',
         () => runBehavioralFingerprintSubjectRuntime({ post: priorityPost })],
+      ['behavioral_fingerprint_evaluator',
+        () => runBehavioralFingerprintEvaluatorRuntime({ post: priorityPost })],
     ];
     for (const [name, action] of scheduledSteps) {
       if (!await runStep(name, action)) break;
@@ -11197,6 +11254,8 @@ module.exports = {
     runBackgroundIntelligenceRuntime,
     runBehavioralFingerprintSubjectRuntime,
     runBehavioralFingerprintSchedulingRuntime,
+    behavioralFingerprintEvaluatorRuntimeConfig,
+    runBehavioralFingerprintEvaluatorRuntime,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,
