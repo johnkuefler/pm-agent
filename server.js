@@ -6436,7 +6436,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       intelligenceContextReceipt, cognitiveParameterAssignment } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
-        selfModelTrustAvailable: isDirect,
+        selfModelTrustAvailable: isDirect && !lightweightSocial,
         procedureCandidatesAvailable: mode === 'normal',
         exemplarsAvailable: mode === 'normal',
         cognitiveParameterStudiesEnabled: mode === 'normal' && isDirect,

@@ -256,6 +256,16 @@ function summarizeTrial(trial) {
   if (!trial) return null;
   const conditions = trial.conditions || [];
   const assignments = trial.assignments || [];
+  const excluded = assignments.filter(item => item.status === 'excluded_protocol');
+  const enrollmentTarget = Number(trial.enrollment_target_per_group || 0);
+  const sampleTarget = Number(trial.sample_target_per_group || 0);
+  const excludedByReason = Object.fromEntries([...excluded.reduce((counts, item) => {
+    const reason = String(item.protocol_exclusion?.reason || 'unspecified').slice(0, 160);
+    counts.set(reason, (counts.get(reason) || 0) + 1);
+    return counts;
+  }, new Map()).entries()].sort(([left], [right]) => left.localeCompare(right)));
+  const minimumSampleReachable = conditions.every(condition =>
+    enrollmentTarget - excluded.filter(item => item.condition === condition).length >= sampleTarget);
   const common = {
     id: trial.id,
     phase: trial.study_phase,
@@ -263,7 +273,18 @@ function summarizeTrial(trial) {
     assigned_total: assignments.length,
     resolved_total: assignments.filter(item => item.status === 'resolved'
       && item.outcome?.inter_rater?.agreement_within_tolerance !== false).length,
-    excluded_total: assignments.filter(item => item.status === 'excluded_protocol').length,
+    excluded_total: excluded.length,
+    fixed_enrollment_feasibility: {
+      sample_target_per_group: sampleTarget,
+      enrollment_target_per_group: enrollmentTarget,
+      preregistered_attrition_capacity_per_group: Math.max(0, enrollmentTarget - sampleTarget),
+      excluded_total: excluded.length,
+      excluded_by_reason: excludedByReason,
+      minimum_sample_reachable: minimumSampleReachable,
+      scientific_state: minimumSampleReachable
+        ? 'fixed_enrollment_evidence_target_reachable'
+        : 'fixed_enrollment_evidence_target_unreachable',
+    },
     pending_grades: assignments.filter(item => item.status === 'pending' && item.evidence_package).length,
     enrollment_target_total: Number(trial.enrollment_target_per_group || 0) * conditions.length,
     enrollment_target_per_group: trial.enrollment_target_per_group,

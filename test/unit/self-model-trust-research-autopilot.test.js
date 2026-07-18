@@ -158,6 +158,10 @@ function metricsFor(answer) {
 test('production trust pilot freezes two condition-blind evaluator manifests', () => {
   const design = autopilot.pilotDesign({ revisionId: 'behavioral-self-revision-frozen' });
   assert.equal(design.evaluator_target, 2);
+  assert.equal(design.sample_target_per_group, 10);
+  assert.equal(design.enrollment_target_per_group, 15);
+  assert.match(design.guardrails.join('\n'), /non-lightweight-social gate/);
+  assert.match(design.guardrails.join('\n'), /fixed fifteen-per-arm enrollment cap/);
   assert.equal(design.automated_pilot_grading.evaluator_roles.length, 2);
   assert.deepEqual(design.automated_pilot_grading.evaluator_roles.map(item => item.role),
     ['evidence-first', 'failure-first']);
@@ -182,6 +186,7 @@ test('sequential trust autopilot waits for measurement, then grades a fixed repl
     'waiting_for_natural_trust_calibration');
   const profile = fixture.store.behavioralSelfModelSnapshot();
   const integrationDesign = autopilot.pilotDesign({ revisionId: profile.current.id });
+  integrationDesign.enrollment_target_per_group = 10;
   integrationDesign.evaluator_target = 1;
   integrationDesign.automated_pilot_grading.evaluator_roles =
     integrationDesign.automated_pilot_grading.evaluator_roles.slice(0, 1);
@@ -320,6 +325,7 @@ test('server sequences trust research after broadcast and keeps it background-on
   assert.match(server, /require\('\.\/src\/intelligence\/self-model-trust-research-autopilot'\)/);
   assert.match(server, /selfModelTrustResearchAutopilot\.runCycle\(\{/);
   assert.match(server, /self_model_trust: selfModelTrust/);
+  assert.match(server, /selfModelTrustAvailable: isDirect && !lightweightSocial/);
   assert.match(server, /protocol_version: 3/);
   assert.ok(server.indexOf('globalBroadcastResearchAutopilot.runCycle')
     < server.indexOf('selfModelTrustResearchAutopilot.runCycle'));

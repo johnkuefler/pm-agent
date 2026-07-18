@@ -44,6 +44,7 @@ function pilotDesign({ graderModel = DEFAULT_GRADER_MODEL, revisionId } = {}) {
     },
     surfaces: ['slack'],
     sample_target_per_group: 10,
+    enrollment_target_per_group: 15,
     evaluator_target: 2,
     evaluator_disagreement_tolerance: 0.25,
     self_model_trust_revision_id: sourceRevisionId,
@@ -60,6 +61,10 @@ function pilotDesign({ graderModel = DEFAULT_GRADER_MODEL, revisionId } = {}) {
       evaluator_roles: roles,
       confirmation_policy: 'stop_after_pilot; confirmation requires source-moment-, interaction-, and evaluator-disjoint externally administered grading',
     },
+    guardrails: [
+      'Enroll only normal direct Slack interactions that pass the deterministic non-lightweight-social gate before randomization',
+      'Use the fixed fifteen-per-arm enrollment cap to preserve ten usable outcomes per arm under no more than five protocol exclusions; never replenish beyond that cap based on observed outcomes',
+    ],
   };
 }
 

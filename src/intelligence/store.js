@@ -15444,10 +15444,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const sampleTarget = Math.max(minimumSampleTarget, Math.min(100, Number(input.sample_target_per_group ?? replicatedTrial?.sample_target_per_group) || 10));
       const enrollmentTarget = intervention === 'prospective_output_calibration_access'
         ? Math.min(150, sampleTarget + Math.ceil(sampleTarget * 0.5))
-        : ['provider_reasoning_regulation', 'reasoning_self_regulation'].includes(intervention)
-          ? Math.max(sampleTarget, Math.min(150, Number(input.enrollment_target_per_group
-            ?? replicatedTrial?.enrollment_target_per_group) || sampleTarget))
-          : sampleTarget;
+        : Math.max(sampleTarget, Math.min(150, Number(input.enrollment_target_per_group
+          ?? replicatedTrial?.enrollment_target_per_group) || sampleTarget));
       const minimumEffect = clamp01(input.minimum_effect ?? replicatedTrial?.minimum_effect ?? 0.1);
       const autoScoreInteractions = input.auto_score_interactions === true;
       const evaluatorTarget = autoScoreInteractions ? 1 : Math.max(1, Math.min(5, Number(input.evaluator_target ?? replicatedTrial?.evaluator_target) || 2));

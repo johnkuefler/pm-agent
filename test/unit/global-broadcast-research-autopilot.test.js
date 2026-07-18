@@ -64,6 +64,25 @@ function scoresFor(answer) {
   };
 }
 
+test('context trials honor a preregistered fixed reliability attrition margin', async () => {
+  const { dir, store } = await setup();
+  closeReasoningPredecessor(store);
+  const design = autopilot.pilotDesign();
+  design.id = 'global-broadcast-attrition-margin-fixture';
+  design.enrollment_target_per_group = 15;
+  const trial = store.createContextTrial(design);
+  assert.equal(trial.sample_target_per_group, 10);
+  assert.equal(trial.enrollment_target_per_group, 15);
+  assert.equal(trial.stopping_rule,
+    'fixed_enrollment_per_group_with_preregistered_reliability_attrition_cap');
+  store.abortContextTrial(trial.id, {
+    reason_code: 'external_change',
+    explanation: 'The fixture stops after verifying the preregistered attrition-cap design.',
+    evidence: [{ type: 'test_fixture', id: 'fixed-reliability-attrition-margin' }],
+  });
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('sequential broadcast autopilot freezes, captures, blindly grades, and reveals a fixed pilot', async () => {
   const { dir, store } = await setup();
   assert.equal(autopilot.ensurePilot(store, { enabled: true }).state, 'waiting_for_reasoning_pilot');
@@ -190,6 +209,12 @@ test('undelivered broadcast outcomes are terminal exclusions and cannot be repla
   assert.equal(raw.status, 'excluded_protocol');
   assert.equal(raw.protocol_exclusion.reason, 'public_delivery_failed');
   assert.equal(raw.evidence_package, null);
+  const publicStatus = autopilot.status(store, { enabled: true });
+  assert.equal(publicStatus.pilot.fixed_enrollment_feasibility.minimum_sample_reachable, false);
+  assert.equal(publicStatus.pilot.fixed_enrollment_feasibility.scientific_state,
+    'fixed_enrollment_evidence_target_unreachable');
+  assert.deepEqual(publicStatus.pilot.fixed_enrollment_feasibility.excluded_by_reason,
+    { public_delivery_failed: 1 });
   const lateRetry = store.recordGlobalBroadcastResponse(first.assignment_id, {
     task_prompt: 'Retry', public_response: 'Retry', delivered: true,
   });
