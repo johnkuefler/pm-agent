@@ -11178,16 +11178,35 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
   _backgroundIntelligenceCycleInFlight = true;
   const priorityPost = backgroundPostWithPriority(post, lease);
   const steps = {};
+  const stepTimings = {};
   const runStep = async (name, action) => {
     if (lease.wasPreempted()) return false;
+    const startedAt = Date.now();
+    let lastProbeAt = startedAt;
+    let maximumEventLoopLagMs = 0;
+    const probe = setInterval(() => {
+      const observedAt = Date.now();
+      maximumEventLoopLagMs = Math.max(maximumEventLoopLagMs, observedAt - lastProbeAt - 25);
+      lastProbeAt = observedAt;
+    }, 25);
+    probe.unref?.();
     try { steps[name] = await action(); }
     catch (error) { steps[name] = { state: 'failed', error: String(error.message || error).slice(0, 300) }; }
+    finally {
+      await new Promise(resolve => setImmediate(resolve));
+      clearInterval(probe);
+      const wallMs = Date.now() - startedAt;
+      stepTimings[name] = { wall_ms: wallMs,
+        maximum_event_loop_lag_ms: Math.max(0, maximumEventLoopLagMs) };
+      if (maximumEventLoopLagMs > 250) {
+        console.warn(`Background intelligence step ${name} blocked the event loop for ${maximumEventLoopLagMs}ms`);
+      }
+    }
     return !lease.wasPreempted();
   };
   try {
-    try { steps.ecological_expiry = expireDueCognitiveInitiationEcologicalOutcomesRuntime(); }
-    catch (error) { steps.ecological_expiry = { state: 'failed', error: String(error.message || error).slice(0, 300) }; }
     const scheduledSteps = [
+      ['ecological_expiry', () => expireDueCognitiveInitiationEcologicalOutcomesRuntime()],
       ['cognitive_initiation_policy_probe', () => runDueCognitiveInitiationPolicyProbeRuntime({ post: priorityPost })],
       ['cognitive_pulse', () => runCognitivePulseRuntime({ post: priorityPost })],
       ['research_autopilot', () => runResearchAutopilotRuntime({ post: priorityPost })],
@@ -11221,12 +11240,22 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       trigger,
       preempted_by: lease.preemptedBy(),
       steps,
+      step_timings: stepTimings,
       at: new Date().toISOString(),
     };
     return _backgroundIntelligenceCycleLast;
   } finally {
     lease.release();
     _backgroundIntelligenceCycleInFlight = false;
+  }
+}
+
+function tickEndogenousRuntimeWithDiagnostics(trigger) {
+  const startedAt = Date.now();
+  try { return tickEndogenousRuntime(); }
+  finally {
+    const wallMs = Date.now() - startedAt;
+    if (wallMs > 250) console.warn(`Endogenous dynamics ${trigger} blocked the event loop for ${wallMs}ms`);
   }
 }
 
@@ -11276,11 +11305,11 @@ async function start(options = {}) {
       refreshRecentMeetingsCache();
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
-      tickEndogenousRuntime();
+      tickEndogenousRuntimeWithDiagnostics('startup');
       runBackgroundIntelligenceRuntime({ trigger: 'startup' })
         .catch(error => console.error('Background intelligence cycle failed:', error.message));
       _runtimeIntervals.push(setInterval(() => {
-        try { tickEndogenousRuntime(); }
+        try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
         catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
         runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
           .catch(error => console.error('Background intelligence cycle failed:', error.message));
