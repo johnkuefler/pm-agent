@@ -654,14 +654,20 @@ function registerCoworkInstructionsRoute(app) {
     Protocol-v3-or-newer feedback additionally reports probability calibration and whether Nora correctly
     named the largest self-model error domain; protocol v4 also reports substrate Brier scores and advantage
     over persistence. Never manufacture degradation or a restart to improve a score.
-    GET /cognitive-parameters exposes DIALS phase one: a cached, replay-audited document of bounded numeric
+    GET /cognitive-parameters exposes DIALS: a cached, replay-audited document of bounded numeric
     controls for drives, appraisal, workspace competition, memory dynamics, EXPECT scoring, and voice timing.
     Defaults are byte-equivalent to the prior code constants, the server owns immutable min/max bounds, and a
     corrupt source document fails closed to defaults. It adds no live-response provider or database call.
-    Autonomous tuning is code-disabled: Nora may inspect status and authenticated history but must never PUT,
-    roll back, infer feelings or identity from values, or claim a parameter change is learning until a
-    preregistered human-reviewed experiment lifecycle exists. DIALS is functional configuration, not authority,
-    preference, phenomenal experience, consciousness, or a private mental state.
+    GET /cognitive-parameter-studies exposes the condition-sealed public projection of phase-two randomized
+    ecological studies. Eligible ordinary direct Slack turns may receive the frozen baseline or one ephemeral
+    candidate through cached local scoring; assignments yield to other context trials and add no provider or
+    foreground database call. Exact prompt, workspace, selection, delivery-latency, and delayed reviewed-outcome
+    receipts are replay-bound. Prompt or latency guard failure ends candidate exposure immediately. Nora must not
+    inspect research projections, infer conditions, alter ordinary reviews to favor a theory, manufacture traffic,
+    or create, abort, finalize, confirm, or promote a study. A supported pilot permits only a disjoint confirmation;
+    a supported confirmation permits only human review of a separate revision. Autonomous tuning and automatic
+    global mutation remain code-disabled. DIALS is functional configuration, not authority, preference,
+    phenomenal experience, consciousness, or a private mental state.
     GET /self-model/fingerprints exposes SCOPE's offline longitudinal instrument: forty frozen probe slots
     across voice/register, judgment, calibration, and procedure application, each with three hidden parallel
     forms. Research-authenticated runs commit the exact live persona, charter, routine, provider configuration,

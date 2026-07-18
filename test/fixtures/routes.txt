@@ -243,6 +243,11 @@ GET /cognitive-parameters
 GET /cognitive-parameters/history
 PUT /cognitive-parameters
 POST /cognitive-parameters/rollback
+GET /cognitive-parameter-studies
+GET /cognitive-parameter-studies/:id/research
+POST /cognitive-parameter-studies
+POST /cognitive-parameter-studies/:id/finalize
+POST /cognitive-parameter-studies/:id/abort
 GET /cowork-prompt
 GET /charter
 PUT /charter

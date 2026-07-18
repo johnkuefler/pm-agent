@@ -17,6 +17,7 @@ const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
+const { registerCognitiveParameterStudyRoutes } = require('./src/routes/cognitive-parameter-studies');
 const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
 const { createIntelligenceStore } = require('./src/intelligence/store');
@@ -1590,6 +1591,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
         channel: meetingContext?.channel || meetingContext?.source || channel,
       }),
     }) : null;
+  let cognitiveParameterAssignment = null;
+  let cognitiveParameterInput = null;
   const goalContext = intelligence.goalContextForAssignment(contextAssignment);
   const integratedSelfContext = intelligence.integratedSelfContextForAssignment(contextAssignment);
   const cognitivePulseContext = intelligence.cognitivePulseContextForAssignment(contextAssignment);
@@ -1724,7 +1727,16 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
     includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
+    cognitiveParameterStudiesEnabled: !contextAssignment
+      && opts.cognitiveParameterStudiesEnabled === true && experimentalSurface === 'slack',
+    cognitiveParameterUnitKey: opts.trialUnitKey,
   });
+  cognitiveParameterAssignment = broadcastEvent?.cognitive_parameter_assignment || null;
+  if (cognitiveParameterAssignment && typeof opts.onCognitiveParameterAssignment === 'function') {
+    opts.onCognitiveParameterAssignment(cognitiveParameterAssignment);
+  }
+  cognitiveParameterInput = intelligence.cognitiveParameterInputForAssignment(
+    cognitiveParameterAssignment);
   const selfModelContext = intelligence.selfModelContextForAssignment(contextAssignment);
   const profileForecastOnly = contextAssignment?.intervention === 'self_model_access'
     && Number(contextAssignment.self_model_protocol_version) === 2;
@@ -1759,6 +1771,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     returnWorkspaceReceipt: contextAssignment?.intervention === 'endogenous_attention_selection',
     returnContextReceipt: opts.captureIntelligenceReceipt === true,
     broadcastEvent,
+    cognitiveParameterInput,
+    cognitiveParameterAssignment,
     selfModelContext: profileForecastOnly ? null : selfModelContext,
     appraisalContext,
     developmentContext,
@@ -1802,6 +1816,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   promptDiagnostics.intelligence_live_chars = volatileIntelligenceContext.length;
   promptDiagnostics.intelligence_budget_chars = INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000;
   promptDiagnostics.exemplar_selection_count = intelligenceContextReceipt?.exemplar_selection?.exemplars?.length || 0;
+  promptDiagnostics.cognitive_parameter_assignment_present = Boolean(cognitiveParameterAssignment);
   base = `${base}\n\n${reasoningGuidance()}`;
 
   // Relevance focus for the UNCACHED tail — populated inside the memory block below, emitted in
@@ -2181,6 +2196,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // Default: concatenate (identical to pre-cache behavior). cacheSplit: hand back the two
   // halves so the caller can cache only `stable`.
   if (opts.cacheSplit) return { stable: base, volatile, contextAssignment,
+    cognitiveParameterAssignment,
     experimentalSelfModelContext: profileForecastOnly ? selfModelContext : null,
     intelligenceContextReceipt,
     diagnostics: {
@@ -2368,6 +2384,15 @@ registerCognitiveParameterRoutes(app, {
   snapshot: cognitiveParameterSnapshot,
   update: updateCognitiveParameterDocument,
   rollback: rollbackCognitiveParameterDocument,
+});
+
+registerCognitiveParameterStudyRoutes(app, {
+  requireResearchAuth,
+  isDbReady: () => _dbReady,
+  snapshot: options => intelligence.cognitiveParameterStudiesSnapshot(options),
+  create: input => intelligence.createCognitiveParameterStudy(input),
+  finalize: id => intelligence.finalizeCognitiveParameterStudy(id),
+  abort: (id, input) => intelligence.abortCognitiveParameterStudy(id, input),
 });
 
 app.get('/cowork-prompt', requireAuth, (req, res) => {
@@ -6159,6 +6184,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let reasoningSelfRegulationAssignmentForFailure = null;
   let globalBroadcastAssignmentForFailure = null;
   let behavioralSelfProfileAssignmentForFailure = null;
+  let cognitiveParameterAssignmentForFailure = null;
   try {
     const key = sessionKey;
     // Session keys intentionally span a conversation, but research receipts and action attestations
@@ -6327,11 +6353,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     const promptStartedAt = Date.now();
     const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext,
-      intelligenceContextReceipt } =
+      intelligenceContextReceipt, cognitiveParameterAssignment } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
         procedureCandidatesAvailable: mode === 'normal',
         exemplarsAvailable: mode === 'normal',
+        cognitiveParameterStudiesEnabled: mode === 'normal' && isDirect,
+        onCognitiveParameterAssignment: assignment => { cognitiveParameterAssignmentForFailure = assignment; },
         contextTrialsEnabled: true, latencyCritical: true, captureIntelligenceReceipt: true,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
@@ -6720,6 +6748,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
           behavioralSelfProfileForecastActive = false;
         }
+        if (cognitiveParameterAssignment?.assignment_id) {
+          try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'intentional_silence'); } catch {}
+          cognitiveParameterAssignmentForFailure = null;
+        }
         console.log('🤖 Nora (Slack): read it, chose not to reply');
         history.push({ role: 'assistant', content: '[you read their message and chose not to reply; the exchange had wound down]' });
         if (history.length > 20) history.splice(0, 2);
@@ -6734,6 +6766,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (reactMatch) {
       const emoji = reactMatch[1].toLowerCase();
       recordGlobalBroadcastResponse(`:${emoji}:`, false);
+      if (cognitiveParameterAssignment?.assignment_id) {
+        try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'reaction_only_response'); } catch {}
+        cognitiveParameterAssignmentForFailure = null;
+      }
       if (reasoningRegulationActive) {
         try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'reaction_only_response'); } catch {}
         reasoningRegulationActive = false;
@@ -6817,6 +6853,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     // Post reply to Slack (first segment anchors the interaction log)
     let postRes = null;
+    let slackLatencyTrace = null;
     let allSegmentsPosted = segments.length > 0;
     const deliveryStartedAt = Date.now();
     try {
@@ -6834,7 +6871,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         if (i === 0 && res?.data?.ok === true) {
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
-          recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+          slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
             stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
         }
       }
@@ -6850,6 +6887,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (behavioralSelfProfileForecastActive) {
         try { intelligence.excludeBehavioralSelfProfileAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
         behavioralSelfProfileForecastActive = false;
+      }
+      if (cognitiveParameterAssignment?.assignment_id) {
+        try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
+        cognitiveParameterAssignmentForFailure = null;
       }
       try { recordEndogenousAttentionResponse(reply, false); } catch (receiptError) { console.warn(`endogenous attention delivery failure receipt failed: ${receiptError.message}`); }
       try { recordGlobalBroadcastResponse(reply, false); } catch (receiptError) { console.warn(`global broadcast delivery failure receipt failed: ${receiptError.message}`); }
@@ -6936,6 +6977,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       financial_approved: financialApproved,
       contains_financial_content: containsFinancialContent(reply),
       _intelligence_receipt: intelligenceContextReceipt,
+      interactive_latency: slackLatencyTrace?.outcome || null,
       executed_tool_names: firedTools.slice(0, 30),
       context_assignment_id: contextAssignment?.assignment_id || null,
       context_assignment_auto_score: contextAssignment?.auto_score_interactions === true,
@@ -6995,6 +7037,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     if (globalBroadcastAssignmentForFailure?.intervention === 'global_broadcast') {
       try { intelligence.excludeGlobalBroadcastAssignment(globalBroadcastAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
+    }
+    if (cognitiveParameterAssignmentForFailure?.assignment_id) {
+      try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
     }
     // Try to post error message back
     try {
@@ -8274,6 +8319,13 @@ function logInteraction(entry) {
       interaction.exemplar_selection = JSON.parse(JSON.stringify(intelligenceReceipt.exemplar_selection));
       interaction.exemplar_exposure_ids = interaction.exemplar_selection.exemplars.map(item => item.id);
     }
+    const cognitiveParameterReceipt = intelligenceReceipt?.cognitive_parameter_assignment || null;
+    if (cognitiveParameterReceipt?.study_id && cognitiveParameterReceipt.assignment_id) {
+      // Persist only opaque linkage. The condition and applied value remain sealed from the
+      // delayed reviewer for the full active study.
+      interaction.cognitive_parameter_study_id = cognitiveParameterReceipt.study_id;
+      interaction.cognitive_parameter_assignment_id = cognitiveParameterReceipt.assignment_id;
+    }
     if (interaction.ts) {
       try {
         const application = intelligence.recordAffectiveRegulationApplication(interaction);
@@ -8295,6 +8347,27 @@ function logInteraction(entry) {
     items.push(interaction);
     if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
     saveInteractions(items);
+    if (interaction.cognitive_parameter_assignment_id) {
+      try {
+        intelligence.markCognitiveParameterAssignmentDelivered(
+          interaction.cognitive_parameter_assignment_id, {
+            interaction_id: interaction.id,
+            interaction_ref: interaction.ts || interaction.thread_ts || interaction.id,
+            latency: interaction.interactive_latency,
+            workspace_commitment: intelligenceReceipt?.workspace_commitment || null,
+            procedure_selection_commitment:
+              intelligenceReceipt?.procedure_selection_commitment || null,
+            exemplar_selection_commitment:
+              intelligenceReceipt?.exemplar_selection_commitment || null,
+          });
+      } catch (error) {
+        console.warn('cognitive parameter delivery linkage failed:', error.message);
+        try {
+          intelligence.excludeCognitiveParameterAssignment(
+            interaction.cognitive_parameter_assignment_id, 'delivery_linkage_failure');
+        } catch {}
+      }
+    }
     const continuation = intelligence.relevantEpisodes({ person: entry.requester_name || null, query: `${entry.trigger || ''} ${entry.text || ''}`, limit: 1 })[0];
     const episode = intelligence.recordEpisodeEvent({
       correlation: continuation ? null : `slack:${entry.channel}:${entry.thread_ts || entry.ts || 'channel'}`,
@@ -8328,6 +8401,19 @@ registerInteractionRoutes(app, {
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
     try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }
     catch (error) { console.warn('professional viewpoint access outcome capture failed:', error.message); }
+    if (interaction.cognitive_parameter_assignment_id) {
+      try {
+        intelligence.resolveCognitiveParameterAssignmentOutcome(
+          interaction.cognitive_parameter_assignment_id, {
+            interaction_id: interaction.id,
+            outcome: interaction.outcome,
+            signal: interaction.signal || '',
+            reviewed_at: interaction.reviewed_at,
+          });
+      } catch (error) {
+        console.warn('cognitive parameter outcome linkage failed:', error.message);
+      }
+    }
     if (interaction.prospective_output_monitor_id) {
       try {
         intelligence.resolveProspectiveOutputMonitorOutcome(interaction.prospective_output_monitor_id, {

@@ -257,6 +257,24 @@ test('prospective cycle self-prediction collects immediately and requires advant
   assert.equal(indicator(report, 'prospective_cycle_self_prediction').status, 'observational_signal_contradicted');
 });
 
+test('DIALS evidence status advances only from blinded pilot to disjoint confirmation', () => {
+  const options = report => ({ cognitive_parameter_studies: {
+    total: 1, active: 0, completed: 0, aborted: 0, supported_pilots: 0,
+    promotion_eligible_confirmations: 0, global_parameter_mutations: 0, ...report,
+  } });
+  let report = buildIndicatorReport(stateWith(), new Date(), options({ active: 1 }));
+  assert.equal(indicator(report, 'bounded_cognitive_parameter_plasticity').status, 'collecting');
+  report = buildIndicatorReport(stateWith(), new Date(),
+    options({ completed: 1, supported_pilots: 1 }));
+  assert.equal(indicator(report, 'bounded_cognitive_parameter_plasticity').status,
+    'causal_signal_observed');
+  report = buildIndicatorReport(stateWith(), new Date(),
+    options({ completed: 2, supported_pilots: 1, promotion_eligible_confirmations: 1 }));
+  const dials = indicator(report, 'bounded_cognitive_parameter_plasticity');
+  assert.equal(dials.status, 'functional_prediction_supported');
+  assert.equal(dials.evidence.global_parameter_mutations, 0);
+});
+
 test('deliberate behavioral-prior use freezes a protocol-v6 gate before interpreting disposition strata', () => {
   const dispositions = ['applied', 'overridden', 'not_relevant'];
   const moment = (index, integratedAdvantage = 0.1, behavioralAdvantage = 0.05) => {

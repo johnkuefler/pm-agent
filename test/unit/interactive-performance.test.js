@@ -3,8 +3,17 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const performance = require('../../src/intelligence/interactive-performance');
+
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-interactive-performance-'));
+process.env.NORA_TEST_MODE = '1';
+process.env.NORA_DATA_DIR = dataDir;
+delete process.env.DATABASE_URL;
+delete process.env.DATABASE_PUBLIC_URL;
+
+test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
 test('interactive latency firewall quarantines only extra-round or expanded-generation studies', () => {
   for (const intervention of [

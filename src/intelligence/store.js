@@ -13,6 +13,7 @@ const episodicProspection = require('./episodic-prospection');
 const constructiveProspection = require('./constructive-prospection');
 const expectationForecast = require('./expectation-forecast');
 const cognitiveParameters = require('./cognitive-parameters');
+const cognitiveParameterStudy = require('./cognitive-parameter-study');
 const proceduralLearning = require('./procedural-learning');
 const exemplarLearning = require('./exemplar-learning');
 const integratedSelf = require('./integrated-self');
@@ -141,6 +142,7 @@ function emptyState() {
       endogenous_attention: { selections: [] },
       interoception: { observations: [], predictions: [] },
       expectations: { forecasts: [] },
+      cognitive_parameter_studies: { studies: [] },
       procedural_learning: { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       exemplar_learning: { exemplars: [], interaction_outcomes: [], selection_actions: [], selection_passes: [] },
       self_boundary: { challenges: [] },
@@ -192,6 +194,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
   let researchLedgerVerificationCache = null;
+  let cognitiveParameterStudyLiveAuditCache = null;
   const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
   let latestContinuityAuditCache = null;
   const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
@@ -207,10 +210,271 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return cognitiveParameterRecord().params;
   }
 
+  function cognitiveParameterStudyLedgerAudit(study, ledger = state.cognition.research_ledger) {
+    const lifecycle = cognitiveParameterStudy.auditStudy(study);
+    if (!lifecycle.complete_chain_verified) return { ...lifecycle, research_ledger_verified: false };
+    const one = (kind, subjectId, payload) => researchLedgerEventBindingCount(
+      kind, subjectId, cognitiveParameterStudy.commitment(payload), ledger) === 1;
+    const creationVerified = one('cognitive_parameter_study_preregistered', study.id,
+      cognitiveParameterStudy.studyManifest(study));
+    const assignmentsVerified = study.assignments.every(assignment =>
+      one('cognitive_parameter_assignment_committed', assignment.id,
+        cognitiveParameterStudy.assignmentManifest(assignment)));
+    const deliveriesVerified = study.assignments.every(assignment => !assignment.delivery
+      || one('cognitive_parameter_assignment_delivered', assignment.id,
+        cognitiveParameterStudy.deliveryManifest(assignment)));
+    const resolutionsVerified = study.assignments.every(assignment => !assignment.resolution
+      || one('cognitive_parameter_assignment_resolved', assignment.id,
+        cognitiveParameterStudy.resolutionManifest(assignment)));
+    const exclusionsVerified = study.assignments.every(assignment => !assignment.exclusion
+      || one('cognitive_parameter_assignment_excluded', assignment.id,
+        cognitiveParameterStudy.exclusionManifest(assignment)));
+    const terminalVerified = !study.terminal || one('cognitive_parameter_study_terminal', study.id,
+      cognitiveParameterStudy.terminalManifest(study));
+    const researchLedgerVerified = verifyResearchLedger(ledger).valid && creationVerified
+      && assignmentsVerified && deliveriesVerified && resolutionsVerified
+      && exclusionsVerified && terminalVerified;
+    return { ...lifecycle, creation_verified: creationVerified,
+      assignments_verified: assignmentsVerified, deliveries_verified: deliveriesVerified,
+      resolutions_verified: resolutionsVerified, exclusions_verified: exclusionsVerified,
+      terminal_verified: terminalVerified, research_ledger_verified: researchLedgerVerified,
+      complete_chain_verified: lifecycle.complete_chain_verified && researchLedgerVerified };
+  }
+
+  function cognitiveParameterStudyLiveAudit(study) {
+    if (!study || !verifyResearchLedger().valid) return false;
+    if (cognitiveParameterStudyLiveAuditCache?.study === study
+      && cognitiveParameterStudyLiveAuditCache.lifecycle_revision === study.lifecycle_revision
+      && cognitiveParameterStudyLiveAuditCache.valid === true) return true;
+    const audit = cognitiveParameterStudyLedgerAudit(study);
+    cognitiveParameterStudyLiveAuditCache = { study,
+      lifecycle_revision: study.lifecycle_revision, valid: audit.complete_chain_verified };
+    return audit.complete_chain_verified;
+  }
+
+  function trustCognitiveParameterStudyMutation(study) {
+    cognitiveParameterStudyLiveAuditCache = { study,
+      lifecycle_revision: study.lifecycle_revision, valid: true };
+  }
+
+  function touchCognitiveParameterStudy(study) {
+    study.lifecycle_revision = Math.max(0, Number(study.lifecycle_revision) || 0) + 1;
+  }
+
+  function cognitiveParameterStudyClose(current, study, recommendation, now = clock()) {
+    cognitiveParameterStudy.closeStudy(study, recommendation, now);
+    touchCognitiveParameterStudy(study);
+    researchLedgerAppend(current, { kind: 'cognitive_parameter_study_terminal',
+      subject_type: 'cognitive_parameter_study', subject_id: study.id,
+      payload: cognitiveParameterStudy.terminalManifest(study), at: now });
+    trustCognitiveParameterStudyMutation(study);
+    return study;
+  }
+
+  function createCognitiveParameterStudy(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const studies = current.cognition.cognitive_parameter_studies.studies;
+      if (studies.some(item => item.status === 'active')) {
+        throw new Error('only one cognitive parameter study may be active');
+      }
+      const baseline = cognitiveParameterRecord();
+      const phase = input.study_phase === 'confirmatory' ? 'confirmatory' : 'pilot';
+      let prior = null;
+      if (phase === 'confirmatory') {
+        prior = studies.find(item => item.id === input.replicates_study_id);
+        if (!prior || prior.study_phase !== 'pilot' || prior.status !== 'completed'
+          || prior.terminal?.reason !== 'candidate_advantage'
+          || !cognitiveParameterStudyLedgerAudit(prior, current.cognition.research_ledger).complete_chain_verified) {
+          throw new Error('a confirmatory study requires one replay-valid supported pilot');
+        }
+        if (prior.parameter_path !== input.parameter_path
+          || prior.candidate.value !== Number(input.candidate_value)) {
+          throw new Error('confirmatory parameter path and candidate must match the supported pilot');
+        }
+      }
+      const study = cognitiveParameterStudy.createStudy({ ...input,
+        replicated_study_commitment: prior?.content_commitment || null }, baseline, {
+        randomizationSecret: crypto.randomBytes(32).toString('hex'), now: clock(),
+      });
+      studies.push(study);
+      current.cognition.cognitive_parameter_studies.studies = studies.slice(-30);
+      researchLedgerAppend(current, { kind: 'cognitive_parameter_study_preregistered',
+        subject_type: 'cognitive_parameter_study', subject_id: study.id,
+        payload: cognitiveParameterStudy.studyManifest(study) });
+      trustCognitiveParameterStudyMutation(study);
+      return cognitiveParameterStudy.publicStudy(study);
+    });
+  }
+
+  function activeCognitiveParameterStudy(current = state) {
+    return current.cognition.cognitive_parameter_studies.studies.find(item => item.status === 'active') || null;
+  }
+
+  function assignCognitiveParameterStudyInState(current, input = {}) {
+      if (input.eligible !== true || input.surface !== 'slack'
+        || current.cognition.self_model.context_trials.some(item => item.status === 'active')) return null;
+      const study = activeCognitiveParameterStudy(current);
+      if (!study) return null;
+      if (!cognitiveParameterStudyLiveAudit(study)) {
+        throw new Error('active cognitive parameter study failed replay verification');
+      }
+      const currentRecord = cognitiveParameterRecord();
+      if (currentRecord.content_commitment !== study.baseline.record_commitment) {
+        const recommendation = { status: 'aborted', reason: 'external_parameter_change_automatic_rollback',
+          analysis: cognitiveParameterStudy.analysis(study) };
+        cognitiveParameterStudyClose(current, study, recommendation);
+        return null;
+      }
+      const assignmentWindowClosed = new Date(clock()) >= new Date(study.preregistration.due_at)
+        || study.assignments.length >= study.preregistration.maximum_assignments;
+      if (assignmentWindowClosed) {
+        const before = cognitiveParameterStudy.terminalRecommendation(study, clock());
+        if (before) cognitiveParameterStudyClose(current, study, before);
+        return null;
+      }
+      const assignment = cognitiveParameterStudy.createAssignment(study, {
+        unitKey: input.unit_key, surface: input.surface, now: clock(),
+      });
+      if (!study.assignments.some(item => item.id === assignment.id)) {
+        study.assignments.push(assignment);
+        touchCognitiveParameterStudy(study);
+        researchLedgerAppend(current, { kind: 'cognitive_parameter_assignment_committed',
+          subject_type: 'cognitive_parameter_assignment', subject_id: assignment.id,
+          payload: cognitiveParameterStudy.assignmentManifest(assignment) });
+        trustCognitiveParameterStudyMutation(study);
+      }
+      return { study_id: study.id, assignment_id: assignment.id,
+        assignment_commitment: assignment.content_commitment,
+        protocol_version: cognitiveParameterStudy.PROTOCOL_VERSION };
+  }
+
+  function assignCognitiveParameterStudy(input = {}) {
+    if (input.eligible !== true || input.surface !== 'slack'
+      || state.cognition.self_model.context_trials.some(item => item.status === 'active')) return null;
+    return mutate(current => assignCognitiveParameterStudyInState(current, input));
+  }
+
+  function cognitiveParameterInputForAssignment(receipt = null) {
+    if (!receipt?.study_id || !receipt.assignment_id) return activeCognitiveParameters();
+    const study = state.cognition.cognitive_parameter_studies.studies.find(item => item.id === receipt.study_id);
+    const assignment = study?.assignments.find(item => item.id === receipt.assignment_id);
+    if (!study || study.status !== 'active' || !assignment || assignment.exclusion
+      || !cognitiveParameterStudyLiveAudit(study)) {
+      return activeCognitiveParameters();
+    }
+    return cognitiveParameterStudy.paramsForArm(study, assignment.arm);
+  }
+
+  function excludeCognitiveParameterAssignment(assignmentId, reason) {
+    return mutate(current => {
+      const study = current.cognition.cognitive_parameter_studies.studies
+        .find(item => item.assignments.some(candidate => candidate.id === assignmentId));
+      const assignment = study?.assignments.find(item => item.id === assignmentId);
+      if (!study || !assignment) return null;
+      if (assignment.delivery || assignment.resolution || assignment.exclusion) return null;
+      cognitiveParameterStudy.excludeAssignment(study, assignment, reason, clock());
+      touchCognitiveParameterStudy(study);
+      researchLedgerAppend(current, { kind: 'cognitive_parameter_assignment_excluded',
+        subject_type: 'cognitive_parameter_assignment', subject_id: assignment.id,
+        payload: cognitiveParameterStudy.exclusionManifest(assignment) });
+      trustCognitiveParameterStudyMutation(study);
+      return { study_id: study.id, assignment_id: assignment.id, excluded: true };
+    });
+  }
+
+  function markCognitiveParameterAssignmentDelivered(assignmentId, input = {}) {
+    return mutate(current => {
+      const study = current.cognition.cognitive_parameter_studies.studies
+        .find(item => item.assignments.some(candidate => candidate.id === assignmentId));
+      const assignment = study?.assignments.find(item => item.id === assignmentId);
+      if (!study || !assignment) throw new Error('cognitive parameter assignment not found');
+      if (assignment.delivery) return { study_id: study.id, assignment_id: assignment.id, delivered: true };
+      cognitiveParameterStudy.deliverAssignment(study, assignment, input, clock());
+      touchCognitiveParameterStudy(study);
+      researchLedgerAppend(current, { kind: 'cognitive_parameter_assignment_delivered',
+        subject_type: 'cognitive_parameter_assignment', subject_id: assignment.id,
+        payload: cognitiveParameterStudy.deliveryManifest(assignment) });
+      trustCognitiveParameterStudyMutation(study);
+      const recommendation = study.status === 'active'
+        ? cognitiveParameterStudy.terminalRecommendation(study, clock()) : null;
+      if (recommendation) cognitiveParameterStudyClose(current, study, recommendation);
+      return { study_id: study.id, assignment_id: assignment.id, delivered: true,
+        study_status: study.status };
+    });
+  }
+
+  function resolveCognitiveParameterAssignmentOutcome(assignmentId, input = {}) {
+    return mutate(current => {
+      const study = current.cognition.cognitive_parameter_studies.studies
+        .find(item => item.assignments.some(candidate => candidate.id === assignmentId));
+      const assignment = study?.assignments.find(item => item.id === assignmentId);
+      if (!study || !assignment) throw new Error('cognitive parameter assignment not found');
+      if (assignment.resolution) return cognitiveParameterStudy.publicStudy(study);
+      cognitiveParameterStudy.resolveAssignment(study, assignment, input, clock());
+      touchCognitiveParameterStudy(study);
+      researchLedgerAppend(current, { kind: 'cognitive_parameter_assignment_resolved',
+        subject_type: 'cognitive_parameter_assignment', subject_id: assignment.id,
+        payload: cognitiveParameterStudy.resolutionManifest(assignment) });
+      trustCognitiveParameterStudyMutation(study);
+      const recommendation = study.status === 'active'
+        ? cognitiveParameterStudy.terminalRecommendation(study, clock()) : null;
+      if (recommendation) cognitiveParameterStudyClose(current, study, recommendation);
+      return cognitiveParameterStudy.publicStudy(study);
+    });
+  }
+
+  function abortCognitiveParameterStudy(studyId, input = {}) {
+    return mutate(current => {
+      const study = current.cognition.cognitive_parameter_studies.studies.find(item => item.id === studyId);
+      if (!study) return null;
+      if (study.status !== 'active') return cognitiveParameterStudy.publicStudy(study);
+      const reason = String(input.reason || '').trim();
+      if (!reason) throw new Error('cognitive parameter study abort requires a reason');
+      cognitiveParameterStudyClose(current, study, { status: 'aborted',
+        reason: `research_abort:${reason.slice(0, 240)}`,
+        analysis: cognitiveParameterStudy.analysis(study) });
+      return cognitiveParameterStudy.publicStudy(study);
+    });
+  }
+
+  function finalizeCognitiveParameterStudy(studyId) {
+    return mutate(current => {
+      const study = current.cognition.cognitive_parameter_studies.studies.find(item => item.id === studyId);
+      if (!study) return null;
+      if (study.status !== 'active') return cognitiveParameterStudy.publicStudy(study);
+      const recommendation = cognitiveParameterStudy.terminalRecommendation(study, clock());
+      if (!recommendation) throw new Error('cognitive parameter study has not reached a preregistered stopping condition');
+      cognitiveParameterStudyClose(current, study, recommendation);
+      return cognitiveParameterStudy.publicStudy(study);
+    });
+  }
+
+  function cognitiveParameterStudiesSnapshot({ research = false, studyId = null } = {}) {
+    const studies = state.cognition.cognitive_parameter_studies.studies
+      .filter(item => !studyId || item.id === studyId);
+    const visible = studies.map(item => research
+      ? { ...cognitiveParameterStudy.researchStudy(item), audit: cognitiveParameterStudyLedgerAudit(item) }
+      : { ...cognitiveParameterStudy.publicStudy(item), audit: cognitiveParameterStudyLedgerAudit(item) });
+    return { protocol_version: cognitiveParameterStudy.PROTOCOL_VERSION,
+      studies: visible,
+      report: { total: studies.length, active: studies.filter(item => item.status === 'active').length,
+        completed: studies.filter(item => item.status === 'completed').length,
+        aborted: studies.filter(item => item.status === 'aborted').length,
+        supported_pilots: studies.filter(item => item.study_phase === 'pilot'
+          && item.status === 'completed' && item.terminal?.reason === 'candidate_advantage').length,
+        promotion_eligible_confirmations: studies.filter(item => item.status === 'completed'
+          && item.terminal?.analysis?.promotion_eligible === true).length,
+        autonomous_updates_enabled: false,
+        global_parameter_mutations: 0 },
+      epistemic_status: 'Randomized, replay-audited ecological tests of bounded functional parameters. Candidate values are assignment-scoped, reviewers remain condition-blind, and no result automatically mutates Nora, grants authority, establishes feeling or identity, or proves consciousness.' };
+  }
+
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
+    cognitiveParameterStudyLiveAuditCache = null;
     latestContinuityAuditCache = null;
     procedureSelectionCache = null;
     exemplarSelectionCache = null;
@@ -561,6 +825,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.expectations = { forecasts: [], ...(state.cognition.expectations || {}) };
     if (!Array.isArray(state.cognition.expectations.forecasts)) state.cognition.expectations.forecasts = [];
     state.cognition.expectations.forecasts = state.cognition.expectations.forecasts.slice(-500);
+    state.cognition.cognitive_parameter_studies = { studies: [],
+      ...(state.cognition.cognitive_parameter_studies || {}) };
+    if (!Array.isArray(state.cognition.cognitive_parameter_studies.studies)) {
+      state.cognition.cognitive_parameter_studies.studies = [];
+    }
+    state.cognition.cognitive_parameter_studies.studies = state.cognition.cognitive_parameter_studies.studies.slice(-30);
+    for (const study of state.cognition.cognitive_parameter_studies.studies) {
+      if (!Number.isInteger(study.lifecycle_revision) || study.lifecycle_revision < 0) {
+        study.lifecycle_revision = 0;
+      }
+    }
     state.cognition.procedural_learning = { procedures: [], interaction_outcomes: [], selection_actions: [], selection_passes: [],
       ...(state.cognition.procedural_learning || {}) };
     for (const key of ['procedures', 'interaction_outcomes', 'selection_actions', 'selection_passes']) {
@@ -5316,6 +5591,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       aim_reappraisal_evidence: aimReappraisalEvidenceSnapshot(),
       cycle_self_correction_evidence: cycleSelfCorrectionEvidenceSnapshot(),
       cognitive_parameter_status: getCognitiveParameterStatus(),
+      cognitive_parameter_studies: cognitiveParameterStudiesSnapshot().report,
     }),
       operational_environment: operationalEnvironmentStatus() };
   }
@@ -5453,6 +5729,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function runGlobalBroadcast(input = {}) {
     return mutate(current => {
       const now = input.now ? new Date(input.now) : clock();
+      let cognitiveParameterAssignment = null;
+      if (input.cognitiveParameterStudiesEnabled === true) {
+        try {
+          cognitiveParameterAssignment = assignCognitiveParameterStudyInState(current, {
+            eligible: true, surface: 'slack', unit_key: input.cognitiveParameterUnitKey,
+          });
+        } catch (error) {
+          // Research fails closed to the frozen global document and may not suppress the
+          // already-authorized human-facing response.
+          console.warn(`cognitive parameter assignment skipped: ${error.message}`);
+        }
+      }
+      let cognitiveParameterInput = input.cognitiveParameterInput || activeCognitiveParameters();
+      if (cognitiveParameterAssignment) {
+        const parameterStudy = current.cognition.cognitive_parameter_studies.studies
+          .find(item => item.id === cognitiveParameterAssignment.study_id);
+        const parameterAssignment = parameterStudy?.assignments
+          .find(item => item.id === cognitiveParameterAssignment.assignment_id);
+        if (parameterStudy && parameterAssignment) {
+          cognitiveParameterInput = cognitiveParameterStudy.paramsForArm(
+            parameterStudy, parameterAssignment.arm);
+        }
+      }
       const trial = input.trial_id ? current.cognition.self_model.context_trials.find(item => item.id === input.trial_id && item.status === 'active' && item.intervention === 'global_broadcast') : null;
       const assignment = trial?.assignments.find(item => item.id === input.assignment_id) || null;
       const protocolV2 = trial?.global_broadcast_protocol_version === 2;
@@ -5464,7 +5763,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const scoredWorkspace = scoreWorkspace(current, { ...input,
         includeConstructiveProspection: input.includeConstructiveProspection !== false && !interventionActive('constructive_prospection_access'),
         includeGoalAffect: input.includeGoalAffect !== false && goalAffectAudit(current.cognition.goal_affect?.current).complete_chain_verified,
-      }, now, activeCognitiveParameters());
+      }, now, cognitiveParameterInput);
       const experimentalTypes = new Set(['commitment', 'relationship', 'perspective', 'surprise', 'mind_change', 'experiment', 'feedback', 'self_frame']);
       const workspace = protocolV2 ? { ...scoredWorkspace, slots: scoredWorkspace.slots.filter(item => experimentalTypes.has(item.type)) } : scoredWorkspace;
       const eligibleReceipts = consumeBroadcast(workspace.slots, { deliver: true });
@@ -5503,7 +5802,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         };
         researchLedgerAppend(current, { kind: 'global_broadcast_context_delivered', subject_type: 'context_assignment', subject_id: assignment.id, payload: assignment.intervention_receipt });
       }
-      return JSON.parse(JSON.stringify(event));
+      const output = JSON.parse(JSON.stringify(event));
+      if (cognitiveParameterAssignment) {
+        output.cognitive_parameter_assignment = cognitiveParameterAssignment;
+      }
+      return output;
     });
   }
 
@@ -10675,6 +10978,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const calibrationResolved = cognition.calibration?.resolved || 0;
     const responsiveness = interactivePerformance.summarize(state.traces, clock().getTime());
     const parameterStatus = getCognitiveParameterStatus();
+    const parameterStudies = cognition.cognitive_parameter_studies?.studies || [];
+    const activeParameterStudy = parameterStudies.find(item => item.status === 'active') || null;
+    const parameterStudyStatus = {
+      total: parameterStudies.length,
+      active: activeParameterStudy ? 1 : 0,
+      completed: parameterStudies.filter(item => item.status === 'completed').length,
+      aborted: parameterStudies.filter(item => item.status === 'aborted').length,
+      resolved_assignments: parameterStudies.reduce((sum, item) => sum
+        + item.assignments.filter(assignment => assignment.resolution).length, 0),
+      supported_pilots: parameterStudies.filter(item => item.study_phase === 'pilot'
+        && item.status === 'completed' && item.terminal?.reason === 'candidate_advantage').length,
+      promotion_eligible_confirmations: parameterStudies.filter(item => item.status === 'completed'
+        && item.terminal?.analysis?.promotion_eligible === true).length,
+      active_replay_verified: activeParameterStudy
+        ? cognitiveParameterStudyLedgerAudit(activeParameterStudy).complete_chain_verified : null,
+      active_conditions_sealed: Boolean(activeParameterStudy),
+      global_parameter_mutations: 0,
+    };
     const ledgerVerificationPerformance = researchLedgerVerificationPerformance();
     const responseP95 = Object.entries(responsiveness.surfaces)
       .filter(([, value]) => value.p95_ms !== null)
@@ -10720,9 +11041,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         openPredictions + resolvedPredictions + scoredCycleSelfForecasts + openExpectations + resolvedExpectations > 0),
         commitments: metric(Math.max(scaleCount(openCommitments, 8), fulfilledCommitments ? 0.24 : 0), `${openCommitments} open and ${fulfilledCommitments} fulfilled promises`, openCommitments + fulfilledCommitments > 0),
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
-        learning: metric(scaleCount(activeExperiments + (cognition.development || []).length + activeProcedures + candidateProcedures + activeExemplars, 10),
-          `${activeExperiments} active experiments, ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes`,
-        activeExperiments + (cognition.development || []).length + procedures.length + exemplars.length > 0),
+        learning: metric(scaleCount(activeExperiments + parameterStudyStatus.active
+          + (cognition.development || []).length + activeProcedures + candidateProcedures + activeExemplars, 10),
+          `${activeExperiments} active learning experiments and ${parameterStudyStatus.active} blinded causal parameter study; ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes`,
+        activeExperiments + parameterStudies.length + (cognition.development || []).length
+          + procedures.length + exemplars.length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive
           ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}; ${sourceBoundAimProgress} source-bound aim progress note${sourceBoundAimProgress === 1 ? '' : 's'}`
@@ -10791,7 +11114,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           autonomous_tuning_enabled: parameterStatus.autonomous_tuning_enabled,
           integrity_verified: parameterStatus.integrity?.valid === true
             && parameterStatus.source_ledger_integrity?.valid !== false,
-          mechanism: parameterStatus.mechanism },
+          mechanism: parameterStatus.mechanism,
+          studies: parameterStudyStatus },
         reflection: { surprises: (cognition.surprises || []).length, mind_changes: (cognition.mind_changes || []).length,
           development: (cognition.development || []).length, counterfactuals: (cognition.counterfactuals || []).length,
           viewpoint_reappraisals: viewpointReappraisals.length,
@@ -24630,26 +24954,43 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .slice(0, Math.max(0, Number(limit) || 0)).map(item => item.snapshot);
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
-    const contextReceipt = { professional_viewpoints: [], procedure_selection: null, exemplar_selection: null };
+    const contextReceipt = {
+      professional_viewpoints: [],
+      procedure_selection: null,
+      procedure_selection_commitment: null,
+      exemplar_selection: null,
+      exemplar_selection_commitment: null,
+      cognitive_parameter_assignment: cognitiveParameterAssignment
+        ? JSON.parse(JSON.stringify(cognitiveParameterAssignment)) : null,
+      workspace_commitment: null,
+    };
     const sealInquirySelection = selfInquirySelectionActive();
     const sealContextTrialPulses = state.cognition.self_model.context_trials.some(item => item.status === 'active');
     const goalAffectAvailable = includeGoalAffect && !interventionActive('goal_access') && !interventionActive('integrated_self_binding')
       && goalAffectAudit().complete_chain_verified;
-    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), includeGoalAffect: goalAffectAvailable, attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock(), activeCognitiveParameters());
+    const workspace = scoreWorkspace(state, { person, project, query, channel, capacity, includeAttentionDirectives: includeHigherOrderMonitor && includeAttentionDirectives && !sealInquirySelection, includeDevelopment, includeIntegratedSelf: includeIntegratedSelf && !sealInquirySelection, includeCognitivePulses: includeCognitivePulses && !sealInquirySelection && !sealContextTrialPulses, includeEpistemicDiscrepancies, includeConstructiveProspection: includeConstructiveProspection && !interventionActive('constructive_prospection_access'), includeGoalAffect: goalAffectAvailable, attentionDirectiveMode: includeHigherOrderMonitor && !sealInquirySelection ? attentionDirectiveMode : 'no_boost', attentionShamSeed, attentionDirectivesOverride }, clock(), cognitiveParameterInput || activeCognitiveParameters());
     if (sealInquirySelection || sealContextTrialPulses) workspace.slots = workspace.slots.filter(item => item.type !== 'cognitive_pulse');
     if (sealInquirySelection) workspace.slots = workspace.slots.filter(item => !['self_claim', 'self_probe', 'self_frame'].includes(item.type));
     const globalBroadcastStudy = broadcastEvent?.trial_id && ['multi_consumer_broadcast', 'workspace_packet_only', 'absent_broadcast'].includes(broadcastEvent.delivery_mode);
     if (globalBroadcastStudy) workspace.slots = broadcastEvent.packet_visible ? JSON.parse(JSON.stringify(broadcastEvent.packet?.slots || [])) : [];
+    contextReceipt.workspace_commitment = cognitiveParameterStudy.commitment({
+      capacity: workspace.capacity,
+      slots: workspace.slots.map(item => ({ type: item.type, id: item.id })),
+    });
     const procedureSelection = procedureContextSelection({ query, selectionKey: procedureSelectionKey || query,
       includeCandidates: includeProcedureCandidates && !globalBroadcastStudy });
     contextReceipt.procedure_selection = procedureSelection.receipt;
+    contextReceipt.procedure_selection_commitment = procedureSelection.receipt
+      ? cognitiveParameterStudy.commitment(procedureSelection.receipt) : null;
     if (procedureSelection.records.length) blocks.push(proceduralLearning.render(procedureSelection.records));
     if (includeExemplars && !globalBroadcastStudy) {
       const exemplarSelection = exemplarContextSelection({ query,
         selectionKey: exemplarSelectionKey || procedureSelectionKey || query });
       contextReceipt.exemplar_selection = exemplarSelection.receipt;
+      contextReceipt.exemplar_selection_commitment = exemplarSelection.receipt
+        ? cognitiveParameterStudy.commitment(exemplarSelection.receipt) : null;
       if (exemplarSelection.records.length) blocks.push(exemplarLearning.render(exemplarSelection.records));
     }
     const broadcastOutputs = sealInquirySelection ? [] : (broadcastEvent?.receipts || []).filter(item => item.used && item.output);
@@ -24960,6 +25301,11 @@ ${episodes.map(item => {
     setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
     expectationForecastAudit, expectationSurprise,
+    createCognitiveParameterStudy, assignCognitiveParameterStudy,
+    cognitiveParameterInputForAssignment, excludeCognitiveParameterAssignment,
+    markCognitiveParameterAssignmentDelivered, resolveCognitiveParameterAssignmentOutcome,
+    abortCognitiveParameterStudy, finalizeCognitiveParameterStudy,
+    cognitiveParameterStudiesSnapshot, cognitiveParameterStudyLedgerAudit,
     recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,

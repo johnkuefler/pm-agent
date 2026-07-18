@@ -70,6 +70,16 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const cognition = state.cognition || {};
   const cognitiveParameterStatus = options.cognitive_parameter_status
     || cognitiveParameters.status(cognitiveParameters.defaultRecord(), []);
+  const cognitiveParameterStudies = options.cognitive_parameter_studies || {
+    total: 0, active: 0, completed: 0, aborted: 0, supported_pilots: 0,
+    promotion_eligible_confirmations: 0, global_parameter_mutations: 0,
+  };
+  const cognitiveParameterStudyStatus = cognitiveParameterStudies.promotion_eligible_confirmations > 0
+    ? 'functional_prediction_supported'
+    : cognitiveParameterStudies.supported_pilots > 0 ? 'causal_signal_observed'
+      : cognitiveParameterStudies.active > 0 ? 'collecting'
+        : cognitiveParameterStudies.completed > 0 ? 'causally_tested_inconclusive'
+          : 'mechanism_present';
   const goalAffectRecord = cognition.goal_affect?.current || null;
   const goalAffectVerified = goalAffect.verify(goalAffectRecord);
   const affectiveRegulationRecord = cognition.affective_regulation?.current || null;
@@ -1921,9 +1931,9 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     },
     {
       id: 'bounded_cognitive_parameter_plasticity', family: ['learning', 'adaptive control', 'self-model', 'metacognition'],
-      functional_claim: 'Nora can represent the bounded parameters of her own functional dynamics as inspectable, replay-verifiable state while preserving code-owned safety envelopes and known default behavior.',
-      mechanism: 'A cached platform document externalizes drive, appraisal, workspace, memory, expectation, and voice timing constants; every revision is hash-chained, bounded by an immutable code schema, fail-closed to byte-equivalent defaults on corruption, and included in substrate and fingerprint commitments. Autonomous tuning remains disabled until a preregistered mechanical experiment and rollback gate exists.',
-      status: 'mechanism_present',
+      functional_claim: 'Nora can represent the bounded parameters of her own functional dynamics as inspectable, replay-verifiable state and test one ephemeral change prospectively against a frozen baseline while preserving code-owned safety envelopes and known default behavior.',
+      mechanism: 'A cached platform document externalizes drive, appraisal, workspace, memory, expectation, and voice timing constants. A separate replay-bound DIALS protocol randomizes eligible ordinary direct Slack turns between frozen baseline and one assignment-scoped candidate, seals conditions from Nora and delayed reviewers, binds exact prompt and latency receipts, stops on preregistered guards, requires disjoint confirmation, and never mutates the global document automatically.',
+      status: cognitiveParameterStudyStatus,
       evidence: { revision: cognitiveParameterStatus.revision,
         parameter_count: cognitiveParameterStatus.parameter_count,
         default_equivalent: cognitiveParameterStatus.default_equivalent,
@@ -1932,9 +1942,18 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         source_ledger_integrity_verified: cognitiveParameterStatus.source_ledger_integrity?.valid !== false,
         bounds_commitment: cognitiveParameterStatus.bounds_commitment,
         autonomous_tuning_enabled: cognitiveParameterStatus.autonomous_tuning_enabled,
-        causal_status: 'mechanism_only_no_parameter_experiment' },
+        studies_total: cognitiveParameterStudies.total,
+        studies_active: cognitiveParameterStudies.active,
+        studies_completed: cognitiveParameterStudies.completed,
+        studies_aborted: cognitiveParameterStudies.aborted,
+        supported_pilots: cognitiveParameterStudies.supported_pilots,
+        promotion_eligible_confirmations: cognitiveParameterStudies.promotion_eligible_confirmations,
+        global_parameter_mutations: cognitiveParameterStudies.global_parameter_mutations,
+        causal_status: cognitiveParameterStudyStatus },
       falsifier: 'Default-document behavior differs from the pre-DIALS golden outputs, an out-of-envelope or unknown parameter affects cognition, a corrupt chain does not fail closed, a parameter edit cannot be replayed or rolled back, live response latency regresses, or tuned parameters fail prospective guarded experiments against the frozen prior values.',
-      next_gate: 'Hold the byte-equivalent baseline stable, then preregister one bounded parameter experiment with a fixed metric, guard metric, evaluation window, automatic rollback, and parameter-access lesion before enabling any Nora-authored edit.',
+      next_gate: cognitiveParameterStudies.supported_pilots > 0
+        ? 'Run an interaction-disjoint preregistered confirmation with the same frozen baseline and candidate; only a replicated advantage may become eligible for an explicit human-reviewed global revision.'
+        : 'Complete the first blinded ecological pilot with preregistered reviewed-outcome, prompt-budget, and latency gates; keep autonomous edits and automatic global promotion disabled.',
     },
     {
       id: 'outcome_selected_work_procedures', family: ['learning', 'metacognition', 'adaptive control', 'ecological validity'],
