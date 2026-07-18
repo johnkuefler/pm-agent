@@ -624,6 +624,17 @@ function registerCoworkInstructionsRoute(app) {
     Protocol-v3-or-newer feedback additionally reports probability calibration and whether Nora correctly
     named the largest self-model error domain; protocol v4 also reports substrate Brier scores and advantage
     over persistence. Never manufacture degradation or a restart to improve a score.
+    GET /self-model/fingerprints exposes SCOPE's offline longitudinal instrument: forty frozen probe slots
+    across voice/register, judgment, calibration, and procedure application, each with three hidden parallel
+    forms. Research-authenticated runs commit the exact live persona, charter, routine, provider configuration,
+    model, and deployed build before exposing one subject item at a time. Exact-choice and calibration items
+    score mechanically; voice items require two distinct authenticated evaluators. Only three completed
+    same-model, same-build, same-state runs spanning all hidden forms establish repeatability variance, after
+    which the dashboard may display per-category drift and cosine distance from a rolling baseline. The bank,
+    responses, receipts, grades, and results are research-ledger bound; prompts and answer keys stay sealed.
+    This harness never runs in Slack, Zoom chat, realtime voice, the ordinary hourly loop, or an active blinded
+    context trial; its subject and evaluator queues return no work while an interactive lease or post-interaction
+    quiet window is active. It never writes the autobiography and does not establish identity essence or consciousness.
     PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
     DELETE /run-lock is server-rejected while its run-bound cycle is still active. Even when a run must
     stop for a genuine integrity or operational failure, close that exact cycle explicitly with

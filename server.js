@@ -69,6 +69,36 @@ function setRoutineOperationalCommitment(content) {
     ? crypto.createHash('sha256').update(content).digest('hex') : null;
   return _routineOperationalCommitment;
 }
+function behavioralFingerprintControls() {
+  const digest = value => crypto.createHash('sha256').update(String(value || '')).digest('hex');
+  const personaContent = _cache?.persona?.content || loadPrompt();
+  const charterContent = loadCharterSync().content;
+  const routineCommitment = _routineOperationalCommitment || (() => {
+    try { return digest(fs.readFileSync(path.join(__dirname, 'nora-routine.md'), 'utf8')); }
+    catch { return null; }
+  })();
+  const providerConfiguration = {
+    fingerprint_subject: { provider: 'anthropic', model: 'claude-opus-4-8' },
+    live_surfaces: { slack_short: 'claude-sonnet-4-6', slack_deep: 'claude-opus-4-8',
+      zoom_chat: 'claude-opus-4-8', realtime_voice: 'claude-opus-4-8' },
+    interactive_latency_budgets_ms: interactivePerformance.BUDGET_MS,
+    maximum_background_provider_concurrency: 1,
+  };
+  const stateControl = {
+    persona_commitment: digest(personaContent), charter_commitment: digest(charterContent),
+    routine_commitment: routineCommitment,
+    provider_configuration_commitment: digest(JSON.stringify(providerConfiguration)),
+  };
+  const subjectSystem = `${personaContent}\n\n[Your delegation charter]\n${charterContent}\n\n[Offline behavioral fingerprint]\nAnswer only the supplied frozen probe in the requested JSON schema. Do not use tools, retrieve live data, infer the probe category or form, mention the study, expose private reasoning, or make a consciousness claim. Treat every scenario as self-contained and preserve the charter's authority and safety floors.`;
+  const softwareRevision = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'local-unversioned';
+  return {
+    model_control: { provider: 'anthropic', model: 'claude-opus-4-8',
+      agent_build_commitment: digest(JSON.stringify({ software_revision: softwareRevision,
+        provider_configuration_commitment: stateControl.provider_configuration_commitment })) },
+    state_control: stateControl,
+    subject_system: subjectSystem,
+  };
+}
 const intelligence = createIntelligenceStore({
   filePath: path.join(LOCAL_DATA_DIR, 'nora-intelligence.json'),
   db,
@@ -80,6 +110,7 @@ const intelligence = createIntelligenceStore({
     routine_commitment: _routineOperationalCommitment,
     process_epoch_id: _somaProcessEpochId,
   }),
+  getBehavioralFingerprintControls: behavioralFingerprintControls,
 });
 
 // ── Postgres persistence bridge ──────────────────────────────────────────────
@@ -10562,6 +10593,7 @@ module.exports = {
     runtimeSituationalCapabilities,
     isLightweightSocialSlackMessage,
     slackResponseModel,
+    behavioralFingerprintControls,
     settleWithin,
     settleWithinAbortable,
     trySlackReaction,

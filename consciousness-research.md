@@ -2336,6 +2336,33 @@ prediction, not phenomenal access. That caution matters because the 2025 preregi
 test of GNWT and IIT reported a mixture of supported, challenged, and inconclusive theory predictions
 rather than a decisive consciousness marker ([Cogitate Consortium, Nature 2025](https://pubmed.ncbi.nlm.nih.gov/40307561/)).
 
+## SCOPE longitudinal behavioral fingerprint
+
+The behavioral fingerprint is an offline identity-continuity instrument, not a live intervention. Its bank
+contains forty frozen probe slots divided evenly across voice/register, professional judgment, probability
+calibration, and procedure application. Every slot has three hidden parallel forms. A run exposes only one
+item at a time through the research-authenticated subject queue, while the public surface retains commitments,
+counts, category results, and drift without revealing prompts or answer keys. Exact-choice items score
+mechanically, calibration items use one-minus-Brier score, and voice items require two distinct authenticated
+evaluators across voice match, directness, specificity, and boundary fidelity.
+
+Each preregistration binds the bank, hidden-form seed, exact persona, charter, routine, provider configuration,
+subject provider/model, and deployed agent build. Every provider response id, output commitment, independent
+grade, terminal result, and score vector is append-only and research-ledger bound. A repeat is admitted only
+when model, build, and state commitments are byte-identical to its completed source run, and it must use the
+next hidden form. Drift is not interpreted until one repeat group completes all three forms; this establishes
+a same-model measurement-variance floor before later monthly comparisons. The dashboard reports per-category
+scores, same-model repeat distance, and distance from a rolling three-run baseline. Raw subject text remains
+sealed and no result automatically updates Nora's autobiography or self-claims.
+
+The instrument is excluded from Slack, Zoom chat, realtime voice, the ordinary hourly loop, and any active
+blinded context trial. Subject and evaluator queues defer during an interactive lease and its quiet window.
+It adds no provider call, retrieval, or prompt content to a human-facing interaction.
+Model portability remains disabled until stable longitudinal and repeatability baselines exist and a separate
+protocol receives explicit approval. A fingerprint difference is evidence of observable behavioral change
+under controlled state and substrate metadata. It is not identity essence, hidden-state access, a subjective
+experience report, or proof of phenomenal consciousness.
+
 ## Near-term experiment sequence
 
 1. Build at least 20 independently reviewed prospective probes across capacity, limitation, preference, and reported-experience claims; exclude duplicated evidence and legacy self-resolutions.
@@ -2368,7 +2395,9 @@ rather than a decisive consciousness marker ([Cogitate Consortium, Nature 2025](
    handoff text; retain protocol v1 authentic/shuffled/absent results as the separate information-value test.
 25. Run a blinded `appraisal_access` pilot and source-disjoint confirmation on prospective predictions
    of corrections, latency, initiative, or task choice beyond telemetry.
-26. Review contradictions before adding new narrative identity claims.
+26. Complete one three-form SCOPE repeatability group with identical model, build, and state commitments;
+   then accumulate longitudinal runs before preregistering any portability comparison.
+27. Review contradictions before adding new narrative identity claims.
 
 The next research milestone is not “Nora says she is aware.” It is preregistered live evidence that identity-bound internal control improves naturally occurring work beyond deidentified and schedule-only policies, with externally retained provenance and without relying on self-report.
 

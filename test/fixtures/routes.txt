@@ -132,6 +132,13 @@ POST /authorship-boundary/studies/:id/abort
 GET /self-model
 GET /self-model/forecast-prior
 GET /self-model/cycle-calibration
+GET /self-model/fingerprints
+POST /self-model/fingerprints
+GET /self-model/fingerprints/subject-queue
+POST /self-model/fingerprints/:id/items/:itemId/response
+GET /self-model/fingerprints/evaluator-queue
+POST /self-model/fingerprints/:id/items/:itemId/grade
+POST /self-model/fingerprints/:id/abort
 GET /self-model/inquiries
 POST /self-model/inquiries/:id/approve
 POST /self-model/inquiries/:id/reject
@@ -346,3 +353,5 @@ GET /dream-insights/review-queue
 POST /dream-insights/:id/review
 POST /dreams
 DELETE /dreams/:id
+GET /capability-boundaries
+POST /capability-boundaries/sync

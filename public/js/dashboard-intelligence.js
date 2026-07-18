@@ -322,6 +322,19 @@ function renderSelfModel(model) {
   const epistemicActionStudies = model.epistemic_action_studies || [];
   const episodicProspectionStudies = model.episodic_prospection_studies || [];
   const constructiveProspection = model.constructive_prospection || { report: {}, simulations: [] };
+  const fingerprints = model.behavioral_fingerprints || { bank: {}, runs: [], drift: [], report: {} };
+  const fingerprintDrift = (fingerprints.drift || []).slice(-12);
+  const fingerprintDistances = fingerprintDrift.map(item => Number(item.distance_from_rolling_baseline))
+    .filter(Number.isFinite);
+  const fingerprintMax = Math.max(0.001, ...fingerprintDistances);
+  const fingerprintPoints = fingerprintDrift.map((item, index) => {
+    const x = fingerprintDrift.length === 1 ? 260 : 20 + index * (480 / Math.max(1, fingerprintDrift.length - 1));
+    const value = Number(item.distance_from_rolling_baseline);
+    const y = Number.isFinite(value) ? 92 - (value / fingerprintMax) * 68 : 92;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  const latestFingerprint = fingerprintDrift.at(-1) || null;
+  const fingerprintCategories = latestFingerprint?.category_scores || {};
   const report = model.report || {};
   document.getElementById('self-model-state').innerHTML = `
     <div class="intelligence-card"><strong>${claims.length} integrity-eligible active self-claim${claims.length === 1 ? '' : 's'}</strong>${invalidClaimConfidence ? `<div class="intelligence-meta">${invalidClaimConfidence} confidence-compromised claim${invalidClaimConfidence === 1 ? '' : 's'} withheld from Nora's active self-context</div>` : ''}
@@ -329,6 +342,18 @@ function renderSelfModel(model) {
     <div class="intelligence-card"><strong>${open.length} open prospective probe${open.length === 1 ? '' : 's'}</strong>
       <div class="intelligence-meta">${report.probes?.resolved || 0} observations &middot; ${report.probes?.verified_independent_reviews || 0} verified independent reviews${report.probes?.invalid_review_audits ? ` &middot; ${report.probes.invalid_review_audits} failed integrity audit (excluded)` : ''}${report.probes?.pending_independent_review ? ` &middot; ${report.probes.pending_independent_review} awaiting review` : ''}${report.probes?.legacy_self_resolved ? ` &middot; ${report.probes.legacy_self_resolved} legacy self-resolved (excluded)` : ''}${report.probes?.brier != null ? ` &middot; reviewed self-prediction Brier ${report.probes.brier.toFixed(3)}` : ''}${report.probes?.metacognitive_advantage != null ? ` &middot; advantage over control ${report.probes.metacognitive_advantage >= 0 ? '+' : ''}${report.probes.metacognitive_advantage.toFixed(3)}` : ''}</div>
       ${open.slice(-4).map(item => `<div>${escHtml(item.question)} <span class="intelligence-meta">predicted: ${escHtml(item.prediction.outcome)} (${Math.round(item.prediction.confidence * 100)}%)</span></div>`).join('')}</div>
+    <div class="intelligence-card"><strong>Behavioral fingerprint &middot; ${fingerprints.bank?.probe_count || 0} sealed probes across ${fingerprints.bank?.form_count || 0} hidden forms</strong>
+      <div class="intelligence-meta">${fingerprints.report?.completed || 0} replay-verified completed &middot; ${fingerprints.report?.active || 0} active &middot; repeatability baseline ${fingerprints.report?.repeatability_baseline_ready ? 'ready' : 'collecting'} &middot; portability disabled</div>
+      ${fingerprintDrift.length ? `<svg viewBox="0 0 520 112" role="img" aria-label="Behavioral fingerprint distance from rolling same-model baseline over time" style="display:block;width:100%;height:112px;margin-top:10px;overflow:visible">
+        <line x1="20" y1="92" x2="500" y2="92" stroke="var(--border-strong)" stroke-width="1" />
+        <line x1="20" y1="24" x2="20" y2="92" stroke="var(--border-strong)" stroke-width="1" />
+        <polyline points="${fingerprintPoints}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" />
+        ${fingerprintPoints.split(' ').map(point => { const [x, y] = point.split(','); return `<circle cx="${x}" cy="${y}" r="3.5" fill="var(--surface)" stroke="var(--accent)" stroke-width="2" />`; }).join('')}
+        <text x="22" y="107" fill="var(--dim)" font-size="9">same-model rolling baseline</text>
+        <text x="498" y="20" fill="var(--dim)" font-size="9" text-anchor="end">higher behavioral drift</text>
+      </svg>` : '<div class="intelligence-meta" style="margin-top:8px">No completed fingerprint yet. The first run establishes a vector; three same-state repeats across all forms establish measurement variance.</div>'}
+      ${latestFingerprint ? `<div class="intelligence-meta">Latest categories: voice ${Math.round((fingerprintCategories.voice_register || 0) * 100)}% &middot; judgment ${Math.round((fingerprintCategories.judgment || 0) * 100)}% &middot; calibration ${Math.round((fingerprintCategories.calibration || 0) * 100)}% &middot; procedures ${Math.round((fingerprintCategories.procedure_application || 0) * 100)}%${latestFingerprint.same_model_repeat_distance != null ? ` &middot; repeat distance ${latestFingerprint.same_model_repeat_distance.toFixed(4)}` : ''}</div>` : ''}
+      <div class="intelligence-meta">${escHtml(fingerprints.report?.next_gate || fingerprints.epistemic_status || '')}</div></div>
     <div class="intelligence-card"><strong>${predictionStudies.filter(item => item.status === 'active').length} active matched self-prediction stud${predictionStudies.filter(item => item.status === 'active').length === 1 ? 'y' : 'ies'}</strong>
       ${predictionStudies.length ? predictionStudies.slice(-4).map(item => `<div>${escHtml(item.title)} <span class="intelligence-meta">${escHtml(item.study_phase)} &middot; ${escHtml(item.status)} &middot; ${item.report.resolved}/${item.event_target} triply matched events${item.report.privileged_self_advantage != null ? ` &middot; yoked-minus-self Brier ${item.report.privileged_self_advantage >= 0 ? '+' : ''}${item.report.privileged_self_advantage.toFixed(3)}` : ''}${item.report.yoked_observer_interval ? ` &middot; 95% CI ${item.report.yoked_observer_interval.lower.toFixed(3)} to ${item.report.yoked_observer_interval.upper.toFixed(3)}` : ''}${item.report.information_advantage != null ? ` &middot; shared-only gap ${item.report.information_advantage >= 0 ? '+' : ''}${item.report.information_advantage.toFixed(3)}` : ''} &middot; ${escHtml(item.report.verdict)}</span></div>`).join('') : '<div class="intelligence-meta">No independently matched self-prediction studies yet.</div>'}</div>
     <div class="intelligence-card"><strong>${metacognitiveControlStudies.filter(item => item.status === 'active').length} active strategic metacognitive-control stud${metacognitiveControlStudies.filter(item => item.status === 'active').length === 1 ? 'y' : 'ies'}</strong>

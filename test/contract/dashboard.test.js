@@ -65,6 +65,9 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(intelligenceJs, /fact-equivalent/);
   assert.match(intelligenceJs, /Constructive future-self simulation/);
   assert.match(intelligenceJs, /remembered and imagined content source-separated/);
+  assert.match(intelligenceJs, /Behavioral fingerprint/);
+  assert.match(intelligenceJs, /same-model rolling baseline/);
+  assert.match(intelligenceJs, /portability disabled/);
   assert.match(intelligenceJs, /Integrated operational self/);
   assert.match(intelligenceJs, /functional self-integration, not phenomenal unity/);
   assert.match(intelligenceJs, /Revealed-preference studies/);

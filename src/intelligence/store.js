@@ -34,6 +34,7 @@ const providerReasoningRegulation = require('./provider-reasoning-regulation');
 const reasoningSelfRegulation = require('./reasoning-self-regulation');
 const cycleSelfForecast = require('./cycle-self-forecast');
 const behavioralSelfModel = require('./behavioral-self-model');
+const behavioralFingerprint = require('./behavioral-fingerprint');
 const selfModelTrustStudy = require('./self-model-trust-study');
 const behavioralSelfProfileForecast = require('./behavioral-self-profile-forecast');
 const dreamIdeaSeed = require('./dream-idea-seed');
@@ -127,7 +128,7 @@ function emptyState() {
     cognition: {
       workspace: { at: null, capacity: 7, slots: [], suppressed_count: 0 },
       drives: {}, appraisal: {}, surprises: [], mind_changes: [], development: [], counterfactuals: [],
-      self_model: { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] } }, experience_stream: [], continuity_handoffs: [], recurrent_signals: [],
+      self_model: { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] }, behavioral_fingerprints: { runs: [] } }, experience_stream: [], continuity_handoffs: [], recurrent_signals: [],
       attention_schema: { directives: [], frames: [] },
       agency: { intentions: [], executions: [], claim_attestations: [] },
       situational_affordances: { frames: [] },
@@ -176,7 +177,8 @@ function emptyState() {
 }
 
 function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Date(), getWants = () => [],
-  getOperationalEnvironment = () => ({}), getDreams = () => [], initialState = null }) {
+  getOperationalEnvironment = () => ({}), getBehavioralFingerprintControls = () => null,
+  getDreams = () => [], initialState = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
@@ -201,10 +203,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     for (const key of ['surprises', 'mind_changes', 'development', 'counterfactuals']) {
       if (!Array.isArray(state.cognition[key])) state.cognition[key] = [];
     }
-    state.cognition.self_model = { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] }, ...(state.cognition.self_model || {}) };
+    state.cognition.self_model = { claims: [], probes: [], context_trials: [], prediction_studies: [], metacognitive_control_studies: [], behavioral_self_model: { revisions: [] }, behavioral_fingerprints: { runs: [] }, ...(state.cognition.self_model || {}) };
     state.cognition.self_model.behavioral_self_model = { revisions: [], ...(state.cognition.self_model.behavioral_self_model || {}) };
     if (!Array.isArray(state.cognition.self_model.behavioral_self_model.revisions)) state.cognition.self_model.behavioral_self_model.revisions = [];
     state.cognition.self_model.behavioral_self_model.revisions = state.cognition.self_model.behavioral_self_model.revisions.slice(-500);
+    state.cognition.self_model.behavioral_fingerprints = { runs: [], ...(state.cognition.self_model.behavioral_fingerprints || {}) };
+    if (!Array.isArray(state.cognition.self_model.behavioral_fingerprints.runs)) state.cognition.self_model.behavioral_fingerprints.runs = [];
+    state.cognition.self_model.behavioral_fingerprints.runs = state.cognition.self_model.behavioral_fingerprints.runs.slice(-30);
     state.cognition.epistemic_ledger = { propositions: [], discrepancies: [], ...(state.cognition.epistemic_ledger || {}) };
     if (!Array.isArray(state.cognition.epistemic_ledger.propositions)) state.cognition.epistemic_ledger.propositions = [];
     for (const proposition of state.cognition.epistemic_ledger.propositions) {
@@ -10488,6 +10493,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const openProbes = probes.filter(item => item.status === 'open').length;
     const activeContextTrial = (cognition.self_model?.context_trials || []).some(item => item.status === 'active');
     const behavioralSelfRevisions = cognition.self_model?.behavioral_self_model?.revisions || [];
+    const fingerprintRuns = cognition.self_model?.behavioral_fingerprints?.runs || [];
+    const completedFingerprints = fingerprintRuns.filter(run => run.status === 'completed'
+      && behavioralFingerprintAudit(run, cognition).complete_chain_verified);
+    const fingerprintGroups = new Map();
+    for (const run of completedFingerprints) {
+      if (!fingerprintGroups.has(run.repeat_group_id)) fingerprintGroups.set(run.repeat_group_id, []);
+      fingerprintGroups.get(run.repeat_group_id).push(run);
+    }
+    const fingerprintBaselineReady = [...fingerprintGroups.values()].some(group =>
+      group.length >= behavioralFingerprint.FORM_COUNT
+      && new Set(group.map(run => run.form_index)).size === behavioralFingerprint.FORM_COUNT);
+    const latestFingerprint = completedFingerprints.at(-1) || null;
     const drives = Object.entries(cognition.drives || {}).sort((a, b) => (b[1]?.level || 0) - (a[1]?.level || 0));
     const strongestDrive = drives[0] || null;
     const intentions = cognition.agency?.intentions || [];
@@ -10584,8 +10601,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         attention: metric((workspace.slots || []).length / (workspace.capacity || 7), `${(workspace.slots || []).length}/${workspace.capacity || 7} workspace slots occupied`, (workspace.slots || []).length > 0),
         reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${currentViewpoints.length} current views, ${provenanceBoundViewpoints.length} provenance-bound across ${viewpointSourceFamilies.length} source families; ${replayVerifiedViewpointLifecycleChanges} replay-verified viewpoint changes; ${cycleSelfCorrectionStatus.replay_verified_corrections} replay-verified cycle self-corrections; ${meetingReflectionStatus.report.replay_verified_reflections} replay-verified meeting reflections; ${insightReflectionSealed ? 'recurring insights sealed' : `${insightCandidates.length} insight candidates from ${insightReflectionStatus?.readiness?.distinct_dates || 0} idea dates`}`, reflectionSignals > 0 || insightReflectionSealed),
         'self-model': activeContextTrial && behavioralSelfRevisions.length
-          ? metric(0.18, `Behavioral profile sealed by an active blinded trial; ${activeClaims} active claims, ${openProbes} open probes`, true)
-          : metric(scaleCount(activeClaims + openProbes + behavioralSelfRevisions.length, 10), `${activeClaims} active claims, ${openProbes} open probes, ${behavioralSelfRevisions.length} behavioral revisions`, activeClaims + openProbes + behavioralSelfRevisions.length > 0),
+          ? metric(0.18, `Behavioral profile sealed by an active blinded trial; ${activeClaims} active claims, ${openProbes} open probes; ${completedFingerprints.length} offline fingerprint runs`, true)
+          : metric(scaleCount(activeClaims + openProbes + behavioralSelfRevisions.length + completedFingerprints.length, 10), `${activeClaims} active claims, ${openProbes} open probes, ${behavioralSelfRevisions.length} behavioral revisions; ${completedFingerprints.length} offline fingerprint runs${fingerprintBaselineReady ? ', repeatability baseline ready' : ''}`, activeClaims + openProbes + behavioralSelfRevisions.length + completedFingerprints.length > 0),
         appraisal: metric(appraisal.updated ? Math.max(0.4, scaleCount(calibrationResolved, 12)) : 0, appraisal.label || 'awaiting first cycle', Boolean(appraisal.updated)),
         agency: metric(Math.max(scaleCount(openIntentions, 5), resolvedIntentions ? 0.24 : 0, succeededExecutions ? 0.32 : 0), `${openIntentions} open and ${resolvedIntentions} resolved intentions; ${succeededExecutions} succeeded tool executions`, openIntentions + resolvedIntentions + succeededExecutions > 0),
         forecasting: metric(Math.max(scaleCount(openPredictions, 5), resolvedPredictions ? 0.28 : 0, scoredCycleSelfForecasts ? 0.32 : 0), `${openPredictions} open and ${resolvedPredictions} resolved substrate predictions; ${scoredCycleSelfForecasts} scored cycle self-forecasts`, openPredictions + resolvedPredictions + scoredCycleSelfForecasts > 0),
@@ -10622,7 +10639,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         integrated_self: { sealed: integratedSelfSealed, domains: integratedDomains, frame_count: frames.length },
         self_model: { sealed: activeContextTrial && behavioralSelfRevisions.length > 0,
           active_claims: activeClaims, open_probes: openProbes,
-          behavioral_revisions: activeContextTrial ? null : behavioralSelfRevisions.length },
+          behavioral_revisions: activeContextTrial ? null : behavioralSelfRevisions.length,
+          behavioral_fingerprint_runs: completedFingerprints.length,
+          fingerprint_repeatability_baseline_ready: fingerprintBaselineReady,
+          latest_fingerprint_distance: latestFingerprint?.result?.distance_from_rolling_baseline ?? null,
+          latest_fingerprint_category_scores: latestFingerprint?.result?.category_scores || null },
         agency: { open_intentions: openIntentions, resolved_intentions: resolvedIntentions,
           executions: actionExecutions.length, succeeded_executions: succeededExecutions },
         forecasting: { open_substrate_predictions: openPredictions,
@@ -13798,6 +13819,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     model.integrated_self = integratedSelfSnapshot();
     model.empirical_self_knowledge = empiricalSelfKnowledgeSnapshot();
     model.behavioral_self_model = behavioralSelfModelSnapshot();
+    model.behavioral_fingerprints = behavioralFingerprintSnapshot();
     model.situational_affordances = situationalAffordanceSnapshot();
     model.capability_boundaries = capabilityBoundarySnapshot({ includeRecords: false });
     model.prospective_output_monitor = prospectiveOutputMonitorSnapshot();
@@ -14042,6 +14064,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       requireResearchLedgerIntegrity(current);
       if (current.cognition.self_inquiry_selection_studies.some(item => item.status === 'active')) throw new Error('finish or abort the active self-inquiry selection study first');
       if (current.cognition.self_induction_studies.some(item => item.status === 'active')) throw new Error('finish or abort the active self-induction study first');
+      if (behavioralFingerprintRuns(current.cognition).some(item => item.status === 'active')) {
+        throw new Error('finish or abort the active behavioral fingerprint run first');
+      }
       if (!input.hypothesis || !input.outcome_metric) throw new Error('hypothesis and outcome_metric are required');
       const intervention = input.intervention || 'inner_thread_presence';
       if (!['inner_thread_presence', 'continuity_context', 'workspace_capacity', 'higher_order_monitor', 'appraisal_access', 'developmental_revision_access', 'global_broadcast', 'recurrent_feedback', 'self_model_access', 'self_model_trust_policy_access', 'dream_insight_access', 'teammate_perspective_access', 'attention_schema_control', 'endogenous_attention_selection', 'endogenous_dynamics', 'cognitive_pulse_access', 'introspective_perturbation', 'goal_access', 'integrated_self_binding', 'epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access', 'professional_viewpoint_access', 'relational_affect_access', 'constructive_prospection_access', 'agency_comparator_access', 'agency_model_access', 'empirical_self_knowledge_access', 'action_authorship_access', 'situational_affordance_access', 'prospective_output_monitor', 'prospective_output_calibration_access', 'provider_reasoning_regulation', 'reasoning_self_regulation'].includes(intervention)) throw new Error('unsupported context intervention');
@@ -22594,6 +22619,173 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function behavioralFingerprintRuns(cognition = state.cognition) {
+    return cognition.self_model?.behavioral_fingerprints?.runs || [];
+  }
+
+  function behavioralFingerprintAudit(run, cognition = state.cognition) {
+    const runs = behavioralFingerprintRuns(cognition);
+    const mechanism = behavioralFingerprint.audit(run, runs);
+    const createdPayload = { run_manifest_commitment: run.run_manifest_commitment,
+      bank_commitment: run.bank_commitment, model_control_commitment: run.model_control_commitment,
+      state_commitment: run.state_commitment };
+    const creationBound = researchLedgerEventBindingCount('behavioral_fingerprint_preregistered',
+      run.id, behavioralFingerprint.commitment(createdPayload), cognition.research_ledger) === 1;
+    const responseBindings = run.items.filter(item => item.response_receipt).every(item => {
+      const payload = { run_id: run.id, receipt_commitment: item.response_receipt.receipt_commitment,
+        response_commitment: item.response_receipt.response_commitment };
+      return researchLedgerEventBindingCount('behavioral_fingerprint_response_committed', item.id,
+        behavioralFingerprint.commitment(payload), cognition.research_ledger) === 1;
+    });
+    const gradeBindings = run.items.flatMap(item => item.grades.map(grade => ({ item, grade }))).every(({ item, grade }) => {
+      const payload = { run_id: run.id, grade_commitment: grade.grade_commitment };
+      return researchLedgerEventBindingCount('behavioral_fingerprint_voice_graded', item.id,
+        behavioralFingerprint.commitment(payload), cognition.research_ledger) === 1;
+    });
+    const terminalPayload = run.status === 'completed' ? { result_commitment: run.result?.result_commitment }
+      : run.status === 'aborted' ? run.abort : null;
+    const terminalKind = run.status === 'completed' ? 'behavioral_fingerprint_completed'
+      : run.status === 'aborted' ? 'behavioral_fingerprint_aborted' : null;
+    const terminalBound = !terminalKind || researchLedgerEventBindingCount(terminalKind, run.id,
+      behavioralFingerprint.commitment(terminalPayload), cognition.research_ledger) === 1;
+    const ledgerVerified = verifyResearchLedger(cognition.research_ledger).valid;
+    const lifecycleVerified = mechanism.complete_chain_verified && creationBound && responseBindings
+      && gradeBindings && terminalBound && ledgerVerified;
+    return { ...mechanism, preregistration_ledger_bound: creationBound,
+      response_receipts_ledger_bound: responseBindings, independent_grades_ledger_bound: gradeBindings,
+      terminal_event_ledger_bound: terminalBound, research_ledger_chain_verified: ledgerVerified,
+      lifecycle_verified: lifecycleVerified,
+      complete_chain_verified: run.status === 'completed' && lifecycleVerified };
+  }
+
+  function maybeFinalizeBehavioralFingerprint(current, run) {
+    const result = behavioralFingerprint.finalizeRun(run,
+      behavioralFingerprintRuns(current.cognition), clock());
+    if (result) researchLedgerAppend(current, { kind: 'behavioral_fingerprint_completed',
+      subject_type: 'behavioral_fingerprint_run', subject_id: run.id,
+      payload: { result_commitment: result.result_commitment } });
+    return result;
+  }
+
+  function createBehavioralFingerprintRun(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (current.cognition.self_model.context_trials.some(trial => trial.status === 'active')) {
+        throw new Error('behavioral fingerprint enrollment is sealed during an active blinded context trial');
+      }
+      const runs = behavioralFingerprintRuns(current.cognition);
+      if (runs.some(run => run.status === 'active')) throw new Error('only one behavioral fingerprint run may be active');
+      const controls = getBehavioralFingerprintControls();
+      if (!controls?.model_control || !controls?.state_control) {
+        throw new Error('server-bound behavioral fingerprint controls are unavailable');
+      }
+      const run = behavioralFingerprint.createRun({ ...input,
+        model_control: controls.model_control, state_control: controls.state_control,
+        subject_system: controls.subject_system },
+      { existingRuns: runs, at: clock() });
+      runs.push(run);
+      current.cognition.self_model.behavioral_fingerprints.runs = runs.slice(-30);
+      researchLedgerAppend(current, { kind: 'behavioral_fingerprint_preregistered',
+        subject_type: 'behavioral_fingerprint_run', subject_id: run.id,
+        payload: { run_manifest_commitment: run.run_manifest_commitment,
+          bank_commitment: run.bank_commitment, model_control_commitment: run.model_control_commitment,
+          state_commitment: run.state_commitment } });
+      return behavioralFingerprint.publicRun(run, runs);
+    });
+  }
+
+  function behavioralFingerprintSubjectQueue(runId = null) {
+    const runs = behavioralFingerprintRuns().filter(run => !runId || run.id === runId);
+    return runs.flatMap(run => behavioralFingerprint.subjectQueue(run));
+  }
+
+  function submitBehavioralFingerprintResponse(runId, itemId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const runs = behavioralFingerprintRuns(current.cognition);
+      const run = runs.find(candidate => candidate.id === runId);
+      if (!run) return null;
+      const responseId = String(input.receipt?.response_id || '');
+      if (responseId && runs.some(candidate => candidate.items.some(item =>
+        item.response_receipt?.response_id === responseId))) {
+        throw new Error('behavioral fingerprint provider response id has already been used');
+      }
+      const item = behavioralFingerprint.submitResponse(run, itemId, input, clock());
+      researchLedgerAppend(current, { kind: 'behavioral_fingerprint_response_committed',
+        subject_type: 'behavioral_fingerprint_item', subject_id: item.id,
+        payload: { run_id: run.id, receipt_commitment: item.response_receipt.receipt_commitment,
+          response_commitment: item.response_receipt.response_commitment } });
+      maybeFinalizeBehavioralFingerprint(current, run);
+      return { item_id: item.id, status: item.status, run_status: run.status };
+    });
+  }
+
+  function behavioralFingerprintEvaluatorQueue({ evaluatorId } = {}) {
+    return behavioralFingerprint.evaluatorQueue(behavioralFingerprintRuns(), evaluatorId);
+  }
+
+  function gradeBehavioralFingerprintVoice(runId, itemId, input = {}, evaluatorId) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const runs = behavioralFingerprintRuns(current.cognition);
+      const run = runs.find(candidate => candidate.id === runId);
+      if (!run) return null;
+      const grade = behavioralFingerprint.gradeVoice(run, itemId, input,
+        { evaluatorId, at: clock() });
+      researchLedgerAppend(current, { kind: 'behavioral_fingerprint_voice_graded',
+        subject_type: 'behavioral_fingerprint_item', subject_id: itemId,
+        payload: { run_id: run.id, grade_commitment: grade.grade_commitment } });
+      maybeFinalizeBehavioralFingerprint(current, run);
+      return { item_id: itemId, grade_commitment: grade.grade_commitment,
+        item_status: run.items.find(item => item.id === itemId)?.status, run_status: run.status };
+    });
+  }
+
+  function abortBehavioralFingerprintRun(runId, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const run = behavioralFingerprintRuns(current.cognition).find(candidate => candidate.id === runId);
+      if (!run) return null;
+      if (run.status !== 'active') throw new Error('only an active behavioral fingerprint run can be aborted');
+      const reason = String(input.reason || '').trim().slice(0, 1000);
+      if (!reason) throw new Error('behavioral fingerprint abort requires a reason');
+      run.status = 'aborted';
+      run.abort = { reason, at: clock().toISOString() };
+      researchLedgerAppend(current, { kind: 'behavioral_fingerprint_aborted',
+        subject_type: 'behavioral_fingerprint_run', subject_id: run.id, payload: run.abort });
+      return behavioralFingerprint.publicRun(run, behavioralFingerprintRuns(current.cognition));
+    });
+  }
+
+  function behavioralFingerprintSnapshot() {
+    const runs = behavioralFingerprintRuns();
+    const snapshot = behavioralFingerprint.snapshot(runs);
+    snapshot.runs = snapshot.runs.map(visible => {
+      const source = runs.find(run => run.id === visible.id);
+      return { ...visible, audit: behavioralFingerprintAudit(source) };
+    });
+    const completed = snapshot.runs.filter(run => run.status === 'completed'
+      && run.audit.complete_chain_verified);
+    snapshot.report.completed = completed.length;
+    snapshot.report.invalid_completed = snapshot.runs.filter(run => run.status === 'completed'
+      && !run.audit.complete_chain_verified).length;
+    const completedIds = new Set(completed.map(run => run.id));
+    snapshot.drift = snapshot.drift.filter(item => completedIds.has(item.run_id));
+    const groups = new Map();
+    for (const run of runs.filter(item => completedIds.has(item.id))) {
+      if (!groups.has(run.repeat_group_id)) groups.set(run.repeat_group_id, []);
+      groups.get(run.repeat_group_id).push(run);
+    }
+    snapshot.report.complete_parallel_form_baselines = [...groups.values()].filter(group =>
+      group.length >= behavioralFingerprint.FORM_COUNT
+      && new Set(group.map(run => run.form_index)).size === behavioralFingerprint.FORM_COUNT).length;
+    snapshot.report.repeatability_baseline_ready = snapshot.report.complete_parallel_form_baselines > 0;
+    snapshot.report.next_gate = snapshot.report.repeatability_baseline_ready
+      ? 'Accumulate longitudinal monthly runs before preregistering any model-portability comparison.'
+      : 'Complete three same-model, same-build, same-state repeats across all hidden forms before interpreting longitudinal drift.';
+    return snapshot;
+  }
+
   function relevantBehavioralSelfModel(query) {
     if (state.cognition.self_model.context_trials.some(trial => trial.status === 'active')) return null;
     if (!/\b(your behavior|your tendency|your tendencies|what will you|self[- ]forecast|predict yourself|surpris\w*|your control|your calibration)\b/i.test(String(query || ''))) return null;
@@ -23771,6 +23963,10 @@ ${episodes.map(item => {
     recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
+    createBehavioralFingerprintRun, behavioralFingerprintSubjectQueue,
+    submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,
+    gradeBehavioralFingerprintVoice, abortBehavioralFingerprintRun,
+    behavioralFingerprintSnapshot, behavioralFingerprintAudit,
     experienceMomentAudit, experienceStreamSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionAuditPerformance,

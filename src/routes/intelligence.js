@@ -726,6 +726,45 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     (req, res) => res.json(store.behavioralSelfForecastPriorSnapshot()));
   app.get('/self-model/cycle-calibration', requireAuth,
     (req, res) => res.json(store.behavioralSelfCalibrationSnapshot()));
+  app.get('/self-model/fingerprints', requireAuth,
+    (_req, res) => cachedJson(res, 'behavioral-fingerprints', () => store.behavioralFingerprintSnapshot(),
+      { ttlMs: 15000 }));
+  app.post('/self-model/fingerprints', requireResearchAuth, (req, res) => {
+    try { res.json({ ok: true, run: store.createBehavioralFingerprintRun(req.body || {}) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/self-model/fingerprints/subject-queue', requireResearchAuth, (req, res) => {
+    if (shouldDeferResearchStatusRefresh()) return res.json({ items: [], deferred: 'interactive_priority' });
+    try { res.json({ items: store.behavioralFingerprintSubjectQueue(req.query.run_id || null) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/self-model/fingerprints/:id/items/:itemId/response', requireResearchAuth, (req, res) => {
+    try {
+      const result = store.submitBehavioralFingerprintResponse(req.params.id, req.params.itemId, req.body || {});
+      if (!result) return res.status(404).json({ error: 'behavioral fingerprint run not found' });
+      res.json({ ok: true, ...result });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.get('/self-model/fingerprints/evaluator-queue', requireEvaluatorAuth, (req, res) => {
+    if (shouldDeferResearchStatusRefresh()) return res.json({ items: [], deferred: 'interactive_priority' });
+    try { res.json({ items: store.behavioralFingerprintEvaluatorQueue({ evaluatorId: req.evaluatorId }) }); }
+    catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/self-model/fingerprints/:id/items/:itemId/grade', requireEvaluatorAuth, (req, res) => {
+    try {
+      const result = store.gradeBehavioralFingerprintVoice(req.params.id, req.params.itemId,
+        req.body || {}, req.evaluatorId);
+      if (!result) return res.status(404).json({ error: 'behavioral fingerprint run not found' });
+      res.json({ ok: true, ...result });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
+  app.post('/self-model/fingerprints/:id/abort', requireResearchAuth, (req, res) => {
+    try {
+      const run = store.abortBehavioralFingerprintRun(req.params.id, req.body || {});
+      if (!run) return res.status(404).json({ error: 'behavioral fingerprint run not found' });
+      res.json({ ok: true, run });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
   app.get('/self-model/inquiries', requireAuth, (req, res) => res.json(store.selfInquirySnapshot()));
   app.post('/self-model/inquiries/:id/approve', requireEvaluatorAuth, (req, res) => {
     try {
