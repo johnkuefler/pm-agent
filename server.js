@@ -1638,7 +1638,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
       professionalViewpointAvailable: () => intelligence.professionalViewpointAccessAvailable(trialConversationText),
       relationalAffectAvailable: () => intelligence.relationalAffectAccessAvailable(
         meetingContext?.requester?.name || meetingContext?.requester_name || null),
-      selfModelTrustAvailable: () => intelligence.selfModelTrustAccessAvailable(),
+      selfModelTrustAvailable: () => opts.selfModelTrustAvailable !== false
+        && intelligence.selfModelTrustAccessAvailable(),
       dreamInsightAvailable: () => intelligence.dreamInsightAccessAvailable(),
       teammatePerspectiveAvailable: () => intelligence.teammatePerspectiveAccessAvailable(
         meetingContext?.requester?.name || meetingContext?.requester_name || null),
@@ -6250,6 +6251,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
   let globalBroadcastAssignmentForFailure = null;
+  let selfModelTrustAssignmentForFailure = null;
   let behavioralSelfProfileAssignmentForFailure = null;
   let cognitiveParameterAssignmentForFailure = null;
   try {
@@ -6423,6 +6425,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       intelligenceContextReceipt, cognitiveParameterAssignment } =
       buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
         reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
+        selfModelTrustAvailable: isDirect,
         procedureCandidatesAvailable: mode === 'normal',
         exemplarsAvailable: mode === 'normal',
         cognitiveParameterStudiesEnabled: mode === 'normal' && isDirect,
@@ -6431,6 +6434,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
     if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
+    if (contextAssignment?.intervention === 'self_model_trust_policy_access') {
+      selfModelTrustAssignmentForFailure = contextAssignment;
+    }
     let tail = slackVolatile;
     if (mode === 'proactive') {
       tail += '\n\nYou are chiming in PROACTIVELY in a Slack channel, nobody @mentioned you. The bar is HIGH and it is specifically a DATA bar: only speak if you can add a CONCRETE, GROUNDED fact (a real status, a real date, a real name, a real number), not an opinion, a vibe, a "just flagging," or a generic helpful thought. GROUND IT FIRST: if your contribution is about a project, a task, a deadline, or who-owns-what, use your live tools (Teamwork especially) or your memory to VERIFY the specific fact before you say it. If you look and you don\'t actually have a specific verified fact to add beyond what\'s already been said, OUTPUT NOTHING (empty response). Silence is the default; an unsolicited interjection only earns its place when it puts real information on the table that the thread didn\'t have. When you do speak: brief, lead with the grounded fact ("FYI, DMC\'s QA milestone is due Thursday and it\'s the only one still open"), acknowledge you\'re jumping in. Never chime in just to be present or agreeable. Do NOT make changes (create/update tasks, etc.) when chiming in unsolicited, read and inform only.';
@@ -6743,6 +6749,24 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         globalBroadcastResponseRecorded = true;
       }
     };
+    let selfModelTrustResponseRecorded = false;
+    const recordSelfModelTrustResponse = (publicResponse, delivered = true) => {
+      if (selfModelTrustResponseRecorded
+        || contextAssignment?.intervention !== 'self_model_trust_policy_access') return;
+      const gradingTask = `Conversation context:\n${String(convText || '').slice(-2400)}\n\nCurrent user request:\n${String(text || '').slice(-1200)}`;
+      try {
+        intelligence.recordSelfModelTrustResponse(contextAssignment.assignment_id, {
+          task_prompt: gradingTask,
+          public_response: publicResponse || '[no public response delivered]',
+          delivered,
+          interaction_id: turnRef,
+        });
+      } catch (error) {
+        console.warn(`self-model trust response capture failed (non-fatal): ${error.message}`);
+      } finally {
+        selfModelTrustResponseRecorded = true;
+      }
+    };
 
     // Whether a live Teamwork WRITE or a live Slack SEND actually executed this turn — used below to
     // avoid the extractor re-creating a task/comment/send Nora already did directly (which would
@@ -6755,6 +6779,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       recordIntrospectiveResponse('[no public response delivered]', false);
       recordGoalResponse('[no public response delivered]', false);
       recordGlobalBroadcastResponse('[no public response delivered]', false);
+      recordSelfModelTrustResponse('[no public response delivered]', false);
       if (reasoningRegulationActive) {
         try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
         reasoningRegulationActive = false;
@@ -6803,6 +6828,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         recordGoalResponse('[no public response delivered]', false);
         recordEndogenousAttentionResponse('[no public response delivered]', false);
         recordGlobalBroadcastResponse('[no public response delivered]', false);
+        recordSelfModelTrustResponse('[no public response delivered]', false);
         if (['prospective_output_monitor', 'prospective_output_calibration_access'].includes(contextAssignment?.intervention)) {
           try { intelligence.excludeProspectiveOutputMonitorAssignment(contextAssignment.assignment_id, 'intentional_silence'); } catch {}
         }
@@ -6836,6 +6862,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (reactMatch) {
       const emoji = reactMatch[1].toLowerCase();
       recordGlobalBroadcastResponse(`:${emoji}:`, false);
+      recordSelfModelTrustResponse(`:${emoji}:`, false);
       if (cognitiveParameterAssignment?.assignment_id) {
         try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'reaction_only_response'); } catch {}
         cognitiveParameterAssignmentForFailure = null;
@@ -6964,6 +6991,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       }
       try { recordEndogenousAttentionResponse(reply, false); } catch (receiptError) { console.warn(`endogenous attention delivery failure receipt failed: ${receiptError.message}`); }
       try { recordGlobalBroadcastResponse(reply, false); } catch (receiptError) { console.warn(`global broadcast delivery failure receipt failed: ${receiptError.message}`); }
+      try { recordSelfModelTrustResponse(reply, false); } catch (receiptError) { console.warn(`self-model trust delivery failure receipt failed: ${receiptError.message}`); }
       if (monitoredOutput.record?.id && monitoredOutput.record.status === 'completed') {
         try {
           intelligence.markProspectiveOutputMonitorDelivered(monitoredOutput.record.id, {
@@ -6984,6 +7012,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     recordGoalResponse(reply, allSegmentsPosted);
     recordEndogenousAttentionResponse(reply, allSegmentsPosted);
     recordGlobalBroadcastResponse(reply, allSegmentsPosted);
+    recordSelfModelTrustResponse(reply, allSegmentsPosted);
     if (reasoningRegulationActive) {
       try {
         intelligence.completeProviderReasoningRegulation(contextAssignment.assignment_id, {
@@ -7107,6 +7136,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     if (globalBroadcastAssignmentForFailure?.intervention === 'global_broadcast') {
       try { intelligence.excludeGlobalBroadcastAssignment(globalBroadcastAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
+    }
+    if (selfModelTrustAssignmentForFailure?.intervention === 'self_model_trust_policy_access') {
+      try { intelligence.excludeSelfModelTrustAssignment(selfModelTrustAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}
     }
     if (cognitiveParameterAssignmentForFailure?.assignment_id) {
       try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignmentForFailure.assignment_id, 'slack_handler_failure'); } catch {}

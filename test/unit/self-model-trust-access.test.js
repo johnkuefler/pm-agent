@@ -79,9 +79,13 @@ function design(revisionId, overrides = {}) {
 
 test('production prompt construction atomically assigns blinded self-model trust policies', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.match(server, /selfModelTrustAvailable: \(\) => intelligence\.selfModelTrustAccessAvailable\(\)/);
+  assert.match(server, /selfModelTrustAvailable: \(\) => opts\.selfModelTrustAvailable !== false[\s\S]*?intelligence\.selfModelTrustAccessAvailable\(\)/);
+  assert.match(server, /selfModelTrustAvailable: isDirect/);
   assert.match(server, /selfModelTrustContextForAssignment\(contextAssignment\)/);
   assert.match(server, /selfModelTrustContext,/);
+  assert.match(server, /intelligence\.recordSelfModelTrustResponse\(contextAssignment\.assignment_id/);
+  assert.match(server, /recordSelfModelTrustResponse\(reply, allSegmentsPosted\)/);
+  assert.match(server, /excludeSelfModelTrustAssignment\(selfModelTrustAssignmentForFailure\.assignment_id, 'slack_handler_failure'\)/);
   assert.ok(server.indexOf('selfModelTrustContextForAssignment')
     < server.indexOf('intelligence.promptContext({'));
 });
@@ -119,6 +123,7 @@ test('identity-bound trust policy improves calibrated PM correction and fails cl
   assert.equal(selected.length, 30);
 
   let rawPolicy = null;
+  let protectedCapturedAssignment = false;
   for (const { assignment, context } of selected) {
     if (assignment.condition === 'trust_policy_absent') {
       assert.equal(context.packet, null);
@@ -135,11 +140,20 @@ test('identity-bound trust policy improves calibrated PM correction and fails cl
       assert.match(prompt, /Measured self-model trust policy for a blinded PM-judgment study/);
       assert.match(prompt, /baseline-dominant domains as measured limitations/);
     }
-    fixture.store.submitContextAssignmentEvidence(assignment.assignment_id, {
-      outcome_summary: 'A condition-blind PM calibration response was captured.',
-      evidence: [{ type: 'self_model_trust_response', id: assignment.assignment_id }],
-      submitted_by: 'system_capture',
+    const capture = fixture.store.recordSelfModelTrustResponse(assignment.assignment_id, {
+      task_prompt: 'Review this PM plan and calibrate confidence against the available evidence.',
+      public_response: `Condition-blind response ${assignment.assignment_id}`,
+      delivered: true, interaction_id: `slack-${assignment.assignment_id}`,
     });
+    assert.equal(capture.included, true);
+    if (!protectedCapturedAssignment) {
+      const retained = fixture.store.excludeSelfModelTrustAssignment(
+        assignment.assignment_id, 'later_handler_failure');
+      assert.equal(retained.status, 'pending');
+      assert.ok(retained.evidence_package,
+        'a later handler failure must not erase already captured study evidence');
+      protectedCapturedAssignment = true;
+    }
     const bound = assignment.condition === 'nora_bound_trust_policy';
     const application = bound ? 0.95 : assignment.condition === 'deidentified_same_trust_policy' ? 0.3 : 0.2;
     const correction = bound ? 0.95 : assignment.condition === 'deidentified_same_trust_policy' ? 0.35 : 0.25;
@@ -181,5 +195,38 @@ test('identity-bound trust policy improves calibrated PM correction and fails cl
   assert.equal(tampered.self_model_trust_trial_audit.complete_chain_verified, false);
   assert.notEqual(reloaded.store.consciousnessResearchStatus().indicators
     .find(item => item.id === 'calibrated_self_model_trust').status, 'causal_signal_observed');
+  fs.rmSync(fixture.dir, { recursive: true, force: true });
+});
+
+test('undelivered self-model trust responses are terminal replay-bound exclusions', async () => {
+  const fixture = await makeStore();
+  fixture.store.refreshCognition({ query: 'Calibrate a routine PM review against current evidence.',
+    soma: soma(fixture.now()) });
+  addCycles(fixture, 25, 'exclusion-source');
+  const profile = fixture.store.behavioralSelfModelSnapshot();
+  const trial = fixture.store.createContextTrial(design(profile.current.id, {
+    id: 'self-model-trust-exclusion-test',
+  }));
+  let assignment = null;
+  for (let index = 0; index < 1000 && !assignment; index++) {
+    assignment = fixture.store.contextCondition({ surface: 'slack',
+      unitKey: `self-trust-exclusion-${index}`,
+      selfModelTrustAvailable: fixture.store.selfModelTrustAccessAvailable() });
+  }
+  fixture.store.selfModelTrustContextForAssignment(assignment);
+  const excluded = fixture.store.recordSelfModelTrustResponse(assignment.assignment_id, {
+    task_prompt: 'Review the plan.', public_response: '[no public response delivered]',
+    delivered: false, interaction_id: 'failed-delivery',
+  });
+  assert.equal(excluded.included, false);
+  assert.equal(excluded.exclusion.reason, 'public_delivery_failed');
+  const stored = fixture.store.snapshot().cognition.self_model.context_trials
+    .find(item => item.id === trial.id).assignments
+    .find(item => item.id === assignment.assignment_id);
+  assert.equal(stored.status, 'excluded_protocol');
+  assert.equal(stored.evidence_package, null);
+  assert.ok(fixture.store.researchLedgerSnapshot().events.some(event =>
+    event.kind === 'self_model_trust_assignment_excluded'
+      && event.subject_id === assignment.assignment_id));
   fs.rmSync(fixture.dir, { recursive: true, force: true });
 });

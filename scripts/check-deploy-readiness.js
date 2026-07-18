@@ -19,7 +19,8 @@ function assessRoutineContract(routine = {}) {
     updated_at: routine.updated_at || null, updated_by: routine.updated_by || null };
 }
 
-function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null } = {}) {
+function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
+  researchAutopilot = null } = {}) {
   const blockers = [];
   if (lock.locked) blockers.push({ kind: 'run_lock', holder: lock.holder || null,
     cycle_id: lock.lifecycle?.cycle_id || null, cycle_status: lock.lifecycle?.cycle_status || null });
@@ -35,6 +36,27 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null } = 
   if (routine) {
     const contract = assessRoutineContract(routine);
     if (!contract.valid) blockers.push({ kind: 'routine_contract', ...contract });
+  }
+  if (researchAutopilot) {
+    const priority = researchAutopilot.interactive_priority || {};
+    const activeInteractions = Math.max(0, Number(priority.active_interactions) || 0);
+    const activeSurfaces = priority.active_surfaces && typeof priority.active_surfaces === 'object'
+      ? priority.active_surfaces : {};
+    if (activeInteractions > 0 || Object.values(activeSurfaces).some(value => Number(value) > 0)) {
+      blockers.push({ kind: 'interactive_work_in_flight', active_interactions: activeInteractions,
+        active_surfaces: activeSurfaces });
+    }
+    const quietRemainingMs = Math.max(0, Number(priority.quiet_remaining_ms) || 0);
+    if (quietRemainingMs > 0) {
+      blockers.push({ kind: 'interactive_quiet_window', quiet_remaining_ms: quietRemainingMs,
+        last_interactive_surface: priority.last_interactive_surface || null });
+    }
+    const backgroundProviderInFlight = Math.max(0,
+      Number(priority.background_provider_in_flight) || 0);
+    if (backgroundProviderInFlight > 0) {
+      blockers.push({ kind: 'background_provider_in_flight', count: backgroundProviderInFlight,
+        labels: Array.isArray(priority.background_labels) ? priority.background_labels : [] });
+    }
   }
   return { ready: blockers.length === 0, blockers };
 }
@@ -56,12 +78,16 @@ async function checkDeployReadiness({
   if (!apiKey) throw new Error('NORA_API_KEY is required for the deployment readiness check');
   if (typeof fetchImpl !== 'function') throw new Error('deployment readiness check requires fetch');
   const normalizedBase = String(baseUrl).replace(/\/+$/, '');
-  const [lock, activeBots, routine] = await Promise.all([
+  const [lock, activeBots, routine, researchAutopilot] = await Promise.all([
     fetchJson('/run-lock', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/admin/active-bots', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/routine', { baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000 }),
+    fetchJson('/consciousness-research/autopilot', {
+      baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000,
+    }),
   ]);
-  return { ...assessDeployReadiness({ lock, activeBots, routine }), checked_at: new Date().toISOString(),
+  return { ...assessDeployReadiness({ lock, activeBots, routine, researchAutopilot }),
+    checked_at: new Date().toISOString(),
     base_url: normalizedBase };
 }
 

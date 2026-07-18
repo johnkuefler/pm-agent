@@ -18835,6 +18835,73 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function excludeSelfModelTrustAssignment(id, reason = 'operational_failure') {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const trial = current.cognition.self_model.context_trials.find(item =>
+        item.intervention === 'self_model_trust_policy_access'
+        && item.assignments.some(assignment => assignment.id === id));
+      const assignment = trial?.assignments.find(item => item.id === id);
+      if (!trial || !assignment) return null;
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        return JSON.parse(JSON.stringify(assignment));
+      }
+      // Once a response is atomically captured, a later non-research handler failure must not
+      // discard the participant or its replay-bound evidence. Grading remains safely pending.
+      if (assignment.evidence_package) return JSON.parse(JSON.stringify(assignment));
+      assignment.status = 'excluded_protocol';
+      assignment.protocol_exclusion = {
+        reason: String(reason || 'operational_failure').slice(0, 160),
+        at: clock().toISOString(),
+      };
+      researchLedgerAppend(current, { kind: 'self_model_trust_assignment_excluded',
+        subject_type: 'context_assignment', subject_id: assignment.id,
+        payload: assignment.protocol_exclusion });
+      return JSON.parse(JSON.stringify(assignment));
+    });
+  }
+
+  function recordSelfModelTrustResponse(id, input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const trial = current.cognition.self_model.context_trials.find(item =>
+        item.intervention === 'self_model_trust_policy_access'
+        && item.assignments.some(assignment => assignment.id === id));
+      const assignment = trial?.assignments.find(item => item.id === id);
+      if (!trial || !assignment) return null;
+      if (trial.status !== 'active' || assignment.status !== 'pending') return {
+        assignment_id: assignment.id, included: Boolean(assignment.evidence_package),
+        already_closed: true,
+      };
+      const task = String(input.task_prompt || '').trim();
+      const response = String(input.public_response || '').trim();
+      const audit = selfModelTrustAssignmentAudit(assignment);
+      if (input.delivered !== true || !task || !response
+        || assignment.intervention_receipt?.kind !== 'self_model_trust_policy_delivery'
+        || !audit.delivery_chain_verified) {
+        assignment.status = 'excluded_protocol';
+        assignment.protocol_exclusion = {
+          reason: input.delivered !== true ? 'public_delivery_failed'
+            : 'missing_or_invalid_self_model_trust_capture',
+          at: clock().toISOString(),
+        };
+        researchLedgerAppend(current, { kind: 'self_model_trust_assignment_excluded',
+          subject_type: 'context_assignment', subject_id: assignment.id,
+          payload: assignment.protocol_exclusion });
+        return { assignment_id: assignment.id, included: false,
+          exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)) };
+      }
+      const evidencePackage = attachAssignmentEvidence(current, id, {
+        outcome_summary: 'Atomically captured task and delivered public response for condition-blind self-model trust-policy grading.',
+        evidence: [{ type: 'self_model_trust_response',
+          id: String(input.interaction_id || assignment.unit_hash).slice(0, 300) }],
+        submitted_by: 'system_capture', task_prompt: task, public_response: response,
+      }, clock(), true);
+      return { assignment_id: assignment.id, included: true,
+        evidence_package: evidencePackage };
+    });
+  }
+
   function recordGoalAccessResponse(id, input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -25435,6 +25502,7 @@ ${episodes.map(item => {
     endogenousContextForAssignment, integratedSelfContextForAssignment, cognitivePulseContextForAssignment, constructiveProspectionContextForAssignment, agencyComparatorContextForAssignment, agencyModelContextForAssignment, empiricalSelfContextForAssignment, actionAuthorshipContextForAssignment, situationalAffordanceContextForAssignment,
     contextTrialGradingQueue,
     submitContextAssignmentEvidence, recordGlobalBroadcastResponse, excludeGlobalBroadcastAssignment,
+    recordSelfModelTrustResponse, excludeSelfModelTrustAssignment,
     abortContextTrial,
     selfModelContextForAssignment,
     createAttentionDirective, resolveAttentionDirective, attentionSchemaSnapshot,

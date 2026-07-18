@@ -20,13 +20,18 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
       if (url.endsWith('/run-lock')) return response({ locked: false,
         expired_lease_pending_recovery: false });
       if (url.endsWith('/routine')) return response(validRoutine);
+      if (url.endsWith('/consciousness-research/autopilot')) return response({
+        interactive_priority: { active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0,
+          background_provider_in_flight: 0 },
+      });
       return response({ count: 0, bots: [] });
     } });
   assert.equal(result.ready, true);
   assert.deepEqual(result.blockers, []);
   assert.deepEqual(calls.map(item => item.url).sort(), [
-    'https://nora.example/admin/active-bots', 'https://nora.example/routine',
-    'https://nora.example/run-lock',
+    'https://nora.example/admin/active-bots',
+    'https://nora.example/consciousness-research/autopilot',
+    'https://nora.example/routine', 'https://nora.example/run-lock',
   ]);
   assert.ok(calls.every(item => item.authorization === 'Bearer test-key'));
 });
@@ -55,6 +60,21 @@ test('deployment readiness reports active lifecycle, recovery, and meeting block
   assert.equal(result.ready, false);
   assert.deepEqual(result.blockers.map(item => item.kind),
     ['run_lock', 'run_recovery_pending', 'active_meeting']);
+});
+
+test('deployment readiness protects live replies, their quiet window, and background provider receipts', () => {
+  const result = assessDeployReadiness({
+    lock: { locked: false }, activeBots: { count: 0, bots: [] }, routine: validRoutine,
+    researchAutopilot: { interactive_priority: {
+      active_interactions: 1, active_surfaces: { slack: 1 }, quiet_remaining_ms: 12000,
+      last_interactive_surface: 'slack', background_provider_in_flight: 1,
+      background_labels: ['research-autopilot'],
+    } },
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.blockers.map(item => item.kind), [
+    'interactive_work_in_flight', 'interactive_quiet_window', 'background_provider_in_flight',
+  ]);
 });
 
 test('deployment readiness fails closed when either authoritative probe fails', async () => {
