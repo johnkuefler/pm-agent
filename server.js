@@ -60,6 +60,7 @@ const selfAuthoredAimReappraisal = require('./src/intelligence/self-authored-aim
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
 const postDeliverySelfEvaluation = require('./src/intelligence/post-delivery-self-evaluation');
 const behavioralFingerprintEvaluatorAutopilot = require('./src/intelligence/behavioral-fingerprint-evaluator-autopilot');
+const interactionOutcomeReviewAutopilot = require('./src/intelligence/interaction-outcome-review-autopilot');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -4343,20 +4344,21 @@ async function fetchSlackChannelHistory(channel, latestTs, limit = 12) {
 // John, and for channel threads too. Returns { messages: [...human follow-ups...], truncated }
 // or { error } with a scope hint. Reactions are best-effort and usually empty (the bot token
 // has no reactions:read); the follow-up messages are the primary signal per the routine.
-async function fetchSlackLanding(channel, ts, { channelType, threadTs } = {}) {
+async function fetchSlackLanding(channel, ts, { channelType, threadTs,
+  get = axios.get, signal = undefined } = {}) {
   const headers = { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` };
   const isDM = channelType === 'im' || channelType === 'mpim' || /^D/.test(channel || '');
   try {
     let raw = [];
     if (threadTs && !isDM) {
       // Channel thread: everything in the thread, then keep what came after her message.
-      const r = await axios.get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, { headers, timeout: 6000 });
+      const r = await get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, { headers, timeout: 6000, signal });
       if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
       raw = Array.isArray(r.data.messages) ? r.data.messages : [];
     } else {
       // DM or non-threaded channel message: history at/after her message (oldest=ts inclusive).
       const params = new URLSearchParams({ channel, oldest: String(ts), inclusive: 'true', limit: '20' });
-      const r = await axios.get(`https://slack.com/api/conversations.history?${params.toString()}`, { headers, timeout: 6000 });
+      const r = await get(`https://slack.com/api/conversations.history?${params.toString()}`, { headers, timeout: 6000, signal });
       if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
       raw = (Array.isArray(r.data.messages) ? r.data.messages : []).slice().reverse(); // →chronological
     }
@@ -8495,9 +8497,7 @@ function logInteraction(entry) {
   }
 }
 
-registerInteractionRoutes(app, {
-  requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT,
-  onOutcome: interaction => {
+function handleInteractionOutcome(interaction) {
     try { intelligence.syncCapabilityBoundaryOutcomes([interaction]); }
     catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
     try { intelligence.recordProcedureInteractionOutcome(interaction); }
@@ -8555,7 +8555,49 @@ registerInteractionRoutes(app, {
           ? { relational_signal: interaction.outcome } : {}),
       });
     }
-  },
+}
+
+function commitAutomatedInteractionOutcome(interactionId, input = {}) {
+  const items = loadInteractions();
+  const interaction = items.find(item => item.id === interactionId);
+  if (!interaction) throw new Error('interaction outcome target was not found');
+  if (interaction.reviewed === true) {
+    throw new Error('interaction outcome was resolved before automated review committed');
+  }
+  const candidate = { ...interaction, outcome: input.outcome,
+    signal: String(input.signal || '').slice(0, 1200), reviewed: true,
+    reviewed_at: input.reviewed_at,
+    automated_review_receipt: input.automated_review_receipt };
+  if (!interactionOutcomeReviewAutopilot.verifyAutomatedReviewReceipt(
+    candidate, candidate.automated_review_receipt)) {
+    throw new Error('automated interaction outcome receipt failed replay verification');
+  }
+  const responseIds = new Set(candidate.automated_review_receipt.reviews
+    .map(item => item.response_id));
+  if (items.some(item => item.id !== interactionId
+    && item.automated_review_receipt?.reviews?.some(review => responseIds.has(review.response_id)))) {
+    throw new Error('interaction outcome reviewer response id has already been used');
+  }
+  Object.assign(interaction, candidate);
+  saveInteractions(items);
+  handleInteractionOutcome(interaction);
+  return interaction;
+}
+
+function recordAutomatedInteractionReviewAttempt(interactionId, attempt = {}) {
+  const items = loadInteractions();
+  const interaction = items.find(item => item.id === interactionId);
+  if (!interaction || interaction.reviewed === true || interaction.automated_review_attempt) {
+    return interaction || null;
+  }
+  interaction.automated_review_attempt = JSON.parse(JSON.stringify(attempt));
+  saveInteractions(items);
+  return interaction;
+}
+
+registerInteractionRoutes(app, {
+  requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT,
+  onOutcome: handleInteractionOutcome,
 });
 
 // Dreams — Nora's nightly memory-consolidation + reflection log
@@ -9680,6 +9722,8 @@ let _backgroundIntelligenceCycleLast = null;
 const _behavioralFingerprintSubjectInFlight = new Set();
 let _behavioralFingerprintEvaluatorInFlight = false;
 let _behavioralFingerprintEvaluatorLastCycle = null;
+let _interactionOutcomeReviewInFlight = false;
+let _interactionOutcomeReviewLastCycle = null;
 
 function backgroundPostWithPriority(post, lease) {
   return (url, data, config = {}) => post(url, data, { ...config, signal: lease.signal });
@@ -9852,6 +9896,63 @@ async function runBehavioralFingerprintEvaluatorRuntime({ post = axios.post,
     return _behavioralFingerprintEvaluatorLastCycle;
   } finally {
     _behavioralFingerprintEvaluatorInFlight = false;
+  }
+}
+
+function interactionOutcomeReviewRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_INTERACTION_OUTCOME_REVIEW_AUTOPILOT !== '0'
+    && Boolean(env.OPENAI_API_KEY) && Boolean(env.SLACK_BOT_TOKEN);
+  return {
+    enabled, model: interactionOutcomeReviewAutopilot.DEFAULT_MODEL,
+    maximum_reviews_per_cycle: interactionOutcomeReviewAutopilot.MAX_REVIEWS_PER_CYCLE,
+    minimum_review_delay_hours: interactionOutcomeReviewAutopilot.MIN_REVIEW_DELAY_MS / 3600000,
+    reason: enabled ? 'provider_credentials_default'
+      : !env.OPENAI_API_KEY ? 'missing_openai_key'
+        : !env.SLACK_BOT_TOKEN ? 'missing_slack_token' : 'explicitly_disabled',
+  };
+}
+
+async function runInteractionOutcomeReviewAutopilotRuntime({ post = axios.post,
+  signal = undefined } = {}) {
+  const config = interactionOutcomeReviewRuntimeConfig();
+  if (!config.enabled) return { protocol_version: interactionOutcomeReviewAutopilot.PROTOCOL_VERSION,
+    state: 'disabled', reviewed: 0, inconclusive: 0, failures: [], reason: config.reason };
+  if (intelligence.activeContextTrialsSnapshot().length) {
+    _interactionOutcomeReviewLastCycle = {
+      protocol_version: interactionOutcomeReviewAutopilot.PROTOCOL_VERSION,
+      state: 'waiting_for_active_blinded_trial', reviewed: 0, inconclusive: 0,
+      failures: [], at: new Date().toISOString(),
+    };
+    return _interactionOutcomeReviewLastCycle;
+  }
+  if (_interactionOutcomeReviewInFlight) return {
+    protocol_version: interactionOutcomeReviewAutopilot.PROTOCOL_VERSION,
+    state: 'in_flight', reviewed: 0, inconclusive: 0, failures: [],
+  };
+  _interactionOutcomeReviewInFlight = true;
+  try {
+    const cycle = await interactionOutcomeReviewAutopilot.runCycle({
+      interactions: loadInteractions(), enabled: true, model: config.model,
+      maxReviews: config.maximum_reviews_per_cycle,
+      readLanding: interaction => fetchSlackLanding(interaction.channel, interaction.ts, {
+        channelType: interaction.channel_type, threadTs: interaction.thread_ts, signal,
+      }),
+      callProvider: async request => {
+        const response = await post('https://api.openai.com/v1/responses', request, {
+          headers: { 'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+          timeout: 30000,
+        });
+        return response.data;
+      },
+      commitOutcome: commitAutomatedInteractionOutcome,
+      recordAttempt: recordAutomatedInteractionReviewAttempt,
+    });
+    _interactionOutcomeReviewLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _interactionOutcomeReviewLastCycle;
+  } finally {
+    _interactionOutcomeReviewInFlight = false;
   }
 }
 
@@ -10052,6 +10153,11 @@ function researchAutopilotProgramStatus() {
     enabled: fingerprintEvaluatorConfig.enabled, model: fingerprintEvaluatorConfig.model,
     lastCycle: _behavioralFingerprintEvaluatorLastCycle,
   });
+  const interactionReviewConfig = interactionOutcomeReviewRuntimeConfig();
+  const interactionReviewStatus = interactionOutcomeReviewAutopilot.status(loadInteractions(), {
+    enabled: interactionReviewConfig.enabled, model: interactionReviewConfig.model,
+    lastCycle: _interactionOutcomeReviewLastCycle,
+  });
   const selfPredictionProgram = intelligence.selfPredictionProgramSnapshot();
   const naturalCyclePrediction = naturalCyclePredictionAutopilot.status(intelligence, {
     enabled, lastCycle: _researchAutopilotLastCycle?.natural_cycle_prediction || null,
@@ -10090,6 +10196,7 @@ function researchAutopilotProgramStatus() {
       dream_insight_reflection: dreamInsightStatus,
       post_delivery_self_evaluation: postDeliveryStatus,
       behavioral_fingerprint_evaluator: fingerprintEvaluatorStatus,
+      interaction_outcome_review: interactionReviewStatus,
       interactive_priority: interactivePriority,
       background_intelligence_cycle: backgroundCycle,
     };
@@ -10130,6 +10237,7 @@ function researchAutopilotProgramStatus() {
     dream_insight_reflection: dreamInsightStatus,
     post_delivery_self_evaluation: postDeliveryStatus,
     behavioral_fingerprint_evaluator: fingerprintEvaluatorStatus,
+    interaction_outcome_review: interactionReviewStatus,
     interactive_priority: interactivePriority,
     background_intelligence_cycle: backgroundCycle,
   };
@@ -11091,6 +11199,9 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         () => runSelfAuthoredAimLifecycleAutopilotRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
       ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
+      ['interaction_outcome_review',
+        () => runInteractionOutcomeReviewAutopilotRuntime({ post: priorityPost,
+          signal: lease.signal })],
       ['behavioral_fingerprint_schedule', () => runBehavioralFingerprintSchedulingRuntime()],
       ['behavioral_fingerprint_subject',
         () => runBehavioralFingerprintSubjectRuntime({ post: priorityPost })],
@@ -11256,6 +11367,10 @@ module.exports = {
     runBehavioralFingerprintSchedulingRuntime,
     behavioralFingerprintEvaluatorRuntimeConfig,
     runBehavioralFingerprintEvaluatorRuntime,
+    interactionOutcomeReviewRuntimeConfig,
+    runInteractionOutcomeReviewAutopilotRuntime,
+    commitAutomatedInteractionOutcome,
+    recordAutomatedInteractionReviewAttempt,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,

@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const interactionOutcomeReview = require('./interaction-outcome-review-autopilot');
 
 const PROTOCOL_VERSION = 1;
 const POSITIVE_OUTCOMES = new Set(['landed', 'appreciated']);
@@ -47,6 +48,9 @@ function recordFromInteraction(interaction = {}) {
   const evidenceRef = canonicalSlackRef(interaction);
   if (interaction.reviewed !== true || !interaction.id || !interaction.trigger || !interaction.text
     || !interaction.reviewed_at || !OBSERVED_OUTCOMES.has(outcome) || !evidenceRef) return null;
+  const automatedReceipt = interaction.automated_review_receipt || null;
+  if (automatedReceipt
+    && !interactionOutcomeReview.verifyAutomatedReviewReceipt(interaction, automatedReceipt)) return null;
   const taskFamily = classifyTask(interaction.trigger, interaction.executed_tool_names);
   const scored = POSITIVE_OUTCOMES.has(outcome) || outcome === 'corrected';
   const manifest = {
@@ -65,7 +69,10 @@ function recordFromInteraction(interaction = {}) {
     channel_commitment: commitment(evidenceRef.id.split(':')[0]),
     delivered_at: String(interaction.created || '').slice(0, 40) || null,
     reviewed_at: String(interaction.reviewed_at).slice(0, 40),
-    source_quality: 'authenticated_subject_adjacent_slack_review',
+    source_quality: automatedReceipt
+      ? 'provider_disjoint_authenticated_slack_review'
+      : 'authenticated_subject_adjacent_slack_review',
+    review_receipt_commitment: automatedReceipt?.receipt_commitment || null,
   };
   return { ...manifest, content_commitment: commitment(manifest) };
 }

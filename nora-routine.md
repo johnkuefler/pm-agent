@@ -1642,6 +1642,14 @@ The server logged every Slack reply she sent. Now read back what happened **arou
 
 4. **Write each outcome back:** `POST /interactions/{id}/outcome` with `{ "outcome": "...", "signal": "..." }`. This marks it reviewed so tomorrow's dream skips it.
 
+   Outside an active blinded context trial, the server also runs a six-hour-delayed background review
+   for at most one old interaction per scheduler cycle. It uses the exact built-in Slack landing packet
+   and commits an outcome only when two condition-blind OpenAI roles agree; disagreement is marked as
+   an automated attempt but remains unreviewed for this movement. Reviewed outcomes are immutable, so
+   never relabel or re-review one already resolved by that path. Its replayable receipt is stronger
+   provenance than an unsupported label, but it remains provider-disjoint model grading over subject-
+   adjacent evidence, not human review, causation, private uptake, emotion, or consciousness.
+
 5. **Review decision quality, not just message quality.** Fetch
    `GET /decision-traces?reviewed=false&since=<~7 days ago>`. Traces linked to reviewed Slack
    interactions receive their outcome automatically. For meeting turn-gate traces, inspect the next

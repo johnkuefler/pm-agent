@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const REVIEW_OUTCOMES = new Set(['landed', 'appreciated', 'neutral', 'ignored', 'corrected']);
 
 function registerInteractionRoutes(app, deps) {
   const { requireAuth, loadInteractions, saveInteractions, MAX_INTERACTIONS_KEPT, onOutcome } = deps;
@@ -24,8 +25,19 @@ function registerInteractionRoutes(app, deps) {
     const items = loadInteractions();
     const ix = items.find(i => i.id === req.params.id);
     if (!ix) return res.status(404).json({ error: 'interaction not found' });
-    ix.outcome = req.body.outcome || ix.outcome || null;
-    if (req.body.signal !== undefined) ix.signal = req.body.signal;
+    const outcome = String(req.body?.outcome || '').trim().toLowerCase();
+    const signal = String(req.body?.signal || '').trim().slice(0, 1200);
+    if (!REVIEW_OUTCOMES.has(outcome) || signal.length < 10) {
+      return res.status(400).json({ error: 'interaction review requires a supported outcome and observable signal' });
+    }
+    if (ix.reviewed === true) {
+      if (ix.outcome === outcome && String(ix.signal || '') === signal) {
+        return res.json({ ok: true, interaction: ix, idempotent: true });
+      }
+      return res.status(409).json({ error: 'reviewed interaction outcomes are immutable' });
+    }
+    ix.outcome = outcome;
+    ix.signal = signal;
     ix.reviewed = true;
     ix.reviewed_at = new Date().toISOString();
     saveInteractions(items);
@@ -36,4 +48,4 @@ function registerInteractionRoutes(app, deps) {
   // ============================================================
 }
 
-module.exports = { registerInteractionRoutes };
+module.exports = { REVIEW_OUTCOMES, registerInteractionRoutes };

@@ -334,6 +334,13 @@ function registerCoworkInstructionsRoute(app) {
             "signal": "<what the replies/reactions/adjacent messages actually showed>" }
     Marks it reviewed. Response: { "ok": true, "interaction": {...} }
 
+  Outside an active blinded context trial, a six-hour-delayed background reviewer may resolve at
+  most one still-unreviewed interaction per scheduler cycle. It reads the exact built-in Slack landing
+  evidence and requires two condition-blind OpenAI roles to agree before committing an immutable
+  outcome plus replayable receipt. Disagreement remains unreviewed and is terminally handed back to
+  the dream; never relabel or re-review a committed interaction. This is provider-disjoint model-graded,
+  subject-adjacent observational evidence, not human review, causation, private uptake, or consciousness.
+
   Reviewed outcomes also feed Nora's task-specific capability-boundary register. Only content
   commitments, task family, outcome, diversity keys, timestamps, and the canonical Slack reference
   are retained there; trigger, response, and signal text are not copied. This is observational,
