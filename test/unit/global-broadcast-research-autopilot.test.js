@@ -227,6 +227,20 @@ test('undelivered broadcast outcomes are terminal exclusions and cannot be repla
   });
   assert.equal(lateRetry.already_closed, true);
   assert.equal(lateRetry.included, false);
+  let providerCalls = 0;
+  const terminal = await autopilot.runCycle({
+    store, enabled: true,
+    callProvider: async () => { providerCalls += 1; throw new Error('unreachable pilot must not grade'); },
+  });
+  assert.equal(providerCalls, 0);
+  assert.equal(terminal.state, 'pilot_fixed_enrollment_unreachable_aborted');
+  assert.equal(terminal.fixed_enrollment_feasibility.reachable, false);
+  assert.equal(terminal.abort.status, 'aborted');
+  assert.equal(terminal.abort.abort.reason_code, 'insufficient_recruitment');
+  assert.equal(terminal.abort.abort.mapping_revealed, false);
+  assert.equal(terminal.abort.abort.potential_outcome_dependent_stopping, false);
+  const closed = store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id);
+  assert.equal(closed.status, 'aborted');
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -265,9 +279,10 @@ test('restart-orphaned broadcast assignments are counted honestly and excluded a
   });
   assert.equal(providerCalls, 0);
   assert.equal(recovered.stale_incomplete_assignments_excluded, 1);
+  assert.equal(recovered.state, 'pilot_fixed_enrollment_unreachable_aborted');
   const after = store.snapshot().cognition.self_model.context_trials.find(item => item.id === trial.id)
     .assignments[0];
-  assert.equal(after.status, 'excluded_protocol');
+  assert.equal(after.status, 'aborted_ungraded');
   assert.equal(after.protocol_exclusion.reason,
     'stale_incomplete_delivery_after_restart');
   assert.equal(store.contextTrialGradingQueue({ evaluatorId: autopilot.evaluatorIds()[0] })

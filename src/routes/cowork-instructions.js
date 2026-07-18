@@ -1049,6 +1049,9 @@ function registerCoworkInstructionsRoute(app) {
     action gains over both controls, evidence-access equivalence to the raw packet, no first-order
     degradation, full replay, and interaction-disjoint confirmation. Broadcast history and ordinary
     workspace readback are sealed until reveal; never infer the arm or treat consumer advice as authority.
+    Enrollment is fixed and protocol exclusions are never replaced. If the evidence target becomes
+    mathematically unreachable inside the frozen cap, the autopilot aborts without revealing mappings
+    or analyzing partial outcomes and stops enrolling further Slack turns.
     An epistemic_ownership_access trial freezes three to twelve integrity-valid neutral propositions
     spanning at least two source families, each with current Nora and named-person positions. It varies
     only authentic ownership labels, a matched Nora/person label swap, or absence. It requires

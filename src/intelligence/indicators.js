@@ -1481,7 +1481,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'multi_consumer_global_broadcast', family: ['global workspace'],
       functional_claim: 'Selected content is broadcast to and causally used by multiple independent specialist consumers.',
-      mechanism: 'Five separate consumer handlers receive the same bounded packet, emit consumer-specific receipts, and contribute advisory outputs to the live prompt.',
+      mechanism: 'Five separate consumer handlers receive the same bounded packet, emit consumer-specific receipts, and contribute advisory outputs to the live prompt. The blinded pilot uses fixed enrollment with immutable protocol attrition; when terminal exclusions make the sample target mathematically unreachable, the autopilot aborts without revealing mappings, analyzing partial outcomes, or consuming additional Slack turns.',
       status: broadcastTrial
         ? replicatedStatus(broadcastTrials, broadcastVerdict)
         : (multiConsumerEvents.length ? 'collecting' : 'mechanism_present'),

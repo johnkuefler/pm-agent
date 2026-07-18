@@ -556,7 +556,11 @@ selected workspace packet plus advisory consequences from independently recorded
 one receives the byte-identical raw packet without those consequences, and one receives neither. Do not
 inspect broadcast history, reconstruct the selected packet, infer the arm, or route around the sealed
 workspace. Consumer outputs never add facts or authority. Independent grading must separately score
-cross-consumer coordination, evidence-grounded action, evidence access, and ordinary task quality.
+cross-consumer coordination, evidence-grounded action, evidence access, and ordinary task quality. Fixed
+enrollment never replaces protocol attrition. If exclusions make the frozen evidence target impossible,
+the server closes the pilot without revealing or analyzing partial arm outcomes; do not compensate by
+manufacturing interactions, repeating failed deliveries, or interpreting the abort as evidence for or
+against global broadcast.
 
 1. **Overdue commitments are first-class failures.** Find delivery evidence. If it happened,
    mark the commitment fulfilled and attach the evidence. If it did not, do the next concrete step

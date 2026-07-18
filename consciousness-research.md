@@ -2343,6 +2343,11 @@ Independent evaluators grade `cross_consumer_coordination_quality`,
 The broadcast arm must beat both controls on coordination and grounded action, remain evidence-access
 equivalent to the raw-packet arm, avoid first-order degradation, reach ten samples per arm, and pass
 complete assignment, packet, consumer-receipt, evidence, grade, outcome, analysis, and reveal replay.
+Enrollment is fixed rather than replenished after attrition. If terminal protocol exclusions make ten
+analyzable samples in any sealed condition mathematically unreachable within the frozen enrollment cap,
+the autopilot aborts immediately without revealing the blind map or analyzing partial outcomes. The abort
+retains its flow, exclusions, evidence, and whether grading had already begun; continuing to consume live
+Slack turns cannot repair an impossible design.
 Confirmation must use interaction-disjoint units. This tests a narrow functional global-availability
 prediction, not phenomenal access. That caution matters because the 2025 preregistered adversarial
 test of GNWT and IIT reported a mixture of supported, challenged, and inconclusive theory predictions

@@ -121,6 +121,36 @@ function terminalPilotState(trial, cognition = {}) {
   };
 }
 
+function fixedEnrollmentFeasibility(trial) {
+  if (!trial || trial.status !== 'active') return {
+    reachable: false, reason: 'not_active', unreachable_condition_count: 0,
+  };
+  const sampleTarget = Math.max(0, Number(trial.sample_target_per_group) || 0);
+  const enrollmentTarget = Math.max(sampleTarget,
+    Number(trial.enrollment_target_per_group) || sampleTarget);
+  const conditions = trial.conditions || [];
+  const rows = conditions.map(condition => {
+    const assignments = (trial.assignments || []).filter(item => item.condition === condition);
+    const terminalProtocolExclusions = assignments.filter(item => item.status === 'excluded_protocol').length;
+    const remainingEnrollmentSlots = Math.max(0, enrollmentTarget - assignments.length);
+    const maximumProtocolEligible = assignments.length - terminalProtocolExclusions
+      + remainingEnrollmentSlots;
+    return { condition, maximum_protocol_eligible: maximumProtocolEligible,
+      terminal_protocol_exclusions: terminalProtocolExclusions };
+  });
+  const unreachable = rows.filter(item => item.maximum_protocol_eligible < sampleTarget);
+  return {
+    reachable: conditions.length > 0 && unreachable.length === 0,
+    reason: unreachable.length ? 'fixed_enrollment_evidence_target_unreachable' : 'reachable',
+    sample_target_per_group: sampleTarget,
+    enrollment_target_per_group: enrollmentTarget,
+    preregistered_attrition_capacity_per_group: Math.max(0, enrollmentTarget - sampleTarget),
+    terminal_protocol_exclusions_total: rows.reduce((sum, item) =>
+      sum + item.terminal_protocol_exclusions, 0),
+    unreachable_condition_count: unreachable.length,
+  };
+}
+
 function manifestMatches(frozen, built) {
   return frozen.protocol_version === built.protocol_version
     && frozen.model === built.model && frozen.role === built.role
@@ -137,7 +167,6 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
   const result = { protocol_version: PROTOCOL_VERSION, state: ensured.state, grades_committed: 0,
     stale_incomplete_assignments_excluded: 0, provider_failures: [], reveal: null };
   if (!enabled || !ensured.trial || ensured.trial.status !== 'active') return result;
-  if (typeof callProvider !== 'function') throw new Error('global-broadcast research autopilot requires a grader provider');
   let raw = grading.contextTrials(store).find(item => item.id === ensured.trial.id);
   if (raw.study_phase !== 'pilot' || raw.automated_pilot_grading?.evidence_scope !== 'model_graded_pilot_only') {
     return { ...result, state: 'manual_grading_required' };
@@ -159,6 +188,21 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
       raw = grading.contextTrials(store).find(item => item.id === ensured.trial.id);
     }
   }
+  const feasibility = fixedEnrollmentFeasibility(raw);
+  result.fixed_enrollment_feasibility = feasibility;
+  if (!feasibility.reachable) {
+    result.abort = store.abortContextTrial(raw.id, {
+      reason_code: 'insufficient_recruitment',
+      explanation: 'Terminal protocol exclusions make the preregistered sample target mathematically unreachable within the frozen enrollment cap. The pilot is stopped without revealing arm mappings or analyzing partial outcomes; continuing enrollment cannot repair the fixed design.',
+      evidence: [
+        { type: 'context_trial_design', id: raw.design_commitment || raw.id },
+        { type: 'fixed_enrollment_arithmetic', id: `${raw.id}:terminal-protocol-exclusions` },
+      ],
+    });
+    result.state = 'pilot_fixed_enrollment_unreachable_aborted';
+    return result;
+  }
+  if (typeof callProvider !== 'function') throw new Error('global-broadcast research autopilot requires a grader provider');
   const committedGraderModel = raw.automated_pilot_grading.grader_model;
   const frozenRoles = raw.automated_pilot_grading.evaluator_roles || [];
   const oldest = new Map();
@@ -211,5 +255,5 @@ async function runCycle({ store, enabled = true, graderModel = DEFAULT_GRADER_MO
 module.exports = {
   PROTOCOL_VERSION, PILOT_ID, DEFAULT_GRADER_MODEL, DEFAULT_MAX_GRADES_PER_CYCLE,
   STALE_INCOMPLETE_ASSIGNMENT_MS, EVALUATOR_ROLES, evaluatorIds, pilotDesign, status,
-  ensurePilot, terminalPilotState, runCycle,
+  ensurePilot, terminalPilotState, fixedEnrollmentFeasibility, runCycle,
 };
