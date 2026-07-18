@@ -10905,9 +10905,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     // while the dashboard verifies only the latest twelve lifecycle records.
     const expectationAuditWindow = expectationForecasts.slice(-12);
     const recentResolvedExpectations = expectationAuditWindow.filter(item => item.status === 'resolved').length;
-    const replayVerifiedExpectations = expectationAuditWindow.filter(item => item.status === 'resolved'
-      && expectationForecastAudit(item).complete_chain_verified).length;
-    const expectationCalibration = expectationForecast.summarize(expectationForecasts,
+    const replayVerifiedExpectationRecords = expectationAuditWindow.filter(item => item.status === 'resolved'
+      && expectationForecastAudit(item).complete_chain_verified);
+    const replayVerifiedExpectations = replayVerifiedExpectationRecords.length;
+    const expectationCalibration = expectationForecast.summarize(replayVerifiedExpectationRecords,
       new Date(clock().getTime() - 30 * 86400000).toISOString()).overall;
     const openCommitments = state.commitments.filter(item => item.status === 'open').length;
     const fulfilledCommitments = state.commitments.filter(item => item.status === 'fulfilled').length;
@@ -11091,7 +11092,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           expectation_replay_audit_window: expectationAuditWindow.length,
           expectation_recent_resolved_forecasts: recentResolvedExpectations,
           expectation_calibration_30d: expectationCalibration,
-          expectation_collection_ready: expectationCalibration.n >= 40 },
+          expectation_calibration_evidence_scope: 'latest_12_replay_verified_lifecycles',
+          expectation_collection_ready: false },
         background: { sealed: selfInquirySelectionActive(cognition), tick_count: dynamics.tick_count || 0,
           active_contents: activeContents, accepted_pulses: acceptedPulses, unresolved_pulses: unresolvedPulses,
           top_contents: dynamicsContents.slice(0, 4).map(item => ({ text: item.text, activation: item.activation || 0 })) },
@@ -24482,14 +24484,23 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       (!scope || item.scopes.some(group => group.scope === scope))
       && (!sinceMs || new Date(item.made_at).getTime() >= sinceMs));
     const rollingSince = new Date(clock().getTime() - 30 * 86400000).toISOString();
-    const rolling = expectationForecast.summarize(state.cognition.expectations.forecasts, rollingSince);
+    const rollingSinceMs = new Date(rollingSince).getTime();
+    const replayVerifiedResolved = state.cognition.expectations.forecasts.filter(item =>
+      item.status === 'resolved' && new Date(item.made_at).getTime() >= rollingSinceMs
+      && expectationForecastAudit(item).complete_chain_verified);
+    const rolling = expectationForecast.summarize(replayVerifiedResolved, rollingSince);
+    const verifiedForecastIds = new Set(replayVerifiedResolved.map(item => item.id));
+    const replayVerifiedSurprises = state.cognition.surprises.filter(item =>
+      verifiedForecastIds.has(item.forecast_id) && new Date(item.at).getTime() >= rollingSinceMs);
+    const collectionGate = expectationForecast.collectionGate(replayVerifiedResolved,
+      replayVerifiedSurprises, rolling);
     return {
       epistemic_status: 'Prospectively committed, cycle-bound expectations about observable work sources. Resolutions are source-cited and replay-audited, but citations are not independent proof and this is not evidence of phenomenal consciousness.',
       forecasts: forecasts.map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: expectationForecastAudit(item) })),
       report: { total: forecasts.length, open: forecasts.filter(item => item.status === 'open').length,
         resolved: forecasts.filter(item => item.status === 'resolved').length,
         replay_verified_resolved: forecasts.filter(item => item.status === 'resolved' && expectationForecastAudit(item).complete_chain_verified).length,
-        rolling_30_day: rolling, collection_gate: { minimum_scored_claims: 40, ready: rolling.overall.n >= 40 } },
+        rolling_30_day: rolling, collection_gate: collectionGate },
     };
   }
 

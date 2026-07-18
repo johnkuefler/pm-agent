@@ -119,7 +119,8 @@ function summarize(forecasts = [], since = null) {
     }
   }
   const calculate = items => {
-    if (!items.length) return { n: 0, brier: null, accuracy: null, mean_confidence: null, calibration_gap: null, direction: 'collecting' };
+    if (!items.length) return { n: 0, brier: null, accuracy: null, mean_confidence: null,
+      calibration_gap: null, high_confidence_misses: 0, direction: 'collecting' };
     const average = key => items.reduce((sum, item) => sum + item[key], 0) / items.length;
     const accuracy = items.filter(item => !item.miss).length / items.length;
     const meanConfidence = average('confidence');
@@ -130,12 +131,45 @@ function summarize(forecasts = [], since = null) {
       accuracy,
       mean_confidence: meanConfidence,
       calibration_gap: gap,
+      high_confidence_misses: items.filter(item => item.high_confidence_miss).length,
       direction: gap > 0.05 ? 'overconfident' : gap < -0.05 ? 'underconfident' : 'calibrated_band',
     };
   };
   return {
     overall: calculate(rows),
     by_scope: Object.fromEntries([...SCOPES].map(scope => [scope, calculate(rows.filter(item => item.scope === scope))])),
+  };
+}
+
+function collectionGate(forecasts = [], surprises = [], calibration = summarize(forecasts)) {
+  const dayNumbers = [...new Set(forecasts.map(item => {
+    const value = item.resolution?.resolved_at || item.made_at;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime())
+      ? Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()) / 86400000 : null;
+  }).filter(Number.isFinite))].sort((a, b) => a - b);
+  let longestConsecutiveDays = 0; let currentStreak = 0; let previous = null;
+  for (const day of dayNumbers) {
+    currentStreak = previous != null && day === previous + 1 ? currentStreak + 1 : 1;
+    longestConsecutiveDays = Math.max(longestConsecutiveDays, currentStreak);
+    previous = day;
+  }
+  const scoredScopes = Object.values(calibration.by_scope || {}).filter(item => item.n > 0).length;
+  const sourceBoundSurprises = surprises.filter(item => item.origin === 'expectation_forecast'
+    && item.source_bound === true && item.replay_verified === true).length;
+  const scoredClaims = calibration.overall?.n || 0;
+  return {
+    minimum_scored_claims: 40,
+    minimum_scored_scopes: 3,
+    minimum_consecutive_collection_days: 7,
+    minimum_source_bound_surprises: 1,
+    scored_claims: scoredClaims,
+    scored_scopes: scoredScopes,
+    distinct_collection_days: dayNumbers.length,
+    longest_consecutive_collection_days: longestConsecutiveDays,
+    source_bound_surprises: sourceBoundSurprises,
+    ready: scoredClaims >= 40 && scoredScopes >= 3 && longestConsecutiveDays >= 7
+      && sourceBoundSurprises >= 1,
   };
 }
 
@@ -149,4 +183,5 @@ module.exports = {
   normalizeOutcome,
   scoreClaim,
   summarize,
+  collectionGate,
 };

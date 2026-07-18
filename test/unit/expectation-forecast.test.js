@@ -75,6 +75,10 @@ test('EXPECT is preregistered after the self-forecast, resolved in the same cycl
   const replay = reloaded.expectationForecastSnapshot();
   assert.equal(replay.report.replay_verified_resolved, 1);
   assert.equal(replay.forecasts[0].audit.complete_chain_verified, true);
+  assert.equal(replay.report.collection_gate.scored_claims, 1);
+  assert.equal(replay.report.collection_gate.scored_scopes, 1);
+  assert.equal(replay.report.collection_gate.longest_consecutive_collection_days, 1);
+  assert.equal(replay.report.collection_gate.source_bound_surprises, 1);
 
   const staleCycle = reloaded.startCycle({ id: 'expect-stale-cycle', holder: 'nora', run_lock_holder: 'run-stale' });
   reloaded.preregisterCycleSelfForecast(staleCycle.cycle.id, {
@@ -92,6 +96,43 @@ test('EXPECT is preregistered after the self-forecast, resolved in the same cycl
   assert.equal(abandoned.status, 'abandoned');
   assert.equal(abandoned.audit.abandonment_commitment_verified, true);
   assert.equal(abandoned.audit.complete_chain_verified, true);
+
+  const tamperedState = reloaded.snapshot();
+  tamperedState.cognition.expectations.forecasts[0].scopes[0].claims[0].probability = 0.1;
+  const tampered = createIntelligenceStore({ filePath: path.join(dir, 'tampered-state.json'), db: {},
+    isDbReady: () => false, initialState: tamperedState, clock: () => new Date(now) });
+  await tampered.init();
+  const excluded = tampered.expectationForecastSnapshot();
+  assert.equal(excluded.forecasts[0].audit.complete_chain_verified, false);
+  assert.equal(excluded.report.rolling_30_day.overall.n, 0,
+    'integrity-invalid forecasts must not become calibration self-knowledge');
+  assert.equal(excluded.report.collection_gate.source_bound_surprises, 0);
+});
+
+test('EXPECT collection gate requires longitudinal, cross-scope, surprise-bearing evidence', () => {
+  const forecasts = Array.from({ length: 7 }, (_, day) => ({
+    made_at: `2026-07-${String(10 + day).padStart(2, '0')}T14:00:00.000Z`,
+    resolution: { resolved_at: `2026-07-${String(10 + day).padStart(2, '0')}T14:05:00.000Z`,
+      claims: [] },
+    scopes: ['slack_inbox', 'email_inbox', 'teamwork_deadlines'].map((scope, scopeIndex) => ({
+      scope, claims: Array.from({ length: 2 }, (_, claimIndex) => ({
+        id: `${day}-${scopeIndex}-${claimIndex}`, probability: 0.7, claim: 'bounded observable claim',
+      })),
+    })),
+  }));
+  for (const forecast of forecasts) {
+    forecast.resolution.claims = forecast.scopes.flatMap(group => group.claims.map(claim => ({
+      claim_id: claim.id, outcome: true,
+    })));
+  }
+  const calibration = expectationForecast.summarize(forecasts);
+  const gate = expectationForecast.collectionGate(forecasts, [{ origin: 'expectation_forecast',
+    source_bound: true, replay_verified: true }], calibration);
+  assert.equal(gate.scored_claims, 42);
+  assert.equal(gate.scored_scopes, 3);
+  assert.equal(gate.longest_consecutive_collection_days, 7);
+  assert.equal(gate.source_bound_surprises, 1);
+  assert.equal(gate.ready, true);
 });
 
 test('EXPECT exposes compact calibration before forecast formation without adding a provider path', () => {
