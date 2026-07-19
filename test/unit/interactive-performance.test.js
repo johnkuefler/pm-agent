@@ -228,6 +228,15 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'newly earned insight readback must not change prompts during an active context study');
 });
 
+test('the live persona does not seed a canned small-talk answer that can override a literal question', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const persona = fs.readFileSync(path.join(__dirname, '..', '..', 'nora-prompt.md'), 'utf8');
+  assert.equal(source.includes('"not much, you?"'), false);
+  assert.equal(persona.includes('"not much, you?"'), false);
+  assert.match(source, /Do not copy a stock response from this prompt/);
+  assert.match(persona, /Do not copy a stock response from this prompt/);
+});
+
 test('Slack provider cache prefix stays stable while conversation and cognition tails change', () => {
   const { __test } = require('../../server');
   const first = __test.buildSystemPrompt('slack', null, null,
