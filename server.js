@@ -311,18 +311,29 @@ function autobiographyRecordFromLedger(revisions) {
 }
 
 const _somaProcessEpochId = crypto.randomUUID();
-const _somaNerves = { errors: [], warns: [], loopLagMax: 0 };
+const _somaNerves = { errors: [], warns: [], loopLagMax: 0, runtimeReady: false };
+let _somaLoopLagLast = Date.now();
+function sampleSomaLoopLag(now = Date.now()) {
+  const lag = now - _somaLoopLagLast - 1000;
+  _somaLoopLagLast = now;
+  if (_somaNerves.runtimeReady && lag > _somaNerves.loopLagMax) {
+    _somaNerves.loopLagMax = lag;
+  }
+  return lag;
+}
+function beginSomaRuntimeSampling(now = Date.now()) {
+  // Hydrating Nora's retained state happens before the server accepts traffic. Counting that
+  // one-time boot work as live event-loop pain made a healthy restart look sluggish for several
+  // runs and could unnecessarily suppress dreams or other bounded background maintenance.
+  _somaNerves.loopLagMax = 0;
+  _somaLoopLagLast = now;
+  _somaNerves.runtimeReady = true;
+}
 {
   const origErr = console.error.bind(console), origWarn = console.warn.bind(console);
   console.error = (...a) => { _somaNerves.errors.push(Date.now()); if (_somaNerves.errors.length > 600) _somaNerves.errors.splice(0, 300); origErr(...a); };
   console.warn = (...a) => { _somaNerves.warns.push(Date.now()); if (_somaNerves.warns.length > 600) _somaNerves.warns.splice(0, 300); origWarn(...a); };
-  let last = Date.now();
-  setInterval(() => {
-    const now = Date.now();
-    const lag = now - last - 1000;
-    if (lag > _somaNerves.loopLagMax) _somaNerves.loopLagMax = lag;
-    last = now;
-  }, 1000).unref?.();
+  setInterval(sampleSomaLoopLag, 1000).unref?.();
 }
 function _writeThrough(entity, fn) {
   const prev = _writeQ[entity] || Promise.resolve();
@@ -12134,6 +12145,7 @@ async function start(options = {}) {
     // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
     // authoritative substrate observation before listening so that restart and persistence scoring
     // never depend on a startup race.
+    beginSomaRuntimeSampling();
     await computeSoma();
     await new Promise((resolve, reject) => {
       const onError = (err) => { server.off('listening', onListening); reject(err); };
@@ -12170,6 +12182,7 @@ async function start(options = {}) {
 }
 
 async function stop() {
+  _somaNerves.runtimeReady = false;
   for (const timer of _runtimeIntervals.splice(0)) clearInterval(timer);
   if (_embedTimer) { clearInterval(_embedTimer); _embedTimer = null; }
   await intelligenceRoutesRuntime.close().catch(() => {});

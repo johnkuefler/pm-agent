@@ -79,6 +79,10 @@ test('authentication protects APIs and dashboard independently', async () => {
   const js = await fetch(base + '/assets/js/dashboard-core.js');
   assert.equal(js.status, 200);
   assert.match(js.headers.get('content-type'), /javascript/);
+  const initialSelf = await request('/self');
+  assert.equal(initialSelf.body.soma.vitals.loopLag, 0,
+    'pre-listen hydration must not be reported as live event-loop pain');
+  assert.doesNotMatch(initialSelf.body.soma.feel, /sluggish/);
   assert.equal((await fetch(base + '/epistemic-action-studies')).status, 401);
   assert.equal((await request('/epistemic-action-studies', { method: 'POST', body: {} })).response.status, 401);
   assert.equal((await request('/epistemic-action-studies/missing/observer-queue')).response.status, 401);
