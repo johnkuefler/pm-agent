@@ -7,6 +7,8 @@ const { fork } = require('node:child_process');
 
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
+const DEFAULT_PROJECTION_FAILURE_RETRY_MS = 30 * 1000;
+const DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS = 3 * 60 * 1000;
 
 const PERSISTED_PROJECTION_PROTOCOL_VERSION = 2;
 
@@ -344,6 +346,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
   getPredictions = () => [],
   now = () => new Date(), maxAgeMs = 60 * 60 * 1000,
   minRefreshIntervalMs = 15 * 60 * 1000,
+  failureRetryMs = DEFAULT_PROJECTION_FAILURE_RETRY_MS,
+  refreshTimeoutMs = DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS,
   workerPath = path.join(__dirname, 'research-status-worker.js'),
   createWorker = options => createLowPriorityResearchProcess(workerPath, options.workerData,
     { cpuDutyCycle: true }),
@@ -362,6 +366,11 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
   let hydrationPromise = null;
   let hydrationAttempted = false;
   let lastRefreshStartedAt = 0;
+  let lastRefreshSucceededAt = 0;
+  let lastRefreshFailedAt = 0;
+  let nextRefreshEligibleAt = 0;
+  let consecutiveFailures = 0;
+  let lastRefreshError = null;
   let preemptions = 0;
   let lastPreemption = null;
   let lastPersistenceError = null;
@@ -442,16 +451,24 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     if (inFlight) return inFlight;
     if (shouldDeferRefresh()) throw deferredError();
     const startedAt = Date.now();
-    if (!force && current && startedAt - lastRefreshStartedAt < minRefreshIntervalMs) return current;
+    if (!force && current && startedAt < nextRefreshEligibleAt) return current;
     lastRefreshStartedAt = startedAt;
     const { workerData, capture_ms } = capture();
     const operation = new Promise((resolve, reject) => {
       const worker = createWorker({ workerData });
       activeWorker = worker;
       let settled = false;
+      const timeout = setTimeout(() => {
+        const error = new Error(`${projection} worker exceeded ${refreshTimeoutMs}ms refresh timeout`);
+        error.code = 'projection_refresh_timeout';
+        worker.terminate?.().catch?.(() => {});
+        finish(error);
+      }, Math.max(100, Number(refreshTimeoutMs) || DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS));
+      timeout.unref?.();
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
+        clearTimeout(timeout);
         worker.research_release_cpu_budget?.();
         worker.removeAllListeners();
         if (activeWorker === worker) activeWorker = null;
@@ -502,7 +519,24 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
           : `${projection} worker exited with code ${code}`));
       });
     });
-    inFlight = operation.finally(() => { inFlight = null; });
+    inFlight = operation.then(value => {
+      lastRefreshSucceededAt = Date.now();
+      nextRefreshEligibleAt = lastRefreshSucceededAt + Math.max(0, Number(minRefreshIntervalMs) || 0);
+      consecutiveFailures = 0;
+      lastRefreshError = null;
+      return value;
+    }, error => {
+      lastRefreshFailedAt = Date.now();
+      nextRefreshEligibleAt = lastRefreshFailedAt
+        + Math.max(0, Number(failureRetryMs) || DEFAULT_PROJECTION_FAILURE_RETRY_MS);
+      consecutiveFailures += 1;
+      lastRefreshError = {
+        code: error.code || 'projection_refresh_failure',
+        message: String(error.message || error).slice(0, 500),
+        at: new Date(lastRefreshFailedAt).toISOString(),
+      };
+      throw error;
+    }).finally(() => { inFlight = null; });
     return inFlight;
   }
 
@@ -543,7 +577,7 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     const ageExpired = ageMs > maxAgeMs;
     const stale = revisionChanged || ageExpired;
     if ((buildChanged || ageExpired) && !inFlight && !shouldDeferRefresh()
-      && Date.now() - lastRefreshStartedAt >= minRefreshIntervalMs) {
+      && Date.now() >= nextRefreshEligibleAt) {
       refresh({ force: buildChanged }).catch(() => {});
     }
     return { ...current,
@@ -571,6 +605,16 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       cpu_budget: current?.cpu_budget || null,
       persisted: current?.persisted || false,
       persistence_error: lastPersistenceError,
+      last_refresh_started_at: lastRefreshStartedAt
+        ? new Date(lastRefreshStartedAt).toISOString() : null,
+      last_refresh_succeeded_at: lastRefreshSucceededAt
+        ? new Date(lastRefreshSucceededAt).toISOString() : null,
+      last_refresh_failed_at: lastRefreshFailedAt
+        ? new Date(lastRefreshFailedAt).toISOString() : null,
+      next_refresh_eligible_at: nextRefreshEligibleAt
+        ? new Date(nextRefreshEligibleAt).toISOString() : null,
+      consecutive_failures: consecutiveFailures,
+      refresh_error: lastRefreshError,
       preemptions,
       last_preemption: lastPreemption,
     };
@@ -602,6 +646,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
 module.exports = {
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MIN_REFRESH_INTERVAL_MS,
+  DEFAULT_PROJECTION_FAILURE_RETRY_MS,
+  DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS,
   PERSISTED_PROJECTION_PROTOCOL_VERSION,
   projectionBuildIdentity,
   createLowPriorityResearchProcess,

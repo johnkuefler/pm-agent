@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { EventEmitter } = require('node:events');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const { createResearchStatusCache, createResearchProjectionCache,
   createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope,
@@ -312,6 +313,78 @@ test('an access-safe prior-build projection returns immediately while refresh is
   assert.deepEqual(JSON.parse(snapshot.serialized), store.consciousnessResearchStatus());
 });
 
+test('a preempted prior-build refresh retries promptly instead of waiting the success interval', async t => {
+  const store = await createStore(t);
+  const envelope = createPersistedProjectionEnvelope({
+    serialized: JSON.stringify(store.consciousnessResearchStatus()),
+    revision: store.snapshotRevision(),
+    experimental_access_fingerprint: store.experimentalAccessFingerprint(),
+    generated_at: OBSERVED_AT.toISOString(), completed_at: new Date().toISOString(),
+    build_identity: 'prior-build',
+  }, 'research_status');
+  let attempts = 0;
+  const createWorker = ({ workerData }) => {
+    attempts += 1;
+    const worker = new EventEmitter();
+    worker.research_isolation = 'fixture_worker';
+    worker.research_priority = 19;
+    worker.research_cpu_budget = { mode: 'fixture' };
+    worker.research_release_cpu_budget = () => {};
+    worker.terminate = async () => 0;
+    setImmediate(() => {
+      if (attempts === 1) {
+        worker.emit('error', Object.assign(new Error('preempted fixture'), {
+          code: 'interactive_preemption',
+        }));
+      } else {
+        worker.emit('message', {
+          projection: 'research_status', revision: workerData.revision,
+          generated_at: workerData.observed_at,
+          serialized: JSON.stringify({ refreshed: true }), compute_ms: 1,
+        });
+      }
+    });
+    return worker;
+  };
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store, loadPersisted: async () => envelope,
+    createWorker, failureRetryMs: 5, minRefreshIntervalMs: 60 * 60 * 1000,
+  });
+  t.after(() => cache.close());
+
+  const stale = await cache.get({ waitForCold: false });
+  assert.equal(stale.cache_state, 'stale-build-refreshing');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(cache.status().consecutive_failures, 1);
+  assert.equal(cache.status().refresh_error.code, 'interactive_preemption');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const recovered = await cache.refresh();
+  assert.equal(JSON.parse(recovered.serialized).refreshed, true);
+  assert.equal(attempts, 2);
+  assert.equal(cache.status().consecutive_failures, 0);
+  assert.equal(cache.status().refresh_error, null);
+});
+
+test('a wedged projection worker times out and exposes bounded retry diagnostics', async t => {
+  const store = await createStore(t);
+  let terminated = false;
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store, refreshTimeoutMs: 100,
+    failureRetryMs: 5,
+    createWorker: () => {
+      const worker = new EventEmitter();
+      worker.research_release_cpu_budget = () => {};
+      worker.terminate = async () => { terminated = true; return 0; };
+      return worker;
+    },
+  });
+  t.after(() => cache.close());
+  await assert.rejects(cache.refresh(), error => error.code === 'projection_refresh_timeout');
+  assert.equal(terminated, true);
+  assert.equal(cache.status().consecutive_failures, 1);
+  assert.equal(cache.status().refresh_error.code, 'projection_refresh_timeout');
+});
+
 test('cold HTTP-style reads fail fast while isolated projection generation continues', async t => {
   const store = await createStore(t);
   let workerCreated = false;
@@ -337,4 +410,5 @@ test('HTTP projections expose the low-priority isolation receipt for production 
   assert.match(routes, /requireCurrentExperimentalAccess: true/);
   assert.match(routes, /waitForCold: false/);
   assert.match(routes, /Retry-After/);
+  assert.match(routes, /research-projection-runtime/);
 });

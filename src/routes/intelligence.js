@@ -65,6 +65,15 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json(store.persistenceDiagnostics());
   });
 
+  app.get('/intelligence/research-projection-runtime', requireAuth, (_req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.json({
+      research_status: researchStatusCache.status(),
+      self_model: selfModelCache.status(),
+      cognition: cognitionCache.status(),
+    });
+  });
+
   app.get('/intelligence', requireAuth, (req, res) => {
     const overview = store.dashboardIntelligenceSummary().overview;
     res.json({ ...overview, initiative: overview.initiative });
