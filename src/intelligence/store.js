@@ -50,6 +50,7 @@ const insightSynthesisStudy = require('./insight-synthesis-study');
 const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
+const epistemicAgenda = require('./epistemic-agenda');
 const relationalAffect = require('./relational-affect');
 const relationalAffectStudy = require('./relational-affect-study');
 const teammatePerspective = require('./teammate-perspective');
@@ -124,7 +125,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 99,
+    version: 100,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -152,6 +153,7 @@ function emptyState() {
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
+      epistemic_agenda: { questions: [], attempts: [], last_attempt: null },
       epistemic_self_correction_reflection: { attempts: [] },
       meeting_professional_reflection: { attempts: [] },
       common_ground: { records: [] },
@@ -489,7 +491,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     developmentalReadingInfluenceCache = null;
     developmentalReadingAuditCache = null;
     snapshotRevisionValue += 1;
-    state.version = 99;
+    state.version = 100;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
@@ -992,6 +994,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (state.cognition.affective_regulation.current
       && !affectiveRegulation.verify(state.cognition.affective_regulation.current)) state.cognition.affective_regulation.current = null;
     state.cognition.earned_viewpoints = { current: null, ...(state.cognition.earned_viewpoints || {}) };
+    state.cognition.epistemic_agenda = { questions: [], attempts: [], last_attempt: null,
+      ...(state.cognition.epistemic_agenda || {}) };
+    if (!Array.isArray(state.cognition.epistemic_agenda.questions)) state.cognition.epistemic_agenda.questions = [];
+    if (!Array.isArray(state.cognition.epistemic_agenda.attempts)) state.cognition.epistemic_agenda.attempts = [];
+    state.cognition.epistemic_agenda.questions = state.cognition.epistemic_agenda.questions.slice(-1000);
+    state.cognition.epistemic_agenda.attempts = state.cognition.epistemic_agenda.attempts.slice(-5000);
     let earnedViewpointProjectionInvalid = false;
     if (state.cognition.earned_viewpoints.current) {
       const projectionAudit = earnedViewpoint.audit(state.cognition.earned_viewpoints.current,
@@ -3656,6 +3664,142 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function recordEpistemicPosition(input = {}) {
     return mutate(current => recordEpistemicPositionInState(current, input));
+  }
+
+  function epistemicAgendaAttemptManifest(attempt = {}) {
+    return { id: attempt.id, at: attempt.at, packet_commitment: attempt.packet_commitment,
+      output_commitment: attempt.output_commitment,
+      generation_receipt_commitment: attempt.generation_receipt?.receipt_commitment || null };
+  }
+
+  function epistemicAgendaAttemptAudit(attempt, ledger = state.cognition.research_ledger) {
+    const receiptAudit = epistemicAgenda.auditReceipt(attempt?.generation_receipt || {});
+    const attemptCommitment = epistemicAgenda.commitment(epistemicAgendaAttemptManifest(attempt));
+    const contentVerified = Boolean(attempt?.id && attempt?.at && receiptAudit.complete_chain_verified
+      && attempt.packet_commitment === epistemicAgenda.commitment(attempt.packet)
+      && attempt.output_commitment === epistemicAgenda.commitment(attempt.output)
+      && attempt.generation_receipt.packet_commitment === attempt.packet_commitment
+      && attempt.generation_receipt.output_commitment === attempt.output_commitment
+      && attempt.attempt_commitment === attemptCommitment);
+    const payloadCommitment = crypto.createHash('sha256')
+      .update(canonicalJson({ attempt_commitment: attemptCommitment })).digest('hex');
+    const ledgerBindingVerified = contentVerified
+      && researchLedgerEventBindingCount('epistemic_agenda_attempt_recorded', attempt.id,
+        payloadCommitment, ledger) === 1;
+    return { ...receiptAudit, content_verified: contentVerified,
+      ledger_binding_verified: ledgerBindingVerified,
+      complete_chain_verified: contentVerified && ledgerBindingVerified };
+  }
+
+  function applyEpistemicAgendaAttempt(questions, attempt) {
+    const output = attempt.output;
+    if (output.action === 'abstain') return { question_id: null };
+    if (output.action === 'form') {
+      const question = { id: `epistemic-agenda-question-${attempt.id}`, status: 'open',
+        topic_key: output.topic_key, question: output.question,
+        why_it_matters: output.why_it_matters, current_best_answer: output.current_best_answer,
+        confidence: output.confidence, interest_score: output.interest_score,
+        next_evidence: output.next_evidence, evidence_ids: [...output.evidence_ids],
+        created_at: attempt.at, updated_at: attempt.at, history: [] };
+      question.history.push({ attempt_id: attempt.id, at: attempt.at, action: output.action,
+        reason: output.reason, evidence_ids: [...output.evidence_ids] });
+      questions.push(question);
+      return { question_id: question.id };
+    }
+    const question = questions.find(item => item.id === attempt.packet?.question?.id
+      && item.status === 'open');
+    if (!question) throw new Error('epistemic agenda revision targets a missing or closed question');
+    if (output.action === 'abandon') question.status = 'abandoned';
+    else {
+      question.current_best_answer = output.current_best_answer;
+      question.confidence = output.confidence;
+      question.interest_score = output.interest_score;
+      question.next_evidence = output.next_evidence;
+      question.evidence_ids = [...new Set([...question.evidence_ids, ...output.evidence_ids])].slice(0, 30);
+      if (output.action === 'resolve') question.status = 'resolved';
+    }
+    question.updated_at = attempt.at;
+    question.history.push({ attempt_id: attempt.id, at: attempt.at, action: output.action,
+      reason: output.reason, evidence_ids: [...output.evidence_ids] });
+    question.history = question.history.slice(-40);
+    return { question_id: question.id };
+  }
+
+  function epistemicAgendaProjectionAudit(agenda = state.cognition.epistemic_agenda,
+    ledger = state.cognition.research_ledger) {
+    const attempts = agenda?.attempts || [];
+    const attemptAudits = attempts.map(item => epistemicAgendaAttemptAudit(item, ledger));
+    const reconstructed = [];
+    let replayVerified = attemptAudits.every(item => item.complete_chain_verified);
+    if (replayVerified) {
+      try { attempts.forEach(item => applyEpistemicAgendaAttempt(reconstructed, item)); }
+      catch { replayVerified = false; }
+    }
+    const projectionVerified = replayVerified
+      && epistemicAgenda.canonicalJson(reconstructed) === epistemicAgenda.canonicalJson(agenda.questions || []);
+    return { attempt_audits: attemptAudits, replay_verified: replayVerified,
+      projection_verified: projectionVerified,
+      complete_chain_verified: replayVerified && projectionVerified && verifyResearchLedger(ledger).valid };
+  }
+
+  function recordEpistemicAgendaAttempt(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const agenda = current.cognition.epistemic_agenda;
+      const packet = JSON.parse(JSON.stringify(input.packet || {}));
+      const output = epistemicAgenda.normalizeOutput(input.output, packet);
+      const receipt = JSON.parse(JSON.stringify(input.generation_receipt || {}));
+      const receiptAudit = epistemicAgenda.auditReceipt(receipt);
+      if (!receiptAudit.complete_chain_verified
+        || receipt.packet_commitment !== epistemicAgenda.commitment(packet)
+        || receipt.output_commitment !== epistemicAgenda.commitment(output)) {
+        throw new Error('epistemic agenda requires a replay-valid provider receipt bound to the packet and output');
+      }
+      if (output.action === 'form'
+        && agenda.questions.filter(item => item.status === 'open').length >= epistemicAgenda.MAX_OPEN_QUESTIONS) {
+        throw new Error('epistemic agenda open-question capacity is full');
+      }
+      if (packet.mode === 'revisit') {
+        const currentQuestion = agenda.questions.find(item => item.id === packet.question?.id);
+        if (!currentQuestion || epistemicAgenda.canonicalJson(epistemicAgenda.publicQuestion(currentQuestion))
+          !== epistemicAgenda.canonicalJson(packet.question)) {
+          throw new Error('epistemic agenda packet is not bound to the current open question');
+        }
+      }
+      const at = clock().toISOString();
+      const attempt = { id: `epistemic-agenda-attempt-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+        at, packet, packet_commitment: epistemicAgenda.commitment(packet), output,
+        output_commitment: epistemicAgenda.commitment(output), generation_receipt: receipt };
+      attempt.attempt_commitment = epistemicAgenda.commitment(epistemicAgendaAttemptManifest(attempt));
+      const applied = applyEpistemicAgendaAttempt(agenda.questions, attempt);
+      attempt.question_id = applied.question_id;
+      agenda.attempts.push(attempt); agenda.attempts = agenda.attempts.slice(-5000);
+      agenda.questions = agenda.questions.slice(-1000); agenda.last_attempt = at;
+      researchLedgerAppend(current, { kind: 'epistemic_agenda_attempt_recorded',
+        subject_type: 'epistemic_agenda_attempt', subject_id: attempt.id,
+        payload: { attempt_commitment: attempt.attempt_commitment } });
+      return { attempt_id: attempt.id, question_id: attempt.question_id, action: output.action };
+    });
+  }
+
+  function epistemicAgendaSnapshot({ includeAttempts = false } = {}) {
+    const agenda = state.cognition.epistemic_agenda;
+    const audit = epistemicAgendaProjectionAudit(agenda);
+    const questions = audit.complete_chain_verified ? JSON.parse(JSON.stringify(agenda.questions)) : [];
+    const result = {
+      epistemic_status: 'Durable, Nora-authored professional questions revised only by naturally encountered evidence. This is a functional model of sustained inquiry, not a feeling claim, autonomous action authority, or evidence of phenomenal consciousness.',
+      protocol: { version: epistemicAgenda.PROTOCOL_VERSION,
+        maximum_open_questions: epistemicAgenda.MAX_OPEN_QUESTIONS, active_search: false,
+        foreground_provider_calls: false, connector_actions: false,
+        minimum_attempt_interval_hours: epistemicAgenda.MIN_ATTEMPT_INTERVAL_MS / 3600000 },
+      questions, audit, report: { total: questions.length,
+        open: questions.filter(item => item.status === 'open').length,
+        resolved: questions.filter(item => item.status === 'resolved').length,
+        abandoned: questions.filter(item => item.status === 'abandoned').length,
+        replay_verified_attempts: audit.attempt_audits.filter(item => item.complete_chain_verified).length,
+        last_attempt: agenda.last_attempt || null } };
+    if (includeAttempts) result.attempts = JSON.parse(JSON.stringify(agenda.attempts));
+    return result;
   }
 
   function epistemicSelfCorrectionReflectionSnapshot() {
@@ -11165,6 +11309,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const earnedViewpointProjectionVerified = !earnedViewpointProjectionSealed()
       && earnedViewpoint.audit(earnedViewpointState, cognition.epistemic_ledger?.propositions || []).complete_chain_verified;
     const currentViewpoints = earnedViewpointProjectionVerified ? earnedViewpointState?.viewpoints || [] : [];
+    const epistemicAgendaStatus = epistemicAgendaSnapshot();
+    const openAgendaQuestions = epistemicAgendaStatus.questions.filter(item => item.status === 'open');
     const provenanceBoundViewpoints = currentViewpoints
       .filter(item => item.source_family_provenance_verified === true);
     const viewpointSourceFamilies = [...new Set(provenanceBoundViewpoints.map(item => item.source_family))].sort();
@@ -11185,7 +11331,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       : dreamInsight.dreamInsights(dashboardDreams).map(item => item.insight)
         .filter(item => item.status === 'candidate');
     const reflectionSignals = (cognition.surprises || []).length + (cognition.mind_changes || []).length
-      + unresolvedPulses + viewpointReappraisals.length + currentViewpoints.length
+      + unresolvedPulses + viewpointReappraisals.length + currentViewpoints.length + openAgendaQuestions.length
       + (insightReflectionStatus?.report?.attempts || 0) + insightCandidates.length
       + (aimReappraisalStatus?.report?.attempts || 0)
       + cycleSelfCorrectionStatus.replay_verified_corrections
@@ -11260,10 +11406,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         relationships: metric(scaleCount(activeRelationshipObservations || state.relationships.length, 12), `${state.relationships.length} people, ${activeRelationshipObservations} active observations`, state.relationships.length > 0),
         learning: metric(scaleCount(activeExperiments + parameterStudyStatus.active
           + (cognition.development || []).length + activeProcedures + candidateProcedures + activeExemplars
-          + activeReadingSessions + completedReadingEncounters, 10),
-          `${activeExperiments} active learning experiments and ${parameterStudyStatus.active} blinded causal parameter study; ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes; ${readingSources.length} admitted reading sources, ${activeReadingSessions} active and ${completedReadingEncounters} completed intellectual encounters`,
+          + activeReadingSessions + completedReadingEncounters + openAgendaQuestions.length, 10),
+          `${activeExperiments} active learning experiments and ${parameterStudyStatus.active} blinded causal parameter study; ${openAgendaQuestions.length} open evidence-bound questions; ${(cognition.development || []).length} developmental memories; ${activeProcedures} active, ${candidateProcedures} candidate, and ${retiredProcedures} retired procedures with ${procedureOutcomes.length} source-bound outcomes; ${activeExemplars} active (${positiveExemplars} positive, ${contrastExemplars} contrast) and ${retiredExemplars} retired exemplars with ${exemplarOutcomes.length} exposure outcomes; ${readingSources.length} admitted reading sources, ${activeReadingSessions} active and ${completedReadingEncounters} completed intellectual encounters`,
         activeExperiments + parameterStudies.length + (cognition.development || []).length
-          + procedures.length + exemplars.length + readingSources.length + readingSessions.length > 0),
+          + procedures.length + exemplars.length + readingSources.length + readingSessions.length
+          + openAgendaQuestions.length > 0),
         background: metric(Math.max(scaleCount(activeContents, 7), acceptedPulses ? 0.32 : 0), `${activeContents} active signals, ${acceptedPulses} accepted cognitive pulses`, activeContents + acceptedPulses > 0),
         motivation: metric(strongestDriveLevel, strongestDrive
           ? `${strongestDriveName} is strongest at ${Math.round(strongestDriveLevel * 100)}%; ${replayVerifiedAimLifecycleChanges} replay-verified aim lifecycle change${replayVerifiedAimLifecycleChanges === 1 ? '' : 's'}; ${sourceBoundAimProgress} source-bound aim progress note${sourceBoundAimProgress === 1 ? '' : 's'}`
@@ -11341,6 +11488,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         autonomous_play: { active_sessions: activePlaySessions,
           completed_sessions: completedPlaySessions, candidate_insights: playCandidateInsights,
           durable_influence_enabled: false, background_only: true },
+        epistemic_agenda: { ...epistemicAgendaStatus.report,
+          current_question: openAgendaQuestions[0]?.question || null,
+          projection_verified: epistemicAgendaStatus.audit.complete_chain_verified,
+          active_search: false, foreground_provider_calls: false },
         cognitive_parameters: { revision: parameterStatus.revision,
           parameter_count: parameterStatus.parameter_count,
           default_equivalent: parameterStatus.default_equivalent,
@@ -11400,6 +11551,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     delete snapshot.experience_stream;
     delete snapshot.recurrent_signals;
+    if (snapshot.epistemic_agenda) {
+      const agenda = epistemicAgendaSnapshot();
+      snapshot.epistemic_agenda = { questions: agenda.questions, report: agenda.report,
+        protocol: agenda.protocol, audit: { complete_chain_verified: agenda.audit.complete_chain_verified },
+        attempt_details_sealed: true };
+    }
     if (snapshot.continuity_handoffs) {
       const handoffs = cognition.continuity_handoffs || [];
       const sealed = interventionActive('continuity_context') || interventionActive('inner_thread_presence');
@@ -26508,6 +26665,8 @@ ${episodes.map(item => {
     operationalEnvironmentSnapshot, operationalEnvironmentStatus,
     createSourceBoundaryChallenge, answerSourceBoundaryChallenge, sourceBoundarySnapshot,
     recordEpistemicPosition, reviewEpistemicDiscrepancy, epistemicLedgerSnapshot,
+    recordEpistemicAgendaAttempt, epistemicAgendaSnapshot, epistemicAgendaAttemptAudit,
+    epistemicAgendaProjectionAudit,
     epistemicSelfCorrectionReflectionSnapshot, recordEpistemicSelfCorrectionReflection,
     epistemicSelfCorrectionPacket,
     meetingProfessionalReflectionSnapshot, recordMeetingProfessionalReflection,

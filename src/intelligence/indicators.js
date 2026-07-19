@@ -6,6 +6,7 @@ const cognitiveSelfRegulation = require('./cognitive-self-regulation');
 const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
+const epistemicAgenda = require('./epistemic-agenda');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 const professionalViewpointAccessOutcome = require('./professional-viewpoint-access-outcome');
@@ -160,6 +161,10 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     return professionalViewpointReflection.auditReceipt(item.generation_receipt).complete_chain_verified
       && item.attempt_commitment === professionalViewpointReflection.commitment(payload);
   });
+  const agendaQuestions = cognition.epistemic_agenda?.questions || [];
+  const agendaAttempts = cognition.epistemic_agenda?.attempts || [];
+  const receiptVerifiedAgendaAttempts = agendaAttempts
+    .filter(item => epistemicAgenda.auditReceipt(item.generation_receipt).complete_chain_verified);
   const professionalReappraisalAttempts = cognition.professional_viewpoint_reappraisal?.attempts || [];
   const replayVerifiedProfessionalReappraisals = professionalReappraisalAttempts.filter(item => {
     const payload = JSON.parse(JSON.stringify(item));
@@ -2226,6 +2231,20 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
       },
       falsifier: 'Views enter cognition without formation provenance or adequate evidence, fail replay after source tampering, become unrevisable assertions, or authentic Nora-bound viewpoints fail to improve evidence-grounded PM recommendations over identical deidentified and absent-view controls.',
       next_gate: 'Naturally form several provenance-bound source-family-diverse viewpoints, accumulate replay-valid prompt-access outcomes without interpreting access as use, observe evidence-driven revision or retirement, then run an authentic Nora-bound versus identical deidentified versus absent-view PM recommendation study with first-order quality, unsupported-claim, and foreground-latency safeguards.',
+    },
+    {
+      id: 'sustained_epistemic_agenda', family: ['metacognition', 'curiosity', 'intellectual development', 'professional judgment'],
+      functional_claim: 'Nora can originate a useful professional question, preserve it across invocations, and revise, resolve, or abandon it when naturally encountered evidence changes the best tentative answer.',
+      mechanism: 'A restart-durable, capacity-limited question ledger runs only in the preemptible background lane. Formation requires evidence from distinct dates or projects; updates cite only new committed records; every provider result and projection transition is hash-bound and replay-audited. The mechanism cannot browse, message, create tasks, call connectors, or run a provider on Slack or Zoom response paths.',
+      status: receiptVerifiedAgendaAttempts.length ? 'collecting' : 'mechanism_present',
+      evidence: { questions: agendaQuestions.length,
+        open_questions: agendaQuestions.filter(item => item.status === 'open').length,
+        resolved_questions: agendaQuestions.filter(item => item.status === 'resolved').length,
+        abandoned_questions: agendaQuestions.filter(item => item.status === 'abandoned').length,
+        provider_receipt_verified_attempts: receiptVerifiedAgendaAttempts.length,
+        active_search_actions: 0, foreground_provider_calls: 0 },
+      falsifier: 'Questions are generic or already answered, persist without new evidence, silently change identity, cite unavailable records, cause actions or connector use, degrade foreground latency, or fail to improve later evidence-grounded PM judgment over matched evidence without agenda access.',
+      next_gate: 'Naturally accumulate at least three replay-verified questions with one evidence-driven revision and one resolution or abandonment, then preregister a matched authentic-question versus byte-identical deidentified-question versus absent-question PM judgment pilot with independent quality, novelty, unsupported-claim, and latency grading.',
     },
     {
       id: 'epistemic_self_other_boundary', family: ['source monitoring', 'theory of mind', 'self-model'],

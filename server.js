@@ -55,6 +55,7 @@ const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-re
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
+const epistemicAgenda = require('./src/intelligence/epistemic-agenda');
 const cycleSelfCorrectionReflection = require('./src/intelligence/cycle-self-correction-reflection');
 const meetingProfessionalReflection = require('./src/intelligence/meeting-professional-reflection');
 const selfAuthoredAimReflection = require('./src/intelligence/self-authored-aim-reflection');
@@ -10118,6 +10119,8 @@ let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
+let _epistemicAgendaInFlight = false;
+let _epistemicAgendaLastCycle = null;
 let _cycleSelfCorrectionReflectionInFlight = false;
 let _cycleSelfCorrectionReflectionLastCycle = null;
 let _meetingProfessionalReflectionInFlight = false;
@@ -10663,6 +10666,13 @@ function professionalViewpointReappraisalRuntimeConfig(env = process.env) {
   };
 }
 
+function epistemicAgendaRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_EPISTEMIC_AGENDA !== '0' && Boolean(env.ANTHROPIC_API_KEY);
+  return { enabled, model: String(env.NORA_EPISTEMIC_AGENDA_MODEL
+    || epistemicAgenda.DEFAULT_MODEL).slice(0, 160) };
+}
+
 function cycleSelfCorrectionReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_CYCLE_SELF_CORRECTION_REFLECTION !== '0'
@@ -11088,6 +11098,38 @@ async function runProfessionalViewpointLifecycleAutopilotRuntime({ post = axios.
   const reflection = await runProfessionalViewpointReflectionAutopilotRuntime({ post });
   const reappraisal = await runProfessionalViewpointReappraisalAutopilotRuntime({ post });
   return { reflection, reappraisal };
+}
+
+async function runEpistemicAgendaRuntime({ post = axios.post } = {}) {
+  const config = epistemicAgendaRuntimeConfig();
+  if (!config.enabled) {
+    _epistemicAgendaLastCycle = { protocol_version: epistemicAgenda.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, at: new Date().toISOString() };
+    return _epistemicAgendaLastCycle;
+  }
+  if (_epistemicAgendaLastCycle?.state === 'failed_closed'
+    && Date.now() - new Date(_epistemicAgendaLastCycle.at || 0).getTime() < 60 * 60 * 1000) {
+    return { ..._epistemicAgendaLastCycle, state: 'failure_cooldown' };
+  }
+  if (_epistemicAgendaInFlight) return { protocol_version: epistemicAgenda.PROTOCOL_VERSION,
+    state: 'in_flight', at: new Date().toISOString() };
+  _epistemicAgendaInFlight = true;
+  try {
+    const cycle = await epistemicAgenda.runCycle({ store: intelligence, memories: loadMemory(),
+      enabled: true, model: config.model, callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01' }, timeout: 45000 });
+        return response.data;
+      } });
+    _epistemicAgendaLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _epistemicAgendaLastCycle;
+  } catch (error) {
+    _epistemicAgendaLastCycle = { protocol_version: epistemicAgenda.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString() };
+    return _epistemicAgendaLastCycle;
+  } finally { _epistemicAgendaInFlight = false; }
 }
 
 async function runCycleSelfCorrectionReflectionRuntime({ post = axios.post } = {}) {
@@ -11905,6 +11947,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     common_ground_review: 'Reviewing shared conversational context',
     teammate_perspective_review: 'Reviewing teammate perspective evidence',
     professional_viewpoint_lifecycle: 'Reflecting on professional judgment',
+    epistemic_agenda: 'Revisiting a question Nora is carrying',
     cycle_self_correction_reflection: 'Reviewing forecast corrections',
     meeting_professional_reflection: 'Reflecting on meeting outcomes',
     self_authored_aim_lifecycle: 'Reviewing self-authored aims',
@@ -11971,6 +12014,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
       ['professional_viewpoint_lifecycle',
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
+      ['epistemic_agenda', () => runEpistemicAgendaRuntime({ post: priorityPost })],
       ['cycle_self_correction_reflection',
         () => runCycleSelfCorrectionReflectionRuntime({ post: priorityPost })],
       ['meeting_professional_reflection',
@@ -12166,6 +12210,8 @@ module.exports = {
     runProfessionalViewpointReappraisalAutopilotRuntime,
     runProfessionalViewpointLifecycleAutopilotRuntime,
     runProfessionalViewpointLifecycleWithPriorityRuntime,
+    epistemicAgendaRuntimeConfig,
+    runEpistemicAgendaRuntime,
     cycleSelfCorrectionReflectionRuntimeConfig,
     runCycleSelfCorrectionReflectionRuntime,
     meetingProfessionalReflectionRuntimeConfig,

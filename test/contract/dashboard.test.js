@@ -132,7 +132,7 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
   const brainJs = fs.readFileSync(path.join(root, 'public/js/dashboard-brain.js'), 'utf8');
   const sections = [...html.matchAll(/data-intelligence-section="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(sections.length, 16);
+  assert.equal(sections.length, 17);
   assert.equal(new Set(sections).size, sections.length);
   const targetLiteral = intelligenceJs.match(/const intelligenceSectionTargets = (\{[\s\S]*?\n\});/);
   assert.ok(targetLiteral, 'progressive section registry should stay inspectable');
@@ -146,6 +146,8 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /startPlayroomPolling/);
   assert.match(html, /id="playroom-state"/);
   assert.match(intelligenceJs, /\/developmental-reading/);
+  assert.match(intelligenceJs, /\/epistemic-agenda/);
+  assert.match(html, /id="epistemic-agenda-state"/);
   assert.match(intelligenceJs, /startReadingRoomPolling/);
   assert.match(intelligenceJs, /Provider-bound autonomous selection/);
   assert.match(intelligenceJs, /candidate.*frozen/);
@@ -198,7 +200,7 @@ test('intelligence detail is divided into bounded human-readable views', () => {
 
   const sections = [...html.matchAll(/data-intelligence-view="([^"]+)" data-intelligence-section="([^"]+)"/g)]
     .map(([, view, section]) => ({ view, section }));
-  assert.equal(sections.length, 16);
+  assert.equal(sections.length, 17);
   assert.ok(sections.every(({ view }) => expectedViews.includes(view)));
   assert.equal(new Set(sections.map(({ section }) => section)).size, sections.length,
     'every detail section should belong to exactly one room');

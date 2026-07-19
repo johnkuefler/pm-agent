@@ -132,6 +132,7 @@ GET /source-boundary/challenges
 POST /source-boundary/challenges
 POST /source-boundary/challenges/:id/answer
 GET /epistemic-ledger
+GET /epistemic-agenda
 POST /epistemic-ledger/positions
 GET /earned-viewpoints
 POST /earned-viewpoints/:id/retire

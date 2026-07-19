@@ -13,7 +13,7 @@ const intelligenceViews = Object.freeze({
     description: 'The few signals that explain her current state and activity.', sections: [] },
   learning: { title: 'Learning and stimulation',
     description: 'Books, play, and the functional state shaping what Nora notices and practices.',
-    sections: ['reading-room', 'playroom', 'cognition'] },
+    sections: ['epistemic-agenda', 'reading-room', 'playroom', 'cognition'] },
   self: { title: 'Self and behavior',
     description: 'What Nora claims about herself and whether those claims predict observable behavior.',
     sections: ['self-model', 'attention', 'agency', 'interoception', 'experience'] },
@@ -28,7 +28,7 @@ const intelligenceSectionViews = Object.fromEntries(Object.entries(intelligenceV
   .flatMap(([view, config]) => config.sections.map(section => [section, view])));
 
 const intelligenceSectionTargets = {
-  cognition: ['cognition-state'], 'reading-room': ['reading-room-state'], playroom: ['playroom-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
+  cognition: ['cognition-state'], 'epistemic-agenda': ['epistemic-agenda-state'], 'reading-room': ['reading-room-state'], playroom: ['playroom-state'], research: ['consciousness-research-state'], 'self-model': ['self-model-state'],
   boundary: ['self-boundary-state'], attention: ['attention-schema-state'], agency: ['agency-state'],
   interoception: ['interoception-state'], experience: ['experience-stream-state'],
   orientation: ['orientation-list', 'cycle-list'], commitments: ['commitment-list'], episodes: ['episode-list'],
@@ -205,6 +205,9 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
       } else if (name === 'reading-room') {
         const value = await intelligenceJson('/developmental-reading?limit=8', signal);
         if (token === intelligenceLoadToken) renderReadingRoom(value);
+      } else if (name === 'epistemic-agenda') {
+        const value = await intelligenceJson('/epistemic-agenda', signal);
+        if (token === intelligenceLoadToken) renderEpistemicAgenda(value);
       } else if (name === 'playroom') {
         const value = await intelligenceJson('/playroom', signal);
         if (token === intelligenceLoadToken) renderPlayroom(value);
@@ -306,6 +309,36 @@ function readingRoomStatus(availability = {}) {
   const label = labels[availability.state] || String(availability.state || 'Library ready').replaceAll('_', ' ');
   return availability.influence_access?.state === 'sealed' && availability.state !== 'sealed'
     ? `${label} · influence sealed` : label;
+}
+
+function renderEpistemicAgenda(value = {}) {
+  const target = document.getElementById('epistemic-agenda-state');
+  if (!target) return;
+  const questions = value.questions || [];
+  const open = questions.filter(item => item.status === 'open');
+  const ordered = [...open, ...questions.filter(item => item.status !== 'open').slice(-3).reverse()];
+  if (!ordered.length) {
+    target.innerHTML = `<div class="epistemic-agenda-empty"><strong>No question has earned a place yet.</strong>
+      <p>Nora checks recent work in the background and will form one only when distinct evidence creates a real, useful gap.</p></div>`;
+    return;
+  }
+  target.innerHTML = `<div class="epistemic-agenda-summary">
+      <span><strong>${value.report?.open || 0}</strong> open</span>
+      <span><strong>${value.report?.resolved || 0}</strong> resolved</span>
+      <span><strong>${value.report?.replay_verified_attempts || 0}</strong> replay-verified turns</span>
+    </div>
+    <div class="epistemic-agenda-list">${ordered.map(item => {
+    const latest = item.history?.at(-1);
+    return `<article class="epistemic-question" data-status="${escHtml(item.status)}">
+      <div class="epistemic-question-heading"><span>${escHtml(item.status)}</span><strong>${Math.round(Number(item.confidence || 0) * 100)}% tentative</strong></div>
+      <h3>${escHtml(item.question)}</h3>
+      <p>${escHtml(item.current_best_answer || 'No tentative answer yet.')}</p>
+      <dl><div><dt>Why Nora keeps it</dt><dd>${escHtml(item.why_it_matters)}</dd></div>
+        <div><dt>What could change it</dt><dd>${escHtml(item.next_evidence)}</dd></div></dl>
+      <div class="epistemic-question-meta">${item.evidence_ids?.length || 0} naturally encountered records${latest ? ` &middot; last ${escHtml(latest.action)} ${escHtml(new Date(item.updated_at).toLocaleString())}` : ''}</div>
+    </article>`;
+  }).join('')}</div>
+    <p class="intelligence-note">No active searching, connector actions, or foreground model calls. Questions change only when ordinary work supplies new evidence.</p>`;
 }
 
 function readingRoomBook(source, session) {
@@ -556,6 +589,8 @@ function renderIntelligenceGlance(summary = {}) {
     ? `${motivation.strongest_name} is the strongest active drive` : 'No dominant drive yet';
   const learningNow = [
     reading.active_title ? `Reading ${reading.active_title}` : null,
+    cognition.epistemic_agenda?.current_question
+      ? `Carrying: ${cognition.epistemic_agenda.current_question}` : null,
     play.active_sessions ? 'A play session is active' : null,
   ].filter(Boolean);
   target.innerHTML = `
