@@ -928,7 +928,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try {
       const snapshot = await selfModelCache.get({
         requireCurrentExperimentalAccess: true,
-        requireCurrentRevision: req.query.allow_stale !== '1',
+        requireCurrentRevision: process.env.NORA_TEST_MODE === '1'
+          || req.query.require_current === '1',
       });
       projectionHeaders(res, snapshot);
       return res.type('application/json').send(snapshot.serialized);

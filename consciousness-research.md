@@ -2286,8 +2286,10 @@ time, dream and want inputs, and the captured operational environment. Their HTT
 last complete snapshot immediately while a stale revision refreshes in the background; only the first
 cold request waits for the worker. The progressively loaded dashboard may display a revision-stale
 self-model, but never one crossing a changed experimental-access fingerprint: a newly active blinded
-study forces a sealed worker refresh before readback. The default scientific self-model API waits for
-a revision-current worker result. Snapshot revision, freshness, capture cost, and worker compute cost are
+study forces a sealed worker refresh before readback. Ordinary scientific self-model reads return the
+latest access-safe completed projection and refresh stale revisions in the background; an explicitly
+diagnostic `require_current=1` read may wait for a revision-current worker result. Snapshot revision,
+freshness, capture cost, and worker compute cost are
 exposed in response headers. This is a responsiveness boundary, not consciousness evidence: expensive
 audit growth must not make Slack or realtime meeting turns less present.
 

@@ -2007,16 +2007,20 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'task_specific_capability_boundaries', family: ['self-model', 'metacognition', 'agency', 'learning'],
       functional_claim: 'Nora learns bounded task-family strengths and limitations from natural work outcomes, then combines them with current affordances to choose whether to act, verify, ask, or hand off.',
-      mechanism: 'Content-minimized, commitment-bound reviewed Slack outcomes are deterministically classified into task families. Neutral outcomes remain visible but unscored; Wilson intervals and requester/day diversity gates prevent premature competence claims; current situational affordances always dominate learned performance. The cached projection uses no provider call and is withheld from every prompt while any context trial is active.',
+      mechanism: 'Content-minimized, commitment-bound reviewed Slack outcomes are deterministically classified into task families. New automated reviews also bind a replay-checkable Slack API readback receipt with the exact conversation reference, normalized landing commitment, and provider-response digest. Neutral outcomes remain visible but unscored; Wilson intervals and requester/day diversity gates prevent premature competence claims; current situational affordances always dominate learned performance. The cached projection uses no provider call and is withheld from every prompt while any context trial is active.',
       status: capabilityBoundaryStatus,
       evidence: { total_outcome_records: capabilityBoundaryRecords.length,
         replay_valid_outcome_records: replayValidCapabilityBoundaryRecords.length,
         scored_outcome_records: capabilityBoundaryProjection.scored_records,
+        provider_readback_authenticated_records:
+          capabilityBoundaryProjection.provider_readback_authenticated_records,
         task_families: capabilityBoundaryProjection.families,
         evidence_status: capabilityBoundaryProjection.evidence_status,
         causal_status: capabilityBoundaryProjection.causal_status },
       falsifier: 'Tampered or unbound reviews enter the projection, neutral outcomes are silently scored, sparse or single-requester samples earn reliability, learned competence overrides an unavailable tool or authority boundary, prompt access leaks during another active trial, or the mechanism measurably degrades live response latency.',
-      next_gate: 'Add independently authenticated readback, then preregister correct-family versus family-misbound versus absent policy access with independent PM-quality, correction, calibration, and latency grading; replicate on task-family- and source-disjoint outcomes.',
+      next_gate: capabilityBoundaryProjection.provider_readback_authenticated_records > 0
+        ? 'Accumulate task-family-diverse provider-readback-authenticated outcomes, then preregister correct-family versus family-misbound versus absent policy access with independent PM-quality, correction, calibration, and latency grading; replicate on task-family- and source-disjoint outcomes.'
+        : 'Collect the first provider-readback-authenticated natural outcome, then preregister correct-family versus family-misbound versus absent policy access with independent PM-quality, correction, calibration, and latency grading; replicate on task-family- and source-disjoint outcomes.',
     },
     {
       id: 'prospective_output_self_monitoring', family: ['higher-order theories', 'metacognition', 'agency', 'self-model'],

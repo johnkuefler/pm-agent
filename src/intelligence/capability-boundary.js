@@ -51,6 +51,10 @@ function recordFromInteraction(interaction = {}) {
   const automatedReceipt = interaction.automated_review_receipt || null;
   if (automatedReceipt
     && !interactionOutcomeReview.verifyAutomatedReviewReceipt(interaction, automatedReceipt)) return null;
+  const providerReadbackReceipt = automatedReceipt?.packet?.provider_readback_receipt || null;
+  const providerReadbackVerified = Boolean(providerReadbackReceipt
+    && interactionOutcomeReview.verifySlackLandingReadbackReceipt(providerReadbackReceipt,
+      interaction, automatedReceipt.packet.landing));
   const taskFamily = classifyTask(interaction.trigger, interaction.executed_tool_names);
   const scored = POSITIVE_OUTCOMES.has(outcome) || outcome === 'corrected';
   const manifest = {
@@ -69,10 +73,15 @@ function recordFromInteraction(interaction = {}) {
     channel_commitment: commitment(evidenceRef.id.split(':')[0]),
     delivered_at: String(interaction.created || '').slice(0, 40) || null,
     reviewed_at: String(interaction.reviewed_at).slice(0, 40),
-    source_quality: automatedReceipt
-      ? 'provider_disjoint_authenticated_slack_review'
+    source_quality: providerReadbackVerified
+      ? 'provider_disjoint_review_with_slack_api_readback'
+      : automatedReceipt ? 'provider_disjoint_authenticated_slack_review'
       : 'authenticated_subject_adjacent_slack_review',
     review_receipt_commitment: automatedReceipt?.receipt_commitment || null,
+    ...(providerReadbackReceipt ? {
+      provider_readback_verified: providerReadbackVerified,
+      provider_readback_receipt_commitment: providerReadbackReceipt.receipt_commitment || null,
+    } : {}),
   };
   return { ...manifest, content_commitment: commitment(manifest) };
 }
@@ -121,13 +130,18 @@ function familyProjection(records, family) {
 
 function projection(records = []) {
   const verified = records.filter(verifyRecord);
+  const providerReadbackAuthenticated = verified
+    .filter(record => record.provider_readback_verified === true
+      && /^[a-f0-9]{64}$/.test(String(record.provider_readback_receipt_commitment || ''))).length;
   const families = [...new Set(verified.map(record => record.task_family))].sort();
   const byFamily = Object.fromEntries(families.map(family => [family, familyProjection(verified, family)]));
   return {
     protocol_version: PROTOCOL_VERSION,
-    evidence_status: 'observational_subject_adjacent',
+    evidence_status: providerReadbackAuthenticated
+      ? 'observational_provider_readback_authenticated' : 'observational_subject_adjacent',
     causal_status: 'not_causally_tested',
     replay_verified_records: verified.length,
+    provider_readback_authenticated_records: providerReadbackAuthenticated,
     scored_records: verified.filter(record => record.scored).length,
     families: byFamily,
   };

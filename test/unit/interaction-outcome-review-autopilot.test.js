@@ -30,6 +30,16 @@ function landing(overrides = {}) {
   };
 }
 
+function authenticatedLanding(source = interaction(), overrides = {}) {
+  const value = landing(overrides);
+  value.provider_readback_receipt = review.createSlackLandingReadbackReceipt({
+    responseData: { ok: true, messages: value.messages }, channel: source.channel,
+    anchorMessageTs: source.ts, apiMethod: 'conversations.history', landing: value,
+    retrievedAt: NOW,
+  });
+  return value;
+}
+
 function providerResponse(id, outcome = 'appreciated',
   evidenceTs = ['1784332900.000002']) {
   return {
@@ -85,6 +95,30 @@ test('dual-role consensus commits one replay-valid provider-disjoint outcome', a
   assert.equal(record.review_receipt_commitment,
     reviewed.automated_review_receipt.receipt_commitment);
   assert.equal(capability.verifyRecord(record), true);
+});
+
+test('Slack API readback is commitment-bound into the review and learned capability evidence', async () => {
+  const source = interaction();
+  let committed;
+  await review.runCycle({ interactions: [source], now: NOW,
+    readLanding: async () => authenticatedLanding(source),
+    callProvider: async (_request, context) => providerResponse(`readback-${context.role}`),
+    commitOutcome: (_id, input) => { committed = input; } });
+  const reviewed = { ...source, ...committed, reviewed: true };
+  const receipt = reviewed.automated_review_receipt.packet.provider_readback_receipt;
+  assert.equal(review.verifySlackLandingReadbackReceipt(receipt, reviewed,
+    reviewed.automated_review_receipt.packet.landing), true);
+  assert.equal(review.verifyAutomatedReviewReceipt(reviewed,
+    reviewed.automated_review_receipt), true);
+  const record = capability.recordFromInteraction(reviewed);
+  assert.equal(record.provider_readback_verified, true);
+  assert.equal(record.source_quality, 'provider_disjoint_review_with_slack_api_readback');
+  assert.equal(capability.projection([record]).provider_readback_authenticated_records, 1);
+
+  const tampered = structuredClone(reviewed.automated_review_receipt);
+  tampered.packet.provider_readback_receipt.anchor_message_ts = '1784332800.999999';
+  tampered.receipt_commitment = review.commitment(review.receiptPayload(tampered));
+  assert.equal(review.verifyAutomatedReviewReceipt(reviewed, tampered), false);
 });
 
 test('role disagreement remains unreviewed and is terminally handed back to nightly review', async () => {

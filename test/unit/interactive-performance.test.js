@@ -149,6 +149,9 @@ test('live server opts into complete Slack trials but never globally enables sec
     'intelligence.js'), 'utf8');
   assert.match(intelligenceRoutes, /getResearchAutopilotStatus\(\{ detail: req\.query\.detail \}\)/,
     'exhaustive status must require an explicit diagnostic detail request');
+  assert.match(intelligenceRoutes,
+    /requireCurrentRevision: process\.env\.NORA_TEST_MODE === '1'[\s\S]*req\.query\.require_current === '1'/,
+    'ordinary self-model reads must serve the access-safe projection without chasing every live revision');
   assert.match(server, /model: slackResponseModel\(query\)/,
     'typed Zoom chat must share the bounded fast-turn model policy');
   assert.match(server, /beginBackground\('memory-embedding-backfill'\)/,

@@ -4530,16 +4530,20 @@ async function fetchSlackLanding(channel, ts, { channelType, threadTs,
   const isDM = channelType === 'im' || channelType === 'mpim' || /^D/.test(channel || '');
   try {
     let raw = [];
+    let providerResponse = null;
+    let apiMethod = null;
     if (threadTs && !isDM) {
       // Channel thread: everything in the thread, then keep what came after her message.
       const r = await get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, { headers, timeout: 6000, signal });
       if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
+      providerResponse = r.data; apiMethod = 'conversations.replies';
       raw = Array.isArray(r.data.messages) ? r.data.messages : [];
     } else {
       // DM or non-threaded channel message: history at/after her message (oldest=ts inclusive).
       const params = new URLSearchParams({ channel, oldest: String(ts), inclusive: 'true', limit: '20' });
       const r = await get(`https://slack.com/api/conversations.history?${params.toString()}`, { headers, timeout: 6000, signal });
       if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
+      providerResponse = r.data; apiMethod = 'conversations.history';
       raw = (Array.isArray(r.data.messages) ? r.data.messages : []).slice().reverse(); // →chronological
     }
     // Keep only what came strictly AFTER her message, and drop her own/bot/system posts —
@@ -4548,7 +4552,13 @@ async function fetchSlackLanding(channel, ts, { channelType, threadTs,
       .filter(m => Number(m.ts) > Number(ts))
       .filter(m => !m.bot_id && m.subtype !== 'bot_message' && (!m.subtype || m.subtype === 'thread_broadcast' || m.subtype === 'file_share'))
       .map(m => ({ user: m.user || null, text: m.text || '', ts: m.ts, reactions: (m.reactions || []).map(r => ({ name: r.name, count: r.count })) }));
-    return { messages: after.slice(0, 15), truncated: after.length > 15, is_dm: isDM };
+    const landing = { messages: after.slice(0, 15), truncated: after.length > 15, is_dm: isDM };
+    return { ...landing, provider_readback_receipt:
+      interactionOutcomeReviewAutopilot.createSlackLandingReadbackReceipt({
+        responseData: providerResponse, channel, anchorMessageTs: ts,
+        threadTs: apiMethod === 'conversations.replies' ? threadTs : null,
+        apiMethod, landing, retrievedAt: new Date(),
+      }) };
   } catch (err) {
     return { error: err.message };
   }
@@ -12282,6 +12292,7 @@ module.exports = {
     runInteractionOutcomeReviewAutopilotRuntime,
     commitAutomatedInteractionOutcome,
     recordAutomatedInteractionReviewAttempt,
+    fetchSlackLanding,
     readExactSlackEvidence,
     readCommonGroundSlackEvidence,
     runCognitiveInitiationStudySubjectRuntime,

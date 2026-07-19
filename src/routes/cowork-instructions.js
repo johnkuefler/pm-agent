@@ -721,7 +721,9 @@ function registerCoworkInstructionsRoute(app) {
     GET /self-model. The deterministic 20-cycle profile exposes action tendencies plus signed behavioral
     and cross-domain self-state forecast errors after five samples. Its raw committed history remains
     auditable, while protocol-v5 forward projections and baselines exclude retired action families.
-    General profile access remains sealed during active blinded context trials.
+    General profile access remains sealed during active blinded context trials. This broad read returns
+    the latest completed access-safe projection so routine cognition cannot wait behind a changing ledger;
+    require_current=1 is diagnostic-only and must not be used in an ordinary hourly run.
     GET /self-model/cycle-calibration exposes a narrower natural-cycle feedback projection for audit after
     the retain/revise decision: the latest
     replay-valid protocol-v2-or-newer miss, its source outcome and feedback commitments, and a mature profile only

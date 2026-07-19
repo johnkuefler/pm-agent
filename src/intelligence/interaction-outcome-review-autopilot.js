@@ -8,6 +8,8 @@ const MIN_REVIEW_DELAY_MS = 6 * 60 * 60 * 1000;
 const MAX_REVIEWS_PER_CYCLE = 1;
 const REVIEWER_ROLES = Object.freeze(['evidence_first', 'failure_first']);
 const OUTCOMES = Object.freeze(['appreciated', 'landed', 'neutral', 'ignored', 'corrected']);
+const SLACK_READBACK_PROTOCOL_VERSION = 1;
+const SHA256 = /^[a-f0-9]{64}$/;
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -85,6 +87,70 @@ function stableLanding(landing = {}) {
   return { messages, truncated: landing.truncated === true, is_dm: landing.is_dm === true };
 }
 
+function slackReadbackPayload(receipt = {}) {
+  const payload = { ...receipt };
+  delete payload.receipt_commitment;
+  return payload;
+}
+
+function createSlackLandingReadbackReceipt({ responseData, channel, anchorMessageTs,
+  threadTs = null, apiMethod, landing, retrievedAt = new Date() } = {}) {
+  const retrieved = new Date(retrievedAt);
+  const stable = stableLanding(landing);
+  const method = String(apiMethod || '');
+  const channelId = String(channel || '').trim();
+  const anchor = String(anchorMessageTs || '').trim();
+  const thread = threadTs == null ? null : String(threadTs).trim();
+  if (!['conversations.history', 'conversations.replies'].includes(method)
+    || !/^[CDG][A-Z0-9]{8,}$/.test(channelId)
+    || !/^\d{10,}\.\d{6}$/.test(anchor)
+    || (thread != null && !/^\d{10,}\.\d{6}$/.test(thread))
+    || !Number.isFinite(retrieved.getTime()) || !responseData?.ok) {
+    throw new Error('Slack landing readback requires a successful, identifiable provider response');
+  }
+  const receipt = {
+    protocol_version: SLACK_READBACK_PROTOCOL_VERSION,
+    provider: 'slack', verification_method: 'provider_api_readback',
+    api_method: method, channel: channelId, anchor_message_ts: anchor,
+    thread_ts: thread, retrieved_at: retrieved.toISOString(),
+    provider_response_digest: commitment(responseData),
+    landing_commitment: commitment(stable),
+    external_reference: { type: 'slack_conversation_readback',
+      id: `${channelId}:${thread || anchor}` },
+    epistemic_boundary: 'The digest and exact Slack reference make this normalized provider readback independently re-checkable while the source remains available. They do not prove private uptake or causation.',
+  };
+  receipt.receipt_commitment = commitment(slackReadbackPayload(receipt));
+  return receipt;
+}
+
+function verifySlackLandingReadbackReceipt(receipt = {}, interaction = {}, landing = {}) {
+  try {
+    const stable = stableLanding(landing);
+    const retrievedAt = new Date(receipt.retrieved_at);
+    const deliveredAt = Number(interaction.ts) * 1000;
+    const expectedMethod = interaction.thread_ts && !stable.is_dm
+      ? 'conversations.replies' : 'conversations.history';
+    const expectedThread = expectedMethod === 'conversations.replies'
+      ? String(interaction.thread_ts) : null;
+    return receipt.protocol_version === SLACK_READBACK_PROTOCOL_VERSION
+      && receipt.provider === 'slack'
+      && receipt.verification_method === 'provider_api_readback'
+      && receipt.api_method === expectedMethod
+      && receipt.channel === String(interaction.channel || '')
+      && receipt.anchor_message_ts === String(interaction.ts || '')
+      && receipt.thread_ts === expectedThread
+      && receipt.external_reference?.type === 'slack_conversation_readback'
+      && receipt.external_reference?.id === `${receipt.channel}:${expectedThread || receipt.anchor_message_ts}`
+      && SHA256.test(String(receipt.provider_response_digest || ''))
+      && receipt.landing_commitment === commitment(stable)
+      && Number.isFinite(retrievedAt.getTime()) && Number.isFinite(deliveredAt)
+      && retrievedAt.getTime() >= deliveredAt
+      && receipt.receipt_commitment === commitment(slackReadbackPayload(receipt));
+  } catch {
+    return false;
+  }
+}
+
 function reviewPacket(interaction = {}, landing = {}, observedAt = new Date()) {
   const observed = new Date(observedAt);
   if (!Number.isFinite(observed.getTime()) || !interaction.id || !interaction.channel
@@ -92,6 +158,12 @@ function reviewPacket(interaction = {}, landing = {}, observedAt = new Date()) {
     throw new Error('interaction review requires a complete delivered Slack interaction');
   }
   const stable = stableLanding(landing);
+  const hasProviderReadbackReceipt = Object.hasOwn(landing, 'provider_readback_receipt');
+  const providerReadbackReceipt = landing.provider_readback_receipt || null;
+  if (providerReadbackReceipt
+    && !verifySlackLandingReadbackReceipt(providerReadbackReceipt, interaction, stable)) {
+    throw new Error('Slack landing provider readback receipt failed verification');
+  }
   const deliveredAtMs = Number(interaction.ts) * 1000;
   if (!Number.isFinite(deliveredAtMs)) throw new Error('interaction review requires a valid Slack delivery timestamp');
   const evidenceWindowEndsAt = deliveredAtMs + MIN_REVIEW_DELAY_MS;
@@ -112,6 +184,8 @@ function reviewPacket(interaction = {}, landing = {}, observedAt = new Date()) {
     },
     observed_at: observed.toISOString(),
     evidence_window_ends_at: new Date(evidenceWindowEndsAt).toISOString(), landing: stable,
+    ...(hasProviderReadbackReceipt ? { provider_readback_receipt: providerReadbackReceipt
+      ? JSON.parse(JSON.stringify(providerReadbackReceipt)) : null } : {}),
     outcome_definitions: {
       appreciated: 'explicit positive uptake, thanks, action, or building on the answer',
       landed: 'clear acknowledgment or useful continuation without correction',
@@ -226,7 +300,11 @@ function verifyAutomatedReviewReceipt(interaction = {}, receipt = {}) {
     || !OUTCOMES.includes(receipt.consensus_outcome)
     || !Array.isArray(receipt.reviews) || receipt.reviews.length !== REVIEWER_ROLES.length) return false;
   try {
-    const reconstructed = reviewPacket(interaction, receipt.packet.landing,
+    const reconstructed = reviewPacket(interaction, {
+      ...receipt.packet.landing,
+      ...(Object.hasOwn(receipt.packet, 'provider_readback_receipt')
+        ? { provider_readback_receipt: receipt.packet.provider_readback_receipt } : {}),
+    },
       receipt.packet.observed_at);
     if (canonicalJson(reconstructed) !== canonicalJson(receipt.packet)) return false;
     if (new Date(receipt.packet.observed_at).getTime()
@@ -333,7 +411,9 @@ function status(interactions = [], runtime = {}) {
 
 module.exports = {
   PROTOCOL_VERSION, DEFAULT_MODEL, MIN_REVIEW_DELAY_MS, MAX_REVIEWS_PER_CYCLE,
-  REVIEWER_ROLES, OUTCOMES, canonicalJson, commitment, reviewerId, reviewSchema,
+  REVIEWER_ROLES, OUTCOMES, SLACK_READBACK_PROTOCOL_VERSION, canonicalJson, commitment,
+  slackReadbackPayload, createSlackLandingReadbackReceipt, verifySlackLandingReadbackReceipt,
+  reviewerId, reviewSchema,
   systemPrompt, promptProtocol, stableLanding, reviewPacket, buildReviewRequest,
   responseText, normalizeReviewOutput, parseReview, receiptPayload, automatedReviewReceipt,
   verifyAutomatedReviewReceipt, eligibleInteractions, runCycle, status,

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const interactionReview = require('../../src/intelligence/interaction-outcome-review-autopilot');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-domain-'));
 process.env.NORA_DATA_DIR = dataDir;
@@ -163,6 +164,24 @@ test('missing Slack reaction scope is cached and degrades without repeated API f
   assert.equal(second.reason, 'missing_scope_cached');
   assert.equal(calls, 1);
   helpers.resetSlackReactionCapabilityForTest();
+});
+
+test('Slack landing fetch binds the successful provider response to a replay-checkable receipt', async () => {
+  const anchor = '1784332800.000001';
+  const followup = '1784332900.000002';
+  const landing = await helpers.fetchSlackLanding('D031HHSBM1Q', anchor, {
+    channelType: 'im',
+    get: async () => ({ data: { ok: true, messages: [
+      { bot_id: 'B123', text: 'Nora response', ts: anchor },
+      { user: 'UJYKB4788', text: 'that helped, thanks', ts: followup },
+    ] } }),
+  });
+  assert.deepEqual(landing.messages.map(item => item.ts), [followup]);
+  assert.equal(interactionReview.verifySlackLandingReadbackReceipt(
+    landing.provider_readback_receipt,
+    { channel: 'D031HHSBM1Q', channel_type: 'im', ts: anchor, thread_ts: anchor },
+    landing), true);
+  assert.match(landing.provider_readback_receipt.provider_response_digest, /^[a-f0-9]{64}$/);
 });
 
 test('Slack post-response extraction uses parameters carried through the handler', () => {
