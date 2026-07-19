@@ -327,11 +327,13 @@ async function runCycle({ store, interactions = [], enabled = true, model = DEFA
   for (const candidateInteraction of eligible) {
     const personKey = String(candidateInteraction.requester_name).trim().toLowerCase();
     if (!currentByPerson.has(personKey)) {
-      const commonGroundSnapshot = store.commonGroundSnapshot({ person: candidateInteraction.requester_name });
-      currentByPerson.set(personKey, new Set((commonGroundSnapshot.records || [])
-        .filter(item => ['awaiting_independent_review', 'independently_verified'].includes(item.status)
-          && item.audit?.current !== false)
-        .map(item => item.proposition_id)));
+      const excluded = typeof store.commonGroundFormationExcludedPropositionIds === 'function'
+        ? store.commonGroundFormationExcludedPropositionIds(candidateInteraction.requester_name)
+        : (store.commonGroundSnapshot({ person: candidateInteraction.requester_name }).records || [])
+          .filter(item => ['awaiting_independent_review', 'independently_verified'].includes(item.status)
+            && item.audit?.current !== false)
+          .map(item => item.proposition_id);
+      currentByPerson.set(personKey, new Set(excluded));
     }
     const candidatePropositions = (ledger.propositions || [])
       .filter(item => !currentByPerson.get(personKey).has(item.id));

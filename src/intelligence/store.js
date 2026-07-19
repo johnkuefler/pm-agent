@@ -5077,12 +5077,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function commonGroundFormationExcludedPropositionIds(person = '') {
+    const normalized = String(person).trim().toLowerCase();
+    if (!normalized) return [];
+    const propositions = state.cognition.epistemic_ledger.propositions;
+    return state.cognition.common_ground.records.filter(record => {
+      if (record.person.toLowerCase() !== normalized
+        || !['awaiting_independent_review', 'independently_verified'].includes(record.status)) return false;
+      const audit = commonGround.audit(record, propositions, clock(), state.cognition.research_ledger);
+      return audit.current && audit.complete_chain_verified;
+    }).map(record => record.proposition_id);
+  }
+
   function recordCommonGroundFormation(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
-      if (commonGroundProjectionSealed()) {
-        throw new Error('common-ground formation is sealed during an active blinded study');
-      }
       const interactionId = String(input.interaction_id || '').trim().slice(0, 240);
       const formationState = current.cognition.common_ground_formation
         || (current.cognition.common_ground_formation = { attempts: [] });
@@ -27228,7 +27237,8 @@ ${episodes.map(item => {
     meetingProfessionalReflectionPacket,
     recordCommonGround, commonGroundReviewQueue, reviewCommonGround,
     commonGroundSnapshot, commonGroundFrameForPerson, commonGroundProjectionSealed,
-    commonGroundFormationSnapshot, recordCommonGroundFormation,
+    commonGroundFormationSnapshot, commonGroundFormationExcludedPropositionIds,
+    recordCommonGroundFormation,
     earnedViewpointsSnapshot, retireEarnedViewpoint,
     professionalViewpointAccessSnapshot, professionalViewpointAccessAudit,
     recordProfessionalViewpointAccessApplication, resolveProfessionalViewpointAccessOutcome,

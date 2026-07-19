@@ -72,6 +72,11 @@ test('subject-side formation binds substantive uptake to an existing position an
     rationale: 'Repeated delivery evidence supports checking dependencies before commitment.',
     evidence: [{ type: 'memory', id: 'dependency-pattern-1' }], recorded_by: 'nora-reflection',
   });
+  store.createContextTrial({
+    id: 'common-ground-formation-seal-control', intervention: 'workspace_capacity',
+    hypothesis: 'Workspace capacity affects first-order task quality.',
+    outcome_metric: 'first_order_task_quality', surfaces: ['slack'], sample_target_per_group: 2,
+  });
   const interaction = await reviewedInteraction();
   let providerCalls = 0;
   const cycle = await formation.runCycle({ store, interactions: [interaction], now: NOW,
@@ -89,6 +94,18 @@ test('subject-side formation binds substantive uptake to an existing position an
   const formationSnapshot = store.commonGroundFormationSnapshot();
   assert.equal(formationSnapshot.report.formed, 1);
   assert.equal(formationSnapshot.report.replay_verified, 1);
+  const sealedCommon = store.commonGroundSnapshot({ person: 'John', query: 'delivery dependency' });
+  assert.equal(sealedCommon.experimental_access_sealed, true);
+  assert.equal(store.snapshot().cognition.common_ground.records[0]
+    .cognitive_access_sealed_at_formation, true,
+  'natural uptake is captured append-only but remains hidden from the active study');
+  assert.equal(store.commonGroundFrameForPerson('John', 'delivery dependency'), null);
+  assert.equal(store.commonGroundReviewQueue().length, 1,
+    'independent review may proceed without exposing the candidate to Nora');
+  store.abortContextTrial('common-ground-formation-seal-control', {
+    reason_code: 'operational_failure', explanation: 'The fixture completed the sealed capture check.',
+    evidence: [{ type: 'test_fixture', id: 'common-ground-formation-seal-complete' }],
+  });
   const common = store.commonGroundSnapshot({ person: 'John', query: 'delivery dependency' });
   assert.equal(common.report.awaiting_independent_review, 1);
   assert.equal(common.report.independently_verified_current, 0);
