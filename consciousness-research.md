@@ -2304,7 +2304,9 @@ exposed in response headers. This is a responsiveness boundary, not consciousnes
 audit growth must not make Slack or realtime meeting turns less present.
 Foreground Slack or Zoom activity may preempt a low-priority projection worker at any point. A
 preempted or failed refresh now enters a separate bounded retry interval rather than inheriting the
-successful-refresh interval, and a wedged worker is terminated after a fixed wall-clock ceiling.
+successful-refresh interval. The low-priority worker receives a capped 20% CPU duty cycle by default
+and is terminated after a ten-minute wall-clock ceiling; the duty cycle remains environment-tunable
+within a hard 25% cap. Foreground interactions still terminate it immediately and always win.
 `GET /intelligence/research-projection-runtime` exposes current/source revision, build identity,
 in-flight state, consecutive failures, last bounded error, retry eligibility, isolation, priority,
 and CPU-budget receipts. These are operational freshness controls, not consciousness evidence.

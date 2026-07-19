@@ -11,8 +11,16 @@ const { createResearchStatusCache, createResearchProjectionCache,
   createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope,
   PERSISTED_PROJECTION_PROTOCOL_VERSION, projectionBuildIdentity } =
   require('../../src/intelligence/research-status-cache');
+const { DEFAULT_PROJECTION_FAILURE_RETRY_MS, DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS } =
+  require('../../src/intelligence/research-status-cache');
 
 const OBSERVED_AT = new Date('2026-07-17T15:00:00.000Z');
+
+test('production projection retry and timeout defaults are bounded and distinct', () => {
+  assert.equal(DEFAULT_PROJECTION_FAILURE_RETRY_MS, 30 * 1000);
+  assert.equal(DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS, 10 * 60 * 1000);
+  assert.ok(DEFAULT_PROJECTION_FAILURE_RETRY_MS < DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS);
+});
 
 async function createStore(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-research-cache-'));

@@ -8,7 +8,7 @@ const { fork } = require('node:child_process');
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
 const DEFAULT_PROJECTION_FAILURE_RETRY_MS = 30 * 1000;
-const DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS = 3 * 60 * 1000;
+const DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS = 10 * 60 * 1000;
 
 const PERSISTED_PROJECTION_PROTOCOL_VERSION = 2;
 
@@ -28,7 +28,7 @@ function configureCpuDutyCycle(child, env = process.env) {
   }
   const periodMs = boundedNumber(env.NORA_RESEARCH_CPU_PERIOD_MS, 200, 100, 1000);
   const burstMs = Math.min(periodMs / 2,
-    boundedNumber(env.NORA_RESEARCH_CPU_BURST_MS, 20, 5, 50));
+    boundedNumber(env.NORA_RESEARCH_CPU_BURST_MS, 40, 5, 50));
   let timer = null;
   let released = false;
   let stopped = false;
