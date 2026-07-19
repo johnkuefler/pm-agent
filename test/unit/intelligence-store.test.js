@@ -2418,7 +2418,7 @@ test('schema migration marks discretionary truth and legacy metacognitive analys
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
   await store.init();
   const migrated = store.snapshot().cognition.self_model.metacognitive_control_studies[0].items[0];
-  assert.equal(store.snapshot().version, 99);
+  assert.equal(store.snapshot().version, 100);
   assert.equal(migrated.legacy_uncommitted_truth, true);
   assert.equal(migrated.resolution.answer_key_commitment_verified, false);
   assert.equal(store.snapshot().cognition.self_model.metacognitive_control_studies[0].legacy_analysis_plan, true);
@@ -2454,7 +2454,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   fs.writeFileSync(filePath, JSON.stringify({ version: 2, cognition: {} }));
   const store = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false, clock: () => new Date('2026-07-11T15:00:00Z') });
   await store.init();
-  assert.equal(store.snapshot().version, 99);
+  assert.equal(store.snapshot().version, 100);
   assert.deepEqual(store.snapshot().cognition.self_model.metacognitive_control_studies, []);
   store.refreshCognition({ wants: [{ want: 'Understand my own revisions' }] });
   const first = store.startCycle({ holder: 'nora', inner_thread: { content: 'I am carrying one unresolved question.', updated_at: '2026-07-11T14:00:00Z' } });
@@ -2469,6 +2469,12 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   assert.equal(firstClosed.audit.complete_lifecycle_verified, true);
   assert.equal(firstClosed.audit.evidence_eligible, true);
   assert.equal(firstClosed.start_snapshot, undefined);
+  const developmentalRuntime = store.developmentalSelfReflectionRuntimeSnapshot();
+  assert.equal(developmentalRuntime.moments.length, 1);
+  assert.equal(developmentalRuntime.moments[0].summary, 'Reviewed the unresolved question');
+  assert.deepEqual(Object.keys(developmentalRuntime.moments[0]).sort(), [
+    'audit', 'cycle_id', 'finished', 'id', 'observed_adjustment', 'started', 'status', 'summary',
+  ]);
   const second = store.startCycle({ holder: 'nora', inner_thread: { content: 'Follow the remaining evidence tomorrow.', updated_at: '2026-07-11T15:00:00Z' } });
   assert.equal(second.moment.predecessor_id, first.moment.id);
   assert.equal(second.moment.predecessor_lifecycle_commitment, firstClosed.lifecycle_commitment);

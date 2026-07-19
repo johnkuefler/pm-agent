@@ -12553,6 +12553,42 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  // A deliberately narrow background projection for developmental self-reflection. It exposes
+  // only replay-eligible lifecycle summaries and the developmental ledger, never prompts,
+  // message text, tool arguments, or tool results. Keeping this bounded also avoids cloning the
+  // full cognition state during the five-minute scheduler.
+  function developmentalSelfReflectionRuntimeSnapshot({ limit = 72 } = {}) {
+    const maximum = Math.max(1, Math.min(96, Number(limit) || 72));
+    const auditCache = new Map();
+    const cycles = new Map((state.cycles || []).map(cycle => [cycle.id, cycle]));
+    const moments = (state.cognition.experience_stream || []).slice(-maximum).map(moment => {
+      const audit = experienceMomentAudit(moment, state.cognition, state.cycles, auditCache);
+      const cycle = cycles.get(moment.cycle_id) || null;
+      const summary = String(moment.closure?.summary || cycle?.summary || '').trim().slice(0, 1100);
+      const correction = moment.self_forecast?.outcome?.self_correction || null;
+      const observedAdjustment = correction
+        ? `${String(correction.disposition || 'observed').slice(0, 80)}: ${String(correction.rationale || correction.reason || '').trim().slice(0, 600)}`.slice(0, 700)
+        : '';
+      return {
+        id: moment.id, cycle_id: moment.cycle_id, started: moment.started,
+        finished: moment.finished, status: moment.status, summary,
+        observed_adjustment: observedAdjustment || null,
+        audit: { complete_lifecycle_verified: audit.complete_lifecycle_verified === true,
+          evidence_eligible: audit.evidence_eligible === true },
+      };
+    }).filter(moment => moment.status !== 'open' && moment.summary);
+    return {
+      protocol_version: 1,
+      epistemic_status: 'A bounded projection of replay-eligible observable lifecycle summaries for background developmental hypothesis formation and later holdout review.',
+      developments: (state.cognition.development || []).filter(item =>
+        item.origin?.creator_id === 'nora-developmental-self-reflection'
+        || item.status === 'candidate' || item.status === 'integrated').slice(-40).map(item => ({
+        ...JSON.parse(JSON.stringify(item)), audit: developmentalRevisionAudit(item),
+      })),
+      moments,
+    };
+  }
+
   function recordCounterfactual(input = {}) {
     return mutate(current => {
       if (!input.actual || !input.alternative || !input.evidence_basis) throw new Error('actual, alternative, and evidence_basis are required');
@@ -27286,7 +27322,8 @@ ${episodes.map(item => {
     recordAffectiveRegulationApplication, resolveAffectiveRegulationApplicationOutcome,
     affectiveTransitionAudit, affectiveApplicationAudit,
     relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
-    recordDevelopment, reviewDevelopment, developmentalRevisionAudit, autobiographyEvidence, recordCounterfactual,
+    recordDevelopment, reviewDevelopment, developmentalRevisionAudit,
+    developmentalSelfReflectionRuntimeSnapshot, autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,
     recordCognitivePulseResult, recordCognitivePulseFailure, resolveCognitivePulse,

@@ -105,12 +105,16 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'learning', label: 'Learning', layer: 'background', x: .28, y: .75,
-    description: 'Behavior experiments, developmental memories, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, autonomous play, and DIALS. Leisure can produce testable candidates but never directly rewrites the persona.',
+    description: 'Behavior experiments, tested developmental self-model changes, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, autonomous play, and DIALS. Later holdout evidence—not a compelling story—decides what can enter the autobiography.',
     links: ['relationships', 'reflection', 'background'],
     read: state => {
       const experiments = state.experiments || [];
       const active = experiments.filter(item => item.status === 'active').length;
-      const development = (state.cognition?.development || []).length;
+      const developments = state.cognition?.development || [];
+      const development = developments.length;
+      const pendingDevelopment = developments.filter(item => item.status === 'candidate').length;
+      const integratedDevelopment = developments.filter(item => item.status === 'integrated'
+        && item.audit?.integration_verified !== false).length;
       const reading = state.cognition?.developmental_reading?.report || {};
       const encounters = reading.completed_encounters || 0;
       const readingActive = reading.active_sessions || 0;
@@ -118,7 +122,7 @@ const NORA_BRAIN_CAPABILITIES = [
       const playActive = play.active_sessions || 0;
       const playCompleted = play.completed_sessions || 0;
       const total = active + development + encounters + readingActive + playActive + playCompleted;
-      return activity(scaleCount(total, 10), `${active} active experiments, ${development} developmental memories, ${readingActive} active and ${encounters} completed reading encounters, ${playActive} active and ${playCompleted} completed leisure sessions`, total > 0);
+      return activity(scaleCount(total, 10), `${active} active experiments, ${pendingDevelopment} self-model candidates and ${integratedDevelopment} independently supported revisions, ${readingActive} active and ${encounters} completed reading encounters, ${playActive} active and ${playCompleted} completed leisure sessions`, total > 0);
     },
   },
   {

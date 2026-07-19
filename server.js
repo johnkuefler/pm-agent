@@ -61,6 +61,7 @@ const cycleSelfCorrectionReflection = require('./src/intelligence/cycle-self-cor
 const meetingProfessionalReflection = require('./src/intelligence/meeting-professional-reflection');
 const selfAuthoredAimReflection = require('./src/intelligence/self-authored-aim-reflection');
 const selfAuthoredAimReappraisal = require('./src/intelligence/self-authored-aim-reappraisal');
+const developmentalSelfReflection = require('./src/intelligence/developmental-self-reflection');
 const dreamInsightReflection = require('./src/intelligence/dream-insight-reflection');
 const postDeliverySelfEvaluation = require('./src/intelligence/post-delivery-self-evaluation');
 const behavioralFingerprintEvaluatorAutopilot = require('./src/intelligence/behavioral-fingerprint-evaluator-autopilot');
@@ -1623,6 +1624,30 @@ function fitSlackSystemPrompt(stable, volatile, optionalLinked = '',
   };
 }
 
+async function commitAutobiographyRevision(input = {}) {
+  if (!_dbReady) throw new Error('Postgres not active');
+  return serializeAutobiographyWrite(async () => {
+    let previous = await db.getState('autobiography');
+    const revisions = (await db.getState('autobiography_revisions')) || [];
+    if (!verifyAutobiographyHistory(revisions, previous).valid) {
+      const recovered = autobiographyRecordFromLedger(revisions);
+      if (recovered && verifyAutobiographyHistory(revisions, recovered).valid) {
+        previous = recovered;
+        await db.setState('autobiography', recovered);
+      }
+    }
+    const revision = createAutobiographyRevision(previous, revisions,
+      { ...(input || {}), updated_by: 'nora' },
+      { resolveEvidence: autobiographyEvidenceResolver() });
+    const nextRevisions = [...revisions, revision.event];
+    await db.setState('autobiography_revisions', nextRevisions);
+    await db.setState('autobiography', revision.current);
+    _cache.autobiographyRevisions = nextRevisions;
+    _cache.autobiography = revision.current;
+    return revision;
+  });
+}
+
 // Nora's editable persona is the canonical source, but several long sections repeat the
 // final-position live channel policy below almost word-for-word. Repeating both costs live
 // response latency and weakens the very rules repetition was meant to emphasize. This compiler
@@ -2919,24 +2944,7 @@ async function persistWantsUpdate(items, { updatedBy = 'nora', now = new Date() 
 app.put('/self/autobiography', requireAuth, async (req, res) => {
   if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
   try {
-    const result = await serializeAutobiographyWrite(async () => {
-      let previous = await db.getState('autobiography');
-      const revisions = (await db.getState('autobiography_revisions')) || [];
-      if (!verifyAutobiographyHistory(revisions, previous).valid) {
-        const recovered = autobiographyRecordFromLedger(revisions);
-        if (recovered && verifyAutobiographyHistory(revisions, recovered).valid) {
-          previous = recovered;
-          await db.setState('autobiography', recovered);
-        }
-      }
-      const revision = createAutobiographyRevision(previous, revisions, { ...(req.body || {}), updated_by: 'nora' }, { resolveEvidence: autobiographyEvidenceResolver() });
-      const nextRevisions = [...revisions, revision.event];
-      await db.setState('autobiography_revisions', nextRevisions);
-      await db.setState('autobiography', revision.current);
-      _cache.autobiographyRevisions = nextRevisions;
-      _cache.autobiography = revision.current;
-      return revision;
-    });
+    const result = await commitAutobiographyRevision(req.body || {});
     console.log(`Evidence-bound autobiography revision ${result.current.revision_id} by ${result.current.updated_by}`);
     res.json({
       ok: true, updated_at: result.current.updated_at, revision_id: result.current.revision_id,
@@ -9131,6 +9139,16 @@ function saveDreams(dreams) {
   try { fs.writeFileSync(getDreamsPath(), JSON.stringify(dreams, null, 2)); }
   catch (err) { console.error('Failed to persist dreams:', err.message); }
 }
+function saveDreamsStrict(dreams) {
+  if (!_dbReady) { saveDreams(dreams); return Promise.resolve(); }
+  _cache.dreams = dreams;
+  const previous = _writeQ.dreams || Promise.resolve();
+  const operation = previous.then(() => db.replaceAllDreams(dreams));
+  _writeQ.dreams = operation.catch(error => {
+    console.error('Strict developmental dream persistence failed:', error.message);
+  });
+  return operation;
+}
 const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
 
 registerDreamRoutes(app, {
@@ -10246,6 +10264,8 @@ let _selfAuthoredAimReflectionInFlight = false;
 let _selfAuthoredAimReflectionLastCycle = null;
 let _selfAuthoredAimReappraisalInFlight = false;
 let _selfAuthoredAimReappraisalLastCycle = null;
+let _developmentalSelfReflectionInFlight = false;
+let _developmentalSelfReflectionLastCycle = null;
 let _dreamInsightReflectionInFlight = false;
 let _dreamInsightReflectionLastCycle = null;
 let _postDeliverySelfEvaluationInFlight = false;
@@ -10844,6 +10864,24 @@ function selfAuthoredAimReappraisalRuntimeConfig(env = process.env) {
   };
 }
 
+function developmentalSelfReflectionRuntimeConfig(env = process.env) {
+  const explicitlyEnabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_DEVELOPMENTAL_SELF_REFLECTION !== '0';
+  const subjectEnabled = explicitlyEnabled && Boolean(env.ANTHROPIC_API_KEY);
+  const evaluatorEnabled = explicitlyEnabled && Boolean(env.OPENAI_API_KEY);
+  return {
+    enabled: explicitlyEnabled && (subjectEnabled || evaluatorEnabled),
+    subject_enabled: subjectEnabled,
+    evaluator_enabled: evaluatorEnabled,
+    subject_model: String(env.NORA_DEVELOPMENTAL_SELF_REFLECTION_MODEL
+      || developmentalSelfReflection.SUBJECT_MODEL).slice(0, 160),
+    evaluator_model: String(env.NORA_DEVELOPMENTAL_SELF_EVALUATOR_MODEL
+      || developmentalSelfReflection.EVALUATOR_MODEL).slice(0, 160),
+    reason: !explicitlyEnabled ? 'explicitly_disabled'
+      : subjectEnabled || evaluatorEnabled ? 'provider_credentials_default' : 'missing_provider_credentials',
+  };
+}
+
 function dreamInsightReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_DREAM_INSIGHT_REFLECTION !== '0'
@@ -11026,6 +11064,16 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
       enabled: aimReappraisalConfig.enabled, model: aimReappraisalConfig.model,
       lastCycle: _selfAuthoredAimReappraisalLastCycle,
     });
+  const developmentalSelfConfig = developmentalSelfReflectionRuntimeConfig();
+  const developmentalSelfRuntime = intelligence.developmentalSelfReflectionRuntimeSnapshot({ limit: 72 });
+  const developmentalSelfStatus = developmentalSelfReflection.status({
+    dreams: loadDreams(), developments: developmentalSelfRuntime.developments,
+    moments: developmentalSelfRuntime.moments, autobiography: _cache.autobiography,
+    revisions: _cache.autobiographyRevisions || [], enabled: developmentalSelfConfig.enabled,
+    subjectModel: developmentalSelfConfig.subject_model,
+    evaluatorModel: developmentalSelfConfig.evaluator_model,
+    lastCycle: _developmentalSelfReflectionLastCycle,
+  });
   const dreamInsightConfig = dreamInsightReflectionRuntimeConfig();
   const dreamInsightStatus = dreamInsightReflection.status(loadDreams(), {
     enabled: dreamInsightConfig.enabled, model: dreamInsightConfig.model,
@@ -11082,6 +11130,7 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     meeting_professional_reflection: meetingReflectionStatus,
     self_authored_aim_reflection: aimStatus,
     self_authored_aim_reappraisal: aimReappraisalStatus,
+    developmental_self_reflection: developmentalSelfStatus,
     dream_insight_reflection: dreamInsightStatus,
     post_delivery_self_evaluation: postDeliveryStatus,
     behavioral_fingerprint_evaluator: fingerprintEvaluatorStatus,
@@ -11517,6 +11566,64 @@ async function runSelfAuthoredAimLifecycleAutopilotRuntime({ post = axios.post }
   const reflection = await runSelfAuthoredAimReflectionAutopilotRuntime({ post });
   const reappraisal = await runSelfAuthoredAimReappraisalAutopilotRuntime({ post });
   return { reflection, reappraisal };
+}
+
+async function runDevelopmentalSelfReflectionRuntime({ post = axios.post } = {}) {
+  const config = developmentalSelfReflectionRuntimeConfig();
+  if (!config.enabled) {
+    _developmentalSelfReflectionLastCycle = {
+      protocol_version: developmentalSelfReflection.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, reason: config.reason, at: new Date().toISOString(),
+    };
+    return _developmentalSelfReflectionLastCycle;
+  }
+  if (intelligence.interventionActive('developmental_revision_access')) {
+    _developmentalSelfReflectionLastCycle = {
+      protocol_version: developmentalSelfReflection.PROTOCOL_VERSION,
+      state: 'sealed_for_active_study', provider_calls: 0, at: new Date().toISOString(),
+    };
+    return _developmentalSelfReflectionLastCycle;
+  }
+  if (_developmentalSelfReflectionInFlight) return {
+    protocol_version: developmentalSelfReflection.PROTOCOL_VERSION,
+    state: 'in_flight', provider_calls: 0, at: new Date().toISOString(),
+  };
+  _developmentalSelfReflectionInFlight = true;
+  try {
+    const cycle = await developmentalSelfReflection.runCycle({
+      store: intelligence, loadDreams, saveDreams: saveDreamsStrict,
+      getAutobiography: () => ({ record: JSON.parse(JSON.stringify(_cache.autobiography || null)),
+        revisions: JSON.parse(JSON.stringify(_cache.autobiographyRevisions || [])) }),
+      commitAutobiography: async input => (await commitAutobiographyRevision(input)).current,
+      enabled: true, subjectEnabled: config.subject_enabled,
+      evaluatorEnabled: config.evaluator_enabled,
+      subjectModel: config.subject_model, evaluatorModel: config.evaluator_model,
+      callSubject: config.subject_enabled ? async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: { 'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01' }, timeout: 45000 });
+        return response.data;
+      } : null,
+      callEvaluator: config.evaluator_enabled ? async request => {
+        const response = await post('https://api.openai.com/v1/responses', request, {
+          headers: { 'Content-Type': 'application/json',
+            Authorization: `Bearer ${process.env.OPENAI_API_KEY}` }, timeout: 45000 });
+        return response.data;
+      } : null,
+    });
+    _developmentalSelfReflectionLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _developmentalSelfReflectionLastCycle;
+  } catch (error) {
+    _developmentalSelfReflectionLastCycle = {
+      protocol_version: developmentalSelfReflection.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _developmentalSelfReflectionLastCycle;
+  } finally {
+    _developmentalSelfReflectionInFlight = false;
+  }
 }
 
 async function runDreamInsightReflectionAutopilotRuntime({ post = axios.post } = {}) {
@@ -12159,6 +12266,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     cycle_self_correction_reflection: 'Reviewing forecast corrections',
     meeting_professional_reflection: 'Reflecting on meeting outcomes',
     self_authored_aim_lifecycle: 'Reviewing self-authored aims',
+    developmental_self_reflection: 'Testing how Nora’s working self-model is changing',
     dream_insight_reflection: 'Testing a dream insight',
     post_delivery_self_evaluation: 'Reviewing a delivered response',
     interaction_outcome_review: 'Checking interaction outcomes',
@@ -12231,6 +12339,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         () => runMeetingProfessionalReflectionRuntime({ post: priorityPost })],
       ['self_authored_aim_lifecycle',
         () => runSelfAuthoredAimLifecycleAutopilotRuntime({ post: priorityPost })],
+      ['developmental_self_reflection',
+        () => runDevelopmentalSelfReflectionRuntime({ post: priorityPost })],
       ['dream_insight_reflection', () => runDreamInsightReflectionAutopilotRuntime({ post: priorityPost })],
       ['post_delivery_self_evaluation', () => runPostDeliverySelfEvaluationRuntime({ post: priorityPost })],
       ['interaction_outcome_review',
@@ -12438,6 +12548,8 @@ module.exports = {
     selfAuthoredAimReappraisalRuntimeConfig,
     runSelfAuthoredAimReappraisalAutopilotRuntime,
     runSelfAuthoredAimLifecycleAutopilotRuntime,
+    developmentalSelfReflectionRuntimeConfig,
+    runDevelopmentalSelfReflectionRuntime,
     dreamInsightReflectionRuntimeConfig,
     runDreamInsightReflectionAutopilotRuntime,
     runDreamReflectionLifecycleWithPriorityRuntime,

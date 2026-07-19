@@ -28,7 +28,7 @@ const runtimeActivityRegionDefaults = {
 
 const runtimeActivitySelfKinds = [
   'behavioral_fingerprint', 'self_authored', 'self_inquiry', 'self_induction',
-  'self_correction', 'professional_viewpoint', 'meeting_professional_reflection',
+  'self_correction', 'developmental_self', 'professional_viewpoint', 'meeting_professional_reflection',
   'post_delivery_self_evaluation', 'interaction_outcome_review', 'cognitive_initiation',
 ];
 
