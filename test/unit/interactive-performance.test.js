@@ -204,6 +204,10 @@ test('live server opts into complete Slack trials but never globally enables sec
   assert.match(interactionLogger, /recordAffectiveRegulationApplication\(interaction\)/);
   assert.match(interactionLogger, /recordProfessionalViewpointAccessApplication\(/,
     'viewpoint outcome evidence must be captured only in post-delivery interaction logging');
+  assert.match(interactionLogger, /recordEpistemicAgendaAccessApplication\([\s\S]*epistemic_agenda_access/,
+    'agenda access must be recorded and reported only after a Slack response is delivered');
+  assert.match(interactionLogger, /use is not assumed/,
+    'live activity must not turn prompt access into a model-use claim');
   assert.match(interactionLogger, /developmental_reading_exposures/,
     'reading transfer exposure must be captured only after a Slack response is delivered');
   const store = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',

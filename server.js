@@ -8856,7 +8856,13 @@ function logInteraction(entry) {
         try {
           const application = intelligence.recordEpistemicAgendaAccessApplication(
             interaction, agendaQuestions[0]);
-          if (application) interaction.epistemic_agenda_access_application_id = application.id;
+          if (application) {
+            interaction.epistemic_agenda_access_application_id = application.id;
+            runtimeActivity.record({ lane: 'learning', kind: 'epistemic_agenda_access',
+              label: 'Carrying a question into PM judgment',
+              detail: 'One relevant carried question was present in a delivered Slack prompt; use is not assumed.',
+              source: 'slack-handler', meta: { surface: 'slack', result: 'prompt_access_only' } });
+          }
         } catch (error) {
           console.warn('epistemic agenda access capture failed:', error.message);
         }
@@ -8917,7 +8923,13 @@ function handleInteractionOutcome(interaction) {
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
     try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }
     catch (error) { console.warn('professional viewpoint access outcome capture failed:', error.message); }
-    try { intelligence.resolveEpistemicAgendaAccessOutcome(interaction); }
+    try {
+      const agendaAccess = intelligence.resolveEpistemicAgendaAccessOutcome(interaction);
+      if (agendaAccess) runtimeActivity.record({ lane: 'learning',
+        kind: 'epistemic_agenda_access_outcome', label: 'Reviewing question transfer',
+        detail: 'Delayed Slack feedback was linked to a carried-question exposure; causal benefit is not assumed.',
+        source: 'interaction-review', meta: { surface: 'slack', result: 'observational_outcome' } });
+    }
     catch (error) { console.warn('epistemic agenda access outcome capture failed:', error.message); }
     if (interaction.cognitive_parameter_assignment_id) {
       try {
