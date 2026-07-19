@@ -130,7 +130,7 @@ test('provider decoding is restricted to the exact committed evidence packet', (
   const packet = agenda.packetFor({ memories: memories(), questions: [], now, mode: 'form' });
   const request = agenda.requestFor(packet);
   const allowedIds = packet.evidence.map(item => item.ref.id);
-  assert.equal(packet.protocol_version, 2);
+  assert.equal(packet.protocol_version, 3);
   assert.deepEqual(request.request.output_config.format.schema.properties.evidence_ids.items.enum,
     allowedIds);
   assert.match(request.request.system, /schema enumerates the only permitted IDs/);
@@ -157,6 +157,45 @@ test('protocol upgrade preserves replay verification of version-one receipts', (
   const submission = agenda.submissionFor(packet, response(request.request, formationOutput()));
   assert.equal(submission.receipt.protocol_version, 1);
   assert.equal(agenda.auditReceipt(submission.receipt).complete_chain_verified, true);
+});
+
+test('protocol upgrade preserves replay verification of evidence-bound version-two receipts', () => {
+  const packet = { ...agenda.packetFor({ memories: memories(), questions: [], now, mode: 'form' }),
+    protocol_version: agenda.EVIDENCE_BOUND_PROTOCOL_VERSION };
+  const request = agenda.requestFor(packet);
+  assert.equal(request.manifest.protocol_version, 2);
+  assert.deepEqual(request.request.output_config.format.schema.properties.evidence_ids.items.enum,
+    packet.evidence.map(item => item.ref.id));
+  assert.doesNotMatch(request.request.system, /durability rule/);
+  const submission = agenda.submissionFor(packet, response(request.request, formationOutput()));
+  assert.equal(submission.receipt.protocol_version, 2);
+  assert.equal(agenda.auditReceipt(submission.receipt).complete_chain_verified, true);
+});
+
+test('durable-question gate rejects project status lookups and retains transferable inquiry', () => {
+  const packet = agenda.packetFor({ memories: memories(), questions: [], now, mode: 'form' });
+  assert.doesNotThrow(() => agenda.normalizeOutput(formationOutput(), packet));
+
+  const datedStatus = { ...formationOutput(),
+    topic_key: 'alpha.launch-date-vs-dependency',
+    question: 'Does Alpha dependency readiness align with the 7/30 website launch date?',
+    next_evidence: 'A new Alpha status message confirming whether the launch date will hold.',
+  };
+  assert.throws(() => agenda.normalizeOutput(datedStatus, packet), /not durable.*deadline or calendar date/);
+
+  const oneMessageAnswer = { ...formationOutput(),
+    topic_key: 'dependency.readiness',
+    question: 'Does the integration go live before the website?',
+    next_evidence: 'Naturally encountered work showing whether the integration is ready.',
+  };
+  assert.throws(() => agenda.normalizeOutput(oneMessageAnswer, packet), /not durable.*transferable pattern/);
+
+  const namedSystem = { ...formationOutput(),
+    topic_key: 'delivery.system-pattern',
+    question: 'Does Salesforce readiness predict launch movement better than a due date?',
+    next_evidence: 'Naturally encountered cases across future work would test the relationship.',
+  };
+  assert.throws(() => agenda.normalizeOutput(namedSystem, packet), /not durable.*named person, vendor, or system/);
 });
 
 test('a relevant question can enter ordinary PM judgment with a replay-valid access and outcome receipt', async () => {

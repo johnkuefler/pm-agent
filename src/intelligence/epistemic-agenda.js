@@ -5,7 +5,8 @@ const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
 const professionalReflection = require('./professional-viewpoint-reflection');
 
 const LEGACY_PROTOCOL_VERSION = 1;
-const PROTOCOL_VERSION = 2;
+const EVIDENCE_BOUND_PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 1200;
 const MIN_ATTEMPT_INTERVAL_MS = 6 * 60 * 60 * 1000;
@@ -18,6 +19,16 @@ const RELEVANCE_STOPWORDS = new Set([
   'delivery', 'schedule', 'client', 'status', 'update', 'website', 'meeting', 'current',
   'please', 'summarize', 'summary',
 ]);
+const GENERIC_PROJECT_TERMS = new Set([
+  'brand', 'campaign', 'client', 'content', 'design', 'email', 'general', 'launch', 'marketing',
+  'project', 'social', 'website',
+]);
+const QUESTION_OPENERS = new Set([
+  'are', 'can', 'could', 'do', 'does', 'how', 'if', 'in', 'is', 'should', 'what', 'when',
+  'where', 'which', 'who', 'why', 'will', 'would',
+]);
+const DURABLE_INQUIRY_PATTERN = /\b(?:across|better than|distinguish|generaliz(?:e|es|ed|ing|able)|how does|how should|less likely|more likely|pattern|predict(?:s|ed|ive)?|relationship between|signals?|tend(?:s|ed|ency)?|trade-?off|under what conditions|when does|worse than)\b/i;
+const DATED_REFERENCE_PATTERN = /\b(?:20\d{2}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/;
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -91,6 +102,45 @@ function evidenceContextCount(evidence = []) {
   return new Set(evidence.map(item => item.added || `project:${String(item.project || 'general').toLowerCase()}`)).size;
 }
 
+function properNounTerms(value) {
+  const text = String(value || '');
+  return [...new Set([...text.matchAll(/\b[A-Z][A-Za-z0-9'-]{2,}\b/g)]
+    .filter(match => match.index !== 0)
+    .map(match => match[0].toLowerCase())
+    .filter(term => !QUESTION_OPENERS.has(term)))];
+}
+
+function citedProjectTerms(packet, evidenceIds) {
+  const selected = new Set(evidenceIds || []);
+  return [...new Set((packet.evidence || [])
+    .filter(item => selected.has(item?.ref?.id))
+    .flatMap(item => String(item.project || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])
+    .filter(term => !GENERIC_PROJECT_TERMS.has(term)))];
+}
+
+function durableQuestionQuality({ topicKey, question, nextEvidence, evidenceIds }, packet) {
+  if (DATED_REFERENCE_PATTERN.test(question) || DATED_REFERENCE_PATTERN.test(nextEvidence)) {
+    return { valid: false, reason: 'durable questions cannot be bound to a named deadline or calendar date' };
+  }
+  if (!DURABLE_INQUIRY_PATTERN.test(question)) {
+    return { valid: false,
+      reason: 'durable questions must examine a transferable pattern, cue, relationship, tradeoff, or boundary' };
+  }
+  const projectTerms = citedProjectTerms(packet, evidenceIds);
+  const outputTerms = new Set(`${topicKey} ${question} ${nextEvidence}`.toLowerCase()
+    .match(/[a-z0-9]{3,}/g) || []);
+  const namedProjectTerm = projectTerms.find(term => outputTerms.has(term));
+  if (namedProjectTerm) {
+    return { valid: false,
+      reason: 'durable questions must transfer beyond the named projects that supplied their evidence' };
+  }
+  if (properNounTerms(question).length || properNounTerms(nextEvidence).length) {
+    return { valid: false,
+      reason: 'durable questions and their next-evidence criteria must not depend on a named person, vendor, or system' };
+  }
+  return { valid: true, reason: null };
+}
+
 function outputSchema(packetOrMode, protocolVersion = Number(packetOrMode?.protocol_version)
   || PROTOCOL_VERSION) {
   const packet = packetOrMode && typeof packetOrMode === 'object' ? packetOrMode : null;
@@ -135,6 +185,8 @@ function systemPrompt(mode, protocolVersion = PROTOCOL_VERSION) {
     'Preserve uncertainty and explain exactly what changed. Do not maintain continuity merely for narrative appeal.');
   if (protocolVersion >= 2) shared.push(
     'Every evidence_ids entry must be copied exactly from packet.evidence[].ref.id; the schema enumerates the only permitted IDs. Use an empty array when abstaining rather than citing prior, absent, or invented evidence.');
+  if (protocolVersion >= 3) shared.push(
+    'A durable agenda question must transfer beyond every named project, person, vendor, system, and date in its source cases. Ask about a professional pattern, predictive cue, relationship, tradeoff, or decision boundary that can be tested across future work. Do not ask for a missing status, date, approval, owner response, or other fact that one message could answer. Keep project examples in reason only; keep topic_key, question, and next_evidence abstract and entity-free. During revisit, abandon a carried question that violates this durability rule rather than preserving it for continuity.');
   shared.push('Return only JSON matching the requested schema.');
   return shared.join(' ');
 }
@@ -214,6 +266,10 @@ function normalizeOutput(raw, packet) {
     || !Number.isFinite(interestScore) || interestScore < 0 || interestScore > 1) {
     throw new Error('agenda question is missing a bounded question, rationale, tentative answer, uncertainty, or evidence criterion');
   }
+  if (Number(packet?.protocol_version) >= 3) {
+    const quality = durableQuestionQuality({ topicKey, question, nextEvidence, evidenceIds }, packet);
+    if (!quality.valid) throw new Error(`agenda question is not durable: ${quality.reason}`);
+  }
   if (action === 'form') {
     if (evidenceIds.length < 2 || evidenceContextCount(evidenceIds.map(id => byId.get(id))) < 2) {
       throw new Error('a new agenda question requires evidence from at least two dates or projects');
@@ -267,7 +323,7 @@ function auditReceipt(receipt = {}) {
   let output = null;
   try { output = normalizeOutput(receipt.output, receipt.packet); } catch { output = null; }
   const checks = {
-    protocol_verified: [LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION]
+    protocol_verified: [LEGACY_PROTOCOL_VERSION, EVIDENCE_BOUND_PROTOCOL_VERSION, PROTOCOL_VERSION]
       .includes(Number(receipt.protocol_version))
       && Number(receipt?.packet?.protocol_version) === Number(receipt.protocol_version)
       && receipt.provider === 'anthropic' && Boolean(receipt.model) && Boolean(receipt.response_id),
@@ -314,9 +370,11 @@ async function runCycle({ store, memories = [], callProvider, enabled = true, mo
     provider_calls: 1, action: submission.output.action, question_id: recorded.question_id || null };
 }
 
-module.exports = { LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS, MIN_ATTEMPT_INTERVAL_MS,
+module.exports = { LEGACY_PROTOCOL_VERSION, EVIDENCE_BOUND_PROTOCOL_VERSION, PROTOCOL_VERSION,
+  DEFAULT_MODEL, MAX_TOKENS, MIN_ATTEMPT_INTERVAL_MS,
   MIN_FORM_INTERVAL_MS, MAX_OPEN_QUESTIONS, RELEVANCE_STOPWORDS, canonicalJson, commitment, cleanText,
   publicQuestion, relevanceTerms, promptPacket, relevantPromptPackets, renderPromptPacket,
-  evidenceContextCount, outputSchema, systemPrompt, packetFor, buildManifest,
+  evidenceContextCount, properNounTerms, citedProjectTerms, durableQuestionQuality,
+  outputSchema, systemPrompt, packetFor, buildManifest,
   requestFor, responseText, parseJsonObject, normalizeOutput, receiptPayload, submissionFor,
   auditReceipt, runCycle };
