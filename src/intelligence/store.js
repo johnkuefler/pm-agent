@@ -1665,7 +1665,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       failed_closed: lifecycle.report.failed_closed,
       replay_verified: lifecycle.report.replay_verified,
       active_reappraisal_formed_aims: wants.filter(want => want?.status === 'active'
-        && want.provenance?.formation_protocol === selfAuthoredAimReappraisal.FORMATION_PROTOCOL).length,
+        && selfAuthoredAimReappraisal.SUPPORTED_FORMATION_PROTOCOLS
+          .includes(want.provenance?.formation_protocol)).length,
     };
   }
 

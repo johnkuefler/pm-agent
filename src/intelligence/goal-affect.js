@@ -44,7 +44,8 @@ function verifiedWant(want) {
       && selfAuthoredAimReflection.auditReceipt(want.provenance.generation_receipt, { want })
         .complete_chain_verified;
   }
-  if (want.provenance?.formation_protocol === selfAuthoredAimReappraisal.FORMATION_PROTOCOL) {
+  if (selfAuthoredAimReappraisal.SUPPORTED_FORMATION_PROTOCOLS
+    .includes(want.provenance?.formation_protocol)) {
     return want.provenance?.epistemic_status === 'receipt_bound_subject_synthesis'
       && selfAuthoredAimReappraisal.auditReceipt(want.provenance.generation_receipt, {
         want,
@@ -57,7 +58,8 @@ function verifiedWant(want) {
 
 function progressEvidenceRequired(want) {
   return [selfAuthoredAimReflection.FORMATION_PROTOCOL,
-    selfAuthoredAimReappraisal.FORMATION_PROTOCOL].includes(want?.provenance?.formation_protocol)
+    ...selfAuthoredAimReappraisal.SUPPORTED_FORMATION_PROTOCOLS]
+    .includes(want?.provenance?.formation_protocol)
     || (want?.provenance?.origin === 'self_generated'
       && want?.provenance?.epistemic_status === 'subject_attested');
 }

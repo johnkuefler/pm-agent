@@ -815,7 +815,10 @@ function registerCoworkInstructionsRoute(app) {
     only from newer evidence spanning dates or projects. Replacement never edits identity in place: the
     prior aim is retired append-only, the successor names the superseded aim, and both the decision and
     successor provenance replay from the source dream and provider receipt. Partial persistence is
-    recovered from the committed dream attempt without another model call. Reappraisal may not turn an
+    recovered from the committed dream attempt without another model call. Protocol v2 may rebase an
+    evidence-supported legacy-unverified aim into a receipt-bound successor without forcing a wording
+    change; the successor must add observable success, counterevidence, and a bounded horizon, while old
+    v1 receipts keep their original audit contract. Reappraisal may not turn an
     assignment into a desire, expand authority, or run in a live Slack or Zoom handler.
     For provenance-valid aims, only new progress notes that the server bound to active stored memory
     sources recorded on the same date can count as progress; missing, invented, inactive, old, changed,

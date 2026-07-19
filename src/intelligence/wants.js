@@ -3,7 +3,12 @@ const crypto = require('crypto');
 const STATUSES = new Set(['active', 'completed', 'retired']);
 const ORIGINS = new Set(['self_generated', 'user_suggested', 'system_seed', 'unknown']);
 const RECEIPT_BOUND_FORMATION_PROTOCOL = 'server_direct_subject_aim_reflection_v1';
-const RECEIPT_BOUND_REAPPRAISAL_PROTOCOL = 'server_direct_subject_aim_reappraisal_v1';
+const RECEIPT_BOUND_REAPPRAISAL_PROTOCOL_V1 = 'server_direct_subject_aim_reappraisal_v1';
+const RECEIPT_BOUND_REAPPRAISAL_PROTOCOL = 'server_direct_subject_aim_reappraisal_v2';
+const RECEIPT_BOUND_REAPPRAISAL_PROTOCOLS = Object.freeze([
+  RECEIPT_BOUND_REAPPRAISAL_PROTOCOL_V1,
+  RECEIPT_BOUND_REAPPRAISAL_PROTOCOL,
+]);
 const HISTORY_PROTOCOL_VERSION = 2;
 const HASH_PROTOCOL = 'canonical_json_sha256_v2';
 const LEGACY_ARCHIVE_PROTOCOL = 'legacy_wants_history_archive_v1';
@@ -38,7 +43,7 @@ function cleanProvenance(value, now) {
   }
   const formation_protocol = cleanText(value.formation_protocol, 'provenance.formation_protocol', 100);
   const receiptBound = [RECEIPT_BOUND_FORMATION_PROTOCOL,
-    RECEIPT_BOUND_REAPPRAISAL_PROTOCOL].includes(formation_protocol);
+    ...RECEIPT_BOUND_REAPPRAISAL_PROTOCOLS].includes(formation_protocol);
   if (formation_protocol && !receiptBound) throw new Error('provenance.formation_protocol is invalid');
   let generation_receipt = null;
   let source_dream_id = '';
@@ -53,7 +58,7 @@ function cleanProvenance(value, now) {
     if (!/^[a-f0-9]{64}$/.test(String(generation_receipt.receipt_commitment || ''))) {
       throw new Error('receipt-bound wants require a committed generation receipt');
     }
-    if (formation_protocol === RECEIPT_BOUND_REAPPRAISAL_PROTOCOL) {
+    if (RECEIPT_BOUND_REAPPRAISAL_PROTOCOLS.includes(formation_protocol)) {
       supersedes_aim_id = cleanText(value.supersedes_aim_id,
         'provenance.supersedes_aim_id', 100, true);
     }
@@ -344,6 +349,7 @@ function compactWantHistory(events, currentRecord, { maxEvents = 40, now = new D
 }
 
 module.exports = { RECEIPT_BOUND_FORMATION_PROTOCOL, RECEIPT_BOUND_REAPPRAISAL_PROTOCOL,
+  RECEIPT_BOUND_REAPPRAISAL_PROTOCOL_V1, RECEIPT_BOUND_REAPPRAISAL_PROTOCOLS,
   HISTORY_PROTOCOL_VERSION, HASH_PROTOCOL, LEGACY_ARCHIVE_PROTOCOL, canonicalJson,
   normalizeWantUpdate, stableHash, eventPayload, wantRevisionEvent, verifyWantHistory,
   archivePayload, createLegacyWantHistoryArchive, auditLegacyWantHistoryArchive,

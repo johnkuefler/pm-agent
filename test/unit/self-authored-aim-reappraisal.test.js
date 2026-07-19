@@ -102,6 +102,75 @@ test('background reappraisal retires a broad legacy aim and forms one replay-bou
   assert.equal(goalAffect.verifiedWant(tampered), false);
 });
 
+test('supported legacy direction can rebase unchanged into a falsifiable replay-bound aim', async () => {
+  const f = fixture();
+  const prior = f.wants()[0];
+  const packet = reappraisal.packetFor({ memories: memories(), sourceDream: f.dreams()[0],
+    wants: f.wants(), now: NOW });
+  assert.equal(packet.aims[0].requires_receipt_rebase, true);
+  const output = {
+    decision: 'revise', aim_id: prior.id,
+    rationale: 'Evidence across distinct projects supports keeping this direction, but the legacy record needs observable tests before it can guide optional attention.',
+    evidence_ids: packet.evidence.slice(0, 3).map(item => item.ref.id),
+    replacement: {
+      want: prior.want,
+      why: prior.why,
+      formation_context: 'Recent records across several projects support preserving this direction while replacing its unverifiable legacy provenance.',
+      success_observation: 'Within six weeks, project questions are answered from verified context without a corrective follow-up in at least three distinct projects.',
+      counterevidence: ['Repeated project questions still require correction despite reviewing the available verified context.'],
+      horizon_days: 42,
+    },
+  };
+  const run = await reappraisal.runCycle({ ...f, memories: memories(), now: NOW,
+    callProvider: async request => response(request, output, 'msg-aim-legacy-rebase') });
+  assert.equal(run.state, 'aim_revised');
+  const wants = f.wants();
+  const retired = wants.find(item => item.id === prior.id);
+  const successor = wants.find(item => item.id === run.replacement_aim_id);
+  assert.equal(retired.status, 'retired');
+  assert.equal(successor.want, prior.want);
+  assert.equal(successor.why, prior.why);
+  assert.equal(successor.provenance.formation_protocol, reappraisal.FORMATION_PROTOCOL);
+  assert.equal(goalAffect.verifiedWant(successor), true);
+  assert.equal(goalAffect.snapshot(wants, NOW).active_verified_aims, 1);
+  assert.equal(reappraisal.auditAttempt(reappraisal.reflectionAttempts(f.dreams())[0].attempt,
+    wants, f.dreams()[0]).complete_chain_verified, true);
+});
+
+test('v1 receipt contract stays frozen and rejects same-wording migration', () => {
+  assert.equal(reappraisal.commitment(reappraisal.systemPrompt(1)),
+    '2942365193e6098df5219bf1f85b536be0ca05b86a857e01c0033c79deb60d00');
+  assert.equal(reappraisal.commitment(reappraisal.outputSchema()),
+    'ecd2034c39cf116ca0fa49c822a508094b695d847ad28146e1a8f0cde3fd0995');
+  const packet = reappraisal.packetFor({ memories: memories(), sourceDream: dreams()[0],
+    wants: initialWants(), now: NOW });
+  packet.protocol_version = reappraisal.LEGACY_PROTOCOL_VERSION;
+  for (const aim of packet.aims) delete aim.requires_receipt_rebase;
+  const sameDirection = revisionOutput(packet);
+  sameDirection.replacement.want = packet.aims[0].want;
+  sameDirection.replacement.why = packet.aims[0].why;
+  assert.throws(() => reappraisal.normalizeOutput(sameDirection, packet),
+    /materially change the professional direction/);
+
+  const output = reappraisal.normalizeOutput(revisionOutput(packet), packet);
+  const manifest = reappraisal.buildManifest(packet, reappraisal.DEFAULT_MODEL,
+    reappraisal.LEGACY_PROTOCOL_VERSION);
+  const receipt = {
+    protocol_version: reappraisal.LEGACY_PROTOCOL_VERSION,
+    transport: reappraisal.LEGACY_FORMATION_PROTOCOL,
+    provider: 'anthropic', model: reappraisal.DEFAULT_MODEL,
+    response_id: 'historical-v1-response', stop_reason: 'end_turn',
+    prompt_protocol_commitment: manifest.prompt_protocol_commitment,
+    source_packet: structuredClone(packet),
+    source_packet_commitment: manifest.source_packet_commitment,
+    output: structuredClone(output), output_commitment: reappraisal.commitment(output),
+    external_reference: { type: 'server_direct_provider_response', id: 'historical-v1-response' },
+    input_tokens: 700, output_tokens: 180,
+  };
+  receipt.receipt_commitment = reappraisal.commitment(reappraisal.receiptPayload(receipt));
+  assert.equal(reappraisal.auditReceipt(receipt).complete_chain_verified, true);
+});
+
 test('research status and the functional brain expose replay-verified aim lifecycle evidence', async t => {
   const f = fixture();
   const packet = reappraisal.packetFor({ memories: memories(), sourceDream: f.dreams()[0],

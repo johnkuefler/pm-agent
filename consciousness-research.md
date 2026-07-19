@@ -755,6 +755,13 @@ use source-disjoint matched decoys, blind independent graders, preserve first-or
 compare authentic-goal access against both decoy and absent-goal conditions. Even a positive result
 would establish functional goal guidance, not intrinsic desire or phenomenal wanting.
 
+Reappraisal protocol v2 closes a prospective provenance gap without rewriting that history. When
+newer evidence supports a `legacy_unverified` aim, Nora may retire the legacy record and create a
+receipt-bound successor that preserves the same direction while adding an observable success sign,
+counterevidence, a bounded horizon, and exact source commitments. Thin evidence still requires
+abstention, and contradiction can retire the direction. Historical v1 receipts retain their original
+prompt and validation rules, so the migration cannot retroactively change what an earlier receipt meant.
+
 ### Blinded causal access to a self-authored aim
 
 The `goal_access` intervention operationalizes that next test. Trial creation accepts only an active
