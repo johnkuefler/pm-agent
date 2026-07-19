@@ -1318,7 +1318,13 @@ function registerCoworkInstructionsRoute(app) {
     private disagreement. During blinded context studies, GET records and prompt frames remain sealed,
     but POST may still append current externally evidenced uptake so a sequence of studies cannot erase
     natural observations. The echoed candidate is not cognitive context or validation and still requires
-    separate review. A bounded provider-disjoint autopilot may review only canonical Slack citations using
+    separate review. GET /common-ground/formation exposes the bounded background formation ledger. After
+    a provider-disjoint interaction review finds substantive uptake, a preemptible Claude subject pass may
+    map it only to an existing current Nora position; it cannot invent a proposition, treat generic thanks
+    or topic overlap as uptake, revise an existing person position, or run from a Slack/Zoom foreground
+    handler. The packet, exact cited human messages, existing position commitment, abstention or candidate,
+    and provider response must replay before a person position and review-pending common-ground record are
+    appended. A bounded provider-disjoint autopilot may review only canonical Slack citations using
     two condition-blind OpenAI roles; both must agree, missing readback stays pending, and disagreement is
     inconclusive. It receives no Nora prompt, self-model, study condition, hypothesis, or expected result.
     This is functional social cognition, not proof of comprehension, intimacy, shared

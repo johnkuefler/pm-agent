@@ -1,5 +1,6 @@
 GET /intelligence/dashboard-summary
 GET /intelligence/persistence-runtime
+GET /intelligence/research-projection-runtime
 GET /intelligence
 GET /commitments
 POST /commitments
@@ -140,6 +141,7 @@ POST /earned-viewpoints/:id/retire
 GET /epistemic-ledger/discrepancies
 POST /epistemic-ledger/discrepancies/:id/review
 GET /common-ground
+GET /common-ground/formation
 POST /common-ground
 GET /common-ground/review-queue
 POST /common-ground/:id/review

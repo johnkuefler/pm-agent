@@ -894,6 +894,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.get('/common-ground', requireAuth, (req, res) => {
     res.json(store.commonGroundSnapshot({ person: req.query.person, query: req.query.query }));
   });
+  app.get('/common-ground/formation', requireAuth, (_req, res) => {
+    res.json(store.commonGroundFormationSnapshot());
+  });
   app.post('/common-ground', requireAuth, (req, res) => {
     try { res.json({ ok: true, record: store.recordCommonGround(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }

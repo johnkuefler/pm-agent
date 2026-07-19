@@ -15,6 +15,7 @@ const meetingProfessionalReflection = require('./meeting-professional-reflection
 const relationalAffect = require('./relational-affect');
 const teammatePerspective = require('./teammate-perspective');
 const commonGround = require('./common-ground');
+const commonGroundFormation = require('./common-ground-formation');
 const behavioralSelfModel = require('./behavioral-self-model');
 const capabilityBoundary = require('./capability-boundary');
 const proceduralLearning = require('./procedural-learning');
@@ -227,6 +228,18 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     state.cognition.epistemic_ledger?.propositions || [], now, state.cognition.research_ledger);
   const commonGroundAudits = commonGroundRecords.map(record => commonGround.audit(record,
     state.cognition.epistemic_ledger?.propositions || [], now, state.cognition.research_ledger));
+  const commonGroundFormationAttempts = cognition.common_ground_formation?.attempts || [];
+  const replayVerifiedCommonGroundFormationAttempts = commonGroundFormationAttempts.filter(attempt => {
+    const payload = JSON.parse(JSON.stringify(attempt));
+    delete payload.attempt_commitment;
+    const proposition = attempt.proposition_id
+      ? (cognition.epistemic_ledger?.propositions || []).find(item => item.id === attempt.proposition_id)
+      : null;
+    return attempt.attempt_commitment === commonGroundFormation.commitment(payload)
+      && commonGroundFormation.auditReceipt(attempt.generation_receipt, {
+        interactionId: attempt.interaction_id, proposition,
+      }).complete_chain_verified;
+  });
   const sourceAttestations = cognition.external_source_attestations || [];
   const replayValidSourceAttestations = sourceAttestations
     .filter(item => item.audit?.complete_chain_verified === true);
@@ -2273,10 +2286,14 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'interactional_common_ground', family: ['social cognition', 'joint attention', 'theory of mind', 'self-other boundary', 'professional collaboration'],
       functional_claim: 'Nora distinguishes information interactionally established with a specific teammate from Nora-only context and from unsupported assumptions about what the teammate knows, then uses that boundary to communicate efficiently and clarify selectively.',
-      mechanism: 'A person- and proposition-bound append-only register requires current replay-valid Nora and teammate positions plus explicit acknowledgment, accurate restatement, coordinated use, or targeted correction evidence. Append-only capture remains available while cognitive access is sealed, but records and frames stay hidden from Nora. Canonical Slack evidence binds channel, thread root, and exact message; a provider-disjoint dual-role evaluator must re-fetch every cited human message and reach consensus before a query-relevant frame may enter Nora\'s prompt. Missing evidence is labeled only not established, never teammate ignorance.',
+      mechanism: 'A background subject-side formation pass can map already reviewed substantive Slack uptake only onto an existing current Nora position; generic thanks and topic overlap fail closed. The person- and proposition-bound append-only register then requires explicit acknowledgment, accurate restatement, coordinated use, or targeted correction evidence. Canonical Slack evidence binds channel, thread root, and exact message; a provider-disjoint dual-role evaluator must re-fetch every cited human message and reach consensus before a query-relevant frame may enter Nora\'s prompt. Missing evidence is labeled only not established, never teammate ignorance.',
       status: commonGroundRecords.length ? 'collecting' : 'mechanism_present',
       evidence: {
         total_candidates: commonGroundRecords.length,
+        subject_formation_attempts: commonGroundFormationAttempts.length,
+        replay_verified_subject_formations: replayVerifiedCommonGroundFormationAttempts.length,
+        subject_formation_abstentions: commonGroundFormationAttempts
+          .filter(item => item.decision === 'abstain').length,
         independently_verified_current: verifiedCommonGround.length,
         awaiting_independent_review: commonGroundRecords
           .filter(record => record.status === 'awaiting_independent_review').length,

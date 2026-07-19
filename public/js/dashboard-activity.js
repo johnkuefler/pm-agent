@@ -59,6 +59,7 @@ function runtimeActivityPriority(item) {
 function runtimeActivityRegion(item = {}) {
   const kind = String(item.kind || '').toLowerCase();
   if (item.lane === 'conversation') return 'social';
+  if (kind.includes('common_ground')) return 'social';
   if (item.lane === 'leisure' || kind.includes('autonomous_play')) return 'play';
   if (item.lane === 'learning' || kind.includes('developmental_reading') || kind.includes('epistemic_agenda')) return 'learning';
   if (item.lane === 'work' || kind === 'deferred_tool_job' || kind.startsWith('hourly_')) return 'executive';

@@ -36,6 +36,7 @@ const selfInquiryStudy = require('./self-inquiry-study');
 const selfInductionStudy = require('./self-induction-study');
 const epistemicLedger = require('./epistemic-ledger');
 const commonGround = require('./common-ground');
+const commonGroundFormation = require('./common-ground-formation');
 const prospectiveOutputMonitor = require('./prospective-output-monitor');
 const executionClaimGuard = require('./execution-claim-guard');
 const endogenousAttention = require('./endogenous-attention');
@@ -160,6 +161,7 @@ function emptyState() {
       epistemic_self_correction_reflection: { attempts: [] },
       meeting_professional_reflection: { attempts: [] },
       common_ground: { records: [] },
+      common_ground_formation: { attempts: [] },
       counterfactual_agency: { experiments: [], models: [] },
       research_ledger: { events: [], anchors: [] },
       authorship_boundary: { challenges: [], studies: [] },
@@ -555,6 +557,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.common_ground = { records: [], ...(state.cognition.common_ground || {}) };
     if (!Array.isArray(state.cognition.common_ground.records)) state.cognition.common_ground.records = [];
     state.cognition.common_ground.records = state.cognition.common_ground.records.slice(-500);
+    state.cognition.common_ground_formation = { attempts: [],
+      ...(state.cognition.common_ground_formation || {}) };
+    if (!Array.isArray(state.cognition.common_ground_formation.attempts)) {
+      state.cognition.common_ground_formation.attempts = [];
+    }
+    state.cognition.common_ground_formation.attempts =
+      state.cognition.common_ground_formation.attempts.slice(-300);
     if (!Array.isArray(state.cognition.self_model.claims)) state.cognition.self_model.claims = [];
     if (loadedVersion < 51) {
       for (const claim of state.cognition.self_model.claims) {
@@ -4896,8 +4905,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       || state.cognition.self_model.context_trials.some(trial => trial.status === 'active');
   }
 
-  function recordCommonGround(input = {}) {
-    return mutate(current => {
+  function recordCommonGroundInState(current, input = {}) {
       requireResearchLedgerIntegrity(current);
       const proposition = current.cognition.epistemic_ledger.propositions
         .find(item => item.id === input.proposition_id);
@@ -4932,7 +4940,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return { ...JSON.parse(JSON.stringify(record)),
         audit: commonGround.audit(record, current.cognition.epistemic_ledger.propositions, clock(),
           current.cognition.research_ledger) };
-    });
+  }
+
+  function recordCommonGround(input = {}) {
+    return mutate(current => recordCommonGroundInState(current, input));
   }
 
   function commonGroundReviewQueue() {
@@ -5037,6 +5048,139 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           .map(item => item.person))],
       },
     };
+  }
+
+  function commonGroundFormationAttemptVerified(attempt = {}) {
+    const payload = JSON.parse(JSON.stringify(attempt || {}));
+    delete payload.attempt_commitment;
+    const proposition = attempt.proposition_id
+      ? state.cognition.epistemic_ledger.propositions.find(item => item.id === attempt.proposition_id)
+      : null;
+    return Boolean(attempt.attempt_commitment === commonGroundFormation.commitment(payload)
+      && commonGroundFormation.auditReceipt(attempt.generation_receipt, {
+        interactionId: attempt.interaction_id, proposition,
+      }).complete_chain_verified);
+  }
+
+  function commonGroundFormationSnapshot() {
+    const attempts = state.cognition.common_ground_formation?.attempts || [];
+    return {
+      protocol_version: commonGroundFormation.PROTOCOL_VERSION,
+      epistemic_status: 'Background Claude formation may bind explicit human uptake only to an existing current Nora position. A provider-disjoint exact-message review is still required before prompt access. This is observable mutual availability, not private comprehension, memory, agreement, feeling, relationship state, or consciousness.',
+      attempts: JSON.parse(JSON.stringify(attempts)),
+      report: {
+        total: attempts.length,
+        formed: attempts.filter(item => item.decision === 'form').length,
+        abstained: attempts.filter(item => item.decision === 'abstain').length,
+        replay_verified: attempts.filter(commonGroundFormationAttemptVerified).length,
+      },
+    };
+  }
+
+  function recordCommonGroundFormation(input = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (commonGroundProjectionSealed()) {
+        throw new Error('common-ground formation is sealed during an active blinded study');
+      }
+      const interactionId = String(input.interaction_id || '').trim().slice(0, 240);
+      const formationState = current.cognition.common_ground_formation
+        || (current.cognition.common_ground_formation = { attempts: [] });
+      if (!interactionId || formationState.attempts.some(item => item.interaction_id === interactionId)) {
+        throw new Error('this interaction already has a committed common-ground formation attempt');
+      }
+      const output = input.output;
+      const receipt = input.generation_receipt;
+      if (!commonGroundFormation.auditReceipt(receipt, { interactionId }).complete_chain_verified
+        || commonGroundFormation.canonicalJson(output)
+          !== commonGroundFormation.canonicalJson(receipt?.output)) {
+        throw new Error('common-ground formation requires a replay-valid provider receipt bound to the interaction');
+      }
+
+      let proposition = null;
+      let personPositionId = null;
+      let commonGroundRecord = null;
+      if (output.decision === 'form') {
+        const candidate = output.candidate;
+        proposition = current.cognition.epistemic_ledger.propositions
+          .find(item => item.id === candidate.proposition_id);
+        if (!proposition || !commonGroundFormation.auditReceipt(receipt, {
+          interactionId, proposition,
+        }).complete_chain_verified) {
+          throw new Error('common-ground formation proposition no longer matches the frozen source packet');
+        }
+        const packet = receipt.source_packet;
+        const packetProposition = packet.propositions.find(item => item.id === candidate.proposition_id);
+        const currentNora = epistemicLedger.currentPositions(proposition)
+          .find(item => item.owner_type === 'nora_belief');
+        if (!currentNora || currentNora.id !== packetProposition.nora_position.id
+          || currentNora.position_commitment !== packetProposition.nora_position.position_commitment) {
+          throw new Error('the Nora position changed after common-ground formation was frozen');
+        }
+        const person = packet.interaction.person;
+        const evidenceByTs = new Map(packet.interaction.human_followups
+          .map(item => [item.message_ts, item.evidence_ref]));
+        const evidence = candidate.evidence_message_ts.map(ts => evidenceByTs.get(ts));
+        if (evidence.some(ref => !ref)) throw new Error('common-ground formation evidence left the frozen packet');
+        const currentPerson = epistemicLedger.currentPositions(proposition)
+          .find(item => item.owner_type === 'person_belief'
+            && String(item.subject).toLowerCase() === String(person).toLowerCase());
+        if (currentPerson && currentPerson.polarity !== candidate.person_polarity) {
+          throw new Error('automatic common-ground formation cannot revise an existing person position');
+        }
+        if (currentPerson) personPositionId = currentPerson.id;
+        else {
+          const observedAt = new Date(Number(candidate.evidence_message_ts[0]) * 1000).toISOString();
+          const recorded = recordEpistemicPositionInState(current, {
+            topic_key: proposition.topic_key, statement: proposition.statement,
+            proposition_kind: proposition.proposition_kind || 'neutral',
+            owner_type: 'person_belief', subject: person, polarity: candidate.person_polarity,
+            confidence: candidate.confidence,
+            rationale: `Observable Slack uptake: ${candidate.summary}`.slice(0, 1200),
+            recorded_by: `nora-common-ground-formation:${receipt.model}:v${commonGroundFormation.PROTOCOL_VERSION}`,
+            observed_at: observedAt, evidence,
+            generation_receipt: receipt,
+          });
+          personPositionId = epistemicLedger.currentPositions(recorded)
+            .find(item => item.owner_type === 'person_belief'
+              && String(item.subject).toLowerCase() === String(person).toLowerCase())?.id || null;
+        }
+        commonGroundRecord = recordCommonGroundInState(current, {
+          id: `common-ground-cgf-${commonGroundFormation.commitment({ interactionId,
+            proposition_id: proposition.id, person }).slice(0, 20)}`,
+          proposition_id: proposition.id, person,
+          nora_position_id: currentNora.id, person_position_id: personPositionId,
+          acknowledgment_kind: candidate.acknowledgment_kind,
+          summary: candidate.summary, evidence,
+          observed_at: new Date(Number(candidate.evidence_message_ts[0]) * 1000).toISOString(),
+          expires_at: new Date(clock().getTime() + 30 * 86400000).toISOString(),
+        });
+      } else if (output.decision !== 'abstain') {
+        throw new Error('common-ground formation decision must form or abstain');
+      }
+
+      const attemptPayload = {
+        protocol_version: commonGroundFormation.PROTOCOL_VERSION,
+        id: input.id || `common-ground-formation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        interaction_id: interactionId, decision: output.decision,
+        proposition_id: proposition?.id || null, person_position_id: personPositionId,
+        common_ground_id: commonGroundRecord?.id || null,
+        generation_receipt: JSON.parse(JSON.stringify(receipt)), completed_at: clock().toISOString(),
+      };
+      const attempt = { ...attemptPayload,
+        attempt_commitment: commonGroundFormation.commitment(attemptPayload) };
+      formationState.attempts.push(attempt);
+      formationState.attempts = formationState.attempts.slice(-300);
+      researchLedgerAppend(current, {
+        kind: output.decision === 'form' ? 'common_ground_formation_formed'
+          : 'common_ground_formation_abstained',
+        subject_type: 'common_ground_formation', subject_id: attempt.id,
+        payload: { attempt_commitment: attempt.attempt_commitment,
+          interaction_id: interactionId, common_ground_id: commonGroundRecord?.id || null },
+      });
+      return { ...JSON.parse(JSON.stringify(attempt)),
+        common_ground_id: commonGroundRecord?.id || null };
+    });
   }
 
   const AUTHORSHIP_CATEGORIES = ['nora_verbatim', 'nora_derived', 'other_ai', 'human', 'mixed'];
@@ -27084,6 +27228,7 @@ ${episodes.map(item => {
     meetingProfessionalReflectionPacket,
     recordCommonGround, commonGroundReviewQueue, reviewCommonGround,
     commonGroundSnapshot, commonGroundFrameForPerson, commonGroundProjectionSealed,
+    commonGroundFormationSnapshot, recordCommonGroundFormation,
     earnedViewpointsSnapshot, retireEarnedViewpoint,
     professionalViewpointAccessSnapshot, professionalViewpointAccessAudit,
     recordProfessionalViewpointAccessApplication, resolveProfessionalViewpointAccessOutcome,

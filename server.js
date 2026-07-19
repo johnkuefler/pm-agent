@@ -51,6 +51,7 @@ const reasoningResearchAutopilot = require('./src/intelligence/reasoning-researc
 const globalBroadcastResearchAutopilot = require('./src/intelligence/global-broadcast-research-autopilot');
 const selfModelTrustResearchAutopilot = require('./src/intelligence/self-model-trust-research-autopilot');
 const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycle-prediction-autopilot');
+const commonGroundFormation = require('./src/intelligence/common-ground-formation');
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
@@ -10225,6 +10226,8 @@ let _researchAutopilotInFlight = false;
 let _researchAutopilotLastCycle = null;
 let _commonGroundReviewAutopilotInFlight = false;
 let _commonGroundReviewAutopilotLastCycle = null;
+let _commonGroundFormationInFlight = false;
+let _commonGroundFormationLastCycle = null;
 let _teammatePerspectiveReviewAutopilotInFlight = false;
 let _teammatePerspectiveReviewAutopilotLastCycle = null;
 let _professionalViewpointReflectionInFlight = false;
@@ -10728,6 +10731,19 @@ async function runInteractionOutcomeReviewAutopilotRuntime({ post = axios.post,
   }
 }
 
+function commonGroundFormationRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_COMMON_GROUND_FORMATION_AUTOPILOT !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_COMMON_GROUND_FORMATION_MODEL
+      || commonGroundFormation.DEFAULT_MODEL).slice(0, 160),
+    reason: enabled ? 'provider_credentials_default'
+      : !env.ANTHROPIC_API_KEY ? 'missing_anthropic_key' : 'explicitly_disabled',
+  };
+}
+
 function commonGroundReviewAutopilotRuntimeConfig(env = process.env) {
   const maxReviews = Number(env.NORA_COMMON_GROUND_REVIEW_MAX_PER_CYCLE);
   const enabled = env.NORA_TEST_MODE !== '1'
@@ -10910,6 +10926,17 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
         self_model_trust_policy: selfModelTrust },
     };
   }
+  const commonGroundFormationConfig = commonGroundFormationRuntimeConfig();
+  const commonGroundFormationStoreStatus = intelligence.commonGroundFormationSnapshot();
+  const commonGroundFormationStatus = {
+    protocol_version: commonGroundFormation.PROTOCOL_VERSION,
+    enabled: commonGroundFormationConfig.enabled,
+    model: commonGroundFormationConfig.model,
+    background_only: true,
+    report: commonGroundFormationStoreStatus.report,
+    last_cycle: _commonGroundFormationLastCycle,
+    scientific_boundary: 'This is receipt-bound subject-side recognition of explicit uptake for an existing Nora position. A separate exact-message review remains mandatory before use; it does not establish private comprehension, memory, agreement, feeling, or consciousness.',
+  };
   const commonGroundReviewConfig = commonGroundReviewAutopilotRuntimeConfig();
   const commonGroundReview = commonGroundReviewAutopilot.status(intelligence, {
     enabled: commonGroundReviewConfig.enabled, model: commonGroundReviewConfig.model,
@@ -11021,6 +11048,7 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     self_prediction_sequence: selfPredictionSequence,
     self_prediction_subject: selfPredictionSubject,
     natural_cycle_prediction: naturalCyclePrediction,
+    common_ground_formation: commonGroundFormationStatus,
     common_ground_review: commonGroundReview,
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
@@ -11036,6 +11064,47 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     interactive_priority: interactivePriority,
     background_intelligence_cycle: backgroundCycle,
   };
+}
+
+async function runCommonGroundFormationRuntime({ post = axios.post } = {}) {
+  const config = commonGroundFormationRuntimeConfig();
+  if (!config.enabled) {
+    _commonGroundFormationLastCycle = {
+      protocol_version: commonGroundFormation.PROTOCOL_VERSION,
+      state: 'disabled', provider_calls: 0, reason: config.reason, at: new Date().toISOString(),
+    };
+    return _commonGroundFormationLastCycle;
+  }
+  if (_commonGroundFormationInFlight) return {
+    protocol_version: commonGroundFormation.PROTOCOL_VERSION,
+    state: 'in_flight', provider_calls: 0, at: new Date().toISOString(),
+  };
+  _commonGroundFormationInFlight = true;
+  try {
+    const cycle = await commonGroundFormation.runCycle({
+      store: intelligence, interactions: loadInteractions(), enabled: true, model: config.model,
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: { 'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01' },
+          timeout: 45000,
+        });
+        return response.data;
+      },
+    });
+    _commonGroundFormationLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _commonGroundFormationLastCycle;
+  } catch (error) {
+    _commonGroundFormationLastCycle = {
+      protocol_version: commonGroundFormation.PROTOCOL_VERSION,
+      state: 'failed_closed', provider_calls: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+    return _commonGroundFormationLastCycle;
+  } finally {
+    _commonGroundFormationInFlight = false;
+  }
 }
 
 async function runCommonGroundReviewAutopilotRuntime({ post = axios.post } = {}) {
@@ -12056,6 +12125,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     cognitive_initiation_policy_probe: 'Checking a delayed cognition probe',
     cognitive_pulse: 'Considering a background hypothesis',
     research_autopilot: 'Reviewing the research program',
+    common_ground_formation: 'Recognizing established conversational context',
     common_ground_review: 'Reviewing shared conversational context',
     teammate_perspective_review: 'Reviewing teammate perspective evidence',
     professional_viewpoint_lifecycle: 'Reflecting on professional judgment',
@@ -12122,6 +12192,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['cognitive_initiation_policy_probe', () => runDueCognitiveInitiationPolicyProbeRuntime({ post: priorityPost })],
       ['cognitive_pulse', () => runCognitivePulseRuntime({ post: priorityPost })],
       ['research_autopilot', () => runResearchAutopilotRuntime({ post: priorityPost })],
+      ['common_ground_formation', () => runCommonGroundFormationRuntime({ post: priorityPost })],
       ['common_ground_review', () => runCommonGroundReviewAutopilotRuntime({ post: priorityPost })],
       ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
       ['professional_viewpoint_lifecycle',
@@ -12316,6 +12387,8 @@ module.exports = {
     researchAutopilotRuntimeConfig,
     researchAutopilotProgramStatus,
     runResearchAutopilotRuntime,
+    commonGroundFormationRuntimeConfig,
+    runCommonGroundFormationRuntime,
     commonGroundReviewAutopilotRuntimeConfig,
     runCommonGroundReviewAutopilotRuntime,
     teammatePerspectiveReviewAutopilotRuntimeConfig,
