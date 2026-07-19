@@ -186,9 +186,21 @@ test('intelligence store ledger-binds the offline lifecycle and exposes only dri
 });
 
 test('production controls bind the deployed Nora prompt without exposing the hourly routine to the subject', () => {
-  const controls = require('../../server').__test.behavioralFingerprintControls();
+  const runtime = require('../../server').__test;
+  const priorRailwaySha = process.env.RAILWAY_GIT_COMMIT_SHA;
+  const priorGitCommit = process.env.GIT_COMMIT;
+  delete process.env.RAILWAY_GIT_COMMIT_SHA; delete process.env.GIT_COMMIT;
+  const controls = runtime.behavioralFingerprintControls();
   assert.equal(controls.model_control.model, 'claude-opus-4-8');
   assert.match(controls.model_control.agent_build_commitment, /^[a-f0-9]{64}$/);
+  assert.match(runtime.deployedSourceCommitment(), /^[a-f0-9]{64}$/);
+  assert.equal(runtime.softwareRevisionIdentity(),
+    `source-tree:${runtime.deployedSourceCommitment()}`);
+  const expectedBuild = require('node:crypto').createHash('sha256').update(JSON.stringify({
+    software_revision: runtime.softwareRevisionIdentity(),
+    provider_configuration_commitment: controls.state_control.provider_configuration_commitment,
+  })).digest('hex');
+  assert.equal(controls.model_control.agent_build_commitment, expectedBuild);
   assert.match(controls.state_control.persona_commitment, /^[a-f0-9]{64}$/);
   assert.match(controls.state_control.charter_commitment, /^[a-f0-9]{64}$/);
   assert.match(controls.state_control.routine_commitment, /^[a-f0-9]{64}$/);
@@ -200,6 +212,10 @@ test('production controls bind the deployed Nora prompt without exposing the hou
   assert.equal(controls.evaluator_policy.provider, 'openai');
   assert.equal(controls.evaluator_policy.subject_provider, 'anthropic');
   assert.equal(controls.evaluator_policy.roles.length, 2);
+  if (priorRailwaySha === undefined) delete process.env.RAILWAY_GIT_COMMIT_SHA;
+  else process.env.RAILWAY_GIT_COMMIT_SHA = priorRailwaySha;
+  if (priorGitCommit === undefined) delete process.env.GIT_COMMIT;
+  else process.env.GIT_COMMIT = priorGitCommit;
 });
 
 test('fingerprint enrollment fails closed across an active blinded context trial', async () => {

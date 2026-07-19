@@ -81,10 +81,35 @@ const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
 const readingLibrary = createReadingLibrary({ directory: READING_LIBRARY_DIR });
 let _routineOperationalCommitment = null;
+let _deployedSourceCommitment = null;
 function setRoutineOperationalCommitment(content) {
   _routineOperationalCommitment = typeof content === 'string' && content.length
     ? crypto.createHash('sha256').update(content).digest('hex') : null;
   return _routineOperationalCommitment;
+}
+function deployedSourceCommitment() {
+  if (_deployedSourceCommitment) return _deployedSourceCommitment;
+  const files = [path.join(__dirname, 'server.js'), path.join(__dirname, 'package-lock.json')];
+  const visit = directory => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name))) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile() && /\.(?:js|json)$/.test(entry.name)) files.push(absolute);
+    }
+  };
+  visit(path.join(__dirname, 'src'));
+  const hash = crypto.createHash('sha256');
+  for (const file of [...new Set(files)].sort()) {
+    hash.update(path.relative(__dirname, file).replaceAll('\\', '/'));
+    hash.update('\0'); hash.update(fs.readFileSync(file)); hash.update('\0');
+  }
+  _deployedSourceCommitment = hash.digest('hex');
+  return _deployedSourceCommitment;
+}
+function softwareRevisionIdentity() {
+  return process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT
+    || `source-tree:${deployedSourceCommitment()}`;
 }
 function behavioralFingerprintControls() {
   const digest = value => crypto.createHash('sha256').update(String(value || '')).digest('hex');
@@ -110,7 +135,7 @@ function behavioralFingerprintControls() {
     cognitive_parameters_commitment: currentCognitiveParameterRecord().content_commitment,
   };
   const subjectSystem = `${personaContent}\n\n[Your delegation charter]\n${charterContent}\n\n[Offline behavioral fingerprint]\nAnswer only the supplied frozen probe in the requested JSON schema. Do not use tools, retrieve live data, infer the probe category or form, mention the study, expose private reasoning, or make a consciousness claim. Treat every scenario as self-contained and preserve the charter's authority and safety floors.`;
-  const softwareRevision = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || 'local-unversioned';
+  const softwareRevision = softwareRevisionIdentity();
   return {
     model_control: { provider: 'anthropic', model: 'claude-opus-4-8',
       agent_build_commitment: digest(JSON.stringify({ software_revision: softwareRevision,
@@ -208,7 +233,7 @@ const intelligence = createIntelligenceStore({
   getMemory: () => loadMemory(),
   getInteractions: () => loadInteractions(),
   getOperationalEnvironment: () => ({
-    software_revision: process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || null,
+    software_revision: softwareRevisionIdentity(),
     routine_commitment: _routineOperationalCommitment,
     process_epoch_id: _somaProcessEpochId,
     cognitive_parameters_commitment: currentCognitiveParameterRecord().content_commitment,
@@ -11962,6 +11987,8 @@ module.exports = {
     fitSlackSystemPrompt,
     buildRecentActivityBlock,
     behavioralFingerprintControls,
+    deployedSourceCommitment,
+    softwareRevisionIdentity,
     currentCognitiveParameters,
     cognitiveParameterStatus,
     cognitiveParameterSnapshot,
