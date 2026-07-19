@@ -210,3 +210,49 @@ test('review waits for twelve hours and three later cycles without calling eithe
   assert.equal(result.state, 'daily_attempt_limit');
   assert.equal(calls, 0);
 });
+
+test('the daily formation limit returns without opening the replay-audited experience projection', async () => {
+  const dreams = [{ id: 'dream-daily-limit', finished: '2026-07-18T06:00:00.000Z',
+    reflection: { developmental_self_reflection_attempt: {
+      attempted_at: '2026-07-18T06:30:00.000Z', decision: 'abstained',
+    } } }];
+  let runtimeReads = 0;
+  const result = await reflection.runCycle({
+    store: {
+      developmentalSelfReflectionScheduleSnapshot: () => ({ developments: [] }),
+      developmentalSelfReflectionRuntimeSnapshot: () => { runtimeReads += 1; throw new Error('must remain closed'); },
+      persistStrict: async () => {},
+    },
+    loadDreams: () => structuredClone(dreams), saveDreams: () => {},
+    getAutobiography: biography, commitAutobiography: async () => {},
+    callSubject: async () => assert.fail('daily limit prevents formation'),
+    now: new Date('2026-07-18T10:00:00.000Z'),
+  });
+  assert.equal(result.state, 'daily_attempt_limit');
+  assert.equal(result.provider_calls, 0);
+  assert.equal(runtimeReads, 0);
+});
+
+test('the schedule preflight still opens full evidence for an uncited integrated development', async () => {
+  const fixture = formedFixture();
+  const integrated = { ...fixture.development, status: 'integrated',
+    independent_review: { outcome: 'supported', evidence: [{ type: 'experience_moment', id: 'h1' }] },
+    audit: { complete_chain_verified: true, integration_verified: true } };
+  let runtimeReads = 0; let committed = null;
+  const result = await reflection.runCycle({
+    store: {
+      developmentalSelfReflectionScheduleSnapshot: () => ({ developments: [integrated] }),
+      developmentalSelfReflectionRuntimeSnapshot: () => { runtimeReads += 1;
+        return { developments: [integrated], moments: [] }; },
+      persistStrict: async () => {},
+    },
+    loadDreams: () => structuredClone(fixture.dreams), saveDreams: () => {},
+    getAutobiography: biography,
+    commitAutobiography: async input => { committed = input; return { revision_id: 'bio-r2' }; },
+    callSubject: async () => assert.fail('integration takes priority over formation'),
+    now: new Date('2026-07-18T10:00:00.000Z'),
+  });
+  assert.equal(result.state, 'autobiography_revised');
+  assert.equal(runtimeReads, 1);
+  assert.match(committed.content, /Evidence-bound revisions/);
+});

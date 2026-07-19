@@ -2470,6 +2470,9 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   assert.equal(firstClosed.audit.evidence_eligible, true);
   assert.equal(firstClosed.start_snapshot, undefined);
   const developmentalRuntime = store.developmentalSelfReflectionRuntimeSnapshot();
+  const developmentalSchedule = store.developmentalSelfReflectionScheduleSnapshot();
+  assert.equal(developmentalSchedule.protocol_version, 1);
+  assert.deepEqual(developmentalSchedule.developments, []);
   assert.equal(developmentalRuntime.moments.length, 1);
   assert.equal(developmentalRuntime.moments[0].summary, 'Reviewed the unresolved question');
   assert.deepEqual(Object.keys(developmentalRuntime.moments[0]).sort(), [

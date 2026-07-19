@@ -12558,6 +12558,21 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   // only replay-eligible lifecycle summaries and the developmental ledger, never prompts,
   // message text, tool arguments, or tool results. Keeping this bounded also avoids cloning the
   // full cognition state during the five-minute scheduler.
+  function developmentalSelfReflectionScheduleSnapshot() {
+    return {
+      protocol_version: 1,
+      epistemic_status: 'A minimal scheduling projection used only to decide whether the replay-audited developmental evidence projection must be opened.',
+      developments: (state.cognition.development || []).filter(item =>
+        item.origin?.creator_id === 'nora-developmental-self-reflection'
+        || item.status === 'candidate' || item.status === 'integrated').slice(-40).map(item => ({
+        id: item.id,
+        status: item.status,
+        origin: { creator_id: item.origin?.creator_id || null },
+        audit: developmentalRevisionAudit(item),
+      })),
+    };
+  }
+
   function developmentalSelfReflectionRuntimeSnapshot({ limit = 72 } = {}) {
     const maximum = Math.max(1, Math.min(96, Number(limit) || 72));
     const auditCache = new Map();
@@ -27324,7 +27339,8 @@ ${episodes.map(item => {
     affectiveTransitionAudit, affectiveApplicationAudit,
     relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit,
-    developmentalSelfReflectionRuntimeSnapshot, autobiographyEvidence, recordCounterfactual,
+    developmentalSelfReflectionScheduleSnapshot, developmentalSelfReflectionRuntimeSnapshot,
+    autobiographyEvidence, recordCounterfactual,
     tickEndogenousDynamics, endogenousDynamicsSnapshot,
     prepareCognitivePulse, beginCognitivePulseInitiation, completeCognitivePulseInitiation, deferCognitivePulse,
     recordCognitivePulseResult, recordCognitivePulseFailure, resolveCognitivePulse,

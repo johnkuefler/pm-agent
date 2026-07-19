@@ -524,6 +524,40 @@ function attemptsToday(dreams, now) {
   }).length;
 }
 
+// Decide whether the expensive replay-audited experience projection is needed. Recovery,
+// review, and autobiography integration always take precedence over formation throttles.
+function scheduleDecision({ dreams = [], developments = [], revisions = [], subjectEnabled = true,
+  subjectAvailable = true, now = new Date() } = {}) {
+  const creatorDevelopments = developments.filter(item => item.origin?.creator_id === CREATOR_ID);
+  const uncitedIntegrated = creatorDevelopments.some(item => item.audit?.integration_verified === true
+    && !developmentCitedInAutobiography(item.id, revisions));
+  if (uncitedIntegrated) return { requires_full_cycle: true, reason: 'autobiography_integration' };
+
+  const candidateIds = new Set(creatorDevelopments.filter(item => item.status === 'candidate')
+    .map(item => item.id));
+  const hasRecordedReview = reviewAttempts(dreams).some(({ attempt }) =>
+    attempt.decision === 'reviewed' && attempt.review_receipt && candidateIds.has(attempt.development_id));
+  if (hasRecordedReview) return { requires_full_cycle: true, reason: 'review_recovery' };
+  if (candidateIds.size) return { requires_full_cycle: true, reason: 'candidate_review' };
+
+  const knownDevelopmentIds = new Set(developments.map(item => item.id));
+  const hasRecoverableFormation = formationAttempts(dreams).some(({ attempt }) =>
+    attempt.decision === 'formed' && attempt.generation_receipt
+      && !knownDevelopmentIds.has(attempt.development_id));
+  if (hasRecoverableFormation) return { requires_full_cycle: true, reason: 'formation_recovery' };
+
+  if (!subjectEnabled || !subjectAvailable) {
+    return { requires_full_cycle: false, state: 'formation_disabled' };
+  }
+  if (attemptsToday(dreams, now) >= MAX_DAILY_FORMATION_ATTEMPTS) {
+    return { requires_full_cycle: false, state: 'daily_attempt_limit' };
+  }
+  if (!selectSourceDream(dreams)) {
+    return { requires_full_cycle: false, state: 'no_unprocessed_dream' };
+  }
+  return { requires_full_cycle: true, reason: 'formation_evidence_required' };
+}
+
 function status({ dreams = [], developments = [], moments = [], autobiography = null,
   revisions = [], enabled = true, subjectModel = SUBJECT_MODEL, evaluatorModel = EVALUATOR_MODEL,
   lastCycle = null, now = new Date() } = {}) {
@@ -572,8 +606,15 @@ async function runCycle({ store, loadDreams, saveDreams, getAutobiography, commi
     || typeof getAutobiography !== 'function' || typeof commitAutobiography !== 'function') {
     throw new Error('developmental self reflection requires store and persistence callbacks');
   }
-  const runtime = store.developmentalSelfReflectionRuntimeSnapshot({ limit: 72 });
   const dreams = loadDreams(); const autobiographyState = getAutobiography();
+  if (typeof store.developmentalSelfReflectionScheduleSnapshot === 'function') {
+    const schedule = store.developmentalSelfReflectionScheduleSnapshot();
+    const decision = scheduleDecision({ dreams, developments: schedule.developments || [],
+      revisions: autobiographyState.revisions || [], subjectEnabled,
+      subjectAvailable: typeof callSubject === 'function', now });
+    if (!decision.requires_full_cycle) return { ...result, state: decision.state };
+  }
+  const runtime = store.developmentalSelfReflectionRuntimeSnapshot({ limit: 72 });
   const developments = runtime.developments || []; const moments = runtime.moments || [];
 
   const uncited = developments.find(item => item.origin?.creator_id === CREATOR_ID
@@ -725,4 +766,4 @@ module.exports = { PROTOCOL_VERSION, SUBJECT_MODEL, EVALUATOR_MODEL, MAX_TOKENS,
   auditFormationReceipt, formationAttemptAudit, reviewPacket, reviewSchema, reviewSystemPrompt,
   reviewRequest, normalizeReviewOutput, reviewSubmission, evaluatorId, reviewInput,
   recordReviewAttempt, auditReviewReceipt, reviewAttemptAudit,
-  developmentCitedInAutobiography, autobiographyRevisionInput, status, runCycle };
+  developmentCitedInAutobiography, autobiographyRevisionInput, scheduleDecision, status, runCycle };
