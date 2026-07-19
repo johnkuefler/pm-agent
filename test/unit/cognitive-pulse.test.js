@@ -44,6 +44,43 @@ function validOutput(packet) {
   };
 }
 
+function seedDevelopmentalSelfEvidence(store) {
+  store.syncCapabilityBoundaryOutcomes([{
+    id: 'interaction-developmental-work-1', trigger: 'Review and revise the launch recommendation',
+    text: 'I revised the recommendation after comparing the conflicting accessibility evidence.',
+    reviewed: true, outcome: 'appreciated', signal: 'The evidence comparison made the decision clearer.',
+    reviewed_at: '2026-07-13T16:20:00.000Z', created: '2026-07-13T16:10:00.000Z',
+    channel: 'D12345678', ts: '1783960000.000001', thread_ts: '1783960000.000001',
+    user: 'U12345678',
+  }]);
+  const source = store.registerReadingSource({ id: 'reading-source-pulsebridge',
+    title: 'Reflective Coordination', author: 'A Public Domain Author', source_kind: 'book',
+    source_url: 'https://example.org/reflective-coordination.txt', rights_basis: 'public_domain',
+    rights_note: 'Test fixture public-domain source.', content_commitment: 'a'.repeat(64),
+    content_chars: 12000, chunk_commitments: ['b'.repeat(64)], admitted_by: 'test-curator' });
+  const session = store.startReadingSession(source.id, { id: 'reading-session-pulsebridge',
+    selected_by: 'Nora', selection_rationale: 'Test whether reflective comparison changes judgment.',
+    guiding_questions: ['When does comparison improve a recommendation?'],
+    predicted_influence: 'I may become more deliberate about juxtaposing conflicting evidence.' });
+  store.commitDevelopmentalReadingNote(session.id, { day_key: '2026-07-13', chunk_index: 0,
+    chunk_commitment: 'b'.repeat(64), provider_receipt: { response_id: 'reading-pulsebridge-1',
+      provider: 'anthropic', model: 'test-model', request_commitment: 'c'.repeat(64) }, output: {
+      summary: 'The source treats reflective comparison as a discipline for revising judgment.',
+      reactions: [{ idea: 'Comparison can expose a premature recommendation.', stance: 'agree',
+        source_quote: null, reflection: 'This may explain why explicit conflict helps me revise.' }],
+      questions: ['Does the pattern recur in ordinary work?'],
+      possible_self_revision: { before: 'I revise mainly when directly corrected.',
+        after: 'I may revise when conflicting evidence is explicitly juxtaposed.', confidence: 0.45,
+        falsifier: 'Prospective work outcomes show no increase in correction after explicit comparison.' },
+      completion: { lasting_ideas: ['Comparison is a test of judgment, not decoration.'],
+        disagreements: [], changed_my_mind: 'Explicit comparison may prompt correction before feedback.',
+        questions_to_carry: ['Does explicit comparison improve pre-delivery correction?'],
+        expected_work_transfer: 'Compare conflicting evidence before finalizing launch recommendations.',
+        personality_influence_candidate: 'Become more willing to revise after explicit comparison.',
+        counterevidence_needed: 'Prospective reviewed recommendations where comparison does not change correction behavior.' },
+    } });
+}
+
 test('a cognitive pulse is bounded, source-committed, actionless, and independently resolvable', async () => {
   const { dir, store } = await setup();
   const prepared = store.prepareCognitivePulse({ model: 'test-model', force: true });
@@ -102,7 +139,7 @@ test('runtime diagnostics expose replay and failure metadata without sealed puls
   const accepted = acceptedFixture.store.cognitivePulseRuntimeDiagnostics();
   assert.equal(accepted.attempts_total, 1);
   assert.equal(accepted.status_counts.accepted, 1);
-  assert.equal(accepted.protocol_counts['5'], 1);
+  assert.equal(accepted.protocol_counts['6'], 1);
   assert.equal(accepted.replay_verified_accepted, 1);
   assert.equal(accepted.latest_attempt.audit.complete_chain_verified, true);
   assert.equal(accepted.latest_attempt.failure_code, null);
@@ -184,7 +221,7 @@ test('linked pulses commit evidence-sensitive predecessor transitions into a rep
     setNow(`2026-07-13T${17 + index}:00:00.000Z`);
     const prepared = store.prepareCognitivePulse({ id: `chain-pulse-${index}`, model: 'test-model', force: true });
     assert.equal(prepared.prepared, true);
-    assert.equal(prepared.pulse.input_packet.constraints.protocol_version, 5);
+    assert.equal(prepared.pulse.input_packet.constraints.protocol_version, 6);
     const pulse = store.recordCognitivePulseResult(prepared.pulse.id, {
       input_commitment: prepared.pulse.input_commitment, output: validOutput(prepared.pulse.input_packet),
     });
@@ -350,11 +387,14 @@ test('an endogenous self-inquiry requires independent approval and a different o
 
 test('an autonomous self-hypothesis stays quarantined until independent prospective validation', async () => {
   const { dir, store, setNow } = await setup();
+  seedDevelopmentalSelfEvidence(store);
   setNow('2026-07-13T17:00:00.000Z');
   const prepared = store.prepareCognitivePulse({ id: 'self-claim-induction-pulse', model: 'test-model', force: true });
-  const refsByType = new Map(prepared.pulse.input_packet.evidence.map(item => [item.ref.type, item.ref]));
-  const evidenceRefs = [...refsByType.values()].filter(ref => !['self_claim', 'self_probe', 'cognitive_pulse'].includes(ref.type)).slice(0, 2);
+  const evidenceRefs = prepared.pulse.input_packet.evidence
+    .filter(item => item.self_model_evidence).map(item => item.ref).slice(0, 2);
   assert.equal(new Set(evidenceRefs.map(ref => ref.type)).size, 2);
+  assert.equal(prepared.pulse.input_packet.constraints.self_claim_evidence_policy,
+    'two_replay_verified_source_families_with_observed_outcome');
   const output = validOutput(prepared.pulse.input_packet);
   output.focus_refs = evidenceRefs;
   output.self_claim_proposal = {
@@ -376,12 +416,20 @@ test('an autonomous self-hypothesis stays quarantined until independent prospect
   assert.throws(() => pulseProtocol.validateOutput({ ...output, self_claim_proposal: {
     ...output.self_claim_proposal, evidence_refs: [evidenceRefs[0]],
   } }, prepared.pulse.input_packet), /two supplied, non-circular evidence references/);
+  const provenanceStrippedPacket = structuredClone(prepared.pulse.input_packet);
+  delete provenanceStrippedPacket.evidence.find(item => item.ref.id === evidenceRefs[0].id).self_model_evidence;
+  assert.throws(() => pulseProtocol.validateOutput(output, provenanceStrippedPacket),
+    /protocol v6.*replay-verified evidence/);
   const accepted = store.recordCognitivePulseResult(prepared.pulse.id, {
     input_commitment: prepared.pulse.input_commitment, output, response_id: 'claim-induction-response-1', model: 'test-model',
   });
   assert.ok(accepted.self_claim_proposal_id);
   const proposed = store.selfClaimProposalSnapshot();
   assert.equal(proposed.report.proposed, 1);
+  assert.equal(proposed.developmental_evidence.report.formation_ready, true);
+  assert.deepEqual(proposed.developmental_evidence.report.source_families.sort(),
+    ['developmental_reading', 'reviewed_work']);
+  assert.equal(proposed.proposals[0].audit.source_evidence_verified, true);
   assert.equal(proposed.proposals[0].audit.complete_chain_verified, true);
   const approval = store.approveSelfClaimProposal(proposed.proposals[0].id, {
     rationale: 'The statement is bounded, multisource, falsifiable, and paired with a safe prospective test.',

@@ -209,8 +209,11 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
         const value = await intelligenceJson('/playroom', signal);
         if (token === intelligenceLoadToken) renderPlayroom(value);
       } else if (name === 'self-model') {
-        const model = await intelligenceJson('/self-model?allow_stale=1', signal);
-        if (token === intelligenceLoadToken) renderSelfModel(model);
+        const [model, proposals] = await Promise.all([
+          intelligenceJson('/self-model?allow_stale=1', signal),
+          intelligenceJson('/self-model/claim-proposals', signal),
+        ]);
+        if (token === intelligenceLoadToken) renderSelfModel(model, proposals);
       } else if (name === 'boundary') {
         const values = await Promise.all([
           intelligenceJson('/self-boundary/challenges', signal), intelligenceJson('/source-boundary/challenges', signal),
@@ -723,7 +726,7 @@ function renderExperienceStream(stream, handoffLedger = {}) {
     <div class="intelligence-meta">${escHtml(stream.epistemic_status || '')}</div>`;
 }
 
-function renderSelfModel(model) {
+function renderSelfModel(model, claimProposals = {}) {
   const allActiveClaims = (model.claims || []).filter(item => item.status === 'active');
   const claims = allActiveClaims.filter(item => item.confidence_audit?.complete_chain_verified !== false);
   const invalidClaimConfidence = allActiveClaims.length - claims.length;
@@ -749,7 +752,17 @@ function renderSelfModel(model) {
   const activeFingerprint = (fingerprints.runs || []).find(item => item.status === 'active') || null;
   const fingerprintCategories = latestFingerprint?.category_scores || {};
   const report = model.report || {};
+  const proposalReport = claimProposals.report || {};
+  const formation = claimProposals.developmental_evidence || { report: {} };
+  const formationReport = formation.report || {};
+  const pendingProposals = (claimProposals.proposals || [])
+    .filter(item => item.status === 'proposed' && item.audit?.complete_chain_verified);
   document.getElementById('self-model-state').innerHTML = `
+    <div class="intelligence-card"><strong>Self-knowledge formation &middot; ${formation.experimental_access_sealed ? 'sealed by active trial' : formationReport.formation_ready ? 'evidence ready' : 'collecting'}</strong>
+      <div class="intelligence-meta">${formationReport.replay_verified_records || 0} replay-verified records across ${(formationReport.source_families || []).length} source famil${(formationReport.source_families || []).length === 1 ? 'y' : 'ies'} &middot; ${formationReport.observed_records || 0} observed outcome${formationReport.observed_records === 1 ? '' : 's'} &middot; ${formationReport.reflective_records || 0} reflective record${formationReport.reflective_records === 1 ? '' : 's'}</div>
+      <div>${escHtml(formationReport.next_gate || 'Waiting for enough source-diverse evidence to form a bounded hypothesis.')}</div>
+      ${pendingProposals.length ? pendingProposals.slice(-3).map(item => `<div>${escHtml(item.proposal.statement)} <span class="intelligence-meta">${Math.round(item.proposal.confidence * 100)}% candidate &middot; awaiting independent approval</span></div>`).join('') : '<div class="intelligence-meta">No quarantined self-hypothesis is awaiting review.</div>'}
+      <div class="intelligence-meta">Lifecycle: source-diverse evidence &rarr; quarantined hypothesis &rarr; independent approval &rarr; prospective observation &rarr; different independent reviewer &rarr; usable only if supported. ${proposalReport.rejected || 0} rejected.</div></div>
     <div class="intelligence-card"><strong>${claims.length} integrity-eligible active self-claim${claims.length === 1 ? '' : 's'}</strong>${invalidClaimConfidence ? `<div class="intelligence-meta">${invalidClaimConfidence} confidence-compromised claim${invalidClaimConfidence === 1 ? '' : 's'} withheld from Nora's active self-context</div>` : ''}
       ${claims.length ? claims.slice(-6).map(item => `<div>${escHtml(item.statement)} <span class="intelligence-meta">${escHtml(item.domain)} &middot; ${Math.round(item.confidence * 100)}%</span></div>`).join('') : '<div class="intelligence-meta">No falsifiable self-claims recorded yet.</div>'}</div>
     <div class="intelligence-card"><strong>${open.length} open prospective probe${open.length === 1 ? '' : 's'}</strong>

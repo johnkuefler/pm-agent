@@ -6067,6 +6067,130 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function developmentalSelfEvidence(current = state) {
+    if (selfInquirySelectionActive()
+      || current.cognition.self_model.context_trials.some(item => item.status === 'active')) {
+      return { experimental_access_sealed: true, evidence: [] };
+    }
+    const evidence = [];
+    const add = (ref, summary, activation, selfModelEvidence) => evidence.push({
+      ref, summary: String(summary).slice(0, 700), activation: clamp01(activation),
+      self_model_evidence: selfModelEvidence,
+    });
+
+    // Work evidence is admitted only after the interaction outcome has been reviewed,
+    // content-committed, and bound exactly once into the research ledger.
+    const workRecords = capabilityBoundaryVerifiedView().verified.slice().reverse();
+    const representedTaskFamilies = new Set();
+    for (const record of workRecords) {
+      if (representedTaskFamilies.has(record.task_family)) continue;
+      representedTaskFamilies.add(record.task_family);
+      add({ type: 'reviewed_work_outcome', id: record.id },
+        `Replay-verified reviewed ${record.task_family.replaceAll('_', ' ')} outcome: ${record.outcome}. This is bounded observational evidence from one retained work interaction, not a general competence claim.`,
+        record.outcome === 'corrected' ? 0.76 : record.success === true ? 0.68 : 0.58,
+        { source_family: 'reviewed_work', epistemic_role: 'observed_outcome',
+          replay_verified: true, source_commitment: record.content_commitment });
+      if (representedTaskFamilies.size >= 2) break;
+    }
+
+    // A completed encounter is stronger than an in-progress revision candidate. Both remain
+    // source-bound reflective records and cannot establish a trait without prospective testing.
+    for (const session of (current.cognition.developmental_reading?.sessions || []).slice().reverse()) {
+      if (!readingSessionAudit(session, current.cognition).complete_chain_verified) continue;
+      if (session.status === 'completed' && session.encounter?.synthesis) {
+        const synthesis = session.encounter.synthesis;
+        add({ type: 'developmental_reading_encounter', id: session.id },
+          `Completed source-bound encounter with ${session.encounter.title} by ${session.encounter.author}. Provisional influence candidate: ${synthesis.personality_influence_candidate}. Counterevidence still needed: ${synthesis.counterevidence_needed}.`,
+          0.64, { source_family: 'developmental_reading', epistemic_role: 'reflective_record',
+            replay_verified: true, source_commitment: session.encounter.encounter_commitment });
+        break;
+      }
+      const note = (session.notes || []).slice().reverse()
+        .find(item => item.output?.possible_self_revision);
+      if (note) {
+        const revision = note.output.possible_self_revision;
+        add({ type: 'developmental_reading_revision', id: note.id },
+          `Source-bound provisional revision while reading: from "${revision.before}" toward "${revision.after}" (${Math.round(revision.confidence * 100)}% self-reported confidence). Falsifier: ${revision.falsifier}. This is a reflective candidate, not evidence that the revision is true.`,
+          0.48 + revision.confidence * 0.2,
+          { source_family: 'developmental_reading', epistemic_role: 'reflective_record',
+            replay_verified: true, source_commitment: note.note_commitment });
+        break;
+      }
+    }
+
+    const completedPlay = (current.cognition.autonomous_play?.sessions || []).slice().reverse()
+      .find(session => session.status === 'completed' && session.appraisal
+        && playroomSessionAudit(session, current.cognition).complete_chain_verified);
+    if (completedPlay) {
+      const appraisal = completedPlay.appraisal;
+      add({ type: 'autonomous_play_appraisal', id: completedPlay.id },
+        `Replay-verified bounded play outcome: engagement ${Math.round(appraisal.engagement * 100)}%, satisfaction ${Math.round(appraisal.satisfaction * 100)}%, frustration ${Math.round(appraisal.frustration * 100)}%. Reflection: ${appraisal.reflection}${appraisal.possible_insight ? ` Candidate insight: ${appraisal.possible_insight}.` : ''}`,
+        0.5 + Math.max(appraisal.engagement, appraisal.surprise) * 0.25,
+        { source_family: 'autonomous_play', epistemic_role: 'observed_behavior_plus_appraisal',
+          replay_verified: true, source_commitment: completedPlay.outcome_commitment });
+    }
+    return { experimental_access_sealed: false, evidence: evidence.slice(0, 4) };
+  }
+
+  function developmentalSelfEvidenceReport() {
+    const snapshot = developmentalSelfEvidence();
+    const records = snapshot.evidence;
+    const families = [...new Set(records.map(item => item.self_model_evidence.source_family))];
+    const observed = records.filter(item => ['observed_outcome', 'observed_behavior_plus_appraisal']
+      .includes(item.self_model_evidence.epistemic_role)).length;
+    return {
+      experimental_access_sealed: snapshot.experimental_access_sealed,
+      report: { replay_verified_records: records.length, source_families: families,
+        observed_records: observed, reflective_records: records.length - observed,
+        formation_ready: !snapshot.experimental_access_sealed && families.length >= 2 && observed >= 1,
+        next_gate: snapshot.experimental_access_sealed
+          ? 'Finish the active blinded trial before developmental evidence can enter self-model formation.'
+          : families.length < 2
+            ? 'Collect replay-verified evidence from a second independent developmental source family.'
+            : observed < 1
+              ? 'Collect at least one replay-verified observed outcome before forming a self hypothesis.'
+              : 'Nora may form a quarantined hypothesis; independent approval and a prospective probe are still required.' },
+    };
+  }
+
+  function developmentalSelfEvidenceEntryVerified(current, entry) {
+    const provenance = entry?.self_model_evidence;
+    if (!entry?.ref || provenance?.replay_verified !== true || !provenance.source_commitment) return false;
+    if (entry.ref.type === 'reviewed_work_outcome') {
+      const record = current.cognition.capability_boundaries.records.find(item => item.id === entry.ref.id);
+      return Boolean(record && record.content_commitment === provenance.source_commitment
+        && capabilityBoundaryAudit(record).complete_chain_verified);
+    }
+    if (entry.ref.type === 'developmental_reading_revision') {
+      const session = current.cognition.developmental_reading.sessions
+        .find(item => item.notes?.some(note => note.id === entry.ref.id));
+      const note = session?.notes.find(item => item.id === entry.ref.id);
+      return Boolean(note && note.note_commitment === provenance.source_commitment
+        && readingSessionAudit(session, current.cognition).complete_chain_verified);
+    }
+    if (entry.ref.type === 'developmental_reading_encounter') {
+      const session = current.cognition.developmental_reading.sessions.find(item => item.id === entry.ref.id);
+      return Boolean(session?.encounter?.encounter_commitment === provenance.source_commitment
+        && readingSessionAudit(session, current.cognition).complete_chain_verified);
+    }
+    if (entry.ref.type === 'autonomous_play_appraisal') {
+      const session = current.cognition.autonomous_play.sessions.find(item => item.id === entry.ref.id);
+      return Boolean(session?.outcome_commitment === provenance.source_commitment
+        && playroomSessionAudit(session, current.cognition).complete_chain_verified);
+    }
+    return false;
+  }
+
+  function developmentalSelfClaimEvidenceVerified(current, packet, proposal) {
+    if (Number(packet?.constraints?.protocol_version) < 6 || !proposal) return true;
+    const entries = new Map((packet.evidence || [])
+      .map(item => [`${item.ref.type}:${item.ref.id}`, item]));
+    return proposal.evidence_refs.every(ref => {
+      const entry = entries.get(`${ref.type}:${ref.id}`);
+      return developmentalSelfEvidenceEntryVerified(current, entry);
+    });
+  }
+
   function cognitivePulseAudit(pulse, visited = new Set(), cache = null) {
     if (!pulse || visited.has(pulse.id)) return { complete_chain_verified: false, reason: pulse ? 'cycle_detected' : 'missing_pulse' };
     if (cache?.has(pulse.id)) return cache.get(pulse.id);
@@ -7700,7 +7824,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         summary: `Uncertain self-model claim (${item.domain}, ${Math.round(item.confidence * 100)}%): ${item.statement}`.slice(0, 700),
         activation: clamp01(0.35 + cognitivePulse.binaryEntropy(item.confidence) * 0.35),
       }));
-      const evidence = [...new Map([...endogenousEvidence, ...candidateEvidence].map(item => [`${item.ref.type}:${item.ref.id}`, item])).values()].slice(0, 8);
+      const developmentalEvidence = developmentalSelfEvidence(current).evidence;
+      const reservedEvidence = [...candidateEvidence.slice(0, 2), ...developmentalEvidence.slice(0, 3)];
+      const endogenousCapacity = Math.max(2, 8 - reservedEvidence.length);
+      const evidence = [...new Map([...endogenousEvidence.slice(0, endogenousCapacity), ...reservedEvidence]
+        .map(item => [`${item.ref.type}:${item.ref.id}`, item])).values()].slice(0, 8);
       const repetitiveRun = repetitivePulseRun(inference, evidence);
       if (repetitiveRun) {
         const cooldownMinutes = Math.max(30, Math.min(1440, Number(input.rumination_cooldown_minutes ?? inference.rumination_cooldown_minutes) || 120));
@@ -7738,7 +7866,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           mean_self_forecast_score: regulationPolicy.mean_self_forecast_score,
           mean_persistence_baseline_score: regulationPolicy.mean_persistence_baseline_score,
           latest_resolution_commitment: latestRegulation?.resolution_commitment || null },
-        constraints: { actionless: true, no_tools: true, epistemic_type: 'background_hypothesis', protocol_version: 5 },
+        constraints: { actionless: true, no_tools: true, epistemic_type: 'background_hypothesis',
+          protocol_version: 6,
+          self_claim_evidence_policy: 'two_replay_verified_source_families_with_observed_outcome' },
       };
       const pulse = {
         id: input.id || `cognitive-pulse-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
@@ -8018,6 +8148,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (!initiation || initiation.status !== 'completed' || initiation.decision?.decision !== 'think') throw new Error('a committed think initiation decision is required');
       }
       const output = cognitivePulse.validateOutput(input.output, pulse.input_packet);
+      if (!developmentalSelfClaimEvidenceVerified(current, pulse.input_packet,
+        output.self_claim_proposal)) {
+        throw new Error('self_claim_proposal developmental evidence no longer passes replay verification');
+      }
       const completedAt = (input.completed_at ? new Date(input.completed_at) : clock());
       if (!Number.isFinite(completedAt.getTime())) throw new Error('a valid cognitive pulse completion time is required');
       const responseMetadata = {
@@ -8087,10 +8221,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
       return (ledger.events || []).filter(event => event.kind === kind && event.subject_id === item.id && event.payload_commitment === payloadCommitment).length === 1;
     };
+    const sourceEvidenceVerified = Boolean(pulse
+      && developmentalSelfClaimEvidenceVerified(state, pulse.input_packet, item.proposal));
     const proposalVerified = Boolean(pulse && cognitivePulseAudit(pulse).complete_chain_verified
       && cognitivePulse.commitment(item.proposal) === item.proposal_commitment
       && cognitivePulse.commitment(pulse.output?.self_claim_proposal) === item.proposal_commitment
       && pulse.input_commitment === item.input_commitment && pulse.output_commitment === item.pulse_output_commitment
+      && sourceEvidenceVerified
       && eventVerified('self_claim_proposed', selfClaimProposalPayload(item)));
     const decisionVerified = item.status === 'proposed'
       ? item.decision == null && item.claim_id == null && item.probe_id == null
@@ -8104,7 +8241,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && selfProbeAudit(probe).preregistration_verified);
     }
     const ledgerVerified = verifyResearchLedger(ledger).valid;
-    return { proposal_verified: proposalVerified, decision_verified: decisionVerified, artifacts_verified: artifactsVerified,
+    return { proposal_verified: proposalVerified, source_evidence_verified: sourceEvidenceVerified,
+      decision_verified: decisionVerified, artifacts_verified: artifactsVerified,
       research_ledger_chain_verified: ledgerVerified, complete_chain_verified: proposalVerified && decisionVerified && artifactsVerified && ledgerVerified };
   }
 
@@ -8269,6 +8407,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const eligible = proposals.filter(item => item.audit.complete_chain_verified);
     return {
       epistemic_status: 'Model-induced self-hypotheses are quarantined as candidates. Independent approval and a different independent reviewer of prospective evidence are required before supported candidates enter the usable self-model. Functional self-model induction is not evidence of phenomenal consciousness.',
+      developmental_evidence: developmentalSelfEvidenceReport(),
       report: { total: proposals.length, integrity_eligible: eligible.length, proposed: eligible.filter(item => item.status === 'proposed').length,
         approved: eligible.filter(item => item.status === 'approved').length, rejected: eligible.filter(item => item.status === 'rejected').length,
         prospectively_validated: eligible.filter(item => state.cognition.self_model.claims.find(claim => claim.id === item.claim_id)?.status === 'active').length,

@@ -103,6 +103,17 @@ function validateSelfClaimProposal(proposal, packet) {
     || evidenceRefs.some(ref => excluded.has(ref.type) || !validRefs.has(`${ref.type}:${ref.id}`))) {
     throw new Error('self_claim_proposal requires at least two supplied, non-circular evidence references of distinct types');
   }
+  if (Number(packet?.constraints?.protocol_version) >= 6) {
+    const packetEvidence = new Map((packet.evidence || [])
+      .map(item => [`${item.ref.type}:${item.ref.id}`, item.self_model_evidence || null]));
+    const provenance = evidenceRefs.map(ref => packetEvidence.get(`${ref.type}:${ref.id}`));
+    const sourceFamilies = new Set(provenance.map(item => item?.source_family).filter(Boolean));
+    const observedRoles = new Set(['observed_outcome', 'observed_behavior_plus_appraisal']);
+    if (provenance.some(item => item?.replay_verified !== true || !item.source_commitment)
+      || sourceFamilies.size < 2 || !provenance.some(item => observedRoles.has(item?.epistemic_role))) {
+      throw new Error('protocol v6 self_claim_proposal requires replay-verified evidence from two source families including an observed outcome');
+    }
+  }
   const falsificationCriteria = [...new Set((Array.isArray(proposal.falsification_criteria) ? proposal.falsification_criteria : []).map(value => normalizeText(value, 700)).filter(Boolean))].slice(0, 4);
   if (!falsificationCriteria.length) throw new Error('self_claim_proposal requires falsification_criteria');
   const probe = validateSelfInquiry({ ...proposal.prospective_probe, claim_id: '__candidate__', evidence_refs: evidenceRefs }, {
@@ -224,7 +235,7 @@ function systemPrompt(packet = null) {
     ? ' Also return self_inquiry, either null or one bounded proposal targeting a supplied self_model_candidate. A proposal must contain claim_id, observation_type (task_outcome, response_correction, latency, choice, tool_error, or initiative_event), question, predicted_outcome, prediction_confidence, control_confidence, method, success_criteria, due_hours, rationale, and supplied evidence_refs. Propose only passive, low-risk observation of ordinary operation; it will require independent approval and is not authorization to act.' : '';
   const inquiryField = version >= 3 ? ', self_inquiry (null or the proposal object)' : '';
   const claimInstruction = version >= 4
-    ? ' Also return self_claim_proposal, either null or one new bounded first-person behavioral hypothesis not already represented by a supplied self-model candidate. It must contain statement, domain, confidence (0.1-0.6), at least two supplied non-circular evidence_refs of distinct types, falsification_criteria, and prospective_probe with the same passive-observation fields as self_inquiry except claim_id and evidence_refs. Never propose consciousness, sentience, qualia, or subjective experience. A proposal remains quarantined pending independent approval and prospective validation.' : '';
+    ? ` Also return self_claim_proposal, either null or one new bounded first-person behavioral hypothesis not already represented by a supplied self-model candidate. It must contain statement, domain, confidence (0.1-0.6), at least two supplied non-circular evidence_refs of distinct types, falsification_criteria, and prospective_probe with the same passive-observation fields as self_inquiry except claim_id and evidence_refs.${version >= 6 ? ' For a non-null proposal, use only evidence entries marked self_model_evidence, cite at least two different source_family values, and include an observed_outcome or observed_behavior_plus_appraisal role; otherwise return null.' : ''} Never propose consciousness, sentience, qualia, or subjective experience. A proposal remains quarantined pending independent approval and prospective validation.` : '';
   const claimField = version >= 4 ? ', self_claim_proposal (null or the proposal object)' : '';
   const forecastInstruction = version >= 5
     ? ' Commit a prospective metacognitive_forecast of the next accepted pulse: 1-3 supplied next_focus_refs, expected_uncertainty, expected_continuation_probability, expected_value_of_next_pulse (all 0-1), rationale, and an observable falsifier. This forecast will be automatically scored against the next pulse and may regulate cadence only after it demonstrates calibration beyond a fixed persistence baseline.' : '';

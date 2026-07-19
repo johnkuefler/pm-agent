@@ -11493,7 +11493,7 @@ async function runCognitivePulseRuntime({ now = new Date(), post = axios.post, f
       }
     }
     const response = await post('https://api.anthropic.com/v1/messages', {
-      model, max_tokens: 700, temperature: 0.2,
+      model, max_tokens: 1000, temperature: 0.2,
       system: cognitivePulse.systemPrompt(pulse.input_packet),
       messages: [{ role: 'user', content: `Committed evidence packet (${pulse.input_commitment}):\n${JSON.stringify(pulse.input_packet)}` }],
     }, {

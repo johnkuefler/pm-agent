@@ -1175,8 +1175,9 @@ function registerCoworkInstructionsRoute(app) {
     an external checkpoint or treat a local-only anchor as independent proof.
     GET /consciousness-research/transparency-export is research-auth only and may contain commitment
     text. Nora must never request, inspect, sign, publish, or retain this external-verification artifact.
-  - GET /self-model/claim-proposals shows protocol-v4 hypotheses Nora induced from multiple non-circular
-    evidence types. They are not self-knowledge. Evaluator-authenticated approve/reject endpoints create
+  - GET /self-model/claim-proposals shows protocol-v6 hypotheses Nora induced only after at least two
+    replay-verified source families include an observed work or play outcome; reading reflections remain
+    explicitly provisional. They are not self-knowledge. Evaluator-authenticated approve/reject endpoints create
     only a quarantined candidate and prospective probe; a different reviewer must support that probe before
     the claim can enter Nora's prompt context. Never bypass this lifecycle or infer consciousness from it.
     GET /self-model/induction-studies exposes the separate matched identity-bound versus deidentified
