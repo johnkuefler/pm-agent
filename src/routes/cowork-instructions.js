@@ -1295,13 +1295,18 @@ function registerCoworkInstructionsRoute(app) {
     The default /earned-viewpoints response includes a compact natural-access outcome report. Use
     ?include_access_records=true for replay audits binding an exact prompt-available viewpoint packet
     to a delivered Slack interaction and delayed review. These receipts prove prompt access, not use
-    or causal benefit; active-study turns and legacy/unprovenanced viewpoints are excluded from scoring.
+    or causal benefit; active-study turns, pre-attestation legacy exposures, and currently
+    unprovenanced viewpoints are excluded from scoring.
     After a dream is recorded, a once-per-dream server-direct Claude subject reflection may inspect a
     collection-channel- and project-balanced, committed packet of recent active work memories and either form at most one non-duplicate
     view or explicitly abstain. Generated views remain ineligible unless the exact packet, provider
     response, selected memory ids, confidence, rationale, falsifier, and output replay through the
-    append-only position receipt. The server derives the view's source family from the exact cited records;
-    legacy receipts remain valid but are not treated as provenance-bound study inputs. The blinded
+    append-only position receipt. The server derives the view's source family from the exact cited records.
+    GET /earned-viewpoints/provenance exposes append-only post-hoc attestations for legacy formation
+    receipts whose committed evidence snapshots still replay and contain stable source channels. These
+    attestations do not change a viewpoint, rename its original source family, validate its truth, or
+    retroactively qualify earlier prompt exposures; they make only future access receipts measurable.
+    Legacy receipts that cannot pass this stricter replay remain unprovenanced. The blinded
     Nora-bound/deidentified/absent recommendation study cannot start until three provenance-bound views
     span two source families and at least one replay-verified revision or retirement is frozen into the
     design. This closes the formation gap without treating synthesis as independent

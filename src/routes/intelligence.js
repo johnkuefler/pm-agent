@@ -872,6 +872,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     return cachedJson(res, `earned-viewpoints:${includeAccessRecords ? 'records' : 'summary'}`,
       () => store.earnedViewpointsSnapshot({ includeAccessRecords }), { ttlMs: 10000 });
   });
+  app.get('/earned-viewpoints/provenance', requireAuth, (_req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.json(store.professionalViewpointProvenanceSnapshot());
+  });
   app.post('/earned-viewpoints/:id/retire', requireAuth, (req, res) => {
     try {
       const proposition = store.retireEarnedViewpoint(req.params.id, req.body || {});

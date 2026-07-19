@@ -1234,8 +1234,14 @@ channels before the bounded packet is assembled, then round-robin balanced acros
 channel. Each new viewpoint's `source_family` is derived deterministically from the exact cited packet
 records: a single cited channel retains its channel family and a multi-channel citation receives the
 cross-channel family. That derivation is replayed against the provider receipt and the append-only
-proposition. Older protocol-v1 receipts remain valid but are explicitly `source_family_provenance_verified=false`;
-they are not silently upgraded and cannot enter the recommendation study.
+proposition. Older protocol-v1 receipts begin as `source_family_provenance_verified=false`. A bounded
+background migration may append a post-hoc provenance attestation only when the complete legacy
+formation receipt still replays and every cited committed source snapshot carries a stable collection
+channel. The attestation is bound to the original formation-position and provider-receipt commitments
+plus a new research-ledger event. It never changes the original source-family label, statement,
+position, or receipt; earlier prompt exposures remain ineligible, while only later access receipts may
+be measured. Missing, ambiguous, tampered, or ledger-unbound evidence fails closed. This recovers
+prospective measurement without silently upgrading history or validating the viewpoint itself.
 
 Protocol-v1 reappraisal adds the missing self-correction lifecycle. It runs only after dreams or on the
 five-minute background cadence, never in Slack, Zoom chat, or realtime voice response paths. At most one

@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const epistemicLedger = require('./epistemic-ledger');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
+const professionalViewpointProvenance = require('./professional-viewpoint-provenance');
 
 const PROTOCOL_VERSION = 1;
 const PROPOSITION_KIND = 'professional_viewpoint';
@@ -41,7 +42,7 @@ function currentNoraPosition(proposition) {
   return positions.length === 1 ? positions[0] : null;
 }
 
-function eligibility(proposition) {
+function eligibility(proposition, opts = {}) {
   const position = currentNoraPosition(proposition || {});
   const evidence = distinctReferences(position?.evidence);
   const sourceEvidence = distinctReferences(proposition?.source_family_evidence);
@@ -60,9 +61,17 @@ function eligibility(proposition) {
       topicKey: proposition?.topic_key, statement: proposition?.statement,
       position: formationPosition, sourceFamily: proposition?.source_family,
     }) : null;
-  const sourceFamilyProvenanceVerified = Boolean(derivedSourceFamily
+  const nativeSourceFamilyProvenanceVerified = Boolean(derivedSourceFamily
     && derivedSourceFamily === proposition?.source_family
     && formationReceiptAudit?.complete_chain_verified);
+  const provenanceAttestation = proposition?.source_family_provenance_attestation || null;
+  const provenanceAttestationAudit = provenanceAttestation
+    ? professionalViewpointProvenance.auditAttestation(provenanceAttestation, proposition) : null;
+  const attestationLedgerBound = Boolean(provenanceAttestationAudit?.complete_chain_verified
+    && typeof opts.isProvenanceAttestationLedgerBound === 'function'
+    && opts.isProvenanceAttestationLedgerBound(provenanceAttestation, proposition) === true);
+  const sourceFamilyProvenanceVerified = nativeSourceFamilyProvenanceVerified
+    || attestationLedgerBound;
   const generationReceiptAudit = reflectionAuthored
     ? professionalViewpointReflection.auditReceipt(position?.generation_receipt, {
       topicKey: proposition?.topic_key, statement: proposition?.statement, position,
@@ -85,7 +94,10 @@ function eligibility(proposition) {
   return { eligible: Object.values(checks).every(Boolean), checks, position, evidence,
     source_evidence: sourceEvidence, generation_receipt_audit: generationReceiptAudit,
     formation_receipt_audit: formationReceiptAudit,
-    source_family_provenance_verified: sourceFamilyProvenanceVerified };
+    provenance_attestation_audit: provenanceAttestationAudit,
+    source_family_provenance_verified: sourceFamilyProvenanceVerified,
+    source_family_provenance_method: nativeSourceFamilyProvenanceVerified
+      ? 'formation_receipt' : attestationLedgerBound ? 'legacy_posthoc_attestation' : null };
 }
 
 function sourceCommitment(proposition) {
@@ -103,8 +115,8 @@ function tendencyFor(status) {
   return 'verify_before_using';
 }
 
-function viewpointFor(proposition) {
-  const audit = eligibility(proposition);
+function viewpointFor(proposition, opts = {}) {
+  const audit = eligibility(proposition, opts);
   if (!audit.eligible) return null;
   const position = audit.position;
   const status = statusFor(position);
@@ -118,6 +130,7 @@ function viewpointFor(proposition) {
     evidence: audit.evidence,
     source_family: proposition.source_family,
     source_family_provenance_verified: audit.source_family_provenance_verified,
+    source_family_provenance_method: audit.source_family_provenance_method,
     formed_at: proposition.created,
     updated_at: proposition.updated,
     current_position_id: position.id,
@@ -129,11 +142,11 @@ function viewpointFor(proposition) {
   };
 }
 
-function derive(propositions = [], observedAt = new Date()) {
+function derive(propositions = [], observedAt = new Date(), opts = {}) {
   const observed = new Date(observedAt);
   if (!Number.isFinite(observed.getTime())) throw new Error('earned viewpoint projection requires a valid observation time');
   const professional = propositions.filter(proposition => proposition?.proposition_kind === PROPOSITION_KIND);
-  const viewpoints = professional.map(viewpointFor).filter(Boolean)
+  const viewpoints = professional.map(proposition => viewpointFor(proposition, opts)).filter(Boolean)
     .sort((left, right) => left.viewpoint_id.localeCompare(right.viewpoint_id));
   const payload = {
     protocol_version: PROTOCOL_VERSION,
@@ -154,18 +167,18 @@ function verify(record) {
     && commitment(payload) === content_commitment;
 }
 
-function audit(record, propositions = []) {
+function audit(record, propositions = [], opts = {}) {
   const contentCommitmentVerified = verify(record);
   let deterministicReplayVerified = false;
   if (contentCommitmentVerified) {
     try {
-      deterministicReplayVerified = derive(propositions, record.observed_at).content_commitment === record.content_commitment;
+      deterministicReplayVerified = derive(propositions, record.observed_at, opts).content_commitment === record.content_commitment;
     } catch { deterministicReplayVerified = false; }
   }
   const sourceBindingsVerified = contentCommitmentVerified && record.viewpoints.every(viewpoint => {
     const proposition = propositions.find(item => item.id === viewpoint.viewpoint_id);
     return Boolean(proposition && sourceCommitment(proposition) === viewpoint.source_commitment
-      && eligibility(proposition).eligible);
+      && eligibility(proposition, opts).eligible);
   });
   return {
     content_commitment_verified: contentCommitmentVerified,

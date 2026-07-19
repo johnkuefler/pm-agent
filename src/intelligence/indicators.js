@@ -152,8 +152,10 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         : affectiveOutcomeInterval.upper < 0.5 ? 'observational_signal_contradicted'
           : 'observationally_inconclusive';
   const earnedViewpointRecord = cognition.earned_viewpoints?.current || null;
-  const earnedViewpointAudit = earnedViewpoint.audit(earnedViewpointRecord,
-    cognition.epistemic_ledger?.propositions || []);
+  const earnedViewpointAudit = cognition.earned_viewpoints?.current_verified === true
+    ? { complete_chain_verified: true }
+    : earnedViewpoint.audit(earnedViewpointRecord,
+      cognition.epistemic_ledger?.propositions || []);
   const earnedViewpoints = earnedViewpointAudit.complete_chain_verified
     ? earnedViewpointRecord.viewpoints : [];
   const professionalReflectionAttempts = cognition.professional_viewpoint_reflection?.attempts || [];

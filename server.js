@@ -10234,6 +10234,7 @@ let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
 let _professionalViewpointReappraisalLastCycle = null;
+let _professionalViewpointProvenanceLastCycle = null;
 let _epistemicAgendaInFlight = false;
 let _epistemicAgendaLastCycle = null;
 let _cycleSelfCorrectionReflectionInFlight = false;
@@ -10864,6 +10865,21 @@ function postDeliverySelfEvaluationRuntimeConfig(env = process.env) {
   };
 }
 
+function runProfessionalViewpointProvenanceRuntime() {
+  try {
+    const result = intelligence.attestLegacyProfessionalViewpointProvenance();
+    _professionalViewpointProvenanceLastCycle = {
+      protocol_version: 1, ...result, at: new Date().toISOString(),
+    };
+  } catch (error) {
+    _professionalViewpointProvenanceLastCycle = {
+      protocol_version: 1, state: 'failed_closed', attested: 0,
+      failure: String(error.message || error).slice(0, 300), at: new Date().toISOString(),
+    };
+  }
+  return _professionalViewpointProvenanceLastCycle;
+}
+
 function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
   const enabled = researchAutopilotRuntimeConfig().enabled;
   const interactivePriority = interactivePerformance.prioritySnapshot();
@@ -10968,6 +10984,13 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     last_cycle: _professionalViewpointReappraisalLastCycle,
     scientific_boundary: 'This is replay-bound subject-side self-correction over frozen work evidence. It is not independent validation, proof of originality, subjective experience, or phenomenal consciousness.',
   };
+  const professionalViewpointProvenanceStatus = {
+    protocol_version: 1,
+    background_only: true,
+    report: intelligence.professionalViewpointProvenanceSnapshot().report,
+    last_cycle: _professionalViewpointProvenanceLastCycle,
+    scientific_boundary: 'This is append-only post-hoc replay of committed legacy formation evidence for future measurement only. It does not validate a viewpoint, rewrite formation history, qualify earlier exposures, or evidence consciousness.',
+  };
   const cycleSelfCorrectionConfig = cycleSelfCorrectionReflectionRuntimeConfig();
   const cycleSelfCorrectionStoreStatus = intelligence.epistemicSelfCorrectionReflectionSnapshot();
   const cycleSelfCorrectionStatus = {
@@ -11053,6 +11076,7 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
+    professional_viewpoint_provenance: professionalViewpointProvenanceStatus,
     cycle_self_correction_reflection: cycleSelfCorrectionStatus,
     meeting_professional_reflection: meetingReflectionStatus,
     self_authored_aim_reflection: aimStatus,
@@ -12128,6 +12152,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     common_ground_formation: 'Recognizing established conversational context',
     common_ground_review: 'Reviewing shared conversational context',
     teammate_perspective_review: 'Reviewing teammate perspective evidence',
+    professional_viewpoint_provenance: 'Revalidating the evidence behind an older viewpoint',
     professional_viewpoint_lifecycle: 'Reflecting on professional judgment',
     epistemic_agenda: 'Revisiting a question Nora is carrying',
     cycle_self_correction_reflection: 'Reviewing forecast corrections',
@@ -12195,6 +12220,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['common_ground_formation', () => runCommonGroundFormationRuntime({ post: priorityPost })],
       ['common_ground_review', () => runCommonGroundReviewAutopilotRuntime({ post: priorityPost })],
       ['teammate_perspective_review', () => runTeammatePerspectiveReviewAutopilotRuntime({ post: priorityPost })],
+      ['professional_viewpoint_provenance', () => runProfessionalViewpointProvenanceRuntime()],
       ['professional_viewpoint_lifecycle',
         () => runProfessionalViewpointLifecycleAutopilotRuntime({ post: priorityPost })],
       ['epistemic_agenda', () => runEpistemicAgendaRuntime({ post: priorityPost })],
@@ -12397,6 +12423,7 @@ module.exports = {
     runProfessionalViewpointReflectionAutopilotRuntime,
     professionalViewpointReappraisalRuntimeConfig,
     runProfessionalViewpointReappraisalAutopilotRuntime,
+    runProfessionalViewpointProvenanceRuntime,
     runProfessionalViewpointLifecycleAutopilotRuntime,
     runProfessionalViewpointLifecycleWithPriorityRuntime,
     epistemicAgendaRuntimeConfig,

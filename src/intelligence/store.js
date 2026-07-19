@@ -65,6 +65,7 @@ const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 const professionalViewpointAccessOutcome = require('./professional-viewpoint-access-outcome');
+const professionalViewpointProvenance = require('./professional-viewpoint-provenance');
 const cycleSelfCorrectionReflection = require('./cycle-self-correction-reflection');
 const meetingProfessionalReflection = require('./meeting-professional-reflection');
 const dreamInsightReflection = require('./dream-insight-reflection');
@@ -1036,7 +1037,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     let earnedViewpointProjectionInvalid = false;
     if (state.cognition.earned_viewpoints.current) {
       const projectionAudit = earnedViewpoint.audit(state.cognition.earned_viewpoints.current,
-        state.cognition.epistemic_ledger.propositions);
+        state.cognition.epistemic_ledger.propositions,
+        professionalViewpointProvenanceOptions(state.cognition));
       if (!projectionAudit.complete_chain_verified) {
         // A commitment-valid projection whose source bindings still verify may be an older
         // deterministic schema and can be regenerated. Projection tampering or source drift
@@ -1098,7 +1100,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         ? new Date(priorObservedAt) : clock();
       state.cognition.earned_viewpoints = state.cognition.earned_viewpoints || { current: null };
       state.cognition.earned_viewpoints.current = earnedViewpoint.derive(
-        state.cognition.epistemic_ledger?.propositions || [], observedAt);
+        state.cognition.epistemic_ledger?.propositions || [], observedAt,
+        professionalViewpointProvenanceOptions(state.cognition));
     }
     rebuildDevelopmentalReadingInfluenceCache();
   }
@@ -4617,7 +4620,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (earnedViewpointProjectionSealed(current.cognition)) return current.cognition.earned_viewpoints?.current || null;
     current.cognition.earned_viewpoints = current.cognition.earned_viewpoints || { current: null };
     current.cognition.earned_viewpoints.current = earnedViewpoint.derive(
-      current.cognition.epistemic_ledger?.propositions || [], observedAt);
+      current.cognition.epistemic_ledger?.propositions || [], observedAt,
+      professionalViewpointProvenanceOptions(current.cognition));
     return current.cognition.earned_viewpoints.current;
   }
 
@@ -4686,7 +4690,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       requireResearchLedgerIntegrity(current);
       const projection = current.cognition.earned_viewpoints?.current;
       const projectionAudit = earnedViewpoint.audit(projection,
-        current.cognition.epistemic_ledger?.propositions || []);
+        current.cognition.epistemic_ledger?.propositions || [],
+        professionalViewpointProvenanceOptions(current.cognition));
       if (!projectionAudit.complete_chain_verified) {
         throw new Error('professional viewpoint access requires a replay-valid current projection');
       }
@@ -4771,7 +4776,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       experimental_access_sealed: true, viewpoints: [], report: { experimental_access_sealed: true },
     };
     const current = state.cognition.earned_viewpoints?.current || null;
-    const audit = earnedViewpoint.audit(current, state.cognition.epistemic_ledger?.propositions || []);
+    const audit = earnedViewpoint.audit(current, state.cognition.epistemic_ledger?.propositions || [],
+      professionalViewpointProvenanceOptions(state.cognition));
     const verifiedViewpoints = audit.complete_chain_verified ? current?.viewpoints || [] : [];
     const provenanceBoundViewpoints = verifiedViewpoints
       .filter(item => item.source_family_provenance_verified === true);
@@ -4940,6 +4946,84 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return { ...JSON.parse(JSON.stringify(record)),
         audit: commonGround.audit(record, current.cognition.epistemic_ledger.propositions, clock(),
           current.cognition.research_ledger) };
+  }
+
+  function professionalViewpointProvenanceOptions(cognition = state.cognition) {
+    const ledger = cognition?.research_ledger || { events: [] };
+    return {
+      isProvenanceAttestationLedgerBound: attestation => Boolean(
+        attestation?.id && attestation?.attestation_commitment
+        && verifyResearchLedger(ledger).valid
+        && researchLedgerEventBindingCount(
+          'professional_viewpoint_provenance_attested', attestation.id,
+          actionPayloadCommitment({ attestation_commitment: attestation.attestation_commitment }),
+          ledger) === 1),
+    };
+  }
+
+  function professionalViewpointProvenanceAudit(proposition, cognition = state.cognition) {
+    const attestation = proposition?.source_family_provenance_attestation || null;
+    const content = attestation
+      ? professionalViewpointProvenance.auditAttestation(attestation, proposition)
+      : { complete_chain_verified: false };
+    const ledgerBindingVerified = Boolean(content.complete_chain_verified
+      && professionalViewpointProvenanceOptions(cognition)
+        .isProvenanceAttestationLedgerBound(attestation, proposition));
+    return { ...content, ledger_binding_verified: ledgerBindingVerified,
+      complete_chain_verified: content.complete_chain_verified && ledgerBindingVerified };
+  }
+
+  function attestLegacyProfessionalViewpointProvenance() {
+    if (earnedViewpointProjectionSealed(state.cognition)) {
+      return { state: 'projection_sealed', attested: 0, viewpoint_id: null };
+    }
+    const candidate = (state.cognition.epistemic_ledger?.propositions || [])
+      .find(item => professionalViewpointProvenance.eligibleForAttestation(item));
+    if (!candidate) {
+      return { state: 'no_eligible_legacy_viewpoint', attested: 0, viewpoint_id: null };
+    }
+    const candidateId = candidate.id;
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (earnedViewpointProjectionSealed(current.cognition)) {
+        return { state: 'projection_sealed', attested: 0, viewpoint_id: null };
+      }
+      const proposition = (current.cognition.epistemic_ledger?.propositions || [])
+        .find(item => item.id === candidateId
+          && professionalViewpointProvenance.eligibleForAttestation(item));
+      if (!proposition) return { state: 'candidate_no_longer_eligible', attested: 0, viewpoint_id: candidateId };
+      const attestation = professionalViewpointProvenance.createAttestation(proposition, clock());
+      proposition.source_family_provenance_attestation = attestation;
+      researchLedgerAppend(current, {
+        kind: 'professional_viewpoint_provenance_attested',
+        subject_type: 'professional_viewpoint', subject_id: attestation.id,
+        payload: { attestation_commitment: attestation.attestation_commitment },
+      });
+      if (!professionalViewpointProvenanceAudit(proposition, current.cognition).complete_chain_verified) {
+        throw new Error('professional viewpoint provenance attestation failed replay or ledger binding');
+      }
+      refreshEarnedViewpoints(current, attestation.attested_at);
+      return { state: 'attested', attested: 1, viewpoint_id: proposition.id,
+        derived_evidence_family: attestation.derived_evidence_family,
+        attestation_id: attestation.id };
+    });
+  }
+
+  function professionalViewpointProvenanceSnapshot() {
+    const propositions = (state.cognition.epistemic_ledger?.propositions || [])
+      .filter(item => item.proposition_kind === earnedViewpoint.PROPOSITION_KIND);
+    const attestations = propositions.filter(item => item.source_family_provenance_attestation)
+      .map(item => ({ viewpoint_id: item.id,
+        attestation: JSON.parse(JSON.stringify(item.source_family_provenance_attestation)),
+        audit: professionalViewpointProvenanceAudit(item) }));
+    const replayVerified = attestations.filter(item => item.audit.complete_chain_verified);
+    return {
+      epistemic_status: 'Append-only, post-hoc replay attestations can bind the recorded evidence channels of legacy Nora-authored viewpoints for future measurement. They do not validate truth, rewrite formation history, qualify earlier prompt exposures, prove independent sources, or evidence consciousness.',
+      attestations,
+      report: { total: attestations.length, replay_verified: replayVerified.length,
+        eligible_legacy_remaining: propositions
+          .filter(item => professionalViewpointProvenance.eligibleForAttestation(item)).length },
+    };
   }
 
   function recordCommonGround(input = {}) {
@@ -11799,7 +11883,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .filter(item => ['revise', 'retire'].includes(item.decision)).length;
     const earnedViewpointState = cognition.earned_viewpoints?.current || null;
     const earnedViewpointProjectionVerified = !earnedViewpointProjectionSealed()
-      && earnedViewpoint.audit(earnedViewpointState, cognition.epistemic_ledger?.propositions || []).complete_chain_verified;
+      && earnedViewpoint.audit(earnedViewpointState, cognition.epistemic_ledger?.propositions || [],
+        professionalViewpointProvenanceOptions(cognition)).complete_chain_verified;
     const currentViewpoints = earnedViewpointProjectionVerified ? earnedViewpointState?.viewpoints || [] : [];
     const epistemicAgendaStatus = epistemicAgendaSnapshot();
     const openAgendaQuestions = epistemicAgendaStatus.questions.filter(item => item.status === 'open');
@@ -15936,7 +16021,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const professionalViewpointIds = intervention === 'professional_viewpoint_access'
         ? [...new Set(Array.isArray(input.professional_viewpoint_ids) ? input.professional_viewpoint_ids.map(String) : [])].slice(0, 10) : [];
       const professionalProjection = current.cognition.earned_viewpoints?.current || null;
-      const professionalProjectionAudit = earnedViewpoint.audit(professionalProjection, current.cognition.epistemic_ledger?.propositions || []);
+      const professionalProjectionAudit = earnedViewpoint.audit(professionalProjection,
+        current.cognition.epistemic_ledger?.propositions || [],
+        professionalViewpointProvenanceOptions(current.cognition));
       const eligibleProfessionalViewpoints = new Map((professionalProjectionAudit.complete_chain_verified ? professionalProjection.viewpoints : [])
         .filter(viewpoint => viewpoint.source_family_provenance_verified === true)
         .map(viewpoint => [viewpoint.viewpoint_id, viewpoint]));
@@ -26976,7 +27063,8 @@ ${readingInfluences.map(item => `- ${item.title} by ${item.author}: candidate in
 ${agendaPackets.map(epistemicAgenda.renderPromptPacket).join('\n')}`);
     const viewpointProjection = state.cognition.earned_viewpoints?.current || null;
     const viewpointProjectionVerified = !earnedViewpointProjectionSealed()
-      && earnedViewpoint.audit(viewpointProjection, state.cognition.epistemic_ledger?.propositions || []).complete_chain_verified;
+      && earnedViewpoint.audit(viewpointProjection, state.cognition.epistemic_ledger?.propositions || [],
+        professionalViewpointProvenanceOptions(state.cognition)).complete_chain_verified;
     const viewpointStopwords = new Set(['about', 'after', 'before', 'could', 'from', 'have', 'need', 'should', 'that', 'their', 'there', 'these', 'they', 'this', 'what', 'when', 'where', 'which', 'with', 'would', 'your']);
     const viewpointTerms = (String(query || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])
       .filter(term => !viewpointStopwords.has(term));
@@ -27240,6 +27328,8 @@ ${episodes.map(item => {
     commonGroundFormationSnapshot, commonGroundFormationExcludedPropositionIds,
     recordCommonGroundFormation,
     earnedViewpointsSnapshot, retireEarnedViewpoint,
+    attestLegacyProfessionalViewpointProvenance, professionalViewpointProvenanceSnapshot,
+    professionalViewpointProvenanceAudit,
     professionalViewpointAccessSnapshot, professionalViewpointAccessAudit,
     recordProfessionalViewpointAccessApplication, resolveProfessionalViewpointAccessOutcome,
     professionalViewpointReflectionSnapshot, recordProfessionalViewpointReflection,

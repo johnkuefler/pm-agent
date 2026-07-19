@@ -95,6 +95,7 @@ test('authentication protects APIs and dashboard independently', async () => {
   assert.equal((await fetch(base + '/epistemic-ledger')).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/positions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await fetch(base + '/earned-viewpoints')).status, 401);
+  assert.equal((await fetch(base + '/earned-viewpoints/provenance')).status, 401);
   assert.equal((await fetch(base + '/relational-affect')).status, 401);
   assert.equal((await fetch(base + '/earned-viewpoints/missing/retire', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
   assert.equal((await fetch(base + '/epistemic-ledger/discrepancies')).status, 401);
@@ -371,6 +372,9 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(earnedSnapshot.body.access_applications, undefined);
   const earnedAccessRecords = await request('/earned-viewpoints?include_access_records=true');
   assert.ok(Array.isArray(earnedAccessRecords.body.access_applications));
+  const viewpointProvenance = await request('/earned-viewpoints/provenance');
+  assert.equal(viewpointProvenance.response.status, 200);
+  assert.ok(Array.isArray(viewpointProvenance.body.attestations));
   const retiredViewpoint = await request(`/earned-viewpoints/${formedViewpoint.body.proposition.id}/retire`, { method: 'POST', body: {
     rationale: 'A later comparable observation no longer supports carrying this as a current view.',
     recorded_by: 'nora-nightly-reflection', evidence: [{ type: 'interaction', id: 'integration-viewpoint-reversal-3' }],

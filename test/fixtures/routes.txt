@@ -137,6 +137,7 @@ GET /epistemic-ledger
 GET /epistemic-agenda
 POST /epistemic-ledger/positions
 GET /earned-viewpoints
+GET /earned-viewpoints/provenance
 POST /earned-viewpoints/:id/retire
 GET /epistemic-ledger/discrepancies
 POST /epistemic-ledger/discrepancies/:id/review
