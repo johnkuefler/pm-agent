@@ -191,6 +191,11 @@ test('the intelligence store ledger-binds an autonomous play lifecycle and seals
   assert.equal(status.report.invalid, 0);
   assert.equal(status.recent[0].audit.complete_chain_verified, true);
   assert.equal(status.causal_gate.influence_enabled, false);
+  const liveContext = store.liveActivityContextSnapshot();
+  assert.equal(liveContext.play.status, 'completed');
+  assert.equal(liveContext.play.activity, 'merge_grid');
+  assert.equal(liveContext.play.game.board.length, 4);
+  assert.equal(liveContext.play.mechanism_verified, true);
   await store.persistStrict();
 
   const blockedState = store.snapshot();

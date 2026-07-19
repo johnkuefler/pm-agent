@@ -174,14 +174,27 @@ test('intelligence dashboard paints a fast summary before progressively loading 
 
 test('dashboard exposes one central live activity surface across every room', () => {
   const activityJs = fs.readFileSync(path.join(root, 'public/js/dashboard-activity.js'), 'utf8');
+  const activityCss = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
   assert.match(html, /data-tab="live"/);
   assert.match(html, /id="global-activity-strip"/);
   assert.match(html, /id="page-live" class="page"/);
   assert.match(html, /id="live-current-list"/);
   assert.match(html, /id="live-history-list"/);
+  assert.match(html, /id="live-cortex"/);
+  assert.equal([...html.matchAll(/data-live-region="[^"]+"/g)].length, 7,
+    'the live cortex should route activity into seven bounded functional regions');
+  assert.match(html, /id="live-reading-snapshot"/);
+  assert.match(html, /id="live-play-snapshot"/);
+  assert.match(html, /<details class="section live-history-section">/,
+    'the chronological audit should be secondary and collapsed by default');
   assert.match(activityJs, /new EventSource\('\/runtime-activity\/events'\)/);
   assert.match(activityJs, /fetchRuntimeActivitySnapshot/);
+  assert.match(activityJs, /function runtimeActivityRegion\(item = \{\}\)/);
+  assert.match(activityJs, /\/runtime-activity\/context/);
+  assert.match(activityCss, /\.live-cortex\{[^}]*contain:layout paint/);
+  assert.match(activityCss, /@media\(prefers-reduced-motion:no-preference\)/);
   assert.match(html, /message text, prompts, tool arguments, or tool results/i);
+  assert.match(html, /not literal neural imaging or evidence of phenomenal consciousness/i);
   assert.doesNotThrow(() => new vm.Script(activityJs, { filename: 'dashboard-activity.js' }));
 });
 

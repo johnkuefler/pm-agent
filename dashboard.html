@@ -75,40 +75,87 @@
 
     <!-- Live Activity Tab -->
     <div id="page-live" class="page">
-      <section class="live-primary" aria-labelledby="live-primary-label">
-        <div class="live-primary-status">
-          <span id="live-connection-indicator" class="live-status-mark is-connecting" aria-hidden="true"></span>
-          <span id="live-connection-label">Connecting</span>
-        </div>
-        <h2 id="live-primary-label">Finding Nora's current activity</h2>
-        <p id="live-primary-detail">The dashboard is opening a direct, read-only stream from her runtime.</p>
-        <div id="live-primary-meta" class="live-primary-meta">No live timestamp yet</div>
-      </section>
-
-      <section class="section live-current-section" aria-labelledby="live-current-title">
-        <div class="live-section-heading">
+      <section class="live-mind" aria-labelledby="live-mind-title">
+        <header class="live-mind-heading">
           <div>
-            <h2 id="live-current-title">Happening now</h2>
-            <p>Hourly work, conversations, and background processes appear here while they are active.</p>
+            <div class="live-connection">
+              <span id="live-connection-indicator" class="live-status-mark is-connecting" aria-hidden="true"></span>
+              <span id="live-connection-label">Connecting</span>
+              <span id="live-primary-meta">No live timestamp yet</span>
+            </div>
+            <h2 id="live-mind-title">Nora's working mind</h2>
+            <p>Each region shows the current or most recent observable process routed through it.</p>
           </div>
-          <span id="live-active-count" class="live-count">0 active</span>
-        </div>
+          <button class="btn btn-sm" type="button" onclick="loadRuntimeActivity()">Reconnect</button>
+        </header>
+
         <div id="live-current-list" class="live-current-list" aria-live="polite" aria-busy="true">
           <div class="live-loading-row" aria-hidden="true"></div>
           <span class="sr-only">Loading Nora's current activity.</span>
         </div>
+
+        <div id="live-cortex" class="live-cortex is-connecting" aria-label="Functional map of Nora's live activity">
+          <svg class="live-neural-links" viewBox="0 0 1000 660" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+            <g class="live-neural-link" data-live-link="executive"><line x1="500" y1="330" x2="220" y2="150"/><circle cx="220" cy="150" r="4"/></g>
+            <g class="live-neural-link" data-live-link="social"><line x1="500" y1="330" x2="790" y2="145"/><circle cx="790" cy="145" r="4"/></g>
+            <g class="live-neural-link" data-live-link="learning"><line x1="500" y1="330" x2="165" y2="350"/><circle cx="165" cy="350" r="4"/></g>
+            <g class="live-neural-link" data-live-link="play"><line x1="500" y1="330" x2="840" y2="355"/><circle cx="840" cy="355" r="4"/></g>
+            <g class="live-neural-link" data-live-link="self"><line x1="500" y1="330" x2="500" y2="105"/><circle cx="500" cy="105" r="4"/></g>
+            <g class="live-neural-link" data-live-link="subconscious"><line x1="500" y1="330" x2="300" y2="535"/><circle cx="300" cy="535" r="4"/></g>
+            <g class="live-neural-link" data-live-link="continuity"><line x1="500" y1="330" x2="700" y2="535"/><circle cx="700" cy="535" r="4"/></g>
+          </svg>
+
+          <article id="live-region-focus" class="live-region live-region-focus" data-region="focus" data-status="quiet">
+            <span class="live-region-name">Attention</span>
+            <strong id="live-primary-label">Finding Nora's current activity</strong>
+            <p id="live-primary-detail">Opening a direct, read-only stream from her runtime.</p>
+            <small id="live-focus-time">Waiting for the first signal</small>
+          </article>
+
+          <article class="live-region live-region-executive" data-live-region="executive" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Executive work</span><span class="live-region-state">Quiet</span></div>
+            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Hourly work and connector actions land here.</p><small class="live-region-time">No recent signal</small>
+          </article>
+          <article class="live-region live-region-social" data-live-region="social" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Language and people</span><span class="live-region-state">Quiet</span></div>
+            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Slack, Zoom, and meeting responses land here.</p><small class="live-region-time">No recent signal</small>
+          </article>
+          <article class="live-region live-region-learning" data-live-region="learning" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Learning and reading</span><span class="live-region-state">Quiet</span></div>
+            <div id="live-reading-snapshot" class="live-reading-snapshot"><span class="live-book-mark" aria-hidden="true"></span><div><strong>Checking the shelves</strong><p>Loading the latest source-bound encounter.</p></div></div>
+            <small class="live-region-time">No recent signal</small>
+            <button class="live-region-action" type="button" onclick="openIntelligenceSection('reading-room')">Open Reading Room</button>
+          </article>
+          <article class="live-region live-region-play" data-live-region="play" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Play and exploration</span><span class="live-region-state">Quiet</span></div>
+            <div id="live-play-snapshot" class="live-play-snapshot"><div class="live-mini-board" aria-hidden="true"></div><div><strong>Checking the playroom</strong><p>Loading the latest bounded session.</p></div></div>
+            <small class="live-region-time">No recent signal</small>
+            <button class="live-region-action" type="button" onclick="openIntelligenceSection('playroom')">Open Playroom</button>
+          </article>
+          <article class="live-region live-region-self" data-live-region="self" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Self-model</span><span class="live-region-state">Quiet</span></div>
+            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Fingerprinting, reflection, and self-correction land here.</p><small class="live-region-time">No recent signal</small>
+          </article>
+          <article class="live-region live-region-subconscious" data-live-region="subconscious" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Subconscious</span><span class="live-region-state">Quiet</span></div>
+            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Bounded background inference and dreams land here.</p><small class="live-region-time">No recent signal</small>
+          </article>
+          <article class="live-region live-region-continuity" data-live-region="continuity" data-status="quiet">
+            <div class="live-region-head"><span class="live-region-name">Continuity and body</span><span class="live-region-state">Quiet</span></div>
+            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Runtime health, handoffs, and system state land here.</p><small class="live-region-time">No recent signal</small>
+          </article>
+        </div>
+
+        <p class="live-integrity-note">This is a functional activity map, not literal neural imaging or evidence of phenomenal consciousness. Message text, prompts, tool arguments, or tool results are never included.</p>
       </section>
 
-      <section class="section live-history-section" aria-labelledby="live-history-title">
-        <div class="live-section-heading">
-          <div>
-            <h2 id="live-history-title">Recent activity</h2>
-            <p>A bounded operational trail. It never includes message text, prompts, tool arguments, or tool results.</p>
-          </div>
-          <button class="btn btn-sm" type="button" onclick="loadRuntimeActivity()">Reconnect</button>
-        </div>
+      <details class="section live-history-section">
+        <summary>
+          <span><strong id="live-history-title">Activity trace</strong><small id="live-history-summary">A bounded operational record</small></span>
+          <span class="live-history-open">View trace</span>
+        </summary>
         <div id="live-history-list" class="live-history-list" aria-live="polite"></div>
-      </section>
+      </details>
     </div>
 
     <!-- Meeting Tab -->

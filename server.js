@@ -8008,6 +8008,7 @@ registerRuntimeActivityRoutes(app, {
   requireDashboardAuth,
   stream: runtimeActivity,
   getRunLock: loadDurableRunLock,
+  getContextSnapshot: () => intelligence.liveActivityContextSnapshot(),
 });
 
 // POST /admin/drive/upload-artifact

@@ -21,6 +21,11 @@ test('dashboard summary stays compact and advances with store mutations', async 
 
   const initialRevision = store.snapshotRevision();
   const initial = store.dashboardIntelligenceSummary();
+  const initialLiveContext = store.liveActivityContextSnapshot();
+  assert.equal(initialLiveContext.reading, null);
+  assert.equal(initialLiveContext.play, null);
+  assert.ok(Buffer.byteLength(JSON.stringify(initialLiveContext)) < 2000,
+    'the always-on live context must remain a tiny projection');
   assert.equal(initial.revision, initialRevision);
   assert.ok(Buffer.byteLength(JSON.stringify(initial)) < 15000, 'summary must stay small enough for first paint');
   assert.equal(Object.keys(initial.brain).length, 16);

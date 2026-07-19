@@ -16,12 +16,22 @@ const HOURLY_PHASES = Object.freeze({
   summary: ['Closing the hourly pass', 'Summarizing actual work, constraints, and the next continuity handoff.'],
 });
 
-function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth, stream, getRunLock = () => null } = {}) {
+function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth, stream,
+  getRunLock = () => null, getContextSnapshot = () => ({ reading: null, play: null }) } = {}) {
   if (!stream) throw new Error('runtime activity stream is required');
 
   app.get('/runtime-activity', requireAuth, (_req, res) => {
     res.set('Cache-Control', 'private, no-store');
     res.json(stream.snapshot());
+  });
+
+  app.get('/runtime-activity/context', requireAuth, (_req, res) => {
+    try {
+      res.set('Cache-Control', 'private, no-store');
+      res.json(getContextSnapshot());
+    } catch (error) {
+      res.status(503).json({ error: `live context unavailable: ${error.message}` });
+    }
   });
 
   app.post('/runtime-activity/report', requireAuth, async (req, res) => {

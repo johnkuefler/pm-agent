@@ -225,6 +225,12 @@ test('store ledger-binds reading, quarantines influence during trials, and enfor
   assert.deepEqual(snapshot.sessions[0].notes, []);
   assert.equal(snapshot.sessions[0].encounter.synthesis, undefined);
   assert.equal(snapshot.report.provisional_self_revision_candidates, 2);
+  const sealedLiveContext = store.liveActivityContextSnapshot();
+  assert.equal(sealedLiveContext.reading.title, 'A Public Domain Work');
+  assert.equal(sealedLiveContext.reading.completed_chunks, 2);
+  assert.equal(sealedLiveContext.reading.total_chunks, 2);
+  assert.equal(sealedLiveContext.reading.last_reflection, null);
+  assert.equal(sealedLiveContext.reading.influence_sealed, true);
   const dashboardProjectionStarted = performance.now();
   for (let index = 0; index < 200; index += 1) {
     assert.equal(store.developmentalReadingSnapshot({ sessionLimit: 8 }).sessions.length, 1);
@@ -241,6 +247,9 @@ test('store ledger-binds reading, quarantines influence during trials, and enfor
   const unsealedSnapshot = store.developmentalReadingSnapshot();
   assert.equal(unsealedSnapshot.sessions[0].notes.length, 2);
   assert.equal(unsealedSnapshot.sessions[0].encounter.synthesis.lasting_ideas.length, 1);
+  const unsealedLiveContext = store.liveActivityContextSnapshot();
+  assert.equal(unsealedLiveContext.reading.mechanism_verified, true);
+  assert.match(unsealedLiveContext.reading.last_reflection, /contrasts imposed efficiency/);
   const prompt = store.promptContext({ query: 'How should we improve coordination on this project?',
     returnContextReceipt: true });
   assert.match(prompt.text, /Relevant provisional intellectual influence/);

@@ -65,6 +65,9 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
     requireDashboardAuth: (_req, _res, next) => next?.(),
     stream,
     getRunLock: () => ({ holder: 'run-live', expires_at: Date.now() + 60000 }),
+    getContextSnapshot: () => ({ generated_at: new Date(now).toISOString(),
+      reading: { title: 'How We Think', status: 'active' },
+      play: { status: 'completed', game: { score: 48 } } }),
   });
   const response = () => ({
     statusCode: 200, body: null, headers: {}, writes: [],
@@ -88,6 +91,12 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
   const invalidRes = response();
   await routes.get('POST /runtime-activity/report')({ body: { phase: 'private_thoughts' } }, invalidRes);
   assert.equal(invalidRes.statusCode, 400);
+
+  const contextRes = response();
+  routes.get('GET /runtime-activity/context')({}, contextRes);
+  assert.equal(contextRes.body.reading.title, 'How We Think');
+  assert.equal(contextRes.body.play.game.score, 48);
+  assert.equal(contextRes.headers['Cache-Control'], 'private, no-store');
 
   const listeners = {};
   const streamRes = response();

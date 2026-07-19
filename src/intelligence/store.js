@@ -11460,6 +11460,76 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       studies: state.cognition.cognitive_initiation_policy_studies.map(publicCognitiveInitiationPolicyStudy) };
   }
 
+  // A deliberately small projection for the always-on Live view. It reads only the latest
+  // reading and play records and performs local mechanism checks, avoiding the full ledger
+  // replays used by the detailed Intelligence rooms.
+  function liveActivityContextSnapshot() {
+    const cognition = state.cognition || {};
+    const readingState = cognition.developmental_reading || { sources: [], sessions: [] };
+    const readingSources = (readingState.sources || []).filter(developmentalReading.verifySource);
+    const readingSessions = readingState.sessions || [];
+    const readingSession = readingSessions.find(item => item.status === 'active')
+      || [...readingSessions].reverse().find(item => item.status === 'completed')
+      || readingSessions.at(-1) || null;
+    const readingSource = readingSession
+      ? readingSources.find(item => item.id === readingSession.source_id) || null
+      : readingSources.at(-1) || null;
+    const readingMechanismVerified = Boolean(readingSession && readingSource
+      && developmentalReading.auditSession(readingSession, readingSource).complete_chain_verified);
+    const readingInfluenceSealed = (cognition.self_model?.context_trials || [])
+      .some(item => item.status === 'active') || selfInquirySelectionActive(cognition);
+    const readingNote = readingSession?.notes?.at(-1) || null;
+    const reading = readingSource ? {
+      title: readingSource.title,
+      author: readingSource.author,
+      status: readingSession?.status || 'available',
+      completed_chunks: Math.max(readingSession?.notes?.length || 0,
+        readingSession?.next_chunk_index || 0),
+      total_chunks: readingSource.chunk_commitments?.length || 0,
+      last_reflection: !readingInfluenceSealed && readingMechanismVerified
+        ? String(readingNote?.output?.summary
+          || readingSession?.encounter?.synthesis?.lasting_ideas?.[0] || '').slice(0, 240) || null
+        : null,
+      updated_at: readingNote?.recorded_at || readingSession?.completed_at
+        || readingSession?.started_at || readingSource.admitted_at || null,
+      mechanism_verified: readingSession ? readingMechanismVerified : true,
+      influence_sealed: readingInfluenceSealed,
+    } : null;
+
+    const playSessions = cognition.autonomous_play?.sessions || [];
+    const playSession = playSessions.find(item => !['completed', 'excluded'].includes(item.status))
+      || [...playSessions].reverse().find(item => item.status === 'completed')
+      || playSessions.at(-1) || null;
+    const playMechanismVerified = Boolean(playSession
+      && autonomousPlay.auditSession(playSession).complete_chain_verified);
+    const board = playSession?.game?.board;
+    const play = playSession ? {
+      status: playSession.status,
+      activity: playSession.selection?.activity || null,
+      game: board ? {
+        board: JSON.parse(JSON.stringify(board)),
+        score: Number(playSession.game.score) || 0,
+        maximum_tile: Math.max(0, ...board.flat().map(value => Number(value) || 0)),
+        move_count: Number(playSession.game.move_count) || 0,
+        maximum_moves: Number(playSession.game.maximum_moves) || 0,
+      } : null,
+      appraisal: playSession.appraisal ? {
+        satisfaction: playSession.appraisal.satisfaction,
+        engagement: playSession.appraisal.engagement,
+      } : null,
+      updated_at: playSession.completed_at || playSession.appraisal?.recorded_at
+        || playSession.selection?.selected_at || playSession.started_at || playSession.created_at || null,
+      mechanism_verified: playMechanismVerified,
+    } : null;
+
+    return {
+      generated_at: clock().toISOString(),
+      reading,
+      play,
+      epistemic_status: 'Observable reading and play records only. This projection does not expose private reasoning or establish subjective experience.',
+    };
+  }
+
   function dashboardIntelligenceSummary() {
     const cognition = state.cognition || {};
     const workspace = cognition.workspace || { slots: [], capacity: 7 };
@@ -26871,7 +26941,7 @@ ${episodes.map(item => {
     // State is JSON-like, but native structured clone avoids running a second full JSON encoder on
     // Nora's foreground thread when background research workers take an isolated snapshot.
     init, snapshot: () => structuredClone(state), snapshotRevision,
-    noteExternalConfigurationChange, dashboardIntelligenceSummary,
+    noteExternalConfigurationChange, dashboardIntelligenceSummary, liveActivityContextSnapshot,
     persist, persistStrict, persistenceDiagnostics, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,

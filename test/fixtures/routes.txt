@@ -1,4 +1,5 @@
 GET /intelligence/dashboard-summary
+GET /intelligence/persistence-runtime
 GET /intelligence
 GET /commitments
 POST /commitments
@@ -353,6 +354,7 @@ PATCH /tasks/:id/result
 DELETE /tasks/:id
 PUT /tasks/:id
 GET /runtime-activity
+GET /runtime-activity/context
 POST /runtime-activity/report
 GET /runtime-activity/events
 POST /admin/drive/upload-artifact
