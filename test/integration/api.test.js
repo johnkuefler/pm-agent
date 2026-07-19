@@ -369,6 +369,9 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(earnedSnapshot.body.current_verified, true);
   assert.equal(earnedSnapshot.body.viewpoints.some(item => item.viewpoint_id === formedViewpoint.body.proposition.id), true);
   assert.equal(earnedSnapshot.body.report.natural_access.applications, 0);
+  assert.equal(earnedSnapshot.body.report.natural_access.usefulness_calibration
+    .eligible_resolved_single_viewpoint_applications, 0);
+  assert.deepEqual(earnedSnapshot.body.report.natural_access.usefulness_calibration.calibrations, []);
   assert.equal(earnedSnapshot.body.access_applications, undefined);
   const earnedAccessRecords = await request('/earned-viewpoints?include_access_records=true');
   assert.ok(Array.isArray(earnedAccessRecords.body.access_applications));

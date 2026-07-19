@@ -1297,6 +1297,14 @@ function registerCoworkInstructionsRoute(app) {
     to a delivered Slack interaction and delayed review. These receipts prove prompt access, not use
     or causal benefit; active-study turns, pre-attestation legacy exposures, and currently
     unprovenanced viewpoints are excluded from scoring.
+    The same response includes a deterministic usefulness calibration for replay-verified reviewed
+    interactions where exactly one current-position viewpoint was available. It reports whole-reply
+    helpful/corrected/neutral/ignored outcomes and does not retain message or review text. Treat it as
+    evidence about whether surfacing the view has been useful, never as evidence that the view was
+    used, caused the outcome, or is true. Multi-viewpoint replies are attributionally ambiguous and
+    excluded; positive feedback must never raise belief confidence. Before three scored observations,
+    the calibration is collecting evidence and must not change behavior. Repeated corrections may
+    justify extra verification or selective use, but belief revision still requires independent work evidence.
     After a dream is recorded, a once-per-dream server-direct Claude subject reflection may inspect a
     collection-channel- and project-balanced, committed packet of recent active work memories and either form at most one non-duplicate
     view or explicitly abstain. Generated views remain ineligible unless the exact packet, provider

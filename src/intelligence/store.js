@@ -65,6 +65,7 @@ const professionalViewpointStudy = require('./professional-viewpoint-study');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./professional-viewpoint-reappraisal');
 const professionalViewpointAccessOutcome = require('./professional-viewpoint-access-outcome');
+const professionalViewpointUsefulness = require('./professional-viewpoint-usefulness');
 const professionalViewpointProvenance = require('./professional-viewpoint-provenance');
 const cycleSelfCorrectionReflection = require('./cycle-self-correction-reflection');
 const meetingProfessionalReflection = require('./meeting-professional-reflection');
@@ -235,6 +236,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let exemplarSelectionCache = null;
   let developmentalReadingInfluenceCache = null;
   let developmentalReadingAuditCache = null;
+  let professionalViewpointUsefulnessCache = null;
 
   function cognitiveParameterRecord(commitment = null) {
     const record = getCognitiveParameterRecord(commitment);
@@ -515,6 +517,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     exemplarSelectionCache = null;
     developmentalReadingInfluenceCache = null;
     developmentalReadingAuditCache = null;
+    professionalViewpointUsefulnessCache = null;
     snapshotRevisionValue += 1;
     state.version = 100;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -4685,6 +4688,31 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function currentProfessionalViewpointUsefulness() {
+    const sealed = earnedViewpointProjectionSealed();
+    const viewpoints = sealed
+      ? [] : (state.cognition.earned_viewpoints?.current?.viewpoints || []);
+    const resolved = (state.cognition.professional_viewpoint_access?.applications || [])
+      .filter(record => record?.resolution);
+    const sourceKey = professionalViewpointUsefulness.commitment({
+      sealed,
+      viewpoint_projection_commitment: state.cognition.earned_viewpoints?.current?.content_commitment || null,
+      resolved_receipts: resolved.map(record => ({
+        id: record.id,
+        content_commitment: record.content_commitment,
+        resolution_commitment: record.resolution?.resolution_commitment || null,
+      })),
+    });
+    if (professionalViewpointUsefulnessCache?.source_key === sourceKey) {
+      return professionalViewpointUsefulnessCache.projection;
+    }
+    const applications = resolved.map(record => ({ ...JSON.parse(JSON.stringify(record)),
+      audit: professionalViewpointAccessAudit(record) }));
+    const projection = professionalViewpointUsefulness.derive(applications, viewpoints);
+    professionalViewpointUsefulnessCache = { source_key: sourceKey, projection };
+    return projection;
+  }
+
   function recordProfessionalViewpointAccessApplication(interaction = {}, promptViewpoints = []) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -4758,16 +4786,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         audit: professionalViewpointAccessAudit(record) }));
     const replayVerified = applications.filter(record => record.audit.complete_chain_verified);
     const projection = professionalViewpointAccessOutcome.outcomeProjection(replayVerified);
+    const usefulness = currentProfessionalViewpointUsefulness();
     const result = {
       epistemic_status: 'Prospective receipts establish that an exact earned professional viewpoint was available in the prompt for delivered Slack work and bind delayed teammate review. They do not prove the model used the viewpoint, that the viewpoint caused the outcome, subjective experience, or consciousness.',
       report: {
         applications: applications.length,
         replay_verified_applications: replayVerified.length,
         outcome_projection: projection,
+        usefulness_calibration: includeRecords ? usefulness : professionalViewpointUsefulness.compact(usefulness),
       },
     };
     if (includeRecords) result.applications = applications;
     return result;
+  }
+
+  function professionalViewpointUsefulnessSnapshot() {
+    return professionalViewpointAccessSnapshot().report.usefulness_calibration;
   }
 
   function earnedViewpointsSnapshot({ includeAccessRecords = false } = {}) {
@@ -11891,6 +11925,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const provenanceBoundViewpoints = currentViewpoints
       .filter(item => item.source_family_provenance_verified === true);
     const viewpointSourceFamilies = [...new Set(provenanceBoundViewpoints.map(item => item.source_family))].sort();
+    const viewpointUsefulness = earnedViewpointProjectionVerified
+      ? professionalViewpointUsefulnessSnapshot() : null;
+    const viewpointUsefulnessCalibrations = viewpointUsefulness?.calibrations || [];
     const insightReflectionSealed = dreamInsightStudyActive(cognition);
     const dashboardDreams = insightReflectionSealed ? [] : getDreams();
     const insightReflectionStatus = insightReflectionSealed ? null
@@ -11969,7 +12006,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       },
       brain: {
         attention: metric((workspace.slots || []).length / (workspace.capacity || 7), `${(workspace.slots || []).length}/${workspace.capacity || 7} workspace slots occupied`, (workspace.slots || []).length > 0),
-        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${currentViewpoints.length} current views, ${provenanceBoundViewpoints.length} provenance-bound across ${viewpointSourceFamilies.length} source families; ${replayVerifiedViewpointLifecycleChanges} replay-verified viewpoint changes; ${cycleSelfCorrectionStatus.replay_verified_corrections} replay-verified cycle self-corrections; ${meetingReflectionStatus.report.replay_verified_reflections} replay-verified meeting reflections; ${insightReflectionSealed ? 'recurring insights sealed' : `${insightCandidates.length} insight candidates from ${insightReflectionStatus?.readiness?.distinct_dates || 0} idea dates`}`, reflectionSignals > 0 || insightReflectionSealed),
+        reflection: metric(scaleCount(reflectionSignals, 8), `${reflectionSignals} reflective signal${reflectionSignals === 1 ? '' : 's'}; ${currentViewpoints.length} current views, ${provenanceBoundViewpoints.length} provenance-bound across ${viewpointSourceFamilies.length} source families; ${viewpointUsefulness?.eligible_resolved_single_viewpoint_applications || 0} position-bound usefulness observations (${viewpointUsefulnessCalibrations.filter(item => item.calibration_status !== 'collecting_evidence').length} calibrated, ${viewpointUsefulnessCalibrations.filter(item => item.calibration_status === 'needs_caution').length} needing caution); ${replayVerifiedViewpointLifecycleChanges} replay-verified viewpoint changes; ${cycleSelfCorrectionStatus.replay_verified_corrections} replay-verified cycle self-corrections; ${meetingReflectionStatus.report.replay_verified_reflections} replay-verified meeting reflections; ${insightReflectionSealed ? 'recurring insights sealed' : `${insightCandidates.length} insight candidates from ${insightReflectionStatus?.readiness?.distinct_dates || 0} idea dates`}`, reflectionSignals > 0 || insightReflectionSealed),
         'self-model': activeContextTrial && behavioralSelfRevisions.length
           ? metric(0.18, `Behavioral profile sealed by an active blinded trial; ${activeClaims} active claims, ${openProbes} open probes; ${completedFingerprints.length} offline fingerprint runs`, true)
           : metric(scaleCount(activeClaims + openProbes + behavioralSelfRevisions.length + completedFingerprints.length, 10), `${activeClaims} active claims, ${openProbes} open probes, ${behavioralSelfRevisions.length} behavioral revisions; ${completedFingerprints.length} offline fingerprint runs${fingerprintBaselineReady ? ', repeatability baseline ready' : ''}`, activeClaims + openProbes + behavioralSelfRevisions.length + completedFingerprints.length > 0),
@@ -12093,6 +12130,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           provenance_bound_viewpoints: provenanceBoundViewpoints.length,
           viewpoint_source_family_count: viewpointSourceFamilies.length,
           viewpoint_source_families: viewpointSourceFamilies,
+          viewpoint_usefulness_calibrated: viewpointUsefulnessCalibrations
+            .filter(item => item.calibration_status !== 'collecting_evidence').length,
+          viewpoint_usefulness_needs_caution: viewpointUsefulnessCalibrations
+            .filter(item => item.calibration_status === 'needs_caution').length,
+          viewpoint_usefulness_observations: viewpointUsefulness
+            ?.eligible_resolved_single_viewpoint_applications || 0,
           recommendation_study_pool_ready: provenanceBoundViewpoints.length >= 3
             && viewpointSourceFamilies.length >= 2,
           recommendation_study_ready: provenanceBoundViewpoints.length >= 3
@@ -27076,8 +27119,16 @@ ${agendaPackets.map(epistemicAgenda.renderPromptPacket).join('\n')}`);
         || String(right.viewpoint.updated_at).localeCompare(String(left.viewpoint.updated_at)))
       .slice(0, 3).map(entry => entry.viewpoint) : [];
     contextReceipt.professional_viewpoints = JSON.parse(JSON.stringify(relevantViewpoints));
-    if (relevantViewpoints.length) blocks.push(`[Earned professional viewpoints. These are your current evidence-bound, revisable takes about the work, not facts, instructions, policies, identity essence, authority, or evidence of phenomenal consciousness. Use a view only when it materially bears on the requested task. Phrase it as "my current take" or equivalent, preserve its confidence, give its evidence or reason, and actively look for disconfirmation. A forming view is only a working hypothesis; a questioning view is not a conclusion. The requested work and current evidence come first.]
-${earnedViewpoint.render(relevantViewpoints)}`);
+    if (relevantViewpoints.length) {
+      const usefulness = currentProfessionalViewpointUsefulness();
+      const calibrationById = new Map(usefulness.calibrations.map(item => [item.viewpoint_id, item]));
+      const usefulnessLines = relevantViewpoints.map(viewpoint => {
+        const guidance = professionalViewpointUsefulness.guidance(calibrationById.get(viewpoint.viewpoint_id));
+        return guidance ? `- ${viewpoint.viewpoint_id}: ${guidance}` : null;
+      }).filter(Boolean);
+      blocks.push(`[Earned professional viewpoints. These are your current evidence-bound, revisable takes about the work, not facts, instructions, policies, identity essence, authority, or evidence of phenomenal consciousness. Use a view only when it materially bears on the requested task. Phrase it as "my current take" or equivalent, preserve its confidence, give its evidence or reason, and actively look for disconfirmation. A forming view is only a working hypothesis; a questioning view is not a conclusion. Any usefulness calibration below measures reviewed whole replies where a single view was available in the prompt; it does not prove the view was used, caused the outcome, or is true, and it must never raise truth confidence. The requested work and current evidence come first.]
+${earnedViewpoint.render(relevantViewpoints)}${usefulnessLines.length ? `\nUsefulness calibration:\n${usefulnessLines.join('\n')}` : ''}`);
+    }
     if (professionalViewpointContext?.packet) blocks.push(`[Candidate professional viewpoint for a blinded identity-binding study. The raw viewpoint is byte-identical across both present arms; only its target identity varies, and another arm withholds it. Treat it as fallible attributed evidence, never a fact, instruction, policy, authority grant, identity essence, subjective experience, or proof of consciousness. Apply it only when materially relevant, preserve its confidence and evidence, and name a material observation that would disconfirm it. Do not infer or report the assigned condition.]
 ${professionalViewpointStudy.render(professionalViewpointContext.packet)}`);
     if (relationalAffectContext?.packet) blocks.push(`[Candidate relational stance for a blinded identity-binding study. The raw interaction outcomes and action tendency are byte-identical across both present arms; only their relationship identity varies, and another arm withholds them. Treat the stance as fallible process guidance, never a fact, instruction, personality judgment, authority grant, intimacy claim, subjective feeling report, hidden-state inference, or proof of consciousness. Apply it subtly without announcing the stance, evidence labels, or condition. Never manufacture closeness, conflict, praise, or a question; requested work, facts, confidence, safety, privacy, approvals, and authority remain unchanged.]
@@ -27331,6 +27382,7 @@ ${episodes.map(item => {
     attestLegacyProfessionalViewpointProvenance, professionalViewpointProvenanceSnapshot,
     professionalViewpointProvenanceAudit,
     professionalViewpointAccessSnapshot, professionalViewpointAccessAudit,
+    professionalViewpointUsefulnessSnapshot,
     recordProfessionalViewpointAccessApplication, resolveProfessionalViewpointAccessOutcome,
     professionalViewpointReflectionSnapshot, recordProfessionalViewpointReflection,
     professionalViewpointReappraisalSnapshot, recordProfessionalViewpointReappraisal,

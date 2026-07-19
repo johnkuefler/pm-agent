@@ -91,9 +91,20 @@ test('subject reflection forms one receipt-bound viewpoint and fails closed unde
   assert.equal(accessProjection.report.natural_access.applications, 1);
   assert.equal(accessProjection.report.natural_access.replay_verified_applications, 1);
   assert.equal(accessProjection.report.natural_access.outcome_projection.scored_outcomes, 1);
+  assert.equal(accessProjection.report.natural_access.usefulness_calibration
+    .eligible_resolved_single_viewpoint_applications, 1);
+  assert.equal(accessProjection.report.natural_access.usefulness_calibration
+    .calibrations[0].calibration_status, 'collecting_evidence');
   assert.equal(accessProjection.access_applications[0].audit.complete_chain_verified, true);
   assert.equal(store.earnedViewpointsSnapshot().access_applications, undefined,
     'dashboard response remains compact by default');
+  const calibratedPrompt = store.promptContext({
+    query: 'How should we plan integration QA before launch?', returnContextReceipt: true,
+  });
+  assert.match(calibratedPrompt.text, /Usefulness calibration/);
+  assert.match(calibratedPrompt.text, /Still collecting evidence; do not change behavior/);
+  assert.doesNotMatch(calibratedPrompt.text, /useful recommendation/,
+    'the review signal text must never enter Nora\'s prompt');
   const status = store.professionalViewpointReflectionSnapshot();
   assert.deepEqual(status.report, { total: 1, formed: 1, abstained: 0, replay_verified: 1 });
   const indicator = store.consciousnessResearchStatus().indicators
