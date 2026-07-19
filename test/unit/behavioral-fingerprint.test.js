@@ -196,6 +196,9 @@ test('production controls bind the deployed Nora prompt without exposing the hou
   assert.match(runtime.deployedSourceCommitment(), /^[a-f0-9]{64}$/);
   assert.equal(runtime.softwareRevisionIdentity(),
     `source-tree:${runtime.deployedSourceCommitment()}`);
+  assert.equal(runtime.softwareRevisionIdentity({ RAILWAY_GIT_COMMIT_SHA: 'stale-railway-sha' }),
+    `git:stale-railway-sha;source-tree:${runtime.deployedSourceCommitment()}`,
+    'a Railway-reported revision must never replace the actual deployed source commitment');
   const expectedBuild = require('node:crypto').createHash('sha256').update(JSON.stringify({
     software_revision: runtime.softwareRevisionIdentity(),
     provider_configuration_commitment: controls.state_control.provider_configuration_commitment,

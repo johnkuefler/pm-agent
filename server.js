@@ -112,9 +112,10 @@ function deployedSourceCommitment() {
   _deployedSourceCommitment = hash.digest('hex');
   return _deployedSourceCommitment;
 }
-function softwareRevisionIdentity() {
-  return process.env.RAILWAY_GIT_COMMIT_SHA || process.env.GIT_COMMIT
-    || `source-tree:${deployedSourceCommitment()}`;
+function softwareRevisionIdentity(env = process.env) {
+  const sourceIdentity = `source-tree:${deployedSourceCommitment()}`;
+  const claimedGitRevision = String(env.RAILWAY_GIT_COMMIT_SHA || env.GIT_COMMIT || '').trim();
+  return claimedGitRevision ? `git:${claimedGitRevision};${sourceIdentity}` : sourceIdentity;
 }
 function behavioralFingerprintControls() {
   const digest = value => crypto.createHash('sha256').update(String(value || '')).digest('hex');
