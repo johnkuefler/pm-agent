@@ -51,6 +51,7 @@ const goalAffect = require('./goal-affect');
 const affectiveRegulation = require('./affective-regulation');
 const earnedViewpoint = require('./earned-viewpoint');
 const epistemicAgenda = require('./epistemic-agenda');
+const epistemicAgendaAccessOutcome = require('./epistemic-agenda-access-outcome');
 const relationalAffect = require('./relational-affect');
 const relationalAffectStudy = require('./relational-affect-study');
 const teammatePerspective = require('./teammate-perspective');
@@ -125,7 +126,7 @@ function rubricLeaksDesign(rubric, conditions = []) {
 
 function emptyState() {
   return {
-    version: 100,
+    version: 101,
     commitments: [],
     episodes: [],
     relationships: [],
@@ -153,7 +154,7 @@ function emptyState() {
       self_boundary: { challenges: [] },
       source_boundary: { challenges: [] },
       epistemic_ledger: { propositions: [], discrepancies: [] },
-      epistemic_agenda: { questions: [], attempts: [], last_attempt: null },
+      epistemic_agenda: { questions: [], attempts: [], access_applications: [], last_attempt: null },
       epistemic_self_correction_reflection: { attempts: [] },
       meeting_professional_reflection: { attempts: [] },
       common_ground: { records: [] },
@@ -994,12 +995,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (state.cognition.affective_regulation.current
       && !affectiveRegulation.verify(state.cognition.affective_regulation.current)) state.cognition.affective_regulation.current = null;
     state.cognition.earned_viewpoints = { current: null, ...(state.cognition.earned_viewpoints || {}) };
-    state.cognition.epistemic_agenda = { questions: [], attempts: [], last_attempt: null,
+    state.cognition.epistemic_agenda = { questions: [], attempts: [], access_applications: [], last_attempt: null,
       ...(state.cognition.epistemic_agenda || {}) };
     if (!Array.isArray(state.cognition.epistemic_agenda.questions)) state.cognition.epistemic_agenda.questions = [];
     if (!Array.isArray(state.cognition.epistemic_agenda.attempts)) state.cognition.epistemic_agenda.attempts = [];
+    if (!Array.isArray(state.cognition.epistemic_agenda.access_applications)) state.cognition.epistemic_agenda.access_applications = [];
     state.cognition.epistemic_agenda.questions = state.cognition.epistemic_agenda.questions.slice(-1000);
     state.cognition.epistemic_agenda.attempts = state.cognition.epistemic_agenda.attempts.slice(-5000);
+    state.cognition.epistemic_agenda.access_applications = state.cognition.epistemic_agenda.access_applications.slice(-600);
     let earnedViewpointProjectionInvalid = false;
     if (state.cognition.earned_viewpoints.current) {
       const projectionAudit = earnedViewpoint.audit(state.cognition.earned_viewpoints.current,
@@ -3742,6 +3745,26 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       complete_chain_verified: replayVerified && projectionVerified && verifyResearchLedger(ledger).valid };
   }
 
+  function epistemicAgendaHistoricalQuestionCommitments(agenda = state.cognition.epistemic_agenda,
+    ledger = state.cognition.research_ledger) {
+    const attempts = agenda?.attempts || [];
+    if (!attempts.every(item => epistemicAgendaAttemptAudit(item, ledger).complete_chain_verified)) {
+      return new Map();
+    }
+    const reconstructed = [];
+    const commitments = new Map();
+    try {
+      for (const attempt of attempts) {
+        applyEpistemicAgendaAttempt(reconstructed, attempt);
+        for (const question of reconstructed) {
+          const publicRecord = epistemicAgenda.publicQuestion(question);
+          commitments.set(epistemicAgenda.commitment(publicRecord), publicRecord.id);
+        }
+      }
+    } catch { return new Map(); }
+    return commitments;
+  }
+
   function recordEpistemicAgendaAttempt(input = {}) {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
@@ -3782,10 +3805,112 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
-  function epistemicAgendaSnapshot({ includeAttempts = false } = {}) {
+  function epistemicAgendaAccessAudit(record, agenda = state.cognition.epistemic_agenda,
+    ledger = state.cognition.research_ledger) {
+    const contentVerified = epistemicAgendaAccessOutcome.verifyApplication(record);
+    const historicalCommitments = contentVerified
+      ? epistemicAgendaHistoricalQuestionCommitments(agenda, ledger) : new Map();
+    const sourceQuestionVerified = contentVerified
+      && historicalCommitments.get(record.prompt_packet.question_commitment) === record.prompt_packet.id;
+    const applicationBound = contentVerified && researchLedgerEventBindingCount(
+      'epistemic_agenda_access_recorded', record.id,
+      actionPayloadCommitment({ content_commitment: record.content_commitment }), ledger) === 1;
+    const resolutionVerified = record?.resolution
+      ? epistemicAgendaAccessOutcome.verifyResolution(record.resolution, record) : true;
+    const resolutionBound = !record?.resolution || (resolutionVerified && researchLedgerEventBindingCount(
+      'epistemic_agenda_access_outcome_resolved', record.id,
+      actionPayloadCommitment({ resolution_commitment: record.resolution.resolution_commitment }), ledger) === 1);
+    const ledgerVerified = verifyResearchLedger(ledger).valid;
+    return { content_commitment_verified: contentVerified,
+      source_question_replay_verified: sourceQuestionVerified,
+      application_ledger_binding_verified: applicationBound,
+      resolution_verified: resolutionVerified,
+      resolution_ledger_binding_verified: resolutionBound,
+      research_ledger_chain_verified: ledgerVerified,
+      complete_chain_verified: contentVerified && sourceQuestionVerified && applicationBound && resolutionVerified
+        && resolutionBound && ledgerVerified };
+  }
+
+  function epistemicAgendaPromptPackets(query = '', { limit = 1 } = {}) {
+    if (!epistemicAgendaProjectionAudit().complete_chain_verified) return [];
+    return epistemicAgenda.relevantPromptPackets(state.cognition.epistemic_agenda.questions,
+      query, limit).map(item => JSON.parse(JSON.stringify(item)));
+  }
+
+  function recordEpistemicAgendaAccessApplication(interaction = {}, promptPacket = null) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      if (!epistemicAgendaProjectionAudit(current.cognition.epistemic_agenda,
+        current.cognition.research_ledger).complete_chain_verified) {
+        throw new Error('epistemic agenda access requires a replay-valid current projection');
+      }
+      const question = current.cognition.epistemic_agenda.questions
+        .find(item => item.id === promptPacket?.id && item.status === 'open');
+      const expected = question ? epistemicAgenda.promptPacket(question, interaction.trigger) : null;
+      if (!expected || epistemicAgenda.canonicalJson(expected)
+        !== epistemicAgenda.canonicalJson(promptPacket)) {
+        throw new Error('epistemic agenda access receipt is not bound to the current relevant question');
+      }
+      const application = epistemicAgendaAccessOutcome.createApplication({ interaction,
+        promptPacket, experimentalContextRefs: interaction.context_assignment_id
+          ? [interaction.context_assignment_id] : [] });
+      const applications = current.cognition.epistemic_agenda.access_applications;
+      const existing = applications.find(item => item.id === application.id);
+      if (existing) {
+        if (epistemicAgendaAccessOutcome.canonicalJson(
+          epistemicAgendaAccessOutcome.applicationManifest(existing))
+          !== epistemicAgendaAccessOutcome.canonicalJson(
+            epistemicAgendaAccessOutcome.applicationManifest(application))) {
+          throw new Error('epistemic agenda access application id conflicts with existing evidence');
+        }
+        return JSON.parse(JSON.stringify(existing));
+      }
+      applications.push(application);
+      current.cognition.epistemic_agenda.access_applications = applications.slice(-600);
+      researchLedgerAppend(current, { kind: 'epistemic_agenda_access_recorded',
+        subject_type: 'epistemic_agenda_access', subject_id: application.id,
+        payload: { content_commitment: application.content_commitment } });
+      return JSON.parse(JSON.stringify(application));
+    });
+  }
+
+  function resolveEpistemicAgendaAccessOutcome(interaction = {}) {
+    return mutate(current => {
+      requireResearchLedgerIntegrity(current);
+      const application = current.cognition.epistemic_agenda.access_applications
+        .find(item => item.interaction_id === String(interaction.id || ''));
+      if (!application) return null;
+      const resolution = epistemicAgendaAccessOutcome.outcomeResolution(interaction, application);
+      if (application.resolution) {
+        if (epistemicAgendaAccessOutcome.canonicalJson(application.resolution)
+          !== epistemicAgendaAccessOutcome.canonicalJson(resolution)) {
+          throw new Error('epistemic agenda access outcome is already resolved differently');
+        }
+        return JSON.parse(JSON.stringify(application));
+      }
+      application.resolution = resolution;
+      researchLedgerAppend(current, { kind: 'epistemic_agenda_access_outcome_resolved',
+        subject_type: 'epistemic_agenda_access', subject_id: application.id,
+        payload: { resolution_commitment: resolution.resolution_commitment } });
+      return JSON.parse(JSON.stringify(application));
+    });
+  }
+
+  function epistemicAgendaAccessSnapshot({ includeRecords = false } = {}) {
+    const applications = (state.cognition.epistemic_agenda?.access_applications || [])
+      .map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: epistemicAgendaAccessAudit(item) }));
+    const replayVerified = applications.filter(item => item.audit.complete_chain_verified);
+    const result = { epistemic_status: 'Exact post-delivery receipts establish only that one relevant open question was available in Nora\'s Slack prompt. Delayed authenticated review remains observational evidence and does not prove the model used the question, that it caused the response, a felt curiosity, or consciousness.',
+      report: epistemicAgendaAccessOutcome.outcomeProjection(replayVerified) };
+    if (includeRecords) result.applications = applications;
+    return result;
+  }
+
+  function epistemicAgendaSnapshot({ includeAttempts = false, includeAccessRecords = false } = {}) {
     const agenda = state.cognition.epistemic_agenda;
     const audit = epistemicAgendaProjectionAudit(agenda);
     const questions = audit.complete_chain_verified ? JSON.parse(JSON.stringify(agenda.questions)) : [];
+    const naturalAccess = epistemicAgendaAccessSnapshot({ includeRecords: includeAccessRecords });
     const result = {
       epistemic_status: 'Durable, Nora-authored professional questions revised only by naturally encountered evidence. This is a functional model of sustained inquiry, not a feeling claim, autonomous action authority, or evidence of phenomenal consciousness.',
       protocol: { version: epistemicAgenda.PROTOCOL_VERSION,
@@ -3797,8 +3922,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         resolved: questions.filter(item => item.status === 'resolved').length,
         abandoned: questions.filter(item => item.status === 'abandoned').length,
         replay_verified_attempts: audit.attempt_audits.filter(item => item.complete_chain_verified).length,
-        last_attempt: agenda.last_attempt || null } };
+        last_attempt: agenda.last_attempt || null, natural_access: naturalAccess.report } };
     if (includeAttempts) result.attempts = JSON.parse(JSON.stringify(agenda.attempts));
+    if (includeAccessRecords) result.access_applications = naturalAccess.applications;
     return result;
   }
 
@@ -5460,6 +5586,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     auditedState.cognition.professional_viewpoint_access.applications =
       sourceProfessionalViewpointApplications.map(record => ({
         ...JSON.parse(JSON.stringify(record)), audit: professionalViewpointAccessAudit(record),
+      }));
+    const sourceEpistemicAgendaApplications =
+      state.cognition.epistemic_agenda?.access_applications || [];
+    auditedState.cognition.epistemic_agenda.access_applications =
+      sourceEpistemicAgendaApplications.map(record => ({
+        ...JSON.parse(JSON.stringify(record)), audit: epistemicAgendaAccessAudit(record),
       }));
     const sourceEpisodicStudies = state.cognition.episodic_prospection_studies || [];
     auditedState.cognition.episodic_prospection_studies = (auditedState.cognition.episodic_prospection_studies || []).map((study, index) => ({
@@ -26202,10 +26334,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }));
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
     const contextReceipt = {
       professional_viewpoints: [],
+      epistemic_agenda_questions: [],
       developmental_reading_encounters: [],
       procedure_selection: null,
       procedure_selection_commitment: null,
@@ -26416,6 +26549,11 @@ ${interoceptivePredictions.map(item => `- By ${item.due}, predict ${item.metric}
     }));
     if (readingInfluences.length) blocks.push(`[Relevant provisional intellectual influence from a completed reading encounter. This is Nora's source-bound, revisable response to a work, not the author's instruction, a fact, memory, policy, authority grant, persona rewrite, identity essence, or consciousness evidence. Apply it only if it materially improves the present task. Preserve disagreement and actively watch for the named counterevidence; current task evidence always wins.]
 ${readingInfluences.map(item => `- ${item.title} by ${item.author}: candidate influence — ${item.personality_influence_candidate} Expected work transfer — ${item.expected_work_transfer}${item.disagreements.length ? ` Retained disagreement — ${item.disagreements[0]}` : ''} Counterevidence needed — ${item.counterevidence_needed} [encounter ${item.encounter_commitment.slice(0, 12)}]`).join('\n')}`);
+    const agendaPackets = includeEpistemicAgenda && !sealInquirySelection
+      ? epistemicAgendaPromptPackets(query, { limit: 1 }) : [];
+    contextReceipt.epistemic_agenda_questions = JSON.parse(JSON.stringify(agendaPackets));
+    if (agendaPackets.length) blocks.push(`[Relevant question from your sustained epistemic agenda. This is a self-originated, evidence-bound professional uncertainty, not a fact, task, goal, instruction, request to investigate, authority grant, standing topic, feeling claim, identity essence, or evidence of consciousness. Do not announce the agenda. Let it improve the current PM judgment only when the present request genuinely bears on it; preserve the tentative answer and uncertainty, distinguish current evidence from the carried question, and notice disconfirming evidence. Never browse, message, create work, or delay the response merely to pursue it.]
+${agendaPackets.map(epistemicAgenda.renderPromptPacket).join('\n')}`);
     const viewpointProjection = state.cognition.earned_viewpoints?.current || null;
     const viewpointProjectionVerified = !earnedViewpointProjectionSealed()
       && earnedViewpoint.audit(viewpointProjection, state.cognition.epistemic_ledger?.propositions || []).complete_chain_verified;
@@ -26666,7 +26804,9 @@ ${episodes.map(item => {
     createSourceBoundaryChallenge, answerSourceBoundaryChallenge, sourceBoundarySnapshot,
     recordEpistemicPosition, reviewEpistemicDiscrepancy, epistemicLedgerSnapshot,
     recordEpistemicAgendaAttempt, epistemicAgendaSnapshot, epistemicAgendaAttemptAudit,
-    epistemicAgendaProjectionAudit,
+    epistemicAgendaProjectionAudit, epistemicAgendaPromptPackets,
+    recordEpistemicAgendaAccessApplication, resolveEpistemicAgendaAccessOutcome,
+    epistemicAgendaAccessSnapshot, epistemicAgendaAccessAudit,
     epistemicSelfCorrectionReflectionSnapshot, recordEpistemicSelfCorrectionReflection,
     epistemicSelfCorrectionPacket,
     meetingProfessionalReflectionSnapshot, recordMeetingProfessionalReflection,

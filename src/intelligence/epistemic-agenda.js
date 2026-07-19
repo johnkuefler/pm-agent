@@ -10,6 +10,13 @@ const MAX_TOKENS = 1200;
 const MIN_ATTEMPT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MIN_FORM_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const MAX_OPEN_QUESTIONS = 3;
+const RELEVANCE_STOPWORDS = new Set([
+  'the', 'and', 'for', 'about', 'after', 'before', 'could', 'does', 'from', 'have', 'into', 'need', 'should',
+  'that', 'their', 'there', 'these', 'they', 'this', 'what', 'when', 'where', 'which',
+  'with', 'would', 'your', 'project', 'work', 'team', 'task', 'tasks', 'launch', 'date',
+  'delivery', 'schedule', 'client', 'status', 'update', 'website', 'meeting', 'current',
+  'please', 'summarize', 'summary',
+]);
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -37,6 +44,46 @@ function publicQuestion(question = {}) {
     evidence_ids: [...new Set((question.evidence_ids || []).map(id => cleanText(id, 500)).filter(Boolean))].slice(0, 30),
     created_at: question.created_at, updated_at: question.updated_at,
   };
+}
+
+function relevanceTerms(value) {
+  return [...new Set((String(value || '').toLowerCase().match(/[a-z0-9-]{3,40}/g) || [])
+    .filter(term => !RELEVANCE_STOPWORDS.has(term)))];
+}
+
+function promptPacket(question, query = '') {
+  const source = publicQuestion(question);
+  if (source.status !== 'open') return null;
+  const queryTerms = relevanceTerms(query);
+  if (!queryTerms.length) return null;
+  const corpus = `${source.topic_key} ${source.question} ${source.why_it_matters} ${source.current_best_answer || ''} ${source.next_evidence}`.toLowerCase();
+  const matchedTerms = queryTerms.filter(term => corpus.includes(term)).sort().slice(0, 8);
+  const relevanceScore = matchedTerms.reduce((sum, term) => sum + (term.length >= 8 ? 3 : term.length <= 4 ? 2 : 1), 0);
+  if (relevanceScore < 2) return null;
+  return {
+    id: source.id, status: 'open', topic_key: source.topic_key,
+    question: cleanText(source.question, 420),
+    why_it_matters: cleanText(source.why_it_matters, 260),
+    current_best_answer: cleanText(source.current_best_answer, 500),
+    confidence: source.confidence, interest_score: source.interest_score,
+    next_evidence: cleanText(source.next_evidence, 300),
+    evidence_count: source.evidence_ids.length,
+    updated_at: source.updated_at,
+    question_commitment: commitment(source), matched_terms: matchedTerms,
+    relevance_score: relevanceScore,
+  };
+}
+
+function relevantPromptPackets(questions = [], query = '', limit = 1) {
+  return questions.map(item => promptPacket(item, query)).filter(Boolean)
+    .sort((left, right) => right.relevance_score - left.relevance_score
+      || right.interest_score - left.interest_score
+      || String(right.updated_at).localeCompare(String(left.updated_at)))
+    .slice(0, Math.max(0, Math.min(2, Number(limit) || 1)));
+}
+
+function renderPromptPacket(packet) {
+  return `- Open question: ${packet.question}\n  Current tentative answer (${Math.round(packet.confidence * 100)}%): ${packet.current_best_answer}\n  Why it may matter: ${packet.why_it_matters}\n  Watch for: ${packet.next_evidence}`;
 }
 
 function evidenceContextCount(evidence = []) {
@@ -252,7 +299,8 @@ async function runCycle({ store, memories = [], callProvider, enabled = true, mo
 }
 
 module.exports = { PROTOCOL_VERSION, DEFAULT_MODEL, MAX_TOKENS, MIN_ATTEMPT_INTERVAL_MS,
-  MIN_FORM_INTERVAL_MS, MAX_OPEN_QUESTIONS, canonicalJson, commitment, cleanText,
-  publicQuestion, evidenceContextCount, outputSchema, systemPrompt, packetFor, buildManifest,
+  MIN_FORM_INTERVAL_MS, MAX_OPEN_QUESTIONS, RELEVANCE_STOPWORDS, canonicalJson, commitment, cleanText,
+  publicQuestion, relevanceTerms, promptPacket, relevantPromptPackets, renderPromptPacket,
+  evidenceContextCount, outputSchema, systemPrompt, packetFor, buildManifest,
   requestFor, responseText, parseJsonObject, normalizeOutput, receiptPayload, submissionFor,
   auditReceipt, runCycle };

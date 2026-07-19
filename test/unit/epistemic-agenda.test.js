@@ -126,6 +126,78 @@ test('formation fails closed for one context, external evidence, duplicates, and
   assert.equal(agenda.auditReceipt(tampered).complete_chain_verified, false);
 });
 
+test('a relevant question can enter ordinary PM judgment with a replay-valid access and outcome receipt', async () => {
+  now = new Date('2026-07-18T12:00:00.000Z');
+  const { dir, store } = await makeStore();
+  await agenda.runCycle({ store, memories: memories(), now,
+    callProvider: async request => response(request, formationOutput()) });
+
+  const query = 'Should explicit ownership predict movement better when Alpha delivery is under pressure?';
+  const selected = store.promptContext({ query, returnContextReceipt: true });
+  assert.match(selected.text, /Relevant question from your sustained epistemic agenda/);
+  assert.equal(selected.context_receipt.epistemic_agenda_questions.length, 1);
+  const packet = selected.context_receipt.epistemic_agenda_questions[0];
+  assert.match(packet.question, /ownership predict movement/);
+  assert.ok(packet.matched_terms.includes('ownership'));
+
+  const unrelated = store.promptContext({ query: 'Please summarize the current project status.',
+    returnContextReceipt: true });
+  assert.doesNotMatch(unrelated.text, /sustained epistemic agenda/);
+  assert.deepEqual(unrelated.context_receipt.epistemic_agenda_questions, []);
+  const experimentallySealed = store.promptContext({ query, includeEpistemicAgenda: false,
+    returnContextReceipt: true });
+  assert.deepEqual(experimentallySealed.context_receipt.epistemic_agenda_questions, []);
+
+  const interaction = {
+    id: 'interaction-agenda-access-1', created: now.toISOString(),
+    channel: 'C0123456789', ts: '1784385600.000001', thread_ts: '1784385600.000001',
+    trigger: query, text: 'I would escalate the missing owner first and keep the date as supporting context.',
+  };
+  const application = await store.recordEpistemicAgendaAccessApplication(interaction, packet);
+  assert.equal(application.access_claim, 'question_was_available_in_prompt_not_proven_used');
+  assert.equal(application.observational_outcome_eligible, true);
+  assert.equal(store.epistemicAgendaAccessAudit(application).complete_chain_verified, true);
+  assert.equal('trigger' in application, false);
+  assert.equal('text' in application, false);
+
+  const reviewed = { ...interaction, reviewed: true, reviewed_at: '2026-07-18T12:05:00.000Z',
+    outcome: 'appreciated', signal: 'The prioritization was useful.' };
+  const resolved = await store.resolveEpistemicAgendaAccessOutcome(reviewed);
+  assert.equal(resolved.resolution.success, true);
+  const access = store.epistemicAgendaAccessSnapshot({ includeRecords: true });
+  assert.equal(access.report.replay_verified_applications, 1);
+  assert.equal(access.report.resolved_applications, 1);
+  assert.equal(access.report.scored_outcomes, 1);
+  assert.equal(access.report.successes, 1);
+  assert.equal(access.applications[0].audit.source_question_replay_verified, true);
+
+  const indicator = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'sustained_epistemic_agenda');
+  assert.equal(indicator.evidence.replay_verified_natural_access_applications, 1);
+  assert.equal(indicator.evidence.natural_access_outcome_projection.successes, 1);
+
+  const tampered = structuredClone(access.applications[0]);
+  tampered.prompt_packet.question = 'A different question';
+  assert.equal(store.epistemicAgendaAccessAudit(tampered).complete_chain_verified, false);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('relevance selection is local, bounded, and fast enough for foreground use', async () => {
+  now = new Date('2026-07-18T12:00:00.000Z');
+  const { dir, store } = await makeStore();
+  await agenda.runCycle({ store, memories: memories(), now,
+    callProvider: async request => response(request, formationOutput()) });
+  const started = process.hrtime.bigint();
+  for (let index = 0; index < 1000; index += 1) {
+    const packets = store.epistemicAgendaPromptPackets(
+      'Does explicit ownership predict movement under pressure?');
+    assert.equal(packets.length, 1);
+  }
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(elapsedMs < 1000, `1000 local selections took ${elapsedMs.toFixed(1)}ms`);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('runtime remains disabled in test mode, without credentials, or by explicit switch', () => {
   const { __test } = require('../../server');
   assert.equal(__test.epistemicAgendaRuntimeConfig({ ANTHROPIC_API_KEY: 'configured' }).enabled, true);

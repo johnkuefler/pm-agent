@@ -841,6 +841,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.get('/epistemic-ledger', requireAuth, (req, res) => res.json(store.epistemicLedgerSnapshot()));
   app.get('/epistemic-agenda', requireAuth, (req, res) => res.json(store.epistemicAgendaSnapshot({
     includeAttempts: req.query.include_attempts === 'true',
+    includeAccessRecords: req.query.include_access_records === 'true',
   })));
   app.post('/epistemic-ledger/positions', requireAuth, (req, res) => {
     try { res.json({ ok: true, proposition: store.recordEpistemicPosition(req.body || {}) }); }

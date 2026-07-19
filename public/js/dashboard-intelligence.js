@@ -316,6 +316,7 @@ function renderEpistemicAgenda(value = {}) {
   if (!target) return;
   const questions = value.questions || [];
   const open = questions.filter(item => item.status === 'open');
+  const access = value.report?.natural_access || {};
   const ordered = [...open, ...questions.filter(item => item.status !== 'open').slice(-3).reverse()];
   if (!ordered.length) {
     target.innerHTML = `<div class="epistemic-agenda-empty"><strong>No question has earned a place yet.</strong>
@@ -326,6 +327,7 @@ function renderEpistemicAgenda(value = {}) {
       <span><strong>${value.report?.open || 0}</strong> open</span>
       <span><strong>${value.report?.resolved || 0}</strong> resolved</span>
       <span><strong>${value.report?.replay_verified_attempts || 0}</strong> replay-verified turns</span>
+      <span><strong>${access.replay_verified_applications || 0}</strong> relevant work exposures</span>
     </div>
     <div class="epistemic-agenda-list">${ordered.map(item => {
     const latest = item.history?.at(-1);
@@ -338,7 +340,7 @@ function renderEpistemicAgenda(value = {}) {
       <div class="epistemic-question-meta">${item.evidence_ids?.length || 0} naturally encountered records${latest ? ` &middot; last ${escHtml(latest.action)} ${escHtml(new Date(item.updated_at).toLocaleString())}` : ''}</div>
     </article>`;
   }).join('')}</div>
-    <p class="intelligence-note">No active searching, connector actions, or foreground model calls. Questions change only when ordinary work supplies new evidence.</p>`;
+    <p class="intelligence-note">No active searching, connector actions, or foreground model calls. Questions change only when ordinary work supplies new evidence. Prompt exposure is recorded separately from proven use or causal benefit.</p>`;
 }
 
 function readingRoomBook(source, session) {

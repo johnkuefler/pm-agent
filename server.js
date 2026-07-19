@@ -1510,7 +1510,7 @@ function compactInteractiveIntelligenceContext(text, maxChars) {
     else if (/selected work procedures/i.test(compactLabel)) priority = Math.max(priority, 92);
     else if (/relevant past work patterns/i.test(compactLabel)) priority = Math.max(priority, 91);
     else if (/relevant conversation continuity|current grounded internal appraisal|affect-regulation|relational attunement|empirical functional self-knowledge/i.test(compactLabel)) priority = Math.max(priority, 90);
-    else if (/self-authored aim|operational self-state|verified completed-cycle self-corrections|earned professional viewpoints|verified post-meeting professional reflections|constructive future simulations/i.test(compactLabel)) priority = Math.max(priority, 82);
+    else if (/self-authored aim|operational self-state|verified completed-cycle self-corrections|earned professional viewpoints|verified post-meeting professional reflections|constructive future simulations|relevant question from your sustained epistemic agenda/i.test(compactLabel)) priority = Math.max(priority, 82);
     else if (/endogenous salience|attention schema|prospective agency|testable self-model|open interoceptive predictions/i.test(compactLabel)) priority = Math.max(priority, 72);
     return { index, text: textValue, priority, experimental };
   });
@@ -1961,6 +1961,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     includeDevelopment: contextAssignment?.intervention !== 'developmental_revision_access',
     includeCognitivePulses: !contextAssignment,
     includeEpistemicDiscrepancies: !['epistemic_ownership_access', 'epistemic_discrepancy_access', 'epistemic_revision_profile_access'].includes(contextAssignment?.intervention),
+    includeEpistemicAgenda: !contextAssignment,
     includeConstructiveProspection: contextAssignment?.intervention !== 'constructive_prospection_access',
     includeGoalAffect: !['goal_access', 'integrated_self_binding'].includes(contextAssignment?.intervention),
   });
@@ -1977,6 +1978,11 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     ? compactInteractiveIntelligenceContext(intelligenceContext,
       INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000)
     : (intelligenceContext || '');
+  if (intelligenceContextReceipt?.epistemic_agenda_questions?.length) {
+    intelligenceContextReceipt.epistemic_agenda_questions =
+      intelligenceContextReceipt.epistemic_agenda_questions.filter(packet =>
+        volatileIntelligenceContext.includes(packet.question));
+  }
   promptDiagnostics.intelligence_raw_chars = String(intelligenceContext || '').length;
   promptDiagnostics.intelligence_live_chars = volatileIntelligenceContext.length;
   promptDiagnostics.intelligence_budget_chars = INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000;
@@ -8845,6 +8851,16 @@ function logInteraction(entry) {
           console.warn('professional viewpoint access capture failed:', error.message);
         }
       }
+      const agendaQuestions = intelligenceReceipt?.epistemic_agenda_questions || [];
+      if (agendaQuestions.length === 1) {
+        try {
+          const application = intelligence.recordEpistemicAgendaAccessApplication(
+            interaction, agendaQuestions[0]);
+          if (application) interaction.epistemic_agenda_access_application_id = application.id;
+        } catch (error) {
+          console.warn('epistemic agenda access capture failed:', error.message);
+        }
+      }
     }
     items.push(interaction);
     if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
@@ -8901,6 +8917,8 @@ function handleInteractionOutcome(interaction) {
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
     try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }
     catch (error) { console.warn('professional viewpoint access outcome capture failed:', error.message); }
+    try { intelligence.resolveEpistemicAgendaAccessOutcome(interaction); }
+    catch (error) { console.warn('epistemic agenda access outcome capture failed:', error.message); }
     if (interaction.cognitive_parameter_assignment_id) {
       try {
         intelligence.resolveCognitiveParameterAssignmentOutcome(
