@@ -218,6 +218,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     last_total_ms: null, last_payload_bytes: null, last_committed_at: null,
     last_error: null,
   };
+  let cycleOpenRuntime = {
+    attempts: 0, successes: 0, failures: 0, in_flight: false,
+    last_refresh_ms: null, last_cycle_ms: null, last_commit_ms: null,
+    last_total_ms: null, last_resumed: null, last_completed_at: null, last_error: null,
+  };
   let researchLedgerVerificationCache = null;
   let cognitiveParameterStudyLiveAuditCache = null;
   const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
@@ -1223,6 +1228,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       flush_scheduled: persistenceFlushScheduled,
       flush_running: persistenceFlushRunning,
       strict_waiters: persistenceWaiters.filter(item => item.strict).length,
+      cycle_open: { ...cycleOpenRuntime },
       ...persistenceRuntime,
     };
   }
@@ -26046,10 +26052,35 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   async function openOrResumeCycle(input = {}) {
-    return durableMutationBatch(() => {
-      refreshCognition(input);
-      return startCycle(input);
-    });
+    const attemptStarted = performance.now();
+    cycleOpenRuntime = { ...cycleOpenRuntime, attempts: cycleOpenRuntime.attempts + 1,
+      in_flight: true, last_error: null };
+    let refreshMs = null; let cycleMs = null; let result;
+    try {
+      result = await durableMutationBatch(() => {
+        let stageStarted = performance.now();
+        refreshCognition(input);
+        refreshMs = performance.now() - stageStarted;
+        stageStarted = performance.now();
+        const opened = startCycle(input);
+        cycleMs = performance.now() - stageStarted;
+        return opened;
+      });
+      const totalMs = performance.now() - attemptStarted;
+      cycleOpenRuntime = { ...cycleOpenRuntime, successes: cycleOpenRuntime.successes + 1,
+        in_flight: false, last_refresh_ms: refreshMs, last_cycle_ms: cycleMs,
+        last_commit_ms: Math.max(0, totalMs - (refreshMs || 0) - (cycleMs || 0)),
+        last_total_ms: totalMs, last_resumed: result?.resumed === true,
+        last_completed_at: clock().toISOString(), last_error: null };
+      return result;
+    } catch (error) {
+      cycleOpenRuntime = { ...cycleOpenRuntime, failures: cycleOpenRuntime.failures + 1,
+        in_flight: false, last_refresh_ms: refreshMs, last_cycle_ms: cycleMs,
+        last_total_ms: performance.now() - attemptStarted,
+        last_completed_at: clock().toISOString(),
+        last_error: String(error?.message || error).slice(0, 500) };
+      throw error;
+    }
   }
 
   function cycleLifecycleRuntimeProjection(cycleId, momentId) {

@@ -61,5 +61,11 @@ test('durable cycle open and idempotent resume each commit one state revision', 
   assert.equal(resumed.orientation.cached, true);
   assert.equal(resumed.cycle.id, started.cycle.id);
   assert.equal(writes.length, 2);
-  assert.equal(store.persistenceDiagnostics().requested_revision, 2);
+  const diagnostics = store.persistenceDiagnostics();
+  assert.equal(diagnostics.requested_revision, 2);
+  assert.equal(diagnostics.cycle_open.attempts, 2);
+  assert.equal(diagnostics.cycle_open.successes, 2);
+  assert.equal(diagnostics.cycle_open.failures, 0);
+  assert.equal(diagnostics.cycle_open.last_resumed, true);
+  assert.ok(diagnostics.cycle_open.last_total_ms >= diagnostics.cycle_open.last_refresh_ms);
 });
