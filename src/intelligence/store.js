@@ -3,6 +3,8 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { performance } = require('node:perf_hooks');
+const { AsyncJsonSerializer } = require('../runtime/async-json-serializer');
 const { normalizeCommitment } = require('./models');
 const { clamp01, computeAppraisal, computeDrives, scoreWorkspace, calibration } = require('./cognition');
 const { selfModelReport } = require('./self-model');
@@ -202,6 +204,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
+  const asyncSerializer = new AsyncJsonSerializer();
+  let persistenceRequestedRevision = 0;
+  let persistenceCommittedRevision = 0;
+  let persistenceFlushScheduled = false;
+  let persistenceFlushRunning = false;
+  let persistenceWaiters = [];
+  let persistenceBatchDepth = 0;
+  let persistenceBatchDirty = false;
+  const persistenceRuntime = {
+    optimized_flushes: 0, coalesced_revisions: 0, failures: 0,
+    last_dispatch_ms: null, last_serialization_ms: null, last_database_ms: null,
+    last_total_ms: null, last_payload_bytes: null, last_committed_at: null,
+    last_error: null,
+  };
   let researchLedgerVerificationCache = null;
   let cognitiveParameterStudyLiveAuditCache = null;
   const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
@@ -1089,8 +1105,74 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return state;
   }
 
+  function optimizedPersistenceAvailable() {
+    return Boolean(isDbReady() && typeof db?.setStateSerialized === 'function');
+  }
+
+  function settlePersistenceWaiters(targetRevision, error = null) {
+    const settled = persistenceWaiters.filter(waiter => waiter.revision <= targetRevision);
+    persistenceWaiters = persistenceWaiters.filter(waiter => waiter.revision > targetRevision);
+    for (const waiter of settled) {
+      if (error && waiter.strict) waiter.reject(error);
+      else waiter.resolve();
+    }
+  }
+
+  function scheduleOptimizedPersistenceFlush() {
+    if (persistenceFlushScheduled || persistenceFlushRunning) return;
+    persistenceFlushScheduled = true;
+    setImmediate(flushOptimizedPersistence);
+  }
+
+  async function flushOptimizedPersistence() {
+    persistenceFlushScheduled = false;
+    if (persistenceFlushRunning) return;
+    persistenceFlushRunning = true;
+    const targetRevision = persistenceRequestedRevision;
+    const priorCommittedRevision = persistenceCommittedRevision;
+    const totalStarted = performance.now();
+    try {
+      // postMessage takes one native structured-clone snapshot at this revision. The costly JSON
+      // traversal then happens in a worker, so Slack, Zoom, and lifecycle HTTP handlers stay live.
+      const serialized = await asyncSerializer.stringify(state);
+      const databaseStarted = performance.now();
+      await db.setStateSerialized('intelligence_v1', serialized.json);
+      const databaseMs = performance.now() - databaseStarted;
+      persistenceCommittedRevision = targetRevision;
+      persistenceRuntime.optimized_flushes += 1;
+      persistenceRuntime.coalesced_revisions += Math.max(0,
+        targetRevision - priorCommittedRevision - 1);
+      persistenceRuntime.last_dispatch_ms = serialized.dispatch_ms;
+      persistenceRuntime.last_serialization_ms = serialized.serialization_ms;
+      persistenceRuntime.last_database_ms = databaseMs;
+      persistenceRuntime.last_total_ms = performance.now() - totalStarted;
+      persistenceRuntime.last_payload_bytes = serialized.payload_bytes;
+      persistenceRuntime.last_committed_at = clock().toISOString();
+      persistenceRuntime.last_error = null;
+      settlePersistenceWaiters(targetRevision);
+    } catch (error) {
+      error.code = error.code || 'INTELLIGENCE_PERSISTENCE_FAILED';
+      persistenceRuntime.failures += 1;
+      persistenceRuntime.last_total_ms = performance.now() - totalStarted;
+      persistenceRuntime.last_error = String(error?.message || error).slice(0, 500);
+      console.error('intelligence persistence failed:', error.message);
+      settlePersistenceWaiters(targetRevision, error);
+    } finally {
+      persistenceFlushRunning = false;
+      if (persistenceRequestedRevision > targetRevision) scheduleOptimizedPersistenceFlush();
+    }
+  }
+
   function enqueuePersistence({ strict = false } = {}) {
     snapshotRevisionValue += 1;
+    if (optimizedPersistenceAvailable()) {
+      const revision = ++persistenceRequestedRevision;
+      const operation = new Promise((resolve, reject) => {
+        persistenceWaiters.push({ revision, strict, resolve, reject });
+      });
+      scheduleOptimizedPersistenceFlush();
+      return operation;
+    }
     const snapshot = JSON.parse(JSON.stringify(state));
     const operation = writeQueue.then(async () => {
       if (isDbReady()) return db.setState('intelligence_v1', snapshot);
@@ -1103,8 +1185,47 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return strict ? operation : writeQueue;
   }
 
-  function persist() { return enqueuePersistence(); }
-  function persistStrict() { return enqueuePersistence({ strict: true }); }
+  function persist() {
+    if (persistenceBatchDepth > 0) {
+      persistenceBatchDirty = true;
+      return Promise.resolve();
+    }
+    return enqueuePersistence();
+  }
+  function persistStrict() {
+    if (persistenceBatchDepth > 0) {
+      persistenceBatchDirty = true;
+      return Promise.resolve();
+    }
+    return enqueuePersistence({ strict: true });
+  }
+  async function durableMutationBatch(fn) {
+    const outermost = persistenceBatchDepth === 0;
+    persistenceBatchDepth += 1;
+    let result; let mutationError = null;
+    try { result = fn(); }
+    catch (error) { mutationError = error; }
+    finally { persistenceBatchDepth -= 1; }
+    if (outermost && persistenceBatchDirty) {
+      persistenceBatchDirty = false;
+      await enqueuePersistence({ strict: true });
+    }
+    if (mutationError) throw mutationError;
+    return result;
+  }
+  function persistenceDiagnostics() {
+    return {
+      protocol_version: 1,
+      foreground_serialization: optimizedPersistenceAvailable() ? 'worker_thread' : 'legacy_fallback',
+      requested_revision: persistenceRequestedRevision,
+      committed_revision: persistenceCommittedRevision,
+      pending_revisions: Math.max(0, persistenceRequestedRevision - persistenceCommittedRevision),
+      flush_scheduled: persistenceFlushScheduled,
+      flush_running: persistenceFlushRunning,
+      strict_waiters: persistenceWaiters.filter(item => item.strict).length,
+      ...persistenceRuntime,
+    };
+  }
   function snapshotRevision() { return snapshotRevisionValue; }
   function noteExternalConfigurationChange() {
     snapshotRevisionValue += 1;
@@ -25833,7 +25954,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (!moment) throw new Error(`active intelligence cycle ${recentActive.id} has no open experience moment`);
         return {
           cycle: recentActive,
-          orientation: orient({ ...input, now: requestedAt }),
+          // This cycle already owns a durable orientation. Recomputing the full projection on an
+          // idempotent resume made restart recovery scale with the entire retained mind state.
+          orientation: {
+            at: requestedAt.toISOString(), resumed: true, cached: true,
+            ...(recentActive.orientation || {}),
+            recommendations: recentActive.recommendations || [],
+          },
           moment,
           resumed: true,
         };
@@ -25916,6 +26043,30 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           predecessor_gap_acknowledged: moment.predecessor_gap_acknowledged } });
       return { cycle, orientation, moment };
     });
+  }
+
+  async function openOrResumeCycle(input = {}) {
+    return durableMutationBatch(() => {
+      refreshCognition(input);
+      return startCycle(input);
+    });
+  }
+
+  function cycleLifecycleRuntimeProjection(cycleId, momentId) {
+    const cycle = state.cycles.find(item => item.id === cycleId) || null;
+    const moment = state.cognition.experience_stream.find(item => item.id === momentId
+      && item.cycle_id === cycleId) || null;
+    return {
+      integrity_verified: Boolean(cycle && moment
+        && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id),
+      cycle_status: cycle?.status || 'missing',
+      forecast_committed: Boolean(moment?.self_forecast),
+      forecast_correction_committed: Boolean(moment?.self_forecast?.self_correction?.revision),
+      forecast_correction_required: Boolean(moment?.self_forecast?.self_correction
+        && !moment.self_forecast.self_correction.revision),
+      closure_handoff_committed: Boolean(moment?.closure?.handoff_hash),
+      handoff_committed: state.cognition.continuity_handoffs.some(item => item.cycle_id === cycleId),
+    };
   }
 
   function reenterCycle(id, input = {}) {
@@ -26024,8 +26175,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         researchLedgerAppend(current, { kind: 'recurrent_feedback_context_delivered', subject_type: 'context_assignment', subject_id: recurrenceAssignment.id, payload: recurrenceAssignment.intervention_receipt });
       }
       const visibleSignal = { ...signal, status: 'recorded' };
-      return { cycle: JSON.parse(JSON.stringify(cycle)), moment_id: moment.id, round, signal: visibleSignal, cognition: cognitionPayload(current.cognition) };
+      return { cycle: JSON.parse(JSON.stringify(cycle)), moment_id: moment.id, round,
+        signal: visibleSignal };
     });
+  }
+
+  async function reenterCycleDurable(id, input = {}) {
+    return durableMutationBatch(() => reenterCycle(id, input));
   }
 
   function completeCycle(id, input = {}) {
@@ -26678,9 +26834,11 @@ ${episodes.map(item => {
   }
 
   return {
-    init, snapshot: () => JSON.parse(JSON.stringify(state)), snapshotRevision,
+    // State is JSON-like, but native structured clone avoids running a second full JSON encoder on
+    // Nora's foreground thread when background research workers take an isolated snapshot.
+    init, snapshot: () => structuredClone(state), snapshotRevision,
     noteExternalConfigurationChange, dashboardIntelligenceSummary,
-    persist, persistStrict, interventionActive,
+    persist, persistStrict, persistenceDiagnostics, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
@@ -26699,7 +26857,8 @@ ${episodes.map(item => {
     commitPlayroomSelection, playroomTurnQueue, commitPlayroomTurn,
     playroomAppraisalQueue, commitPlayroomAppraisal, playroomSnapshot, playroomSessionAudit,
     initiativeStatus, spendInitiative,
-    setInitiativeBudget, orient, startCycle, reenterCycle, completeCycle,
+    setInitiativeBudget, orient, startCycle, openOrResumeCycle,
+    cycleLifecycleRuntimeProjection, reenterCycle, reenterCycleDurable, completeCycle,
     createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
     expectationForecastAudit, expectationSurprise,
     createCognitiveParameterStudy, assignCognitiveParameterStudy,

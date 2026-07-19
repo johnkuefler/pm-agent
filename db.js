@@ -665,6 +665,14 @@ async function setState(key, value) {
     [key, JSON.stringify(value)]
   );
 }
+async function setStateSerialized(key, serializedValue) {
+  if (typeof serializedValue !== 'string') throw new TypeError('serialized app state must be a JSON string');
+  await q(
+    `INSERT INTO ${DB_SCHEMA}.app_state (key, value, updated_at) VALUES ($1,$2::jsonb, now())
+     ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+    [key, serializedValue]
+  );
+}
 async function deleteState(key) {
   await q(`DELETE FROM ${DB_SCHEMA}.app_state WHERE key=$1`, [key]);
 }
@@ -690,6 +698,6 @@ module.exports = {
   loadAllMarkers, replaceAllMarkers,
   loadAllSlackThreads, replaceAllSlackThreads,
   upsertTranscript, listTranscripts, getTranscript, deleteTranscript,
-  getState, setState, deleteState,
+  getState, setState, setStateSerialized, deleteState,
   enqueueJob, claimNextQueuedJob, finishJob, requeueRunningJobs, recentJobs,
 };

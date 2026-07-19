@@ -60,6 +60,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     cachedJson(res, 'dashboard-summary', () => store.dashboardIntelligenceSummary(), { ttlMs: 5000 });
   });
 
+  app.get('/intelligence/persistence-runtime', requireAuth, (_req, res) => {
+    res.set('Cache-Control', 'private, no-store');
+    res.json(store.persistenceDiagnostics());
+  });
+
   app.get('/intelligence', requireAuth, (req, res) => {
     const overview = store.dashboardIntelligenceSummary().overview;
     res.json({ ...overview, initiative: overview.initiative });
@@ -377,15 +382,15 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         : value,
     });
   });
-  app.post('/intelligence/cycles', requireAuth, (req, res) => {
+  app.post('/intelligence/cycles', requireAuth, async (req, res) => {
+    const startedAt = process.hrtime.bigint();
     try {
       const authoritativeInputs = getCognitiveInputs();
       const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
         inner_thread: authoritativeInputs.inner_thread || null,
         soma: authoritativeInputs.soma || null, wants: authoritativeInputs.wants || [], predictions: getPredictions(),
         resume_active: true };
-      store.refreshCognition(cognitiveInput);
-      const started = store.startCycle(cognitiveInput);
+      const started = await store.openOrResumeCycle(cognitiveInput);
       progressHourlyCycle(started.cycle.id, {
         label: 'Planning the run',
         detail: 'Committing a testable forecast before operational work begins.',
@@ -411,16 +416,19 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         for (const field of ['orientation', 'recommendations']) delete visibleStarted.cycle[field];
         delete visibleStarted.orientation;
       }
-      res.json({ ok: true, ...visibleStarted, cognition: store.cognitionSnapshot(getPredictions()) });
-    } catch (error) { res.status(400).json({ error: error.message }); }
+      const durationMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      res.set('Server-Timing', `cycle-open;dur=${durationMs.toFixed(1)}`);
+      res.set('X-Nora-Persistence-Mode', store.persistenceDiagnostics().foreground_serialization);
+      res.json({ ok: true, ...visibleStarted });
+    } catch (error) { res.status(error.code === 'INTELLIGENCE_PERSISTENCE_FAILED' ? 503 : 400).json({ error: error.message }); }
   });
-  app.post('/intelligence/cycles/:id/reenter', requireAuth, (req, res) => {
+  app.post('/intelligence/cycles/:id/reenter', requireAuth, async (req, res) => {
     try {
-      const result = store.reenterCycle(req.params.id, { ...getCognitiveInputs(), ...(req.body || {}), predictions: getPredictions() });
+      const result = await store.reenterCycleDurable(req.params.id, { ...getCognitiveInputs(), ...(req.body || {}), predictions: getPredictions() });
       if (!result) return res.status(404).json({ error: 'intelligence cycle not found' });
       if (store.interventionActive('recurrent_feedback')) return res.json({ ok: true, experimental_outcome_sealed: true, cycle_id: result.cycle?.id || req.params.id });
       res.json({ ok: true, ...result });
-    } catch (error) { res.status(400).json({ error: error.message }); }
+    } catch (error) { res.status(error.code === 'INTELLIGENCE_PERSISTENCE_FAILED' ? 503 : 400).json({ error: error.message }); }
   });
   app.post('/intelligence/cycles/:id/self-forecast', requireAuth, async (req, res) => {
     let forecast = null;
