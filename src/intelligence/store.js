@@ -4036,16 +4036,23 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function epistemicAgendaSnapshot({ includeAttempts = false, includeAccessRecords = false } = {}) {
     const agenda = state.cognition.epistemic_agenda;
     const audit = epistemicAgendaProjectionAudit(agenda);
-    const questions = audit.complete_chain_verified ? JSON.parse(JSON.stringify(agenda.questions)) : [];
+    const questions = audit.complete_chain_verified
+      ? JSON.parse(JSON.stringify(agenda.questions)).map(question => ({ ...question,
+        prompt_access: epistemicAgenda.promptEligibility(question) })) : [];
     const naturalAccess = epistemicAgendaAccessSnapshot({ includeRecords: includeAccessRecords });
+    const promptEligible = questions.filter(item => item.prompt_access?.eligible).length;
+    const promptHeld = questions.filter(item => item.status === 'open'
+      && !item.prompt_access?.eligible).length;
     const result = {
-      epistemic_status: 'Durable, Nora-authored professional questions revised only by naturally encountered evidence. This is a functional model of sustained inquiry, not a feeling claim, autonomous action authority, or evidence of phenomenal consciousness.',
+      epistemic_status: 'Durable, Nora-authored professional questions revised only by naturally encountered evidence. Immutable but non-durable legacy questions remain visible and replay-valid while being held outside ordinary response prompts. This is a functional model of sustained inquiry, not a feeling claim, autonomous action authority, or evidence of phenomenal consciousness.',
       protocol: { version: epistemicAgenda.PROTOCOL_VERSION,
         maximum_open_questions: epistemicAgenda.MAX_OPEN_QUESTIONS, active_search: false,
         foreground_provider_calls: false, connector_actions: false,
+        prompt_access_rule: 'durable_question_prompt_access_v1',
         minimum_attempt_interval_hours: epistemicAgenda.MIN_ATTEMPT_INTERVAL_MS / 3600000 },
       questions, audit, report: { total: questions.length,
         open: questions.filter(item => item.status === 'open').length,
+        prompt_eligible: promptEligible, held_for_durable_revision: promptHeld,
         resolved: questions.filter(item => item.status === 'resolved').length,
         abandoned: questions.filter(item => item.status === 'abandoned').length,
         replay_verified_attempts: audit.attempt_audits.filter(item => item.complete_chain_verified).length,

@@ -325,22 +325,27 @@ function renderEpistemicAgenda(value = {}) {
   }
   target.innerHTML = `<div class="epistemic-agenda-summary">
       <span><strong>${value.report?.open || 0}</strong> open</span>
+      <span><strong>${value.report?.prompt_eligible || 0}</strong> eligible for work</span>
+      <span><strong>${value.report?.held_for_durable_revision || 0}</strong> held for revision</span>
       <span><strong>${value.report?.resolved || 0}</strong> resolved</span>
       <span><strong>${value.report?.replay_verified_attempts || 0}</strong> replay-verified turns</span>
       <span><strong>${access.replay_verified_applications || 0}</strong> relevant work exposures</span>
     </div>
     <div class="epistemic-agenda-list">${ordered.map(item => {
     const latest = item.history?.at(-1);
-    return `<article class="epistemic-question" data-status="${escHtml(item.status)}">
-      <div class="epistemic-question-heading"><span>${escHtml(item.status)}</span><strong>${Math.round(Number(item.confidence || 0) * 100)}% tentative</strong></div>
+    const accessState = item.prompt_access?.eligible ? 'eligible' : 'held';
+    const stateLabel = item.status === 'open' && accessState === 'held'
+      ? 'open history · held from work' : `${item.status} · ${accessState}`;
+    return `<article class="epistemic-question" data-status="${escHtml(item.status)}" data-access="${accessState}">
+      <div class="epistemic-question-heading"><span>${escHtml(stateLabel)}</span><strong>${Math.round(Number(item.confidence || 0) * 100)}% tentative</strong></div>
       <h3>${escHtml(item.question)}</h3>
       <p>${escHtml(item.current_best_answer || 'No tentative answer yet.')}</p>
-      <dl><div><dt>Why Nora keeps it</dt><dd>${escHtml(item.why_it_matters)}</dd></div>
+      <dl><div><dt>${accessState === 'held' ? 'Why it remains in history' : 'Why Nora keeps it'}</dt><dd>${escHtml(item.why_it_matters)}</dd></div>
         <div><dt>What could change it</dt><dd>${escHtml(item.next_evidence)}</dd></div></dl>
       <div class="epistemic-question-meta">${item.evidence_ids?.length || 0} naturally encountered records${latest ? ` &middot; last ${escHtml(latest.action)} ${escHtml(new Date(item.updated_at).toLocaleString())}` : ''}</div>
     </article>`;
   }).join('')}</div>
-    <p class="intelligence-note">No active searching, connector actions, or foreground model calls. Questions change only when ordinary work supplies new evidence. Prompt exposure is recorded separately from proven use or causal benefit.</p>`;
+    <p class="intelligence-note">No active searching, connector actions, or foreground model calls. Only durable, transferable questions can enter relevant work; disqualified history stays visible until a receipt-bound revision or abandonment. Prompt exposure is recorded separately from proven use or causal benefit.</p>`;
 }
 
 function readingRoomBook(source, session) {

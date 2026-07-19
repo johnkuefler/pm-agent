@@ -65,7 +65,7 @@ function relevanceTerms(value) {
 
 function promptPacket(question, query = '') {
   const source = publicQuestion(question);
-  if (source.status !== 'open') return null;
+  if (!promptEligibility(source).eligible) return null;
   const queryTerms = relevanceTerms(query);
   if (!queryTerms.length) return null;
   const corpus = `${source.topic_key} ${source.question} ${source.why_it_matters} ${source.current_best_answer || ''} ${source.next_evidence}`.toLowerCase();
@@ -139,6 +139,24 @@ function durableQuestionQuality({ topicKey, question, nextEvidence, evidenceIds 
       reason: 'durable questions and their next-evidence criteria must not depend on a named person, vendor, or system' };
   }
   return { valid: true, reason: null };
+}
+
+function promptEligibility(question = {}) {
+  const source = publicQuestion(question);
+  const reasons = [];
+  if (source.status !== 'open') reasons.push('question_not_open');
+  if (DATED_REFERENCE_PATTERN.test(source.question)
+    || DATED_REFERENCE_PATTERN.test(source.next_evidence)) reasons.push('date_bound');
+  if (!DURABLE_INQUIRY_PATTERN.test(source.question)) reasons.push('not_transferable_inquiry');
+  if (properNounTerms(source.question).length || properNounTerms(source.next_evidence).length) {
+    reasons.push('named_entity_bound');
+  }
+  return {
+    eligible: reasons.length === 0,
+    state: reasons.length ? 'held_for_durable_revision' : 'eligible_for_relevant_work',
+    reasons,
+    rule: 'durable_question_prompt_access_v1',
+  };
 }
 
 function outputSchema(packetOrMode, protocolVersion = Number(packetOrMode?.protocol_version)
@@ -374,7 +392,7 @@ module.exports = { LEGACY_PROTOCOL_VERSION, EVIDENCE_BOUND_PROTOCOL_VERSION, PRO
   DEFAULT_MODEL, MAX_TOKENS, MIN_ATTEMPT_INTERVAL_MS,
   MIN_FORM_INTERVAL_MS, MAX_OPEN_QUESTIONS, RELEVANCE_STOPWORDS, canonicalJson, commitment, cleanText,
   publicQuestion, relevanceTerms, promptPacket, relevantPromptPackets, renderPromptPacket,
-  evidenceContextCount, properNounTerms, citedProjectTerms, durableQuestionQuality,
+  evidenceContextCount, properNounTerms, citedProjectTerms, durableQuestionQuality, promptEligibility,
   outputSchema, systemPrompt, packetFor, buildManifest,
   requestFor, responseText, parseJsonObject, normalizeOutput, receiptPayload, submissionFor,
   auditReceipt, runCycle };

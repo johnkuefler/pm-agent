@@ -148,6 +148,9 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.match(intelligenceJs, /\/developmental-reading/);
   assert.match(intelligenceJs, /\/epistemic-agenda/);
   assert.match(html, /id="epistemic-agenda-state"/);
+  assert.match(intelligenceJs, /held for revision/);
+  assert.match(intelligenceJs, /held from work/);
+  assert.match(intelligenceJs, /prompt_access\?\.eligible/);
   assert.match(intelligenceJs, /startReadingRoomPolling/);
   assert.match(intelligenceJs, /Provider-bound autonomous selection/);
   assert.match(intelligenceJs, /candidate.*frozen/);

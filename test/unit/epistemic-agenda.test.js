@@ -198,6 +198,34 @@ test('durable-question gate rejects project status lookups and retains transfera
   assert.throws(() => agenda.normalizeOutput(namedSystem, packet), /not durable.*named person, vendor, or system/);
 });
 
+test('non-durable legacy questions remain auditable but cannot enter ordinary work prompts', async () => {
+  now = new Date('2026-07-18T12:00:00.000Z');
+  const { dir, store } = await makeStore();
+  const packet = { ...agenda.packetFor({ memories: memories(), questions: [], now, mode: 'form' }),
+    protocol_version: agenda.LEGACY_PROTOCOL_VERSION };
+  const legacyStatus = { ...formationOutput(), topic_key: 'alpha.launch-status',
+    question: 'Does Alpha launch readiness align with the 7/30 delivery date?',
+    next_evidence: 'A Basecamp reply from Alex confirming whether Alpha is ready for 7/30.' };
+  const request = agenda.requestFor(packet);
+  const submission = agenda.submissionFor(packet, response(request.request, legacyStatus));
+  await store.recordEpistemicAgendaAttempt({ packet, output: submission.output,
+    generation_receipt: submission.receipt });
+
+  const snapshot = store.epistemicAgendaSnapshot({ includeAttempts: true });
+  assert.equal(snapshot.audit.complete_chain_verified, true);
+  assert.equal(snapshot.report.replay_verified_attempts, 1);
+  assert.equal(snapshot.report.open, 1);
+  assert.equal(snapshot.report.prompt_eligible, 0);
+  assert.equal(snapshot.report.held_for_durable_revision, 1);
+  assert.deepEqual(snapshot.questions[0].prompt_access, {
+    eligible: false, state: 'held_for_durable_revision',
+    reasons: ['date_bound', 'not_transferable_inquiry', 'named_entity_bound'],
+    rule: 'durable_question_prompt_access_v1',
+  });
+  assert.deepEqual(store.epistemicAgendaPromptPackets('Is Alpha ready for its 7/30 launch?'), []);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('a relevant question can enter ordinary PM judgment with a replay-valid access and outcome receipt', async () => {
   now = new Date('2026-07-18T12:00:00.000Z');
   const { dir, store } = await makeStore();
