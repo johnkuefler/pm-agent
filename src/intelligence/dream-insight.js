@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const dreamIdeaSeed = require('./dream-idea-seed');
 
 const OBSERVATION_PROTOCOL_VERSION = 1;
 const OBSERVATION_WINDOW_MIN_DAYS = 2;
@@ -112,6 +113,11 @@ function observationPlanAudit(insight) {
 }
 
 function resolutionEligibility(insight, now = new Date(), outcome = null) {
+  const role = roleEligibility(insight);
+  if (outcome !== 'retired' && !role.eligible) return {
+    eligible: false, reason: 'retired_role_residue', observation_protocol: 'role_boundary',
+    resolve_not_before: null, minimum_opportunities: null,
+  };
   const audit = observationPlanAudit(insight);
   const plan = insight?.formation_record?.observation_plan || null;
   if (!audit.complete_chain_verified) return {
@@ -137,6 +143,16 @@ function resolutionEligibility(insight, now = new Date(), outcome = null) {
     resolve_not_before: plan.resolve_not_before,
     minimum_opportunities: plan.minimum_opportunities,
   };
+}
+
+function roleEligibility(insight = {}) {
+  const formation = insight?.formation_record || {};
+  const values = [insight.statement, formation.statement, formation.next_observation,
+    formation.expected_usefulness, formation.observation_plan?.opportunity_definition,
+    ...(formation.source_ideas || []).map(item => item?.idea)];
+  const reasons = [...new Set(values.flatMap(value => dreamIdeaSeed.roleEligibility(String(value || '')).reasons))];
+  return { eligible: reasons.length === 0,
+    state: reasons.length ? 'retired_role_residue' : 'eligible', reasons };
 }
 
 function dreamInsights(dreams = []) {
@@ -219,6 +235,7 @@ function insightAudit(insight, dreams = []) {
     && resolutionSemanticsVerified && independentReviewVerified
     && independentReviewSemanticsVerified && statusLifecycleVerified
     && observationAudit.complete_chain_verified;
+  const role = roleEligibility(insight);
   return {
     formation_commitment_verified: formationCommitmentVerified,
     projection_matches_formation: projectionMatchesFormation,
@@ -234,7 +251,8 @@ function insightAudit(insight, dreams = []) {
     independent_review_semantics_verified: independentReviewSemanticsVerified,
     status_lifecycle_verified: statusLifecycleVerified,
     ...observationAudit,
-    final_evidence_eligible: Boolean(expectedReviewOutcome && completeChainVerified),
+    role_eligibility: role,
+    final_evidence_eligible: Boolean(expectedReviewOutcome && completeChainVerified && role.eligible),
     complete_chain_verified: completeChainVerified,
   };
 }
@@ -247,7 +265,7 @@ function snapshotFor(insight, dreams = []) {
 
 function eligibleSnapshots(dreams = []) {
   return dreamInsights(dreams).filter(({ insight }) => insight?.status === 'independently_supported'
-    && insightAudit(insight, dreams).final_evidence_eligible)
+    && roleEligibility(insight).eligible && insightAudit(insight, dreams).final_evidence_eligible)
     .map(({ insight }) => snapshotFor(insight, dreams));
 }
 
@@ -262,7 +280,7 @@ function verifyFinalSnapshot(snapshot, dreams = []) {
 module.exports = {
   OBSERVATION_PROTOCOL_VERSION, OBSERVATION_WINDOW_MIN_DAYS, OBSERVATION_WINDOW_MAX_DAYS,
   OBSERVATION_MIN_OPPORTUNITIES, OBSERVATION_MAX_OPPORTUNITIES,
-  canonicalJson, commitment, dreamInsights, eligibleSnapshots, insightAudit,
+  canonicalJson, commitment, dreamInsights, eligibleSnapshots, insightAudit, roleEligibility,
   normalizeObservationPlanInput, normalizeObservationPlan, observationPlanAudit,
   resolutionEligibility, snapshotFor, validEvidenceRefs, verifyFinalSnapshot,
 };

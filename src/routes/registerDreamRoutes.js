@@ -46,6 +46,7 @@ function registerDreamRoutes(app, deps) {
         total: allSeeds.length,
         available: allSeeds.filter(seed => seed.status === 'available').length,
         used: allSeeds.filter(seed => seed.status === 'used').length,
+        role_retired: allSeeds.filter(seed => seed.status === 'role_retired').length,
       },
     });
   });
@@ -81,6 +82,7 @@ function registerDreamRoutes(app, deps) {
         window_eligible_candidates: allInsights.filter(insight => insight.status === 'candidate'
           && insight.resolution_eligibility.eligible).length,
         legacy_unbounded: allInsights.filter(insight => insight.audit.observation_protocol === 'legacy_unbounded').length,
+        role_retired: allInsights.filter(insight => !insight.audit.role_eligibility?.eligible).length,
       },
     });
   });

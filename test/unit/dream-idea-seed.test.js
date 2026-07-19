@@ -20,3 +20,19 @@ test('dream idea seeds bind an exact stored spark and reveal later source drift'
   assert.equal(audit.source_exists, true);
   assert.equal(audit.content_commitment_verified, false);
 });
+
+test('retired development-dispatch ideas remain committed history but are ineligible as new seeds', () => {
+  const dream = { id: 'dream-retired-role', date: '2026-07-15', reflection: { ideas: [
+    'The dev-dispatch pipeline needs a standing repo-mapping fix.',
+    'Ownership gaps may predict schedule drift better than due dates.',
+  ] } };
+  const listed = dreamIdeaSeed.list([dream], []);
+  assert.equal(listed[0].status, 'role_retired');
+  assert.deepEqual(listed[0].role_eligibility, {
+    eligible: false, state: 'retired_role_residue', reasons: ['development_dispatch_retired'],
+  });
+  assert.equal(dreamIdeaSeed.verifySnapshot(listed[0]), true,
+    'role retirement must not rewrite or invalidate the historical source commitment');
+  assert.equal(listed[1].status, 'available');
+  assert.equal(listed[1].role_eligibility.eligible, true);
+});

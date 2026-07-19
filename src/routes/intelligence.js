@@ -197,6 +197,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       input.source_refs = Array.isArray(input.source_refs) ? input.source_refs.map(ref => (
         ref?.type === 'dream_idea' ? dreamIdeaSeed.resolve(ref, getDreams()) : ref
       )) : input.source_refs;
+      const retiredSource = (input.source_refs || []).find(ref => ref?.type === 'dream_idea'
+        && !dreamIdeaSeed.roleEligibility(ref).eligible);
+      if (retiredSource) throw new Error('retired-role dream ideas cannot seed new learning experiments');
       res.json({ ok: true, experiment: store.chooseExperiment(input) });
     }
     catch (error) { res.status(400).json({ error: error.message }); }

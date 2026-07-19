@@ -166,3 +166,57 @@ test('historical candidates remain replay-valid and explicitly legacy unbounded'
   assert.equal(resolved.body.insight.audit.observation_protocol, 'legacy_unbounded');
   assert.equal(resolved.body.insight.audit.complete_chain_verified, true);
 });
+
+test('retired-role insight history cannot earn support and can be explicitly retired', () => {
+  const dreams = [{ id: 'dream-role-a', date: '2026-07-01',
+    finished: '2026-07-01T06:00:00.000Z', reflection: { ideas: [
+      'The dev-dispatch pipeline repeatedly stalls on repository mapping.',
+    ] } }, { id: 'dream-role-b', date: '2026-07-03',
+    finished: '2026-07-03T06:00:00.000Z', reflection: { ideas: [
+      'A repo-mapping standing fix could reduce recurring development dispatch no-ops.',
+    ] } }];
+  const formation = { id: 'retired-role-insight',
+    statement: 'Development dispatch needs a standing repo-mapping repair.',
+    scope: 'process', confidence: 0.4,
+    rationale: 'Two historical dream records repeated the same now-retired operational concern.',
+    expected_usefulness: 'It would have reduced repeated development-dispatch checks.',
+    falsification_criteria: ['The retired run never occurs again.'],
+    next_observation: 'Observe the next dev-dispatch run for the same mapping gap.',
+    source_ideas: [
+      { dream_id: 'dream-role-a', dream_date: '2026-07-01', idea_index: 0,
+        idea: dreams[0].reflection.ideas[0] },
+      { dream_id: 'dream-role-b', dream_date: '2026-07-03', idea_index: 0,
+        idea: dreams[1].reflection.ideas[0] },
+    ], provenance_claim: 'submitted_as_nora_nightly_reflection',
+    formed_at: '2026-07-03T07:00:00.000Z' };
+  dreams[1].reflection.insight_candidates = [{ id: formation.id, statement: formation.statement,
+    scope: formation.scope, confidence: formation.confidence, status: 'candidate',
+    formed_at: formation.formed_at, formation_record: formation,
+    formation_commitment: dreamInsight.commitment(formation), resolution_record: null,
+    resolution_commitment: null, independent_review: null, independent_review_commitment: null }];
+  const { invoke } = harness(false, { dreams,
+    clock: () => new Date('2026-07-04T06:00:00.000Z') });
+
+  const listed = invoke('GET', '/dream-insights');
+  assert.equal(listed.body.report.role_retired, 1);
+  assert.equal(listed.body.insights[0].audit.complete_chain_verified, true);
+  assert.equal(listed.body.insights[0].audit.role_eligibility.eligible, false);
+  assert.equal(listed.body.insights[0].resolution_eligibility.reason, 'retired_role_residue');
+
+  const evidence = [{ type: 'operational_role_boundary', id: 'development-dispatch-retired' }];
+  const unsupported = invoke('POST', '/dream-insights/:id/resolve', {
+    params: { id: formation.id }, body: { outcome: 'supported',
+      observation: 'The historical condition is no longer part of Nora operational role.', evidence },
+  });
+  assert.equal(unsupported.statusCode, 400);
+  assert.match(unsupported.body.error, /retired_role_residue/);
+
+  const retired = invoke('POST', '/dream-insights/:id/resolve', {
+    params: { id: formation.id }, body: { outcome: 'retired',
+      observation: 'Development dispatch and repository follow-up were removed from Nora role.', evidence },
+  });
+  assert.equal(retired.statusCode, 200);
+  assert.equal(retired.body.insight.status, 'retired');
+  assert.equal(retired.body.insight.audit.complete_chain_verified, true);
+  assert.equal(retired.body.insight.audit.final_evidence_eligible, false);
+});

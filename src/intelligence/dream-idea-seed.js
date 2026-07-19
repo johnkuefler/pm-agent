@@ -2,6 +2,10 @@
 
 const crypto = require('crypto');
 
+const RETIRED_ROLE_PATTERNS = Object.freeze([
+  { id: 'development_dispatch_retired', pattern: /\b(?:copilot pr|dev(?:elopment)?[- ]dispatch|dev[- ]round|gh_token|github (?:access|token)|pr (?:closure|dispatch|monitoring)|pull[- ]request|repo(?:sitory)?[- ]mapping)\b/i },
+]);
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
@@ -28,6 +32,13 @@ function payloadFor(dream, ideaIndex) {
 function seedFor(dream, ideaIndex) {
   const payload = payloadFor(dream, ideaIndex);
   return payload ? { ...payload, content_commitment: contentCommitment(payload) } : null;
+}
+
+function roleEligibility(value) {
+  const text = typeof value === 'string' ? value : String(value?.idea || '');
+  const reasons = RETIRED_ROLE_PATTERNS.filter(item => item.pattern.test(text)).map(item => item.id);
+  return { eligible: reasons.length === 0,
+    state: reasons.length ? 'retired_role_residue' : 'eligible', reasons };
 }
 
 function resolve(ref, dreams = []) {
@@ -66,7 +77,9 @@ function list(dreams = [], experiments = []) {
     .map(seed => {
       const usedBy = experiments.filter(experiment => (experiment.source_refs || []).some(ref => ref?.type === 'dream_idea'
         && ref.id === seed.id && ref.content_commitment === seed.content_commitment)).map(experiment => experiment.id);
-      return { ...seed, status: usedBy.length ? 'used' : 'available', used_by: usedBy };
+      const role = roleEligibility(seed);
+      return { ...seed, status: role.eligible ? (usedBy.length ? 'used' : 'available') : 'role_retired',
+        role_eligibility: role, used_by: usedBy };
     });
 }
 
@@ -84,4 +97,5 @@ function verifySnapshot(ref) {
     && ref.idea.trim() && ref.idea.length <= 1600 && ref.content_commitment === contentCommitment(payload));
 }
 
-module.exports = { audit, contentCommitment, list, resolve, seedFor, verifySnapshot };
+module.exports = { RETIRED_ROLE_PATTERNS, audit, contentCommitment, list, resolve, roleEligibility,
+  seedFor, verifySnapshot };

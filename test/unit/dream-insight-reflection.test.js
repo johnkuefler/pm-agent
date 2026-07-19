@@ -192,6 +192,26 @@ test('a source packet guarantees source seeds and excludes later evidence', () =
   assert.equal(packet.source_selection_protocol_version, reflection.SOURCE_SELECTION_PROTOCOL_VERSION);
 });
 
+test('source-selection v3 excludes retired-role residue without rewriting historical dream ideas', () => {
+  const dreams = [{
+    id: 'dream-prior', date: '2026-07-13', finished: '2026-07-13T07:00:00.000Z',
+    reflection: { ideas: ['Ownership gaps may predict schedule drift better than due dates.'] },
+  }, {
+    id: 'dream-retired', date: '2026-07-14', finished: '2026-07-14T07:00:00.000Z',
+    reflection: { ideas: ['The dev-dispatch pipeline needs a standing repo-mapping fix.'] },
+  }, {
+    id: 'dream-current', date: '2026-07-15', finished: '2026-07-15T07:00:00.000Z',
+    reflection: { ideas: ['Unowned dated work repeatedly stalls before handoff.'] },
+  }];
+  const packet = reflection.packetFor({ dreams, sourceDream: dreams[2] });
+  assert.equal(packet.source_selection_protocol_version, 3);
+  assert.equal(packet.idea_seeds.some(seed => seed.dream_id === 'dream-retired'), false);
+  assert.equal(dreams[1].reflection.ideas.length, 1,
+    'source selection must preserve the exact historical dream record');
+  assert.equal(reflection.eligibleSourceDreams(dreams).some(dream => dream.id === 'dream-retired'),
+    false);
+});
+
 test('reflection rejects sources outside the packet or without date separation', () => {
   const dreams = fixtureDreams();
   const packet = reflection.packetFor({ dreams, sourceDream: dreams[1] });

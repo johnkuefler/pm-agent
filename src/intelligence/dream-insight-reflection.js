@@ -10,7 +10,7 @@ const LEGACY_PROTOCOL_VERSION = 1;
 const ID_ROLE_PROTOCOL_VERSION = 2;
 const ORDINAL_PROTOCOL_VERSION = 3;
 const PROTOCOL_VERSION = 4;
-const SOURCE_SELECTION_PROTOCOL_VERSION = 2;
+const SOURCE_SELECTION_PROTOCOL_VERSION = 3;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const MAX_TOKENS = 1400;
 const MAX_PACKET_SEEDS = 36;
@@ -51,7 +51,7 @@ function utcDate(value = new Date()) {
 }
 
 function seedPacket(dreams = [], limit = MAX_PACKET_SEEDS) {
-  return dreamIdeaSeed.list(dreams, []).map(seed => ({
+  return dreamIdeaSeed.list(dreams, []).filter(seed => seed.role_eligibility?.eligible).map(seed => ({
     type: seed.type, id: seed.id, dream_id: seed.dream_id, dream_date: seed.dream_date,
     idea_index: seed.idea_index, idea: seed.idea, content_commitment: seed.content_commitment,
   })).sort((left, right) => String(right.dream_date || '').localeCompare(String(left.dream_date || ''))

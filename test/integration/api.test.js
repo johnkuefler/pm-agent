@@ -1020,6 +1020,20 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   } });
   assert.equal(seededExperiment.body.experiment.source_refs[0].idea, seed.idea);
   assert.equal((await request('/dream-idea-seeds?status=used')).body.seeds.some(item => item.id === seed.id), true);
+  const retiredRoleDream = await request('/dreams', { method: 'POST', body: {
+    date: '2026-07-13', started: '2026-07-13T05:00:00Z', finished: '2026-07-13T05:10:00Z',
+    narrative: 'Historical role residue.', reflection: { ideas: [
+      'The dev-dispatch pipeline needs a standing repo-mapping fix.',
+    ] },
+  } });
+  const retiredProjection = await request('/dream-idea-seeds?status=role_retired');
+  const retiredSeed = retiredProjection.body.seeds.find(item => item.dream_id === retiredRoleDream.body.dream.id);
+  assert.equal(retiredProjection.body.report.role_retired, 1);
+  assert.equal(retiredSeed.role_eligibility.eligible, false);
+  assert.equal((await request('/learning-experiments/choose', { method: 'POST', body: {
+    behavior: 'Resume repository mapping', hypothesis: 'Development dispatch will move faster',
+    rationale: 'A historical dream proposed it.', source_refs: [retiredSeed],
+  } })).response.status, 400);
   const laterDream = await request('/dreams', { method: 'POST', body: { date: '2026-07-15', started: '2026-07-15T05:00:00Z', finished: '2026-07-15T05:10:00Z', narrative: 'The handoff pattern recurred.', reflection: { ideas: ['The same delivery phase keeps producing preventable handoff gaps'] } } });
   const insight = await request('/dream-insights', { method: 'POST', body: {
     statement: 'A repeated delivery phase may be producing preventable handoff gaps across projects.',

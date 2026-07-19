@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const dreamInsight = require('./dream-insight');
+const dreamIdeaSeed = require('./dream-idea-seed');
 
 const ALLOWED_SCOPES = new Set(['project', 'process', 'team']);
 const PHENOMENAL_CLAIM = /\b(conscious(?:ness)?|sentien(?:t|ce)|qualia|phenomenal|subjective experience)\b/i;
@@ -44,6 +45,12 @@ function createCandidate({ dreams = [], input = {}, now = new Date(),
   if (new Set(sourceIdeas.map(source => source.dream_id)).size !== sourceIdeas.length
     || new Set(sourceIdeas.map(source => source.dream_date)).size !== sourceIdeas.length) {
     throw new Error('dream insight sources must come from distinct dreams on distinct dates');
+  }
+  const roleReasons = [...new Set([statement, rationale, expectedUsefulness, nextObservation,
+    ...falsificationCriteria, ...sourceIdeas.map(source => source.idea)]
+    .flatMap(value => dreamIdeaSeed.roleEligibility(value).reasons))];
+  if (roleReasons.length) {
+    throw new Error(`retired-role residue cannot form a new dream insight: ${roleReasons.join(', ')}`);
   }
   const existing = dreamInsight.dreamInsights(dreams).map(({ insight }) => insight);
   if (existing.filter(insight => insight.status === 'candidate').length >= 10) {
