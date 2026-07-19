@@ -6324,7 +6324,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
   }
 
-  function refreshCognition(input = {}) {
+  function refreshCognition(input = {}, { project = true } = {}) {
     return mutate(current => {
       const now = input.now ? new Date(input.now) : clock();
       const goalState = interventionActive('goal_access') || interventionActive('integrated_self_binding')
@@ -6344,7 +6344,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       current.cognition.relational_affect.current = relationalAffect.derive(current.relationships, now);
       current.cognition.workspace = scoreWorkspace(current, cognitionInput, now, activeCognitiveParameters());
       recordAttentionFrame(current, current.cognition.workspace, { kind: input.attention_kind || 'refresh', cycle_id: input.cycle_id || null, now });
-      return cognitionPayload(current.cognition);
+      // Full cognition projection performs replay audits intended for explicit cognition reads.
+      // Lifecycle callers only need the state mutation and must not pay that growing cost on the
+      // foreground run-lock path.
+      return project ? cognitionPayload(current.cognition) : null;
     });
   }
 
@@ -26059,7 +26062,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     try {
       result = await durableMutationBatch(() => {
         let stageStarted = performance.now();
-        refreshCognition(input);
+        refreshCognition(input, { project: false });
         refreshMs = performance.now() - stageStarted;
         stageStarted = performance.now();
         const opened = startCycle(input);

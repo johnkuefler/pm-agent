@@ -162,7 +162,16 @@ function scoreWorkspace(state, context = {}, now = new Date(), parameterInput = 
     const dueMs = new Date(item.decision_due).getTime(); const dueSoon = Number.isFinite(dueMs) && dueMs <= now.getTime() + config.prospection.due_soon_hours * 60 * 60 * 1000;
     candidates.push({ type: 'prospection', id: item.id, score: (dueSoon ? config.prospection.due_soon_base : config.prospection.normal_base) + relevance(`${item.scenario} ${intended?.action || ''} ${intended?.predicted_outcome || ''}`), text: `Constructed future: ${item.scenario}; current plan: ${intended?.action || item.intended_option_key} (${Math.round((intended?.probability || 0) * 100)}% predicted outcome)` });
   }
-  const currentSelfFrame = context.includeIntegratedSelf === false ? null : (state.cognition?.integrated_self?.frames || []).filter(item => integratedSelf.verifyFrame(item, state).complete_chain_verified).at(-1);
+  let currentSelfFrame = null;
+  if (context.includeIntegratedSelf !== false) {
+    const frames = state.cognition?.integrated_self?.frames || [];
+    for (let index = frames.length - 1; index >= 0; index--) {
+      if (integratedSelf.verifyFrame(frames[index], state).complete_chain_verified) {
+        currentSelfFrame = frames[index];
+        break;
+      }
+    }
+  }
   if (currentSelfFrame) {
     const drive = currentSelfFrame.motivation?.dominant_drive;
     const selfRelevance = /\b(?:self|you|your|feel|state|capacity|attention|intend|why|control|coher)/i.test(query) ? config.self_frame.self_query_boost : 0;
