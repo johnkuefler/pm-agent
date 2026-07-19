@@ -83,6 +83,8 @@ function registerCoworkInstructionsRoute(app) {
     Acquire at the TOP of a run; if acquired=false, another run is active — skip all shared-state mutation.
   - GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ..., "lifecycle": {...}|null }
   - DELETE /run-lock?holder=...   — Release (only the holder can). Always release at run end.
+  - GET  /runtime-activity         — Bounded live activity snapshot used by the dashboard.
+  - POST /runtime-activity/report  — Report an hourly-run phase. Body: { "phase": "orientation|forecast|context|cleanup|tasks|transcripts|files|email|slack|deadlines|relationships|reflection|summary" }. The server binds it to the active run lock; reporting is best-effort and never replaces the durable cycle ledger.
     The response reports lifecycle closure. Releasing an open bound cycle records a replay-audited explicit
     gap excluded from evidence rather than fabricating a forecast, action, self-report, or handoff. The lock
     auto-expires after its TTL so a crashed run can't wedge it; expiry is recovered as explicit missing evidence.

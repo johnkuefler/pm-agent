@@ -10,6 +10,7 @@
     }
 
     const pageMeta = {
+      live: ['Live', 'See Nora\'s hourly work, conversations, and background processes as they happen.'],
       meeting: ['Meeting', 'Send Nora into a call with the right context, mandate, and participation mode.'],
       tasks: ['Tasks', 'Review Nora\'s action queue, schedule follow-up work, and close completed items.'],
       projects: ['Projects', 'Manage the durable project context Nora uses across meetings, Slack, and scheduled work.'],
@@ -42,6 +43,7 @@
       closeMobileNav();
       closeCommandPalette();
       if (name === 'memory') loadMemory();
+      if (name === 'live') loadRuntimeActivity();
       if (name === 'tasks') loadTasks();
       if (name === 'projects') loadProjects();
       if (name === 'transcripts') loadTranscripts();

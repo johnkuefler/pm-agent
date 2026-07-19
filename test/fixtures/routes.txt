@@ -351,6 +351,9 @@ PATCH /tasks/:id/complete
 PATCH /tasks/:id/result
 DELETE /tasks/:id
 PUT /tasks/:id
+GET /runtime-activity
+POST /runtime-activity/report
+GET /runtime-activity/events
 POST /admin/drive/upload-artifact
 GET /admin/drive/upload-artifact-status
 GET /admin/mcp

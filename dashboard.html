@@ -28,6 +28,7 @@
       <nav id="workspace-nav" class="nav" aria-label="Workspace">
         <div class="nav-group">
           <div class="nav-label">Work</div>
+          <button class="tab" type="button" data-tab="live" aria-selected="false" onclick="showTab('live')">Live</button>
           <button class="tab active" type="button" data-tab="meeting" aria-selected="true" onclick="showTab('meeting')">Meeting</button>
           <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Tasks</button>
           <button class="tab" type="button" data-tab="projects" aria-selected="false" onclick="showTab('projects')">Projects</button>
@@ -66,6 +67,49 @@
           <button id="theme-toggle" class="utility-btn" type="button" onclick="toggleTheme()">Dark theme</button>
         </div>
       </div>
+      <button id="global-activity-strip" class="global-activity-strip is-connecting" type="button" onclick="showTab('live')" aria-label="Open Nora's live activity">
+        <span class="global-activity-state" aria-hidden="true"></span>
+        <span class="global-activity-copy"><strong id="global-activity-label">Connecting to Nora's activity</strong><span id="global-activity-detail">Waiting for the live runtime stream.</span></span>
+        <span class="global-activity-action">Open live view</span>
+      </button>
+
+    <!-- Live Activity Tab -->
+    <div id="page-live" class="page">
+      <section class="live-primary" aria-labelledby="live-primary-label">
+        <div class="live-primary-status">
+          <span id="live-connection-indicator" class="live-status-mark is-connecting" aria-hidden="true"></span>
+          <span id="live-connection-label">Connecting</span>
+        </div>
+        <h2 id="live-primary-label">Finding Nora's current activity</h2>
+        <p id="live-primary-detail">The dashboard is opening a direct, read-only stream from her runtime.</p>
+        <div id="live-primary-meta" class="live-primary-meta">No live timestamp yet</div>
+      </section>
+
+      <section class="section live-current-section" aria-labelledby="live-current-title">
+        <div class="live-section-heading">
+          <div>
+            <h2 id="live-current-title">Happening now</h2>
+            <p>Hourly work, conversations, and background processes appear here while they are active.</p>
+          </div>
+          <span id="live-active-count" class="live-count">0 active</span>
+        </div>
+        <div id="live-current-list" class="live-current-list" aria-live="polite" aria-busy="true">
+          <div class="live-loading-row" aria-hidden="true"></div>
+          <span class="sr-only">Loading Nora's current activity.</span>
+        </div>
+      </section>
+
+      <section class="section live-history-section" aria-labelledby="live-history-title">
+        <div class="live-section-heading">
+          <div>
+            <h2 id="live-history-title">Recent activity</h2>
+            <p>A bounded operational trail. It never includes message text, prompts, tool arguments, or tool results.</p>
+          </div>
+          <button class="btn btn-sm" type="button" onclick="loadRuntimeActivity()">Reconnect</button>
+        </div>
+        <div id="live-history-list" class="live-history-list" aria-live="polite"></div>
+      </section>
+    </div>
 
     <!-- Meeting Tab -->
     <div id="page-meeting" class="page active">
@@ -743,6 +787,7 @@
   </div>
 
   <script src="/assets/js/dashboard-core.js?v={{ASSET_VERSION}}"></script>
+  <script src="/assets/js/dashboard-activity.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-identity.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-meeting.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-tasks.js?v={{ASSET_VERSION}}"></script>

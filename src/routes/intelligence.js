@@ -3,7 +3,7 @@
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
   const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
@@ -19,6 +19,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     projection: 'cognition',
     loadPersisted: () => loadResearchProjection('cognition'),
     savePersisted: envelope => saveResearchProjection('cognition', envelope) });
+  function progressHourlyCycle(cycleId, update) {
+    if (!activityStream) return;
+    const cycle = store.list('cycles').find(item => item.id === cycleId);
+    if (!cycle?.run_lock_holder) return;
+    activityStream.progress(`hourly:${cycle.run_lock_holder}`, update);
+  }
   function projectionHeaders(res, snapshot) {
     res.set('X-Nora-Snapshot-Cache', snapshot.cache_state);
     res.set('X-Nora-Snapshot-Revision', String(snapshot.revision));
@@ -380,6 +386,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         resume_active: true };
       store.refreshCognition(cognitiveInput);
       const started = store.startCycle(cognitiveInput);
+      progressHourlyCycle(started.cycle.id, {
+        label: 'Planning the run',
+        detail: 'Committing a testable forecast before operational work begins.',
+        meta: { phase: 'forecast' },
+      });
       const visibleStarted = JSON.parse(JSON.stringify(started));
       delete visibleStarted.moment.start_snapshot;
       delete visibleStarted.moment.closure_snapshot;
@@ -417,6 +428,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       forecast = store.preregisterCycleSelfForecast(req.params.id, req.body || {});
       if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
       await store.persistStrict();
+      progressHourlyCycle(req.params.id, {
+        label: 'Working the hourly pass',
+        detail: 'The forecast is committed and operational work is underway.',
+        meta: { phase: 'operations' },
+      });
       res.json({ ok: true, forecast });
     } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
   });
@@ -465,6 +481,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         ...(req.body || {}), substrate_at_close: authoritativeInputs.soma || null,
       });
       if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
+      progressHourlyCycle(req.params.id, {
+        label: 'Closing the hourly pass',
+        detail: 'Preserving the completed cycle and preparing its continuity handoff.',
+        meta: { phase: 'summary' },
+      });
       if (store.interventionActive('integrated_self_binding')) return res.json({ ok: true, cycle: { id: cycle.id, status: cycle.status, experimental_access_sealed: true } });
       res.json({ ok: true, cycle });
     } catch (error) { res.status(400).json({ error: error.message }); }

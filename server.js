@@ -10,6 +10,7 @@ const db = require('./db');
 const { registerCoworkInstructionsRoute } = require('./src/routes/cowork-instructions');
 const { registerUiRoutes } = require('./src/routes/ui');
 const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
+const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
 const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
@@ -72,8 +73,10 @@ const selfPredictionStudySequencer = require('./src/intelligence/self-prediction
 const interactivePerformance = require('./src/intelligence/interactive-performance');
 const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
+const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const app = express();
 const server = http.createServer(app);
+const runtimeActivity = createRuntimeActivityStream();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
@@ -353,6 +356,7 @@ function currentCognitiveInputs() {
 
 const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     requireAuth, requireResearchAuth, requireEvaluatorAuth, store: intelligence, readingLibrary,
+    activityStream: runtimeActivity,
     getDreams: loadDreams,
     getWants: () => (_cache.wants?.items || []),
     runSelfInquirySelectionSubject: runSelfInquirySelectionSubjectRuntime,
@@ -3946,6 +3950,11 @@ app.post('/webhook/chat', async (req, res) => {
   if (!query) return;
   const interactionStartedAt = Date.now();
   const interactivePriorityLease = interactivePerformance.beginInteractive('zoom-chat');
+  const chatActivity = runtimeActivity.begin({ lane: 'conversation', kind: 'zoom_chat_response',
+    label: 'Replying in meeting chat',
+    detail: 'Preparing a typed meeting response on the foreground latency-safe path.',
+    source: 'zoom-chat-handler', meta: { surface: 'zoom-chat' } });
+  let chatActivityFailed = false;
   intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('zoom-chat');
 
   console.log(`💬 Chat trigger from ${speaker}: ${query}`);
@@ -4083,6 +4092,10 @@ app.post('/webhook/chat', async (req, res) => {
       extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
     }
   } catch (err) {
+    chatActivityFailed = true;
+    runtimeActivity.finish(chatActivity.id, { status: 'failed',
+      detail: 'The typed meeting response hit an error before clean completion.',
+      outcome: 'A short error notice was attempted in the meeting chat.' });
     console.error('Chat response error:', err.response?.data || err.message);
     // Try to send error message back to chat
     try {
@@ -4093,6 +4106,9 @@ app.post('/webhook/chat', async (req, res) => {
       );
     } catch {}
   } finally {
+    if (!chatActivityFailed) runtimeActivity.finish(chatActivity.id, { status: 'completed',
+      detail: 'The typed meeting response left the foreground response path.',
+      outcome: 'Interactive priority released.' });
     interactivePriorityLease.release();
   }
 });
@@ -5168,6 +5184,11 @@ function maybeVolunteerProbe(openaiWs, session, userText) {
       }
     }));
     session.voiceResponseActive = true; session.voiceResponseAt = now;
+    const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_volunteer_check',
+      label: 'Considering whether to speak in a meeting',
+      detail: 'Checking for one concrete, useful fact without interrupting the room.',
+      source: 'realtime-voice', meta: { surface: 'realtime', interaction_kind: 'volunteer_probe' } });
+    session.runtimeVoiceActivityId = activity.id;
     return true;
   } catch (e) { console.warn('volunteer probe failed:', e.message); return false; }
 }
@@ -5258,6 +5279,11 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       session.voiceTriggerAt = session.voiceResponseAt;
       session.voiceTriggerReason = why;
       session.voiceFirstAudioPending = !session.muted;
+      const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_voice_response',
+        label: session.muted ? 'Replying to a meeting while muted' : 'Responding in a live meeting',
+        detail: 'Preparing a foreground realtime response with meeting turn-taking priority.',
+        source: 'realtime-voice', meta: { surface: 'realtime', interaction_kind: why } });
+      session.runtimeVoiceActivityId = activity.id;
     }
     catch (e) { console.warn('voice trigger failed:', e.message); }
     console.log(`🎙️ Voice: responding (${why})`);
@@ -5526,17 +5552,27 @@ async function processNextJob() {
   if (_dbReady) { try { job = await db.claimNextQueuedJob(); } catch (e) { console.warn('claimNextQueuedJob:', e.message); return; } }
   else { const idx = _memJobs.findIndex(j => j.status === 'queued'); if (idx >= 0) { job = _memJobs[idx]; job.status = 'running'; } }
   if (!job) return;
+  const jobActivity = runtimeActivity.begin({ id: `job:${job.id}`, lane: 'background',
+    kind: 'deferred_tool_job', label: 'Running a deferred connector task',
+    detail: 'Executing work that was intentionally moved out of a live Slack or meeting response.',
+    source: 'job-worker', meta: { step: job.tool_name || 'connector_tool', surface: job.kind || 'background' } });
   try {
     const result = await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
     if (_dbReady) await db.finishJob(job.id, { status: 'done', result }); else job.status = 'done';
     safelyCompleteToolExecution(job.origin?.action_execution_id, 'succeeded', result);
     await deliverJobResult(job, { ok: true, result });
+    runtimeActivity.finish(jobActivity.id, { status: 'completed',
+      detail: 'The deferred connector task completed and its result was routed back.',
+      outcome: 'Delivery attempted on the originating surface.' });
     console.log(`✅ Deferred job ${job.id} done: ${job.tool_name}`);
   } catch (e) {
     const error = e.response?.data?.message || e.message || 'tool failed';
     if (_dbReady) await db.finishJob(job.id, { status: 'failed', error }); else job.status = 'failed';
     safelyCompleteToolExecution(job.origin?.action_execution_id, 'failed', error);
     await deliverJobResult(job, { ok: false, error }).catch(() => {});
+    runtimeActivity.finish(jobActivity.id, { status: 'failed',
+      detail: 'The deferred connector task failed without blocking the live response path.',
+      outcome: 'Failure notice routed to the originating surface.' });
     console.warn(`❌ Deferred job ${job.id} failed: ${error}`);
   }
 }
@@ -6436,12 +6472,26 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
   const interactionStartedAt = Date.now();
   const interactivePriorityLease = interactivePerformance.beginInteractive('slack');
+  const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'slack_response',
+    label: mode === 'proactive' ? 'Considering a Slack interjection' : 'Replying in Slack',
+    detail: 'Preparing a bounded response on the foreground latency-safe path.',
+    source: 'slack-handler', meta: { surface: 'slack', interaction_kind: mode } });
   intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('slack');
+  let failed = false;
   try {
     return await withSlackSessionLock(sessionKey, () =>
       handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
         sourceAttestation, interactionStartedAt));
+  } catch (error) {
+    failed = true;
+    runtimeActivity.finish(activity.id, { status: 'failed',
+      detail: 'The Slack turn ended before the response path reached a clean terminal state.',
+      outcome: 'Failure contained to this interaction.' });
+    throw error;
   } finally {
+    if (!failed) runtimeActivity.finish(activity.id, { status: 'completed',
+      detail: 'The Slack turn left the foreground response path.',
+      outcome: 'Interactive priority released.' });
     interactivePriorityLease.release();
   }
 }
@@ -7792,6 +7842,7 @@ function recoverRunBoundLifecycleWithoutLease() {
 registerRunLockRoutes(app, requireAuth, {
   loadLock: loadDurableRunLock,
   saveLock: saveDurableRunLock,
+  activityStream: runtimeActivity,
   projectLifecycle: ({ lifecycle, holder }) => {
     if (!lifecycle?.cycle_id) return lifecycle;
     const innerProjection = currentInnerThreadProjection();
@@ -7940,6 +7991,13 @@ registerTaskRoutes(app, {
       intelligence.recordEpisodeEvent({ correlation, channel: 'task', kind: 'commitment_fulfilled', actor: 'Nora', text: task.action, at: meta.completed_at });
     }
   },
+});
+
+registerRuntimeActivityRoutes(app, {
+  requireAuth,
+  requireDashboardAuth,
+  stream: runtimeActivity,
+  getRunLock: loadDurableRunLock,
 });
 
 // POST /admin/drive/upload-artifact
@@ -9802,7 +9860,14 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'error') {
         console.error('❌ OpenAI error:', JSON.stringify(msg.error));
         const s = sessions[botId];
-        if (s) { s.voiceResponseActive = false; resumePendingVoiceTurn(openaiWs, s); }
+        if (s) {
+          if (s.runtimeVoiceActivityId) runtimeActivity.finish(s.runtimeVoiceActivityId, { status: 'failed',
+            detail: 'The realtime meeting response ended with a provider error.',
+            outcome: 'The voice gate was released for the next human turn.' });
+          s.runtimeVoiceActivityId = null;
+          s.voiceResponseActive = false;
+          resumePendingVoiceTurn(openaiWs, s);
+        }
       }
 
       if (msg.type === 'input_audio_buffer.speech_started') {
@@ -9819,6 +9884,10 @@ wss.on('connection', async (ws, req) => {
             promptChars: systemPrompt.length, interactionId: botId,
             trigger: s.voiceTriggerReason || 'voice turn' });
           console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
+          if (s.runtimeVoiceActivityId) runtimeActivity.progress(s.runtimeVoiceActivityId, {
+            label: 'Speaking in a live meeting',
+            detail: 'First audio was delivered; the response is still in progress.',
+          });
         }
       }
 
@@ -9863,6 +9932,11 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'response.done' && msg.response) {
         const s = sessions[botId];
         if (s) {
+          if (s.runtimeVoiceActivityId) runtimeActivity.finish(s.runtimeVoiceActivityId, {
+            status: 'completed', detail: 'The realtime meeting turn reached a terminal response event.',
+            outcome: 'Voice turn-taking released for the room.',
+          });
+          s.runtimeVoiceActivityId = null;
           s.voiceResponseActive = false; // free the gate
           s.voiceCancelRequested = false;
           resumePendingVoiceTurn(openaiWs, s);
@@ -9894,6 +9968,11 @@ wss.on('connection', async (ws, req) => {
                 }
               }));
               s.voiceResponseActive = true; s.voiceResponseAt = Date.now();
+              const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_voice_response',
+                label: 'Interjecting with a concrete meeting fact',
+                detail: 'Delivering the bounded fact that passed the silent volunteer check.',
+                source: 'realtime-voice', meta: { surface: 'realtime', interaction_kind: 'volunteer' } });
+              s.runtimeVoiceActivityId = activity.id;
             } catch (e) { console.warn('volunteer speak failed:', e.message); }
           }
           return; // nothing below applies to a silent probe
@@ -11804,14 +11883,48 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
   const lease = interactivePerformance.beginBackground('scheduled-intelligence');
   if (!lease.allowed) {
     _backgroundIntelligenceCycleLast = backgroundPriorityDeferred('scheduled-intelligence', lease);
+    runtimeActivity.record({ lane: 'background', kind: 'intelligence_cycle',
+      label: 'Background intelligence yielded to a live conversation',
+      detail: 'Slack and meeting responsiveness retained foreground priority.',
+      status: 'deferred', source: 'background-scheduler', meta: { reason: lease.reason } });
     return _backgroundIntelligenceCycleLast;
   }
   _backgroundIntelligenceCycleInFlight = true;
+  const backgroundActivity = runtimeActivity.begin({ lane: 'background', kind: 'intelligence_cycle',
+    label: 'Running background intelligence',
+    detail: 'Checking due reflection, learning, research, reading, and play work one bounded step at a time.',
+    source: 'background-scheduler', meta: { trigger } });
   const priorityPost = backgroundPostWithPriority(post, lease);
   const steps = {};
   const stepTimings = {};
+  const stepLabels = {
+    ecological_expiry: 'Checking expired research follow-ups',
+    cognitive_initiation_policy_probe: 'Checking a delayed cognition probe',
+    cognitive_pulse: 'Considering a background hypothesis',
+    research_autopilot: 'Reviewing the research program',
+    common_ground_review: 'Reviewing shared conversational context',
+    teammate_perspective_review: 'Reviewing teammate perspective evidence',
+    professional_viewpoint_lifecycle: 'Reflecting on professional judgment',
+    cycle_self_correction_reflection: 'Reviewing forecast corrections',
+    meeting_professional_reflection: 'Reflecting on meeting outcomes',
+    self_authored_aim_lifecycle: 'Reviewing self-authored aims',
+    dream_insight_reflection: 'Testing a dream insight',
+    post_delivery_self_evaluation: 'Reviewing a delivered response',
+    interaction_outcome_review: 'Checking interaction outcomes',
+    behavioral_fingerprint_schedule: 'Checking behavioral fingerprint timing',
+    behavioral_fingerprint_subject: 'Running a blinded fingerprint item',
+    behavioral_fingerprint_evaluator: 'Evaluating a fingerprint item',
+    autonomous_play_schedule: 'Checking whether off-hours play is due',
+    autonomous_play: 'Playing a bounded off-hours game',
+    developmental_reading_selection: 'Choosing the next reading source',
+    developmental_reading: 'Reading and reflecting on a source',
+  };
   const runStep = async (name, action) => {
     if (lease.wasPreempted()) return false;
+    const stepActivity = runtimeActivity.begin({ lane: ['developmental_reading', 'developmental_reading_selection'].includes(name) ? 'learning'
+      : name === 'autonomous_play' ? 'leisure' : 'background', kind: name,
+    label: stepLabels[name] || 'Running a background step', detail: 'Checking whether this bounded activity is due now.',
+    source: 'background-scheduler', parent_id: backgroundActivity.id, meta: { step: name } });
     const startedAt = Date.now();
     let lastProbeAt = startedAt;
     let maximumEventLoopLagMs = 0;
@@ -11821,8 +11934,12 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       lastProbeAt = observedAt;
     }, 25);
     probe.unref?.();
+    let stepFailed = false;
     try { steps[name] = await action(); }
-    catch (error) { steps[name] = { state: 'failed', error: String(error.message || error).slice(0, 300) }; }
+    catch (error) {
+      stepFailed = true;
+      steps[name] = { state: 'failed', error: String(error.message || error).slice(0, 300) };
+    }
     finally {
       await new Promise(resolve => setImmediate(resolve));
       clearInterval(probe);
@@ -11832,6 +11949,15 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       if (maximumEventLoopLagMs > 250) {
         console.warn(`Background intelligence step ${name} blocked the event loop for ${maximumEventLoopLagMs}ms`);
       }
+      const resultState = String(steps[name]?.state || (steps[name]?.ran === false ? 'not_due' : 'completed'));
+      runtimeActivity.finish(stepActivity.id, {
+        status: stepFailed ? 'failed' : lease.wasPreempted() ? 'preempted' : 'completed',
+        detail: stepFailed ? 'This background step failed without blocking live interactions.'
+          : lease.wasPreempted() ? 'The step yielded when a live interaction arrived.'
+            : 'The bounded check reached a terminal state.',
+        outcome: stepFailed ? 'Failure recorded in server diagnostics.' : `Result: ${resultState.replaceAll('_', ' ')}.`,
+        meta: { result: resultState },
+      });
     }
     return !lease.wasPreempted();
   };
@@ -11880,7 +12006,19 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       step_timings: stepTimings,
       at: new Date().toISOString(),
     };
+    runtimeActivity.finish(backgroundActivity.id, {
+      status: lease.wasPreempted() ? 'preempted' : 'completed',
+      detail: lease.wasPreempted()
+        ? 'Background intelligence yielded immediately to live interactive work.'
+        : 'Every due background check reached a bounded terminal state.',
+      outcome: lease.wasPreempted() ? 'Live responsiveness retained priority.' : 'Background cycle complete.',
+    });
     return _backgroundIntelligenceCycleLast;
+  } catch (error) {
+    runtimeActivity.finish(backgroundActivity.id, { status: 'failed',
+      detail: 'The background intelligence cycle ended unexpectedly.',
+      outcome: 'Failure recorded without taking the interactive lane down.' });
+    throw error;
   } finally {
     lease.release();
     _backgroundIntelligenceCycleInFlight = false;
@@ -11913,6 +12051,13 @@ async function start(options = {}) {
     const unleasedRunRecovery = recoverRunBoundLifecycleWithoutLease();
     const staleCycleRecovery = unleasedRunRecovery.recovered
       ? unleasedRunRecovery : intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
+    const restoredRunLock = loadDurableRunLock();
+    if (restoredRunLock && Number(restoredRunLock.expires_at) > Date.now()) {
+      runtimeActivity.begin({ id: `hourly:${restoredRunLock.holder}`, lane: 'work', kind: 'hourly_run',
+        label: 'Restoring an active hourly run',
+        detail: 'The durable operational lease survived this server restart.',
+        source: 'startup-recovery', meta: { phase: 'orientation' } });
+    }
     await intelligence.persistStrict();
     if (staleCycleRecovery.recovered) {
       console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale intelligence cycle(s) as explicit continuity gaps`);

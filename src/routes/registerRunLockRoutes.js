@@ -14,7 +14,7 @@ function normalizeLock(value) {
 
 function registerRunLockRoutes(app, requireAuth, {
   onAcquire = null, onRelease = null, projectLifecycle = null,
-  loadLock = null, saveLock = null, clock = () => Date.now(),
+  loadLock = null, saveLock = null, clock = () => Date.now(), activityStream = null,
 } = {}) {
   let _runLock = null; // Default in-memory store when persistence is not injected.
   const readLock = async () => {
@@ -61,6 +61,10 @@ function registerRunLockRoutes(app, requireAuth, {
     if (active && current.holder !== holder) {
       let visible;
       visible = await visibleLifecycle(current.lifecycle, { holder: current.holder });
+      activityStream?.record({ lane: 'work', kind: 'hourly_run_deferred',
+        label: 'An overlapping hourly run was held back',
+        detail: 'The active run kept exclusive ownership of the operational ledger.',
+        status: 'deferred', source: 'run-lock', meta: { reason: 'active_run_lock' } });
       return res.json({ acquired: false, held_by: current.holder,
         expires_at: new Date(current.expires_at).toISOString(), lifecycle: visible });
     }
@@ -74,6 +78,9 @@ function registerRunLockRoutes(app, requireAuth, {
           released_at: new Date(now).toISOString(), expired: true,
         });
         await writeLock(null);
+        activityStream?.finish(`hourly:${current.holder}`, { status: 'failed',
+          detail: 'The hourly lease expired before a clean release.',
+          outcome: 'The lifecycle was gap-closed before a successor started.' });
       } catch (error) {
         console.error(`Run lock expiry recovery failed for ${current.holder}: ${error.message}`);
         return res.status(503).json({ acquired: false, reason: 'expired_lifecycle_recovery_failed',
@@ -92,6 +99,10 @@ function registerRunLockRoutes(app, requireAuth, {
         }) || null;
       } catch (error) {
         console.error(`Run lock lifecycle start failed for ${holder}: ${error.message}`);
+        activityStream?.record({ id: `hourly:${holder}:start-failed`, lane: 'work',
+          kind: 'hourly_run', label: 'Hourly run could not start',
+          detail: 'The run-bound lifecycle failed before operational work began.', status: 'failed',
+          source: 'run-lock', meta: { reason: 'lifecycle_start_failed' } });
         return res.status(503).json({ acquired: false, reason: 'lifecycle_start_failed', error: error.message });
       }
     }
@@ -108,6 +119,22 @@ function registerRunLockRoutes(app, requireAuth, {
       return persistenceFailure(res, 'write', error);
     }
     console.log(`Run lock ${active ? 'refreshed' : 'acquired'} by ${holder} (ttl ${ttl}s)`);
+    if (active) {
+      const refreshedActivity = activityStream?.progress(`hourly:${holder}`, {
+        detail: 'The active hourly run renewed its exclusive operational lease.',
+      });
+      if (activityStream && !refreshedActivity) {
+        activityStream.begin({ id: `hourly:${holder}`, lane: 'work', kind: 'hourly_run',
+          label: 'Resuming the active hourly run',
+          detail: 'The durable operational lease survived a server process change.',
+          source: 'run-lock', meta: { phase: 'orientation' } });
+      }
+    } else {
+      activityStream?.begin({ id: `hourly:${holder}`, lane: 'work', kind: 'hourly_run',
+        label: 'Orienting to the hour',
+        detail: 'Loading identity, continuity, current commitments, and operating context.',
+        source: 'run-lock', meta: { phase: 'orientation' } });
+    }
     let visible;
     visible = await visibleLifecycle(lifecycle, { holder });
     return res.json({ acquired: true, holder, expires_at: new Date(next.expires_at).toISOString(), lifecycle: visible });
@@ -152,6 +179,10 @@ function registerRunLockRoutes(app, requireAuth, {
         }) || lifecycle;
       } catch (error) {
         console.error(`Run lock lifecycle release failed for ${current.holder}: ${error.message}`);
+        activityStream?.progress(`hourly:${current.holder}`, {
+          detail: 'Waiting for the run-bound cycle to close cleanly before releasing the lease.',
+          meta: { reason: error.code || 'lifecycle_release_failed' },
+        });
         return res.status(503).json({ released: false, reason: 'lifecycle_release_failed',
           ...(error.code ? { code: error.code } : {}),
           ...(error.next_required_action ? { next_required_action: error.next_required_action } : {}),
@@ -162,6 +193,11 @@ function registerRunLockRoutes(app, requireAuth, {
     try { await writeLock(null); }
     catch (error) { return persistenceFailure(res, 'write', error); }
     console.log(`Run lock released${holder ? ` by ${holder}` : ''}`);
+    if (current?.holder) {
+      activityStream?.finish(`hourly:${current.holder}`, { status: 'completed',
+        detail: 'The hourly run closed its lifecycle and released the operational lease.',
+        outcome: 'Ready for the next scheduled pass.' });
+    }
     return res.json({ released: true, lifecycle });
   });
 }

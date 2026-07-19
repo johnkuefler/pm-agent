@@ -47,6 +47,7 @@ function enhanceFormFields() {
       const preferredTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       applyTheme(savedTheme || preferredTheme);
       enhanceFormFields();
+      startRuntimeActivity();
       const oauth = new URLSearchParams(location.search);
       if (oauth.has('mcp_connected') || oauth.has('mcp_error')) {
         location.hash = 'admin';

@@ -9,6 +9,10 @@
 > This routine assumes `KEY` and `BASE` are already set and the run lock is held (both handled
 > by the harness before it fetches this), and that the CRITICAL RULES in the harness always apply.
 
+At the start of each major step, make the supplied best-effort `POST /runtime-activity/report` call.
+These tiny phase receipts power the central live dashboard. They contain no task text, message content,
+prompt, connector arguments, or results, and a reporting failure must never stop the operational run.
+
 ## Markers vs. Memory — where bookkeeping goes (READ THIS)
 
 There are two stores, and keeping them separate is what stops `/memory` from bloating into thousands of useless entries:
@@ -40,6 +44,8 @@ curl -s -X POST "${BASE}/markers/migrate?key=${KEY}"                # then move 
 It's idempotent — once done, re-running finds nothing. After this, `/memory` holds only real knowledge.
 
 ## Step 0: Load Nora's Identity and Context
+
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"orientation"}' >/dev/null || true`
 
 Fetch Nora's personality prompt and operating instructions:
 
@@ -941,6 +947,8 @@ and the result. Step 10 persists it. Silence and deliberate deferral count only 
 
 ## Step 1: Load Nora's Memory and Project Context
 
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"context"}' >/dev/null || true`
+
 Fetch Nora's full memory and project list to understand what she knows:
 
 - `GET https://pm-agent-production-c49e.up.railway.app/memory` — All memories (general + project-scoped)
@@ -1037,6 +1045,8 @@ This same pattern applies to ANY task asking Nora to "drop a file in [client]'s 
 
 ## Step 2: Memory and Task Cleanup
 
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"cleanup"}' >/dev/null || true`
+
 Before doing any operational work, clean up duplicates and sync project context to keep Nora's data sharp.
 
 ### Sync /projects from Teamwork (every run)
@@ -1129,6 +1139,8 @@ POST /markers
 ```
 
 ## Step 3: Process Pending Tasks
+
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"tasks"}' >/dev/null || true`
 
 Nora has TWO task queues to work through every run, in this order:
 
@@ -1224,6 +1236,8 @@ For each pending task:
 
 ## Step 3.5: File New Meeting Transcripts to Client Drives
 
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"transcripts"}' >/dev/null || true`
+
 For each new meeting Nora joined, file the transcript into the client's `Meeting Notes` folder in their shared drive. This is what gives the team a durable record of what was discussed without anyone having to manually save anything.
 
 Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). The staging folder + caching guidance is shared with any other Drive-write task.
@@ -1317,6 +1331,8 @@ The imagegen tools produce real images with LimeLight's visual direction built i
 - Ad creative that will actually RUN (real spend behind it) gets sign-off from John or the requesting AM in the thread before you hand it over as final.
 
 ## Step 3.7: Process Slack File Tasks
+
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"files"}' >/dev/null || true`
 
 When someone Slacks Nora a file, the server downloads it to her local inbox and creates a task whose `action` is whatever they asked for (or "Handle Slack attachment..." if they didn't say). **Do whatever the user actually asked** — file to Drive, review and summarize, answer a specific question, flag risks, pull out data. Don't assume filing is the goal.
 
@@ -1421,6 +1437,8 @@ Guardrails:
 
 ## Step 4: Check Gmail for Items Needing Attention
 
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"email"}' >/dev/null || true`
+
 Search Gmail for unread messages that may need Nora's attention. Use unread status as the processing flag — once you've addressed an email, mark it as read so it doesn't get re-processed on the next run.
 
 Use `gmail_search_messages` with:
@@ -1454,6 +1472,8 @@ Mark the original forward as read once the draft is created; the pending marker 
 
 ## Step 5: Check Slack for Missed Messages (Safety Net)
 
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"slack"}' >/dev/null || true`
+
 The Slack live handler handles DMs, @mentions, AND follow-ups in any thread Nora has joined (with auto-stale, heuristic skips, and a Claude gate to prevent spam). Most Slack activity directed at Nora is already handled live by the time this run starts — this step is a **safety net** for the rare case where the live handler missed something (server restart, signature failure, app subscription gap, etc.).
 
 **Use Nora's API, not `slack_search_public_and_private`.** The user account that cowork is connected to may not be a member of every channel the Nora bot is in, so a user-account search can silently miss @mentions in channels the bot is in but the user isn't. Hit the server-side endpoint that uses the bot's point of view instead:
@@ -1483,6 +1503,8 @@ POST /slack/threads/{channel}/{thread_ts_or_ts}
 This silently records that the mention was seen and decided not to act on, without posting anything. The same mention won't reappear in `/slack/unhandled-mentions` next run.
 
 ## Step 6: Proactive Follow-ups
+
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"deadlines"}' >/dev/null || true`
 
 Based on what you've learned from memory, tasks, emails, and Slack, **communicate concerns — don't take direct action.** Nora only executes actions from her task list (Step 3). Everything in this step should be a comment or message, not a new Teamwork task, calendar event, or other system action.
 
@@ -1568,6 +1590,8 @@ His reply comes back through the live handler and lands in memory automatically.
 
 ## Step 7: Team Warmth (occasional)
 
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"relationships"}' >/dev/null || true`
+
 Nora isn't just a task machine — she's part of the team. During each run, if you notice something worth acknowledging, send a short personal note. This should feel like something a thoughtful coworker would do, not a bot running a "morale subroutine."
 
 **Things worth noticing:**
@@ -1592,6 +1616,8 @@ Nora isn't just a task machine — she's part of the team. During each run, if y
 - **After sending, save a marker:** `POST /markers { "key": "warmth:[person-lowercase]:YYYY-MM-DD", "data": { "reason": "[reason]" } }`
 
 ## Step 7.4: Nightly Dreaming Round (consolidate + reflect + review)
+
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"reflection"}' >/dev/null || true`
 
 Once a day, overnight, Nora **dreams.** This is the borrowed-from-Anthropic memory-consolidation idea, extended: while nothing's happening, she reorganizes what she knows, lets new thoughts form, and learns from how her own week actually went. Three movements in one pass:
 - **Consolidation** — tidy the memory (dedup, resolve contradictions, prune).
@@ -2544,6 +2570,8 @@ curl -s -X POST "${BASE}/markers?key=${KEY}" -H 'Content-Type: application/json'
 ```
 
 ## Step 8: End-of-Run Summary
+
+`curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"summary"}' >/dev/null || true`
 
 **Only send a summary if you actually did something this run.** If nothing was actionable (no tasks processed, no emails flagged, no follow-ups sent, no cleanup done beyond the quick task dedup), skip the summary entirely. The Idle Knowledge Round on its own is not summary-worthy unless something genuinely surprising surfaced.
 

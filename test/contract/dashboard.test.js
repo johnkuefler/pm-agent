@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(root, 'dashboard.html'), 'utf8');
 
 test('dashboard has one page for every navigation tab and no duplicate ids', () => {
   const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]);
-  assert.equal(tabs.length, 12);
+  assert.equal(tabs.length, 13);
   assert.equal(new Set(tabs).size, tabs.length);
   for (const tab of tabs) assert.match(html, new RegExp(`id="page-${tab}"`));
 
@@ -25,6 +25,7 @@ test('dashboard presentation and behavior live in focused external assets', () =
   const scripts = [...html.matchAll(/<script src="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(scripts.map(source => source.replace(/\?v=.*$/, '')), [
     '/assets/js/dashboard-core.js',
+    '/assets/js/dashboard-activity.js',
     '/assets/js/dashboard-identity.js',
     '/assets/js/dashboard-meeting.js',
     '/assets/js/dashboard-tasks.js',
@@ -167,6 +168,19 @@ test('intelligence dashboard paints a fast summary before progressively loading 
   assert.doesNotMatch(initialLoader, /\/cognition|\/self-model|\/consciousness-research\/status|\/developmental-reading/);
   assert.match(brainJs, /noraBrainVisibilityObserver/);
   assert.match(brainJs, /time - noraBrainLastDraw >= 40/);
+});
+
+test('dashboard exposes one central live activity surface across every room', () => {
+  const activityJs = fs.readFileSync(path.join(root, 'public/js/dashboard-activity.js'), 'utf8');
+  assert.match(html, /data-tab="live"/);
+  assert.match(html, /id="global-activity-strip"/);
+  assert.match(html, /id="page-live" class="page"/);
+  assert.match(html, /id="live-current-list"/);
+  assert.match(html, /id="live-history-list"/);
+  assert.match(activityJs, /new EventSource\('\/runtime-activity\/events'\)/);
+  assert.match(activityJs, /fetchRuntimeActivitySnapshot/);
+  assert.match(html, /message text, prompts, tool arguments, or tool results/i);
+  assert.doesNotThrow(() => new vm.Script(activityJs, { filename: 'dashboard-activity.js' }));
 });
 
 test('intelligence detail is divided into bounded human-readable views', () => {
