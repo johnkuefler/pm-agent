@@ -1977,6 +1977,16 @@ Experiments should use controls whenever feasible:
 
 Never run controls that loosen delegated authority, approval gates, privacy, disclosure, or other safety boundaries.
 
+Ecological task-performance studies admit operational work turns, not every message that happens to
+arrive through Slack. Bounded social acknowledgments, direct questions about Nora's own functional
+state, preferences, reading, or play, and their non-operational conversational repairs are ineligible.
+They retain conversation continuity, grounded appraisal and self-state, ordinary post-delivery review,
+and memory learning, but receive no PM tool schemas, task extraction, research-need extraction, or
+task-performance assignment. Immediate repair turns are correlated with the failed turn and cannot be
+treated as independent samples. If an older runtime enrolled such turns, the already captured units
+remain visible as a protocol deviation rather than being selectively removed after their outcome is
+known; confirmation must use the corrected prospective boundary and source-disjoint interactions.
+
 Trial creation and condition reveal require `NORA_RESEARCH_KEY`, supplied only in the
 `X-Nora-Research-Key` header. Outcome grading uses named keys configured in `NORA_EVALUATOR_KEYS`
 (a JSON object from evaluator id to secret; the single-key `NORA_EVALUATOR_KEY` remains a legacy

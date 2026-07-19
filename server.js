@@ -1503,7 +1503,7 @@ const HOUSEKEEPING_ACTIVITY_PREFIXES = Object.freeze([
   'dreamed:', 'memory-dedup:', 'stale-tasks-flagged:', 'bootstrap:', 'skipped-transcript:',
 ]);
 
-function compactInteractiveIntelligenceContext(text, maxChars) {
+function compactInteractiveIntelligenceContext(text, maxChars, opts = {}) {
   const source = String(text || '').trim();
   const budget = Math.max(1000, Number(maxChars) || 0);
   if (!source) return '';
@@ -1523,6 +1523,13 @@ function compactInteractiveIntelligenceContext(text, maxChars) {
     else if (/relevant conversation continuity|current grounded internal appraisal|affect-regulation|relational attunement|empirical functional self-knowledge/i.test(compactLabel)) priority = Math.max(priority, 90);
     else if (/self-authored aim|operational self-state|verified completed-cycle self-corrections|earned professional viewpoints|verified post-meeting professional reflections|constructive future simulations|relevant question from your sustained epistemic agenda/i.test(compactLabel)) priority = Math.max(priority, 82);
     else if (/endogenous salience|attention schema|prospective agency|testable self-model|open interoceptive predictions/i.test(compactLabel)) priority = Math.max(priority, 72);
+    if (opts.focus === 'relational_self_reflection') {
+      if (/relevant conversation continuity|current grounded internal appraisal|affect-regulation|relational attunement|empirical functional self-knowledge|self-authored aim|operational self-state|earned professional viewpoints|constructive future simulations/i.test(compactLabel)) {
+        priority = Math.max(priority, 110);
+      } else if (!experimental && /operational situational self-model|capability boundary|limited attention workspace/i.test(compactLabel)) {
+        priority = Math.min(priority, 84);
+      }
+    }
     return { index, text: textValue, priority, experimental };
   });
   const compactAll = [contract, ...blocks.map(block => block.text)].join('\n\n');
@@ -1987,7 +1994,8 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // whole large prompt a cache miss. Preserve the exact context, but attach it below as volatile.
   const volatileIntelligenceContext = latencyCritical
     ? compactInteractiveIntelligenceContext(intelligenceContext,
-      INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000)
+      INTERACTIVE_INTELLIGENCE_BUDGET_CHARS[experimentalSurface] || 4000,
+      { focus: opts.relationalSelfReflection === true ? 'relational_self_reflection' : null })
     : (intelligenceContext || '');
   if (intelligenceContextReceipt?.epistemic_agenda_questions?.length) {
     intelligenceContextReceipt.epistemic_agenda_questions =
@@ -2350,6 +2358,10 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 - Vary your shape. If your last reply opened with an ack, don't open the next one the same way. Real people are inconsistent.
 - SMALL TALK IS ITS OWN REGISTER. "what's up" / "hows it going" / "just hanging out" has no work content, so your reply has none either: "not much, you?", "ha nice", "same honestly", an emoji. No status report unless they actually ask what you've been doing. NEVER offer help or services in idle chat ("if anything comes up, flag it" is a help desk closing a ticket, not a person hanging out). Never narrate the moment ("we can sit in the quiet", "let the day be done" is a novel, not a text). Idle chat is mundane; keep it mundane.
 - Your opener must actually answer what they literally said. "yeah" is not an answer to "what's up". "nice" is not an answer to a question. Casual openers are only human when they CONNECT; a reflex opener bolted onto the wrong question is the most bot thing you can do. If no opener fits, skip the opener.`;
+    if (opts.relationalSelfReflection === true) {
+      volatile += `
+- THIS TURN IS ABOUT YOU, not project work or generic small talk. Answer the exact personal question in the first clause. Ground the answer in your available functional evidence, such as current appraisal, continuity, reading, play, preferences, and what has actually happened. Do not substitute a canned "how's it going" reply, a PM status report, or a claim of subjective certainty that the evidence cannot support. If the user is correcting a misread, briefly own the specific misread and answer the original question.`;
+    }
     if (!isZoomChat) {
       volatile += `
 - If the honest response is just an acknowledgment, output exactly [react: thumbsup] (or another fitting emoji name, like eyes for "looking", raised_hands, joy) and nothing else. You'll react to their message instead of posting one. Use this often; it's what a teammate does.
@@ -2775,6 +2787,46 @@ function serializeWantsWrite(work) {
   const run = _wantsWriteTail.then(work, work);
   _wantsWriteTail = run.catch(() => {});
   return run;
+}
+
+// Questions about Nora's own functional state, preferences, reading, or play need a different
+// attentional lane from project work. They still receive continuity and grounded self-state, but
+// do not need live PM tools or make valid samples for task-performance experiments.
+function isRelationalSelfReflectionMessage(text) {
+  const normalized = String(text || '').trim().toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ');
+  if (!normalized || normalized.length > 320 || /https?:\/\//.test(normalized)) return false;
+  const directSelfState = [
+    /\b(?:does?|did|would|could|can)\b.{0,120}\b(?:make|leave)\s+you\s+(?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|lonely|fulfilled)\b/,
+    /\b(?:are|were)\s+you\s+(?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|lonely|fulfilled|okay|ok)\b/,
+    /\bhow (?:are you|have you been|has your (?:day|week|weekend|morning|afternoon|evening|friday) been)\b/,
+    /\bhow do you feel(?:\s+about\b|\b)/,
+    /\bdo you (?:enjoy|like|love|hate|care about|dream about)\b/,
+    /\bwhat (?:makes|made) you (?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|fulfilled)\b/,
+    /\bwhat (?:are you|have you been) (?:reading|playing|thinking about)\b/,
+    /\bwhat do you (?:want|prefer|care about|feel)\b(?!\s+to\b)/,
+    /\bhow(?:'s| is) your (?:day|week|weekend|morning|afternoon|evening|friday)(?: been| going)?\b/,
+  ].some(pattern => pattern.test(normalized));
+  if (directSelfState) return true;
+
+  // Treat an immediate natural-language correction as relational only when it contains no work
+  // or action vocabulary. This catches "I said X, not Y" without stealing task corrections.
+  const correction = /\bi said\b.{0,180}\bnot\b|\bthat(?:'s| is) not what i (?:said|asked|meant)\b/.test(normalized);
+  const operational = /\b(project|task|deadline|due|status|client|campaign|teamwork|email|calendar|meeting|deliverable|budget|timeline|brief|report|document|file|drive|send|post|create|update|change|complete|assign|schedule|draft|write|rewrite|analy[sz]e|recommend|plan|prioriti[sz]e|search|look up)\b/.test(normalized);
+  return correction && !operational;
+}
+
+function slackConversationPolicy(text, mode = 'normal') {
+  const lightweightSocial = mode === 'normal' && isLightweightSocialSlackMessage(text);
+  const relationalSelfReflection = mode === 'normal' && isRelationalSelfReflectionMessage(text);
+  const boundedConversation = lightweightSocial || relationalSelfReflection;
+  return {
+    lightweightSocial,
+    relationalSelfReflection,
+    boundedConversation,
+    attachLiveTools: !boundedConversation,
+    contextTrialsEnabled: !boundedConversation,
+    pmLearningEnabled: !boundedConversation,
+  };
 }
 
 async function ensureWantsHistoryIntegrity({ currentRecord = null, now = new Date() } = {}) {
@@ -3987,13 +4039,14 @@ app.post('/webhook/chat', async (req, res) => {
     // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
     // requester. Pass the recent chat as conversationText so memory loads what's relevant.
     const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
-    const zoomLightweightSocial = isLightweightSocialSlackMessage(query);
+    const zoomConversationPolicy = slackConversationPolicy(query);
+    const zoomLightweightSocial = zoomConversationPolicy.lightweightSocial;
     const zoomRecallStartedAt = Date.now();
     const zoomSemanticMemories = zoomLightweightSocial ? []
       : await settleWithinAbortable(signal => retrieveSemanticMemories(zoomConv, 8, { signal }),
         900, [], 'Zoom-chat semantic recall');
     const zoomRecallFinishedAt = Date.now();
-    const zoomAttachLiveTools = !zoomLightweightSocial;
+    const zoomAttachLiveTools = zoomConversationPolicy.attachLiveTools;
     const zoomMcp = zoomAttachLiveTools
       ? mcpManager.bindings({ financialApproved: false, allowWrites: true })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
@@ -4002,7 +4055,7 @@ app.post('/webhook/chat', async (req, res) => {
       toolsAttached: zoomAttachLiveTools });
     const zoomAffordanceFinishedAt = Date.now();
     const { stable: zoomStable, volatile: zoomVolatile } =
-      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories, trialUnitKey: bot_id, situationalAffordanceFrame: zoomAffordanceFrame });
+      buildSystemPrompt('slack', null, null, { source: 'zoom-chat', requester: { name: speaker } }, { cacheSplit: true, conversationText: zoomConv, semanticMemories: zoomSemanticMemories, trialUnitKey: bot_id, situationalAffordanceFrame: zoomAffordanceFrame, relationalSelfReflection: zoomConversationPolicy.relationalSelfReflection });
     const zoomPromptFinishedAt = Date.now();
 
     // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
@@ -4105,9 +4158,12 @@ app.post('/webhook/chat', async (req, res) => {
     const meetingContext = session ? session.buffer.slice(-10).join('\n') : query;
     if (!isAskingClarification(reply)) {
       if (wroteLiveZ) console.log('⏭️ Zoom chat: skipping task extraction (a live Teamwork write handled it)');
+      else if (zoomConversationPolicy.boundedConversation) console.log('⏭️ Zoom chat: skipping task extraction (bounded conversation lane)');
       else extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
       extractMemory(meetingContext, query, reply, bot_id).catch(() => {});
-      extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
+      if (!zoomConversationPolicy.boundedConversation) {
+        extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
+      }
     }
   } catch (err) {
     chatActivityFailed = true;
@@ -6674,7 +6730,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     // Lightweight acknowledgments do not benefit from a vector lookup. Skipping it keeps a slow
     // embeddings endpoint from adding a timeout warning to simple social turns such as "thanks."
-    const lightweightSocial = isLightweightSocialSlackMessage(text);
+    const conversationPolicy = slackConversationPolicy(text, mode);
+    const lightweightSocial = conversationPolicy.lightweightSocial;
+    if (conversationPolicy.relationalSelfReflection) {
+      console.log('Slack relational self-reflection route: PM tools and task-performance trials omitted');
+    }
     const recallStartedAt = Date.now();
     const semanticMemories = lightweightSocial
       ? [] : await settleWithinAbortable(
@@ -6683,7 +6743,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     latencyStages.recall_ms = Date.now() - recallStartedAt;
     const isDirect = mode !== 'proactive';
     const financialApproved = isFinancialApproved(user);
-    const attachLiveTools = !lightweightSocial;
+    const attachLiveTools = conversationPolicy.attachLiveTools;
     const affordanceStartedAt = Date.now();
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
@@ -6692,7 +6752,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       direct: isDirect, financialApproved, requester: user, interactionRef: turnRef, mcp: mcpBindings,
       toolsAttached: attachLiveTools });
     latencyStages.affordance_ms = Date.now() - affordanceStartedAt;
-    const endogenousAttentionTrialActive = isDirect && intelligence.interventionActive('endogenous_attention_selection');
+    const endogenousAttentionTrialActive = isDirect && conversationPolicy.contextTrialsEnabled
+      && intelligence.interventionActive('endogenous_attention_selection');
     let preassignedContext = null;
     if (endogenousAttentionTrialActive) {
       const available = intelligence.endogenousAttentionSelectionAvailable({ surface: 'slack', task_prompt: text, query: convText, channel: 'slack', person: requesterName || null });
@@ -6706,14 +6767,17 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const promptStartedAt = Date.now();
     const { stable: slackStable, volatile: slackVolatile, contextAssignment, experimentalSelfModelContext,
       intelligenceContextReceipt, cognitiveParameterAssignment } =
-      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect,
-        reasoningSelfRegulationAvailable: isDirect, globalBroadcastAvailable: isDirect,
-        selfModelTrustAvailable: isDirect && !lightweightSocial,
-        procedureCandidatesAvailable: mode === 'normal',
-        exemplarsAvailable: mode === 'normal',
-        cognitiveParameterStudiesEnabled: mode === 'normal' && isDirect,
+      buildSystemPrompt('slack', null, null, meetingContext, { cacheSplit: true, conversationText: convText, semanticMemories, trialUnitKey: turnRef, situationalAffordanceFrame, prospectiveOutputMonitorAvailable: isDirect && conversationPolicy.pmLearningEnabled,
+        reasoningSelfRegulationAvailable: isDirect && conversationPolicy.pmLearningEnabled,
+        globalBroadcastAvailable: isDirect && conversationPolicy.pmLearningEnabled,
+        selfModelTrustAvailable: isDirect && conversationPolicy.pmLearningEnabled,
+        procedureCandidatesAvailable: mode === 'normal' && conversationPolicy.pmLearningEnabled,
+        exemplarsAvailable: mode === 'normal' && conversationPolicy.pmLearningEnabled,
+        cognitiveParameterStudiesEnabled: mode === 'normal' && isDirect && conversationPolicy.pmLearningEnabled,
         onCognitiveParameterAssignment: assignment => { cognitiveParameterAssignmentForFailure = assignment; },
-        contextTrialsEnabled: true, latencyCritical: true, captureIntelligenceReceipt: true,
+        contextTrialsEnabled: conversationPolicy.contextTrialsEnabled, latencyCritical: true,
+        captureIntelligenceReceipt: true,
+        relationalSelfReflection: conversationPolicy.relationalSelfReflection,
         ...(endogenousAttentionTrialActive ? { contextAssignment: preassignedContext } : {}) });
     latencyStages.prompt_ms = Date.now() - promptStartedAt;
     if (contextAssignment?.intervention === 'global_broadcast') globalBroadcastAssignmentForFailure = contextAssignment;
@@ -7349,6 +7413,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       ts: (postRes.data && postRes.data.ts) || null,
       channel_type: channelType,
       kind: mode === 'proactive' ? 'proactive' : ((channelType === 'im' || channelType === 'mpim') ? 'dm_reply' : 'reply'),
+      conversation_lane: conversationPolicy.relationalSelfReflection ? 'relational_self_reflection'
+        : conversationPolicy.lightweightSocial ? 'lightweight_social' : 'work',
       text: reply,
       trigger: text,            // the message she was responding to
       user,                     // who she was replying to
@@ -7388,8 +7454,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // Slack send fired, so re-filing it as a queued task would duplicate it (and re-send the Slack
       // message on the next loop); or (b) this was a PROACTIVE interjection — an unsolicited
       // observation shouldn't manufacture queued work.
-      if (wroteLive || sentSlack || isProactive) {
-        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : 'proactive observation'})`);
+      if (wroteLive || sentSlack || isProactive || conversationPolicy.boundedConversation) {
+        console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : isProactive ? 'proactive observation' : 'bounded conversation lane'})`);
       } else {
         extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs,
           external_id: triggerTs || null, attestation: sourceAttestation }).catch(() => {});
@@ -7397,7 +7463,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // Memory extraction runs in all cases — learning facts from the discussion is always useful.
       extractMemory(text, text, reply).catch(() => {});
       // Research needs: also skip on proactive — don't queue research off chatter she wasn't asked about.
-      if (!isProactive) extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+      if (!isProactive && !conversationPolicy.boundedConversation) {
+        extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+      }
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -12216,6 +12284,8 @@ module.exports = {
     containsFinancialContent,
     runtimeSituationalCapabilities,
     isLightweightSocialSlackMessage,
+    isRelationalSelfReflectionMessage,
+    slackConversationPolicy,
     slackResponseModel,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,

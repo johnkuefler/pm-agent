@@ -99,9 +99,10 @@ test('foreground interactions preempt one background provider lane and enforce a
   performance.resetPriorityGateForTest();
 });
 
-test('live server opts into complete Slack trials but never globally enables second-pass monitoring', () => {
+test('live server opts eligible Slack work into complete trials but isolates relational turns', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
-  assert.match(server, /contextTrialsEnabled: true, latencyCritical: true/);
+  assert.match(server, /contextTrialsEnabled: conversationPolicy\.contextTrialsEnabled, latencyCritical: true/);
+  assert.match(server, /relationalSelfReflection: conversationPolicy\.relationalSelfReflection/);
   assert.match(server, /const enabled = Boolean\(assignment\)/);
   assert.doesNotMatch(server, /NORA_PROSPECTIVE_OUTPUT_MONITOR_ENABLED/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'slack'/);
@@ -115,10 +116,10 @@ test('live server opts into complete Slack trials but never globally enables sec
     'optional linked-page enrichment must lose quickly to the live reply path');
   assert.ok(server.includes("const linkedText = fetched.join('\\n\\n---\\n\\n').slice(0, 800);"),
     'multiple links must share one bounded live-prompt excerpt');
-  assert.match(server, /const attachLiveTools = !lightweightSocial/,
-    'bounded Slack social turns must omit irrelevant live-tool schemas');
-  assert.match(server, /const zoomAttachLiveTools = !zoomLightweightSocial/,
-    'bounded Zoom-chat social turns must omit irrelevant live-tool schemas');
+  assert.match(server, /const attachLiveTools = conversationPolicy\.attachLiveTools/,
+    'bounded Slack social and self-reflective turns must omit irrelevant live-tool schemas');
+  assert.match(server, /const zoomAttachLiveTools = zoomConversationPolicy\.attachLiveTools/,
+    'bounded Zoom-chat social and self-reflective turns must omit irrelevant live-tool schemas');
   assert.match(server, /const volatileIntelligenceContext = latencyCritical[\s\S]*compactInteractiveIntelligenceContext/,
     'changing cognition must stay bounded outside the stable provider-cache prefix');
   assert.match(server, /beginInteractive\('slack'\)/);

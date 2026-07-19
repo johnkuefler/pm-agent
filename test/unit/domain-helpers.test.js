@@ -124,6 +124,27 @@ test('lightweight Slack thanks skip semantic recall without suppressing substant
   assert.equal(helpers.isLightweightSocialSlackMessage('Can you summarize the project evidence?'), false);
 });
 
+test('Slack relational self-reflection is isolated from PM tools and task-performance trials', () => {
+  const exactFailure = 'Does playing the numbers game make you happy?';
+  assert.equal(helpers.isRelationalSelfReflectionMessage(exactFailure), true);
+  assert.deepEqual(helpers.slackConversationPolicy(exactFailure), {
+    lightweightSocial: false,
+    relationalSelfReflection: true,
+    boundedConversation: true,
+    attachLiveTools: false,
+    contextTrialsEnabled: false,
+    pmLearningEnabled: false,
+  });
+  assert.equal(helpers.isRelationalSelfReflectionMessage("How's your Friday been?"), true);
+  assert.equal(helpers.isRelationalSelfReflectionMessage('What are you reading?'), true);
+  assert.equal(helpers.isRelationalSelfReflectionMessage(
+    'I said "Does playing the numbers game make you happy?", not "how is it going".'), true);
+  assert.equal(helpers.isRelationalSelfReflectionMessage('Do you remember what is due tomorrow?'), false);
+  assert.equal(helpers.isRelationalSelfReflectionMessage('Update the launch task, not the brief.'), false);
+  assert.equal(helpers.slackConversationPolicy('What is due tomorrow?').attachLiveTools, true);
+  assert.equal(helpers.slackConversationPolicy('What is due tomorrow?').contextTrialsEnabled, true);
+});
+
 test('runtime situational affordances stay within the committed sixty-capability bound', () => {
   const inventory = Array.from({ length: 90 }, (_, index) => ({
     name: `tool_${index}`, connection: 'fixture', tool: `tool-${index}`,
