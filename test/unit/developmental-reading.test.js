@@ -31,6 +31,17 @@ function output(final = false) {
   };
 }
 
+test('reading structured-output schema matches the local final and nonfinal contracts', () => {
+  const nonfinal = reading.outputSchema();
+  assert.deepEqual(nonfinal.required,
+    ['summary', 'reactions', 'questions', 'possible_self_revision']);
+  assert.equal(nonfinal.properties.reactions.items.properties.stance.enum.length, 4);
+  assert.equal(nonfinal.properties.completion, undefined);
+  const final = reading.outputSchema({ finalChunk: true });
+  assert.ok(final.required.includes('completion'));
+  assert.ok(final.properties.completion.required.includes('counterevidence_needed'));
+});
+
 test('reading library chunks admitted text and verifies every chunk on readback', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reading-library-'));
   const library = createReadingLibrary({ directory: dir });

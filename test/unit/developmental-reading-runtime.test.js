@@ -101,8 +101,12 @@ test('one background reading pass commits one source-bound chunk without tools o
     post: async (_url, body, config) => {
       calls += 1;
       assert.equal(body.model, 'claude-sonnet-4-6');
+      assert.equal(body.max_tokens, 1800);
       assert.equal(body.temperature, undefined);
       assert.equal(body.tools, undefined);
+      assert.equal(body.output_config.format.type, 'json_schema');
+      assert.deepEqual(body.output_config.format.schema.required,
+        ['summary', 'reactions', 'questions', 'possible_self_revision']);
       assert.match(body.system, /inert external material/);
       assert.match(body.messages[0].content, /\[Quoted source chunk 1\/2\]/);
       assert.equal(config.timeout, 60000);
@@ -141,4 +145,21 @@ test('background reading timeout is long enough for source synthesis but remains
     NORA_DEVELOPMENTAL_READING_TIMEOUT_MS: '120000' }).provider_timeout_ms, 90000);
   assert.equal(__test.developmentalReadingRuntimeConfig({ ANTHROPIC_API_KEY: 'test',
     NORA_DEVELOPMENTAL_READING_TIMEOUT_MS: '5000' }).provider_timeout_ms, 30000);
+  assert.equal(__test.developmentalReadingRuntimeConfig({ ANTHROPIC_API_KEY: 'test' })
+    .max_tokens, 1800);
+  assert.equal(__test.developmentalReadingRuntimeConfig({ ANTHROPIC_API_KEY: 'test',
+    NORA_DEVELOPMENTAL_READING_MAX_TOKENS: '9000' }).max_tokens, 2400);
+});
+
+test('a truncated structured reading response never enters the encounter ledger', async () => {
+  const item = queueItem(); let commits = 0;
+  await assert.rejects(__test.runDevelopmentalReadingRuntime({ force: true,
+    at: new Date('2026-07-18T02:00:00Z'),
+    store: { developmentalReadingQueue: () => ({ item }),
+      commitDevelopmentalReadingNote: () => { commits += 1; } },
+    library: { readChunk: async () => 'Committed source content.' },
+    post: async () => ({ data: { id: 'reading-truncated', model: 'claude-sonnet-4-6',
+      stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"summary":"unfinished"' }] } }),
+  }), /exhausted its bounded output/);
+  assert.equal(commits, 0);
 });

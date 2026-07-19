@@ -9,6 +9,54 @@ const RIGHTS_BASES = Object.freeze(['public_domain', 'open_license', 'user_provi
 const SOURCE_KINDS = Object.freeze(['book', 'essay', 'manual', 'paper', 'other']);
 const STANCES = Object.freeze(['agree', 'disagree', 'uncertain', 'complicate']);
 
+function outputSchema({ finalChunk = false } = {}) {
+  const boundedString = (minLength, maxLength) => ({ type: 'string', minLength, maxLength });
+  const schema = {
+    type: 'object', additionalProperties: false,
+    properties: {
+      summary: boundedString(1, 700),
+      reactions: { type: 'array', minItems: 1, maxItems: 4, items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          idea: boundedString(1, 400), stance: { type: 'string', enum: [...STANCES] },
+          source_quote: { type: ['string', 'null'], maxLength: 220 },
+          reflection: boundedString(1, 600),
+        },
+        required: ['idea', 'stance', 'source_quote', 'reflection'],
+      } },
+      questions: { type: 'array', maxItems: 3, items: boundedString(1, 300) },
+      possible_self_revision: { anyOf: [{ type: 'null' }, {
+        type: 'object', additionalProperties: false,
+        properties: { before: boundedString(1, 500), after: boundedString(1, 500),
+          confidence: { type: 'number', minimum: 0.1, maximum: 0.6 },
+          falsifier: boundedString(1, 500) },
+        required: ['before', 'after', 'confidence', 'falsifier'],
+      }] },
+    },
+    required: ['summary', 'reactions', 'questions', 'possible_self_revision'],
+  };
+  if (finalChunk) {
+    schema.properties.completion = {
+      type: 'object', additionalProperties: false,
+      properties: {
+        lasting_ideas: { type: 'array', minItems: 1, maxItems: 5,
+          items: boundedString(1, 500) },
+        disagreements: { type: 'array', maxItems: 3, items: boundedString(1, 500) },
+        changed_my_mind: { type: ['string', 'null'], maxLength: 800 },
+        questions_to_carry: { type: 'array', minItems: 1, maxItems: 5,
+          items: boundedString(1, 500) },
+        expected_work_transfer: boundedString(1, 800),
+        personality_influence_candidate: boundedString(1, 800),
+        counterevidence_needed: boundedString(1, 800),
+      },
+      required: ['lasting_ideas', 'disagreements', 'changed_my_mind', 'questions_to_carry',
+        'expected_work_transfer', 'personality_influence_candidate', 'counterevidence_needed'],
+    };
+    schema.required.push('completion');
+  }
+  return schema;
+}
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') return `{${Object.keys(value).sort()
@@ -347,6 +395,7 @@ function auditSession(session, source) {
 module.exports = {
   PROTOCOL_VERSION, PROVIDER_BOUND_SESSION_PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION,
   RIGHTS_BASES, SOURCE_KINDS, STANCES,
+  outputSchema,
   canonicalJson, commitment, sourceManifest, createSource, verifySource,
   sessionManifest, sessionSelectionPayload, selectionCandidateSet, createSession, verifySession,
   normalizeOutput, noteManifest,
