@@ -126,6 +126,39 @@ test('formation fails closed for one context, external evidence, duplicates, and
   assert.equal(agenda.auditReceipt(tampered).complete_chain_verified, false);
 });
 
+test('provider decoding is restricted to the exact committed evidence packet', () => {
+  const packet = agenda.packetFor({ memories: memories(), questions: [], now, mode: 'form' });
+  const request = agenda.requestFor(packet);
+  const allowedIds = packet.evidence.map(item => item.ref.id);
+  assert.equal(packet.protocol_version, 2);
+  assert.deepEqual(request.request.output_config.format.schema.properties.evidence_ids.items.enum,
+    allowedIds);
+  assert.match(request.request.system, /schema enumerates the only permitted IDs/);
+
+  const prior = { id: 'existing', status: 'open', ...formationOutput(),
+    created_at: now.toISOString(), updated_at: now.toISOString() };
+  const revisit = agenda.packetFor({ memories: memories([{
+    id: 'new-delta', added: '2026-07-18', project: 'Delta', source: 'slack', kind: 'fact',
+    status: 'active', fact: 'A new delivery observation arrived after the question formed.',
+  }]), questions: [prior], now, mode: 'revisit' });
+  const revisitableIds = agenda.requestFor(revisit).request.output_config.format.schema
+    .properties.evidence_ids.items.enum;
+  assert.ok(revisitableIds.includes('new-delta'));
+  assert.ok(prior.evidence_ids.every(id => !revisitableIds.includes(id)));
+});
+
+test('protocol upgrade preserves replay verification of version-one receipts', () => {
+  const packet = { ...agenda.packetFor({ memories: memories(), questions: [], now, mode: 'form' }),
+    protocol_version: agenda.LEGACY_PROTOCOL_VERSION };
+  const request = agenda.requestFor(packet);
+  assert.equal(request.manifest.protocol_version, 1);
+  assert.equal(request.request.output_config.format.schema.properties.evidence_ids.items.enum,
+    undefined);
+  const submission = agenda.submissionFor(packet, response(request.request, formationOutput()));
+  assert.equal(submission.receipt.protocol_version, 1);
+  assert.equal(agenda.auditReceipt(submission.receipt).complete_chain_verified, true);
+});
+
 test('a relevant question can enter ordinary PM judgment with a replay-valid access and outcome receipt', async () => {
   now = new Date('2026-07-18T12:00:00.000Z');
   const { dir, store } = await makeStore();
