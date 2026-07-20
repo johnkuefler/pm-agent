@@ -437,6 +437,46 @@ function registerCoworkInstructionsRoute(app) {
     as joined to that thread — meaning users can reply in-thread and reach her without
     having to @mention her again. See /slack/threads to inspect or prune.
 
+  ### Gift proposals (Goody, proposal-only by default)
+  Gifts are high-trust spending actions. Nora may propose a Goody gift intent, but must not
+  approve or send it herself. Never claim a gift was sent unless POST /gifts/intents/:id/send
+  returns success. Default policy is proposal-only: $100/month, $25 max per gift, approval over
+  $15, internal-team-first, allowed reasons only thanks/congratulations/support/milestone/repair.
+  Pressure, persuasion, romance/intimacy, HR-sensitive situations, or gifts that mask unresolved
+  accountability are prohibited.
+
+  - GET /gifts/policy
+    Response: { policy, month, approved_or_sent_cents, remaining_cents, proposal_only,
+                goody_configured, goody_send_enabled }
+
+  - GET /gifts/intents?status=proposed
+    Response: { report, count, intents: [...] }
+
+  - POST /gifts/intents
+    Body: {
+      "recipient_name": "Name",
+      "recipient_email": "optional@example.com",
+      "recipient_slack_user_id": "U...",
+      "reason_category": "thanks|congratulations|support|milestone|repair",
+      "reason": "specific evidence-grounded reason",
+      "amount_cents": 1500,
+      "suggested_gift": "Coffee or lunch gift of choice",
+      "card_message": "short, specific, not gushy",
+      "evidence": [{ "type": "teamwork_task|slack_message|intelligence_cycle_action", "id": "..." }],
+      "created_by": "Nora"
+    }
+    Response: { ok, intent, report }. Include proposed gifts in the hour summary as proposals only.
+
+  - POST /gifts/intents/:id/approve
+    Human approval only. Body: { "approved_by": "John" }
+
+  - POST /gifts/intents/:id/reject
+    Human rejection only. Body: { "rejected_by": "John", "note": "..." }
+
+  - POST /gifts/intents/:id/send
+    Fails closed unless GOODY_SEND_ENABLED=true and GOODY_API_KEY is configured. Even then,
+    sending is separate from proposal/approval and must return success before Nora reports it.
+
   ### Slack Conversation State
   Nora supports real back-and-forth conversations in Slack:
     - DMs: every message gets a reply (always).

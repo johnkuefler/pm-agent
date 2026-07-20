@@ -232,6 +232,39 @@ test('markers support exact checks, bulk updates, prefix filters, and deletion',
   assert.equal((await request('/markers/filed%3Aa', { method: 'DELETE' })).body.existed, true);
 });
 
+test('gift intents are proposal-first, budgeted, and fail closed before Goody sending', async () => {
+  const policy = await request('/gifts/policy');
+  assert.equal(policy.body.policy.mode, 'proposal_only');
+  assert.equal(policy.body.policy.monthly_budget_cents, 10000);
+  assert.equal(policy.body.proposal_only, true);
+
+  const created = await request('/gifts/intents', { method: 'POST', body: {
+    id: 'gift-integration-chelsea',
+    recipient_name: 'Chelsea Galindo',
+    recipient_slack_user_id: 'U03CJSL85AL',
+    reason_category: 'thanks',
+    reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+    amount_cents: 1500,
+    suggested_gift: 'Coffee or lunch gift of choice',
+    card_message: 'Thank you for closing the loop and flagging the risk early.',
+    evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-mrtrx1a5-lyyo:1784585763.285619' }],
+  } });
+  assert.equal(created.body.ok, true);
+  assert.equal(created.body.intent.status, 'proposed');
+  assert.equal(created.body.intent.requires_approval, true);
+  assert.match(created.body.intent.request_commitment, /^[a-f0-9]{64}$/);
+
+  const approved = await request('/gifts/intents/gift-integration-chelsea/approve', {
+    method: 'POST', body: { approved_by: 'John' },
+  });
+  assert.equal(approved.body.intent.status, 'approved');
+  assert.equal(approved.body.report.approved_or_sent_cents, 1500);
+
+  const send = await request('/gifts/intents/gift-integration-chelsea/send', { method: 'POST' });
+  assert.equal(send.response.status, 409);
+  assert.equal(send.body.proposal_only, true);
+});
+
 test('run lock enforces holder ownership', async () => {
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'one', ttl_seconds: 60 } })).body.acquired, true);
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'two', ttl_seconds: 60 } })).body.acquired, false);

@@ -15,6 +15,7 @@ const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
+const { registerGiftRoutes } = require('./src/routes/registerGiftRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
@@ -76,12 +77,14 @@ const selfPredictionStudySequencer = require('./src/intelligence/self-prediction
 const interactivePerformance = require('./src/intelligence/interactive-performance');
 const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
+const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
+const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   ? path.join(LOCAL_DATA_DIR, 'reading-library')
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
@@ -694,6 +697,27 @@ function bumpProjectActivity(name) {
   saveProjects(projects);
 }
 
+function loadGiftLedger() {
+  if (_dbReady) return goodyGifting.normalizeLedger(_cache.giftLedger);
+  if (_cache.giftLedger) return goodyGifting.normalizeLedger(_cache.giftLedger);
+  try { _cache.giftLedger = goodyGifting.normalizeLedger(JSON.parse(fs.readFileSync(GIFT_LEDGER_PATH, 'utf8'))); }
+  catch { _cache.giftLedger = goodyGifting.emptyLedger(); }
+  return _cache.giftLedger;
+}
+
+async function saveGiftLedger(value) {
+  const ledger = goodyGifting.normalizeLedger(value);
+  if (_dbReady) await db.setState('gift_ledger', ledger);
+  else {
+    fs.mkdirSync(path.dirname(GIFT_LEDGER_PATH), { recursive: true });
+    const temp = `${GIFT_LEDGER_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(temp, JSON.stringify(ledger, null, 2));
+    fs.renameSync(temp, GIFT_LEDGER_PATH);
+  }
+  _cache.giftLedger = ledger;
+  return ledger;
+}
+
 // Slack threads Nora has replied in. Used to keep conversations going without re-mention.
 // Persisted so a deploy/restart doesn't drop active conversations.
 //
@@ -1116,6 +1140,7 @@ async function initPersistence() {
     _cache.calendar = await db.getState('calendar');
     _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
       await db.getState('drive_artifact_uploads'));
+    _cache.giftLedger = goodyGifting.normalizeLedger(await db.getState('gift_ledger'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -8107,6 +8132,8 @@ registerTaskRoutes(app, {
     }
   },
 });
+
+registerGiftRoutes(app, { requireAuth, loadGiftLedger, saveGiftLedger });
 
 registerRuntimeActivityRoutes(app, {
   requireAuth,
