@@ -5260,6 +5260,16 @@ function addressesSomeoneElse(t, session) {
 const VOLUNTEER_COOLDOWN_MS = 5 * 60 * 1000;   // at most one uninvited interjection per 5 minutes
 const VOLUNTEER_PROBE_COOLDOWN_MS = 90 * 1000; // and don't even ask the model more often than this
 const VOLUNTEER_CUE = /\b(deadline|due|overdue|timeline|launch|ship(?:ping|s|ped)?|estimate|scope|budget|hours|capacity|booked|bandwidth|overloaded|milestone|sprint|blocked|blocker|task|teamwork)\b/i;
+function isBenignRealtimeDeleteMissingItemError(msg) {
+  if (!msg || msg.type !== 'error') return false;
+  const error = msg.error || {};
+  const text = [error.message, error.code, error.type, error.event_id]
+    .filter(Boolean)
+    .join(' ');
+  return /\b(?:error\s+)?deleting\s+item\b/i.test(text)
+    && /\bitem\b/i.test(text)
+    && /\bdoes\s+not\s+exist\b/i.test(text);
+}
 function maybeVolunteerProbe(openaiWs, session, userText) {
   if (session.leanIn === false) return false;
   if (!VOLUNTEER_CUE.test(userText || '')) return false;
@@ -9964,15 +9974,19 @@ wss.on('connection', async (ws, req) => {
   openaiWs.on('message', (data) => {
     try {
       const str = data.toString();
-      if (ws.readyState === WebSocket.OPEN) {
+      const msg = JSON.parse(str);
+      const benignDeleteMiss = isBenignRealtimeDeleteMissingItemError(msg);
+      if (!benignDeleteMiss && ws.readyState === WebSocket.OPEN) {
         ws.send(str);
       }
 
-      const msg = JSON.parse(str);
       openaiEventCount++;
 
       // Log all non-audio events (audio delta is too noisy)
-      if (msg.type !== 'response.output_audio.delta') {
+      if (benignDeleteMiss) {
+        console.warn('OpenAI realtime cleanup skipped missing item:', msg.error?.message || 'delete item did not exist');
+      }
+      if (!benignDeleteMiss && msg.type !== 'response.output_audio.delta') {
         console.log(`⬅️ OpenAI → Browser [${msg.type}]`);
       }
 
@@ -9990,7 +10004,7 @@ wss.on('connection', async (ws, req) => {
       // Log errors in detail. Also release the turn-gate: a rejected response.create (e.g. an active
       // response already exists, or a transient API error) must not leave voiceResponseActive stuck
       // true, which would silence her for the rest of the call.
-      if (msg.type === 'error') {
+      if (msg.type === 'error' && !benignDeleteMiss) {
         console.error('❌ OpenAI error:', JSON.stringify(msg.error));
         const s = sessions[botId];
         if (s) {
@@ -12595,6 +12609,7 @@ module.exports = {
     intelligenceStore: intelligence,
     maybeTriggerVoiceResponse,
     resumePendingVoiceTurn,
+    isBenignRealtimeDeleteMissingItemError,
   },
 };
 

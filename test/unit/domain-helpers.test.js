@@ -110,6 +110,18 @@ test('named and one-on-one barge-ins preempt stale voice work while group cross-
   assert.equal(oneOnOne.pendingVoiceTurn.text, 'wait, one more thing');
 });
 
+test('missing realtime cleanup items are treated as harmless meeting UI noise', () => {
+  assert.equal(helpers.isBenignRealtimeDeleteMissingItemError({
+    type: 'error',
+    error: { message: "Error deleting item: the item with id 'item_E3JCC6nfw5Z9YxXK6uUyH' does not exist." },
+  }), true);
+  assert.equal(helpers.isBenignRealtimeDeleteMissingItemError({
+    type: 'error',
+    error: { message: 'response.create failed because another response is already active' },
+  }), false);
+  assert.equal(helpers.isBenignRealtimeDeleteMissingItemError({ type: 'response.done' }), false);
+});
+
 test('run-bound cycle detection covers durable and pre-durability holder forms', () => {
   assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'nora-cowork', run_lock_holder: 'run-123' }), true);
   assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'nora-cowork' }), true);
