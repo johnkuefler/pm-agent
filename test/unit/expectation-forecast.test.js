@@ -17,6 +17,9 @@ test('EXPECT scores source-bound outcomes and calibration without scoring unavai
   });
   assert.equal(expectationForecast.scoreClaim(claims[0].claims[0], { outcome: 'unclear' }).scored, false);
   assert.throws(() => expectationForecast.normalizeEvidence([{ type: 'made_up', id: 'x' }]), /invalid expectation evidence type/);
+  assert.throws(() => expectationForecast.normalizeClaims([{ scope: 'run_shape', claims: [
+    { claim: 'p', probability: 0.5 },
+  ] }], () => 'claim-junk'), /concrete observable sentence/);
 });
 
 test('EXPECT is preregistered after the self-forecast, resolved in the same cycle, and reloads replay-valid', async t => {

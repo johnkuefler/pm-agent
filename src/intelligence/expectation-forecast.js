@@ -56,7 +56,10 @@ function normalizeClaims(groups = [], idFactory) {
     }
     const claims = group.claims.map(item => {
       const claim = String(item?.claim || '').trim().replace(/\s+/g, ' ');
-      if (!claim) throw new Error('each expectation claim requires text');
+      const claimWords = claim.match(/[A-Za-z0-9][A-Za-z0-9'-]*/g) || [];
+      if (!claim || claim.length < 12 || claimWords.length < 3) {
+        throw new Error('each expectation claim must be a concrete observable sentence');
+      }
       claimCount += 1;
       return { id: idFactory(), claim: claim.slice(0, 500), probability: normalizeProbability(item.probability) };
     });

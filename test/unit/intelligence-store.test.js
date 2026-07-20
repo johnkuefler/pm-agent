@@ -2468,6 +2468,7 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   const firstClosed = store.experienceStreamSnapshot().moments[0];
   assert.equal(firstClosed.audit.complete_lifecycle_verified, true);
   assert.equal(firstClosed.audit.evidence_eligible, true);
+  assert.equal(store.cycleLifecycleRuntimeProjection(first.cycle.id, first.moment.id).handoff_eligible, true);
   assert.equal(firstClosed.start_snapshot, undefined);
   const developmentalRuntime = store.developmentalSelfReflectionRuntimeSnapshot();
   const developmentalSchedule = store.developmentalSelfReflectionScheduleSnapshot();
@@ -2494,6 +2495,16 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   assert.equal(stream.continuity.tested_handoffs, 1);
   assert.equal(stream.continuity.handoff_match_rate, 1);
   assert.equal(stream.moments[0].closure.self_report, 'I am less uncertain now.');
+  const tamperedState = store.snapshot();
+  const tamperedMoment = tamperedState.cognition.experience_stream.find(item => item.id === second.moment.id);
+  tamperedMoment.closure.handoff_preview = 'Tampered after close';
+  const tampered = createIntelligenceStore({ filePath: path.join(dir, 'tampered-state.json'), db: {},
+    isDbReady: () => false, initialState: tamperedState, clock: () => new Date('2026-07-11T15:00:00Z') });
+  await tampered.init();
+  const tamperedProjection = tampered.cycleLifecycleRuntimeProjection(second.cycle.id, second.moment.id);
+  assert.equal(tamperedProjection.closure_handoff_committed, true);
+  assert.equal(tamperedProjection.handoff_committed, false);
+  assert.equal(tamperedProjection.handoff_eligible, false);
   assert.match(stream.epistemic_status, /not a claim/);
   const cognition = store.cognitionSnapshot();
   assert.equal(cognition.experience_stream, undefined);

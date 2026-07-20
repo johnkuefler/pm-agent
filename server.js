@@ -7984,6 +7984,7 @@ registerRunLockRoutes(app, requireAuth, {
       forecast_committed: projection.forecast_committed,
       forecast_correction_committed: projection.forecast_correction_committed,
       handoff_committed: false,
+      handoff_eligible: false,
       next_required_action: 'Stop and report the run-bound lifecycle integrity failure; do not reconstruct it.',
     };
     let lifecycleStage; let nextRequiredAction;
@@ -7998,8 +7999,13 @@ registerRunLockRoutes(app, requireAuth, {
       nextRequiredAction = `Continue the ordinary operational loop, then PATCH /intelligence/cycles/${lifecycle.cycle_id}/complete before releasing the lock`;
     } else if (projection.cycle_status === 'completed'
       && projection.closure_handoff_committed && !projection.handoff_committed) {
-      lifecycleStage = 'handoff_required';
-      nextRequiredAction = `PUT /self/inner with the exact completed cycle ${lifecycle.cycle_id} handoff before releasing the lock`;
+      if (projection.handoff_eligible) {
+        lifecycleStage = 'handoff_required';
+        nextRequiredAction = `PUT /self/inner with the exact completed cycle ${lifecycle.cycle_id} handoff before releasing the lock`;
+      } else {
+        lifecycleStage = 'handoff_ineligible_release_required';
+        nextRequiredAction = `Do not retry PUT /self/inner for this cycle; release the lock with DELETE /run-lock?holder=${encodeURIComponent(holder || '')}`;
+      }
     } else {
       lifecycleStage = 'release_required';
       nextRequiredAction = `DELETE /run-lock?holder=${encodeURIComponent(holder || '')}`;
@@ -8013,6 +8019,7 @@ registerRunLockRoutes(app, requireAuth, {
       forecast_committed: projection.forecast_committed,
       forecast_correction_committed: projection.forecast_correction_committed,
       handoff_committed: projection.handoff_committed,
+      handoff_eligible: projection.handoff_eligible,
       next_required_action: nextRequiredAction,
     };
   },

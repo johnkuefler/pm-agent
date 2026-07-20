@@ -26502,6 +26502,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const cycle = state.cycles.find(item => item.id === cycleId) || null;
     const moment = state.cognition.experience_stream.find(item => item.id === momentId
       && item.cycle_id === cycleId) || null;
+    const momentAudit = moment ? experienceMomentAudit(moment) : null;
     return {
       integrity_verified: Boolean(cycle && moment
         && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id),
@@ -26512,6 +26513,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && !moment.self_forecast.self_correction.revision),
       closure_handoff_committed: Boolean(moment?.closure?.handoff_hash),
       handoff_committed: state.cognition.continuity_handoffs.some(item => item.cycle_id === cycleId),
+      handoff_eligible: Boolean(momentAudit?.evidence_eligible),
     };
   }
 
