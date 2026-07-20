@@ -24990,7 +24990,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     } else {
       const predecessor = (cognition.experience_stream || []).find(item => item.id === moment.predecessor_id);
       if (moment.predecessor_gap_acknowledged === true) {
-        predecessorVerified = Boolean(predecessor && !predecessor.lifecycle_commitment && moment.predecessor_lifecycle_commitment == null);
+        const predecessorAudit = predecessor ? experienceMomentAudit(predecessor, cognition, cycles, cache, nextVisited) : null;
+        predecessorVerified = Boolean(predecessor && moment.predecessor_lifecycle_commitment == null
+          && (!predecessor.lifecycle_commitment || predecessorAudit?.complete_lifecycle_verified === false));
         predecessorChainVerified = predecessorVerified;
       } else {
         const predecessorAudit = predecessor ? experienceMomentAudit(predecessor, cognition, cycles, cache, nextVisited) : null;
@@ -26393,6 +26395,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const active = current.cycles.find(item => item.status === 'running');
       if (active) throw new Error(`intelligence cycle ${active.id} could not be safely recovered`);
       const previousMoment = current.cognition.experience_stream.at(-1) || null;
+      const previousMomentAudit = previousMoment
+        ? experienceMomentAudit(previousMoment, current.cognition, current.cycles) : null;
+      const predecessorGapAcknowledged = Boolean(previousMoment
+        && (!previousMoment.lifecycle_commitment || previousMomentAudit?.complete_lifecycle_verified === false));
       const operationalEnvironment = operationalEnvironmentSnapshot();
       const inheritedThread = input.inner_thread?.content || input.inner_thread || null;
       const inheritedHash = inheritedThread ? crypto.createHash('sha256').update(String(inheritedThread)).digest('hex') : null;
@@ -26425,8 +26431,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         lifecycle_protocol_version: 2,
         cycle_id: cycle.id, predecessor_id: previousMoment?.id || null,
         predecessor_status: previousMoment?.status || null, started: orientation.at, finished: null, status: 'open',
-        predecessor_lifecycle_commitment: previousMoment?.lifecycle_commitment || null,
-        predecessor_gap_acknowledged: Boolean(previousMoment && !previousMoment.lifecycle_commitment),
+        predecessor_lifecycle_commitment: predecessorGapAcknowledged ? null : previousMoment?.lifecycle_commitment || null,
+        predecessor_gap_acknowledged: predecessorGapAcknowledged,
         inherited_context: {
           inner_thread_hash: inheritedHash,
           inner_thread_commitment: input.inner_thread?.continuity_commitment || null,

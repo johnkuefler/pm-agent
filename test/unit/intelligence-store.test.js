@@ -3305,6 +3305,15 @@ test('experience lifecycle tampering invalidates autobiographical and integrated
   assert.equal(after.audit.evidence_eligible, false);
   assert.equal(reloaded.autobiographyEvidence({ type: 'experience_moment', id: after.id }).status, 'unverified');
   assert.equal(reloaded.integratedSelfSnapshot().report.integrity_verified, 0);
+  const successor = reloaded.startCycle({ id: 'post-tamper-successor' });
+  assert.equal(successor.moment.predecessor_id, after.id);
+  assert.equal(successor.moment.predecessor_lifecycle_commitment, null);
+  assert.equal(successor.moment.predecessor_gap_acknowledged, true);
+  reloaded.completeCycle(successor.cycle.id, { summary: 'Acknowledged the predecessor gap and closed a new segment.' });
+  const successorMoment = reloaded.experienceStreamSnapshot().moments.find(item => item.id === successor.moment.id);
+  assert.equal(successorMoment.audit.predecessor_binding_verified, true);
+  assert.equal(successorMoment.audit.complete_lifecycle_verified, true);
+  assert.equal(successorMoment.audit.evidence_eligible, true);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
