@@ -3940,9 +3940,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const ledgerBindingVerified = contentVerified
       && researchLedgerEventBindingCount('epistemic_agenda_attempt_recorded', attempt.id,
         payloadCommitment, ledger) === 1;
+    const readingEvidenceVerified = (attempt?.packet?.evidence || [])
+      .filter(item => item?.ref?.type === 'memory'
+        && String(item.ref.id || '').startsWith('curiosity-reading:'))
+      .every(item => {
+        const match = /^curiosity-reading:([^:]+):([a-f0-9]{64})$/.exec(String(item.ref.id));
+        const session = match && state.cognition.developmental_reading.sessions
+          .find(candidate => candidate.id === match[1]);
+        const expectedEvidence = session ? developmentalReadingCuriosityEvidence({
+          questionId: session.curiosity_question_binding?.id,
+        }).find(candidate => candidate.id === item.ref.id) : null;
+        const expectedSnapshot = expectedEvidence
+          ? professionalViewpointReflection.sourceSnapshot(expectedEvidence) : null;
+        return Boolean(session && expectedSnapshot
+          && epistemicAgenda.canonicalJson(expectedSnapshot) === epistemicAgenda.canonicalJson(item)
+          && readingSessionAudit(session).complete_chain_verified
+          && session.status === 'completed'
+          && session.encounter?.encounter_commitment === match[2]
+          && session.curiosity_question_binding?.id === attempt.packet?.question?.id);
+      });
     return { ...receiptAudit, content_verified: contentVerified,
+      commissioned_reading_evidence_verified: readingEvidenceVerified,
       ledger_binding_verified: ledgerBindingVerified,
-      complete_chain_verified: contentVerified && ledgerBindingVerified };
+      complete_chain_verified: contentVerified && readingEvidenceVerified && ledgerBindingVerified };
   }
 
   function applyEpistemicAgendaAttempt(questions, attempt) {
@@ -4170,7 +4190,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const result = {
       epistemic_status: 'Durable, Nora-authored professional questions revised only by naturally encountered evidence. Immutable but non-durable legacy questions remain visible and replay-valid while being held outside ordinary response prompts. This is a functional model of sustained inquiry, not a feeling claim, autonomous action authority, or evidence of phenomenal consciousness.',
       protocol: { version: epistemicAgenda.PROTOCOL_VERSION,
-        maximum_open_questions: epistemicAgenda.MAX_OPEN_QUESTIONS, active_search: false,
+        maximum_open_questions: epistemicAgenda.MAX_OPEN_QUESTIONS,
+        active_search: 'admitted_source_commission_only',
         foreground_provider_calls: false, connector_actions: false,
         prompt_access_rule: 'durable_question_prompt_access_v1',
         minimum_attempt_interval_hours: epistemicAgenda.MIN_ATTEMPT_INTERVAL_MS / 3600000 },
@@ -12214,7 +12235,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         epistemic_agenda: { ...epistemicAgendaStatus.report,
           current_question: openAgendaQuestions[0]?.question || null,
           projection_verified: epistemicAgendaStatus.audit.complete_chain_verified,
-          active_search: false, foreground_provider_calls: false },
+          active_search: 'admitted_source_commission_only', foreground_provider_calls: false },
         cognitive_parameters: { revision: parameterStatus.revision,
           parameter_count: parameterStatus.parameter_count,
           default_equivalent: parameterStatus.default_equivalent,
@@ -24139,6 +24160,23 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!source || !readingSourceAudit(source, current.cognition).complete_chain_verified) {
         throw new Error('reading session requires a replay-verified admitted source');
       }
+      if (input.curiosity_question_candidates) {
+        if (!epistemicAgendaProjectionAudit(current.cognition.epistemic_agenda,
+          current.cognition.research_ledger).complete_chain_verified) {
+          throw new Error('curiosity-commissioned reading requires a replay-valid epistemic agenda');
+        }
+        for (const candidate of input.curiosity_question_candidates) {
+          const question = current.cognition.epistemic_agenda.questions
+            .find(item => item.id === candidate?.id && item.status === 'open');
+          const publicQuestion = question ? epistemicAgenda.publicQuestion(question) : null;
+          if (!publicQuestion || !epistemicAgenda.promptEligibility(publicQuestion).eligible
+            || candidate.question !== publicQuestion.question
+            || candidate.interest_score !== publicQuestion.interest_score
+            || candidate.question_commitment !== epistemicAgenda.commitment(publicQuestion)) {
+            throw new Error('reading curiosity choice ecology is not bound to the current durable agenda');
+          }
+        }
+      }
       const session = developmentalReading.createSession(source, input, clock());
       current.cognition.developmental_reading.sessions.push(session);
       current.cognition.developmental_reading.sessions = current.cognition.developmental_reading.sessions.slice(-200);
@@ -24263,6 +24301,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       report: { sources: sources.length, active_sessions: allSessions.filter(item => item.status === 'active').length,
         completed_encounters: allSessions.filter(item => item.status === 'completed'
           && item.audit.complete_chain_verified).length,
+        curiosity_commissioned_sessions: allSessions.filter(item =>
+          item.curiosity_question_binding && item.audit.complete_chain_verified).length,
+        completed_curiosity_commissions: allSessions.filter(item => item.status === 'completed'
+          && item.curiosity_question_binding && item.audit.complete_chain_verified).length,
         reflected_chunks: allSessions.reduce((sum, item) => sum + item.notes.length, 0),
         provisional_self_revision_candidates: allSessions.reduce((sum, item) => sum
           + item.notes.filter(note => note.output.possible_self_revision).length, 0),
@@ -24397,6 +24439,26 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const value = type => parts.find(part => part.type === type)?.value;
     return { day_key: `${value('year')}-${value('month')}-${value('day')}`,
       weekday: value('weekday'), hour: Number(value('hour')) };
+  }
+
+  function developmentalReadingCuriosityEvidence({ questionId = '' } = {}) {
+    const selectedId = String(questionId || '');
+    return developmentalReadingAuditedRecords().sessions
+      .filter(session => session.status === 'completed' && session.audit.complete_chain_verified
+        && session.curiosity_question_binding?.id === selectedId && session.encounter)
+      .map(session => {
+        const synthesis = session.encounter.synthesis || {};
+        const ideas = (synthesis.lasting_ideas || []).slice(0, 3).join(' ');
+        const disagreement = (synthesis.disagreements || []).slice(0, 1).join(' ');
+        const changed = synthesis.changed_my_mind || 'No committed mind change was claimed.';
+        return {
+          id: `curiosity-reading:${session.id}:${session.encounter.encounter_commitment}`,
+          fact: `A replay-verified source encounter commissioned by the durable question "${session.curiosity_question_binding.question}" completed ${session.encounter.title} by ${session.encounter.author}. Lasting ideas: ${ideas} Changed view: ${changed} Retained disagreement: ${disagreement || 'none recorded'}. This is source evidence, not a resolved answer.`,
+          added: String(session.completed_at || '').slice(0, 10),
+          project: 'general', source: 'system', kind: 'curiosity_commissioned_reading',
+          status: 'active',
+        };
+      });
   }
 
   function playroomAcquisitionContext(cognition = state.cognition) {
@@ -27580,7 +27642,8 @@ ${episodes.map(item => {
     exemplarSelectionPassAudit,
     registerReadingSource, startReadingSession, developmentalReadingQueue,
     commitDevelopmentalReadingNote, developmentalReadingSnapshot,
-    developmentalReadingInfluenceSnapshot, readingSourceAudit, readingSessionAudit,
+    developmentalReadingInfluenceSnapshot, developmentalReadingCuriosityEvidence,
+    readingSourceAudit, readingSessionAudit,
     playroomAutomationPlan, reconcileAutonomousPlayBuild, openAutonomousPlaySession, playroomSelectionQueue,
     commitPlayroomSelection, playroomTurnQueue, commitPlayroomTurn,
     playroomAppraisalQueue, commitPlayroomAppraisal, playroomSnapshot, playroomSessionAudit,

@@ -104,6 +104,10 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
   const completedReadingEncounters = replayVerifiedReadingSessions.filter(item =>
     item.status === 'completed' && item.encounter?.encounter_commitment
       && item.encounter?.synthesis);
+  const curiosityCommissionedReading = replayVerifiedReadingSessions.filter(item =>
+    item.curiosity_question_binding);
+  const completedCuriosityCommissionedReading = curiosityCommissionedReading.filter(item =>
+    item.status === 'completed' && item.encounter?.encounter_commitment);
   const readingNotes = replayVerifiedReadingSessions.flatMap(item => item.notes || []);
   const readingReactions = readingNotes.flatMap(item => item.output?.reactions || []);
   const readingRevisions = readingNotes.map(item => item.output?.possible_self_revision)
@@ -2266,8 +2270,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     },
     {
       id: 'sustained_epistemic_agenda', family: ['metacognition', 'curiosity', 'intellectual development', 'professional judgment'],
-      functional_claim: 'Nora can originate a useful professional question, preserve it across invocations, and revise, resolve, or abandon it when naturally encountered evidence changes the best tentative answer.',
-      mechanism: 'A restart-durable, capacity-limited question ledger runs only in the preemptible background lane. Formation requires evidence from distinct dates or projects; updates cite only new committed records; every provider result and projection transition is hash-bound and replay-audited. A deterministic local relevance gate can expose one question to a genuinely related live PM judgment, with exact Slack delivery and delayed-outcome receipts. The mechanism cannot browse, message, create tasks, call connectors, or run a provider on Slack or Zoom response paths.',
+      functional_claim: 'Nora can originate a useful professional question, preserve it across invocations, let that question commission a bounded source encounter, and revise, resolve, or abandon it when replay-bound evidence changes the best tentative answer.',
+      mechanism: 'A restart-durable, capacity-limited question ledger runs only in the preemptible background lane. Formation requires evidence from distinct dates or projects; updates cite only new committed records; every provider result and projection transition is hash-bound and replay-audited. During off hours, an exact committed open question may participate in the choice among already admitted legal reading sources; the selected question, source-choice ecology, encounter, and any later agenda revision remain separately replayable. A deterministic local relevance gate can also expose one question to related live PM judgment with exact delivery and delayed-outcome receipts. The mechanism cannot browse arbitrary sources, message, create tasks, call connectors, or run a provider on Slack or Zoom response paths.',
       status: receiptVerifiedAgendaAttempts.length ? 'collecting' : 'mechanism_present',
       evidence: { questions: agendaQuestions.length,
         open_questions: agendaQuestions.filter(item => item.status === 'open').length,
@@ -2278,9 +2282,13 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         replay_verified_natural_access_applications:
           replayVerifiedAgendaAccessApplications.length,
         natural_access_outcome_projection: agendaAccessOutcomeProjection,
-        active_search_actions: 0, foreground_provider_calls: 0 },
+        curiosity_commissioned_reading_sessions: curiosityCommissionedReading.length,
+        completed_curiosity_commissions: completedCuriosityCommissionedReading.length,
+        active_search_actions: curiosityCommissionedReading.length,
+        active_search_scope: 'admitted_rights-verified_reading_sources_only',
+        foreground_provider_calls: 0 },
       falsifier: 'Questions are generic or already answered, persist without new evidence, silently change identity, cite unavailable records, cause actions or connector use, degrade foreground latency, or fail to improve later evidence-grounded PM judgment over matched evidence without agenda access.',
-      next_gate: 'Naturally accumulate replay-valid relevant-work exposures and delayed outcomes across several questions, while preserving foreground latency and treating exposure as distinct from use. After one evidence-driven revision and one resolution or abandonment, preregister a matched authentic-question versus byte-identical deidentified-question versus absent-question PM judgment pilot with independent quality, novelty, unsupported-claim, and latency grading.',
+      next_gate: 'Complete at least one question-commissioned source encounter and a later replay-verified agenda update citing that encounter, while also accumulating relevant-work exposures and delayed outcomes. Then preregister a matched authentic-question versus byte-identical deidentified-question versus absent-question PM judgment pilot with independent quality, novelty, unsupported-claim, and latency grading.',
     },
     {
       id: 'epistemic_self_other_boundary', family: ['source monitoring', 'theory of mind', 'self-model'],

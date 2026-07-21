@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const agenda = require('../../src/intelligence/epistemic-agenda');
+const reading = require('../../src/intelligence/developmental-reading');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
 let now = new Date('2026-07-18T12:00:00.000Z');
@@ -100,6 +101,79 @@ test('a question persists through replay-verified evidence-bound formation and r
   assert.equal(reloaded.epistemicAgendaSnapshot().audit.complete_chain_verified, true);
   assert.equal(reloaded.epistemicAgendaSnapshot().questions[0].confidence, 0.52);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('a durable question can commission reading and later revise from that exact encounter', async () => {
+  now = new Date('2026-07-18T12:00:00.000Z');
+  const { store } = await makeStore();
+  await agenda.runCycle({ store, memories: memories(), now,
+    callProvider: async request => response(request, formationOutput(), 'msg-curiosity-form') });
+  const question = store.epistemicAgendaSnapshot().questions[0];
+  const publicQuestion = agenda.publicQuestion(question);
+  const questionCandidate = { id: question.id, question: question.question,
+    question_commitment: agenda.commitment(publicQuestion),
+    interest_score: question.interest_score };
+  const source = store.registerReadingSource({ id: 'reading-source-agenda-link',
+    title: 'How We Think', author: 'John Dewey', source_kind: 'book',
+    source_url: 'https://example.org/how-we-think.txt', rights_basis: 'public_domain',
+    rights_note: 'Public domain edition.', content_commitment: '1'.repeat(64),
+    content_chars: 25000, chunk_commitments: ['2'.repeat(64)], admitted_by: 'John' });
+  const sourceCandidates = [{ id: source.id, title: source.title, author: source.author,
+    source_kind: source.source_kind, rights_basis: source.rights_basis, chunk_count: 1 }];
+  const selection = { source_id: source.id, curiosity_question_id: question.id,
+    selection_rationale: 'Reflective inquiry may test the carried ownership-versus-date question.',
+    guiding_questions: ['What makes a delivery inference genuinely corrective?'],
+    predicted_influence: 'It may lower confidence in simple metadata heuristics.' };
+  const session = store.startReadingSession(source.id, { id: 'reading-agenda-link-session',
+    selected_by: 'Nora', ...selection, selection_candidates: sourceCandidates,
+    curiosity_question_candidates: [questionCandidate],
+    curiosity_question_binding: questionCandidate,
+    selection_provider_receipt: { response_id: 'reading-agenda-selection',
+      provider: 'anthropic', model: 'test-model', request_commitment: '3'.repeat(64),
+      selection_commitment: reading.commitment(reading.sessionSelectionPayload(selection)),
+      candidate_set_commitment: reading.commitment(sourceCandidates),
+      curiosity_question_set_commitment: reading.commitment([questionCandidate]) } });
+  assert.equal(session.curiosity_question_binding.id, question.id);
+  store.commitDevelopmentalReadingNote(session.id, { day_key: '2026-07-18', chunk_index: 0,
+    chunk_commitment: '2'.repeat(64), provider_receipt: { response_id: 'reading-agenda-note',
+      provider: 'anthropic', model: 'test-model', request_commitment: '4'.repeat(64) },
+    output: { summary: 'Reflective inquiry tests an inference by seeking consequences and alternatives.',
+      reactions: [{ idea: 'Inquiry begins from doubt.', stance: 'agree', source_quote: null,
+        reflection: 'A due date or owner field should remain a hypothesis until outcomes discriminate it.' }],
+      questions: ['Which operational signals discriminate competing delivery explanations?'],
+      possible_self_revision: { before: 'Ownership is usually the better delivery signal.',
+        after: 'Ownership is useful only when later movement distinguishes it from competing causes.',
+        confidence: 0.45, falsifier: 'Repeated cases show ownership predicts movement without other evidence.' },
+      completion: { lasting_ideas: ['A useful inference remains open to consequence and alternatives.'],
+        disagreements: [],
+        changed_my_mind: 'I now treat ownership as a testable cue rather than a default explanation.',
+        questions_to_carry: ['Which later outcomes distinguish ownership from automation?'],
+        expected_work_transfer: 'Seek a discriminating later outcome before escalating one metadata field.',
+        personality_influence_candidate: 'Become slower to promote one delivery cue into an explanation.',
+        counterevidence_needed: 'Repeated cross-project outcomes where ownership alone predicts movement.' } } });
+  const commissioned = store.developmentalReadingCuriosityEvidence({ questionId: question.id });
+  assert.equal(commissioned.length, 1);
+  assert.match(commissioned[0].id,
+    /^curiosity-reading:reading-agenda-link-session:[a-f0-9]{64}$/);
+  now = new Date('2026-07-18T19:00:00.000Z');
+  const revision = {
+    action: 'update', reason: 'The commissioned encounter complicates the original cue hierarchy.',
+    topic_key: question.topic_key, question: question.question,
+    why_it_matters: question.why_it_matters,
+    current_best_answer: 'Explicit ownership is a useful cue only when later consequences distinguish it from automation or task-type effects.',
+    confidence: 0.5, interest_score: 0.84,
+    next_evidence: 'Cross-project cases with discriminating later outcomes could strengthen or reverse this conditional answer.',
+    evidence_ids: [commissioned[0].id],
+  };
+  const updated = await agenda.runCycle({ store, memories: [...memories(), ...commissioned], now,
+    callProvider: async request => response(request, revision, 'msg-curiosity-update') });
+  assert.equal(updated.action, 'update');
+  const snapshot = store.epistemicAgendaSnapshot({ includeAttempts: true });
+  assert.equal(snapshot.questions[0].confidence, 0.5);
+  assert.equal(snapshot.audit.complete_chain_verified, true);
+  assert.equal(snapshot.audit.attempt_audits.at(-1)
+    .commissioned_reading_evidence_verified, true);
+  assert.equal(store.developmentalReadingSnapshot().report.completed_curiosity_commissions, 1);
 });
 
 test('formation fails closed for one context, external evidence, duplicates, and provider receipt tampering', async () => {

@@ -170,6 +170,44 @@ test('choice-ecology sessions freeze meaningful alternatives without changing le
   /exact candidate choice ecology/);
 });
 
+test('a durable curiosity can commission an exact source encounter without rewriting either choice', () => {
+  const source = reading.createSource({ id: 'reading-source-curiosity01', title: 'How We Think',
+    author: 'John Dewey', source_kind: 'book', source_url: 'https://example.org/how-we-think.txt',
+    rights_basis: 'public_domain', rights_note: 'Public domain edition.',
+    content_commitment: 'a'.repeat(64), content_chars: 20000,
+    chunk_commitments: ['b'.repeat(64)], admitted_by: 'John' },
+  new Date('2026-07-18T01:00:00Z'));
+  const question = { id: 'epistemic-agenda-question-curiosity',
+    question: 'When does reflective inquiry correct a project judgment rather than rationalize it?',
+    question_commitment: 'd'.repeat(64), interest_score: 0.88 };
+  const candidates = [{ id: source.id, title: source.title, author: source.author,
+    source_kind: 'book', rights_basis: 'public_domain', chunk_count: 1 }];
+  const selection = { source_id: source.id, curiosity_question_id: question.id,
+    selection_rationale: 'This source may directly complicate the carried question about correction.',
+    guiding_questions: ['What distinguishes inquiry from rationalization?'],
+    predicted_influence: 'It may sharpen the evidence required before revising a judgment.' };
+  const session = reading.createSession(source, { id: 'curiosity-reading-session',
+    selected_by: 'Nora', ...selection, selection_candidates: candidates,
+    curiosity_question_candidates: [question], curiosity_question_binding: question,
+    selection_provider_receipt: {
+      response_id: 'selection-response-curiosity', provider: 'anthropic', model: 'test-model',
+      request_commitment: 'c'.repeat(64),
+      selection_commitment: reading.commitment(reading.sessionSelectionPayload(selection)),
+      candidate_set_commitment: reading.commitment(candidates),
+      curiosity_question_set_commitment: reading.commitment([question]),
+    } }, new Date('2026-07-18T02:00:00Z'));
+  assert.equal(session.protocol_version, reading.CURIOSITY_SESSION_PROTOCOL_VERSION);
+  assert.equal(session.curiosity_question_binding.id, question.id);
+  assert.equal(reading.verifySession(session, source), true);
+  const tampered = structuredClone(session);
+  tampered.curiosity_question_binding.question = 'A substituted server question?';
+  assert.equal(reading.verifySession(tampered, source), false);
+  assert.throws(() => reading.createSession(source, { selected_by: 'Nora', ...selection,
+    selection_candidates: candidates, curiosity_question_candidates: [question],
+    curiosity_question_binding: { ...question, question_commitment: 'e'.repeat(64) },
+    selection_provider_receipt: session.selection_provider_receipt }), /exact committed question/);
+});
+
 test('store ledger-binds reading, quarantines influence during trials, and enforces a daily budget', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reading-store-'));
   const interactions = [];

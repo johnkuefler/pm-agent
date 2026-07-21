@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const epistemicAgenda = require('../../src/intelligence/epistemic-agenda');
 
 process.env.NORA_TEST_MODE = '1';
 const { __test } = require('../../server');
@@ -42,14 +43,27 @@ test('off-hours selection lets Nora choose or abstain from metadata before any s
   const alternative = { id: 'reading-source-alternative', title: 'A Different Book',
     author: 'Another Author', source_kind: 'book', rights_basis: 'public_domain', chunk_count: 8 };
   const started = [];
+  const carriedQuestion = {
+    id: 'epistemic-agenda-question-reading-runtime', status: 'open',
+    topic_key: 'coordination.shared-judgment',
+    question: 'When does shared judgment improve coordination more than a procedural handoff?',
+    why_it_matters: 'The answer could change when Nora invites participation rather than prescribing a process.',
+    current_best_answer: 'Shared judgment appears most useful when local information is distributed.',
+    confidence: 0.55, interest_score: 0.86,
+    next_evidence: 'Cross-project cases comparing distributed judgment with procedural handoffs.',
+    evidence_ids: ['memory-a', 'memory-b'], created_at: '2026-07-17T00:00:00.000Z',
+    updated_at: '2026-07-17T00:00:00.000Z', prompt_access: { eligible: true },
+  };
   const store = {
     developmentalReadingSnapshot: () => ({ report: { active_sessions: 0 },
       availability: { state: 'between_encounters' }, sources: [source, alternative], sessions: [] }),
+    epistemicAgendaSnapshot: () => ({ questions: [carriedQuestion] }),
     startReadingSession: (sourceId, input) => {
       started.push({ sourceId, input });
       return { id: 'selected-session', source_id: sourceId,
         selection_mode: 'provider_bound_autonomous',
-        selection_candidates: input.selection_candidates };
+        selection_candidates: input.selection_candidates,
+        curiosity_question_binding: input.curiosity_question_binding };
     },
   };
   const result = await __test.runDevelopmentalReadingSelectionRuntime({ force: true, store,
@@ -61,6 +75,7 @@ test('off-hours selection lets Nora choose or abstain from metadata before any s
       assert.equal(config.timeout, 60000);
       return { data: { id: 'selection-response-runtime', model: 'claude-sonnet-4-6',
         content: [{ type: 'text', text: JSON.stringify({ decision: 'select', source_id: source.id,
+          curiosity_question_id: carriedQuestion.id,
           selection_rationale: 'I want to examine a view that may complicate my coordination habits.',
           guiding_questions: ['What would change my current view of coordination?'],
           predicted_influence: 'I may sharpen when to invite shared judgment.' }) }] } };
@@ -73,7 +88,13 @@ test('off-hours selection lets Nora choose or abstain from metadata before any s
   assert.match(started[0].input.selection_provider_receipt.selection_commitment, /^[a-f0-9]{64}$/);
   assert.match(started[0].input.selection_provider_receipt.candidate_set_commitment, /^[a-f0-9]{64}$/);
   assert.equal(started[0].input.selection_candidates.length, 2);
+  assert.equal(started[0].input.curiosity_question_binding.id, carriedQuestion.id);
+  assert.equal(started[0].input.curiosity_question_binding.question_commitment,
+    epistemicAgenda.commitment(epistemicAgenda.publicQuestion(carriedQuestion)));
+  assert.match(started[0].input.selection_provider_receipt.curiosity_question_set_commitment,
+    /^[a-f0-9]{64}$/);
   assert.equal(result.candidate_count, 2);
+  assert.equal(result.curiosity_question_id, carriedQuestion.id);
 
   started.length = 0;
   const abstained = await __test.runDevelopmentalReadingSelectionRuntime({ force: true, store,

@@ -5,6 +5,7 @@ const crypto = require('node:crypto');
 const PROTOCOL_VERSION = 1;
 const PROVIDER_BOUND_SESSION_PROTOCOL_VERSION = 2;
 const SESSION_PROTOCOL_VERSION = 3;
+const CURIOSITY_SESSION_PROTOCOL_VERSION = 4;
 const RIGHTS_BASES = Object.freeze(['public_domain', 'open_license', 'user_provided_authorized']);
 const SOURCE_KINDS = Object.freeze(['book', 'essay', 'manual', 'paper', 'other']);
 const STANCES = Object.freeze(['agree', 'disagree', 'uncertain', 'complicate']);
@@ -143,16 +144,47 @@ function sessionManifest(session) {
   if (Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION) {
     manifest.selection_candidates = session.selection_candidates;
   }
+  if (Number(session.protocol_version) >= CURIOSITY_SESSION_PROTOCOL_VERSION) {
+    manifest.curiosity_question_candidates = session.curiosity_question_candidates;
+    manifest.curiosity_question_binding = session.curiosity_question_binding;
+  }
   return manifest;
 }
 
 function sessionSelectionPayload(value) {
-  return {
+  const payload = {
     decision: 'select', source_id: value.source_id,
     selection_rationale: value.selection_rationale,
     guiding_questions: value.guiding_questions,
     predicted_influence: value.predicted_influence,
   };
+  if (Object.hasOwn(value, 'curiosity_question_id')) {
+    payload.curiosity_question_id = value.curiosity_question_id || null;
+  }
+  return payload;
+}
+
+function curiosityQuestionCandidateSet(value) {
+  if (!Array.isArray(value) || value.length > 3) {
+    throw new Error('reading curiosity ecology accepts zero to three durable questions');
+  }
+  const seen = new Set();
+  return value.map(candidate => {
+    const normalized = {
+      id: text(candidate?.id, 'curiosity question id', 240),
+      question: text(candidate?.question, 'curiosity question', 900),
+      question_commitment: text(candidate?.question_commitment,
+        'curiosity question commitment', 64),
+      interest_score: Number(candidate?.interest_score),
+    };
+    if (seen.has(normalized.id) || !/^[a-f0-9]{64}$/.test(normalized.question_commitment)
+      || !Number.isFinite(normalized.interest_score)
+      || normalized.interest_score < 0 || normalized.interest_score > 1) {
+      throw new Error('reading curiosity ecology contains an invalid or duplicate question');
+    }
+    seen.add(normalized.id);
+    return normalized;
+  });
 }
 
 function selectionCandidateSet(value) {
@@ -195,6 +227,22 @@ function createSession(source, input = {}, at = new Date()) {
   };
   let selectionProviderReceipt = null;
   let selectionCandidates = null;
+  let curiosityQuestionCandidates = null;
+  let curiosityQuestionBinding = null;
+  if (input.curiosity_question_candidates) {
+    curiosityQuestionCandidates = curiosityQuestionCandidateSet(input.curiosity_question_candidates);
+    const selectedId = text(input.curiosity_question_binding?.id,
+      'selected curiosity question id', 240, { optional: true });
+    selection.curiosity_question_id = selectedId;
+    if (selectedId) {
+      const selected = curiosityQuestionCandidates.find(item => item.id === selectedId);
+      if (!selected || selected.question !== input.curiosity_question_binding?.question
+        || selected.question_commitment !== input.curiosity_question_binding?.question_commitment) {
+        throw new Error('selected reading curiosity must match the exact committed question ecology');
+      }
+      curiosityQuestionBinding = selected;
+    }
+  }
   if (input.selection_provider_receipt) {
     selectionProviderReceipt = {
       response_id: text(input.selection_provider_receipt.response_id, 'selection provider response id', 300),
@@ -219,9 +267,19 @@ function createSession(source, input = {}, at = new Date()) {
         throw new Error('autonomous reading selection requires the exact candidate choice ecology');
       }
     }
+    if (curiosityQuestionCandidates) {
+      selectionProviderReceipt.curiosity_question_set_commitment = text(
+        input.selection_provider_receipt.curiosity_question_set_commitment,
+        'curiosity question set commitment', 64);
+      if (selectionProviderReceipt.curiosity_question_set_commitment
+        !== commitment(curiosityQuestionCandidates)) {
+        throw new Error('autonomous reading selection requires the exact curiosity choice ecology');
+      }
+    }
   }
   const session = {
-    id, protocol_version: selectionCandidates ? SESSION_PROTOCOL_VERSION
+    id, protocol_version: curiosityQuestionCandidates ? CURIOSITY_SESSION_PROTOCOL_VERSION
+      : selectionCandidates ? SESSION_PROTOCOL_VERSION
       : selectionProviderReceipt ? PROVIDER_BOUND_SESSION_PROTOCOL_VERSION : PROTOCOL_VERSION,
     source_id: source.id,
     source_commitment: source.content_manifest_commitment,
@@ -234,6 +292,10 @@ function createSession(source, input = {}, at = new Date()) {
       selection_provider_receipt: selectionProviderReceipt,
     } : {}),
     ...(selectionCandidates ? { selection_candidates: selectionCandidates } : {}),
+    ...(curiosityQuestionCandidates ? {
+      curiosity_question_candidates: curiosityQuestionCandidates,
+      curiosity_question_binding: curiosityQuestionBinding,
+    } : {}),
     started_at: new Date(at).toISOString(), status: 'active', next_chunk_index: 0,
     notes: [], completed_at: null, encounter: null, session_manifest_commitment: null,
   };
@@ -243,19 +305,36 @@ function createSession(source, input = {}, at = new Date()) {
 
 function verifySession(session, source) {
   const supportedProtocol = [PROTOCOL_VERSION, PROVIDER_BOUND_SESSION_PROTOCOL_VERSION,
-    SESSION_PROTOCOL_VERSION]
+    SESSION_PROTOCOL_VERSION, CURIOSITY_SESSION_PROTOCOL_VERSION]
     .includes(Number(session?.protocol_version));
+  const selectionValue = Number(session?.protocol_version) >= CURIOSITY_SESSION_PROTOCOL_VERSION
+    ? { ...session, curiosity_question_id: session.curiosity_question_binding?.id || null }
+    : session;
   const selectionReceiptVerified = Number(session?.protocol_version) < PROVIDER_BOUND_SESSION_PROTOCOL_VERSION
     || (session.selection_mode === 'provider_bound_autonomous'
       && /^[a-f0-9]{64}$/.test(session.selection_provider_receipt?.request_commitment || '')
       && session.selection_provider_receipt?.selection_commitment
-        === commitment(sessionSelectionPayload(session)));
+        === commitment(sessionSelectionPayload(selectionValue)));
   let choiceEcologyVerified = true;
   if (Number(session?.protocol_version) >= SESSION_PROTOCOL_VERSION) {
     try {
       const candidates = selectionCandidateSet(session.selection_candidates);
       choiceEcologyVerified = candidates.some(candidate => candidate.id === source.id)
         && session.selection_provider_receipt?.candidate_set_commitment === commitment(candidates);
+    } catch { choiceEcologyVerified = false; }
+  }
+  if (Number(session?.protocol_version) >= CURIOSITY_SESSION_PROTOCOL_VERSION) {
+    try {
+      const candidates = curiosityQuestionCandidateSet(session.curiosity_question_candidates);
+      const selected = session.curiosity_question_binding;
+      const bindingValid = !selected || candidates.some(candidate => canonicalJson(candidate)
+        === canonicalJson(selected));
+      choiceEcologyVerified = choiceEcologyVerified && bindingValid
+        && session.selection_provider_receipt?.curiosity_question_set_commitment
+          === commitment(candidates)
+        && session.selection_provider_receipt?.selection_commitment
+          === commitment(sessionSelectionPayload({ ...session,
+            curiosity_question_id: selected?.id || null }));
     } catch { choiceEcologyVerified = false; }
   }
   return Boolean(verifySource(source) && supportedProtocol && selectionReceiptVerified
@@ -365,6 +444,9 @@ function appendNote(session, source, input = {}, at = new Date()) {
       ...(Number(session.protocol_version) >= SESSION_PROTOCOL_VERSION ? {
         selection_candidates: session.selection_candidates,
       } : {}),
+      ...(Number(session.protocol_version) >= CURIOSITY_SESSION_PROTOCOL_VERSION ? {
+        curiosity_question_binding: session.curiosity_question_binding,
+      } : {}),
       note_commitments: session.notes.map(item => item.note_commitment), encounter_commitment: null,
       epistemic_status: 'A source-bound intellectual encounter and provisional self-report. It is not a persona edit, trained weight change, independent validation, subjective-experience proof, or consciousness evidence.',
     };
@@ -394,10 +476,12 @@ function auditSession(session, source) {
 
 module.exports = {
   PROTOCOL_VERSION, PROVIDER_BOUND_SESSION_PROTOCOL_VERSION, SESSION_PROTOCOL_VERSION,
+  CURIOSITY_SESSION_PROTOCOL_VERSION,
   RIGHTS_BASES, SOURCE_KINDS, STANCES,
   outputSchema,
   canonicalJson, commitment, sourceManifest, createSource, verifySource,
-  sessionManifest, sessionSelectionPayload, selectionCandidateSet, createSession, verifySession,
+  sessionManifest, sessionSelectionPayload, selectionCandidateSet, curiosityQuestionCandidateSet,
+  createSession, verifySession,
   normalizeOutput, noteManifest,
   appendNote, auditSession,
 };
