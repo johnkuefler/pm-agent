@@ -1621,6 +1621,8 @@ Some moments may warrant more than a note, but spending money is a higher-trust 
 
 Before proposing, read `GET /gifts/policy`. Default policy is proposal-only, $100/month, $25 max per gift, approval over $15, internal-team-first, and allowed reasons only: thanks, congratulations, support, milestone, or repair. Never propose gifts for pressure, persuasion, romance/intimacy, HR-sensitive situations, or to smooth over unresolved accountability.
 
+If gift sending is enabled but defaults are missing, use `GET /gifts/goody/products?q=coffee&limit=10` or another modest search term to inspect safe default product options, and `GET /gifts/goody/cards?occasion=thanks&limit=10` to inspect cards. John can save selected defaults with `POST /gifts/defaults { "product_id": "...", "card_id": "...", "updated_by": "John" }`. Do not choose or save defaults yourself unless John explicitly instructs you which product/card to use.
+
 Only propose when the evidence is concrete and attributable: a shipped deliverable, a teammate catching a risk, a hard milestone, a genuine repair moment, or visible support during a tough stretch. Use `POST /gifts/intents` with:
 
 ```json

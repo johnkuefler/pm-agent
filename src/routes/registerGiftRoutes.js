@@ -52,6 +52,46 @@ function registerGiftRoutes(app, deps) {
     res.json(goodyGifting.policyReport(ledger));
   });
 
+  app.post('/gifts/defaults', requireAuth, async (req, res) => {
+    try {
+      const result = goodyGifting.updateGiftDefaults(loadGiftLedger(), {
+        product_id: req.body?.product_id,
+        card_id: req.body?.card_id,
+        updated_by: req.body?.updated_by || 'John',
+      });
+      await saveGiftLedger(result.ledger);
+      res.json({ ok: true, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get('/gifts/goody/products', requireAuth, async (req, res) => {
+    try {
+      const result = await goodyGifting.listGoodyProducts(loadGiftLedger(), {
+        query: req.query.q || req.query.query || '',
+        page: req.query.page || 1,
+        perPage: req.query.per_page || req.query.limit || 25,
+      });
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get('/gifts/goody/cards', requireAuth, async (req, res) => {
+    try {
+      const result = await goodyGifting.listGoodyCards(loadGiftLedger(), {
+        occasion: req.query.occasion || req.query.q || '',
+        page: req.query.page || 1,
+        perPage: req.query.per_page || req.query.limit || 25,
+      });
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   app.get('/gifts/intents', requireAuth, (req, res) => {
     const ledger = loadGiftLedger();
     const status = req.query.status ? String(req.query.status) : null;

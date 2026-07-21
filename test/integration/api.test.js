@@ -241,6 +241,15 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
   assert.equal(policy.body.policy.mode, 'proposal_only');
   assert.equal(policy.body.policy.monthly_budget_cents, 10000);
   assert.equal(policy.body.proposal_only, true);
+  assert.equal(policy.body.goody_product_configured, false);
+
+  const defaults = await request('/gifts/defaults', {
+    method: 'POST',
+    body: { product_id: 'product-integration', card_id: 'card-integration', updated_by: 'John' },
+  });
+  assert.equal(defaults.body.ok, true);
+  assert.equal(defaults.body.report.goody_product_configured, true);
+  assert.equal(defaults.body.report.default_product_id, 'product-integration');
 
   const created = await request('/gifts/intents', { method: 'POST', body: {
     id: 'gift-integration-chelsea',

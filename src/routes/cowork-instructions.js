@@ -467,6 +467,19 @@ function registerCoworkInstructionsRoute(app) {
     }
     Response: { ok, intent, report }. Include proposed gifts in the hour summary as proposals only.
 
+  - GET /gifts/goody/products?q=coffee&limit=10
+    Uses the configured Goody API key/environment to list safe product summaries from the Goody catalog.
+    Response includes product ids, names, brands, prices, shipping prices, and image urls. Product/card
+    IDs are not secrets.
+
+  - GET /gifts/goody/cards?occasion=thanks&limit=10
+    Lists active Goody cards and card IDs for picking a default card.
+
+  - POST /gifts/defaults
+    Human selection only. Body: { "product_id": "...", "card_id": "...", "updated_by": "John" }.
+    Stores default_product_id/default_card_id in the gift policy. Railway env vars GOODY_PRODUCT_ID
+    and GOODY_CARD_ID still override these stored defaults if present.
+
   - POST /gifts/intents/:id/approve
     Human approval only. Body: { "approved_by": "John" }
 

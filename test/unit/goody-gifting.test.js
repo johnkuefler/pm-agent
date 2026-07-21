@@ -188,3 +188,51 @@ test('Goody gift link delivery is recorded separately from order send', () => {
   assert.equal(recorded.intent.gift_link_delivery_channel, 'D123');
   assert.match(recorded.intent.gift_link_delivery_commitment, /^[a-f0-9]{64}$/);
 });
+
+test('Goody defaults can be stored in the gift policy without Railway env edits', () => {
+  const updated = goody.updateGiftDefaults(goody.emptyLedger(), {
+    product_id: 'product-from-catalog',
+    card_id: 'card-from-catalog',
+    updated_by: 'John',
+  });
+  assert.equal(updated.ledger.policy.default_product_id, 'product-from-catalog');
+  assert.equal(updated.ledger.policy.default_card_id, 'card-from-catalog');
+  assert.equal(updated.report.goody_product_configured, true);
+  assert.equal(updated.report.goody_card_configured, true);
+});
+
+test('Goody catalog helpers return safe product and card summaries', async () => {
+  const priorKey = process.env.GOODY_API_KEY;
+  process.env.GOODY_API_KEY = 'test-goody-key';
+  const calls = [];
+  const fetchImpl = async url => {
+    calls.push(url);
+    if (url.includes('/v1/products')) {
+      return new Response(JSON.stringify({
+        data: [{
+          id: 'product-1',
+          name: 'Coffee Treat',
+          price: 1200,
+          price_is_variable: false,
+          brand: { name: 'Cafe Co', shipping_price: 0 },
+          images: [{ image_large: { url: 'https://example.com/coffee.png' } }],
+        }],
+        list_meta: { total_count: 1 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      data: [{ id: 'card-1', occasions: ['Thanks'], image_thumb: { url: 'https://example.com/card.png' } }],
+      list_meta: { total_count: 1 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const products = await goody.listGoodyProducts(goody.emptyLedger(), { query: 'coffee', fetchImpl });
+    assert.equal(products.products[0].id, 'product-1');
+    assert.equal(products.products[0].brand_name, 'Cafe Co');
+    const cards = await goody.listGoodyCards(goody.emptyLedger(), { occasion: 'thanks', fetchImpl });
+    assert.equal(cards.cards[0].id, 'card-1');
+    assert.equal(calls.length, 2);
+  } finally {
+    if (priorKey === undefined) delete process.env.GOODY_API_KEY; else process.env.GOODY_API_KEY = priorKey;
+  }
+});

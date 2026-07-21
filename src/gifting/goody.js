@@ -14,6 +14,8 @@ const DEFAULT_POLICY = Object.freeze({
   allowed_reasons: ['thanks', 'congratulations', 'support', 'milestone', 'repair'],
   blocked_reasons: ['persuasion', 'pressure', 'romance_or_intimacy', 'hr_sensitive'],
   goody_environment: 'sandbox',
+  default_product_id: '',
+  default_card_id: '',
 });
 
 const GOODY_BASE_URLS = Object.freeze({
@@ -87,6 +89,8 @@ function splitName(fullName) {
 
 function policyReport(ledger = emptyLedger(), { now = new Date() } = {}) {
   const normalized = normalizeLedger(ledger);
+  const productId = configuredProductId(normalized.policy);
+  const cardId = configuredCardId(normalized.policy);
   const key = monthKey(now);
   const spent = normalized.intents
     .filter(item => monthKey(item.created_at) === key && ['approved', 'sent'].includes(item.status))
@@ -99,9 +103,33 @@ function policyReport(ledger = emptyLedger(), { now = new Date() } = {}) {
     proposal_only: normalized.policy.mode === 'proposal_only' || normalized.policy.auto_send_enabled !== true,
     goody_configured: Boolean(process.env.GOODY_API_KEY),
     goody_send_enabled: process.env.GOODY_SEND_ENABLED === 'true',
-    goody_product_configured: Boolean(process.env.GOODY_PRODUCT_ID),
-    goody_card_configured: Boolean(process.env.GOODY_CARD_ID),
+    goody_product_configured: Boolean(productId),
+    goody_card_configured: Boolean(cardId),
+    default_product_id: productId || null,
+    default_card_id: cardId || null,
   };
+}
+
+function configuredProductId(policy = DEFAULT_POLICY) {
+  return normalizeText(process.env.GOODY_PRODUCT_ID || policy.default_product_id, 120);
+}
+
+function configuredCardId(policy = DEFAULT_POLICY) {
+  return normalizeText(process.env.GOODY_CARD_ID || policy.default_card_id, 120);
+}
+
+function updateGiftDefaults(ledger = emptyLedger(), input = {}) {
+  const current = normalizeLedger(ledger);
+  const productId = normalizeText(input.product_id ?? input.default_product_id ?? current.policy.default_product_id, 120);
+  const cardId = normalizeText(input.card_id ?? input.default_card_id ?? current.policy.default_card_id, 120);
+  current.policy = {
+    ...current.policy,
+    default_product_id: productId,
+    default_card_id: cardId,
+    defaults_updated_by: normalizeText(input.updated_by || 'John', 120),
+    defaults_updated_at: new Date().toISOString(),
+  };
+  return { ledger: current, report: policyReport(current) };
 }
 
 function validateIntentInput(input = {}, ledger = emptyLedger(), { now = new Date() } = {}) {
@@ -269,13 +297,95 @@ function goodyConfig(policy = DEFAULT_POLICY) {
   return {
     api_key: process.env.GOODY_API_KEY || '',
     base_url: baseUrl,
-    product_id: normalizeText(process.env.GOODY_PRODUCT_ID, 120),
-    card_id: normalizeText(process.env.GOODY_CARD_ID, 120),
+    product_id: configuredProductId(policy),
+    card_id: configuredCardId(policy),
     from_name: normalizeText(process.env.GOODY_FROM_NAME || 'Nora at LimeLight Marketing', 120),
     payment_method_id: normalizeText(process.env.GOODY_PAYMENT_METHOD_ID, 120),
     workspace_id: normalizeText(process.env.GOODY_WORKSPACE_ID, 120),
     send_method: ALLOWED_SEND_METHODS.includes(sendMethod) ? sendMethod : 'link_multiple_custom_list',
   };
+}
+
+async function getGoodyJson(path, {
+  policy = DEFAULT_POLICY,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 30000,
+} = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('Goody catalog requires fetch');
+  if (!process.env.GOODY_API_KEY) throw new Error('GOODY_API_KEY is not configured');
+  const baseUrl = GOODY_BASE_URLS[policy.goody_environment] || GOODY_BASE_URLS.sandbox;
+  const response = await fetchImpl(`${baseUrl}${path}`, {
+    headers: { Authorization: `Bearer ${process.env.GOODY_API_KEY}` },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  let body;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text.slice(0, 500) }; }
+  if (!response.ok) {
+    const message = body?.error || body?.message || body?.raw || `HTTP ${response.status}`;
+    throw new Error(`Goody API request failed: ${String(message).slice(0, 240)}`);
+  }
+  return body;
+}
+
+function publicProduct(product = {}) {
+  return {
+    id: product.id || null,
+    name: product.name || null,
+    brand_name: product.brand?.name || null,
+    price: product.price ?? null,
+    price_is_variable: product.price_is_variable ?? null,
+    shipping_price: product.brand?.shipping_price ?? null,
+    subtitle: product.subtitle || product.subtitle_short || null,
+    image_url: product.images?.[0]?.image_large?.url || product.image_large?.url || null,
+    restricted_states: Array.isArray(product.restricted_states) ? product.restricted_states : [],
+  };
+}
+
+function publicCard(card = {}) {
+  return {
+    id: card.id || null,
+    occasions: Array.isArray(card.occasions) ? card.occasions : [],
+    image_thumb_url: card.image_thumb?.url || null,
+    image_url: card.image?.url || null,
+  };
+}
+
+async function listGoodyProducts(ledger = emptyLedger(), {
+  query = '',
+  page = 1,
+  perPage = 25,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const current = normalizeLedger(ledger);
+  const safePage = Math.max(1, Math.round(Number(page) || 1));
+  const safePerPage = Math.min(100, Math.max(1, Math.round(Number(perPage) || 25)));
+  const params = new URLSearchParams({ page: String(safePage), per_page: String(safePerPage) });
+  const body = await getGoodyJson(`/v1/products?${params}`, { policy: current.policy, fetchImpl });
+  const q = normalizeText(query, 120).toLowerCase();
+  let products = Array.isArray(body.data) ? body.data.map(publicProduct) : [];
+  if (q) {
+    products = products.filter(product => [product.name, product.brand_name, product.subtitle]
+      .filter(Boolean).some(value => String(value).toLowerCase().includes(q)));
+  }
+  return { products, list_meta: body.list_meta || {}, report: policyReport(current) };
+}
+
+async function listGoodyCards(ledger = emptyLedger(), {
+  occasion = '',
+  page = 1,
+  perPage = 25,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const current = normalizeLedger(ledger);
+  const safePage = Math.max(1, Math.round(Number(page) || 1));
+  const safePerPage = Math.min(100, Math.max(1, Math.round(Number(perPage) || 25)));
+  const params = new URLSearchParams({ page: String(safePage), per_page: String(safePerPage) });
+  const body = await getGoodyJson(`/v1/cards?${params}`, { policy: current.policy, fetchImpl });
+  const q = normalizeText(occasion, 120).toLowerCase();
+  let cards = Array.isArray(body.data) ? body.data.map(publicCard) : [];
+  if (q) cards = cards.filter(card => card.occasions.some(item => String(item).toLowerCase().includes(q)));
+  return { cards, list_meta: body.list_meta || {}, report: policyReport(current) };
 }
 
 function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
@@ -391,11 +501,14 @@ module.exports = {
   createIntent,
   emptyLedger,
   extractHighPriceCents,
+  listGoodyCards,
+  listGoodyProducts,
   normalizeLedger,
   policyReport,
   recordGiftLinkDelivery,
   rejectIntent,
   sendIntent,
   sendReadiness,
+  updateGiftDefaults,
   validateIntentInput,
 };
