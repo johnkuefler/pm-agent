@@ -162,6 +162,7 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
 }
 
 function audit(receipt = {}) {
+  receipt = receipt && typeof receipt === 'object' ? receipt : {};
   const selected = Array.isArray(receipt.scored_candidates)
     ? receipt.scored_candidates.slice().sort(sortScores)[0] : null;
   const commitmentVerified = /^[a-f0-9]{64}$/.test(String(receipt.receipt_commitment || ''))

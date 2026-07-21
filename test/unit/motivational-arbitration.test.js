@@ -90,6 +90,7 @@ test('unverified wants and stale soma cannot influence arbitration', () => {
   assert.equal(receipt.source_state.want_history_verified, false);
   assert.equal(receipt.source_state.soma.fresh, false);
   assert.equal(receipt.motivationally_material, false);
+  assert.equal(arbitration.audit(null).complete_chain_verified, false);
 });
 
 test('motivation cannot outrank an explicit required obligation', () => {

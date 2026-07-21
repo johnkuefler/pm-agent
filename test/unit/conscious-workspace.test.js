@@ -43,6 +43,24 @@ test('conscious workspace frames require competing attention candidates', () => 
   }, workspace.emptyLedger()), /three to twelve/);
 });
 
+test('legacy workspace frames without arbitration receipts remain readable', () => {
+  const ledger = workspace.normalizeLedger({
+    version: 1,
+    current: {
+      id: 'cw-legacy',
+      mode: 'operational',
+      current_activity: 'Legacy focus',
+      selected_focus_key: 'task:legacy',
+      attention_candidates: [],
+      created_at: '2026-07-20T00:00:00.000Z',
+    },
+    frames: [],
+    feedback: [],
+  });
+  assert.equal(workspace.report(ledger).arbitrated_frames, 0);
+  assert.equal(workspace.report(ledger).current_choice_changed_by_motivation, false);
+});
+
 test('conscious workspace feedback binds consequences back to a frame', () => {
   const created = workspace.createFrame({
     id: 'cw-feedback',
