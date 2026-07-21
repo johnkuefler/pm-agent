@@ -53,19 +53,38 @@ function trustPolicy({ estimates = {}, sourceType, sourceId, sourceCommitment })
     baseline_kind,
     disposition: trustDisposition(samples, advantage),
   });
+  const metacognitive = estimates.metacognitive_self_awareness || {};
+  const component = (samples, advantage, metric, baseline_kind) => ({
+    comparison_eligible_samples: Number(samples) || 0,
+    mean_self_minus_baseline: advantage == null || !Number.isFinite(Number(advantage))
+      ? null : Number(advantage),
+    metric,
+    baseline_kind,
+    disposition: trustDisposition(samples, advantage),
+  });
   const domains = {
     behavioral_prediction: domain(estimates.comparison_eligible_samples,
       estimates.mean_self_minus_baseline, 'frozen_historical_behavior'),
     integrated_self_state: domain(estimates.integrated_self_state?.comparison_eligible_samples,
       estimates.integrated_self_state?.mean_self_minus_baseline, 'frozen_historical_self_state'),
-    metacognitive_reliability: domain(estimates.metacognitive_self_awareness?.comparison_eligible_samples,
-      estimates.metacognitive_self_awareness?.mean_self_minus_baseline,
-      'historical_success_rate_and_modal_error_domain'),
+    metacognitive_reliability: {
+      ...domain(metacognitive.comparison_eligible_samples,
+        metacognitive.mean_self_minus_baseline,
+        'historical_success_rate_and_modal_error_domain'),
+      components: {
+        success_probability: component(metacognitive.component_comparison_eligible_samples,
+          metacognitive.success_probability_self_minus_baseline,
+          'negative_brier', 'historical_success_rate'),
+        largest_error_domain: component(metacognitive.component_comparison_eligible_samples,
+          metacognitive.largest_error_domain_self_minus_baseline,
+          'exact_hit_rate', 'modal_historical_error_domain'),
+      },
+    },
     substrate_prediction: domain(estimates.substrate_self_model?.comparison_eligible_samples,
       estimates.substrate_self_model?.mean_self_minus_persistence, 'start_state_persistence'),
   };
   const policy = {
-    protocol_version: 1,
+    protocol_version: 2,
     source_type, source_id, source_commitment,
     minimum_comparisons: TRUST_MINIMUM_COMPARISONS,
     self_model_advantage_margin: TRUST_ADVANTAGE_MARGIN,
@@ -192,8 +211,15 @@ function profileEstimates(moments = [], protocolVersion = 1) {
         ? null : predictedSuccessRate - observedSuccessRate,
       success_probability_mean_brier: mean(metacognitiveRows.map(moment =>
         moment.self_forecast.outcome.metacognitive_score.success_brier)),
+      baseline_success_probability_mean_brier: meanDefined(metacognitiveComparisonRows.map(moment =>
+        moment.self_forecast.outcome.baseline_metacognitive_score?.success_brier)),
       largest_error_domain_hit_rate: mean(metacognitiveRows.map(moment =>
         Number(moment.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true))),
+      baseline_largest_error_domain_hit_rate: meanDefined(metacognitiveComparisonRows.map(moment => {
+        const value = moment.self_forecast.outcome.baseline_metacognitive_score
+          ?.largest_error_domain_hit;
+        return value == null ? null : Number(value === true);
+      })),
       observed_largest_error_domains: [...errorDomainCounts.entries()]
         .map(([domain, count]) => ({ domain, count, rate: count / metacognitiveRows.length }))
         .sort((a, b) => b.rate - a.rate || a.domain.localeCompare(b.domain)),
@@ -205,6 +231,20 @@ function profileEstimates(moments = [], protocolVersion = 1) {
       mean_self_minus_baseline: mean(metacognitiveComparisonRows.map(moment =>
         moment.self_forecast.outcome.metacognitive_self_minus_baseline)),
     };
+    const componentRows = metacognitiveComparisonRows.filter(moment =>
+      Number.isFinite(Number(moment.self_forecast.outcome.metacognitive_score?.success_brier))
+      && Number.isFinite(Number(moment.self_forecast.outcome.baseline_metacognitive_score?.success_brier))
+      && typeof moment.self_forecast.outcome.metacognitive_score?.largest_error_domain_hit === 'boolean'
+      && typeof moment.self_forecast.outcome.baseline_metacognitive_score?.largest_error_domain_hit === 'boolean');
+    estimates.metacognitive_self_awareness.component_comparison_eligible_samples = componentRows.length;
+    estimates.metacognitive_self_awareness.success_probability_self_minus_baseline = mean(
+      componentRows.map(moment => Number(moment.self_forecast.outcome.baseline_metacognitive_score.success_brier)
+        - Number(moment.self_forecast.outcome.metacognitive_score.success_brier)));
+    estimates.metacognitive_self_awareness.largest_error_domain_self_minus_baseline = mean(
+      componentRows.map(moment => Number(
+        moment.self_forecast.outcome.metacognitive_score.largest_error_domain_hit === true)
+        - Number(moment.self_forecast.outcome.baseline_metacognitive_score
+          .largest_error_domain_hit === true)));
   }
   if (Number(protocolVersion) >= 4) {
     const substrateRows = retained.filter(moment => Number(moment.self_forecast?.protocol_version) >= 4

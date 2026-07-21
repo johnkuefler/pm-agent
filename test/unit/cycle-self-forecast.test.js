@@ -476,6 +476,9 @@ test('protocol-v7 preserves raw reliability while trust control defers contradic
   const eligiblePolicy = behavioralSelfModel.trustPolicy({ estimates: {
     ...estimates, metacognitive_self_awareness: {
       ...estimates.metacognitive_self_awareness, mean_self_minus_baseline: 0.1,
+      component_comparison_eligible_samples: 20,
+      success_probability_self_minus_baseline: 0.1,
+      largest_error_domain_self_minus_baseline: 0.1,
     } }, sourceType: 'behavioral_self_prior', sourceId: behavioralSelfPrior.id,
   sourceCommitment: priorCommitment });
   const selfSelected = cycleSelfForecast.adjudicateMetacognitivePrediction({
@@ -484,6 +487,24 @@ test('protocol-v7 preserves raw reliability while trust control defers contradic
   });
   assert.equal(selfSelected.source, 'self_model');
   assert.equal(selfSelected.operational_prediction.predicted_success_probability, 0.1);
+  const mixedPolicy = behavioralSelfModel.trustPolicy({ estimates: {
+    ...estimates, metacognitive_self_awareness: {
+      ...estimates.metacognitive_self_awareness,
+      component_comparison_eligible_samples: 20,
+      success_probability_self_minus_baseline: 0.1,
+      largest_error_domain_self_minus_baseline: -0.1,
+    } }, sourceType: 'behavioral_self_prior', sourceId: behavioralSelfPrior.id,
+  sourceCommitment: priorCommitment });
+  const mixed = cycleSelfForecast.adjudicateMetacognitivePrediction({
+    forecast: cycleSelfForecast.normalizeForecast(input, 7), baseline: record.baseline,
+    trustPolicy: mixedPolicy,
+  });
+  assert.equal(mixed.source, 'component_control');
+  assert.deepEqual(mixed.component_sources, {
+    success_probability: 'self_model', largest_error_domain: 'historical_baseline',
+  });
+  assert.equal(mixed.operational_prediction.predicted_success_probability, 0.1);
+  assert.equal(mixed.operational_prediction.predicted_largest_error_domain, 'action_count');
   const tampered = structuredClone(record.metacognitive_adjudication);
   tampered.source = 'self_model';
   assert.notEqual(cycleSelfForecast.commitment(

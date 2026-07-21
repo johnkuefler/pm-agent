@@ -346,13 +346,32 @@ function adjudicateMetacognitivePrediction({ forecast = {}, baseline = {}, trust
   }
   const rawPrediction = metacognitiveProjection(forecast.metacognitive_prediction);
   const baselinePrediction = metacognitiveProjection(baseline.metacognitive_prediction);
-  const source = trustDomain.disposition === 'self_model_eligible'
-    ? 'self_model' : 'historical_baseline';
-  const operationalPrediction = source === 'self_model' ? rawPrediction : baselinePrediction;
+  const componentSource = componentName => {
+    const disposition = trustDomain.components?.[componentName]?.disposition;
+    if (Number(trustPolicy.protocol_version) >= 2 && disposition) {
+      return disposition === 'self_model_eligible' ? 'self_model' : 'historical_baseline';
+    }
+    return trustDomain.disposition === 'self_model_eligible'
+      ? 'self_model' : 'historical_baseline';
+  };
+  const componentSources = {
+    success_probability: componentSource('success_probability'),
+    largest_error_domain: componentSource('largest_error_domain'),
+  };
+  const distinctSources = new Set(Object.values(componentSources));
+  const source = distinctSources.size === 1 ? [...distinctSources][0] : 'component_control';
+  const operationalPrediction = {
+    integrated_success_threshold: rawPrediction.integrated_success_threshold,
+    predicted_success_probability: componentSources.success_probability === 'self_model'
+      ? rawPrediction.predicted_success_probability : baselinePrediction.predicted_success_probability,
+    predicted_largest_error_domain: componentSources.largest_error_domain === 'self_model'
+      ? rawPrediction.predicted_largest_error_domain : baselinePrediction.predicted_largest_error_domain,
+  };
   const adjudication = {
-    protocol_version: 1,
+    protocol_version: Number(trustPolicy.protocol_version) >= 2 ? 2 : 1,
     domain: 'metacognitive_reliability',
     source,
+    component_sources: componentSources,
     trust_disposition: trustDomain.disposition,
     trust_policy_commitment: trustPolicy.policy_commitment,
     raw_prediction_commitment: commitment(rawPrediction),
@@ -360,7 +379,9 @@ function adjudicateMetacognitivePrediction({ forecast = {}, baseline = {}, trust
     operational_prediction: JSON.parse(JSON.stringify(operationalPrediction)),
     epistemic_limit: source === 'self_model'
       ? 'The self-estimate cleared a replay-bound historical calibration gate. It remains a fallible operational forecast, not hidden-state access or consciousness evidence.'
-      : 'The raw self-estimate remains preserved and scored, but measured calibration does not justify using it operationally. Baseline deferral is evidence of a bounded limitation, not identity essence or consciousness evidence.',
+      : source === 'component_control'
+        ? 'Replay-bound component evidence supports only part of the raw self-estimate. Each prediction component is selected prospectively and scored separately; this is fallible learned control, not hidden-state access or consciousness evidence.'
+        : 'The raw self-estimate remains preserved and scored, but measured calibration does not justify using it operationally. Baseline deferral is evidence of a bounded limitation, not identity essence or consciousness evidence.',
     content_commitment: null,
   };
   adjudication.content_commitment = commitment(metacognitiveAdjudicationManifest(adjudication));

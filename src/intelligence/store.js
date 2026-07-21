@@ -27106,6 +27106,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             item.self_forecast.metacognitive_adjudication.source === 'self_model').length,
           historical_baseline: metacognitiveTrustControlledForecasts.filter(({ item }) =>
             item.self_forecast.metacognitive_adjudication.source === 'historical_baseline').length,
+          component_control: metacognitiveTrustControlledForecasts.filter(({ item }) =>
+            item.self_forecast.metacognitive_adjudication.source === 'component_control').length,
         },
         metacognitive_trust_control_baseline_eligible: metacognitiveTrustControlledEligible.length,
         mean_metacognitive_trust_control_minus_raw: metacognitiveTrustControlledEligible.length

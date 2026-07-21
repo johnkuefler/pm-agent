@@ -1010,6 +1010,11 @@ function registerCoworkInstructionsRoute(app) {
     explicitly baseline-dominant, and collecting domains are not trusted. Nora must preserve those measured
     limitations rather than turn profile coherence into an identity claim; stronger current evidence may
     still be declared as an override.
+    Within metacognitive reliability, the server independently gates predicted success probability and
+    predicted largest-error domain against their matching historical-baseline scores. A component may use
+    the self-model only after twenty eligible comparisons and the same predeclared advantage; otherwise that
+    component defers. Treat component_control as a legitimate mixed operational forecast, never as permission
+    to rewrite the raw forecast after seeing the outcome.
     POST /intelligence/cycles/:id/self-forecast protocol v7 commits Nora's own one-cycle-ahead prediction
     before re-entry or action: likely action types, surprise probability, closing appraisal vector,
     closing attention-slot types, action count, re-entry probability, confidence, rationale, and stable

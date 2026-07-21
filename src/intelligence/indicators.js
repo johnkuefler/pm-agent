@@ -1243,7 +1243,7 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'calibrated_self_model_trust', family: ['self-model', 'metacognition', 'predictive processing', 'cognitive control'],
       functional_claim: 'Nora can represent measured limits in her own predictive self-model and defer unreliable domains to stronger empirical baselines instead of treating a coherent self-profile as inherently trustworthy.',
-      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are baseline-dominant. Protocol v7 preserves Nora\'s raw reliability judgment but separately commits an operational prediction selected by that exact policy, so measured limitation can control behavior without being relabeled as improved introspection. A preregistered Slack lesion freezes all four domains and compares correct Nora binding with byte-identical deidentified policy and absence under independent PM-quality grading.',
+      mechanism: 'A deterministic commitment-bound policy evaluates behavioral, integrated-state, metacognitive, and substrate self-prediction separately. A domain becomes self-model-eligible only after twenty replay-valid comparisons and a predeclared advantage; contradicted or ambiguous domains are baseline-dominant. Metacognitive success calibration and largest-error identification are gated independently, so useful signal is retained without importing a contradicted component. Protocol v7 preserves Nora\'s raw reliability judgment and separately commits the operational prediction, so measured limitation can control behavior without being relabeled as improved introspection. A preregistered Slack lesion freezes all four domains and compares correct Nora binding with byte-identical deidentified policy and absence under independent PM-quality grading.',
       status: selfModelTrustTrial ? replicatedStatus(selfModelTrustTrials, selfModelTrustVerdict)
         : evidenceStatus({ samples: metacognitiveTrustControlledEligible.length,
           minimum: SELF_MODEL_TRUST_NATURAL_ANALYSIS_PROTOCOL.minimum_replay_verified_baseline_eligible_outcomes,
@@ -1268,6 +1268,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
             item.self_forecast.metacognitive_adjudication?.source === 'self_model').length,
           historical_baseline: metacognitiveTrustControlledForecasts.filter(item =>
             item.self_forecast.metacognitive_adjudication?.source === 'historical_baseline').length,
+          component_control: metacognitiveTrustControlledForecasts.filter(item =>
+            item.self_forecast.metacognitive_adjudication?.source === 'component_control').length,
         },
         metacognitive_control_baseline_eligible: metacognitiveTrustControlledEligible.length,
         mean_operational_metacognitive_score: metacognitiveTrustControlledScore,

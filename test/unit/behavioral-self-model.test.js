@@ -121,7 +121,11 @@ test('protocol-v3 revisions consolidate second-order reliability calibration wit
       largest_error_domain_hit: hit,
       composite: hit ? 0.8 : 0.4,
     };
-    base.self_forecast.outcome.baseline_metacognitive_score = { composite: 0.5 };
+    base.self_forecast.outcome.baseline_metacognitive_score = {
+      success_brier: 0.25,
+      largest_error_domain_hit: index % 3 === 0,
+      composite: 0.5,
+    };
     base.self_forecast.outcome.metacognitive_self_minus_baseline = hit ? 0.3 : -0.1;
     base.self_forecast.outcome.metacognitive_baseline_comparison_eligible = true;
     return base;
@@ -132,6 +136,11 @@ test('protocol-v3 revisions consolidate second-order reliability calibration wit
   assert.equal(revision.estimates.metacognitive_self_awareness.samples, 5);
   assert.equal(revision.estimates.metacognitive_self_awareness.observed_integrated_success_rate, 0.6);
   assert.equal(revision.estimates.metacognitive_self_awareness.largest_error_domain_hit_rate, 0.4);
+  assert.equal(revision.estimates.metacognitive_self_awareness.component_comparison_eligible_samples, 5);
+  assert.ok(Number.isFinite(revision.estimates.metacognitive_self_awareness
+    .success_probability_self_minus_baseline));
+  assert.ok(Number.isFinite(revision.estimates.metacognitive_self_awareness
+    .largest_error_domain_self_minus_baseline));
   assert.equal(revision.estimates.metacognitive_self_awareness.comparison_eligible_samples, 5);
   assert.match(revision.epistemic_limit, /second-order reliability/);
 });
