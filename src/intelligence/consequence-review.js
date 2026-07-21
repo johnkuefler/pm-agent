@@ -40,15 +40,16 @@ function commitment(value) {
 }
 
 function emptyLedger() {
-  return { version: 1, actions: [], observations: [] };
+  return { version: 2, actions: [], observations: [], applications: [] };
 }
 
 function normalizeLedger(value = {}) {
   const ledger = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   return {
-    version: 1,
+    version: 2,
     actions: Array.isArray(ledger.actions) ? ledger.actions.map(normalizeActionRecord).filter(Boolean).slice(-1000) : [],
     observations: Array.isArray(ledger.observations) ? ledger.observations.map(normalizeObservationRecord).filter(Boolean).slice(-1000) : [],
+    applications: Array.isArray(ledger.applications) ? ledger.applications.map(normalizeApplicationRecord).filter(Boolean).slice(-2000) : [],
   };
 }
 
@@ -240,6 +241,206 @@ function normalizeObservationRecord(record) {
   };
 }
 
+function actionManifest(action = {}) {
+  return {
+    id: action.id,
+    action_type: action.action_type,
+    description: action.description,
+    intended_effect: action.intended_effect,
+    success_criteria: action.success_criteria,
+    expected_signal: action.expected_signal,
+    target_ref: action.target_ref,
+    workspace_frame_id: action.workspace_frame_id,
+    evidence: action.evidence,
+    consequence_due: action.consequence_due,
+  };
+}
+
+function observationManifest(observation = {}, action = {}) {
+  return {
+    action_id: action.id,
+    action_commitment: action.action_commitment,
+    outcome: observation.outcome,
+    observed_effect: observation.observed_effect,
+    evidence: observation.evidence,
+    should_change_behavior: observation.should_change_behavior,
+    behavior_update: observation.behavior_update,
+  };
+}
+
+function ledgerIndexes(ledger) {
+  return {
+    actions: new Map(ledger.actions.map(item => [item.id, item])),
+    observations: new Map(ledger.observations.map(item => [item.id, item])),
+  };
+}
+
+function verifiedLesson(ledger, actionId, observationId, indexes = null) {
+  const action = indexes ? indexes.actions.get(actionId) : ledger.actions.find(item => item.id === actionId);
+  const observation = indexes ? indexes.observations.get(observationId)
+    : ledger.observations.find(item => item.id === observationId);
+  return Boolean(action && observation
+    && observation.action_id === actionId
+    && action.action_commitment === commitment(actionManifest(action))
+    && observation.observation_commitment === commitment(observationManifest(observation, action)));
+}
+
+function applicationManifest(application = {}) {
+  return {
+    id: application.id,
+    surface: application.surface,
+    lesson_refs: application.lesson_refs,
+    query_commitment: application.query_commitment,
+    person_commitment: application.person_commitment,
+    interaction_id: application.interaction_id,
+    interaction_ref_commitment: application.interaction_ref_commitment,
+    created_at: application.created_at,
+  };
+}
+
+function applicationResolutionManifest(application = {}, resolution = {}) {
+  return {
+    application_commitment: application.application_commitment,
+    interaction_id: resolution.interaction_id,
+    outcome: resolution.outcome,
+    signal_commitment: resolution.signal_commitment,
+    reviewed_at: resolution.reviewed_at,
+  };
+}
+
+function normalizeApplicationRecord(record) {
+  if (!record || typeof record !== 'object' || !record.id || !record.interaction_id) return null;
+  return {
+    ...record,
+    lesson_refs: Array.isArray(record.lesson_refs) ? record.lesson_refs.slice(0, 8) : [],
+    resolution: record.resolution && typeof record.resolution === 'object'
+      ? { ...record.resolution } : null,
+  };
+}
+
+function auditNormalizedApplication(current, application = {}, indexes = null) {
+  const lookup = indexes || ledgerIndexes(current);
+  const lessonsVerified = Array.isArray(application.lesson_refs)
+    && application.lesson_refs.length > 0
+    && application.lesson_refs.every(ref => verifiedLesson(current, ref.action_id, ref.observation_id, lookup)
+      && lookup.actions.get(ref.action_id)?.action_commitment === ref.action_commitment
+      && lookup.observations.get(ref.observation_id)?.observation_commitment === ref.observation_commitment);
+  const applicationVerified = application.application_commitment === commitment(applicationManifest(application));
+  const resolutionVerified = !application.resolution || (application.resolution.interaction_id === application.interaction_id
+    && application.resolution.resolution_commitment
+      === commitment(applicationResolutionManifest(application, application.resolution)));
+  return {
+    lessons_verified: lessonsVerified,
+    application_verified: applicationVerified,
+    resolution_verified: resolutionVerified,
+    complete_chain_verified: lessonsVerified && applicationVerified && resolutionVerified,
+  };
+}
+
+function auditApplication(ledger = emptyLedger(), application = {}) {
+  return auditNormalizedApplication(normalizeLedger(ledger), application);
+}
+
+function recordPromptApplication(ledger = emptyLedger(), input = {}, { now = new Date() } = {}) {
+  const current = normalizeLedger(ledger);
+  const interactionId = normalizeText(input.interaction_id, 200);
+  const interactionRef = normalizeText(input.interaction_ref, 500);
+  const surface = normalizeText(input.surface || 'slack', 40).toLowerCase();
+  if (!interactionId || !interactionRef) throw new Error('consequence application requires a delivered interaction id and reference');
+  const existing = current.applications.find(item => item.interaction_id === interactionId);
+  if (existing) return { ledger: current, application: existing, idempotent: true };
+  const requestedRefs = Array.isArray(input.lesson_refs) ? input.lesson_refs : [];
+  if (!requestedRefs.length || requestedRefs.length > 8) throw new Error('consequence application requires one to eight lesson references');
+  const lessonRefs = requestedRefs.map(ref => {
+    const actionId = normalizeText(ref.action_id, 120);
+    const observationId = normalizeText(ref.observation_id, 160);
+    if (!verifiedLesson(current, actionId, observationId)) throw new Error('consequence application lesson failed integrity verification');
+    const action = current.actions.find(item => item.id === actionId);
+    const observation = current.observations.find(item => item.id === observationId);
+    return { action_id: actionId, observation_id: observationId,
+      action_commitment: action.action_commitment,
+      observation_commitment: observation.observation_commitment };
+  });
+  const observedAt = now instanceof Date ? now : new Date(now);
+  const application = {
+    id: input.id ? normalizeText(input.id, 160)
+      : `cr-app-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`,
+    surface,
+    lesson_refs: lessonRefs,
+    query_commitment: commitment(normalizeText(input.query, 6000)),
+    person_commitment: input.person ? commitment(normalizeText(input.person, 240).toLowerCase()) : null,
+    interaction_id: interactionId,
+    interaction_ref_commitment: commitment(interactionRef),
+    created_at: observedAt.toISOString(),
+    resolution: null,
+  };
+  application.application_commitment = commitment(applicationManifest(application));
+  current.applications.push(application);
+  return { ledger: current, application, idempotent: false };
+}
+
+function resolvePromptApplication(ledger = emptyLedger(), input = {}) {
+  const current = normalizeLedger(ledger);
+  const interactionId = normalizeText(input.interaction_id, 200);
+  const application = current.applications.find(item => item.interaction_id === interactionId);
+  if (!application) return { ledger: current, application: null, resolved: false };
+  if (!auditNormalizedApplication(current, application).complete_chain_verified) {
+    throw new Error('consequence application failed replay verification');
+  }
+  const outcome = normalizeText(input.outcome, 40).toLowerCase();
+  if (!['landed', 'appreciated', 'neutral', 'ignored', 'corrected'].includes(outcome)) {
+    throw new Error('consequence application outcome is unsupported');
+  }
+  const signal = normalizeText(input.signal, 1200);
+  if (!signal) throw new Error('consequence application outcome requires observable signal');
+  const reviewedAt = new Date(input.reviewed_at || new Date());
+  if (!Number.isFinite(reviewedAt.getTime())) throw new Error('consequence application reviewed_at is invalid');
+  const candidate = {
+    interaction_id: interactionId,
+    outcome,
+    signal_commitment: commitment(signal),
+    reviewed_at: reviewedAt.toISOString(),
+  };
+  candidate.resolution_commitment = commitment(applicationResolutionManifest(application, candidate));
+  if (application.resolution) {
+    if (canonical(application.resolution) !== canonical(candidate)) {
+      throw new Error('consequence application outcome is already sealed');
+    }
+    return { ledger: current, application, resolved: true, idempotent: true };
+  }
+  application.resolution = candidate;
+  return { ledger: current, application, resolved: true, idempotent: false };
+}
+
+function applicationFeedbackMap(current) {
+  const counts = new Map();
+  const indexes = ledgerIndexes(current);
+  for (const application of current.applications) {
+    if (!application.resolution || application.resolution.outcome === 'neutral'
+      || !auditNormalizedApplication(current, application, indexes).complete_chain_verified) continue;
+    const positive = ['landed', 'appreciated'].includes(application.resolution.outcome);
+    for (const actionId of new Set(application.lesson_refs.map(ref => ref.action_id))) {
+      const row = counts.get(actionId) || { decisive: 0, positive: 0, negative: 0 };
+      row.decisive += 1;
+      if (positive) row.positive += 1;
+      else row.negative += 1;
+      counts.set(actionId, row);
+    }
+  }
+  return new Map([...counts].map(([actionId, row]) => [actionId, {
+    ...row,
+    observed_success_rate: row.decisive ? row.positive / row.decisive : null,
+    epistemic_limit: 'Observational prompt-exposure outcomes; exposure does not prove use or causation.',
+  }]));
+}
+
+function applicationFeedback(ledger = emptyLedger(), actionId) {
+  return applicationFeedbackMap(normalizeLedger(ledger)).get(String(actionId)) || {
+    decisive: 0, positive: 0, negative: 0, observed_success_rate: null,
+    epistemic_limit: 'Observational prompt-exposure outcomes; exposure does not prove use or causation.',
+  };
+}
+
 function report(ledger = emptyLedger(), { now = new Date() } = {}) {
   const current = normalizeLedger(ledger);
   const counts = Object.fromEntries(STATUSES.map(status => [status, 0]));
@@ -249,6 +450,10 @@ function report(ledger = emptyLedger(), { now = new Date() } = {}) {
     if (action.latest_outcome) outcomes[action.latest_outcome] = (outcomes[action.latest_outcome] || 0) + 1;
   }
   const due = dueActions(current, { now, status: 'open', limit: 200 });
+  const indexes = ledgerIndexes(current);
+  const verifiedApplications = current.applications.filter(application =>
+    auditNormalizedApplication(current, application, indexes).complete_chain_verified);
+  const resolvedApplications = verifiedApplications.filter(application => application.resolution);
   return {
     total_actions: current.actions.length,
     total_observations: current.observations.length,
@@ -256,6 +461,12 @@ function report(ledger = emptyLedger(), { now = new Date() } = {}) {
     outcomes,
     due_open_actions: due.length,
     behavior_updates: current.observations.filter(item => item.should_change_behavior).length,
+    prompt_applications: current.applications.length,
+    replay_verified_prompt_applications: verifiedApplications.length,
+    reviewed_prompt_applications: resolvedApplications.length,
+    prompt_application_outcomes: Object.fromEntries(
+      ['landed', 'appreciated', 'neutral', 'ignored', 'corrected'].map(outcome => [outcome,
+        resolvedApplications.filter(item => item.resolution.outcome === outcome).length])),
   };
 }
 
@@ -285,6 +496,7 @@ function actionSearchText(action = {}, observations = []) {
 
 function promptLessons(ledger = emptyLedger(), { query = '', person = '', limit = 3 } = {}) {
   const current = normalizeLedger(ledger);
+  const feedbackByAction = applicationFeedbackMap(current);
   const observationsByAction = new Map();
   for (const observation of current.observations) {
     const list = observationsByAction.get(observation.action_id) || [];
@@ -305,16 +517,23 @@ function promptLessons(ledger = emptyLedger(), { query = '', person = '', limit 
       const haystack = actionSearchText(action, observations);
       const relevance = terms.length ? terms.filter(term => haystack.includes(term)).length : 0;
       const personMatch = person && haystack.includes(String(person).trim().toLowerCase()) ? 1 : 0;
-      return { action, observation: latest, relevance: relevance + personMatch };
+      return { action, observation: latest, relevance: relevance + personMatch,
+        feedback: feedbackByAction.get(action.id) || {
+          decisive: 0, positive: 0, negative: 0, observed_success_rate: null,
+          epistemic_limit: 'Observational prompt-exposure outcomes; exposure does not prove use or causation.',
+        } };
     })
     .filter(Boolean)
     .filter(item => !terms.length || item.relevance > 0)
     .sort((a, b) => b.relevance - a.relevance
+      || (b.feedback.decisive >= 3 ? b.feedback.observed_success_rate : 0.5)
+        - (a.feedback.decisive >= 3 ? a.feedback.observed_success_rate : 0.5)
       || Number(Boolean(b.observation.should_change_behavior)) - Number(Boolean(a.observation.should_change_behavior))
       || String(b.observation.observed_at).localeCompare(String(a.observation.observed_at)))
     .slice(0, Math.max(0, Math.min(8, Number(limit) || 0)))
-    .map(({ action, observation }) => ({
+    .map(({ action, observation, feedback }) => ({
       action_id: action.id,
+      observation_id: observation.id,
       action_type: action.action_type,
       intended_effect: action.intended_effect,
       success_criteria: action.success_criteria,
@@ -325,6 +544,7 @@ function promptLessons(ledger = emptyLedger(), { query = '', person = '', limit 
       action_commitment: action.action_commitment,
       observation_commitment: observation.observation_commitment,
       observed_at: observation.observed_at,
+      application_feedback: feedback,
     }));
 }
 
@@ -332,9 +552,14 @@ function renderPromptLessons(lessons = []) {
   if (!Array.isArray(lessons) || !lessons.length) return '';
   return lessons.map(item => {
     const update = item.behavior_update ? ` Behavior update: ${item.behavior_update}` : '';
+    const forecast = item.outcome === 'backfired'
+      ? ` Pre-action error forecast: repeating this pattern risks ${item.observed_effect}.`
+      : item.behavior_update ? ' Pre-action check: this task matches a prior evidence-backed behavior revision.' : '';
+    const feedback = item.application_feedback?.decisive >= 3
+      ? ` Later prompt-exposure outcomes: ${item.application_feedback.positive} positive, ${item.application_feedback.negative} negative; observational only.` : '';
     const evidence = (item.evidence || []).slice(0, 3)
       .map(ref => `${ref.type}:${ref.id || ref.url || 'ref'}`).join(', ');
-    return `- ${item.action_type}: intended ${item.intended_effect}; observed ${item.outcome} - ${item.observed_effect}.${update} Evidence ${evidence || 'committed'}; observation ${String(item.observation_commitment || '').slice(0, 12)}.`;
+    return `- ${item.action_type}: intended ${item.intended_effect}; observed ${item.outcome} - ${item.observed_effect}.${forecast}${update}${feedback} Evidence ${evidence || 'committed'}; observation ${String(item.observation_commitment || '').slice(0, 12)}.`;
   }).join('\n');
 }
 
@@ -342,13 +567,17 @@ module.exports = {
   ACTION_TYPES,
   OUTCOMES,
   STATUSES,
+  applicationFeedback,
+  auditApplication,
   closeAction,
   createAction,
   dueActions,
   emptyLedger,
   normalizeLedger,
   observeAction,
+  recordPromptApplication,
   promptLessons,
   report,
   renderPromptLessons,
+  resolvePromptApplication,
 };

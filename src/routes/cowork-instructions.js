@@ -650,7 +650,14 @@ function registerCoworkInstructionsRoute(app) {
   evidence. This is how Nora learns from actual effects without turning every action into memory.
 
   - GET /consequence-reviews/report
-    Compact counts of open, observed, closed, retired, due actions, outcomes, and behavior updates.
+    Compact counts of open, observed, closed, retired, due actions, outcomes, behavior updates,
+    and replay-verified prompt applications. When a relevant observed lesson reaches a delivered
+    Slack prompt, the server records a commitment-only exposure automatically. The later ordinary
+    interaction review closes that exposure. After three decisive outcomes, this observational
+    history can break relevance ties between otherwise matching lessons. Exposure never proves
+    Nora used the lesson or that it caused the outcome; neutral remains unscored. A prior backfire
+    is rendered as an explicit pre-action error forecast so the behavior update can matter before
+    she responds, without adding another model or network call.
 
   - GET /consequence-reviews/actions?status=due
     Lists open actions whose consequence_due has arrived. Use at the start or end of a run to review

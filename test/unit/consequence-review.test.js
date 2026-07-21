@@ -112,12 +112,75 @@ test('observed consequence lessons can enter prompt context as bounded prior evi
     person: 'John',
     query: 'deadline ambiguity recommendation',
     consequenceContext: { lessons, rendered: consequences.renderPromptLessons(lessons) },
+    returnContextReceipt: true,
   });
-  assert.match(prompt, /Observed consequences from prior Nora actions/);
-  assert.match(prompt, /Completion is not consequence/);
-  assert.match(prompt, /lead with the concrete recommendation/);
+  assert.match(prompt.text, /Observed consequences from prior Nora actions/);
+  assert.match(prompt.text, /Completion is not consequence/);
+  assert.match(prompt.text, /lead with the concrete recommendation/);
+  assert.deepEqual(prompt.context_receipt.consequence_lessons, [{
+    action_id: lessons[0].action_id,
+    observation_id: lessons[0].observation_id,
+    action_commitment: lessons[0].action_commitment,
+    observation_commitment: lessons[0].observation_commitment,
+  }]);
   assert.equal(consequences.promptLessons(observed.ledger, {
     person: 'Maya',
     query: 'creative review',
   }).length, 0);
+});
+
+test('delivered consequence lessons form a replay-bound behavior revision loop', () => {
+  const created = consequences.createAction({
+    id: 'cr-pressure-pattern',
+    action_type: 'warmth',
+    description: 'Sent encouragement while a teammate was still blocked.',
+    intended_effect: 'Help the teammate feel supported.',
+    success_criteria: 'A later response shows whether the message reduced or added pressure.',
+    target_ref: 'slack:teammate',
+    evidence: [{ type: 'slack_message', id: 'source-1' }],
+  }, consequences.emptyLedger(), { now: new Date('2026-07-20T10:00:00.000Z') });
+  let state = consequences.observeAction(created.ledger, created.action.id, {
+    outcome: 'backfired',
+    observed_effect: 'The note added pressure before the blocker was removed.',
+    evidence: [{ type: 'slack_message', id: 'source-2' }],
+    should_change_behavior: true,
+    behavior_update: 'Acknowledge the blocker and explicitly remove pressure before offering encouragement.',
+  }, { now: new Date('2026-07-20T11:00:00.000Z') }).ledger;
+  const lesson = consequences.promptLessons(state, {
+    person: 'Teammate', query: 'blocked encouragement pressure', limit: 1,
+  })[0];
+  assert.match(consequences.renderPromptLessons([lesson]), /Pre-action error forecast/);
+
+  for (let index = 0; index < 3; index++) {
+    const recorded = consequences.recordPromptApplication(state, {
+      id: `cr-app-${index}`,
+      surface: 'slack',
+      lesson_refs: [lesson],
+      query: 'They are still blocked; what should I say?',
+      person: 'Teammate',
+      interaction_id: `ix-${index}`,
+      interaction_ref: `slack-ts-${index}`,
+    }, { now: new Date(`2026-07-20T12:0${index}:00.000Z`) });
+    assert.equal(consequences.auditApplication(recorded.ledger, recorded.application).complete_chain_verified, true);
+    state = consequences.resolvePromptApplication(recorded.ledger, {
+      interaction_id: `ix-${index}`,
+      outcome: index === 2 ? 'corrected' : 'landed',
+      signal: index === 2 ? 'The teammate clarified that the blocker had already cleared.' : 'The teammate acknowledged the no-pressure note positively.',
+      reviewed_at: `2026-07-21T12:0${index}:00.000Z`,
+    }).ledger;
+  }
+
+  const feedback = consequences.applicationFeedback(state, created.action.id);
+  assert.deepEqual({ decisive: feedback.decisive, positive: feedback.positive, negative: feedback.negative },
+    { decisive: 3, positive: 2, negative: 1 });
+  const revisedLesson = consequences.promptLessons(state, {
+    person: 'Teammate', query: 'blocked encouragement pressure', limit: 1,
+  })[0];
+  assert.match(consequences.renderPromptLessons([revisedLesson]), /2 positive, 1 negative; observational only/);
+
+  const tampered = JSON.parse(JSON.stringify(state));
+  tampered.applications[0].lesson_refs[0].observation_commitment = '0'.repeat(64);
+  assert.equal(consequences.auditApplication(tampered, tampered.applications[0]).complete_chain_verified, false);
+  assert.equal(consequences.applicationFeedback(tampered, created.action.id).decisive, 2,
+    'tampered exposure is excluded from future behavior feedback');
 });

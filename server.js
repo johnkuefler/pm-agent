@@ -819,14 +819,16 @@ function loadConsequenceReviews() {
 
 async function saveConsequenceReviews(value) {
   const ledger = consequenceReview.normalizeLedger(value);
-  if (_dbReady) await db.setState('consequence_reviews', ledger);
+  // Make the new ledger visible immediately so multiple fire-and-forget Slack receipts
+  // cannot overwrite one another while the database write is in flight.
+  _cache.consequenceReviews = ledger;
+  if (_dbReady) await _writeThrough('consequence_reviews', () => db.setState('consequence_reviews', ledger));
   else {
     fs.mkdirSync(path.dirname(CONSEQUENCE_REVIEWS_PATH), { recursive: true });
     const temp = `${CONSEQUENCE_REVIEWS_PATH}.tmp-${process.pid}`;
     fs.writeFileSync(temp, JSON.stringify(ledger, null, 2));
     fs.renameSync(temp, CONSEQUENCE_REVIEWS_PATH);
   }
-  _cache.consequenceReviews = ledger;
   return ledger;
 }
 
@@ -2198,6 +2200,11 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     intelligenceContextReceipt.epistemic_agenda_questions =
       intelligenceContextReceipt.epistemic_agenda_questions.filter(packet =>
         volatileIntelligenceContext.includes(packet.question));
+  }
+  if (intelligenceContextReceipt?.consequence_lessons?.length) {
+    intelligenceContextReceipt.consequence_lessons =
+      intelligenceContextReceipt.consequence_lessons.filter(lesson =>
+        volatileIntelligenceContext.includes(String(lesson.observation_commitment || '').slice(0, 12)));
   }
   promptDiagnostics.intelligence_raw_chars = String(intelligenceContext || '').length;
   promptDiagnostics.intelligence_live_chars = volatileIntelligenceContext.length;
@@ -9256,6 +9263,27 @@ function logInteraction(entry) {
           console.warn('epistemic agenda access capture failed:', error.message);
         }
       }
+      const consequenceLessons = intelligenceReceipt?.consequence_lessons || [];
+      if (consequenceLessons.length) {
+        try {
+          const result = consequenceReview.recordPromptApplication(loadConsequenceReviews(), {
+            surface: 'slack', lesson_refs: consequenceLessons,
+            query: interaction.trigger || '', person: interaction.requester_name || '',
+            interaction_id: interaction.id,
+            interaction_ref: interaction.ts || interaction.thread_ts,
+          });
+          interaction.consequence_application_id = result.application.id;
+          void saveConsequenceReviews(result.ledger).catch(error => {
+            console.warn('consequence application persistence failed:', error.message);
+          });
+          runtimeActivity.record({ lane: 'learning', kind: 'consequence_application',
+            label: 'Applying a lesson from consequences',
+            detail: `${consequenceLessons.length} prior outcome lesson${consequenceLessons.length === 1 ? '' : 's'} reached a delivered Slack response; later feedback will test the revision.`,
+            source: 'slack-handler', meta: { surface: 'slack', result: 'prompt_access_only' } });
+        } catch (error) {
+          console.warn('consequence application capture failed:', error.message);
+        }
+      }
     }
     items.push(interaction);
     if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
@@ -9310,6 +9338,21 @@ function handleInteractionOutcome(interaction) {
     catch (error) { console.warn('exemplar outcome capture failed:', error.message); }
     try { intelligence.resolveAffectiveRegulationApplicationOutcome(interaction); }
     catch (error) { console.warn('affective regulation outcome capture failed:', error.message); }
+    if (interaction.consequence_application_id) {
+      try {
+        const result = consequenceReview.resolvePromptApplication(loadConsequenceReviews(), {
+          interaction_id: interaction.id,
+          outcome: interaction.outcome,
+          signal: interaction.signal || '',
+          reviewed_at: interaction.reviewed_at,
+        });
+        if (result.resolved) void saveConsequenceReviews(result.ledger).catch(error => {
+          console.warn('consequence application outcome persistence failed:', error.message);
+        });
+      } catch (error) {
+        console.warn('consequence application outcome capture failed:', error.message);
+      }
+    }
     try { intelligence.resolveProfessionalViewpointAccessOutcome(interaction); }
     catch (error) { console.warn('professional viewpoint access outcome capture failed:', error.message); }
     try {

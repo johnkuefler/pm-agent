@@ -27048,6 +27048,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       professional_viewpoints: [],
       epistemic_agenda_questions: [],
       developmental_reading_encounters: [],
+      consequence_lessons: consequenceContext?.lessons?.map(item => ({
+        action_id: item.action_id,
+        observation_id: item.observation_id,
+        action_commitment: item.action_commitment,
+        observation_commitment: item.observation_commitment,
+      })) || [],
       procedure_selection: null,
       procedure_selection_commitment: null,
       exemplar_selection: null,
