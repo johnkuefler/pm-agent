@@ -12664,6 +12664,58 @@ function scheduleStartupBackgroundTask(label, delayMs, fn) {
   _runtimeIntervals.push(timer);
 }
 
+async function completePostListenStartup(background) {
+  console.log('Startup phase: post-listen schema and continuity warmup');
+  // Upgrade the active source of truth only after Postgres hydration. Running this before
+  // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
+  await backfillMemoryIds();
+  console.log('Startup phase: intelligence store init');
+  await intelligence.init();
+  const unleasedRunRecovery = recoverRunBoundLifecycleWithoutLease();
+  const staleCycleRecovery = unleasedRunRecovery.recovered
+    ? unleasedRunRecovery : intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
+  const restoredRunLock = loadDurableRunLock();
+  if (restoredRunLock && Number(restoredRunLock.expires_at) > Date.now()) {
+    runtimeActivity.begin({ id: `hourly:${restoredRunLock.holder}`, lane: 'work', kind: 'hourly_run',
+      label: 'Restoring an active hourly run',
+      detail: 'The durable operational lease survived this server restart.',
+      source: 'startup-recovery', meta: { phase: 'orientation' } });
+  }
+  await intelligence.persistStrict();
+  if (staleCycleRecovery.recovered) {
+    console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale intelligence cycle(s) as explicit continuity gaps`);
+  }
+  console.log('Startup phase: inner-thread projection reconciliation');
+  await reconcileInnerThreadProjection();
+  try { await mcpManager.migrate(); }
+  catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
+  // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
+  // authoritative substrate observation soon after listening so that restart and persistence
+  // scoring do not depend on a long startup race.
+  beginSomaRuntimeSampling();
+  await computeSoma();
+  if (background) {
+    // The full research report is intentionally lazy. Warming its CPU-heavy worker during
+    // startup caused multi-second event-loop lag precisely when Slack/Zoom reconnect and
+    // continuity traffic arrive. The progressive dashboard starts it only when the research
+    // section is requested; a live interaction can then preempt it through the v4 firewall.
+    scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
+    scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
+    _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
+    _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
+    scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
+    scheduleStartupBackgroundTask('startup background intelligence cycle', 30000, () => runBackgroundIntelligenceRuntime({ trigger: 'startup' }));
+    _runtimeIntervals.push(setInterval(() => {
+      try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
+      catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
+      runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
+        .catch(error => console.error('Background intelligence cycle failed:', error.message));
+    }, 5 * 60 * 1000));
+    scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
+  }
+  console.log('Startup phase: post-listen warmup complete');
+}
+
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
@@ -12674,32 +12726,6 @@ async function start(options = {}) {
     // Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
     // reads a half-hydrated cache. DB failure preserves the existing JSON fallback.
     await initPersistence();
-    // Upgrade the active source of truth only after Postgres hydration. Running this before
-    // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
-    await backfillMemoryIds();
-    await intelligence.init();
-    const unleasedRunRecovery = recoverRunBoundLifecycleWithoutLease();
-    const staleCycleRecovery = unleasedRunRecovery.recovered
-      ? unleasedRunRecovery : intelligence.recoverStaleCycles({ reason: 'startup_recovery' });
-    const restoredRunLock = loadDurableRunLock();
-    if (restoredRunLock && Number(restoredRunLock.expires_at) > Date.now()) {
-      runtimeActivity.begin({ id: `hourly:${restoredRunLock.holder}`, lane: 'work', kind: 'hourly_run',
-        label: 'Restoring an active hourly run',
-        detail: 'The durable operational lease survived this server restart.',
-        source: 'startup-recovery', meta: { phase: 'orientation' } });
-    }
-    await intelligence.persistStrict();
-    if (staleCycleRecovery.recovered) {
-      console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale intelligence cycle(s) as explicit continuity gaps`);
-    }
-    await reconcileInnerThreadProjection();
-    try { await mcpManager.migrate(); }
-    catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
-    // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
-    // authoritative substrate observation before listening so that restart and persistence scoring
-    // never depend on a startup race.
-    beginSomaRuntimeSampling();
-    await computeSoma();
     await new Promise((resolve, reject) => {
       const onError = (err) => { server.off('listening', onListening); reject(err); };
       const onListening = () => { server.off('error', onError); resolve(); };
@@ -12709,25 +12735,7 @@ async function start(options = {}) {
     });
     const address = server.address();
     console.log(`Nora server running on port ${typeof address === 'object' ? address.port : port}`);
-    if (background) {
-      // The full research report is intentionally lazy. Warming its CPU-heavy worker during
-      // startup caused multi-second event-loop lag precisely when Slack/Zoom reconnect and
-      // continuity traffic arrive. The progressive dashboard starts it only when the research
-      // section is requested; a live interaction can then preempt it through the v4 firewall.
-      scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
-      scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
-      _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
-      _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
-      scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
-      scheduleStartupBackgroundTask('startup background intelligence cycle', 30000, () => runBackgroundIntelligenceRuntime({ trigger: 'startup' }));
-      _runtimeIntervals.push(setInterval(() => {
-        try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
-        catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
-        runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
-          .catch(error => console.error('Background intelligence cycle failed:', error.message));
-      }, 5 * 60 * 1000));
-      scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
-    }
+    scheduleStartupBackgroundTask('post-listen startup warmup', 250, () => completePostListenStartup(background));
     return server;
   })();
   return _startPromise;
