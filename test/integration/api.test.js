@@ -245,9 +245,10 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
 
   const defaults = await request('/gifts/defaults', {
     method: 'POST',
-    body: { product_id: 'product-integration', card_id: 'card-integration', updated_by: 'John' },
+    body: { environment: 'production', product_id: 'product-integration', card_id: 'card-integration', updated_by: 'John' },
   });
   assert.equal(defaults.body.ok, true);
+  assert.equal(defaults.body.report.goody_environment, 'production');
   assert.equal(defaults.body.report.goody_product_configured, true);
   assert.equal(defaults.body.report.default_product_id, 'product-integration');
 

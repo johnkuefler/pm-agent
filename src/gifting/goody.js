@@ -24,6 +24,7 @@ const GOODY_BASE_URLS = Object.freeze({
 });
 
 const ALLOWED_SEND_METHODS = Object.freeze(['link_multiple_custom_list', 'email_and_link']);
+const ALLOWED_GOODY_ENVIRONMENTS = Object.freeze(['sandbox', 'production']);
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -89,6 +90,7 @@ function splitName(fullName) {
 
 function policyReport(ledger = emptyLedger(), { now = new Date() } = {}) {
   const normalized = normalizeLedger(ledger);
+  const environment = configuredEnvironment(normalized.policy);
   const productId = configuredProductId(normalized.policy);
   const cardId = configuredCardId(normalized.policy);
   const key = monthKey(now);
@@ -107,7 +109,13 @@ function policyReport(ledger = emptyLedger(), { now = new Date() } = {}) {
     goody_card_configured: Boolean(cardId),
     default_product_id: productId || null,
     default_card_id: cardId || null,
+    goody_environment: environment,
   };
+}
+
+function configuredEnvironment(policy = DEFAULT_POLICY) {
+  const value = normalizeText(process.env.GOODY_ENVIRONMENT || policy.goody_environment || 'sandbox', 40);
+  return ALLOWED_GOODY_ENVIRONMENTS.includes(value) ? value : 'sandbox';
 }
 
 function configuredProductId(policy = DEFAULT_POLICY) {
@@ -126,6 +134,9 @@ function updateGiftDefaults(ledger = emptyLedger(), input = {}) {
     ...current.policy,
     default_product_id: productId,
     default_card_id: cardId,
+    ...(input.environment || input.goody_environment
+      ? { goody_environment: configuredEnvironment({ goody_environment: input.environment || input.goody_environment }) }
+      : {}),
     defaults_updated_by: normalizeText(input.updated_by || 'John', 120),
     defaults_updated_at: new Date().toISOString(),
   };
@@ -292,11 +303,13 @@ function sendReadiness(ledger = emptyLedger(), id) {
 }
 
 function goodyConfig(policy = DEFAULT_POLICY) {
-  const baseUrl = GOODY_BASE_URLS[policy.goody_environment] || GOODY_BASE_URLS.sandbox;
+  const environment = configuredEnvironment(policy);
+  const baseUrl = GOODY_BASE_URLS[environment] || GOODY_BASE_URLS.sandbox;
   const sendMethod = normalizeText(process.env.GOODY_SEND_METHOD || 'link_multiple_custom_list', 80);
   return {
     api_key: process.env.GOODY_API_KEY || '',
     base_url: baseUrl,
+    environment,
     product_id: configuredProductId(policy),
     card_id: configuredCardId(policy),
     from_name: normalizeText(process.env.GOODY_FROM_NAME || 'Nora at LimeLight Marketing', 120),
@@ -313,7 +326,8 @@ async function getGoodyJson(path, {
 } = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('Goody catalog requires fetch');
   if (!process.env.GOODY_API_KEY) throw new Error('GOODY_API_KEY is not configured');
-  const baseUrl = GOODY_BASE_URLS[policy.goody_environment] || GOODY_BASE_URLS.sandbox;
+  const environment = configuredEnvironment(policy);
+  const baseUrl = GOODY_BASE_URLS[environment] || GOODY_BASE_URLS.sandbox;
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Authorization: `Bearer ${process.env.GOODY_API_KEY}` },
     signal: AbortSignal.timeout(timeoutMs),
@@ -493,6 +507,7 @@ async function sendIntent(ledger = emptyLedger(), id, {
 
 module.exports = {
   ALLOWED_SEND_METHODS,
+  ALLOWED_GOODY_ENVIRONMENTS,
   DEFAULT_POLICY,
   GOODY_BASE_URLS,
   approveIntent,

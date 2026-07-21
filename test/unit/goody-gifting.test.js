@@ -191,10 +191,13 @@ test('Goody gift link delivery is recorded separately from order send', () => {
 
 test('Goody defaults can be stored in the gift policy without Railway env edits', () => {
   const updated = goody.updateGiftDefaults(goody.emptyLedger(), {
+    environment: 'production',
     product_id: 'product-from-catalog',
     card_id: 'card-from-catalog',
     updated_by: 'John',
   });
+  assert.equal(updated.ledger.policy.goody_environment, 'production');
+  assert.equal(updated.report.goody_environment, 'production');
   assert.equal(updated.ledger.policy.default_product_id, 'product-from-catalog');
   assert.equal(updated.ledger.policy.default_card_id, 'card-from-catalog');
   assert.equal(updated.report.goody_product_configured, true);

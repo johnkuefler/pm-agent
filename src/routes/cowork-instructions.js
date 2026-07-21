@@ -476,9 +476,11 @@ function registerCoworkInstructionsRoute(app) {
     Lists active Goody cards and card IDs for picking a default card.
 
   - POST /gifts/defaults
-    Human selection only. Body: { "product_id": "...", "card_id": "...", "updated_by": "John" }.
+    Human selection only. Body: { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "updated_by": "John" }.
     Stores default_product_id/default_card_id in the gift policy. Railway env vars GOODY_PRODUCT_ID
-    and GOODY_CARD_ID still override these stored defaults if present.
+    and GOODY_CARD_ID still override these stored defaults if present; GOODY_ENVIRONMENT overrides
+    the stored environment if present. If catalog calls return unauthorized, the Goody key probably
+    belongs to the other environment.
 
   - POST /gifts/intents/:id/approve
     Human approval only. Body: { "approved_by": "John" }

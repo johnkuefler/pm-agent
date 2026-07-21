@@ -57,6 +57,7 @@ function registerGiftRoutes(app, deps) {
       const result = goodyGifting.updateGiftDefaults(loadGiftLedger(), {
         product_id: req.body?.product_id,
         card_id: req.body?.card_id,
+        environment: req.body?.environment || req.body?.goody_environment,
         updated_by: req.body?.updated_by || 'John',
       });
       await saveGiftLedger(result.ledger);
