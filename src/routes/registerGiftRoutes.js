@@ -14,6 +14,8 @@ function publicIntent(intent) {
     reason: intent.reason,
     amount_cents: intent.amount_cents,
     currency: intent.currency,
+    product_id: intent.product_id || null,
+    product_name: intent.product_name || null,
     suggested_gift: intent.suggested_gift,
     card_message: intent.card_message || '',
     evidence: intent.evidence || [],
@@ -58,6 +60,9 @@ function registerGiftRoutes(app, deps) {
         product_id: req.body?.product_id,
         card_id: req.body?.card_id,
         environment: req.body?.environment || req.body?.goody_environment,
+        per_gift_limit_cents: req.body?.per_gift_limit_cents,
+        requires_approval_over_cents: req.body?.requires_approval_over_cents,
+        monthly_budget_cents: req.body?.monthly_budget_cents,
         updated_by: req.body?.updated_by || 'John',
       });
       await saveGiftLedger(result.ledger);

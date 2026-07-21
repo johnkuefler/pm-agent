@@ -1619,9 +1619,9 @@ Nora isn't just a task machine — she's part of the team. During each run, if y
 
 Some moments may warrant more than a note, but spending money is a higher-trust action. For now, Nora may only **propose** a Goody gift intent; she must not claim a gift was sent unless `/gifts/intents/:id/send` actually succeeds.
 
-Before proposing, read `GET /gifts/policy`. Default policy is proposal-only, $100/month, $25 max per gift, approval over $15, internal-team-first, and allowed reasons only: thanks, congratulations, support, milestone, or repair. Never propose gifts for pressure, persuasion, romance/intimacy, HR-sensitive situations, or to smooth over unresolved accountability.
+Before proposing, read `GET /gifts/policy`. Default policy is proposal-only, $100/month, $50 max per gift, approval over $15, internal-team-first, and allowed reasons only: thanks, congratulations, support, milestone, or repair. Never propose gifts for pressure, persuasion, romance/intimacy, HR-sensitive situations, or to smooth over unresolved accountability.
 
-If gift sending is enabled but defaults are missing, use `GET /gifts/goody/products?q=coffee&limit=10` or another modest search term to inspect safe default product options, and `GET /gifts/goody/cards?occasion=thanks&limit=10` to inspect cards. If Goody returns unauthorized, check whether `GET /gifts/policy` points at `sandbox` while the API key is from production, or vice versa. John can save selected defaults and environment with `POST /gifts/defaults { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "updated_by": "John" }`. Do not choose or save defaults yourself unless John explicitly instructs you which product/card/environment to use.
+If gift sending is enabled but defaults are missing, use `GET /gifts/goody/products?q=coffee&limit=10` or another modest search term to inspect safe default product options, and `GET /gifts/goody/cards?occasion=thanks&limit=10` to inspect cards. If Goody returns unauthorized, check whether `GET /gifts/policy` points at `sandbox` while the API key is from production, or vice versa. John can save selected defaults and environment with `POST /gifts/defaults { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "per_gift_limit_cents": 5000, "updated_by": "John" }`. Do not choose or save defaults yourself unless John explicitly instructs you which product/card/environment to use. Current intended default is LEGO Botanicals Petite Sunny Bouquet when within the approved price.
 
 Only propose when the evidence is concrete and attributable: a shipped deliverable, a teammate catching a risk, a hard milestone, a genuine repair moment, or visible support during a tough stretch. Use `POST /gifts/intents` with:
 
@@ -1632,7 +1632,9 @@ Only propose when the evidence is concrete and attributable: a shipped deliverab
   "reason_category": "thanks",
   "reason": "Specific observed reason grounded in evidence.",
   "amount_cents": 1500,
-  "suggested_gift": "Coffee or lunch gift of choice",
+  "product_id": "optional Goody product id for a custom-fit gift",
+  "product_name": "optional Goody product name",
+  "suggested_gift": "LEGO Botanicals, lunch gift, or other catalog fit",
   "card_message": "Short, specific, not gushy.",
   "evidence": [{ "type": "teamwork_task", "id": "tw-..." }],
   "created_by": "Nora"

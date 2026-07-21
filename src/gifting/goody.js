@@ -7,7 +7,7 @@ const DEFAULT_POLICY = Object.freeze({
   mode: 'proposal_only',
   currency: 'USD',
   monthly_budget_cents: 10000,
-  per_gift_limit_cents: 2500,
+  per_gift_limit_cents: 5000,
   requires_approval_over_cents: 1500,
   auto_send_enabled: false,
   recipient_scope: 'internal_team_first',
@@ -130,8 +130,23 @@ function updateGiftDefaults(ledger = emptyLedger(), input = {}) {
   const current = normalizeLedger(ledger);
   const productId = normalizeText(input.product_id ?? input.default_product_id ?? current.policy.default_product_id, 120);
   const cardId = normalizeText(input.card_id ?? input.default_card_id ?? current.policy.default_card_id, 120);
+  const perGiftLimitCents = Math.round(Number(input.per_gift_limit_cents ?? current.policy.per_gift_limit_cents));
+  const requiresApprovalOverCents = Math.round(Number(input.requires_approval_over_cents ?? current.policy.requires_approval_over_cents));
+  const monthlyBudgetCents = Math.round(Number(input.monthly_budget_cents ?? current.policy.monthly_budget_cents));
+  if (!Number.isFinite(perGiftLimitCents) || perGiftLimitCents < 100 || perGiftLimitCents > 5000) {
+    throw new Error('per_gift_limit_cents must be between 100 and 5000');
+  }
+  if (!Number.isFinite(requiresApprovalOverCents) || requiresApprovalOverCents < 0 || requiresApprovalOverCents > perGiftLimitCents) {
+    throw new Error('requires_approval_over_cents must be between 0 and the per-gift limit');
+  }
+  if (!Number.isFinite(monthlyBudgetCents) || monthlyBudgetCents < perGiftLimitCents || monthlyBudgetCents > 50000) {
+    throw new Error('monthly_budget_cents must cover at least one gift and stay at or below 50000');
+  }
   current.policy = {
     ...current.policy,
+    monthly_budget_cents: monthlyBudgetCents,
+    per_gift_limit_cents: perGiftLimitCents,
+    requires_approval_over_cents: requiresApprovalOverCents,
     default_product_id: productId,
     default_card_id: cardId,
     ...(input.environment || input.goody_environment
@@ -168,6 +183,8 @@ function validateIntentInput(input = {}, ledger = emptyLedger(), { now = new Dat
     reason,
     amount_cents: amountCents,
     currency: policy.currency,
+    ...(input.product_id ? { product_id: normalizeText(input.product_id, 120) } : {}),
+    ...(input.product_name ? { product_name: normalizeText(input.product_name, 200) } : {}),
     suggested_gift: normalizeText(input.suggested_gift || 'Goody gift of choice', 200),
     card_message: normalizeText(input.card_message, 600),
     evidence,
@@ -190,6 +207,8 @@ function intentPayload(record) {
     reason: record.reason,
     amount_cents: record.amount_cents,
     currency: record.currency,
+    product_id: record.product_id || null,
+    product_name: record.product_name || null,
     suggested_gift: record.suggested_gift,
     card_message: record.card_message || '',
     evidence: record.evidence,
@@ -404,7 +423,8 @@ async function listGoodyCards(ledger = emptyLedger(), {
 
 function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
   const config = goodyConfig(policy);
-  if (!config.product_id) throw new Error('GOODY_PRODUCT_ID is required before sending gifts');
+  const productId = normalizeText(intent.product_id || config.product_id, 120);
+  if (!productId) throw new Error('a gift product_id or configured default product is required before sending gifts');
   if (intent.card_message && !config.card_id) throw new Error('GOODY_CARD_ID is required when sending a card message');
   if (config.send_method === 'email_and_link' && !intent.recipient_email) {
     throw new Error('recipient_email is required for Goody email delivery');
@@ -417,7 +437,7 @@ function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
     from_name: config.from_name,
     send_method: config.send_method,
     recipients: [recipient],
-    cart: { items: [{ product_id: config.product_id, quantity: 1 }] },
+    cart: { items: [{ product_id: productId, quantity: 1 }] },
     customer_reference_id: `nora-${intent.id}-${String(intent.approval_commitment || intent.request_commitment || '').slice(0, 12)}`,
     ...(intent.card_message ? { message: intent.card_message, card_id: config.card_id } : {}),
     ...(config.payment_method_id ? { payment_method_id: config.payment_method_id } : {}),

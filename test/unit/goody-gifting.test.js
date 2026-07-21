@@ -10,12 +10,15 @@ test('Goody gift intents enforce Nora generosity policy and budget math', () => 
     recipient_slack_user_id: 'U03CJSL85AL',
     reason_category: 'thanks',
     reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
-    amount_cents: 1500,
+    amount_cents: 4900,
+    product_id: '013bc7e4-61aa-438d-a619-a1aaa9dc91e8',
+    product_name: 'Botanicals Petite Sunny Bouquet Flower Set',
     suggested_gift: 'Coffee or lunch gift of choice',
     card_message: 'Thank you for closing the loop and flagging the risk early.',
     evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-1:warmth' }],
   }, ledger, { now: new Date('2026-07-20T22:00:00Z') });
   assert.equal(created.intent.status, 'proposed');
+  assert.equal(created.intent.product_id, '013bc7e4-61aa-438d-a619-a1aaa9dc91e8');
   assert.equal(created.intent.requires_approval, true);
   assert.equal(created.report.remaining_cents, 10000);
   assert.match(created.intent.request_commitment, /^[a-f0-9]{64}$/);
@@ -25,8 +28,8 @@ test('Goody gift intents enforce Nora generosity policy and budget math', () => 
     now: new Date('2026-07-20T22:05:00Z'),
   });
   assert.equal(approved.intent.status, 'approved');
-  assert.equal(approved.report.approved_or_sent_cents, 1500);
-  assert.equal(approved.report.remaining_cents, 8500);
+  assert.equal(approved.report.approved_or_sent_cents, 4900);
+  assert.equal(approved.report.remaining_cents, 5100);
 });
 
 test('Goody gift intents reject pressure, thin reasons, and oversized gifts', () => {
@@ -40,7 +43,7 @@ test('Goody gift intents reject pressure, thin reasons, and oversized gifts', ()
   };
   assert.throws(() => goody.createIntent({ ...base, reason_category: 'pressure' }, ledger), /not allowed|blocked/);
   assert.throws(() => goody.createIntent({ ...base, reason: 'nice', amount_cents: 1500 }, ledger), /specific/);
-  assert.throws(() => goody.createIntent({ ...base, amount_cents: 5000 }, ledger), /per-gift limit/);
+  assert.throws(() => goody.createIntent({ ...base, amount_cents: 5001 }, ledger), /per-gift limit/);
 });
 
 test('Goody send readiness fails closed until explicit credentials and send flag exist', () => {
@@ -105,6 +108,7 @@ test('Goody send creates an order batch only after price stays within approval',
       reason_category: 'thanks',
       reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
       amount_cents: 1500,
+      product_id: 'product-override-456',
       card_message: 'Thank you for closing the loop and flagging the risk early.',
       evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-1:warmth' }],
     }, goody.emptyLedger());
@@ -117,6 +121,7 @@ test('Goody send creates an order batch only after price stays within approval',
     assert.equal(sent.intent.goody_price_estimate_cents, 1500);
     assert.equal(calls.length, 2);
     assert.equal(calls[0].auth, 'Bearer test-goody-key');
+    assert.equal(calls[1].body.cart.items[0].product_id, 'product-override-456');
     assert.equal(calls[1].body.customer_reference_id.startsWith('nora-gift-send-'), true);
   } finally {
     if (prior.key === undefined) delete process.env.GOODY_API_KEY; else process.env.GOODY_API_KEY = prior.key;
@@ -194,9 +199,11 @@ test('Goody defaults can be stored in the gift policy without Railway env edits'
     environment: 'production',
     product_id: 'product-from-catalog',
     card_id: 'card-from-catalog',
+    per_gift_limit_cents: 5000,
     updated_by: 'John',
   });
   assert.equal(updated.ledger.policy.goody_environment, 'production');
+  assert.equal(updated.ledger.policy.per_gift_limit_cents, 5000);
   assert.equal(updated.report.goody_environment, 'production');
   assert.equal(updated.ledger.policy.default_product_id, 'product-from-catalog');
   assert.equal(updated.ledger.policy.default_card_id, 'card-from-catalog');

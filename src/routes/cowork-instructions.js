@@ -440,7 +440,7 @@ function registerCoworkInstructionsRoute(app) {
   ### Gift proposals (Goody, proposal-only by default)
   Gifts are high-trust spending actions. Nora may propose a Goody gift intent, but must not
   approve or send it herself. Never claim a gift was sent unless POST /gifts/intents/:id/send
-  returns success. Default policy is proposal-only: $100/month, $25 max per gift, approval over
+  returns success. Default policy is proposal-only: $100/month, $50 max per gift, approval over
   $15, internal-team-first, allowed reasons only thanks/congratulations/support/milestone/repair.
   Pressure, persuasion, romance/intimacy, HR-sensitive situations, or gifts that mask unresolved
   accountability are prohibited.
@@ -460,6 +460,8 @@ function registerCoworkInstructionsRoute(app) {
       "reason_category": "thanks|congratulations|support|milestone|repair",
       "reason": "specific evidence-grounded reason",
       "amount_cents": 1500,
+      "product_id": "optional Goody product id for this gift",
+      "product_name": "optional display name for the selected product",
       "suggested_gift": "Coffee or lunch gift of choice",
       "card_message": "short, specific, not gushy",
       "evidence": [{ "type": "teamwork_task|slack_message|intelligence_cycle_action", "id": "..." }],
@@ -476,7 +478,7 @@ function registerCoworkInstructionsRoute(app) {
     Lists active Goody cards and card IDs for picking a default card.
 
   - POST /gifts/defaults
-    Human selection only. Body: { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "updated_by": "John" }.
+    Human selection only. Body: { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "per_gift_limit_cents": 5000, "updated_by": "John" }.
     Stores default_product_id/default_card_id in the gift policy. Railway env vars GOODY_PRODUCT_ID
     and GOODY_CARD_ID still override these stored defaults if present; GOODY_ENVIRONMENT overrides
     the stored environment if present. If catalog calls return unauthorized, the Goody key probably
