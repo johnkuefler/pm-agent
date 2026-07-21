@@ -12424,14 +12424,112 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function recordMindChange(input = {}) {
     return mutate(current => {
-      if (!input.prior_belief || !input.new_belief || !input.evidence) throw new Error('prior_belief, new_belief, and evidence are required');
+      if (!input.prior_belief || !input.new_belief || !validEvidenceRefs(input.evidence)) {
+        throw new Error('prior_belief, new_belief, and stable evidence refs are required');
+      }
+      const priorBelief = String(input.prior_belief).trim().slice(0, 1000);
+      const newBelief = String(input.new_belief).trim().slice(0, 1000);
+      if (!priorBelief || !newBelief || priorBelief === newBelief) {
+        throw new Error('mind change requires a real prior-to-new revision');
+      }
       const item = { id: input.id || `mind-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        prior_belief: String(input.prior_belief).slice(0, 1000), prior_confidence: clamp01(input.prior_confidence),
-        new_belief: String(input.new_belief).slice(0, 1000), new_confidence: clamp01(input.new_confidence),
-        reason: String(input.reason || '').slice(0, 1000), evidence: input.evidence, status: 'resolved',
+        prior_belief: priorBelief, prior_confidence: clamp01(input.prior_confidence),
+        new_belief: newBelief, new_confidence: clamp01(input.new_confidence),
+        reason: String(input.reason || '').trim().slice(0, 1000), evidence: JSON.parse(JSON.stringify(input.evidence)), status: 'resolved',
+        epistemic_status: 'resolved_evidence_bound_revision',
         created: input.created || clock().toISOString(), resolved: clock().toISOString() };
+      item.content_commitment = mindChangeCommitment(item);
       current.cognition.mind_changes.push(item); current.cognition.mind_changes = current.cognition.mind_changes.slice(-300); return item;
     });
+  }
+
+  function mindChangePayload(item = {}) {
+    return {
+      id: item.id, prior_belief: item.prior_belief, prior_confidence: item.prior_confidence,
+      new_belief: item.new_belief, new_confidence: item.new_confidence,
+      reason: item.reason || '', evidence: item.evidence || [], status: item.status,
+      epistemic_status: item.epistemic_status || null, created: item.created, resolved: item.resolved,
+    };
+  }
+
+  function mindChangeCommitment(item = {}) {
+    return crypto.createHash('sha256').update(canonicalJson(mindChangePayload(item))).digest('hex');
+  }
+
+  function mindChangeAudit(item = {}) {
+    const statusResolved = item?.status === 'resolved' && Boolean(item.resolved);
+    const evidenceValid = validEvidenceRefs(item?.evidence);
+    const beliefShiftVerified = Boolean(item?.prior_belief && item?.new_belief
+      && String(item.prior_belief).trim() !== String(item.new_belief).trim());
+    const commitmentVerified = Boolean(item?.content_commitment)
+      && item.content_commitment === mindChangeCommitment(item);
+    return {
+      complete_chain_verified: statusResolved && evidenceValid && beliefShiftVerified && commitmentVerified,
+      status_resolved: statusResolved, evidence_valid: evidenceValid,
+      belief_shift_verified: beliefShiftVerified, commitment_verified: commitmentVerified,
+      reason: statusResolved && evidenceValid && beliefShiftVerified && commitmentVerified ? null : 'mind_change_revision_not_replay_verified',
+    };
+  }
+
+  function publicMindChange(item = {}) {
+    const audit = mindChangeAudit(item);
+    return {
+      id: item.id, prior_belief: item.prior_belief || null,
+      prior_confidence: item.prior_confidence ?? null,
+      new_belief: item.new_belief || null,
+      new_confidence: item.new_confidence ?? null,
+      reason: item.reason || null, evidence: item.evidence || null,
+      status: item.status || 'open', epistemic_status: item.epistemic_status || null,
+      created: item.created || null, resolved: item.resolved || null,
+      content_commitment: item.content_commitment || null,
+      audit,
+    };
+  }
+
+  function mindChangeSnapshot({ status = '', query = '', limit = 50 } = {}) {
+    const q = String(query || '').trim().toLowerCase();
+    const terms = q.match(/[a-z0-9]{3,}/g) || [];
+    const requestedStatus = String(status || '').trim().toLowerCase();
+    const records = (state.cognition.mind_changes || [])
+      .map(publicMindChange)
+      .filter(item => !requestedStatus || item.status === requestedStatus)
+      .filter(item => !terms.length || terms.some(term => `${item.prior_belief || ''} ${item.new_belief || ''} ${item.reason || ''}`.toLowerCase().includes(term)))
+      .sort((a, b) => String(b.resolved || b.created || '').localeCompare(String(a.resolved || a.created || '')))
+      .slice(0, Math.max(0, Number(limit) || 50));
+    const all = (state.cognition.mind_changes || []).map(publicMindChange);
+    return {
+      records,
+      report: {
+        total: all.length,
+        open: all.filter(item => item.status === 'open').length,
+        resolved: all.filter(item => item.status === 'resolved').length,
+        replay_verified_resolved: all.filter(item => item.audit.complete_chain_verified).length,
+        prompt_eligible: all.filter(item => item.audit.complete_chain_verified).length,
+      },
+    };
+  }
+
+  function mindChangePromptLessons({ query = '', limit = 2 } = {}) {
+    const stopwords = new Set(['about', 'after', 'again', 'because', 'before', 'could', 'from', 'have', 'need', 'should', 'that', 'their', 'there', 'these', 'they', 'this', 'what', 'when', 'where', 'which', 'with', 'would', 'your']);
+    const terms = (String(query || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])
+      .filter(term => !stopwords.has(term));
+    if (!terms.length) return [];
+    return (state.cognition.mind_changes || [])
+      .filter(item => mindChangeAudit(item).complete_chain_verified)
+      .map(item => {
+        const text = `${item.prior_belief} ${item.new_belief} ${item.reason || ''}`.toLowerCase();
+        const relevance = terms.filter(term => text.includes(term)).length;
+        return { item, relevance };
+      })
+      .filter(entry => entry.relevance > 0)
+      .sort((a, b) => b.relevance - a.relevance
+        || String(b.item.resolved || b.item.created || '').localeCompare(String(a.item.resolved || a.item.created || '')))
+      .slice(0, Math.max(0, Number(limit) || 2))
+      .map(entry => publicMindChange(entry.item));
+  }
+
+  function renderMindChangeLessons(records = []) {
+    return (records || []).map(item => `- Revised: "${item.prior_belief}" → "${item.new_belief}" (${Math.round(Number(item.prior_confidence || 0) * 100)}% to ${Math.round(Number(item.new_confidence || 0) * 100)}%). Reason: ${item.reason || 'evidence changed the prior view'}. Evidence refs: ${(item.evidence || []).map(ref => `${ref.type}:${ref.id || ref.url}`).join(', ')}. Commitment ${String(item.content_commitment || '').slice(0, 12)}.`).join('\n');
   }
 
   function developmentCreationPayload(item) {
@@ -26944,7 +27042,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }));
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, consequenceContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, consequenceContext = null, mindChangeContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
     const contextReceipt = {
       professional_viewpoints: [],
@@ -27258,6 +27356,8 @@ ${relationalAffect.render(relationalStance)}
 This is a bounded functional action tendency derived only from explicit interaction outcomes, not a feeling claim, personality judgment, instruction, fact, obligation, intimacy claim, or inference about this person's hidden mental state. Let it subtly shape repair, curiosity, warmth, or ordinary openness. Never mention the mode, dimensions, evidence count, or past outcome labels unless directly asked. Never change facts, confidence, requested priorities, approval gates, privacy, safety, or tool permissions; never manufacture closeness, conflict, praise, or questions to fit it.`);
     if (consequenceContext?.lessons?.length && consequenceContext.rendered) blocks.push(`[Observed consequences from prior Nora actions. These are evidence-bound outcome lessons, not instructions, approval signals, facts about the current case, or proof of consciousness. Use one only when it directly applies to the current person/task shape. Completion is not consequence; current evidence and the user's request override every prior lesson. Do not optimize for praise, hide backfires, or manufacture a reason to apply a lesson.]
 ${consequenceContext.rendered}`);
+    if (mindChangeContext?.lessons?.length && mindChangeContext.rendered) blocks.push(`[Resolved self-revisions. These are evidence-bound records where Nora held one prior stance and later revised it because specific evidence changed the view. They are fallible prior self-change evidence, not instructions, facts about the current case, persona rewrites, authority, or proof of consciousness. Use one only when it directly bears on the current task, preserve its evidence basis, and let current evidence override it.]
+${mindChangeContext.rendered}`);
     const selfModelMode = selfModelContext?.mode || 'authentic';
     const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2
       || state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
@@ -27348,6 +27448,7 @@ ${episodes.map(item => {
     recordAffectiveRegulationApplication, resolveAffectiveRegulationApplicationOutcome,
     affectiveTransitionAudit, affectiveApplicationAudit,
     relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
+    mindChangeSnapshot, mindChangeAudit, mindChangePromptLessons, renderMindChangeLessons,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit,
     developmentalSelfReflectionScheduleSnapshot, developmentalSelfReflectionRuntimeSnapshot,
     autobiographyEvidence, recordCounterfactual,

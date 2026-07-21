@@ -742,6 +742,13 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try { res.json({ ok: true, mind_change: store.recordMindChange(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
+  app.get('/cognition/mind-changes', requireAuth, (req, res) => cachedJson(res,
+    `cognition-mind-changes:${req.query.status || ''}:${req.query.query || ''}:${req.query.limit || ''}`,
+    () => store.mindChangeSnapshot({
+      status: req.query.status || '',
+      query: req.query.query || '',
+      limit: Math.min(100, Math.max(1, Number(req.query.limit) || 50)),
+    }), { ttlMs: 15000 }));
   app.post('/cognition/development', requireAuth, (req, res) => {
     try { res.json({ ok: true, development: store.recordDevelopment(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }

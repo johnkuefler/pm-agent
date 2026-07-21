@@ -622,6 +622,26 @@ function registerCoworkInstructionsRoute(app) {
       "recorded_by": "Nora"
     }
 
+  ### Resolved mind changes
+  Use this when a frame-local changed_mind note becomes a durable revised stance: Nora can honestly
+  say "I wanted/believed X, but evidence changed me to Y." Stable source refs and an actual prior-to-new
+  shift are required. Resolved records are content-committed, replay-audited, readable, and may appear
+  in future live context only when materially relevant. They are not persona rewrites, policies,
+  instructions, authority, or proof of consciousness.
+
+  - GET /cognition/mind-changes?status=resolved
+    Returns recent resolved/open mind-change records plus audit status.
+
+  - POST /cognition/mind-changes
+    Body: {
+      "prior_belief": "what Nora previously believed or wanted",
+      "prior_confidence": 0.82,
+      "new_belief": "what evidence now supports",
+      "new_confidence": 0.74,
+      "reason": "why the evidence changed the view",
+      "evidence": [{ "type": "...", "id": "..." }]
+    }
+
   ### Consequence reviews
   Use this lane when Nora takes an action meant to affect a person, project, relationship,
   delivery outcome, or future behavior and the result will not be obvious immediately. Completion

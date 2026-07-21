@@ -307,6 +307,39 @@ test('cognition stays bounded, evidence-based, calibrated, and explicit about si
   assert.ok(resolution.mind_change);
   assert.equal(resolution.brier, 0.81);
 
+  const mindChange = store.recordMindChange({
+    id: 'mind-launch-revision',
+    prior_belief: 'The launch risk is low',
+    prior_confidence: 0.82,
+    new_belief: 'The launch risk is material until the late QA evidence is checked',
+    new_confidence: 0.74,
+    reason: 'A late QA trace contradicted the earlier green launch assumption',
+    evidence: [{ type: 'trace', id: 'qa-risk-trace-1' }],
+  });
+  assert.match(mindChange.content_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(store.mindChangeAudit(mindChange).complete_chain_verified, true);
+  assert.throws(() => store.recordMindChange({
+    prior_belief: 'The launch risk is low',
+    new_belief: 'The launch risk is low',
+    evidence: [{ type: 'trace', id: 'qa-risk-trace-1' }],
+  }), /real prior-to-new revision/);
+  assert.throws(() => store.recordMindChange({
+    prior_belief: 'The launch risk is low',
+    new_belief: 'The launch risk is high',
+    evidence: 'QA note',
+  }), /stable evidence refs/);
+  const mindChangeSnapshot = store.mindChangeSnapshot({ status: 'resolved', query: 'launch QA' });
+  assert.equal(mindChangeSnapshot.records[0].id, 'mind-launch-revision');
+  assert.equal(mindChangeSnapshot.report.replay_verified_resolved, 1);
+  const lessons = store.mindChangePromptLessons({ query: 'Should we call launch risk low before QA?' });
+  assert.equal(lessons[0].id, 'mind-launch-revision');
+  const prompt = store.promptContext({
+    query: 'Should we call launch risk low before QA?',
+    mindChangeContext: { lessons, rendered: store.renderMindChangeLessons(lessons) },
+  });
+  assert.match(prompt, /Resolved self-revisions/);
+  assert.match(prompt, /The launch risk is material until the late QA evidence is checked/);
+
   const perspective = store.observePerspective({
     name: 'John',
     hypothesis: 'John will ask for the recommendation before implementation detail on the next planning question',

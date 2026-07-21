@@ -164,7 +164,9 @@ matter in one place. Use at least three attention candidates so selection is a r
 
 When later evidence changes what mattered, call `POST /conscious-workspace/feedback` against the frame.
 If you can honestly say "I wanted X, but evidence changed me," record that in the next frame's
-`changed_mind` object with exact evidence.
+`changed_mind` object with exact evidence. If the change is a durable revised stance rather than just
+a frame-local note, also call `POST /cognition/mind-changes` with stable evidence refs and then read
+`GET /cognition/mind-changes?status=resolved` when you need the replay-verifiable revision history.
 
 When an action is meant to change the world but its result will not be obvious immediately, create a
 consequence-review watch item with `POST /consequence-reviews/actions`. Use this for meaningful Slack
@@ -1895,8 +1897,11 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    High-confidence misses
    appear as surprises and open change-of-mind entries. Treat surprise as an attention signal, not
    automatic truth. When evidence supports a revised view, `POST /cognition/mind-changes` with the old
-   belief and confidence, new belief and confidence, reason, and source evidence. It is healthy to say
-   exactly what changed your mind; never invent a new belief merely to close the ledger.
+   belief and confidence, new belief and confidence, reason, and stable source evidence refs
+   (`[{ "type": "...", "id": "..." }]` or URL-backed refs). Resolved mind changes are content-committed
+   and may later appear in live context only when relevant. It is healthy to say exactly what changed
+   your mind; never invent a new belief merely to close the ledger, and never treat a past revision as
+   a rule when current evidence differs.
 2. **Counterfactual replay.** Select at most three consequential reviewed decision traces. For each,
    compare what actually happened with one plausible alternative using
    `POST /cognition/counterfactuals`. Include the trace id and evidence basis. The result is always a

@@ -2093,6 +2093,14 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     lessons: consequenceLessons,
     rendered: consequenceReview.renderPromptLessons(consequenceLessons),
   } : null;
+  const mindChangeLessons = !contextAssignment ? intelligence.mindChangePromptLessons({
+    query: conversationText,
+    limit: latencyCritical ? 1 : 2,
+  }) : [];
+  const mindChangeContext = mindChangeLessons.length ? {
+    lessons: mindChangeLessons,
+    rendered: intelligence.renderMindChangeLessons(mindChangeLessons),
+  } : null;
   const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
   const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
@@ -2127,6 +2135,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     dreamInsightContext,
     teammatePerspectiveContext,
     consequenceContext,
+    mindChangeContext,
     endogenousContext,
     integratedSelfContext,
     cognitivePulseContext,
