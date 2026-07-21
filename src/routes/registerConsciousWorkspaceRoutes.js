@@ -2,7 +2,7 @@
 
 const consciousWorkspace = require('../intelligence/conscious-workspace');
 
-function publicFrame(frame) {
+function publicFrame(frame, ledger = null) {
   if (!frame) return null;
   return {
     id: frame.id,
@@ -23,6 +23,9 @@ function publicFrame(frame) {
     relationship_refs: frame.relationship_refs || [],
     consequence_watchlist: frame.consequence_watchlist || [],
     changed_mind: frame.changed_mind || null,
+    revision_of_frame_id: frame.revision_of_frame_id || null,
+    revision_audit: frame.changed_mind && ledger
+      ? consciousWorkspace.auditRevision(frame, ledger) : null,
     arbitration_receipt: frame.arbitration_receipt || null,
     arbitration_audit: frame.arbitration_receipt
       ? consciousWorkspace.auditArbitration(frame.arbitration_receipt) : null,
@@ -46,20 +49,46 @@ function publicFeedback(feedback) {
   };
 }
 
+function durableMindChangeInput(frame, ledger) {
+  const changed = frame?.changed_mind;
+  const receipt = changed?.revision_receipt;
+  if (!receipt || !consciousWorkspace.auditRevision(frame, ledger).complete_chain_verified) return null;
+  const prior = ledger.frames.find(item => item.id === receipt.prior_frame_id);
+  const priorScore = prior?.arbitration_receipt?.scored_candidates
+    ?.find(item => item.key === receipt.from_key)?.final_score;
+  const nextScore = frame.arbitration_receipt?.scored_candidates
+    ?.find(item => item.key === receipt.to_key)?.final_score;
+  return {
+    id: `mind-workspace-${receipt.receipt_commitment.slice(0, 32)}`,
+    prior_belief: changed.from,
+    prior_confidence: priorScore,
+    new_belief: changed.to,
+    new_confidence: nextScore,
+    reason: changed.because,
+    evidence: [
+      { type: 'conscious_workspace_frame', id: prior.id },
+      ...receipt.feedback.map(item => ({ type: 'workspace_feedback', id: item.id })),
+      { type: 'conscious_workspace_frame', id: frame.id },
+    ],
+    created: prior.created_at,
+    resolved: frame.created_at,
+  };
+}
+
 function registerConsciousWorkspaceRoutes(app, deps) {
   const { requireAuth, loadConsciousWorkspace, saveConsciousWorkspace,
     getWants = () => [], getWantHistoryIntegrity = () => null,
     loadConsequenceReviews = () => ({ actions: [], observations: [], applications: [] }),
     getSoma = () => ({}), getEpistemicAgenda = () => ({}),
-    getRelationalContext = () => ({}) } = deps;
+    getRelationalContext = () => ({}), recordMindChange = null } = deps;
 
   app.get('/conscious-workspace', requireAuth, (req, res) => {
     const ledger = loadConsciousWorkspace();
     const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
     res.json({
       report: consciousWorkspace.report(ledger),
-      current: publicFrame(ledger.current),
-      recent_frames: ledger.frames.slice(-limit).map(publicFrame),
+      current: publicFrame(ledger.current, ledger),
+      recent_frames: ledger.frames.slice(-limit).map(frame => publicFrame(frame, ledger)),
       recent_feedback: ledger.feedback.slice(-limit).map(publicFeedback),
     });
   });
@@ -77,7 +106,13 @@ function registerConsciousWorkspaceRoutes(app, deps) {
         },
       });
       await saveConsciousWorkspace(result.ledger);
-      res.json({ ok: true, frame: publicFrame(result.frame), report: result.report });
+      let durableMindChange = null;
+      const mindChangeInput = durableMindChangeInput(result.frame, result.ledger);
+      if (mindChangeInput && typeof recordMindChange === 'function') {
+        durableMindChange = recordMindChange(mindChangeInput);
+      }
+      res.json({ ok: true, frame: publicFrame(result.frame, result.ledger),
+        durable_mind_change: durableMindChange, report: result.report });
     } catch (error) {
       res.status(400).json({ error: error.message });
     }
@@ -94,4 +129,5 @@ function registerConsciousWorkspaceRoutes(app, deps) {
   });
 }
 
-module.exports = { publicFrame, publicFeedback, registerConsciousWorkspaceRoutes };
+module.exports = { publicFrame, publicFeedback, durableMindChangeInput,
+  registerConsciousWorkspaceRoutes };

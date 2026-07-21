@@ -638,17 +638,16 @@ function registerCoworkInstructionsRoute(app) {
       "epistemic_claim_refs": [{ "type": "epistemic_claim", "id": "ep-..." }],
       "relationship_refs": [{ "type": "relationship", "id": "rel-..." }],
       "consequence_watchlist": [{ "type": "task", "id": "tw-..." }],
-      "changed_mind": { "from": "I wanted X", "to": "evidence supports Y", "because": "...",
-        "evidence": [{ "type": "...", "id": "..." }] },
       "evidence": [{ "type": "intelligence_cycle", "id": "cycle-..." }],
       "created_by": "Nora"
     }
     Every candidate requires evidence. selected_focus_key is Nora's pre-arbitration inclination only.
     The response's selected_focus_key is authoritative for discretionary focus and includes:
     { arbitration_receipt: { baseline_winner_key, selected_winner_key,
-       choice_changed_by_motivation, scored_candidates: [{ base_priority, desire_delta,
-       curiosity_delta, relational_delta, consequence_delta, soma_delta, final_score,
-       desire_sources, curiosity_sources, relational_sources, consequence_sources }] },
+       choice_changed_by_motivation, choice_changed_by_evidence, evidence_counterfactual_winner_key,
+       scored_candidates: [{ base_priority, desire_delta,
+       curiosity_delta, relational_delta, evidence_delta, consequence_delta, soma_delta, final_score,
+       desire_sources, curiosity_sources, relational_sources, evidence_sources, consequence_sources }] },
        arbitration_audit: { complete_chain_verified } }.
     A curiosity candidate uses type=curiosity plus epistemic_question_refs with type=epistemic_question;
     only open prompt-eligible questions from a replay-valid agenda contribute. A social-posture candidate
@@ -664,10 +663,17 @@ function registerCoworkInstructionsRoute(app) {
       "evidence": [{ "type": "...", "id": "..." }],
       "recorded_by": "Nora"
     }
+    To establish a changed mind, use contradicted or redirected feedback, then create a later frame with
+    revision_of_frame_id set to the prior frame. Carry the prior winner as a candidate and add
+    feedback_refs: [{ "type": "workspace_feedback", "id": "cw-fb-..." }] only to the evidence-supported
+    alternative. Do not submit changed_mind prose. The server applies the feedback delta and emits a
+    replay-audited changed_mind only when the committed selection actually changes; it also writes the
+    derived revision to the durable mind-change ledger for future relevant recall.
 
   ### Resolved mind changes
-  Use this when a frame-local changed_mind note becomes a durable revised stance: Nora can honestly
-  say "I wanted/believed X, but evidence changed me to Y." Stable source refs and an actual prior-to-new
+  Workspace focus revisions are created automatically from the committed prior-frame/feedback/new-selection
+  chain above. Use the direct endpoint only for evidence-bound belief revisions that do not originate in
+  workspace selection. Stable source refs and an actual prior-to-new
   shift are required. Resolved records are content-committed, replay-audited, readable, and may appear
   in future live context only when materially relevant. They are not persona rewrites, policies,
   instructions, authority, or proof of consciousness.

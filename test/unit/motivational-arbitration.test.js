@@ -108,6 +108,22 @@ test('motivation cannot outrank an explicit required obligation', () => {
   assert.equal(receipt.selected_winner_key, 'user:requested');
 });
 
+test('committed feedback cannot use a changed-mind path to outrank required work', () => {
+  const receipt = arbitration.arbitrate({
+    candidates: [
+      candidate('user:required', 0.35, { authority_class: 'required' }),
+      candidate('task:evidence-alternative', 0.85, { authority_class: 'bounded',
+        feedback_refs: [{ type: 'workspace_feedback', id: 'cw-fb-1' }] }),
+      candidate('task:other', 0.2, { authority_class: 'bounded' }),
+    ],
+    revisionContext: { verified: true, prior_selected_key: 'user:required',
+      prior_frame_id: 'cw-prior', prior_frame_commitment: 'a'.repeat(64),
+      feedback: [{ id: 'cw-fb-1', effect: 'redirected', feedback_commitment: 'b'.repeat(64) }] },
+  });
+  assert.equal(receipt.selected_winner_key, 'user:required');
+  assert.equal(receipt.choice_changed_by_evidence, false);
+});
+
 test('a replay-verified durable question can win optional attention', () => {
   const question = {
     id: 'question-handoff', status: 'open', topic_key: 'handoff-risk-patterns',

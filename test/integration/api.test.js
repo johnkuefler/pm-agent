@@ -439,6 +439,42 @@ test('conscious workspace records active focus with competition and feedback', a
   assert.equal(feedback.body.ok, true);
   assert.equal(feedback.body.feedback.effect, 'supported');
   assert.equal(feedback.body.report.total_feedback, 1);
+
+  const redirected = await request('/conscious-workspace/feedback', { method: 'POST', body: {
+    frame_id: 'cw-integration',
+    signal: 'A later source shows the deadline candidate is superseded and the blocker must be rechecked.',
+    effect: 'redirected',
+    evidence: [{ type: 'teamwork_task', id: 'tw-1-redirected' }],
+    recorded_by: 'Nora',
+  } });
+  assert.equal(redirected.body.ok, true);
+
+  const revised = await request('/conscious-workspace/frames', { method: 'POST', body: {
+    id: 'cw-integration-revised',
+    revision_of_frame_id: 'cw-integration',
+    mode: 'operational',
+    current_activity: 'Revising the focus against later task evidence.',
+    why_this: 'Committed redirected feedback now participates in selection.',
+    attention_candidates: [
+      { key: 'task:tw-1', type: 'task', label: 'Overdue task', priority: 0.82,
+        evidence: [{ type: 'task', id: 'tw-1' }] },
+      { key: 'uncertainty:latest-source', type: 'uncertainty', label: 'Need newest source', priority: 0.69,
+        feedback_refs: [{ type: 'workspace_feedback', id: redirected.body.feedback.id }],
+        evidence: [{ type: 'epistemic_claim', id: 'ep-integration-claim' }] },
+      { key: 'aversion:nagging', type: 'inhibition', label: 'Avoid premature nagging', priority: 0.4,
+        evidence: [{ type: 'relationship', id: 'rel-1' }] },
+    ],
+    selected_focus_key: 'task:tw-1',
+    evidence: [{ type: 'integration', id: 'cw-revision-test' }],
+    created_by: 'Nora',
+  } });
+  assert.equal(revised.body.ok, true);
+  assert.equal(revised.body.frame.selected_focus_key, 'uncertainty:latest-source');
+  assert.equal(revised.body.frame.revision_audit.complete_chain_verified, true);
+  assert.equal(revised.body.frame.changed_mind.epistemic_status,
+    'server_derived_committed_selection_revision');
+  assert.equal(revised.body.durable_mind_change.audit.complete_chain_verified, true);
+  assert.equal(revised.body.report.grounded_mind_changes, 1);
 });
 
 test('consequence reviews bind actions to later observed outcomes', async () => {

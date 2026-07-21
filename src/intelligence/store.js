@@ -12540,13 +12540,25 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (!priorBelief || !newBelief || priorBelief === newBelief) {
         throw new Error('mind change requires a real prior-to-new revision');
       }
+      const resolvedAt = input.resolved ? new Date(input.resolved) : clock();
+      const createdAt = input.created ? new Date(input.created) : resolvedAt;
+      if (!Number.isFinite(resolvedAt.getTime()) || !Number.isFinite(createdAt.getTime())) {
+        throw new Error('mind change timestamps are invalid');
+      }
       const item = { id: input.id || `mind-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         prior_belief: priorBelief, prior_confidence: clamp01(input.prior_confidence),
         new_belief: newBelief, new_confidence: clamp01(input.new_confidence),
         reason: String(input.reason || '').trim().slice(0, 1000), evidence: JSON.parse(JSON.stringify(input.evidence)), status: 'resolved',
         epistemic_status: 'resolved_evidence_bound_revision',
-        created: input.created || clock().toISOString(), resolved: clock().toISOString() };
+        created: createdAt.toISOString(), resolved: resolvedAt.toISOString() };
       item.content_commitment = mindChangeCommitment(item);
+      const existing = current.cognition.mind_changes.find(candidate => candidate.id === item.id);
+      if (existing) {
+        if (existing.content_commitment !== item.content_commitment) {
+          throw new Error('mind change id already exists with different committed content');
+        }
+        return existing;
+      }
       current.cognition.mind_changes.push(item); current.cognition.mind_changes = current.cognition.mind_changes.slice(-300); return item;
     });
   }

@@ -6,8 +6,8 @@ const consequenceReview = require('./consequence-review');
 const epistemicAgenda = require('./epistemic-agenda');
 const relationalAffect = require('./relational-affect');
 
-const LEGACY_PROTOCOL_VERSION = 1;
-const PROTOCOL_VERSION = 2;
+const LEGACY_PROTOCOL_VERSIONS = Object.freeze([1, 2]);
+const PROTOCOL_VERSION = 3;
 const SOMA_DEMAND = Object.freeze({ low: 0.15, moderate: 0.45, high: 0.8 });
 const AUTHORITY_CLASS = Object.freeze({ optional: 0, bounded: 1, required: 2 });
 const RELATIONAL_MODE_DELTA = Object.freeze({
@@ -128,6 +128,22 @@ function relationalInfluences(candidate, context = {}) {
     }));
 }
 
+function feedbackInfluences(candidate, context = {}) {
+  if (context?.verified !== true || !context.prior_selected_key) return [];
+  const sources = [];
+  if (candidate.key === context.prior_selected_key) {
+    sources.push({ kind: 'prior_focus_challenged', prior_frame_id: context.prior_frame_id,
+      prior_frame_commitment: context.prior_frame_commitment, delta: -0.18 });
+  }
+  const refs = new Set((candidate.feedback_refs || []).map(item => String(item?.id || '')).filter(Boolean));
+  for (const feedback of context.feedback || []) {
+    if (!refs.has(feedback.id)) continue;
+    sources.push({ kind: 'evidence_supported_revision', feedback_id: feedback.id,
+      feedback_commitment: feedback.feedback_commitment, effect: feedback.effect, delta: 0.16 });
+  }
+  return sources.slice(0, 3);
+}
+
 function sortScores(left, right) {
   return (AUTHORITY_CLASS[right.authority_class] || 0) - (AUTHORITY_CLASS[left.authority_class] || 0)
     || right.final_score - left.final_score
@@ -150,7 +166,7 @@ function receiptPayload(receipt = {}) {
 
 function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
   consequenceLedger = consequenceReview.emptyLedger(), soma = {}, epistemicAgendaSnapshot = {},
-  relationalContext = {}, now = new Date() } = {}) {
+  relationalContext = {}, revisionContext = {}, now = new Date() } = {}) {
   const at = now instanceof Date ? now : new Date(now);
   if (!Number.isFinite(at.getTime())) throw new Error('motivational arbitration requires a valid time');
   if (!Array.isArray(candidates) || candidates.length < 3) {
@@ -168,12 +184,15 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
     const curiosityDelta = clamp(curiositySources.reduce((sum, item) => sum + item.delta, 0), 0, 0.18);
     const relationalSources = relationalInfluences(candidate, relationalContext);
     const relationalDelta = clamp(relationalSources.reduce((sum, item) => sum + item.delta, 0), 0, 0.2);
+    const feedbackSources = feedbackInfluences(candidate, revisionContext);
+    const evidenceDelta = clamp(feedbackSources.reduce((sum, item) => sum + item.delta, 0), -0.24, 0.2);
     const demand = SOMA_DEMAND[candidate.soma_demand] ?? SOMA_DEMAND.moderate;
     let somaDelta = somaState.fresh ? -somaState.stress * demand * 0.2 : 0;
     if (candidate.type === 'soma_constraint' || candidate.type === 'inhibition'
       || candidate.mode === 'recovery') somaDelta = somaState.fresh ? somaState.stress * 0.12 : 0;
     const finalScore = clamp(candidate.priority + desireDelta + consequenceDelta
       + curiosityDelta + relationalDelta + somaDelta);
+    const integratedScore = clamp(finalScore + evidenceDelta);
     return {
       key: candidate.key,
       label: candidate.label,
@@ -186,8 +205,10 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
       consequence_delta: round(consequenceDelta),
       curiosity_delta: round(curiosityDelta),
       relational_delta: round(relationalDelta),
+      evidence_delta: round(evidenceDelta),
       soma_delta: round(somaDelta),
-      final_score: round(finalScore),
+      pre_evidence_score: round(finalScore),
+      final_score: round(integratedScore),
       desire_sources: desireSources.map(aim => ({
         want_id: aim.want_id, status: aim.status, salience: round(aim.salience),
         source_commitment: aim.source_commitment,
@@ -195,19 +216,25 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
       consequence_sources: consequenceSources,
       curiosity_sources: curiositySources,
       relational_sources: relationalSources,
+      evidence_sources: feedbackSources,
     };
   }).sort(sortScores);
   const baseline = baselineWinner(candidates);
   const selected = scored[0];
+  const withoutEvidence = scored.map(item => ({ ...item, final_score: item.pre_evidence_score }))
+    .sort(sortScores)[0];
   const receipt = {
     protocol_version: PROTOCOL_VERSION,
     arbitrated_at: at.toISOString(),
     baseline_winner_key: baseline.key,
     selected_winner_key: selected.key,
     choice_changed_by_motivation: baseline.key !== selected.key,
+    evidence_counterfactual_winner_key: withoutEvidence.key,
+    choice_changed_by_evidence: withoutEvidence.key !== selected.key,
     motivationally_material: scored.some(item =>
       Math.abs(item.desire_delta) + Math.abs(item.consequence_delta) + Math.abs(item.curiosity_delta)
-        + Math.abs(item.relational_delta) + Math.abs(item.soma_delta) >= 0.02),
+        + Math.abs(item.relational_delta) + Math.abs(item.evidence_delta)
+        + Math.abs(item.soma_delta) >= 0.02),
     source_state: {
       want_history_verified: goals.history_verified,
       want_history_head: wantHistoryIntegrity?.head || null,
@@ -216,6 +243,8 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
       relational_affect_verified: relationalAffect.audit(relationalContext?.record || null,
         relationalContext?.relationships || []).complete_chain_verified,
       relational_affect_commitment: relationalContext?.record?.content_commitment || null,
+      revision_context_verified: revisionContext?.verified === true,
+      prior_frame_commitment: revisionContext?.prior_frame_commitment || null,
       soma: somaState,
     },
     scored_candidates: scored,
@@ -232,13 +261,14 @@ function audit(receipt = {}) {
     && commitment(receiptPayload(receipt)) === receipt.receipt_commitment;
   const winnerVerified = Boolean(selected && selected.key === receipt.selected_winner_key);
   return {
-    complete_chain_verified: [LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION].includes(Number(receipt.protocol_version))
+    complete_chain_verified: [...LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION]
+      .includes(Number(receipt.protocol_version))
       && commitmentVerified && winnerVerified,
     commitment_verified: commitmentVerified,
     winner_verified: winnerVerified,
   };
 }
 
-module.exports = { LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION, AUTHORITY_CLASS, SOMA_DEMAND,
+module.exports = { LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION, AUTHORITY_CLASS, SOMA_DEMAND,
   SOMA_FRESH_MS, RELATIONAL_MODE_DELTA,
   arbitrate, audit, commitment };

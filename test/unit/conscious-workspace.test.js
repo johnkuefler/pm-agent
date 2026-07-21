@@ -69,12 +69,6 @@ test('conscious workspace feedback binds consequences back to a frame', () => {
     why_this: 'A teammate shipped something and social debt is competing with silence.',
     attention_candidates: candidates,
     selected_focus_key: 'task:deadline',
-    changed_mind: {
-      from: 'Send a generic thanks.',
-      to: 'Wait for specific evidence and make it concrete.',
-      because: 'The epistemic claim recorded thin evidence.',
-      evidence: [{ type: 'epistemic_claim', id: 'ep-1' }],
-    },
     evidence: [{ type: 'cycle', id: 'cycle-1' }],
   }, workspace.emptyLedger());
   const feedback = workspace.addFeedback({
@@ -86,4 +80,51 @@ test('conscious workspace feedback binds consequences back to a frame', () => {
   assert.equal(feedback.feedback.effect, 'supported');
   assert.match(feedback.feedback.feedback_commitment, /^[a-f0-9]{64}$/);
   assert.equal(feedback.report.total_feedback, 1);
+});
+
+test('changed-mind records require committed prior focus, feedback, and a changed server selection', () => {
+  const prior = workspace.createFrame({
+    id: 'cw-prior', mode: 'operational', current_activity: 'Preparing a deadline note.',
+    why_this: 'The visible deadline appears to be the strongest signal.',
+    attention_candidates: candidates, selected_focus_key: 'task:deadline',
+    evidence: [{ type: 'cycle', id: 'cycle-prior' }],
+  }, workspace.emptyLedger());
+  const feedback = workspace.addFeedback({
+    frame_id: 'cw-prior', signal: 'New task evidence shows the apparent deadline is already superseded.',
+    effect: 'redirected', evidence: [{ type: 'teamwork_task', id: 'tw-later' }],
+  }, prior.ledger, { now: new Date('2026-07-21T15:00:00.000Z') });
+  const revised = workspace.createFrame({
+    id: 'cw-revised', revision_of_frame_id: 'cw-prior', mode: 'operational',
+    current_activity: 'Revising the deadline decision against later evidence.',
+    why_this: 'The committed feedback now participates in selection.',
+    attention_candidates: [
+      candidates[0],
+      { ...candidates[2], priority: 0.55,
+        feedback_refs: [{ type: 'workspace_feedback', id: feedback.feedback.id }] },
+      { ...candidates[1], priority: 0.3 },
+    ],
+    selected_focus_key: 'task:deadline',
+    evidence: [{ type: 'cycle', id: 'cycle-revised' }],
+  }, feedback.ledger);
+  assert.equal(revised.frame.arbitration_receipt.baseline_winner_key, 'task:deadline');
+  assert.equal(revised.frame.arbitration_receipt.evidence_counterfactual_winner_key, 'task:deadline');
+  assert.equal(revised.frame.arbitration_receipt.choice_changed_by_evidence, true);
+  assert.equal(revised.frame.selected_focus_key, 'uncertainty:blocker');
+  assert.equal(revised.frame.changed_mind.from, 'Deadline sweep');
+  assert.equal(revised.frame.changed_mind.to, 'Whether the task is really blocked');
+  assert.equal(revised.frame.changed_mind.epistemic_status,
+    'server_derived_committed_selection_revision');
+  assert.equal(workspace.auditRevision(revised.frame, revised.ledger).complete_chain_verified, true);
+  assert.equal(revised.report.grounded_mind_changes, 1);
+
+  const tampered = structuredClone(revised.ledger);
+  tampered.feedback[0].signal = 'Altered after commitment';
+  assert.equal(workspace.auditRevision(tampered.current, tampered).complete_chain_verified, false);
+  assert.throws(() => workspace.createFrame({
+    current_activity: 'Narrating a revision', why_this: 'Self report only',
+    attention_candidates: candidates, selected_focus_key: 'task:deadline',
+    changed_mind: { from: 'X', to: 'Y', because: 'I said so',
+      evidence: [{ type: 'memory', id: 'm-1' }] },
+    evidence: [{ type: 'cycle', id: 'cycle-claim' }],
+  }, revised.ledger), /server-derived/);
 });

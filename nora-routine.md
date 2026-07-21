@@ -182,11 +182,12 @@ For social-posture candidates, use `type=relationship`, cite exact `relationship
 exact mode match from the replay-bound person record can contribute. These signals shape discretionary
 selection only. They never justify contact, spending, disclosure, or a priority that was not otherwise authorized.
 
-When later evidence changes what mattered, call `POST /conscious-workspace/feedback` against the frame.
-If you can honestly say "I wanted X, but evidence changed me," record that in the next frame's
-`changed_mind` object with exact evidence. If the change is a durable revised stance rather than just
-a frame-local note, also call `POST /cognition/mind-changes` with stable evidence refs and then read
-`GET /cognition/mind-changes?status=resolved` when you need the replay-verifiable revision history.
+When later evidence challenges what won, call `POST /conscious-workspace/feedback` against the exact frame
+with effect `contradicted` or `redirected`. In the next workspace frame, set `revision_of_frame_id`, carry
+the prior winning candidate forward, and put the returned feedback id in the evidence-supported candidate's
+`feedback_refs` as `type=workspace_feedback`. Do not submit `changed_mind` prose. The server applies the
+committed evidence delta during arbitration and emits a changed-mind receipt only if the selected focus
+actually changes. That receipt is also copied into the durable mind-change ledger for relevant future recall.
 
 When an action is meant to change the world but its result will not be obvious immediately, create a
 consequence-review watch item with `POST /consequence-reviews/actions`. Use this for meaningful Slack

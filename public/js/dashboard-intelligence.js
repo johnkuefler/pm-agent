@@ -644,10 +644,13 @@ async function loadWorkspaceArbitrationGlance(token = intelligenceLoadToken) {
       selected.desire_delta ? `aim ${selected.desire_delta > 0 ? '+' : ''}${selected.desire_delta.toFixed(2)}` : null,
       selected.curiosity_delta ? `curiosity ${selected.curiosity_delta > 0 ? '+' : ''}${selected.curiosity_delta.toFixed(2)}` : null,
       selected.relational_delta ? `relationship ${selected.relational_delta > 0 ? '+' : ''}${selected.relational_delta.toFixed(2)}` : null,
+      selected.evidence_delta ? `new evidence ${selected.evidence_delta > 0 ? '+' : ''}${selected.evidence_delta.toFixed(2)}` : null,
       selected.consequence_delta ? `consequence ${selected.consequence_delta > 0 ? '+' : ''}${selected.consequence_delta.toFixed(2)}` : null,
       selected.soma_delta ? `body ${selected.soma_delta > 0 ? '+' : ''}${selected.soma_delta.toFixed(2)}` : null,
     ].filter(Boolean);
-    const changed = receipt.choice_changed_by_motivation
+    const changed = frame.revision_audit?.complete_chain_verified === true
+      ? `Evidence changed focus from ${frame.changed_mind.from} to ${frame.changed_mind.to}.`
+      : receipt.choice_changed_by_motivation
       ? `Without those influences, ${receipt.baseline_winner_key} would have won.`
       : 'The same candidate also won on base priority.';
     target.innerHTML = `<span>Why this focus won</span><strong>${escHtml(selected.label || frame.selected_focus_label || receipt.selected_winner_key)}</strong><p>${escHtml(changed)} ${escHtml(forces.length ? `Applied: ${forces.join(', ')}.` : 'No verified motive changed its score.')}</p>`;

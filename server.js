@@ -8474,6 +8474,10 @@ registerConsciousWorkspaceRoutes(app, {
     if (current) delete current.audit;
     return { record: current, relationships: intelligence.list('relationships') };
   },
+  recordMindChange: input => {
+    const item = intelligence.recordMindChange(input);
+    return { ...item, audit: intelligence.mindChangeAudit(item) };
+  },
 });
 
 registerConsequenceReviewRoutes(app, {
