@@ -24,7 +24,7 @@ const { registerInteractionRoutes } = require('./src/routes/registerInteractionR
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
 const { registerCognitiveParameterStudyRoutes } = require('./src/routes/cognitive-parameter-studies');
-const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth } = require('./src/middleware/auth');
+const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth, requireOperatorAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
 const { createIntelligenceStore } = require('./src/intelligence/store');
 const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
@@ -771,6 +771,54 @@ async function saveApiRegistry(value) {
   }
   _cache.apiOpportunities = registry;
   return registry;
+}
+
+let apiOpportunityWriteQueue = Promise.resolve();
+function executeApprovedApiTool(proposal, args = {}, context = {}) {
+  const operation = apiOpportunityWriteQueue.then(async () => {
+    const query = {};
+    for (const parameter of proposal.tool?.query_parameters || []) {
+      if (args[parameter.name] !== undefined) query[parameter.name] = args[parameter.name];
+    }
+    const result = await apiOpportunities.executeApprovedGet(loadApiRegistry(), proposal.id, {
+      path: proposal.tool?.path || proposal.sample_path || '/', query,
+      requester: context.requester || 'Nora', purpose: args.purpose || '',
+      surface: context.surface || 'live_tool', interactionRef: context.interactionRef || null,
+    });
+    await saveApiRegistry(result.registry);
+    return { usage: result.usage, response: result.response,
+      instruction: 'Use the result only for the stated purpose. Its reliability is measured from the later outcome.' };
+  });
+  apiOpportunityWriteQueue = operation.catch(() => {});
+  return operation;
+}
+
+function apiOpportunityToolBindings(context = {}) {
+  return apiOpportunities.toolBindings(loadApiRegistry(),
+    (proposal, args) => executeApprovedApiTool(proposal, args, context));
+}
+
+function recordApiUseOutcomesForInteraction(interaction) {
+  const operation = apiOpportunityWriteQueue.then(async () => {
+    let registry = loadApiRegistry(); let recorded = 0;
+    const refs = new Set([interaction.id, interaction.ts, interaction.thread_ts,
+      interaction.source_turn_ref].filter(Boolean).map(String));
+    const uses = registry.usage.filter(item => !item.outcome && item.interaction_ref
+      && refs.has(String(item.interaction_ref)));
+    const outcome = ['appreciated', 'landed'].includes(interaction.outcome) ? 'helpful'
+      : ['corrected', 'ignored'].includes(interaction.outcome) ? 'unhelpful' : 'unclear';
+    for (const usage of uses) {
+      const result = apiOpportunities.recordUsageOutcome(registry, usage.id, {
+        outcome, note: `${interaction.outcome}: ${interaction.signal || 'No additional observable signal.'}`,
+        evidence: [{ type: 'interaction', id: interaction.id }],
+      });
+      registry = result.registry; recorded += 1;
+    }
+    if (recorded) await saveApiRegistry(registry);
+    return recorded;
+  });
+  apiOpportunityWriteQueue = operation.catch(() => {});
+  return operation;
 }
 
 function loadEpistemicsLedger() {
@@ -4280,6 +4328,9 @@ app.post('/webhook/chat', async (req, res) => {
     const zoomMcp = zoomAttachLiveTools
       ? mcpManager.bindings({ financialApproved: false, allowWrites: true })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
+    const zoomPublicApis = zoomAttachLiveTools
+      ? apiOpportunityToolBindings({ surface: 'zoom_chat', requester: speaker, interactionRef: bot_id })
+      : { tools: [], executors: {}, inventory: [] };
     const zoomAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'zoom-chat', contextKind: 'meeting', direct: true,
       financialApproved: false, requester: speaker, interactionRef: bot_id, mcp: zoomMcp,
       toolsAttached: zoomAttachLiveTools });
@@ -4305,9 +4356,12 @@ app.post('/webhook/chat', async (req, res) => {
     }
     zoomToolDefs.push(...zoomMcp.claudeTools);
     Object.assign(zoomExecutors, zoomMcp.executors);
+    zoomToolDefs.push(...zoomPublicApis.tools);
+    Object.assign(zoomExecutors, zoomPublicApis.executors);
     let zoomTail = zoomVolatile;
     if (zoomAttachLiveTools && teamworkEnabled()) zoomTail += '\n\nYou have LIVE Teamwork tools in this meeting chat: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is for scheduling via teamwork_user_workload; plus milestones, tasklists, people, comments) AND CHANGE (create a task, update one, mark complete/reopen, add a comment), plus web search. If someone asks for a status, date, owner, or fact, look it up and answer with the real data. If they ask you to create or change a task, do it, but only when the ask is clear: if it\'s ambiguous (which project, who, when), ask one quick question first. After any change, say exactly what you did. You CANNOT delete tasks. Keep it tight, this is meeting chat, not an essay. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
+    if (zoomPublicApis.inventory.length) zoomTail += `\n\nApproved public-data API tools are attached: ${zoomPublicApis.inventory.map(item => item.name).join(', ')}. Use only when relevant, pass no private/team/client data, and state a concrete purpose.`;
     if (!zoomAttachLiveTools) zoomTail += '\n\nThis is a bounded social turn. No live tools are attached because the message does not ask for information or action. Respond naturally and briefly.';
     const zoomToolSetupFinishedAt = Date.now();
     const zoomPromptChars = zoomStable.length + zoomTail.length;
@@ -7033,6 +7087,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
+    const publicApiBindings = attachLiveTools && isDirect
+      ? apiOpportunityToolBindings({ surface: 'slack', requester: requesterName || user, interactionRef: turnRef })
+      : { tools: [], executors: {}, inventory: [] };
     const situationalAffordanceFrame = recordRuntimeSituationalAffordance({ surface: 'slack', contextKind: isDirect ? 'direct' : 'proactive',
       direct: isDirect, financialApproved, requester: user, interactionRef: turnRef, mcp: mcpBindings,
       toolsAttached: attachLiveTools });
@@ -7142,6 +7199,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // credentials, static bearer tokens, credential URLs, and custom headers uniformly.
     for (const tool of mcpBindings.claudeTools) toolDefs.push(tool);
     Object.assign(toolExecutors, mcpBindings.executors);
+    for (const tool of publicApiBindings.tools) toolDefs.push(tool);
+    Object.assign(toolExecutors, publicApiBindings.executors);
     const hasWebSearch = toolDefs.some(t => t.name === 'web_search');
     // What each connected MCP actually DOES — so she gets a concrete capability inventory instead of
     // an opaque server codename (a bare "limelight-pm" tells her nothing, which is how she ends up
@@ -7379,6 +7438,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         console.warn(`global broadcast response capture failed (non-fatal): ${error.message}`);
       } finally {
         globalBroadcastResponseRecorded = true;
+      }
+      if (publicApiBindings.inventory.length) {
+        note += ` â€¢ APPROVED PUBLIC APIs: ${publicApiBindings.inventory.map(item => `${item.name} (${item.capability})`).join('; ')}. Use only for public data, provide the concrete purpose, and never put client/team/private/financial information into parameters.`;
       }
     };
     let selfModelTrustResponseRecorded = false;
@@ -7704,6 +7766,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       trigger: text,            // the message she was responding to
       user,                     // who she was replying to
       requester_name: requesterName || null,
+      source_turn_ref: turnRef,
       prospective_output_monitor_id: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? monitoredOutput.record.id : null,
       prospective_output_monitor_delivery_ref: monitoredOutput.record?.status === 'completed' && allSegmentsPosted ? (postRes?.data?.ts || turnRef) : null,
       post_delivery_self_evaluation_eligible: mode === 'normal' && allSegmentsPosted,
@@ -8382,6 +8445,7 @@ registerGiftRoutes(app, {
 
 registerApiOpportunityRoutes(app, {
   requireAuth,
+  requireOperatorAuth,
   loadApiRegistry,
   saveApiRegistry,
 });
@@ -8588,31 +8652,31 @@ app.get('/admin/mcp', requireAuth, (req, res) => {
   try { res.json({ connections: mcpManager.list() }); }
   catch (error) { res.status(500).json({ error: `MCP credential store is unavailable: ${error.message}` }); }
 });
-app.post('/admin/mcp', requireAuth, async (req, res) => {
+app.post('/admin/mcp', requireAuth, requireOperatorAuth, async (req, res) => {
   try {
     const connection = await mcpManager.create(req.body || {});
     console.log(`🔌 MCP connection added: ${connection.name} (${connection.auth_type})`);
     res.json({ ok: true, connection });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
-app.put('/admin/mcp/:id', requireAuth, async (req, res) => {
+app.put('/admin/mcp/:id', requireAuth, requireOperatorAuth, async (req, res) => {
   try {
     const connection = await mcpManager.update(req.params.id, req.body || {});
     if (!connection) return res.status(404).json({ error: 'not found' });
     res.json({ ok: true, connection });
   } catch (error) { res.status(400).json({ error: error.message }); }
 });
-app.delete('/admin/mcp/:id', requireAuth, async (req, res) => {
+app.delete('/admin/mcp/:id', requireAuth, requireOperatorAuth, async (req, res) => {
   const removed = await mcpManager.remove(req.params.id);
   if (!removed) return res.status(404).json({ error: 'not found' });
   console.log(`🔌 MCP connection removed: ${removed.name}`);
   res.json({ ok: true });
 });
-app.post('/admin/mcp/:id/test', requireAuth, async (req, res) => {
+app.post('/admin/mcp/:id/test', requireAuth, requireOperatorAuth, async (req, res) => {
   try { res.json({ ok: true, connection: await mcpManager.testConnection(req.params.id) }); }
   catch (error) { res.status(400).json({ error: error.message, connection: mcpManager.list().find(item => item.id === req.params.id) || null }); }
 });
-app.post('/admin/mcp/:id/oauth/start', requireAuth, async (req, res) => {
+app.post('/admin/mcp/:id/oauth/start', requireAuth, requireOperatorAuth, async (req, res) => {
   try {
     const callbackBase = (process.env.PUBLIC_URL || process.env.RAILWAY_PUBLIC_DOMAIN && `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` || `https://${req.get('host')}`).replace(/\/$/, '');
     const callbackUrl = `${callbackBase}/admin/mcp/oauth/callback`;
@@ -9339,6 +9403,9 @@ function logInteraction(entry) {
 }
 
 function handleInteractionOutcome(interaction) {
+    void recordApiUseOutcomesForInteraction(interaction).catch(error => {
+      console.warn('approved API usefulness outcome capture failed:', error.message);
+    });
     try { intelligence.syncCapabilityBoundaryOutcomes([interaction]); }
     catch (error) { console.warn('capability boundary outcome capture failed:', error.message); }
     try { intelligence.recordProcedureInteractionOutcome(interaction); }
@@ -13142,6 +13209,8 @@ module.exports = {
     maybeTriggerVoiceResponse,
     resumePendingVoiceTurn,
     isBenignRealtimeDeleteMissingItemError,
+    apiOpportunityToolBindings,
+    recordApiUseOutcomesForInteraction,
   },
 };
 

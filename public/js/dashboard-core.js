@@ -2,11 +2,18 @@
     // Bearer on every fetch. If empty (dev mode without NORA_API_KEY), the server's
     // requireAuth middleware skips the check anyway, so this is no-op safe.
     const NORA_API_KEY = (document.querySelector('meta[name="nora-api-key"]') || {}).content || '';
+    const NORA_OPERATOR_TOKEN = (document.querySelector('meta[name="nora-operator-token"]') || {}).content || '';
     function api(path, opts) {
       opts = opts || {};
       const headers = Object.assign({}, opts.headers || {});
       if (NORA_API_KEY) headers['Authorization'] = 'Bearer ' + NORA_API_KEY;
       return fetch(path, Object.assign({}, opts, { headers: headers }));
+    }
+    function operatorApi(path, opts) {
+      opts = opts || {};
+      const headers = Object.assign({}, opts.headers || {});
+      if (NORA_OPERATOR_TOKEN) headers['X-Nora-Operator-Token'] = NORA_OPERATOR_TOKEN;
+      return api(path, Object.assign({}, opts, { headers: headers }));
     }
 
     const pageMeta = {

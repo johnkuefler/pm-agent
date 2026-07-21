@@ -67,4 +67,42 @@ function requireDashboardAuth(req, res, next) {
   return res.status(401).send('Authentication required');
 }
 
-module.exports = { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth };
+function operatorSecret() {
+  return process.env.DASHBOARD_PASSWORD || '';
+}
+
+function createOperatorToken({ now = Date.now(), ttlMs = 12 * 60 * 60 * 1000 } = {}) {
+  const secret = operatorSecret();
+  if (!secret) return '';
+  const payload = Buffer.from(JSON.stringify({ version: 1, audience: 'nora-dashboard-operator',
+    issued_at: now, expires_at: now + ttlMs }), 'utf8').toString('base64url');
+  const signature = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
+function verifyOperatorToken(token, { now = Date.now() } = {}) {
+  const secret = operatorSecret();
+  if (!secret) return true;
+  const [payload, signature, extra] = String(token || '').split('.');
+  if (!payload || !signature || extra) return false;
+  const expected = crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+  const actualBytes = Buffer.from(signature); const expectedBytes = Buffer.from(expected);
+  if (actualBytes.length !== expectedBytes.length || !crypto.timingSafeEqual(actualBytes, expectedBytes)) return false;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    return parsed.audience === 'nora-dashboard-operator' && Number(parsed.issued_at) <= now
+      && Number(parsed.expires_at) >= now && Number(parsed.expires_at) - Number(parsed.issued_at) <= 24 * 60 * 60 * 1000;
+  } catch { return false; }
+}
+
+function requireOperatorAuth(req, res, next) {
+  if (!operatorSecret()) return next();
+  if (verifyOperatorToken(req.headers['x-nora-operator-token'])) {
+    req.operatorAuthority = 'dashboard';
+    return next();
+  }
+  return res.status(401).json({ error: 'operator approval requires a signed dashboard session' });
+}
+
+module.exports = { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth,
+  createOperatorToken, verifyOperatorToken, requireOperatorAuth };

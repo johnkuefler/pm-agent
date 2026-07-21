@@ -376,7 +376,9 @@ GET /api-opportunities/usage
 POST /api-opportunities/proposals
 POST /api-opportunities/proposals/:id/approve
 POST /api-opportunities/proposals/:id/reject
+POST /api-opportunities/proposals/:id/retire
 POST /api-opportunities/proposals/:id/execute
+POST /api-opportunities/usage/:id/outcome
 GET /epistemics/report
 GET /epistemics/claims
 GET /epistemics/claims/:id

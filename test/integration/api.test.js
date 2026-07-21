@@ -21,6 +21,7 @@ Object.assign(process.env, {
   GOODY_PRODUCT_ID: '',
   GOODY_CARD_ID: '',
 });
+const { createOperatorToken } = require('../../src/middleware/auth');
 
 const seed = {
   'nora-memory.json': '[]',
@@ -76,7 +77,9 @@ test('authentication protects APIs and dashboard independently', async () => {
   const auth = Buffer.from('nora:integration-password').toString('base64');
   const permitted = await fetch(base + '/', { headers: { Authorization: `Basic ${auth}` } });
   assert.equal(permitted.status, 200);
-  assert.match(await permitted.text(), /integration-key/);
+  const dashboardHtml = await permitted.text();
+  assert.match(dashboardHtml, /integration-key/);
+  assert.match(dashboardHtml, /meta name="nora-operator-token" content="[^".]+\.[^"]+"/);
 
   const css = await fetch(base + '/assets/dashboard.css');
   assert.equal(css.status, 200);
@@ -315,10 +318,18 @@ test('API opportunities are proposal-first and approval-gated', async () => {
   assert.equal(blocked.response.status, 400);
   assert.match(blocked.body.error, /approved/);
 
+  const selfApproval = await request('/api-opportunities/proposals/api-integration-weather/approve', {
+    method: 'POST', body: { approved_by: 'Nora' },
+  });
+  assert.equal(selfApproval.response.status, 401);
+  assert.match(selfApproval.body.error, /signed dashboard session/);
+
   const approved = await request('/api-opportunities/proposals/api-integration-weather/approve', {
-    method: 'POST', body: { approved_by: 'John' },
+    method: 'POST', headers: { 'X-Nora-Operator-Token': createOperatorToken() }, body: { approved_by: 'John' },
   });
   assert.equal(approved.body.proposal.status, 'approved');
+  const installed = runtime.__test.apiOpportunityToolBindings({ surface: 'test', requester: 'tester' });
+  assert.equal(installed.tools.some(tool => tool.name === approved.body.proposal.tool.name), true);
 });
 
 test('operational epistemics track claim stance and resolution', async () => {
@@ -1198,7 +1209,12 @@ test('public identity and prompt endpoints retain their response contracts', asy
 });
 
 test('MCP admin supports secure auth modes without returning credentials or full URLs', async () => {
-  const created = await request('/admin/mcp', { method: 'POST', body: {
+  const operatorHeaders = { 'X-Nora-Operator-Token': createOperatorToken() };
+  const blocked = await request('/admin/mcp', { method: 'POST', body: {
+    name: 'Self installed MCP', url: 'https://mcp.example.com/mcp', auth_type: 'none', enabled: true,
+  } });
+  assert.equal(blocked.response.status, 401);
+  const created = await request('/admin/mcp', { method: 'POST', headers: operatorHeaders, body: {
     name: 'Secure MCP', url: 'https://mcp.example.com/mcp/embedded-secret-token', auth_type: 'url_token', enabled: true,
   } });
   assert.equal(created.response.status, 200);
@@ -1208,11 +1224,11 @@ test('MCP admin supports secure auth modes without returning credentials or full
   const listed = await request('/admin/mcp');
   assert.equal(listed.body.connections[0].credential_set, true);
   assert.doesNotMatch(JSON.stringify(listed.body), /embedded-secret-token/);
-  const updated = await request(`/admin/mcp/${created.body.connection.id}`, { method: 'PUT', body: { auth_type: 'custom_headers', headers: { 'X-API-Token': 'top-secret' } } });
+  const updated = await request(`/admin/mcp/${created.body.connection.id}`, { method: 'PUT', headers: operatorHeaders, body: { auth_type: 'custom_headers', headers: { 'X-API-Token': 'top-secret' } } });
   assert.equal(updated.body.connection.credential_set, true);
   assert.doesNotMatch(JSON.stringify(updated.body), /top-secret/);
-  assert.equal((await request('/admin/mcp', { method: 'POST', body: { name: 'bad', url: 'http://localhost/mcp' } })).response.status, 400);
-  assert.equal((await request(`/admin/mcp/${created.body.connection.id}`, { method: 'DELETE' })).body.ok, true);
+  assert.equal((await request('/admin/mcp', { method: 'POST', headers: operatorHeaders, body: { name: 'bad', url: 'http://localhost/mcp' } })).response.status, 400);
+  assert.equal((await request(`/admin/mcp/${created.body.connection.id}`, { method: 'DELETE', headers: operatorHeaders })).body.ok, true);
 });
 
 test('dream and transcript CRUD preserves response shapes and local files', async () => {

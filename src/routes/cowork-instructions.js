@@ -531,7 +531,8 @@ function registerCoworkInstructionsRoute(app) {
     }
 
   - POST /api-opportunities/proposals/:id/approve
-    Human approval only. Body: { "approved_by": "John" }
+    Dashboard-operator approval only. Nora's API credential cannot approve or reapprove a proposal. Approval
+    installs its bounded typed read tool in direct Slack and Zoom chat.
 
   - POST /api-opportunities/proposals/:id/reject
     Human rejection only. Body: { "rejected_by": "John", "note": "..." }
@@ -540,6 +541,11 @@ function registerCoworkInstructionsRoute(app) {
     Approved APIs only. Body: { "path": "/v1/forecast", "query": { "latitude": "38.6" }, "requester": "Nora" }.
     The server enforces the approved origin, HTTPS, GET, no credentials, response-size limit, timeout,
     and usage receipts. If an API needs signup/key/OAuth, propose it and stop.
+
+  - POST /api-opportunities/usage/:id/outcome
+    Records helpful, unhelpful, or unclear later evidence. Live Slack uses are linked automatically to delayed
+    interaction outcomes. Three consecutive execution failures suspend a tool; five reviewed uses with at least
+    70% unhelpful outcomes retire it. This is consequence-based capability revision, not permanent accumulation.
 
   ### Operational epistemics
   Use these endpoints to keep consequential claims from turning into mush. This is the practical,

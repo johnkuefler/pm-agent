@@ -2,7 +2,40 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadMcpConnections(), loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadApiOpportunities(), loadMcpConnections(), loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+    }
+
+    async function loadApiOpportunities() {
+      const list = document.getElementById('api-opportunity-list');
+      if (!list) return;
+      try {
+        const r = await api('/api-opportunities/proposals'); const d = await r.json();
+        if (!d.proposals?.length) { list.innerHTML = '<p class="empty">Nora has not proposed an outside capability yet.</p>'; return; }
+        list.innerHTML = d.proposals.slice().reverse().map(p => {
+          const h = p.health || {}; const success = h.success_rate == null ? 'untested' : `${Math.round(h.success_rate * 100)}% reliable`;
+          const outcomes = h.reviewed_calls ? `${h.helpful} helpful / ${h.unhelpful} unhelpful / ${h.unclear} unclear` : 'no usefulness outcomes yet';
+          const actions = p.status === 'proposed'
+            ? `<button class="btn btn-primary btn-sm" onclick="decideApiOpportunity('${p.id}','approve')">Approve & install</button><button class="btn btn-danger btn-sm" onclick="decideApiOpportunity('${p.id}','reject')">Reject</button>`
+            : ['approved','suspended'].includes(p.status)
+              ? `<button class="btn btn-danger btn-sm" onclick="decideApiOpportunity('${p.id}','retire')">Retire</button>`
+              : p.status === 'retired' ? `<button class="btn btn-primary btn-sm" onclick="decideApiOpportunity('${p.id}','approve')">Reapprove</button>` : '';
+          return `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(p.name)} <span style="font-size:12px;color:var(--muted);">${escHtml(p.status)}</span></div><div class="memory-meta">${escHtml(p.capability || 'research')} &middot; ${escHtml(p.tool?.name || '')} &middot; ${escHtml(success)} &middot; ${escHtml(outcomes)}</div><div class="memory-meta">${escHtml(p.use_case || '')}</div>${p.suspension_reason || p.retirement_reason ? `<div class="memory-meta" style="color:var(--warn);">${escHtml(p.suspension_reason || p.retirement_reason)}</div>` : ''}</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
+        }).join('');
+      } catch (e) { list.innerHTML = `<p class="empty">Could not load capability proposals: ${escHtml(e.message)}</p>`; }
+    }
+    async function decideApiOpportunity(id, action) {
+      const toast = document.getElementById('api-opportunity-toast');
+      let note = '';
+      if (action === 'reject' || action === 'retire') note = prompt(`Why ${action} this capability?`, '') || '';
+      const endpoint = action === 'approve' ? 'approve' : action;
+      const body = action === 'approve' ? { approved_by: 'John' }
+        : action === 'reject' ? { rejected_by: 'John', note } : { retired_by: 'John', note };
+      try {
+        const r = await operatorApi(`/api-opportunities/proposals/${encodeURIComponent(id)}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const d = await r.json(); toast.className = r.ok ? 'toast ok' : 'toast err';
+        toast.textContent = r.ok ? `${d.proposal.name} is now ${d.proposal.status}.` : (d.error || 'Decision failed');
+        await loadApiOpportunities();
+      } catch (e) { toast.className = 'toast err'; toast.textContent = e.message; }
     }
 
     // ===== Live MCP connections =====
@@ -57,7 +90,7 @@
         catch { t.className = 'toast err'; t.textContent = 'Custom headers must be valid JSON'; return; }
       }
       try {
-        const r = await api(_editingMcpId ? `/admin/mcp/${_editingMcpId}` : '/admin/mcp', { method: _editingMcpId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const r = await operatorApi(_editingMcpId ? `/admin/mcp/${_editingMcpId}` : '/admin/mcp', { method: _editingMcpId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await r.json(); if (!r.ok) { t.className = 'toast err'; t.textContent = d.error || 'Save failed'; return; }
         const savedId = d.connection.id; resetMcpForm(); await loadMcpConnections();
         t.className = 'toast ok'; t.textContent = d.connection.auth_type === 'oauth' ? 'Saved. Click Connect to authorize.' : 'Saved. Testing connection...';
@@ -87,18 +120,18 @@
     }
     async function connectMcpOAuth(id) {
       const t = document.getElementById('mcp-toast'); t.className = 'toast'; t.textContent = 'Starting secure authorization...';
-      const r = await api(`/admin/mcp/${encodeURIComponent(id)}/oauth/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const r = await operatorApi(`/admin/mcp/${encodeURIComponent(id)}/oauth/start`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const d = await r.json(); if (!r.ok) { t.className = 'toast err'; t.textContent = d.error || 'Could not start OAuth'; return; }
       window.location.assign(d.authorize_url);
     }
     async function testMcpConnection(id) {
       const t = document.getElementById('mcp-toast'); t.className = 'toast'; t.textContent = 'Testing connection and discovering tools...';
-      const r = await api(`/admin/mcp/${encodeURIComponent(id)}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const r = await operatorApi(`/admin/mcp/${encodeURIComponent(id)}/test`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
       const d = await r.json(); t.className = r.ok ? 'toast ok' : 'toast err'; t.textContent = r.ok ? d.connection.status_message : (d.error || 'Connection test failed');
       await loadMcpConnections();
     }
-    async function toggleMcp(id, enabled) { await api(`/admin/mcp/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) }); loadMcpConnections(); }
-    async function deleteMcp(id, name) { if (!confirm(`Delete MCP connection "${name}"?`)) return; await api(`/admin/mcp/${id}`, { method: 'DELETE' }); loadMcpConnections(); }
+    async function toggleMcp(id, enabled) { await operatorApi(`/admin/mcp/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) }); loadMcpConnections(); }
+    async function deleteMcp(id, name) { if (!confirm(`Delete MCP connection "${name}"?`)) return; await operatorApi(`/admin/mcp/${id}`, { method: 'DELETE' }); loadMcpConnections(); }
 
     // Slack - channels the Nora bot is a member of
     async function loadBotChannels() {
