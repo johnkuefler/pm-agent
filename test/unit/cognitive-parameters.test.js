@@ -93,7 +93,7 @@ function fixture() {
 }
 
 test('DIALS defaults are immutable, bounded, and byte-stable', () => {
-  assert.equal(Object.keys(parameters.DEFINITIONS).length, 111);
+  assert.equal(Object.keys(parameters.DEFINITIONS).length, 113);
   assert.equal(Object.isFrozen(parameters.DEFAULTS), true);
   assert.equal(Object.isFrozen(parameters.DEFAULTS.workspace), true);
   assert.equal(parameters.DEFAULTS.workspace.capacity, 7);

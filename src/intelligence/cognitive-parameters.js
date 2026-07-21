@@ -110,6 +110,8 @@ const DEFINITIONS = Object.freeze({
   'memory.salience.system': { default: 0.2, min: 0.05, max: 0.5 },
   'memory.salience.default': { default: 0.3, min: 0.1, max: 0.65 },
   'memory.retrieval.salience_weight': { default: 0.15, min: 0, max: 0.4 },
+  'memory.retrieval.emotional_weight': { default: 0.08, min: 0, max: 0.25 },
+  'memory.retrieval.social_weight': { default: 0.08, min: 0, max: 0.25 },
   'memory.retrieval.recall_weight': { default: 0.012, min: 0, max: 0.05 },
   'memory.retrieval.recall_cap': { default: 10, min: 1, max: 50, integer: true },
   'memory.protection.salience_floor': { default: 0.6, min: 0.4, max: 0.9 },

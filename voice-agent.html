@@ -121,6 +121,31 @@
       animation: blinkFrame 5.8s infinite;
       transform: scale(1.01);
     }
+    .face-blink {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+    .face-blink span {
+      position: absolute;
+      top: 38%;
+      width: 17%;
+      height: 7%;
+      border-radius: 999px;
+      background:
+        radial-gradient(ellipse at 50% 15%, rgba(255,255,255,0.08), transparent 54%),
+        linear-gradient(180deg, rgba(8, 13, 32, 0.94), rgba(17, 24, 48, 0.92));
+      box-shadow: 0 2px 6px rgba(4, 8, 18, 0.28);
+      opacity: 0;
+      transform: scaleY(0.12);
+      transform-origin: center;
+      animation: eyelidBlink 4.8s infinite;
+    }
+    .face-blink span:first-child { left: 32%; }
+    .face-blink span:last-child { right: 31%; animation-delay: 0.035s; }
+    .face-mode.speaking .face-blink span { animation-duration: 4.1s; }
+    .face-mode.muted .face-blink span { animation-duration: 6.7s; opacity: 0; }
     .face-mode.speaking .face {
       animation: speakingBob 0.72s ease-in-out infinite;
     }
@@ -135,6 +160,10 @@
     @keyframes blinkFrame {
       0%, 89%, 92%, 100% { opacity: 0; }
       90%, 91% { opacity: 1; }
+    }
+    @keyframes eyelidBlink {
+      0%, 86%, 89%, 100% { opacity: 0; transform: scaleY(0.12); }
+      87%, 88% { opacity: 0.95; transform: scaleY(1); }
     }
     @keyframes talk {
       from { height: 22px; top: 166px; }
@@ -285,6 +314,7 @@
           <img class="face-frame smiling" src="/assets/nora-face/nora-smiling.jpg" alt="" />
           <img class="face-frame muted" src="/assets/nora-face/nora-muted.jpg" alt="" />
           <img class="face-frame blink" src="/assets/nora-face/nora-blink.jpg" alt="" />
+          <div class="face-blink" aria-hidden="true"><span></span><span></span></div>
         </div>
       </div>
       <div class="name">Nora</div>

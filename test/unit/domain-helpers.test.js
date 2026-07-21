@@ -31,6 +31,19 @@ test('memory salience preserves operational importance', () => {
   assert.equal(helpers.computeSalienceForFact('Routine observation', 'system'), 0.2);
 });
 
+test('memory carries social and emotional weights into prompt labels', () => {
+  const memory = helpers.normalizeMemoryRecord({
+    fact: 'John was furious after Nora missed a deadline and prefers direct risk flags',
+    source: 'slack',
+    source_ref: { channel: 'slack:DM', id: '123.456' },
+  });
+  assert.ok(memory.social_weight >= 0.65);
+  assert.ok(memory.emotional_weight >= 0.65);
+  const line = helpers.memoryPromptLine(memory);
+  assert.match(line, /socially weighted/);
+  assert.match(line, /emotionally weighted/);
+});
+
 test('financial content detector catches sensitive values without flagging ordinary prose', () => {
   assert.equal(helpers.containsFinancialContent('The project has a $45,000 budget'), true);
   assert.equal(helpers.containsFinancialContent('Our margin is 31%'), true);
@@ -83,6 +96,9 @@ test('expressive meeting face uses on-brand image states with blinking', () => {
     assert.ok(fs.existsSync(path.join(__dirname, `../../public/nora-face/nora-${state}.jpg`)), `${state} face frame exists`);
   }
   assert.match(voiceAgentHtml, /@keyframes blinkFrame/);
+  assert.match(voiceAgentHtml, /@keyframes eyelidBlink/);
+  assert.match(voiceAgentHtml, /class="face-blink"/);
+  assert.match(voiceAgentHtml, /\.face-mode\.speaking \.face-blink span/);
   assert.match(voiceAgentHtml, /:not\(\.speaking\):not\(\.muted\) \.face-frame\.blink/);
   assert.doesNotMatch(voiceAgentHtml, /class="eye/);
   assert.doesNotMatch(voiceAgentHtml, /class="mouth/);

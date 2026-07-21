@@ -2434,7 +2434,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // embedded yet, so this silently no-ops back to the keyword behavior.
   if (Array.isArray(opts.semanticMemories) && opts.semanticMemories.length > 0) {
     const semanticLines = opts.semanticMemories.slice(0, 6)
-      .map(m => `- ${String(m.fact || '').replace(/\s+/g, ' ').slice(0, 180)}${m.project ? ` (${m.project})` : ''}`)
+      .map(m => `${memoryPromptLine(m).replace(/\s+/g, ' ').slice(0, 220)}${m.project ? ` (${m.project})` : ''}`)
       .join('\n');
     volatile += `\n\n[Semantically relevant memory]\n${semanticLines.slice(0, 1200)}`;
   }
@@ -2599,8 +2599,11 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
     const retrieval = currentCognitiveParameters().memory.retrieval;
     const ranked = rows
       .filter(r => !markerKeyForFact(r.fact))
+      .map(r => normalizeMemoryRecord(r))
       .map(r => ({ ...r, _score: (1 - (r.distance ?? 1))
         + (r.salience || 0) * retrieval.salience_weight
+        + (r.emotional_weight || 0) * retrieval.emotional_weight
+        + (r.social_weight || 0) * retrieval.social_weight
         + Math.min(r.recall_count || 0, retrieval.recall_cap) * retrieval.recall_weight }))
       .sort((a, b) => b._score - a._score)
       .slice(0, limit);
@@ -12742,6 +12745,8 @@ module.exports = {
     isTaskEligibleNow,
     markerKeyForFact,
     computeSalienceForFact,
+    normalizeMemoryRecord,
+    memoryPromptLine,
     containsFinancialContent,
     runtimeSituationalCapabilities,
     isLightweightSocialSlackMessage,

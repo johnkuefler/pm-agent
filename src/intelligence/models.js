@@ -2,6 +2,8 @@
 
 const MEMORY_KINDS = new Set(['fact', 'inference', 'preference', 'commitment', 'opinion', 'learning', 'episode']);
 const MEMORY_STATUSES = new Set(['active', 'superseded', 'disputed', 'expired']);
+const EMOTIONAL_MEMORY_PATTERN = /\b(upset|angry|furious|frustrat|trust|relief|warmth|thank|thanks|appreciat|apolog|worried|concern|anxious|happy|excited|proud|hurt|disappoint|stress|overwhelm|urgent|crisis|escalat|missed|overdue|blocked)\b/i;
+const SOCIAL_MEMORY_PATTERN = /\b(john|mallory|dawn|ali|andy|brandon|brande[e]?|elle|chelsea|teammate|client|prefers?|likes?|dislikes?|corrected|asked|told|said|wants?|needs?|relationship|communication|feedback|warmth|gift)\b/i;
 
 function clamp(value, min = 0, max = 1) {
   const number = Number(value);
@@ -30,16 +32,38 @@ function normalizeSourceRef(sourceRef, fallback = {}) {
   return Object.values(normalized).some(Boolean) ? normalized : null;
 }
 
+function inferEmotionalWeight(record = {}) {
+  const fact = String(record.fact || '');
+  const source = String(record.source || '').toLowerCase();
+  const base = EMOTIONAL_MEMORY_PATTERN.test(fact) ? 0.55 : 0;
+  if (/\b(furious|angry|crisis|urgent|escalat|overwhelmed|hurt|apolog)\b/i.test(fact)) return Math.max(base, 0.8);
+  if (source === 'learning' || source === 'opinion') return Math.max(base, 0.35);
+  return base;
+}
+
+function inferSocialWeight(record = {}) {
+  const fact = String(record.fact || '');
+  const source = String(record.source || '').toLowerCase();
+  const sourceRef = normalizeSourceRef(record.source_ref);
+  const channel = String(sourceRef?.channel || '').toLowerCase();
+  let weight = SOCIAL_MEMORY_PATTERN.test(fact) ? 0.55 : 0;
+  if (source === 'meeting' || channel.includes('meeting') || channel.includes('slack') || channel.includes('gmail')) weight = Math.max(weight, 0.45);
+  if (/\b(prefers?|communication|corrected|feedback|relationship|trust|warmth|gift)\b/i.test(fact)) weight = Math.max(weight, 0.7);
+  if (/\b(john|mallory|dawn|ali|andy|brandon|brande[e]?|elle|chelsea)\b/i.test(fact)) weight = Math.max(weight, 0.6);
+  return weight;
+}
+
 function normalizeMemoryRecord(record, defaults = {}) {
   const kind = inferMemoryKind(record);
   const confidenceDefault = kind === 'inference' ? 0.6 : kind === 'preference' ? 0.75 : 0.85;
   const status = MEMORY_STATUSES.has(record.status) ? record.status : 'active';
+  const sourceRef = normalizeSourceRef(record.source_ref, defaults.source_ref);
   return {
     ...record,
     kind,
     confidence: clamp(record.confidence ?? defaults.confidence ?? confidenceDefault),
     status,
-    source_ref: normalizeSourceRef(record.source_ref, defaults.source_ref),
+    source_ref: sourceRef,
     valid_from: record.valid_from || defaults.valid_from || record.added || null,
     valid_until: record.valid_until || null,
     last_verified: record.last_verified || defaults.last_verified || null,
@@ -47,6 +71,8 @@ function normalizeMemoryRecord(record, defaults = {}) {
     supersedes: record.supersedes || null,
     contradicted_by: Array.isArray(record.contradicted_by) ? record.contradicted_by : [],
     sensitivity: record.sensitivity || 'normal',
+    emotional_weight: clamp(record.emotional_weight ?? defaults.emotional_weight ?? inferEmotionalWeight({ ...record, source_ref: sourceRef })),
+    social_weight: clamp(record.social_weight ?? defaults.social_weight ?? inferSocialWeight({ ...record, source_ref: sourceRef })),
   };
 }
 
@@ -65,6 +91,8 @@ function memoryPromptLine(memory, now = new Date()) {
   if (m.confidence < 0.7) notes.push(`${Math.round(m.confidence * 100)}% confidence`);
   if (m.valid_until) notes.push(`valid until ${m.valid_until}`);
   if (m.status === 'disputed') notes.push('disputed—verify before using');
+  if (m.social_weight >= 0.65) notes.push('socially weighted');
+  if (m.emotional_weight >= 0.65) notes.push('emotionally weighted');
   if (m.last_verified) {
     const age = Math.floor((now.getTime() - new Date(m.last_verified).getTime()) / 86400000);
     if (age > 30) notes.push(`last verified ${age} days ago`);
@@ -100,6 +128,8 @@ module.exports = {
   MEMORY_KINDS,
   clamp,
   inferMemoryKind,
+  inferEmotionalWeight,
+  inferSocialWeight,
   memoryIsActive,
   memoryPromptLine,
   normalizeCommitment,

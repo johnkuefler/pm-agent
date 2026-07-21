@@ -316,7 +316,7 @@ async function replaceAllMemory(items) {
                             THEN NULL ELSE ${DB_SCHEMA}.memory.embedding END`,
         [m.id, m.fact, m.project || '', m.added || null, m.source || null, m.source_bot_id || null, i,
          (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0, m.last_recalled || null,
-         JSON.stringify({ kind: m.kind, confidence: m.confidence, status: m.status, source_ref: m.source_ref, valid_from: m.valid_from, valid_until: m.valid_until, last_verified: m.last_verified, verification_count: m.verification_count, supersedes: m.supersedes, contradicted_by: m.contradicted_by, sensitivity: m.sensitivity })]
+         JSON.stringify({ kind: m.kind, confidence: m.confidence, status: m.status, source_ref: m.source_ref, valid_from: m.valid_from, valid_until: m.valid_until, last_verified: m.last_verified, verification_count: m.verification_count, supersedes: m.supersedes, contradicted_by: m.contradicted_by, sensitivity: m.sensitivity, emotional_weight: m.emotional_weight, social_weight: m.social_weight })]
       );
     }
     if (ids.length) {
@@ -361,12 +361,12 @@ async function searchMemoryByVector(vec, limit = 12, opts = {}) {
     where += ` AND (source IS NULL OR source <> ALL($${params.length}::text[]))`;
   }
   const { rows } = await q(
-    `SELECT id, fact, project, source, added, salience, recall_count, embedding <=> $1::vector AS distance
+    `SELECT id, fact, project, source, added, salience, recall_count, metadata, embedding <=> $1::vector AS distance
      FROM ${DB_SCHEMA}.memory WHERE ${where}
      ORDER BY embedding <=> $1::vector ASC LIMIT $2`,
     params
   );
-  return rows;
+  return rows.map(row => (row.metadata && typeof row.metadata === 'object' ? { ...row, ...row.metadata } : row));
 }
 
 // Retrieval strengthening (reconsolidation): every time memories surface via semantic recall
