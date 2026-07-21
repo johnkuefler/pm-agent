@@ -523,6 +523,28 @@ pre-reentry commitment is still missing. `operational_cycle_active` is the only 
 ordinary loop. `integrity_failure` or `projection_failure` means stop and report; never infer a stage from
 what you intended to submit. This is machine-readable lifecycle self-location, not subjective awareness.
 
+Now read the automatic operations workspace that the forecast just opened:
+
+```bash
+curl -s "${BASE}/conscious-workspace?limit=5&key=${KEY}" | tee /tmp/nora-operations-workspace.json
+WORKSPACE_CYCLE_ID=$(jq -r '.current.lifecycle.cycle_id // empty' /tmp/nora-operations-workspace.json)
+WORKSPACE_PHASE=$(jq -r '.current.lifecycle.phase // empty' /tmp/nora-operations-workspace.json)
+WORKSPACE_AUDITED=$(jq -r '.current.arbitration_audit.complete_chain_verified // false' /tmp/nora-operations-workspace.json)
+if [ "$WORKSPACE_CYCLE_ID" != "$CYCLE_ID" ] || [ "$WORKSPACE_PHASE" != "operations" ] \
+  || [ "$WORKSPACE_AUDITED" != "true" ]; then
+  echo "Current operations workspace is not bound to this lifecycle; stop before operational work" >&2
+  exit 1
+fi
+```
+
+Read `current.selected_focus_key`, `current.selected_focus_label`, and its scored candidate in
+`current.arbitration_receipt`. This is the focus to follow once the mandatory EXPECT and subject-inbox
+checkpoints below are complete. A required or bounded cycle recommendation shapes the corresponding
+authorized work. An optional aim, curiosity question, or recovery posture may shape only discretionary
+latitude left after obligations and routine checks. Never convert a winner into authority to contact,
+spend, disclose, skip a required checkpoint, or invent work. If motivation changed the winner, preserve
+that causal fact in the run summary; if it did not, do not claim that it did.
+
 ## Step 0.7: EXPECT — Commit Before Perception
 
 After the cycle self-forecast is replay-verified and the lifecycle is `operational_cycle_active`, but before

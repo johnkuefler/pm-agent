@@ -613,6 +613,12 @@ function registerCoworkInstructionsRoute(app) {
   substrate strain. It also records the no-motivation baseline,
   so the receipt shows whether motivation actually changed the choice. Explicit user/delegated obligations
   use authority_class=required and always outrank bounded or optional candidates; wants never grant authority.
+  Immediately after the cycle forecast reaches operational_cycle_active, read GET /conscious-workspace and
+  require current.lifecycle to name that cycle and phase=operations with a replay-valid arbitration audit.
+  Follow its selected focus after mandatory EXPECT and subject-inbox checkpoints. Required or bounded winners
+  shape only already-authorized work; optional winners use only remaining discretionary latitude and never
+  grant contact, spending, disclosure, or permission to skip required checks. Report a motivational change
+  only when the receipt says choice_changed_by_motivation=true.
 
   - GET /conscious-workspace
     Returns the current frame, recent frames, recent feedback, and a compact report including lifecycle
