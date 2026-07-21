@@ -289,6 +289,37 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
   assert.match(send.body.error, /GOODY_SEND_ENABLED/);
 });
 
+test('API opportunities are proposal-first and approval-gated', async () => {
+  const policy = await request('/api-opportunities/policy');
+  assert.equal(policy.body.policy.mode, 'proposal_first');
+  assert.deepEqual(policy.body.policy.allowed_methods, ['GET']);
+
+  const created = await request('/api-opportunities/proposals', { method: 'POST', body: {
+    id: 'api-integration-weather',
+    name: 'Open-Meteo',
+    provider: 'Open-Meteo',
+    base_url: 'https://api.open-meteo.com',
+    sample_path: '/v1/forecast',
+    use_case: 'Provide public weather context for travel-sensitive meeting and project planning.',
+    evidence: [{ type: 'docs', url: 'https://open-meteo.com/' }],
+  } });
+  assert.equal(created.body.ok, true);
+  assert.equal(created.body.proposal.status, 'proposed');
+  assert.match(created.body.proposal.proposal_commitment, /^[a-f0-9]{64}$/);
+
+  const blocked = await request('/api-opportunities/proposals/api-integration-weather/execute', {
+    method: 'POST',
+    body: { path: '/v1/forecast', query: { latitude: '38.6', longitude: '-90.2' } },
+  });
+  assert.equal(blocked.response.status, 400);
+  assert.match(blocked.body.error, /approved/);
+
+  const approved = await request('/api-opportunities/proposals/api-integration-weather/approve', {
+    method: 'POST', body: { approved_by: 'John' },
+  });
+  assert.equal(approved.body.proposal.status, 'approved');
+});
+
 test('run lock enforces holder ownership', async () => {
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'one', ttl_seconds: 60 } })).body.acquired, true);
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'two', ttl_seconds: 60 } })).body.acquired, false);

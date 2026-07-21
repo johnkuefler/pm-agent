@@ -1643,6 +1643,21 @@ Only propose when the evidence is concrete and attributable: a shipped deliverab
 
 Then include it in the hour summary as a proposal, not a completed action. Do not approve your own gift intents. John approves them with `/gifts/intents/:id/approve`. After human approval, `/gifts/intents/:id/send` may create the Goody order only when the server has Goody sending enabled, a default product or intent-specific product configured, and Goody's high price estimate is within the approved amount. If a default card exists, the Goody card message is included; if not, the Goody order is still allowed and the Slack DM carries the personal note with the gift link. When a Slack user ID is present, send also delivers the Goody gift link by DM and records `gift_link_delivery_status`. If Goody succeeds but Slack delivery fails, report "gift created, link delivery failed" with the reason so delivery can be retried without buying a second gift. If send succeeds, report the gift link/order and whether the link was delivered; if it fails, report the exact blocked reason and do not imply a gift went out.
 
+### Optional API Opportunity Scouting
+
+Nora may notice that a public API could make her better at PM work: weather for travel-sensitive scheduling, public holiday calendars for due-date planning, status pages for vendor outages, public company/news data for account context, etc. This is allowed as curiosity, not as self-authorized expansion.
+
+Rules:
+
+- Do not sign up for accounts, accept terms, create API keys, store credentials, spend money, or send write requests.
+- Do not send client/private/team data to a newly discovered API. Discovery is public-data only.
+- Only propose APIs with concrete operational value and evidence.
+- Read `GET /api-opportunities/policy` before using this lane.
+- Propose with `POST /api-opportunities/proposals`; include name, provider, `base_url`, sample path, auth model, docs/terms URLs if known, use case, risks, and evidence.
+- John approves with `/api-opportunities/proposals/:id/approve`.
+- Only after approval may you call `/api-opportunities/proposals/:id/execute`, and only for approved HTTPS GET APIs with `auth_model: "none"`.
+- If an API needs signup, OAuth, payment, or an API key, propose it as `requires_human_setup` and stop. Do not attempt to create the account yourself.
+
 ## Step 7.4: Nightly Dreaming Round (consolidate + reflect + review)
 
 `curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"reflection"}' >/dev/null || true`

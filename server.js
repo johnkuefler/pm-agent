@@ -16,6 +16,7 @@ const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerGiftRoutes } = require('./src/routes/registerGiftRoutes');
+const { registerApiOpportunityRoutes } = require('./src/routes/registerApiOpportunityRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
@@ -77,6 +78,7 @@ const selfPredictionStudySequencer = require('./src/intelligence/self-prediction
 const interactivePerformance = require('./src/intelligence/interactive-performance');
 const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
+const apiOpportunities = require('./src/integrations/api-opportunities');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const app = express();
@@ -85,6 +87,7 @@ const runtimeActivity = createRuntimeActivityStream();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
+const API_OPPORTUNITIES_PATH = path.join(LOCAL_DATA_DIR, 'nora-api-opportunities.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   ? path.join(LOCAL_DATA_DIR, 'reading-library')
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
@@ -718,6 +721,27 @@ async function saveGiftLedger(value) {
   return ledger;
 }
 
+function loadApiRegistry() {
+  if (_dbReady) return apiOpportunities.normalizeRegistry(_cache.apiOpportunities);
+  if (_cache.apiOpportunities) return apiOpportunities.normalizeRegistry(_cache.apiOpportunities);
+  try { _cache.apiOpportunities = apiOpportunities.normalizeRegistry(JSON.parse(fs.readFileSync(API_OPPORTUNITIES_PATH, 'utf8'))); }
+  catch { _cache.apiOpportunities = apiOpportunities.emptyRegistry(); }
+  return _cache.apiOpportunities;
+}
+
+async function saveApiRegistry(value) {
+  const registry = apiOpportunities.normalizeRegistry(value);
+  if (_dbReady) await db.setState('api_opportunities', registry);
+  else {
+    fs.mkdirSync(path.dirname(API_OPPORTUNITIES_PATH), { recursive: true });
+    const temp = `${API_OPPORTUNITIES_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(temp, JSON.stringify(registry, null, 2));
+    fs.renameSync(temp, API_OPPORTUNITIES_PATH);
+  }
+  _cache.apiOpportunities = registry;
+  return registry;
+}
+
 // Slack threads Nora has replied in. Used to keep conversations going without re-mention.
 // Persisted so a deploy/restart doesn't drop active conversations.
 //
@@ -1141,6 +1165,7 @@ async function initPersistence() {
     _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
       await db.getState('drive_artifact_uploads'));
     _cache.giftLedger = goodyGifting.normalizeLedger(await db.getState('gift_ledger'));
+    _cache.apiOpportunities = apiOpportunities.normalizeRegistry(await db.getState('api_opportunities'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -8166,6 +8191,12 @@ registerGiftRoutes(app, {
   loadGiftLedger,
   saveGiftLedger,
   deliverGiftLink: deliverGoodyGiftLink,
+});
+
+registerApiOpportunityRoutes(app, {
+  requireAuth,
+  loadApiRegistry,
+  saveApiRegistry,
 });
 
 registerRuntimeActivityRoutes(app, {

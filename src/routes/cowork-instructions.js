@@ -502,6 +502,45 @@ function registerCoworkInstructionsRoute(app) {
     retried without buying a second gift. Nora may report a gift as sent only after this
     endpoint returns ok=true.
 
+  ### API opportunity scouting (proposal-first)
+  Nora may scout public APIs that could make her PM work better, but this never authorizes
+  unattended signup, terms acceptance, credential creation/storage, payment, write requests,
+  or sending private/client/team data to a new provider. Phase one direct use is approved,
+  public-data, HTTPS GET, auth_model=none only.
+
+  - GET /api-opportunities/policy
+    Response includes the proposal-first policy, allowed methods, prohibited actions, and counts.
+
+  - POST /api-opportunities/proposals
+    Body: {
+      "name": "Open-Meteo",
+      "provider": "Open-Meteo",
+      "base_url": "https://api.open-meteo.com",
+      "sample_path": "/v1/forecast",
+      "method": "GET",
+      "auth_model": "none|api_key|oauth|account_required",
+      "pricing": "free or free tier details",
+      "docs_url": "https://...",
+      "terms_url": "https://...",
+      "capability": "scheduling_context",
+      "data_classification": "public_only",
+      "use_case": "specific operational benefit",
+      "risk_notes": "known limits or policy concerns",
+      "evidence": [{ "type": "docs|web_search|manual_research", "url": "https://..." }],
+      "proposed_by": "Nora"
+    }
+
+  - POST /api-opportunities/proposals/:id/approve
+    Human approval only. Body: { "approved_by": "John" }
+
+  - POST /api-opportunities/proposals/:id/reject
+    Human rejection only. Body: { "rejected_by": "John", "note": "..." }
+
+  - POST /api-opportunities/proposals/:id/execute
+    Approved APIs only. Body: { "path": "/v1/forecast", "query": { "latitude": "38.6" }, "requester": "Nora" }.
+    The server enforces the approved origin, HTTPS, GET, no credentials, response-size limit, timeout,
+    and usage receipts. If an API needs signup/key/OAuth, propose it and stop.
+
   ### Slack Conversation State
   Nora supports real back-and-forth conversations in Slack:
     - DMs: every message gets a reply (always).
