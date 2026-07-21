@@ -67,3 +67,98 @@ test('Goody send readiness fails closed until explicit credentials and send flag
     if (priorEnabled !== undefined) process.env.GOODY_SEND_ENABLED = priorEnabled;
   }
 });
+
+test('Goody send creates an order batch only after price stays within approval', async () => {
+  const prior = {
+    key: process.env.GOODY_API_KEY,
+    enabled: process.env.GOODY_SEND_ENABLED,
+    product: process.env.GOODY_PRODUCT_ID,
+    card: process.env.GOODY_CARD_ID,
+  };
+  Object.assign(process.env, {
+    GOODY_API_KEY: 'test-goody-key',
+    GOODY_SEND_ENABLED: 'true',
+    GOODY_PRODUCT_ID: 'product-123',
+    GOODY_CARD_ID: 'card-123',
+  });
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url, body: JSON.parse(options.body), auth: options.headers.Authorization });
+    if (url.endsWith('/v1/order_batches/price')) {
+      return new Response(JSON.stringify({
+        total_price_estimate: { est_group_total_low: 1400, est_group_total_high: 1500 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      id: 'batch-123',
+      send_status: 'complete',
+      reference_id: 'REF123',
+      customer_reference_id: calls.at(-1).body.customer_reference_id,
+      orders_preview: [{ id: 'order-123', individual_gift_link: 'https://gifts.ongoody.com/gift/test' }],
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const created = goody.createIntent({
+      id: 'gift-send',
+      recipient_name: 'Chelsea Galindo',
+      recipient_slack_user_id: 'U03CJSL85AL',
+      reason_category: 'thanks',
+      reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+      amount_cents: 1500,
+      card_message: 'Thank you for closing the loop and flagging the risk early.',
+      evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-1:warmth' }],
+    }, goody.emptyLedger());
+    const approved = goody.approveIntent(created.ledger, 'gift-send');
+    const sent = await goody.sendIntent(approved.ledger, 'gift-send', { fetchImpl });
+    assert.equal(sent.intent.status, 'sent');
+    assert.equal(sent.intent.goody_order_batch_id, 'batch-123');
+    assert.equal(sent.intent.goody_order_id, 'order-123');
+    assert.equal(sent.intent.goody_gift_link, 'https://gifts.ongoody.com/gift/test');
+    assert.equal(sent.intent.goody_price_estimate_cents, 1500);
+    assert.equal(calls.length, 2);
+    assert.equal(calls[0].auth, 'Bearer test-goody-key');
+    assert.equal(calls[1].body.customer_reference_id.startsWith('nora-gift-send-'), true);
+  } finally {
+    if (prior.key === undefined) delete process.env.GOODY_API_KEY; else process.env.GOODY_API_KEY = prior.key;
+    if (prior.enabled === undefined) delete process.env.GOODY_SEND_ENABLED; else process.env.GOODY_SEND_ENABLED = prior.enabled;
+    if (prior.product === undefined) delete process.env.GOODY_PRODUCT_ID; else process.env.GOODY_PRODUCT_ID = prior.product;
+    if (prior.card === undefined) delete process.env.GOODY_CARD_ID; else process.env.GOODY_CARD_ID = prior.card;
+  }
+});
+
+test('Goody send refuses estimates above the approved amount', async () => {
+  const prior = {
+    key: process.env.GOODY_API_KEY,
+    enabled: process.env.GOODY_SEND_ENABLED,
+    product: process.env.GOODY_PRODUCT_ID,
+  };
+  Object.assign(process.env, {
+    GOODY_API_KEY: 'test-goody-key',
+    GOODY_SEND_ENABLED: 'true',
+    GOODY_PRODUCT_ID: 'product-123',
+  });
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({
+      total_price_estimate: { est_group_total_low: 2000, est_group_total_high: 2600 },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const created = goody.createIntent({
+      id: 'gift-too-much',
+      recipient_name: 'Chelsea Galindo',
+      reason_category: 'thanks',
+      reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+      amount_cents: 1500,
+      evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-1:warmth' }],
+    }, goody.emptyLedger());
+    const approved = goody.approveIntent(created.ledger, 'gift-too-much');
+    await assert.rejects(() => goody.sendIntent(approved.ledger, 'gift-too-much', { fetchImpl }), /exceeds approved amount/);
+    assert.equal(calls, 1);
+  } finally {
+    if (prior.key === undefined) delete process.env.GOODY_API_KEY; else process.env.GOODY_API_KEY = prior.key;
+    if (prior.enabled === undefined) delete process.env.GOODY_SEND_ENABLED; else process.env.GOODY_SEND_ENABLED = prior.enabled;
+    if (prior.product === undefined) delete process.env.GOODY_PRODUCT_ID; else process.env.GOODY_PRODUCT_ID = prior.product;
+  }
+});

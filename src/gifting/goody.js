@@ -21,6 +21,8 @@ const GOODY_BASE_URLS = Object.freeze({
   sandbox: 'https://api.sandbox.ongoody.com',
 });
 
+const ALLOWED_SEND_METHODS = Object.freeze(['link_multiple_custom_list', 'email_and_link']);
+
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -77,6 +79,12 @@ function normalizeReasonCategory(value) {
   return normalizeText(value, 80).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
 }
 
+function splitName(fullName) {
+  const parts = normalizeText(fullName, 120).split(' ').filter(Boolean);
+  if (parts.length <= 1) return { first_name: parts[0] || 'Friend' };
+  return { first_name: parts[0], last_name: parts.slice(1).join(' ') };
+}
+
 function policyReport(ledger = emptyLedger(), { now = new Date() } = {}) {
   const normalized = normalizeLedger(ledger);
   const key = monthKey(now);
@@ -91,6 +99,8 @@ function policyReport(ledger = emptyLedger(), { now = new Date() } = {}) {
     proposal_only: normalized.policy.mode === 'proposal_only' || normalized.policy.auto_send_enabled !== true,
     goody_configured: Boolean(process.env.GOODY_API_KEY),
     goody_send_enabled: process.env.GOODY_SEND_ENABLED === 'true',
+    goody_product_configured: Boolean(process.env.GOODY_PRODUCT_ID),
+    goody_card_configured: Boolean(process.env.GOODY_CARD_ID),
   };
 }
 
@@ -223,16 +233,138 @@ function sendReadiness(ledger = emptyLedger(), id) {
   return { ready: true, base_url: GOODY_BASE_URLS[current.policy.goody_environment] || GOODY_BASE_URLS.sandbox };
 }
 
+function goodyConfig(policy = DEFAULT_POLICY) {
+  const baseUrl = GOODY_BASE_URLS[policy.goody_environment] || GOODY_BASE_URLS.sandbox;
+  const sendMethod = normalizeText(process.env.GOODY_SEND_METHOD || 'link_multiple_custom_list', 80);
+  return {
+    api_key: process.env.GOODY_API_KEY || '',
+    base_url: baseUrl,
+    product_id: normalizeText(process.env.GOODY_PRODUCT_ID, 120),
+    card_id: normalizeText(process.env.GOODY_CARD_ID, 120),
+    from_name: normalizeText(process.env.GOODY_FROM_NAME || 'Nora at LimeLight Marketing', 120),
+    payment_method_id: normalizeText(process.env.GOODY_PAYMENT_METHOD_ID, 120),
+    workspace_id: normalizeText(process.env.GOODY_WORKSPACE_ID, 120),
+    send_method: ALLOWED_SEND_METHODS.includes(sendMethod) ? sendMethod : 'link_multiple_custom_list',
+  };
+}
+
+function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
+  const config = goodyConfig(policy);
+  if (!config.product_id) throw new Error('GOODY_PRODUCT_ID is required before sending gifts');
+  if (intent.card_message && !config.card_id) throw new Error('GOODY_CARD_ID is required when sending a card message');
+  if (config.send_method === 'email_and_link' && !intent.recipient_email) {
+    throw new Error('recipient_email is required for Goody email delivery');
+  }
+  const recipient = {
+    ...splitName(intent.recipient_name),
+    ...(intent.recipient_email ? { email: intent.recipient_email } : {}),
+  };
+  const payload = {
+    from_name: config.from_name,
+    send_method: config.send_method,
+    recipients: [recipient],
+    cart: { items: [{ product_id: config.product_id, quantity: 1 }] },
+    customer_reference_id: `nora-${intent.id}-${String(intent.approval_commitment || intent.request_commitment || '').slice(0, 12)}`,
+    ...(intent.card_message ? { message: intent.card_message, card_id: config.card_id } : {}),
+    ...(config.payment_method_id ? { payment_method_id: config.payment_method_id } : {}),
+    ...(config.workspace_id ? { workspace_id: config.workspace_id } : {}),
+  };
+  return { payload, config };
+}
+
+async function postGoodyJson(path, payload, { config, fetchImpl = globalThis.fetch, timeoutMs = 30000 } = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('Goody send requires fetch');
+  const response = await fetchImpl(`${config.base_url}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${config.api_key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  const text = await response.text();
+  let body;
+  try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text.slice(0, 500) }; }
+  if (!response.ok) {
+    const message = body?.error || body?.message || body?.raw || `HTTP ${response.status}`;
+    throw new Error(`Goody API request failed: ${String(message).slice(0, 240)}`);
+  }
+  return body;
+}
+
+function extractHighPriceCents(priceBody = {}) {
+  const candidates = [
+    priceBody.total_price_estimate?.est_group_total_high,
+    priceBody.total_price?.est_group_total_high,
+    priceBody.cart_price_estimate?.price_est_total_high,
+    priceBody.cart_price?.price_est_total_high,
+  ].map(Number).filter(Number.isFinite);
+  return candidates.length ? Math.max(...candidates) : null;
+}
+
+async function sendIntent(ledger = emptyLedger(), id, {
+  sentBy = 'John',
+  now = new Date(),
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const current = normalizeLedger(ledger);
+  const intent = current.intents.find(item => item.id === id);
+  if (!intent) throw new Error('gift intent not found');
+  if (intent.status === 'sent') return { ledger: current, intent, report: policyReport(current, { now }), already_sent: true };
+  const readiness = sendReadiness(current, id);
+  if (!readiness.ready) {
+    const error = new Error(readiness.reason);
+    error.code = 'goody_not_ready';
+    throw error;
+  }
+  const { payload, config } = buildGoodyOrderPayload(intent, current.policy);
+  const pricePayload = { send_method: payload.send_method, recipients: payload.recipients, cart: payload.cart };
+  const price = await postGoodyJson('/v1/order_batches/price', pricePayload, { config, fetchImpl });
+  const highEstimate = extractHighPriceCents(price);
+  if (!Number.isFinite(highEstimate)) throw new Error('Goody price response did not include a high estimate');
+  if (highEstimate > Number(intent.amount_cents)) {
+    throw new Error(`Goody estimated total ${highEstimate} exceeds approved amount ${intent.amount_cents}`);
+  }
+  const orderBatch = await postGoodyJson('/v1/order_batches', payload, { config, fetchImpl });
+  const firstOrder = Array.isArray(orderBatch.orders_preview) ? orderBatch.orders_preview[0] : null;
+  intent.status = 'sent';
+  intent.sent_by = normalizeText(sentBy, 120) || 'John';
+  intent.sent_at = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  intent.goody_environment = current.policy.goody_environment;
+  intent.goody_order_batch_id = orderBatch.id || null;
+  intent.goody_order_id = firstOrder?.id || null;
+  intent.goody_send_status = orderBatch.send_status || null;
+  intent.goody_gift_link = firstOrder?.individual_gift_link || firstOrder?.individual_order_link || null;
+  intent.goody_reference_id = orderBatch.reference_id || null;
+  intent.goody_customer_reference_id = orderBatch.customer_reference_id || payload.customer_reference_id;
+  intent.goody_price_estimate_cents = highEstimate;
+  intent.goody_send_commitment = commitment({
+    id: intent.id,
+    request_commitment: intent.request_commitment,
+    approval_commitment: intent.approval_commitment,
+    goody_order_batch_id: intent.goody_order_batch_id,
+    goody_order_id: intent.goody_order_id,
+    goody_customer_reference_id: intent.goody_customer_reference_id,
+    goody_price_estimate_cents: intent.goody_price_estimate_cents,
+  });
+  return { ledger: current, intent, report: policyReport(current, { now }), price, order_batch: orderBatch };
+}
+
 module.exports = {
+  ALLOWED_SEND_METHODS,
   DEFAULT_POLICY,
   GOODY_BASE_URLS,
   approveIntent,
+  buildGoodyOrderPayload,
   commitment,
   createIntent,
   emptyLedger,
+  extractHighPriceCents,
   normalizeLedger,
   policyReport,
   rejectIntent,
+  sendIntent,
   sendReadiness,
   validateIntentInput,
 };

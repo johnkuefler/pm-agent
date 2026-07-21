@@ -15,6 +15,10 @@ Object.assign(process.env, {
   NORA_EVALUATOR_KEYS: JSON.stringify({ 'integration-rater-a': 'integration-evaluator-a-key', 'integration-rater-b': 'integration-evaluator-b-key' }),
   DASHBOARD_PASSWORD: 'integration-password',
   DATABASE_URL: '',
+  GOODY_API_KEY: '',
+  GOODY_SEND_ENABLED: '',
+  GOODY_PRODUCT_ID: '',
+  GOODY_CARD_ID: '',
 });
 
 const seed = {
@@ -262,7 +266,7 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
 
   const send = await request('/gifts/intents/gift-integration-chelsea/send', { method: 'POST' });
   assert.equal(send.response.status, 409);
-  assert.equal(send.body.proposal_only, true);
+  assert.match(send.body.error, /GOODY_SEND_ENABLED/);
 });
 
 test('run lock enforces holder ownership', async () => {

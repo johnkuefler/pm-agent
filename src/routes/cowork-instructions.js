@@ -474,8 +474,12 @@ function registerCoworkInstructionsRoute(app) {
     Human rejection only. Body: { "rejected_by": "John", "note": "..." }
 
   - POST /gifts/intents/:id/send
-    Fails closed unless GOODY_SEND_ENABLED=true and GOODY_API_KEY is configured. Even then,
-    sending is separate from proposal/approval and must return success before Nora reports it.
+    Human-triggered send after approval. Fails closed unless GOODY_SEND_ENABLED=true,
+    GOODY_API_KEY, GOODY_PRODUCT_ID, and required GOODY_CARD_ID are configured. Before
+    creating the Goody order batch, the server calls Goody's price endpoint and refuses
+    any estimate above the approved amount. A successful response includes stored
+    goody_order_batch_id, goody_order_id, goody_gift_link, and send commitment. Nora may
+    report a gift as sent only after this endpoint returns ok=true.
 
   ### Slack Conversation State
   Nora supports real back-and-forth conversations in Slack:

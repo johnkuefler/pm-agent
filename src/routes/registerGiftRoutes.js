@@ -27,7 +27,15 @@ function publicIntent(intent) {
     rejected_at: intent.rejected_at || null,
     rejection_note: intent.rejection_note || null,
     goody_order_id: intent.goody_order_id || null,
+    goody_order_batch_id: intent.goody_order_batch_id || null,
+    goody_send_status: intent.goody_send_status || null,
+    goody_gift_link: intent.goody_gift_link || null,
+    goody_reference_id: intent.goody_reference_id || null,
+    goody_customer_reference_id: intent.goody_customer_reference_id || null,
+    goody_price_estimate_cents: intent.goody_price_estimate_cents || null,
+    goody_send_commitment: intent.goody_send_commitment || null,
     sent_at: intent.sent_at || null,
+    sent_by: intent.sent_by || null,
   };
 }
 
@@ -94,20 +102,19 @@ function registerGiftRoutes(app, deps) {
 
   app.post('/gifts/intents/:id/send', requireAuth, async (req, res) => {
     try {
-      const ledger = loadGiftLedger();
-      const readiness = goodyGifting.sendReadiness(ledger, req.params.id);
-      if (!readiness.ready) return res.status(409).json({
-        error: 'goody sending is not enabled',
-        reason: readiness.reason,
-        proposal_only: true,
+      const result = await goodyGifting.sendIntent(loadGiftLedger(), req.params.id, {
+        sentBy: req.body?.sent_by || 'John',
       });
-      return res.status(501).json({
-        error: 'goody send execution is not implemented in this deployment',
-        base_url: readiness.base_url,
-        reason: 'proposal ledger is live; direct spend remains intentionally gated',
+      await saveGiftLedger(result.ledger);
+      return res.json({
+        ok: true,
+        already_sent: result.already_sent === true,
+        intent: publicIntent(result.intent),
+        report: result.report,
       });
     } catch (error) {
-      res.status(400).json({ error: error.message });
+      const status = error.code === 'goody_not_ready' ? 409 : 400;
+      res.status(status).json({ error: error.message });
     }
   });
 }
