@@ -391,6 +391,49 @@ test('conscious workspace records active focus with competition and feedback', a
   assert.equal(feedback.body.report.total_feedback, 1);
 });
 
+test('consequence reviews bind actions to later observed outcomes', async () => {
+  const initial = await request('/consequence-reviews/report');
+  assert.equal(initial.body.total_actions, 0);
+
+  const action = await request('/consequence-reviews/actions', { method: 'POST', body: {
+    id: 'cr-integration-action',
+    action_type: 'slack_message',
+    description: 'Sent a teammate a concise note asking for a deadline decision.',
+    intended_effect: 'Help the teammate either clear the blocker or set a more honest due date.',
+    success_criteria: 'A later source shows a clarified blocker, an updated due date, or evidence the nudge was unnecessary.',
+    expected_signal: 'Slack reply, Teamwork comment, or due date update.',
+    beneficiary: 'Project team',
+    target_ref: 'tw-integration',
+    source_ref: 'cycle-integration/action-1',
+    workspace_frame_id: 'cw-integration',
+    epistemic_claim_refs: [{ type: 'epistemic_claim', id: 'ep-integration-claim' }],
+    evidence: [{ type: 'teamwork_task', id: 'tw-integration' }],
+    consequence_due: '2026-07-20T12:00:00.000Z',
+    created_by: 'Nora',
+  } });
+  assert.equal(action.body.ok, true);
+  assert.equal(action.body.action.status, 'open');
+  assert.match(action.body.action.action_commitment, /^[a-f0-9]{64}$/);
+
+  const due = await request('/consequence-reviews/actions?status=due');
+  assert.equal(due.body.actions.length, 1);
+  assert.equal(due.body.actions[0].id, 'cr-integration-action');
+
+  const observed = await request('/consequence-reviews/actions/cr-integration-action/observe', { method: 'POST', body: {
+    outcome: 'helped',
+    observed_effect: 'The later task record shows the blocker was clarified and the due date was updated.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-integration-later' }],
+    should_change_behavior: true,
+    behavior_update: 'When deadline uncertainty is specific and cited, concise pings are useful.',
+    observed_by: 'Nora',
+  } });
+  assert.equal(observed.body.ok, true);
+  assert.equal(observed.body.action.status, 'observed');
+  assert.equal(observed.body.action.latest_outcome, 'helped');
+  assert.match(observed.body.observation.observation_commitment, /^[a-f0-9]{64}$/);
+  assert.equal(observed.body.report.behavior_updates, 1);
+});
+
 test('run lock enforces holder ownership', async () => {
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'one', ttl_seconds: 60 } })).body.acquired, true);
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'two', ttl_seconds: 60 } })).body.acquired, false);

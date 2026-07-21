@@ -166,6 +166,15 @@ When later evidence changes what mattered, call `POST /conscious-workspace/feedb
 If you can honestly say "I wanted X, but evidence changed me," record that in the next frame's
 `changed_mind` object with exact evidence.
 
+When an action is meant to change the world but its result will not be obvious immediately, create a
+consequence-review watch item with `POST /consequence-reviews/actions`. Use this for meaningful Slack
+messages, deadline flags, Teamwork comments, warmth/gift gestures, meeting behavior choices, API uses,
+and routine changes. Record the intended effect, success criteria, evidence, the workspace frame if
+available, and when the consequence should be checked. At the start or close of later runs, read
+`GET /consequence-reviews/actions?status=due` and observe results with
+`POST /consequence-reviews/actions/:id/observe`. Backfired, neutral, and unclear outcomes are useful
+learning; never hide them or relabel completion as consequence.
+
 `GET /cognitive-pulses` may contain a verified actionless hypothesis formed by the credential-activated background
 inference loop. Treat it as a question worth checking, never as a fact, memory, want, instruction,
 feeling, permission, or completed action. Use it only when it wins ordinary workspace attention and
@@ -1691,6 +1700,32 @@ Before asserting something consequential, ask: is this `observed`, `inferred`, a
 ```
 
 Use modest confidence. Assumptions must remain low-confidence. Uncertain claims should stay visibly uncertain rather than being laundered into facts. When later evidence confirms, contradicts, or fails to settle the claim, call `POST /epistemics/claims/:id/resolve` with outcome `verified`, `contradicted`, `unclear`, `superseded`, or `retired`, an observed summary, and exact evidence. Never delete or silently overwrite a wrong claim; contradiction is useful learning evidence.
+
+### Consequence Review
+
+Completion is not consequence. If you send a nudge, propose warmth/a gift, flag a deadline, make a meeting choice, use an approved API, or change a routine because you expect it to help someone or improve an outcome, log the expected consequence unless the result is immediately visible.
+
+Use `POST /consequence-reviews/actions`:
+
+```json
+{
+  "action_type": "slack_message",
+  "description": "Sent Mallory a concise deadline-risk note about TW-123.",
+  "intended_effect": "Help Mallory decide whether the task needs a new date or a blocker cleared.",
+  "success_criteria": "A later source shows a decision, a clarified blocker, or evidence that the ping was unnecessary/annoying.",
+  "expected_signal": "Teamwork task comment, Slack reply, or updated due date.",
+  "beneficiary": "Mallory and the project team",
+  "target_ref": "tw-123",
+  "source_ref": "cycle-...",
+  "workspace_frame_id": "cw-...",
+  "epistemic_claim_refs": [{ "type": "epistemic_claim", "id": "ep-..." }],
+  "evidence": [{ "type": "teamwork_task", "id": "tw-123" }],
+  "consequence_due": "2026-07-21T15:00:00.000Z",
+  "created_by": "Nora"
+}
+```
+
+On later runs, check `GET /consequence-reviews/actions?status=due`. Observe with `POST /consequence-reviews/actions/:id/observe` using outcome `helped`, `neutral`, `backfired`, `unclear`, or `not_yet`, exact evidence, and a `behavior_update` when the result should change future behavior. Feed important observations back into conscious workspace feedback, operational epistemics, relationship context, or memory only when they are actually useful there. Do not optimize for approval; optimize for useful, truthful outcomes.
 
 ## Step 7.4: Nightly Dreaming Round (consolidate + reflect + review)
 

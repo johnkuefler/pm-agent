@@ -19,6 +19,7 @@ const { registerGiftRoutes } = require('./src/routes/registerGiftRoutes');
 const { registerApiOpportunityRoutes } = require('./src/routes/registerApiOpportunityRoutes');
 const { registerOperationalEpistemicsRoutes } = require('./src/routes/registerOperationalEpistemicsRoutes');
 const { registerConsciousWorkspaceRoutes } = require('./src/routes/registerConsciousWorkspaceRoutes');
+const { registerConsequenceReviewRoutes } = require('./src/routes/registerConsequenceReviewRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
@@ -83,6 +84,7 @@ const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const apiOpportunities = require('./src/integrations/api-opportunities');
 const operationalEpistemics = require('./src/intelligence/operational-epistemics');
 const consciousWorkspace = require('./src/intelligence/conscious-workspace');
+const consequenceReview = require('./src/intelligence/consequence-review');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const app = express();
@@ -94,6 +96,7 @@ const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
 const API_OPPORTUNITIES_PATH = path.join(LOCAL_DATA_DIR, 'nora-api-opportunities.json');
 const OPERATIONAL_EPISTEMICS_PATH = path.join(LOCAL_DATA_DIR, 'nora-operational-epistemics.json');
 const CONSCIOUS_WORKSPACE_PATH = path.join(LOCAL_DATA_DIR, 'nora-conscious-workspace.json');
+const CONSEQUENCE_REVIEWS_PATH = path.join(LOCAL_DATA_DIR, 'nora-consequence-reviews.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   ? path.join(LOCAL_DATA_DIR, 'reading-library')
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
@@ -790,6 +793,27 @@ async function saveConsciousWorkspace(value) {
   return ledger;
 }
 
+function loadConsequenceReviews() {
+  if (_dbReady) return consequenceReview.normalizeLedger(_cache.consequenceReviews);
+  if (_cache.consequenceReviews) return consequenceReview.normalizeLedger(_cache.consequenceReviews);
+  try { _cache.consequenceReviews = consequenceReview.normalizeLedger(JSON.parse(fs.readFileSync(CONSEQUENCE_REVIEWS_PATH, 'utf8'))); }
+  catch { _cache.consequenceReviews = consequenceReview.emptyLedger(); }
+  return _cache.consequenceReviews;
+}
+
+async function saveConsequenceReviews(value) {
+  const ledger = consequenceReview.normalizeLedger(value);
+  if (_dbReady) await db.setState('consequence_reviews', ledger);
+  else {
+    fs.mkdirSync(path.dirname(CONSEQUENCE_REVIEWS_PATH), { recursive: true });
+    const temp = `${CONSEQUENCE_REVIEWS_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(temp, JSON.stringify(ledger, null, 2));
+    fs.renameSync(temp, CONSEQUENCE_REVIEWS_PATH);
+  }
+  _cache.consequenceReviews = ledger;
+  return ledger;
+}
+
 // Slack threads Nora has replied in. Used to keep conversations going without re-mention.
 // Persisted so a deploy/restart doesn't drop active conversations.
 //
@@ -1216,6 +1240,7 @@ async function initPersistence() {
     _cache.apiOpportunities = apiOpportunities.normalizeRegistry(await db.getState('api_opportunities'));
     _cache.operationalEpistemics = operationalEpistemics.normalizeLedger(await db.getState('operational_epistemics'));
     _cache.consciousWorkspace = consciousWorkspace.normalizeLedger(await db.getState('conscious_workspace'));
+    _cache.consequenceReviews = consequenceReview.normalizeLedger(await db.getState('consequence_reviews'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -2601,6 +2626,23 @@ function realtimePromptForSession(session) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
   return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { trialUnitKey: session?.trialUnitKey });
+}
+
+function voiceMeetingContextPacket(session, { systemPrompt = '', voiceTools = [], model = 'gpt-realtime-2.1', refreshedAt = null } = {}) {
+  const participants = session?.participants instanceof Map ? session.participants.size : 0;
+  return {
+    type: 'nora.meeting_context',
+    mode: session?.dummy ? 'test agent' : session?.oneOnOne ? 'one-on-one' : participants >= 3 ? 'group listening' : 'meeting',
+    eagerness: session?.currentEagerness || null,
+    muted: !!session?.muted,
+    project_hint: session?.project_hint || '',
+    has_mandate: !!session?.meetingMeta?.mandate,
+    prompt_chars: systemPrompt ? systemPrompt.length : null,
+    voice_tools: Array.isArray(voiceTools) ? voiceTools.length : 0,
+    model,
+    reasoning_effort: 'medium',
+    refreshed_at: refreshedAt,
+  };
 }
 
 // Async variant that adds SEMANTIC RECALL for the voice prompt: retrieves the memory facts
@@ -8261,6 +8303,12 @@ registerConsciousWorkspaceRoutes(app, {
   saveConsciousWorkspace,
 });
 
+registerConsequenceReviewRoutes(app, {
+  requireAuth,
+  loadConsequenceReviews,
+  saveConsequenceReviews,
+});
+
 registerRuntimeActivityRoutes(app, {
   requireAuth,
   requireDashboardAuth,
@@ -10056,6 +10104,9 @@ wss.on('connection', async (ws, req) => {
     // drops it to 'medium' the moment a second human speaker is heard.
     const initialEagerness = session ? voiceEagernessFor(session) : 'high';
     if (session) session.currentEagerness = initialEagerness;
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(voiceMeetingContextPacket(session, { systemPrompt, voiceTools })));
+    }
 
     // GA Realtime session shape: audio config nested under audio.input/audio.output,
     // modalities renamed to output_modalities, max_response_output_tokens → max_output_tokens.

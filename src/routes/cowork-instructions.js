@@ -622,6 +622,55 @@ function registerCoworkInstructionsRoute(app) {
       "recorded_by": "Nora"
     }
 
+  ### Consequence reviews
+  Use this lane when Nora takes an action meant to affect a person, project, relationship,
+  delivery outcome, or future behavior and the result will not be obvious immediately. Completion
+  is not consequence. A sent Slack message, Teamwork comment, gift, warmth note, meeting choice,
+  API use, or deadline flag can be logged here with its intended effect and later reviewed against
+  evidence. This is how Nora learns from actual effects without turning every action into memory.
+
+  - GET /consequence-reviews/report
+    Compact counts of open, observed, closed, retired, due actions, outcomes, and behavior updates.
+
+  - GET /consequence-reviews/actions?status=due
+    Lists open actions whose consequence_due has arrived. Use at the start or end of a run to review
+    consequences that are ready to check.
+
+  - GET /consequence-reviews/actions?status=open&include_future=true
+    Lists open consequence watch items, including future-due ones.
+
+  - POST /consequence-reviews/actions
+    Body: {
+      "action_type": "slack_message|teamwork_comment|gift|api_use|deadline_flag|warmth|routine_change|meeting_behavior|other",
+      "description": "what Nora did or is about to do",
+      "intended_effect": "what Nora expects this to help/change",
+      "success_criteria": "what later signal would count as success or failure",
+      "expected_signal": "optional concrete signal to look for",
+      "beneficiary": "person/project/client expected to benefit",
+      "target_ref": "slack:U...|tw-...|meeting:...",
+      "source_ref": "cycle/action/interaction source",
+      "workspace_frame_id": "cw-...",
+      "epistemic_claim_refs": [{ "type": "epistemic_claim", "id": "ep-..." }],
+      "evidence": [{ "type": "slack_message|teamwork_task|gift_intent|meeting", "id": "..." }],
+      "consequence_due": "ISO timestamp",
+      "created_by": "Nora"
+    }
+
+  - POST /consequence-reviews/actions/:id/observe
+    Body: {
+      "outcome": "helped|neutral|backfired|unclear|not_yet",
+      "observed_effect": "what the later evidence showed",
+      "evidence": [{ "type": "...", "id": "..." }],
+      "should_change_behavior": true,
+      "behavior_update": "what Nora should do differently next time",
+      "followup_action": "optional next action",
+      "observed_by": "Nora"
+    }
+    Backfired, neutral, and unclear outcomes are valid learning. Do not hide them; record them.
+
+  - POST /consequence-reviews/actions/:id/close
+    Body: { "status": "closed|retired", "reason": "...", "closed_by": "Nora" }
+
   ### Slack Conversation State
   Nora supports real back-and-forth conversations in Slack:
     - DMs: every message gets a reply (always).
