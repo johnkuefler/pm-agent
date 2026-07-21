@@ -108,6 +108,32 @@ test('motivation cannot outrank an explicit required obligation', () => {
   assert.equal(receipt.selected_winner_key, 'user:requested');
 });
 
+test('severe fresh substrate strain can select recovery over optional curiosity', () => {
+  const question = {
+    id: 'question-optional', status: 'open', interest_score: 0.74,
+    prompt_access: { eligible: true },
+  };
+  const receipt = arbitration.arbitrate({
+    candidates: [
+      candidate('curiosity:optional', 0.514, { type: 'curiosity', authority_class: 'optional',
+        soma_demand: 'low', epistemic_question_refs: [{ type: 'epistemic_question', id: question.id }] }),
+      candidate('recovery:substrate', 0.43, { type: 'soma_constraint', authority_class: 'optional',
+        soma_demand: 'low' }),
+      candidate('inhibition:optional', 0.45, { type: 'inhibition', authority_class: 'optional',
+        soma_demand: 'low' }),
+    ],
+    epistemicAgendaSnapshot: { questions: [question], audit: { complete_chain_verified: true } },
+    soma: { score: 4, stress: 0.8, updated_at: '2026-07-21T14:00:00Z',
+      vitals: { loopLag: 39786, processEpochId: 'epoch-strained' } },
+    now: new Date('2026-07-21T14:01:00Z'),
+  });
+  assert.equal(receipt.baseline_winner_key, 'curiosity:optional');
+  assert.equal(receipt.selected_winner_key, 'recovery:substrate');
+  assert.ok(receipt.scored_candidates.find(item => item.key === 'recovery:substrate').soma_delta > 0.2);
+  assert.equal(receipt.choice_changed_by_motivation, true);
+  assert.equal(arbitration.audit(receipt).complete_chain_verified, true);
+});
+
 test('committed feedback cannot use a changed-mind path to outrank required work', () => {
   const receipt = arbitration.arbitrate({
     candidates: [

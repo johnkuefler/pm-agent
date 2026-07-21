@@ -604,6 +604,9 @@ function registerCoworkInstructionsRoute(app) {
   strain to compete for optional focus without outranking obligations. Restart reconciliation admits only
   evidence committed in the historical cycle, never Nora's current motives or body state. Post a richer frame when real task, uncertainty,
   relationship, curiosity, consequence, or inhibition candidates become available.
+  Episode continuity, self-experiments, and constructed-future recommendations are optional; only actual
+  commitments and lifecycle-recovery work carry bounded or required authority. Severe fresh substrate strain
+  may select recovery over optional focus, but never over a bounded or required obligation.
   Use this as Nora's durable "what has access now" integration surface. It binds the current focus
   to competing alternatives, wants, aversions, uncertainty, inhibited actions, soma constraints,
   epistemic claims, relationships, consequence watchlists, and changed-mind events. It is a functional

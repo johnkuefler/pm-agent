@@ -1507,6 +1507,12 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   assert.equal(failedRelease.body.released, true);
   assert.equal(failedRelease.body.lifecycle.closure_status, 'failed');
 
+  await request('/episodes/events', { method: 'POST', body: {
+    correlation: 'integration:lifecycle-focus', title: 'Lifecycle focus authority check',
+    channel: 'test', actor: 'Nora', text: 'Keep the verified thread available.',
+    open_loop: { what: 'Continue the verified integration thread.', owner: 'Nora' },
+  } });
+
   const nextLock = await request('/run-lock', { method: 'POST', body: {
     holder: 'run-integration-complete', ttl_seconds: 60,
   } });
@@ -1547,6 +1553,8 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
     candidate.key === `lifecycle:operations:${nextCycleId}`), false);
   assert.equal(operationsWorkspace.current.attention_candidates.every(candidate =>
     candidate.evidence.some(item => item.type === 'intelligence_cycle' && item.id === nextCycleId)), true);
+  assert.equal(operationsWorkspace.current.attention_candidates.find(candidate =>
+    candidate.key.startsWith('cycle-recommendation:episode:')).authority_class, 'optional');
   assert.equal(operationsWorkspace.current.arbitration_audit.complete_chain_verified, true);
   const focusCommitment = await request('/conscious-workspace/focus-commitments', {
     method: 'POST', body: {

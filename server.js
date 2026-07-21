@@ -925,8 +925,9 @@ function lifecycleOperationsCandidates(cycle, evidence, { context = {}, now = ne
       : item.type === 'experiment' ? 'curiosity' : 'task',
     label: String(item.action || item.reason || `${item.type} needs attention`).slice(0, 240),
     priority: item.priority === 'critical' ? 0.92 : item.priority === 'high' ? 0.8 : 0.65,
-    authority_class: item.type === 'commitment' && ['critical', 'high'].includes(item.priority)
-      ? 'required' : 'bounded',
+    authority_class: item.type === 'commitment'
+      ? (['critical', 'high'].includes(item.priority) ? 'required' : 'bounded')
+      : item.type === 'cycle' ? 'bounded' : 'optional',
     soma_demand: item.priority === 'critical' ? 'high' : 'moderate',
     evidence: [{ type: item.type || 'intelligence_cycle', id: item.id || cycle.id }, ...evidence].slice(0, 12),
   }));

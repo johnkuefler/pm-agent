@@ -188,8 +188,11 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
     const evidenceDelta = clamp(feedbackSources.reduce((sum, item) => sum + item.delta, 0), -0.24, 0.2);
     const demand = SOMA_DEMAND[candidate.soma_demand] ?? SOMA_DEMAND.moderate;
     let somaDelta = somaState.fresh ? -somaState.stress * demand * 0.2 : 0;
-    if (candidate.type === 'soma_constraint' || candidate.type === 'inhibition'
-      || candidate.mode === 'recovery') somaDelta = somaState.fresh ? somaState.stress * 0.12 : 0;
+    if (candidate.type === 'soma_constraint' || candidate.mode === 'recovery') {
+      somaDelta = somaState.fresh ? Math.max(0, somaState.stress - 0.35) * 0.5 : 0;
+    } else if (candidate.type === 'inhibition') {
+      somaDelta = somaState.fresh ? somaState.stress * 0.12 : 0;
+    }
     const finalScore = clamp(candidate.priority + desireDelta + consequenceDelta
       + curiosityDelta + relationalDelta + somaDelta);
     const integratedScore = clamp(finalScore + evidenceDelta);
