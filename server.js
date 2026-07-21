@@ -8541,7 +8541,7 @@ registerRunLockRoutes(app, requireAuth, {
     let lifecycleStage; let nextRequiredAction;
     if (projection.cycle_status === 'running' && !projection.forecast_committed) {
       lifecycleStage = 'forecast_required';
-      nextRequiredAction = `POST /intelligence/cycles/${lifecycle.cycle_id}/self-forecast before operational tools`;
+      nextRequiredAction = `GET /self-model/forecast-prior for this exact active cycle, then POST /intelligence/cycles/${lifecycle.cycle_id}/self-forecast before operational tools using its required_forecast_protocol_version`;
     } else if (projection.cycle_status === 'running' && projection.forecast_correction_required) {
       lifecycleStage = 'forecast_correction_required';
       nextRequiredAction = `POST /intelligence/cycles/${lifecycle.cycle_id}/self-forecast/revision before operational tools`;
@@ -8605,8 +8605,10 @@ registerRunLockRoutes(app, requireAuth, {
       cycle_id: started.cycle.id,
       moment_id: started.moment.id,
       resumed: started.resumed === true,
-      forecast_protocol_version: 7,
-      next_required_action: `POST /intelligence/cycles/${started.cycle.id}/self-forecast before operational tools`,
+      forecast_protocol_version: null,
+      forecast_protocol_resolution_required: true,
+      forecast_protocol_contract_endpoint: '/self-model/forecast-prior',
+      next_required_action: `GET /self-model/forecast-prior for this exact active cycle, then POST /intelligence/cycles/${started.cycle.id}/self-forecast before operational tools using its required_forecast_protocol_version`,
     };
   },
   onRelease: async ({ lifecycle, expired = false, persistence_failed: persistenceFailed = false }) => {

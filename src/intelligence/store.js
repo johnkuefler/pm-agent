@@ -25366,8 +25366,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
           ? 3 : input.self_state_prediction ? 2 : 1)
         : Number(input.protocol_version);
+      const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
+        candidate.id === moment.id ? highest : Math.max(highest,
+          Number(candidate.self_forecast?.protocol_version) || 0), 0);
+      // Resolve the moment-bound prior independently of what the caller submitted. A richer
+      // historical protocol can never make a missing current prior appear; when replay cannot
+      // produce the exact lagged prior, protocol 4 is the honest contract for this one cycle.
+      const availableBehavioralSelfPrior = submittedProtocolVersion >= 5
+        || highestPriorProtocol >= 5
+        ? behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles)
+        : null;
       const behavioralSelfPrior = submittedProtocolVersion >= 5
-        ? behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles) : null;
+        ? availableBehavioralSelfPrior : null;
       const candidateTrustPolicy = behavioralSelfPrior
         ? behavioralSelfModel.trustPolicy({
           estimates: behavioralSelfPrior.estimates,
@@ -25389,15 +25399,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       });
       const correctionFeedback = Number(forecastRecord.protocol_version) >= 3
         ? behavioralSelfCalibrationSnapshot().latest_forecast_error : null;
-      const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
-        candidate.id === moment.id ? highest : Math.max(highest,
-          Number(candidate.self_forecast?.protocol_version) || 0), 0);
-      const laggedPriorSealed = current.cognition.self_model.context_trials.some(trial => trial.status === 'active'
-        && ['self_model_access', 'integrated_self_binding'].includes(trial.intervention));
-      const sealedProtocolFiveFallback = highestPriorProtocol >= 5
-        && Number(forecastRecord.protocol_version) === 4 && laggedPriorSealed;
+      const currentPriorUnavailableFallback = highestPriorProtocol >= 5
+        && Number(forecastRecord.protocol_version) === 4 && !availableBehavioralSelfPrior;
       if (highestPriorProtocol && Number(forecastRecord.protocol_version) < highestPriorProtocol
-        && !sealedProtocolFiveFallback) {
+        && !currentPriorUnavailableFallback) {
         throw new Error('cycle self-forecast protocol cannot downgrade after a richer self-prediction protocol begins');
       }
       moment.self_forecast = forecastRecord;

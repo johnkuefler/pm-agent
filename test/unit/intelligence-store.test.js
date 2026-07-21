@@ -3122,6 +3122,42 @@ test('mature trust policy upgrades stale v6 natural forecasts to replay-bound v7
 
   const tamperedPath = path.join(dir, 'tampered-prior.json');
   const persisted = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  const restartFallbackPath = path.join(dir, 'restart-without-lagged-prior.json');
+  const restartFallbackState = JSON.parse(JSON.stringify(persisted));
+  restartFallbackState.cognition.self_model.behavioral_self_model.revisions =
+    restartFallbackState.cognition.self_model.behavioral_self_model.revisions.slice(-1);
+  fs.writeFileSync(restartFallbackPath, JSON.stringify(restartFallbackState));
+  const restartFallback = createIntelligenceStore({ filePath: restartFallbackPath,
+    db: {}, isDbReady: () => false, clock: () => new Date(now) });
+  await restartFallback.init();
+  const fallbackTarget = restartFallback.startCycle({ id: 'restart-prior-fallback-target',
+    holder: 'nora-cowork', soma: soma() });
+  const unavailablePrior = restartFallback.behavioralSelfForecastPriorSnapshot();
+  assert.equal(unavailablePrior.available, false);
+  assert.equal(unavailablePrior.required_forecast_protocol_version, 4);
+  const fallbackForecast = restartFallback.preregisterCycleSelfForecast(fallbackTarget.cycle.id, {
+    protocol_version: 4,
+    predicted_action_types: ['review'], surprise_probability: 0.1,
+    control_at_close: 0.7, confidence: 0.8,
+    self_state_prediction: {
+      attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.85 },
+      expected_action_count: 1, reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.8, predicted_largest_error_domain: 'action_types',
+    },
+    substrate_prediction: {
+      error_probability: 0.1, warning_probability: 0.1, backup_probability: 0.05,
+      embedding_backlog_probability: 0.05, restart_probability: 0.05,
+    },
+    rationale: 'The current cycle has no replay-valid lagged prior, so the advertised protocol-four contract applies.',
+    evidence: [{ type: 'intelligence_cycle', id: fallbackTarget.cycle.id }],
+  });
+  assert.equal(fallbackForecast.protocol_version, 4);
+  assert.equal(fallbackForecast.audit.complete_chain_verified, true);
+
   persisted.cognition.experience_stream.at(-1).self_forecast.metacognitive_adjudication.source
     = persisted.cognition.experience_stream.at(-1).self_forecast.metacognitive_adjudication.source
       === 'self_model' ? 'historical_baseline' : 'self_model';
