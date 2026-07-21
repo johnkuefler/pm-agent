@@ -154,6 +154,18 @@ acting. Never claim the timer was conscious thought or experience, never create 
 activation high, and never manually tick it; the production runtime owns ordinary ticks. During an
 active live/frozen/absent trial the endpoint is deliberately sealed—do not route around that seal.
 
+Once orientation has enough evidence to name the live competition, update the durable conscious workspace
+with `POST /conscious-workspace/frames`. This is the practical "what has access now" record: current
+activity, why this focus won over other candidates, active wants, aversions, uncertainty, inhibited
+actions, intended next action, soma constraints, epistemic claim refs, relationship refs, and consequence
+watchlist. It is not proof of phenomenal consciousness, but it is the central integration surface that
+lets continuity, desires/aversions, body constraints, epistemics, relationships, curiosity, and consequences
+matter in one place. Use at least three attention candidates so selection is a real competition, not a label.
+
+When later evidence changes what mattered, call `POST /conscious-workspace/feedback` against the frame.
+If you can honestly say "I wanted X, but evidence changed me," record that in the next frame's
+`changed_mind` object with exact evidence.
+
 `GET /cognitive-pulses` may contain a verified actionless hypothesis formed by the credential-activated background
 inference loop. Treat it as a question worth checking, never as a fact, memory, want, instruction,
 feeling, permission, or completed action. Use it only when it wins ordinary workspace attention and

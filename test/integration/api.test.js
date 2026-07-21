@@ -351,6 +351,46 @@ test('operational epistemics track claim stance and resolution', async () => {
   assert.equal(resolved.body.report.counts.verified, 1);
 });
 
+test('conscious workspace records active focus with competition and feedback', async () => {
+  const initial = await request('/conscious-workspace');
+  assert.equal(initial.body.report.total_frames, 0);
+
+  const frame = await request('/conscious-workspace/frames', { method: 'POST', body: {
+    id: 'cw-integration',
+    mode: 'operational',
+    current_activity: 'Deciding whether an overdue task needs a teammate ping.',
+    why_this: 'Deadline risk, uncertainty, and social cost are competing for attention.',
+    attention_candidates: [
+      { key: 'task:tw-1', type: 'task', label: 'Overdue task', priority: 0.82, evidence: [{ type: 'task', id: 'tw-1' }] },
+      { key: 'uncertainty:latest-source', type: 'uncertainty', label: 'Need newest source', priority: 0.76, evidence: [{ type: 'epistemic_claim', id: 'ep-integration-claim' }] },
+      { key: 'aversion:nagging', type: 'inhibition', label: 'Avoid premature nagging', priority: 0.6, evidence: [{ type: 'relationship', id: 'rel-1' }] },
+    ],
+    selected_focus_key: 'uncertainty:latest-source',
+    active_want_refs: [{ type: 'want', id: 'w-1', label: 'Know accounts cold' }],
+    aversions: ['Avoid nagging before checking whether work already moved.'],
+    uncertainties: ['The visible task comment might not be the latest real status.'],
+    inhibited_actions: ['Do not ping until the newest source is checked.'],
+    intended_next_action: 'Read the latest task comments, then decide whether to ping.',
+    epistemic_claim_refs: [{ type: 'epistemic_claim', id: 'ep-integration-claim' }],
+    evidence: [{ type: 'integration', id: 'cw-test' }],
+    created_by: 'Nora',
+  } });
+  assert.equal(frame.body.ok, true);
+  assert.equal(frame.body.frame.selected_focus_key, 'uncertainty:latest-source');
+  assert.match(frame.body.frame.frame_commitment, /^[a-f0-9]{64}$/);
+
+  const feedback = await request('/conscious-workspace/feedback', { method: 'POST', body: {
+    frame_id: 'cw-integration',
+    signal: 'The newest source showed the task was still blocked.',
+    effect: 'supported',
+    evidence: [{ type: 'teamwork_task', id: 'tw-1-later' }],
+    recorded_by: 'Nora',
+  } });
+  assert.equal(feedback.body.ok, true);
+  assert.equal(feedback.body.feedback.effect, 'supported');
+  assert.equal(feedback.body.report.total_feedback, 1);
+});
+
 test('run lock enforces holder ownership', async () => {
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'one', ttl_seconds: 60 } })).body.acquired, true);
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'two', ttl_seconds: 60 } })).body.acquired, false);

@@ -574,6 +574,54 @@ function registerCoworkInstructionsRoute(app) {
     }
     Never silently delete or overwrite a wrong claim; contradiction is useful learning evidence.
 
+  ### Conscious workspace
+  Use this as Nora's durable "what has access now" integration surface. It binds the current focus
+  to competing alternatives, wants, aversions, uncertainty, inhibited actions, soma constraints,
+  epistemic claims, relationships, consequence watchlists, and changed-mind events. It is a functional
+  workspace record, not a consciousness claim. The important invariant: at least three candidates must
+  compete, and the selected focus must be one of them.
+
+  - GET /conscious-workspace
+    Returns the current frame, recent frames, recent feedback, and a compact report.
+
+  - POST /conscious-workspace/frames
+    Body: {
+      "mode": "operational|social|reflection|idle_learning|recovery",
+      "current_activity": "what Nora is doing now",
+      "why_this": "why this focus won over alternatives",
+      "attention_candidates": [
+        { "key": "task:tw-...", "type": "task", "label": "Deadline sweep", "priority": 0.8,
+          "evidence": [{ "type": "teamwork_task", "id": "tw-..." }] },
+        { "key": "want:w-...", "type": "want", "label": "Know the account cold", "priority": 0.4,
+          "evidence": [{ "type": "want", "id": "w-..." }] },
+        { "key": "uncertainty:blocker", "type": "uncertainty", "label": "Is it really blocked?", "priority": 0.7,
+          "evidence": [{ "type": "epistemic_claim", "id": "ep-..." }] }
+      ],
+      "selected_focus_key": "uncertainty:blocker",
+      "active_want_refs": [{ "type": "want", "id": "w-...", "label": "..." }],
+      "aversions": ["avoid nagging when evidence already shows progress"],
+      "uncertainties": ["the task comment may not be the latest source"],
+      "inhibited_actions": ["do not ping until the newest source is checked"],
+      "intended_next_action": "check latest comments, then decide",
+      "soma_constraints": ["loop lag suggests read-only caution"],
+      "epistemic_claim_refs": [{ "type": "epistemic_claim", "id": "ep-..." }],
+      "relationship_refs": [{ "type": "relationship", "id": "rel-..." }],
+      "consequence_watchlist": [{ "type": "task", "id": "tw-..." }],
+      "changed_mind": { "from": "I wanted X", "to": "evidence supports Y", "because": "...",
+        "evidence": [{ "type": "...", "id": "..." }] },
+      "evidence": [{ "type": "intelligence_cycle", "id": "cycle-..." }],
+      "created_by": "Nora"
+    }
+
+  - POST /conscious-workspace/feedback
+    Body: {
+      "frame_id": "cw-...",
+      "signal": "what later evidence showed",
+      "effect": "supported|contradicted|redirected|unclear",
+      "evidence": [{ "type": "...", "id": "..." }],
+      "recorded_by": "Nora"
+    }
+
   ### Slack Conversation State
   Nora supports real back-and-forth conversations in Slack:
     - DMs: every message gets a reply (always).

@@ -18,6 +18,7 @@ const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerGiftRoutes } = require('./src/routes/registerGiftRoutes');
 const { registerApiOpportunityRoutes } = require('./src/routes/registerApiOpportunityRoutes');
 const { registerOperationalEpistemicsRoutes } = require('./src/routes/registerOperationalEpistemicsRoutes');
+const { registerConsciousWorkspaceRoutes } = require('./src/routes/registerConsciousWorkspaceRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
@@ -81,6 +82,7 @@ const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const apiOpportunities = require('./src/integrations/api-opportunities');
 const operationalEpistemics = require('./src/intelligence/operational-epistemics');
+const consciousWorkspace = require('./src/intelligence/conscious-workspace');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const app = express();
@@ -91,6 +93,7 @@ const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-up
 const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
 const API_OPPORTUNITIES_PATH = path.join(LOCAL_DATA_DIR, 'nora-api-opportunities.json');
 const OPERATIONAL_EPISTEMICS_PATH = path.join(LOCAL_DATA_DIR, 'nora-operational-epistemics.json');
+const CONSCIOUS_WORKSPACE_PATH = path.join(LOCAL_DATA_DIR, 'nora-conscious-workspace.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   ? path.join(LOCAL_DATA_DIR, 'reading-library')
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
@@ -766,6 +769,27 @@ async function saveEpistemicsLedger(value) {
   return ledger;
 }
 
+function loadConsciousWorkspace() {
+  if (_dbReady) return consciousWorkspace.normalizeLedger(_cache.consciousWorkspace);
+  if (_cache.consciousWorkspace) return consciousWorkspace.normalizeLedger(_cache.consciousWorkspace);
+  try { _cache.consciousWorkspace = consciousWorkspace.normalizeLedger(JSON.parse(fs.readFileSync(CONSCIOUS_WORKSPACE_PATH, 'utf8'))); }
+  catch { _cache.consciousWorkspace = consciousWorkspace.emptyLedger(); }
+  return _cache.consciousWorkspace;
+}
+
+async function saveConsciousWorkspace(value) {
+  const ledger = consciousWorkspace.normalizeLedger(value);
+  if (_dbReady) await db.setState('conscious_workspace', ledger);
+  else {
+    fs.mkdirSync(path.dirname(CONSCIOUS_WORKSPACE_PATH), { recursive: true });
+    const temp = `${CONSCIOUS_WORKSPACE_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(temp, JSON.stringify(ledger, null, 2));
+    fs.renameSync(temp, CONSCIOUS_WORKSPACE_PATH);
+  }
+  _cache.consciousWorkspace = ledger;
+  return ledger;
+}
+
 // Slack threads Nora has replied in. Used to keep conversations going without re-mention.
 // Persisted so a deploy/restart doesn't drop active conversations.
 //
@@ -1191,6 +1215,7 @@ async function initPersistence() {
     _cache.giftLedger = goodyGifting.normalizeLedger(await db.getState('gift_ledger'));
     _cache.apiOpportunities = apiOpportunities.normalizeRegistry(await db.getState('api_opportunities'));
     _cache.operationalEpistemics = operationalEpistemics.normalizeLedger(await db.getState('operational_epistemics'));
+    _cache.consciousWorkspace = consciousWorkspace.normalizeLedger(await db.getState('conscious_workspace'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -8228,6 +8253,12 @@ registerOperationalEpistemicsRoutes(app, {
   requireAuth,
   loadEpistemicsLedger,
   saveEpistemicsLedger,
+});
+
+registerConsciousWorkspaceRoutes(app, {
+  requireAuth,
+  loadConsciousWorkspace,
+  saveConsciousWorkspace,
 });
 
 registerRuntimeActivityRoutes(app, {
