@@ -162,3 +162,29 @@ test('Goody send refuses estimates above the approved amount', async () => {
     if (prior.product === undefined) delete process.env.GOODY_PRODUCT_ID; else process.env.GOODY_PRODUCT_ID = prior.product;
   }
 });
+
+test('Goody gift link delivery is recorded separately from order send', () => {
+  const created = goody.createIntent({
+    id: 'gift-delivery',
+    recipient_name: 'Chelsea Galindo',
+    reason_category: 'thanks',
+    reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+    amount_cents: 1500,
+    evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-1:warmth' }],
+  }, goody.emptyLedger());
+  created.intent.status = 'sent';
+  created.intent.goody_order_batch_id = 'batch-123';
+  created.intent.goody_order_id = 'order-123';
+  created.intent.goody_gift_link = 'https://gifts.ongoody.com/gift/test';
+  const recorded = goody.recordGiftLinkDelivery(created.ledger, 'gift-delivery', {
+    status: 'delivered',
+    channel: 'D123',
+    ts: '123.456',
+    deliveredBy: 'Nora',
+    now: new Date('2026-07-21T01:00:00Z'),
+  });
+  assert.equal(recorded.intent.status, 'sent');
+  assert.equal(recorded.intent.gift_link_delivery_status, 'delivered');
+  assert.equal(recorded.intent.gift_link_delivery_channel, 'D123');
+  assert.match(recorded.intent.gift_link_delivery_commitment, /^[a-f0-9]{64}$/);
+});

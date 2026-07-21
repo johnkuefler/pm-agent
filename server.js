@@ -5613,6 +5613,34 @@ async function postSlackMessage(target, text, threadTs) {
   return !!(r.data && r.data.ok);
 }
 
+async function deliverGoodyGiftLink(intent) {
+  if (!process.env.SLACK_BOT_TOKEN) return { ok: false, error: 'SLACK_BOT_TOKEN is not configured' };
+  if (!intent?.recipient_slack_user_id) return { ok: false, error: 'recipient_slack_user_id is required for Slack delivery' };
+  if (!intent?.goody_gift_link) return { ok: false, error: 'goody_gift_link is not available yet' };
+  const name = String(intent.recipient_name || '').trim().split(/\s+/)[0] || 'there';
+  const reason = String(intent.reason || '').trim();
+  const message = [
+    `Hey ${name} — I wanted to send you a small thank-you.`,
+    reason ? `I noticed: ${reason}` : '',
+    `Here’s the Goody link: ${intent.goody_gift_link}`,
+  ].filter(Boolean).join('\n\n');
+  try {
+    const dm = await axios.post('https://slack.com/api/conversations.open',
+      { users: intent.recipient_slack_user_id },
+      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+    if (!dm.data?.ok || !dm.data?.channel?.id) {
+      return { ok: false, error: dm.data?.error || 'Slack conversations.open failed' };
+    }
+    const posted = await axios.post('https://slack.com/api/chat.postMessage',
+      { channel: dm.data.channel.id, text: message, unfurl_links: false, unfurl_media: false },
+      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
+    if (!posted.data?.ok) return { ok: false, channel: dm.data.channel.id, error: posted.data?.error || 'Slack chat.postMessage failed' };
+    return { ok: true, channel: dm.data.channel.id, ts: posted.data.ts || null };
+  } catch (error) {
+    return { ok: false, error: error.response?.data?.error || error.message || 'Slack delivery failed' };
+  }
+}
+
 let _slackReactionCapability = 'unknown';
 async function trySlackReaction(channel, timestamp, emoji, post = axios.post) {
   if (!channel || !timestamp || !emoji) return { reacted: false, reason: 'missing_target' };
@@ -8133,7 +8161,12 @@ registerTaskRoutes(app, {
   },
 });
 
-registerGiftRoutes(app, { requireAuth, loadGiftLedger, saveGiftLedger });
+registerGiftRoutes(app, {
+  requireAuth,
+  loadGiftLedger,
+  saveGiftLedger,
+  deliverGiftLink: deliverGoodyGiftLink,
+});
 
 registerRuntimeActivityRoutes(app, {
   requireAuth,

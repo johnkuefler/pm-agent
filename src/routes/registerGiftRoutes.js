@@ -34,13 +34,18 @@ function publicIntent(intent) {
     goody_customer_reference_id: intent.goody_customer_reference_id || null,
     goody_price_estimate_cents: intent.goody_price_estimate_cents || null,
     goody_send_commitment: intent.goody_send_commitment || null,
+    gift_link_delivery_status: intent.gift_link_delivery_status || null,
+    gift_link_delivery_channel: intent.gift_link_delivery_channel || null,
+    gift_link_delivery_ts: intent.gift_link_delivery_ts || null,
+    gift_link_delivery_error: intent.gift_link_delivery_error || null,
+    gift_link_delivery_commitment: intent.gift_link_delivery_commitment || null,
     sent_at: intent.sent_at || null,
     sent_by: intent.sent_by || null,
   };
 }
 
 function registerGiftRoutes(app, deps) {
-  const { requireAuth, loadGiftLedger, saveGiftLedger } = deps;
+  const { requireAuth, loadGiftLedger, saveGiftLedger, deliverGiftLink = null } = deps;
 
   app.get('/gifts/policy', requireAuth, (_req, res) => {
     const ledger = loadGiftLedger();
@@ -106,11 +111,29 @@ function registerGiftRoutes(app, deps) {
         sentBy: req.body?.sent_by || 'John',
       });
       await saveGiftLedger(result.ledger);
+      let delivery = null;
+      let currentIntent = result.intent;
+      const shouldDeliver = req.body?.deliver !== false;
+      if (shouldDeliver && typeof deliverGiftLink === 'function' && currentIntent.goody_gift_link
+        && currentIntent.recipient_slack_user_id
+        && currentIntent.gift_link_delivery_status !== 'delivered') {
+        delivery = await deliverGiftLink(currentIntent);
+        const recorded = goodyGifting.recordGiftLinkDelivery(loadGiftLedger(), currentIntent.id, {
+          status: delivery.ok ? 'delivered' : 'failed',
+          channel: delivery.channel || '',
+          ts: delivery.ts || '',
+          error: delivery.ok ? '' : delivery.error || 'gift link delivery failed',
+          deliveredBy: req.body?.delivered_by || 'Nora',
+        });
+        await saveGiftLedger(recorded.ledger);
+        currentIntent = recorded.intent;
+      }
       return res.json({
         ok: true,
         already_sent: result.already_sent === true,
-        intent: publicIntent(result.intent),
-        report: result.report,
+        delivery,
+        intent: publicIntent(currentIntent),
+        report: goodyGifting.policyReport(loadGiftLedger()),
       });
     } catch (error) {
       const status = error.code === 'goody_not_ready' ? 409 : 400;

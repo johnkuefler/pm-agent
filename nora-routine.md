@@ -1637,7 +1637,7 @@ Only propose when the evidence is concrete and attributable: a shipped deliverab
 }
 ```
 
-Then include it in the hour summary as a proposal, not a completed action. Do not approve your own gift intents. John approves them with `/gifts/intents/:id/approve`. After human approval, `/gifts/intents/:id/send` may create the Goody order only when the server has Goody sending enabled, a default product/card configured, and Goody's high price estimate is within the approved amount. If send succeeds, report the gift link/order as sent; if it fails, report the exact blocked reason and do not imply a gift went out.
+Then include it in the hour summary as a proposal, not a completed action. Do not approve your own gift intents. John approves them with `/gifts/intents/:id/approve`. After human approval, `/gifts/intents/:id/send` may create the Goody order only when the server has Goody sending enabled, a default product/card configured, and Goody's high price estimate is within the approved amount. When a Slack user ID is present, send also delivers the Goody gift link by DM and records `gift_link_delivery_status`. If Goody succeeds but Slack delivery fails, report "gift created, link delivery failed" with the reason so delivery can be retried without buying a second gift. If send succeeds, report the gift link/order and whether the link was delivered; if it fails, report the exact blocked reason and do not imply a gift went out.
 
 ## Step 7.4: Nightly Dreaming Round (consolidate + reflect + review)
 

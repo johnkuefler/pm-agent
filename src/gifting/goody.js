@@ -223,6 +223,36 @@ function rejectIntent(ledger = emptyLedger(), id, { rejectedBy = 'John', note = 
   return { ledger: current, intent, report: policyReport(current, { now }) };
 }
 
+function recordGiftLinkDelivery(ledger = emptyLedger(), id, {
+  status,
+  channel = '',
+  ts = '',
+  error = '',
+  deliveredBy = 'Nora',
+  now = new Date(),
+} = {}) {
+  const current = normalizeLedger(ledger);
+  const intent = current.intents.find(item => item.id === id);
+  if (!intent) throw new Error('gift intent not found');
+  intent.gift_link_delivery_status = normalizeText(status, 40) || 'unknown';
+  intent.gift_link_delivered_by = normalizeText(deliveredBy, 120) || 'Nora';
+  intent.gift_link_delivery_at = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  intent.gift_link_delivery_channel = normalizeText(channel, 120);
+  intent.gift_link_delivery_ts = normalizeText(ts, 80);
+  intent.gift_link_delivery_error = normalizeText(error, 300);
+  intent.gift_link_delivery_commitment = commitment({
+    id: intent.id,
+    goody_order_batch_id: intent.goody_order_batch_id,
+    goody_order_id: intent.goody_order_id,
+    goody_gift_link: intent.goody_gift_link,
+    status: intent.gift_link_delivery_status,
+    channel: intent.gift_link_delivery_channel,
+    ts: intent.gift_link_delivery_ts,
+    error: intent.gift_link_delivery_error,
+  });
+  return { ledger: current, intent, report: policyReport(current, { now }) };
+}
+
 function sendReadiness(ledger = emptyLedger(), id) {
   const current = normalizeLedger(ledger);
   const intent = current.intents.find(item => item.id === id);
@@ -363,6 +393,7 @@ module.exports = {
   extractHighPriceCents,
   normalizeLedger,
   policyReport,
+  recordGiftLinkDelivery,
   rejectIntent,
   sendIntent,
   sendReadiness,
