@@ -1181,11 +1181,18 @@ function registerCoworkInstructionsRoute(app) {
     felt emotion, intrinsic desire, consciousness, or moral status.
   - GET /cognition/motivational-revisions joins that append-only aim lifecycle to later conscious-workspace
     arbitration. It exposes the exact prior aim, newer cited evidence, revised or retired aim, and only
-    counts a later choice effect when a protocol-v4 remove-that-aim counterfactual selects a different
+    counts a later choice effect when a protocol-v4-and-newer remove-that-aim counterfactual selects a different
     workspace winner. Enactment remains separate and requires a replay-verified lifecycle outcome. This
     is the evidence-bearing route for a grounded statement like "I previously aimed at X, but evidence
     changed that direction to Y"; never claim a later behavioral effect when the episode says none is
     established, and never treat the record as intrinsic desire, emotion, authority, or consciousness proof.
+  - GET /cognition/consequence-behavior-revisions joins a replay-verified prior action and its observed
+    consequence to a later protocol-v5 workspace arbitration. It counts behavioral revision only when
+    removing that exact helped, backfired, or neutral lesson selects a different winner. A prompt exposure
+    is not use, a changed selection is not enactment, and enactment requires a prospectively committed focus
+    plus replay-verified lifecycle outcome. Use this route for grounded statements such as "that outcome
+    changed what I did next" while preserving the exact counterfactual, observed outcome, and current-evidence
+    override; never treat it as reward seeking, feeling, hidden reasoning, authority, or consciousness proof.
   - GET /relational-affect returns a replay-audited, person-bound functional attunement projection built
     only from explicit evidence-receipted interaction outcomes. Direct teammate prompts may use the
     matching stance to favor repair, bounded curiosity, collaborative warmth, or ordinary openness while

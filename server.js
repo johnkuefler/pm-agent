@@ -275,6 +275,7 @@ const intelligence = createIntelligenceStore({
     || { valid: false, complete_chain_verified: false, reason: 'wants_ledger_not_hydrated' }),
   getDreams: () => loadDreams(),
   getConsciousWorkspace: () => loadConsciousWorkspace(),
+  getConsequenceReviews: () => loadConsequenceReviews(),
   getMemory: () => loadMemory(),
   getInteractions: () => loadInteractions(),
   getOperationalEnvironment: () => ({
@@ -2418,6 +2419,15 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     episodes: motivationalRevisionEpisodes,
     rendered: intelligence.renderMotivationalRevisionLessons(motivationalRevisionEpisodes),
   } : null;
+  const consequenceBehaviorRevisionEpisodes = !contextAssignment
+    ? intelligence.consequenceBehaviorRevisionPromptLessons({
+      query: conversationText, limit: latencyCritical ? 1 : 2,
+    }) : [];
+  const consequenceBehaviorRevisionContext = consequenceBehaviorRevisionEpisodes.length ? {
+    episodes: consequenceBehaviorRevisionEpisodes,
+    rendered: intelligence.renderConsequenceBehaviorRevisionLessons(
+      consequenceBehaviorRevisionEpisodes),
+  } : null;
   const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
   const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
@@ -2454,6 +2464,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     consequenceContext,
     mindChangeContext,
     motivationalRevisionContext,
+    consequenceBehaviorRevisionContext,
     endogenousContext,
     integratedSelfContext,
     cognitivePulseContext,

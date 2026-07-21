@@ -78,6 +78,53 @@ test('a verified backfire and fresh substrate strain can redirect a demanding ac
   assert.equal(arbitration.audit(receipt).complete_chain_verified, true);
 });
 
+test('a remove-one-consequence counterfactual proves when an outcome changes the winner', () => {
+  const action = consequences.createAction({
+    id: 'cr-pressure', action_type: 'warmth',
+    description: 'Send encouragement while a teammate remains blocked under pressure.',
+    intended_effect: 'Offer support without adding pressure.',
+    success_criteria: 'The teammate reports less pressure or engages constructively.',
+    evidence: [{ type: 'slack_message', id: 'source-pressure' }],
+  }, consequences.emptyLedger(), { now: new Date('2026-07-20T12:00:00Z') });
+  const observed = consequences.observeAction(action.ledger, action.action.id, {
+    outcome: 'backfired', observed_effect: 'The encouragement added pressure before the blocker cleared.',
+    should_change_behavior: true,
+    behavior_update: 'Remove pressure and address the blocker before offering encouragement.',
+    evidence: [{ type: 'slack_message', id: 'outcome-pressure' }],
+  }, { now: new Date('2026-07-20T13:00:00Z') });
+  const receipt = arbitration.arbitrate({
+    candidates: [
+      candidate('warmth:encourage', 0.6, { label: 'Send encouragement while blocked under pressure',
+        action_type: 'warmth' }),
+      candidate('task:remove-pressure', 0.52, { label: 'Address the blocker and remove pressure' }),
+      candidate('task:wait', 0.3),
+    ],
+    consequenceLedger: observed.ledger,
+  });
+  assert.equal(receipt.selected_winner_key, 'task:remove-pressure');
+  assert.equal(receipt.consequence_counterfactuals.length, 1);
+  assert.equal(receipt.consequence_counterfactuals[0].choice_changed_by_consequence, true);
+  assert.equal(receipt.consequence_counterfactuals[0].without_consequence_winner_key,
+    'warmth:encourage');
+  assert.equal(arbitration.audit(receipt).complete_chain_verified, true);
+  const legacyV4 = structuredClone(receipt);
+  legacyV4.protocol_version = 4;
+  delete legacyV4.consequence_counterfactuals;
+  delete legacyV4.receipt_commitment;
+  legacyV4.receipt_commitment = arbitration.commitment(legacyV4);
+  assert.equal(arbitration.audit(legacyV4).complete_chain_verified, true,
+    'protocol-v4 aim counterfactual receipts must remain replay-valid');
+  const sourceTampered = structuredClone(receipt);
+  sourceTampered.scored_candidates.find(item => item.key === 'warmth:encourage')
+    .consequence_sources[0].delta = 0.14;
+  delete sourceTampered.receipt_commitment;
+  sourceTampered.receipt_commitment = arbitration.commitment(sourceTampered);
+  assert.equal(arbitration.audit(sourceTampered).complete_chain_verified, false,
+    'recommitting a rewritten consequence weight must not pass replay');
+  receipt.consequence_counterfactuals[0].without_consequence_winner_key = 'task:wait';
+  assert.equal(arbitration.audit(receipt).complete_chain_verified, false);
+});
+
 test('unverified wants and stale soma cannot influence arbitration', () => {
   const receipt = arbitration.arbitrate({
     candidates: [

@@ -106,6 +106,7 @@ POST /cognition/refresh
 POST /cognition/mind-changes
 GET /cognition/mind-changes
 GET /cognition/motivational-revisions
+GET /cognition/consequence-behavior-revisions
 POST /cognition/development
 POST /cognition/development/:id/review
 POST /cognition/counterfactuals

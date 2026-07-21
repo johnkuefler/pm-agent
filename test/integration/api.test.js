@@ -798,6 +798,11 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(motivationalRevisions.response.status, 200);
   assert.ok(Array.isArray(motivationalRevisions.body.episodes));
   assert.equal(typeof motivationalRevisions.body.report.replay_verified_revisions, 'number');
+  const consequenceRevisions = await request('/cognition/consequence-behavior-revisions');
+  assert.equal(consequenceRevisions.response.status, 200);
+  assert.ok(Array.isArray(consequenceRevisions.body.episodes));
+  assert.equal(typeof consequenceRevisions.body.report
+    .replay_verified_consequence_changed_choices, 'number');
   const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
     protocol_version: 4,
     predicted_action_types: ['integration_review'], surprise_probability: 0.2,

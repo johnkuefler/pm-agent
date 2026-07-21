@@ -361,6 +361,23 @@ function focusCommitmentPayload(record = {}) {
   };
 }
 
+function auditFrame(frame = {}) {
+  const arbitration = motivationalArbitration.audit(frame.arbitration_receipt);
+  const candidate = Array.isArray(frame.attention_candidates)
+    ? frame.attention_candidates.find(item => item.key === frame.selected_focus_key) : null;
+  const frameVerified = Boolean(frame.frame_commitment
+    && frame.frame_commitment === commitment(frameManifest(frame)));
+  const selectionVerified = Boolean(candidate
+    && frame.arbitration_receipt?.selected_winner_key === frame.selected_focus_key);
+  return {
+    complete_chain_verified: frameVerified && arbitration.complete_chain_verified
+      && selectionVerified,
+    frame_verified: frameVerified,
+    arbitration_verified: arbitration.complete_chain_verified,
+    selection_verified: selectionVerified,
+  };
+}
+
 function auditFocusCommitment(record, ledger = emptyLedger()) {
   const current = ledgerView(ledger);
   const frame = current.frames.find(item => item.id === record?.frame_id);
@@ -368,10 +385,9 @@ function auditFocusCommitment(record, ledger = emptyLedger()) {
   const receiptVerified = Boolean(record?.commitment_hash
     && commitment(focusCommitmentPayload(record)) === record.commitment_hash);
   const frameVerified = Boolean(frame && frame.frame_commitment === record.frame_commitment
-    && frame.frame_commitment === commitment(frameManifest(frame))
+    && auditFrame(frame).complete_chain_verified
     && frame.lifecycle?.phase === 'operations' && frame.lifecycle.cycle_id === record.cycle_id
     && frame.selected_focus_key === record.selected_focus_key
-    && motivationalArbitration.audit(frame.arbitration_receipt).complete_chain_verified
     && frame.arbitration_receipt.receipt_commitment === record.arbitration_receipt_commitment);
   const candidateVerified = Boolean(candidate && candidate.type === record.selected_focus_type
     && candidate.authority_class === record.selected_focus_authority_class);
@@ -688,6 +704,7 @@ module.exports = {
   FOCUS_OUTCOMES,
   MODES,
   addFeedback,
+  auditFrame,
   auditFocusCommitment,
   auditFocusOutcome,
   createFrame,

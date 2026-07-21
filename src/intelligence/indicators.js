@@ -641,6 +641,14 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     replay_verified_revisions: 0, revised_aims: 0, retired_aims: 0,
     later_choices_changed: 0, later_enacted_choices_changed: 0,
   };
+  const consequenceBehaviorRevisionEvidence = options.consequence_behavior_revision_evidence || {
+    replay_verified_consequence_changed_choices: 0,
+    enacted_consequence_changed_choices: 0,
+    helped_lessons_material: 0,
+    backfire_lessons_material: 0,
+    later_supported_outcomes: 0,
+    later_failed_or_superseded_outcomes: 0,
+  };
   const cycleSelfCorrectionEvidence = options.cycle_self_correction_evidence || {
     attempts: 0, recorded: 0, abstained: 0, replay_verified: 0,
     replay_verified_corrections: 0, source_cycles: 0,
@@ -1955,13 +1963,25 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     {
       id: 'evidence_driven_motivational_revision', family: ['agency', 'self-model', 'metacognition', 'value representation'],
       functional_claim: 'Nora can preserve a replay-verifiable arc in which she held a self-authored aim, newer independent evidence changed or retired it, and the revised aim can later be shown to change a selected workspace focus.',
-      mechanism: 'A deterministic projection joins the provider-receipted append-only aim-reappraisal lifecycle to protocol-v4 motivational arbitration. Each eligible later choice carries an exact remove-this-aim counterfactual; a behavioral effect is counted only when that counterfactual selects a different winner, with enacted outcomes reported separately.',
+      mechanism: 'A deterministic projection joins the provider-receipted append-only aim-reappraisal lifecycle to protocol-v4-and-newer motivational arbitration. Each eligible later choice carries an exact remove-this-aim counterfactual; a behavioral effect is counted only when that counterfactual selects a different winner, with enacted outcomes reported separately.',
       status: motivationalRevisionEvidence.later_enacted_choices_changed > 0
         ? 'observational_signal_observed'
         : motivationalRevisionEvidence.replay_verified_revisions > 0 ? 'collecting' : 'mechanism_present',
       evidence: motivationalRevisionEvidence,
       falsifier: 'The aim revision cannot replay from its original receipt and cited evidence, removing the revised aim does not change the later selected focus, the effect depends on an unverified want history, or the system reports enactment without a replay-verified lifecycle outcome.',
       next_gate: 'Accumulate several source-diverse natural aim revisions and later counterfactually changed choices, then preregister authentic revised-aim access versus matched prior-aim and absent-aim conditions with non-degraded first-order work.',
+    },
+    {
+      id: 'consequence_driven_behavioral_revision', family: ['learning', 'agency', 'metacognition', 'adaptive control'],
+      functional_claim: 'An observed consequence of Nora\'s prior action can make a specific later workspace choice differ, and the selected focus can then be prospectively committed and resolved against its lifecycle outcome.',
+      mechanism: 'Protocol-v5 motivational arbitration binds every verified helped, backfired, or neutral lesson to its exact action and observation commitments and records a remove-one-consequence counterfactual. A deterministic projection counts behavioral revision only when removing that lesson selects a different winner; pre-action focus commitments and replay-verified experience closure separately establish enactment and outcome.',
+      status: consequenceBehaviorRevisionEvidence.enacted_consequence_changed_choices > 0
+        ? 'observational_signal_observed'
+        : consequenceBehaviorRevisionEvidence.replay_verified_consequence_changed_choices > 0
+          ? 'collecting' : 'mechanism_present',
+      evidence: consequenceBehaviorRevisionEvidence,
+      falsifier: 'The source action or observation fails replay, removing the exact consequence does not change the selected workspace winner, a merely exposed prompt is counted as use, an uncommitted selection is called enactment, or later outcomes are reported without replay-verified lifecycle closure.',
+      next_gate: 'Accumulate source-diverse natural consequence-changed selections and enacted outcomes, then preregister authentic consequence access versus byte-identical consequence-deidentified and absent controls with independent task-quality and correction grading.',
     },
     {
       id: 'attention_schema_control', family: ['attention schema theory'],

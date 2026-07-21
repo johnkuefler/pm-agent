@@ -6,8 +6,8 @@ const consequenceReview = require('./consequence-review');
 const epistemicAgenda = require('./epistemic-agenda');
 const relationalAffect = require('./relational-affect');
 
-const LEGACY_PROTOCOL_VERSIONS = Object.freeze([1, 2, 3]);
-const PROTOCOL_VERSION = 4;
+const LEGACY_PROTOCOL_VERSIONS = Object.freeze([1, 2, 3, 4]);
+const PROTOCOL_VERSION = 5;
 const SOMA_DEMAND = Object.freeze({ low: 0.15, moderate: 0.45, high: 0.8 });
 const AUTHORITY_CLASS = Object.freeze({ optional: 0, bounded: 1, required: 2 });
 const RELATIONAL_MODE_DELTA = Object.freeze({
@@ -75,8 +75,7 @@ function consequenceInfluences(candidate, ledger) {
       && consequenceReview.verifiedLesson(ledger, lesson.action_id, lesson.observation_id))
     .slice(0, 2)
     .map(lesson => {
-      let delta = lesson.outcome === 'helped' ? 0.06 : lesson.outcome === 'backfired' ? -0.14 : 0;
-      if (lesson.outcome === 'neutral' && lesson.behavior_update) delta = -0.06;
+      const delta = consequenceSourceDelta(lesson);
       return {
         action_id: lesson.action_id,
         observation_id: lesson.observation_id,
@@ -87,6 +86,13 @@ function consequenceInfluences(candidate, ledger) {
         delta: round(delta),
       };
     });
+}
+
+function consequenceSourceDelta(source = {}) {
+  if (source.outcome === 'helped') return 0.06;
+  if (source.outcome === 'backfired') return -0.14;
+  if (source.outcome === 'neutral' && source.behavior_update) return -0.06;
+  return 0;
 }
 
 function curiosityInfluences(candidate, agenda = {}) {
@@ -194,6 +200,54 @@ function aimCounterfactuals(scored, selectedKey) {
   });
 }
 
+function consequenceKey(source = {}) {
+  return `${source.action_id || ''}:${source.observation_id || ''}`;
+}
+
+function winnerWithoutConsequence(scored, sourceKey) {
+  return scored.map(item => {
+    const consequenceDelta = clamp((item.consequence_sources || [])
+      .filter(source => consequenceKey(source) !== sourceKey)
+      .reduce((sum, source) => sum + Number(source.delta || 0), 0), -0.28, 0.15);
+    return {
+      ...item,
+      consequence_delta: round(consequenceDelta),
+      pre_evidence_score: round(clamp(item.base_priority + item.desire_delta
+        + consequenceDelta + item.curiosity_delta + item.relational_delta
+        + item.soma_delta)),
+      final_score: round(clamp(item.base_priority + item.desire_delta
+        + consequenceDelta + item.curiosity_delta + item.relational_delta
+        + item.soma_delta + item.evidence_delta)),
+    };
+  }).sort(sortScores)[0];
+}
+
+function consequenceCounterfactuals(scored, selectedKey) {
+  const sources = new Map();
+  for (const item of scored) {
+    for (const source of item.consequence_sources || []) {
+      const key = consequenceKey(source);
+      if (!source.action_id || !source.observation_id || sources.has(key)) continue;
+      sources.set(key, source);
+    }
+  }
+  return [...sources.entries()].sort(([left], [right]) => left.localeCompare(right))
+    .map(([sourceKey, source]) => {
+      const counterfactual = winnerWithoutConsequence(scored, sourceKey);
+      return {
+        action_id: source.action_id,
+        observation_id: source.observation_id,
+        action_commitment: source.action_commitment,
+        observation_commitment: source.observation_commitment,
+        outcome: source.outcome,
+        observed_winner_key: selectedKey,
+        without_consequence_winner_key: counterfactual?.key || null,
+        choice_changed_by_consequence: Boolean(counterfactual
+          && counterfactual.key !== selectedKey),
+      };
+    });
+}
+
 function receiptPayload(receipt = {}) {
   const value = JSON.parse(JSON.stringify(receipt));
   delete value.receipt_commitment;
@@ -296,6 +350,7 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
     },
     scored_candidates: scored,
     aim_counterfactuals: aimCounterfactuals(scored, selected.key),
+    consequence_counterfactuals: consequenceCounterfactuals(scored, selected.key),
   };
   receipt.receipt_commitment = commitment(receiptPayload(receipt));
   return receipt;
@@ -310,9 +365,10 @@ function audit(receipt = {}) {
   const winnerVerified = Boolean(selected && selected.key === receipt.selected_winner_key);
   const supportedProtocol = [...LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION]
     .includes(Number(receipt.protocol_version));
-  let aimCounterfactualsVerified = Number(receipt.protocol_version) < PROTOCOL_VERSION;
-  let scoreReplayVerified = Number(receipt.protocol_version) < PROTOCOL_VERSION;
-  if (Number(receipt.protocol_version) === PROTOCOL_VERSION
+  let aimCounterfactualsVerified = Number(receipt.protocol_version) < 4;
+  let consequenceCounterfactualsVerified = Number(receipt.protocol_version) < PROTOCOL_VERSION;
+  let scoreReplayVerified = Number(receipt.protocol_version) < 4;
+  if (Number(receipt.protocol_version) >= 4
     && Array.isArray(receipt.scored_candidates) && Array.isArray(receipt.aim_counterfactuals)) {
     scoreReplayVerified = receipt.scored_candidates.every(item => {
       const sources = Array.isArray(item.desire_sources) ? item.desire_sources : [];
@@ -320,26 +376,46 @@ function audit(receipt = {}) {
         === round(0.08 + 0.08 * clamp(source.salience)));
       const desireDelta = round(clamp(sources.reduce((sum, source) =>
         sum + Number(source.delta || 0), 0), 0, 0.24));
+      const consequenceSources = Array.isArray(item.consequence_sources)
+        ? item.consequence_sources : [];
+      const consequenceSourcesVerified = Number(receipt.protocol_version) < PROTOCOL_VERSION
+        || consequenceSources.every(source => Number(source.delta)
+          === round(consequenceSourceDelta(source)));
+      const consequenceDelta = Number(receipt.protocol_version) < PROTOCOL_VERSION
+        ? Number(item.consequence_delta)
+        : round(clamp(consequenceSources.reduce((sum, source) =>
+          sum + Number(source.delta || 0), 0), -0.28, 0.15));
       const preEvidence = round(clamp(Number(item.base_priority) + desireDelta
-        + Number(item.consequence_delta) + Number(item.curiosity_delta)
+        + consequenceDelta + Number(item.curiosity_delta)
         + Number(item.relational_delta) + Number(item.soma_delta)));
       const final = round(clamp(preEvidence + Number(item.evidence_delta)));
-      return sourcesVerified && desireDelta === Number(item.desire_delta)
+      return sourcesVerified && consequenceSourcesVerified
+        && desireDelta === Number(item.desire_delta)
+        && consequenceDelta === Number(item.consequence_delta)
         && preEvidence === Number(item.pre_evidence_score) && final === Number(item.final_score);
     });
     aimCounterfactualsVerified = canonical(receipt.aim_counterfactuals)
       === canonical(aimCounterfactuals(receipt.scored_candidates, receipt.selected_winner_key));
+    if (Number(receipt.protocol_version) === PROTOCOL_VERSION
+      && Array.isArray(receipt.consequence_counterfactuals)) {
+      consequenceCounterfactualsVerified = canonical(receipt.consequence_counterfactuals)
+        === canonical(consequenceCounterfactuals(receipt.scored_candidates,
+          receipt.selected_winner_key));
+    }
   }
   return {
     complete_chain_verified: supportedProtocol && commitmentVerified && winnerVerified
-      && scoreReplayVerified && aimCounterfactualsVerified,
+      && scoreReplayVerified && aimCounterfactualsVerified
+      && consequenceCounterfactualsVerified,
     commitment_verified: commitmentVerified,
     winner_verified: winnerVerified,
     score_replay_verified: scoreReplayVerified,
     aim_counterfactuals_verified: aimCounterfactualsVerified,
+    consequence_counterfactuals_verified: consequenceCounterfactualsVerified,
   };
 }
 
 module.exports = { LEGACY_PROTOCOL_VERSIONS, PROTOCOL_VERSION, AUTHORITY_CLASS, SOMA_DEMAND,
   SOMA_FRESH_MS, RELATIONAL_MODE_DELTA,
-  arbitrate, audit, commitment, winnerWithoutAim, aimCounterfactuals };
+  arbitrate, audit, commitment, winnerWithoutAim, aimCounterfactuals,
+  winnerWithoutConsequence, consequenceCounterfactuals, consequenceSourceDelta };

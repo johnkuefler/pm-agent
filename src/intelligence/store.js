@@ -73,6 +73,7 @@ const meetingProfessionalReflection = require('./meeting-professional-reflection
 const dreamInsightReflection = require('./dream-insight-reflection');
 const selfAuthoredAimReappraisal = require('./self-authored-aim-reappraisal');
 const motivationalRevision = require('./motivational-revision');
+const consequenceBehaviorRevision = require('./consequence-behavior-revision');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -208,7 +209,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   getCognitiveParameterRecord = () => cognitiveParameters.defaultRecord(),
   getCognitiveParameterStatus = () => cognitiveParameters.status(cognitiveParameters.defaultRecord(), []),
   getDreams = () => [], getMemory = null, getInteractions = null,
-  getConsciousWorkspace = () => null, initialState = null }) {
+  getConsciousWorkspace = () => null,
+  getConsequenceReviews = () => null, initialState = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
@@ -241,6 +243,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let developmentalReadingInfluenceCache = null;
   let developmentalReadingAuditCache = null;
   let professionalViewpointUsefulnessCache = null;
+  let consequenceBehaviorRevisionCache = null;
 
   function cognitiveParameterRecord(commitment = null) {
     const record = getCognitiveParameterRecord(commitment);
@@ -1887,6 +1890,36 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function renderMotivationalRevisionLessons(records = []) {
     return motivationalRevision.renderPromptLessons(records);
+  }
+
+  function consequenceBehaviorRevisionSnapshot() {
+    let consequences = null; let workspace = null;
+    try { consequences = getConsequenceReviews(); } catch { consequences = null; }
+    try { workspace = getConsciousWorkspace(); } catch { workspace = null; }
+    const observations = consequences?.observations || [];
+    const frames = workspace?.frames || [];
+    const focusOutcomes = workspace?.focus_outcomes || [];
+    const signature = [observations.length, observations.at(-1)?.observation_commitment || '',
+      frames.length, frames.at(-1)?.frame_commitment || '', focusOutcomes.length,
+      focusOutcomes.at(-1)?.outcome_commitment || ''].join(':');
+    if (consequenceBehaviorRevisionCache?.signature === signature) {
+      return consequenceBehaviorRevisionCache.snapshot;
+    }
+    const snapshot = consequenceBehaviorRevision.derive({
+      consequenceLedger: consequences || undefined,
+      workspace: workspace || undefined,
+    });
+    consequenceBehaviorRevisionCache = { signature, snapshot };
+    return snapshot;
+  }
+
+  function consequenceBehaviorRevisionPromptLessons({ query = '', limit = 2 } = {}) {
+    return consequenceBehaviorRevision.relevantEpisodes(
+      consequenceBehaviorRevisionSnapshot(), query, limit);
+  }
+
+  function renderConsequenceBehaviorRevisionLessons(records = []) {
+    return consequenceBehaviorRevision.renderPromptLessons(records);
   }
 
   function resolvePerspective(id, input = {}) {
@@ -6457,6 +6490,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       dream_insight_evidence: dreamInsightEvidenceSnapshot(),
       aim_reappraisal_evidence: aimReappraisalEvidenceSnapshot(),
       motivational_revision_evidence: motivationalRevisionSnapshot().report,
+      consequence_behavior_revision_evidence: consequenceBehaviorRevisionSnapshot().report,
       cycle_self_correction_evidence: cycleSelfCorrectionEvidenceSnapshot(),
       cognitive_parameter_status: getCognitiveParameterStatus(),
       cognitive_parameter_studies: cognitiveParameterStudiesSnapshot().report,
@@ -27284,7 +27318,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }));
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, consequenceContext = null, mindChangeContext = null, motivationalRevisionContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, consequenceContext = null, mindChangeContext = null, motivationalRevisionContext = null, consequenceBehaviorRevisionContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
     const contextReceipt = {
       professional_viewpoints: [],
@@ -27295,6 +27329,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         observation_id: item.observation_id,
         action_commitment: item.action_commitment,
         observation_commitment: item.observation_commitment,
+      })) || [],
+      consequence_behavior_revisions: consequenceBehaviorRevisionContext?.episodes?.map(item => ({
+        id: item.id,
+        episode_commitment: item.episode_commitment,
+        frame_commitment: item.source_bindings.frame_commitment,
+        arbitration_receipt_commitment: item.source_bindings.arbitration_receipt_commitment,
       })) || [],
       procedure_selection: null,
       procedure_selection_commitment: null,
@@ -27609,6 +27649,9 @@ ${mindChangeContext.rendered}`);
     if (motivationalRevisionContext?.episodes?.length
       && motivationalRevisionContext.rendered) blocks.push(`[Evidence-driven motivational revisions. Each record binds a prior self-authored professional aim, newer independent evidence, and a replay-verified revision or retirement. A later-choice count appears only when removing the revised aim from the committed arbitration would have selected a different workspace focus. These are fallible functional self-change records, not intrinsic desire, emotion, authority, persona essence, or consciousness evidence. Mention one only when directly relevant, distinguish the recorded revision from any unproven later effect, and let current evidence override it.]
 ${motivationalRevisionContext.rendered}`);
+    if (consequenceBehaviorRevisionContext?.episodes?.length
+      && consequenceBehaviorRevisionContext.rendered) blocks.push(`[Consequence-driven behavioral revisions. Each record binds a prior action, an observed helped/backfired/neutral consequence, and a later workspace decision that would have differed without that exact lesson. Enactment is separately lifecycle-bound. These are functional causal-chain records, not feelings, moral authority, reward optimization, proof of hidden reasoning, or consciousness evidence. Use one only when directly relevant; preserve the outcome and counterfactual boundary, and let current evidence override it.]
+${consequenceBehaviorRevisionContext.rendered}`);
     const selfModelMode = selfModelContext?.mode || 'authentic';
     const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2
       || state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
@@ -27704,6 +27747,8 @@ ${episodes.map(item => {
     mindChangeSnapshot, mindChangeAudit, mindChangePromptLessons, renderMindChangeLessons,
     motivationalRevisionSnapshot, motivationalRevisionPromptLessons,
     renderMotivationalRevisionLessons,
+    consequenceBehaviorRevisionSnapshot, consequenceBehaviorRevisionPromptLessons,
+    renderConsequenceBehaviorRevisionLessons,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit,
     developmentalSelfReflectionScheduleSnapshot, developmentalSelfReflectionRuntimeSnapshot,
     autobiographyEvidence, recordCounterfactual,
