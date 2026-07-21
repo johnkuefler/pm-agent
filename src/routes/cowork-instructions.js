@@ -94,7 +94,7 @@ function registerCoworkInstructionsRoute(app) {
   warmth this week, responded to a Slack msg). Do NOT put these in /memory anymore — memory is
   for knowledge Nora references in conversation; markers are bookkeeping that used to bloat it.
   Key scheme (examples): "filed-transcript:<bot_id>", "skipped-transcript:<bot_id>",
-  "dreamed:<YYYY-MM-DD>", "memory-dedup:<YYYY-MM-DD>", "stale-tasks-flagged:<YYYY-MM-DD>",
+  "dreamed:<YYYY-MM-DD>", "memory-dedup:<YYYY-MM-DD>", "stale-tasks-reviewed:<YYYY-Www>",
   "warmth:<person-lowercase>:<YYYY-MM-DD>", "slack-responded:<ts>", "bootstrap:<name>".
   - GET  /markers/:key            — The idempotency check. Response: { "exists": bool, "marker": {...}|null }
   - GET  /markers?prefix=filed-transcript:  — List a category. Response: { "count", "markers": {...} }
@@ -996,9 +996,12 @@ function registerCoworkInstructionsRoute(app) {
   - GET /decision-traces — concise why/grounding audit. This is not private chain-of-thought; it is
     the actionable decision, confidence, sources, and policy reasons.
   - GET/PUT /initiative-budgets/:scope — daily unsolicited-message budget. Respect it. Silence is
-    correct when the expected value does not justify the interruption.
-    POST /initiative-budgets/:scope/spend only after the unsolicited message actually posts; a 409
-    means the social budget is exhausted. Hourly cowork uses scope cowork:proactive.
+    correct when the expected value does not justify the interruption. Hourly cowork uses scope
+    cowork:proactive, whose default limit is one person-facing interruption per day.
+    POST /initiative-budgets/cowork:proactive/spend BEFORE any unsolicited Slack message OR Teamwork
+    comment, as a reservation. A 409 means the social budget is exhausted and the message/comment
+    must not be sent. A failed delivery may consume the reservation; preserving quiet is safer than
+    retrying around the boundary. Teamwork comments are interruptions too and never bypass this budget.
   - GET /nora-bench — regression report for meeting judgment, uncertainty, repair, and initiative.
   - POST /intelligence/cycles — start an hourly/nightly autonomic cycle, or idempotently resume the active
     cycle for the same holder. Hourly cowork resumes the cycle returned by POST /run-lock. The response contains a

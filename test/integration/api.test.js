@@ -772,6 +772,7 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   } });
   assert.equal(interoceptivePrediction.body.prediction.status, 'open');
 
+  assert.equal((await request('/initiative-budgets/cowork%3Aproactive')).body.limit, 1);
   await request('/initiative-budgets/test-scope', { method: 'PUT', body: { daily_limit: 2 } });
   assert.equal((await request('/initiative-budgets/test-scope')).body.limit, 2);
   assert.equal((await request('/initiative-budgets/test-scope/spend', { method: 'POST', body: { reason: 'integration' } })).body.budget.remaining, 1);

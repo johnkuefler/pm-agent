@@ -98,6 +98,12 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Overdue commitments are first-class failures/);
   assert.match(routine, /decision-traces\?reviewed=false/);
   assert.match(routine, /initiative-budgets\/cowork:proactive\/spend/);
+  assert.match(routine, /Teamwork comment is just as\s+interruptive as a Slack DM/);
+  assert.match(routine, /Overdue by itself is not enough/);
+  assert.match(routine, /Choose the single highest-value\s+interruption across the whole book/);
+  assert.match(routine, /Silence is not new evidence/);
+  assert.match(cowork, /default limit is one person-facing interruption per day/);
+  assert.match(cowork, /Teamwork comments are interruptions too and never bypass this budget/);
   assert.match(routine, /Step 10: Close the Intelligence Cycle/);
   assert.match(routine, /Choose your own experiments when genuine curiosity earns one/);
   assert.match(routine, /learning-experiments\/choose/);
