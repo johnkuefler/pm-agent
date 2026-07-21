@@ -19,8 +19,30 @@ const EVIDENCE_TYPES = new Set([
   'meeting_record',
   'calendar_event',
   'run_observation',
+  'intelligence_cycle',
   'connector_failure',
 ]);
+
+const EVIDENCE_TYPES_BY_SCOPE = Object.freeze({
+  slack_inbox: ['slack_message', 'slack_thread', 'run_observation', 'connector_failure'],
+  email_inbox: ['email_message', 'run_observation', 'connector_failure'],
+  teamwork_deadlines: ['teamwork_task', 'teamwork_comment', 'run_observation', 'connector_failure'],
+  meeting_day: ['meeting_record', 'calendar_event', 'run_observation', 'connector_failure'],
+  run_shape: ['run_observation', 'intelligence_cycle', 'connector_failure'],
+});
+
+function resolutionContract() {
+  return {
+    outcomes: [true, false, 'unclear'],
+    evidence_types: [...EVIDENCE_TYPES],
+    evidence_types_by_scope: EVIDENCE_TYPES_BY_SCOPE,
+    validation: {
+      preview: 'POST /expectations/:id/resolve?validate_only=1',
+      commit: 'POST /expectations/:id/resolve?require_validation=1',
+      rule: 'Save one JSON payload, preview it, add the returned validation_commitment, then commit that same payload. Never probe the commit request.',
+    },
+  };
+}
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -69,13 +91,16 @@ function normalizeClaims(groups = [], idFactory) {
   return normalized;
 }
 
-function normalizeEvidence(evidence) {
+function normalizeEvidence(evidence, scope = null) {
   if (!Array.isArray(evidence) || evidence.length < 1 || evidence.length > 10) {
     throw new Error('each expectation resolution requires one to ten evidence references');
   }
   return evidence.map(item => {
     const type = String(item?.type || '').trim();
     if (!EVIDENCE_TYPES.has(type)) throw new Error(`invalid expectation evidence type: ${type || 'missing'}`);
+    if (scope && !EVIDENCE_TYPES_BY_SCOPE[scope]?.includes(type)) {
+      throw new Error(`expectation evidence type ${type} is not valid for ${scope}; allowed: ${EVIDENCE_TYPES_BY_SCOPE[scope]?.join(', ')}`);
+    }
     if (!item.id && !item.url) throw new Error('each expectation evidence reference requires id or url');
     return {
       type,
@@ -178,12 +203,14 @@ function collectionGate(forecasts = [], surprises = [], calibration = summarize(
 
 module.exports = {
   EVIDENCE_TYPES,
+  EVIDENCE_TYPES_BY_SCOPE,
   PROTOCOL_VERSION,
   SCOPES,
   commitment,
   normalizeClaims,
   normalizeEvidence,
   normalizeOutcome,
+  resolutionContract,
   scoreClaim,
   summarize,
   collectionGate,

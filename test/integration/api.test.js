@@ -687,7 +687,13 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     feedback_to: [{ type: attentionTarget.type, id: attentionTarget.id }],
   } });
   assert.equal(reentry.body.round.kind, 'reentry');
-  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete`, { method: 'PATCH', body: { summary: 'Integration cycle complete', actions: [{ type: 'integration_review', id: 'integration-review-1' }], self_report: 'The cycle is coherent.', handoff: 'Continue the integration story.', substrate_at_close: { updated_at: 'forged-close', vitals: { errors10: 999, uptimeMin: 1 } } } });
+  const closePayload = { summary: 'Integration cycle complete', actions: [{ type: 'integration_review', id: 'integration-review-1' }], self_report: 'The cycle is coherent.', handoff: 'Continue the integration story.', substrate_at_close: { updated_at: 'forged-close', vitals: { errors10: 999, uptimeMin: 1 } } };
+  const closePreview = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete?validate_only=1`, { method: 'PATCH', body: closePayload });
+  assert.equal(closePreview.response.status, 200);
+  assert.equal(closePreview.body.validation.valid, true);
+  assert.equal((await request('/experience-stream')).body.continuity.open, 1,
+    'cycle-close validation must not close the experience moment');
+  const finishedCycle = await request(`/intelligence/cycles/${cycle.body.cycle.id}/complete?require_validation=1`, { method: 'PATCH', body: { ...closePayload, validation_commitment: closePreview.body.validation_commitment } });
   assert.equal(finishedCycle.body.cycle.status, 'completed');
   const integratedSelf = await request('/integrated-self');
   assert.equal(integratedSelf.response.status, 200);

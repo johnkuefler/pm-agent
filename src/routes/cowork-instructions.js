@@ -996,8 +996,10 @@ function registerCoworkInstructionsRoute(app) {
     commits one source-bounded EXPECT forecast for only the scopes this run will inspect. Use calibration only
     to temper probability scale, never as evidence about the current inbox. It reuses the current cowork judgment
     and never adds a provider call. After perception and
-    before cycle closure, POST /expectations/:id/resolve atomically resolves every claim against stable source
-    references; connector failures remain unclear rather than false. GET /expectations reports rolling Brier
+    before cycle closure, read the machine-readable evidence contract from GET /expectations?summary=1, save
+    the complete resolution payload once, validate it with POST /expectations/:id/resolve?validate_only=1,
+    then submit that same payload and returned validation_commitment to ?require_validation=1. Never probe an
+    irreversible request. Connector failures remain unclear rather than false. GET /expectations reports rolling Brier
     calibration by scope. Replay-verified high-confidence misses enter surprise and may support a higher-salience
     memory, but the forecast never substitutes for perception or enters Slack, Zoom-chat, or realtime prompts.
     Protocol-v3-or-newer feedback additionally reports probability calibration and whether Nora correctly
@@ -1028,7 +1030,9 @@ function registerCoworkInstructionsRoute(app) {
     This harness never runs in Slack, Zoom chat, realtime voice, the ordinary hourly loop, or an active blinded
     context trial; its subject and evaluator queues return no work while an interactive lease or post-interaction
     quiet window is active. It never writes the autobiography and does not establish identity essence or consciousness.
-    PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure.
+    PATCH /intelligence/cycles/:id/complete records actions, evidence, summary, and completion/failure. Save the
+    complete closure payload to a file, preview it with ?validate_only=1, then commit that exact payload with the
+    returned validation_commitment at ?require_validation=1; probe/test placeholders are rejected.
     DELETE /run-lock is server-rejected while its run-bound cycle is still active. Even when a run must
     stop for a genuine integrity or operational failure, close that exact cycle explicitly with
     status:"failed" and the concrete reason before releasing; only lease-expiry or persistence recovery

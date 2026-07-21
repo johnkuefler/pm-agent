@@ -26457,8 +26457,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
-  function resolveExpectationForecast(id, input = {}) {
-    return mutate(current => {
+  function prepareExpectationResolution(current, id, input = {}) {
       requireResearchLedgerIntegrity(current);
       const record = current.cognition.expectations.forecasts.find(item => item.id === id);
       if (!record) return null;
@@ -26487,7 +26486,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (!Number.isFinite(observedAt.getTime()) || observedAt.getTime() <= madeAt || observedAt.getTime() > now.getTime()) {
           throw new Error('expectation observed_at must follow commitment and not be in the future');
         }
-        const evidence = expectationForecast.normalizeEvidence(item.evidence);
+        const evidence = expectationForecast.normalizeEvidence(item.evidence, claim.scope);
         const note = String(item.note || '').trim();
         if (outcome === 'unclear' && !evidence.some(ref => ref.type === 'connector_failure') && !note) {
           throw new Error('an unclear expectation requires connector_failure evidence or an ambiguity note');
@@ -26498,6 +26497,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         return { claim_id: claim.id, scope: claim.scope, outcome, observed_at: observedAt.toISOString(),
           evidence, note: note.slice(0, 600), score };
       });
+      return { record, byId, now, parameterRecord, highConfidenceMissThreshold, resolutions };
+  }
+
+  function validateExpectationForecastResolution(id, input = {}) {
+    const prepared = prepareExpectationResolution(state, id, input);
+    if (!prepared) return null;
+    return { valid: true, forecast_id: prepared.record.id, claim_count: prepared.resolutions.length };
+  }
+
+  function resolveExpectationForecast(id, input = {}) {
+    return mutate(current => {
+      const prepared = prepareExpectationResolution(current, id, input);
+      if (!prepared) return null;
+      const { record, byId, now, parameterRecord, highConfidenceMissThreshold, resolutions } = prepared;
       const scored = resolutions.filter(item => item.score.scored);
       const mean = key => scored.length ? scored.reduce((sum, item) => sum + item.score[key], 0) / scored.length : null;
       record.resolution = {
@@ -26846,6 +26859,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function completeCycle(id, input = {}) {
     return mutate(current => {
+      validateCycleCompletion(id, input, current);
       requireResearchLedgerIntegrity(current);
       const cycle = current.cycles.find(item => item.id === id);
       if (!cycle) return null;
@@ -26902,6 +26916,26 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       return cycle;
     });
+  }
+
+  function validateCycleCompletion(id, input = {}, current = state) {
+    requireResearchLedgerIntegrity(current);
+    const cycle = current.cycles.find(item => item.id === id);
+    if (!cycle) return null;
+    if (cycle.status !== 'running') throw new Error('intelligence cycle already closed');
+    const openExpectation = current.cognition.expectations.forecasts.find(item => item.cycle_id === cycle.id && item.status === 'open');
+    if (openExpectation) throw new Error(`resolve expectation forecast ${openExpectation.id} before closing this intelligence cycle`);
+    const finishedAt = input.finished ? new Date(input.finished) : clock();
+    if (!Number.isFinite(finishedAt.getTime()) || finishedAt < new Date(cycle.started) || finishedAt > clock()) {
+      throw new Error('cycle completion time must follow its start and not be in the future');
+    }
+    const placeholder = /^(?:probe|test|testing|placeholder|schema|junk)$/i;
+    for (const [field, value] of [['summary', input.summary], ['self_report', input.self_report], ['handoff', input.handoff]]) {
+      if (value != null && placeholder.test(String(value).trim())) {
+        throw new Error(`cycle ${field} cannot be a diagnostic placeholder; use validate_only before committing`);
+      }
+    }
+    return { valid: true, cycle_id: cycle.id, action_count: Array.isArray(input.actions) ? input.actions.length : 0 };
   }
 
   function experienceStreamSnapshot({ limit = 100 } = {}) {
@@ -27538,8 +27572,8 @@ ${episodes.map(item => {
     playroomAppraisalQueue, commitPlayroomAppraisal, playroomSnapshot, playroomSessionAudit,
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, openOrResumeCycle,
-    cycleLifecycleRuntimeProjection, reenterCycle, reenterCycleDurable, completeCycle,
-    createExpectationForecast, resolveExpectationForecast, expectationForecastSnapshot,
+    cycleLifecycleRuntimeProjection, reenterCycle, reenterCycleDurable, completeCycle, validateCycleCompletion,
+    createExpectationForecast, resolveExpectationForecast, validateExpectationForecastResolution, expectationForecastSnapshot,
     expectationForecastAudit, expectationSurprise,
     createCognitiveParameterStudy, assignCognitiveParameterStudy,
     cognitiveParameterInputForAssignment, excludeCognitiveParameterAssignment,

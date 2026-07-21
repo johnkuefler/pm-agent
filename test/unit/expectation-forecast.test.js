@@ -53,12 +53,23 @@ test('EXPECT is preregistered after the self-forecast, resolved in the same cycl
   assert.throws(() => store.completeCycle(started.cycle.id, { summary: 'too early' }), /resolve expectation forecast/);
   now = new Date('2026-07-17T14:03:00.000Z');
   const [slackClaim, emailClaim] = forecast.scopes.flatMap(group => group.claims);
-  const resolved = store.resolveExpectationForecast(forecast.id, { claims: [
+  const resolutionPayload = { claims: [
     { claim_id: slackClaim.id, outcome: false, observed_at: now.toISOString(),
       evidence: [{ type: 'run_observation', id: 'slack-scan-1' }] },
     { claim_id: emailClaim.id, outcome: 'unclear', observed_at: now.toISOString(),
       evidence: [{ type: 'connector_failure', id: 'gmail-invalidated-1' }] },
-  ] });
+  ] };
+  assert.deepEqual(store.validateExpectationForecastResolution(forecast.id, resolutionPayload), {
+    valid: true, forecast_id: forecast.id, claim_count: 2,
+  });
+  assert.equal(store.expectationForecastSnapshot().forecasts[0].status, 'open',
+    'validation must not resolve the one-shot forecast');
+  assert.throws(() => store.validateExpectationForecastResolution(forecast.id, { claims: [
+    { ...resolutionPayload.claims[0], evidence: [{ type: 'email_message', id: 'wrong-scope' }] },
+    resolutionPayload.claims[1],
+  ] }), /not valid for slack_inbox/);
+  assert.equal(store.expectationForecastSnapshot().forecasts[0].status, 'open');
+  const resolved = store.resolveExpectationForecast(forecast.id, resolutionPayload);
   assert.equal(resolved.audit.complete_chain_verified, true);
   assert.equal(resolved.resolution.score.scored, 1);
   assert.equal(resolved.resolution.score.unclear, 1);
@@ -70,6 +81,12 @@ test('EXPECT is preregistered after the self-forecast, resolved in the same cycl
   assert.equal(snapshot.report.rolling_30_day.overall.n, 1);
   assert.equal(snapshot.report.rolling_30_day.overall.direction, 'overconfident');
   assert.equal(snapshot.report.collection_gate.ready, false);
+  assert.throws(() => store.completeCycle(started.cycle.id, { summary: 'probe', handoff: 'probe' }),
+    /diagnostic placeholder/);
+  assert.equal(store.list('cycles').find(item => item.id === started.cycle.id).status, 'running');
+  assert.deepEqual(store.validateCycleCompletion(started.cycle.id, {
+    summary: 'Perception completed and EXPECT resolved.', actions: [],
+  }), { valid: true, cycle_id: started.cycle.id, action_count: 0 });
   store.completeCycle(started.cycle.id, { summary: 'Perception completed and EXPECT resolved.', actions: [] });
   await store.persistStrict();
 
@@ -144,6 +161,10 @@ test('EXPECT exposes compact calibration before forecast formation without addin
   const instructions = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes',
     'cowork-instructions.js'), 'utf8');
   assert.match(routes, /req\.query\.summary === '1'[\s\S]*epistemic_status:[\s\S]*report:/);
+  assert.match(routes, /resolution_contract: expectationForecast\.resolutionContract/);
+  assert.match(routes, /validate_only[\s\S]*validation_commitment[\s\S]*require_validation/);
+  assert.deepEqual(expectationForecast.resolutionContract().evidence_types_by_scope.run_shape,
+    ['run_observation', 'intelligence_cycle', 'connector_failure']);
   assert.ok(routine.indexOf('GET /expectations?summary=1')
     < routine.indexOf('POST /expectations`'),
   'calibration must be available before the same invocation commits its forecast');

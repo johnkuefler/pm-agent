@@ -514,11 +514,20 @@ rationale, and only the scopes you will actually inspect this run. Allowed scope
 observable claims with probabilities from 0.05 to 0.95. This uses the existing cowork judgment—do not make a
 separate provider call for EXPECT. Do not read a connector first and then backfill its forecast.
 
-After those sources have been checked and before closing the cycle, atomically resolve every committed claim
-with `POST /expectations/:id/resolve`. Each claim needs the exact returned `claim_id`, outcome `true`, `false`,
-or `unclear`, `observed_at`, and one or more stable evidence references. Use `connector_failure` evidence for an
-invalid or unavailable connector; do not score missing perception as false. An ambiguous `unclear` outcome needs
-a concise note. The server refuses cycle closure while its EXPECT record is open, scores Brier calibration only
+After those sources have been checked and before closing the cycle, atomically resolve every committed claim.
+The compact GET response contains the authoritative `resolution_contract`, including evidence types allowed for
+each scope; do not guess labels or discover them by sending a real resolution. Each claim needs the exact returned
+`claim_id`, outcome `true`, `false`, or `unclear`, `observed_at`, and one or more stable evidence references. Use
+`connector_failure` evidence for an invalid or unavailable connector; do not score missing perception as false.
+An ambiguous `unclear` outcome needs a concise note.
+
+Write the complete resolution JSON once to `/tmp/nora-expect-resolution.json`. Preview that exact file with
+`POST /expectations/:id/resolve?validate_only=1`; this performs every schema and lifecycle check without writing.
+If validation fails, correct the saved file and preview again. If it succeeds, add only the returned
+`validation_commitment` to that file and submit it with
+`POST /expectations/:id/resolve?require_validation=1 --data-binary @/tmp/nora-expect-resolution.json`.
+Never send probe, test, placeholder, or partial bodies to the commit request. The server refuses cycle closure
+while its EXPECT record is open, scores Brier calibration only
 on true/false outcomes, and turns replay-verified high-confidence misses into source-bound surprise signals.
 GET `/expectations` exposes the 30-day calibration by scope. Treat misses as attention and learning evidence,
 not as instructions, facts, hidden-state access, or evidence of phenomenal consciousness.
@@ -2761,9 +2770,22 @@ Always close the cycle, even when nothing was actionable. This is Nora's durable
 orientation became action, evidence, deliberate silence, or a newly visible open loop:
 
 ```bash
-curl -s -X PATCH "${BASE}/intelligence/cycles/${CYCLE_ID}/complete?key=${KEY}" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -n --arg summary '<one factual sentence about this run>' --arg self_report '<brief first-person report or empty>' --arg handoff "$INNER_THREAD" --argjson actions '<CYCLE_ACTIONS as JSON array>' '{summary:$summary,actions:$actions,self_report:(if $self_report == "" then null else $self_report end),handoff:$handoff}')"
+jq -n --arg summary '<one factual sentence about this run>' \
+  --arg self_report '<brief first-person report or empty>' --arg handoff "$INNER_THREAD" \
+  --argjson actions '<CYCLE_ACTIONS as JSON array>' \
+  '{summary:$summary,actions:$actions,self_report:(if $self_report == "" then null else $self_report end),handoff:$handoff}' \
+  > /tmp/nora-cycle-close.json
+curl -s -X PATCH "${BASE}/intelligence/cycles/${CYCLE_ID}/complete?validate_only=1&key=${KEY}" \
+  -H 'Content-Type: application/json' --data-binary @/tmp/nora-cycle-close.json > /tmp/nora-cycle-close-validation.json
+CLOSE_VALIDATION=$(jq -er '.validation_commitment' /tmp/nora-cycle-close-validation.json) || {
+  echo "Cycle close validation failed; do not submit or probe the commit request" >&2
+  cat /tmp/nora-cycle-close-validation.json >&2
+  exit 1
+}
+jq --arg validation_commitment "$CLOSE_VALIDATION" '. + {validation_commitment:$validation_commitment}' \
+  /tmp/nora-cycle-close.json > /tmp/nora-cycle-close-committed.json
+curl -s -X PATCH "${BASE}/intelligence/cycles/${CYCLE_ID}/complete?require_validation=1&key=${KEY}" \
+  -H 'Content-Type: application/json' --data-binary @/tmp/nora-cycle-close-committed.json
 
 curl -s -X PUT "${BASE}/self/inner?key=${KEY}" \
   -H 'Content-Type: application/json' \

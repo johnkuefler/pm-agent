@@ -1,6 +1,7 @@
 'use strict';
 
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
+const expectationForecast = require('../intelligence/expectation-forecast');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
 function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
@@ -471,6 +472,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         since: req.query.since || null });
       if (req.query.summary === '1') return res.json({
         epistemic_status: snapshot.epistemic_status, report: snapshot.report,
+        resolution_contract: expectationForecast.resolutionContract(),
       });
       return res.json(snapshot);
     }
@@ -488,7 +490,20 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.post('/expectations/:id/resolve', requireAuth, async (req, res) => {
     let forecast = null;
     try {
-      forecast = store.resolveExpectationForecast(req.params.id, req.body || {});
+      const validationPayload = { ...(req.body || {}) };
+      delete validationPayload.validation_commitment;
+      const validationCommitment = expectationForecast.commitment({
+        operation: 'resolve_expectation', id: req.params.id, payload: validationPayload,
+      });
+      if (req.query.validate_only === '1') {
+        const validation = store.validateExpectationForecastResolution(req.params.id, validationPayload);
+        if (!validation) return res.status(404).json({ error: 'expectation forecast not found' });
+        return res.json({ ok: true, validation, validation_commitment: validationCommitment });
+      }
+      if (req.query.require_validation === '1' && req.body?.validation_commitment !== validationCommitment) {
+        return res.status(400).json({ error: 'expectation resolution validation_commitment does not match this exact payload' });
+      }
+      forecast = store.resolveExpectationForecast(req.params.id, validationPayload);
       if (!forecast) return res.status(404).json({ error: 'expectation forecast not found' });
       await store.persistStrict();
       res.json({ ok: true, forecast });
@@ -496,9 +511,22 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
     try {
+      const validationPayload = { ...(req.body || {}) };
+      delete validationPayload.validation_commitment;
+      const validationCommitment = expectationForecast.commitment({
+        operation: 'complete_cycle', id: req.params.id, payload: validationPayload,
+      });
+      if (req.query.validate_only === '1') {
+        const validation = store.validateCycleCompletion(req.params.id, validationPayload);
+        if (!validation) return res.status(404).json({ error: 'intelligence cycle not found' });
+        return res.json({ ok: true, validation, validation_commitment: validationCommitment });
+      }
+      if (req.query.require_validation === '1' && req.body?.validation_commitment !== validationCommitment) {
+        return res.status(400).json({ error: 'cycle completion validation_commitment does not match this exact payload' });
+      }
       const authoritativeInputs = getCognitiveInputs();
       const cycle = store.completeCycle(req.params.id, {
-        ...(req.body || {}), substrate_at_close: authoritativeInputs.soma || null,
+        ...validationPayload, substrate_at_close: authoritativeInputs.soma || null,
       });
       if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
       progressHourlyCycle(req.params.id, {

@@ -6,6 +6,7 @@ const path = require('node:path');
 const { performance } = require('node:perf_hooks');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const interactivePerformance = require('../../src/intelligence/interactive-performance');
+const cognitiveParameters = require('../../src/intelligence/cognitive-parameters');
 
 test('dashboard summary stays compact and advances with store mutations', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-dashboard-summary-'));
@@ -38,7 +39,8 @@ test('dashboard summary stays compact and advances with store mutations', async 
   assert.equal(initial.cognition.reflection.viewpoint_usefulness_calibrated, 0);
   assert.equal(initial.cognition.reflection.viewpoint_usefulness_needs_caution, 0);
   assert.match(initial.brain.reflection.evidence, /0 position-bound usefulness observations/);
-  assert.equal(initial.cognition.cognitive_parameters.parameter_count, 111);
+  assert.equal(initial.cognition.cognitive_parameters.parameter_count,
+    Object.keys(cognitiveParameters.DEFINITIONS).length);
   assert.equal(initial.cognition.cognitive_parameters.default_equivalent, true);
   assert.equal(initial.cognition.cognitive_parameters.autonomous_tuning_enabled, false);
   assert.equal(initial.cognition.cognitive_parameters.integrity_verified, true);
