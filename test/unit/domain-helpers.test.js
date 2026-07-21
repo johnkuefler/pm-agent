@@ -82,6 +82,8 @@ test('Recall bot config preserves webhook and voice-agent contracts', () => {
   const config = helpers.buildBotConfig('nora.example.com', 'token-123', 'Nora Test');
   assert.equal(config.bot_name, 'Nora Test');
   assert.match(config.output_media.camera.config.url, /^https:\/\/nora\.example\.com\/voice-agent/);
+  assert.match(config.output_media.camera.config.url, /diagnostics=0/);
+  assert.doesNotMatch(config.output_media.camera.config.url, /visual=/);
   assert.equal(config.recording_config.realtime_endpoints.length, 4);
   const participantHook = config.recording_config.realtime_endpoints.find(e => e.url && e.url.endsWith('/webhook/participant'));
   assert.ok(participantHook, 'participant join/leave webhook is subscribed');
@@ -89,19 +91,14 @@ test('Recall bot config preserves webhook and voice-agent contracts', () => {
   assert.equal(config.webhook_url, 'https://nora.example.com/webhook/status');
 });
 
-test('expressive meeting face uses on-brand image states with blinking', () => {
+test('meeting video uses plain avatar with dashboard-controlled diagnostics', () => {
   const voiceAgentHtml = fs.readFileSync(path.join(__dirname, '../../voice-agent.html'), 'utf8');
-  for (const state of ['listening', 'thinking', 'speaking', 'smiling', 'muted', 'blink']) {
-    assert.match(voiceAgentHtml, new RegExp(`/assets/nora-face/nora-${state}\\.jpg`));
-    assert.ok(fs.existsSync(path.join(__dirname, `../../public/nora-face/nora-${state}.jpg`)), `${state} face frame exists`);
-  }
-  assert.match(voiceAgentHtml, /@keyframes blinkFrame/);
-  assert.match(voiceAgentHtml, /@keyframes eyelidBlink/);
-  assert.match(voiceAgentHtml, /class="face-blink"/);
-  assert.match(voiceAgentHtml, /\.face-mode\.speaking \.face-blink span/);
-  assert.match(voiceAgentHtml, /:not\(\.speaking\):not\(\.muted\) \.face-frame\.blink/);
-  assert.doesNotMatch(voiceAgentHtml, /class="eye/);
-  assert.doesNotMatch(voiceAgentHtml, /class="mouth/);
+  assert.match(voiceAgentHtml, /class="avatar-letter">N/);
+  assert.match(voiceAgentHtml, /diagnostics-on/);
+  assert.match(voiceAgentHtml, /nora\.meeting_diagnostics/);
+  assert.doesNotMatch(voiceAgentHtml, /nora-face/);
+  assert.doesNotMatch(voiceAgentHtml, /face-frame/);
+  assert.doesNotMatch(voiceAgentHtml, /face-blink/);
 });
 
 test('intelligence grounding augments rather than replaces Nora expressive voice', () => {

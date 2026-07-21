@@ -2683,7 +2683,7 @@ function voiceMeetingContextPacket(session, { systemPrompt = '', voiceTools = []
     mode: session?.dummy ? 'test agent' : session?.oneOnOne ? 'one-on-one' : participants >= 3 ? 'group listening' : 'meeting',
     eagerness: session?.currentEagerness || null,
     muted: !!session?.muted,
-    visual_mode: normalizeVoiceVisualMode(session?.voiceVisualMode),
+    diagnostics_visible: !!session?.meetingDiagnostics,
     project_hint: session?.project_hint || '',
     has_mandate: !!session?.meetingMeta?.mandate,
     prompt_chars: systemPrompt ? systemPrompt.length : null,
@@ -3502,16 +3502,11 @@ console.log(`🔑 Loaded ${Object.keys(sessionTokens).length} persisted session 
 // Shared builder for the Recall bot config (used by manual /join and calendar
 // auto-join). Includes everything except meeting_url, which Recall auto-populates
 // for calendar-event bots and is passed explicitly for direct bot creates.
-function normalizeVoiceVisualMode(value) {
-  const mode = String(value || '').trim().toLowerCase();
-  return mode === 'face' || mode === 'expressive_face' ? 'face' : 'signal';
-}
-
 function buildBotConfig(serverHost, sessionToken, botName = 'Nora', opts = {}) {
   const SERVER_URL = `https://${serverHost}`;
   const WS_URL = `wss://${serverHost}`;
-  const visualMode = normalizeVoiceVisualMode(opts.visualMode);
-  const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&visual=${encodeURIComponent(visualMode)}`;
+  const diagnostics = opts.diagnostics ? '1' : '0';
+  const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&diagnostics=${diagnostics}`;
   return {
     bot_name: botName,
     output_media: {
@@ -3548,7 +3543,7 @@ function newSession(projectHint = null, opts = {}) {
   // oneOnOneAuto: while true, oneOnOne is auto-managed from live participant presence (on at join /
   // ≤1 human, off once a 2nd human is present). A manual toggle on the dashboard turns auto off so
   // the human's choice sticks. participants: the set of present HUMANS (bot excluded), keyed by id.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, utterancesSinceEval: 0, leanIn: true, voiceVisualMode: normalizeVoiceVisualMode(opts.visualMode), speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, utterancesSinceEval: 0, leanIn: true, meetingDiagnostics: !!opts.meetingDiagnostics, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -3572,7 +3567,7 @@ function extractMeetingUrl(text) {
 
 // Core join logic, shared by POST /join (dashboard button) and the Slack "join a meeting" tool.
 // Creates the Recall bot, wires the session (project hint, sender, mandate), returns the bot id.
-async function startMeetingJoin({ meeting_url, project, sender, mandate, visual_mode, source = 'manual_join', host }) {
+async function startMeetingJoin({ meeting_url, project, sender, mandate, meeting_diagnostics, source = 'manual_join', host }) {
   if (!meeting_url) throw new Error('meeting_url is required');
   // Normalize project hint to a canonical project name when it matches; else pass through as a hint.
   let projectHint = null;
@@ -3582,16 +3577,16 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, visual_
     projectHint = match ? match.name : trimmed;
   }
   const sessionToken = crypto.randomBytes(32).toString('hex');
-  const visualMode = normalizeVoiceVisualMode(visual_mode);
-  const botConfig = buildBotConfig(host || publicHost(), sessionToken, 'Nora', { visualMode });
+  const diagnostics = meeting_diagnostics === true;
+  const botConfig = buildBotConfig(host || publicHost(), sessionToken, 'Nora', { diagnostics });
   const botRes = await axios.post(`${RECALL_BASE}/bot/`, { meeting_url, ...botConfig }, { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
   const botId = botRes.data.id;
   activeBotId = botId;
   sessionTokens[sessionToken] = botId;
   persistSessionTokens();
-  if (!sessions[botId]) sessions[botId] = newSession(projectHint, { visualMode });
+  if (!sessions[botId]) sessions[botId] = newSession(projectHint, { meetingDiagnostics: diagnostics });
   else if (projectHint) sessions[botId].project_hint = projectHint;
-  sessions[botId].voiceVisualMode = visualMode;
+  sessions[botId].meetingDiagnostics = diagnostics;
   sessions[botId].trialUnitKey = botId;
   // Capture sender identity so Nora knows who sent her in — usually the person she'll talk to.
   const senderName = (typeof sender === 'string' && sender.trim()) ? sender.trim() : null;
@@ -3601,14 +3596,14 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, visual_
   const mandateText = (typeof mandate === 'string' && mandate.trim()) ? mandate.trim().slice(0, 2000) : null;
   if (mandateText) sessions[botId].meetingMeta = { ...(sessions[botId].meetingMeta || {}), mandate: mandateText };
   console.log(`✅ Nora joined via output_media. Bot ID: ${botId} (source: ${source})${projectHint ? ` (project hint: ${projectHint})` : ''}${senderName ? ` (sender: ${senderName})` : ''}${mandateText ? ' (with mandate)' : ''}`);
-  return { bot_id: botId, project_hint: projectHint || null, sender: senderName, visual_mode: visualMode };
+  return { bot_id: botId, project_hint: projectHint || null, sender: senderName, meeting_diagnostics: diagnostics };
 }
 
 app.post('/join', requireAuth, async (req, res) => {
   try {
-    const { meeting_url, project, sender, mandate, visual_mode } = req.body;
+    const { meeting_url, project, sender, mandate, meeting_diagnostics } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
-    const result = await startMeetingJoin({ meeting_url, project, sender, mandate, visual_mode, host: req.get('host') });
+    const result = await startMeetingJoin({ meeting_url, project, sender, mandate, meeting_diagnostics, host: req.get('host') });
     res.json(result);
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
@@ -4121,6 +4116,15 @@ function applyMute(session, enabled) {
   }
 }
 
+function applyMeetingDiagnostics(session, enabled) {
+  if (!session) return;
+  session.meetingDiagnostics = enabled;
+  console.log(`🧭 Meeting diagnostics ${enabled ? 'enabled' : 'disabled'}`);
+  if (session.clientWs && session.clientWs.readyState === WebSocket.OPEN) {
+    session.clientWs.send(JSON.stringify({ type: 'nora.meeting_diagnostics', enabled }));
+  }
+}
+
 // Detect an in-meeting "mute/unmute Nora" chat command. Requires "nora" plus a clear directive, and
 // ignores questions and long sentences, so normal chat that happens to mention muting doesn't flip
 // her. Returns 'mute' | 'unmute' | null.
@@ -4451,6 +4455,23 @@ app.post('/lean-in', requireAuth, (req, res) => {
 });
 
 // Mute mode toggle — Nora listens and captures action items but does not speak
+// Meeting diagnostics toggle: shows/hides the in-meeting signal panels in Nora's video feed.
+// This is purely visual operator observability; it does not change her prompt, tools, or meeting behavior.
+app.get('/meeting-diagnostics', requireAuth, (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.json({ meetingDiagnostics: false, active_session: false });
+  res.json({ meetingDiagnostics: !!sessions[bot_id].meetingDiagnostics, bot_id });
+});
+
+app.post('/meeting-diagnostics', requireAuth, (req, res) => {
+  const bot_id = activeBotId;
+  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
+  const session = sessions[bot_id];
+  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !session.meetingDiagnostics;
+  applyMeetingDiagnostics(session, enabled);
+  res.json({ ok: true, meetingDiagnostics: enabled, bot_id });
+});
+
 app.get('/mute', requireAuth, (req, res) => {
   const bot_id = activeBotId;
   if (!bot_id || !sessions[bot_id]) return res.json({ muted: false, active_session: false });

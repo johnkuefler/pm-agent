@@ -253,6 +253,7 @@ GET /cognitive-parameters
 GET /cognitive-parameters/history
 PUT /cognitive-parameters
 POST /cognitive-parameters/rollback
+POST /cognitive-parameters/repair-schema
 GET /cognitive-parameter-studies
 GET /cognitive-parameter-studies/:id/research
 POST /cognitive-parameter-studies
@@ -299,6 +300,8 @@ GET /one-on-one
 POST /one-on-one
 GET /lean-in
 POST /lean-in
+GET /meeting-diagnostics
+POST /meeting-diagnostics
 GET /mute
 POST /mute
 POST /webhook/participant

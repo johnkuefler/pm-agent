@@ -29,11 +29,14 @@
       width: 100%;
       height: 100%;
       display: grid;
-      grid-template-columns: 286px 1fr 286px;
+      grid-template-columns: 1fr;
       align-items: center;
       gap: 28px;
       padding: 46px 54px;
       text-align: center;
+    }
+    body.diagnostics-on .container {
+      grid-template-columns: 286px 1fr 286px;
     }
     .main-stage { min-width: 0; }
     .avatar {
@@ -77,94 +80,7 @@
     .avatar.listening {
       box-shadow: 0 0 0 10px rgba(110, 231, 183, 0.35), 0 0 0 22px rgba(110, 231, 183, 0.18);
     }
-    .face {
-      display: none;
-      position: absolute;
-      inset: 0;
-      overflow: hidden;
-      border-radius: inherit;
-      background: #111827;
-    }
-    .face::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      border-radius: inherit;
-      pointer-events: none;
-      box-shadow:
-        inset 0 0 0 1px rgba(255,255,255,0.16),
-        inset 0 -40px 80px rgba(7,10,25,0.28);
-    }
-    .face-frame {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      opacity: 0;
-      transform: scale(1.018);
-      transition: opacity 0.22s ease, transform 0.42s ease;
-    }
     .avatar-letter { display: block; }
-    .face-mode .avatar-letter { display: none; }
-    .face-mode .face { display: block; animation: breathe 4.2s ease-in-out infinite; }
-    .face-mode .face-frame.listening { opacity: 1; transform: scale(1.01); }
-    .face-mode.thinking .face-frame,
-    .face-mode.speaking .face-frame,
-    .face-mode.smiling .face-frame,
-    .face-mode.muted .face-frame { opacity: 0; }
-    .face-mode.thinking .face-frame.thinking,
-    .face-mode.speaking .face-frame.speaking,
-    .face-mode.smiling .face-frame.smiling,
-    .face-mode.muted .face-frame.muted { opacity: 1; transform: scale(1.01); }
-    .face-mode:not(.speaking):not(.muted) .face-frame.blink {
-      animation: blinkFrame 5.8s infinite;
-      transform: scale(1.01);
-    }
-    .face-blink {
-      position: absolute;
-      inset: 0;
-      z-index: 2;
-      pointer-events: none;
-    }
-    .face-blink span {
-      position: absolute;
-      top: 38%;
-      width: 17%;
-      height: 7%;
-      border-radius: 999px;
-      background:
-        radial-gradient(ellipse at 50% 15%, rgba(255,255,255,0.08), transparent 54%),
-        linear-gradient(180deg, rgba(8, 13, 32, 0.94), rgba(17, 24, 48, 0.92));
-      box-shadow: 0 2px 6px rgba(4, 8, 18, 0.28);
-      opacity: 0;
-      transform: scaleY(0.12);
-      transform-origin: center;
-      animation: eyelidBlink 4.8s infinite;
-    }
-    .face-blink span:first-child { left: 32%; }
-    .face-blink span:last-child { right: 31%; animation-delay: 0.035s; }
-    .face-mode.speaking .face-blink span { animation-duration: 4.1s; }
-    .face-mode.muted .face-blink span { animation-duration: 6.7s; opacity: 0; }
-    .face-mode.speaking .face {
-      animation: speakingBob 0.72s ease-in-out infinite;
-    }
-    @keyframes breathe {
-      0%, 100% { transform: translateY(0) rotate(-0.5deg); }
-      50% { transform: translateY(-4px) rotate(0.5deg); }
-    }
-    @keyframes speakingBob {
-      0%, 100% { transform: translateY(0); }
-      50% { transform: translateY(-7px); }
-    }
-    @keyframes blinkFrame {
-      0%, 89%, 92%, 100% { opacity: 0; }
-      90%, 91% { opacity: 1; }
-    }
-    @keyframes eyelidBlink {
-      0%, 86%, 89%, 100% { opacity: 0; transform: scaleY(0.12); }
-      87%, 88% { opacity: 0.95; transform: scaleY(1); }
-    }
     @keyframes talk {
       from { height: 22px; top: 166px; }
       to { height: 48px; top: 156px; }
@@ -179,6 +95,7 @@
     .status.connected { color: #6ee7b7; }
     .status.error { color: #f87171; }
     .panel {
+      display: none;
       min-height: 260px;
       border: 1px solid rgba(255, 255, 255, 0.09);
       border-radius: 24px;
@@ -188,6 +105,7 @@
       text-align: left;
       backdrop-filter: blur(18px);
     }
+    body.diagnostics-on .panel { display: block; }
     .panel-title {
       color: rgba(238,238,238,0.74);
       font-size: 12px;
@@ -268,12 +186,13 @@
       white-space: nowrap;
     }
     .chips {
-      display: flex;
+      display: none;
       gap: 8px;
       justify-content: center;
       flex-wrap: wrap;
       margin-top: 22px;
     }
+    body.diagnostics-on .chips { display: flex; }
     .chip {
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 999px;
@@ -285,8 +204,6 @@
     .chip.active { color: #6ee7b7; border-color: rgba(110, 231, 183, 0.2); }
     @media (prefers-reduced-motion: reduce) {
       .avatar.speaking,
-      .face-mode .face,
-      .face-mode.speaking .face,
       .brainline::after { animation: none; }
     }
   </style>
@@ -307,15 +224,6 @@
     <main class="main-stage">
       <div id="avatar" class="avatar">
         <span class="avatar-letter">N</span>
-        <div id="face" class="face" aria-hidden="true">
-          <img class="face-frame listening" src="/assets/nora-face/nora-listening.jpg" alt="" />
-          <img class="face-frame thinking" src="/assets/nora-face/nora-thinking.jpg" alt="" />
-          <img class="face-frame speaking" src="/assets/nora-face/nora-speaking.jpg" alt="" />
-          <img class="face-frame smiling" src="/assets/nora-face/nora-smiling.jpg" alt="" />
-          <img class="face-frame muted" src="/assets/nora-face/nora-muted.jpg" alt="" />
-          <img class="face-frame blink" src="/assets/nora-face/nora-blink.jpg" alt="" />
-          <div class="face-blink" aria-hidden="true"><span></span><span></span></div>
-        </div>
       </div>
       <div class="name">Nora</div>
       <div class="role">PM Agent — LimeLight Marketing</div>
@@ -345,7 +253,7 @@
     const WS_URL = params.get('wss');
     const SERVER_URL = params.get('server');
     const SESSION_TOKEN = params.get('token');
-    const VISUAL_MODE = (params.get('visual') || 'signal').toLowerCase() === 'face' ? 'face' : 'signal';
+    let diagnosticsVisible = params.get('diagnostics') === '1';
 
     let BOT_ID = null;
     let isMuted = false;
@@ -379,9 +287,13 @@
     let responseStartedAt = 0;
     let settleVisualTimer = null;
 
-    if (VISUAL_MODE === 'face') {
-      document.body.classList.add('face-mode');
-      chips.mode.textContent = 'visual: expressive face';
+    setDiagnosticsVisible(diagnosticsVisible);
+
+    function setDiagnosticsVisible(enabled) {
+      diagnosticsVisible = !!enabled;
+      document.body.classList.toggle('diagnostics-on', diagnosticsVisible);
+      chips.mode.textContent = diagnosticsVisible ? 'diagnostics: visible' : 'diagnostics: hidden';
+      note(diagnosticsVisible ? 'diagnostics shown' : 'diagnostics hidden');
     }
 
     function setVisualState(state) {
@@ -426,6 +338,7 @@
       if (context.mode) chips.mode.textContent = `mode: ${context.mode}`;
       if (context.eagerness) chips.eagerness.textContent = `turn gate: ${context.eagerness}`;
       if (context.model) chips.model.textContent = `voice model: ${context.model}`;
+      if (typeof context.diagnostics_visible === 'boolean') setDiagnosticsVisible(context.diagnostics_visible);
       if (Number.isFinite(Number(context.prompt_chars))) logs.memory.textContent = `Memory prompt: ${compactNumber(context.prompt_chars)} chars loaded`;
       if (Number.isFinite(Number(context.voice_tools))) logs.tools.textContent = `Live tools: ${context.voice_tools} read tools available`;
       if (context.project_hint) logs.transcript.textContent = `Project hint: ${context.project_hint}`;
@@ -706,6 +619,10 @@
             setSignal('muted', isMuted ? 'muted' : 'voice on', isMuted ? 'warn' : 'on');
             setVisualState(isSpeaking ? 'speaking' : 'listening');
             note(isMuted ? 'voice muted, still listening' : 'voice enabled');
+          }
+
+          if (msg.type === 'nora.meeting_diagnostics') {
+            setDiagnosticsVisible(!!msg.enabled);
           }
 
           if (msg.type === 'input_audio_buffer.speech_started') {
