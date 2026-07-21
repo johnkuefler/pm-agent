@@ -79,77 +79,51 @@
     }
     .face {
       display: none;
-      position: relative;
-      width: 210px;
-      height: 240px;
-      border-radius: 46% 46% 50% 50%;
-      background:
-        radial-gradient(circle at 34% 22%, rgba(255,255,255,0.18), transparent 20%),
-        linear-gradient(160deg, #f3e8ff, #c4b5fd 50%, #8b5cf6);
-      box-shadow: inset 0 -18px 46px rgba(76,29,149,0.22);
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      border-radius: inherit;
+      background: #111827;
     }
-    .face::before {
+    .face::after {
       content: "";
       position: absolute;
-      left: 34px;
-      right: 34px;
-      top: -18px;
-      height: 76px;
-      border-radius: 80px 80px 30px 30px;
-      background: linear-gradient(135deg, #312e81, #5b21b6);
-      box-shadow: 0 12px 30px rgba(49,46,129,0.25);
+      inset: 0;
+      border-radius: inherit;
+      pointer-events: none;
+      box-shadow:
+        inset 0 0 0 1px rgba(255,255,255,0.16),
+        inset 0 -40px 80px rgba(7,10,25,0.28);
+    }
+    .face-frame {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0;
+      transform: scale(1.018);
+      transition: opacity 0.22s ease, transform 0.42s ease;
     }
     .avatar-letter { display: block; }
     .face-mode .avatar-letter { display: none; }
-    .face-mode .face { display: block; animation: breathe 3.4s ease-in-out infinite; }
-    .eye {
-      position: absolute;
-      top: 100px;
-      width: 24px;
-      height: 34px;
-      border-radius: 50%;
-      background: #211342;
-      box-shadow: inset 0 4px 0 rgba(255,255,255,0.22);
-      transition: transform 0.25s ease, height 0.25s ease, border-radius 0.25s ease;
+    .face-mode .face { display: block; animation: breathe 4.2s ease-in-out infinite; }
+    .face-mode .face-frame.listening { opacity: 1; transform: scale(1.01); }
+    .face-mode.thinking .face-frame,
+    .face-mode.speaking .face-frame,
+    .face-mode.smiling .face-frame,
+    .face-mode.muted .face-frame { opacity: 0; }
+    .face-mode.thinking .face-frame.thinking,
+    .face-mode.speaking .face-frame.speaking,
+    .face-mode.smiling .face-frame.smiling,
+    .face-mode.muted .face-frame.muted { opacity: 1; transform: scale(1.01); }
+    .face-mode:not(.speaking):not(.muted) .face-frame.blink {
+      animation: blinkFrame 5.8s infinite;
+      transform: scale(1.01);
     }
-    .eye.left { left: 56px; }
-    .eye.right { right: 56px; }
-    .mouth {
-      position: absolute;
-      left: 82px;
-      top: 166px;
-      width: 46px;
-      height: 18px;
-      border-radius: 0 0 40px 40px;
-      border-bottom: 7px solid #211342;
-      transition: all 0.22s ease;
+    .face-mode.speaking .face {
+      animation: speakingBob 0.72s ease-in-out infinite;
     }
-    .cheek {
-      position: absolute;
-      top: 142px;
-      width: 30px;
-      height: 14px;
-      border-radius: 50%;
-      background: rgba(244, 114, 182, 0.18);
-      filter: blur(1px);
-    }
-    .cheek.left { left: 32px; }
-    .cheek.right { right: 32px; }
-    .face-mode.thinking .eye { transform: translateY(-2px) translateX(5px); height: 28px; }
-    .face-mode.thinking .mouth { width: 30px; left: 90px; height: 12px; border-radius: 40px; border-bottom-width: 5px; }
-    .face-mode.speaking .face { animation: speakingBob 0.55s ease-in-out infinite; }
-    .face-mode.speaking .mouth {
-      left: 84px;
-      top: 158px;
-      width: 42px;
-      height: 44px;
-      border: 7px solid #211342;
-      background: rgba(33,19,66,0.18);
-      border-radius: 50%;
-      animation: talk 0.28s ease-in-out infinite alternate;
-    }
-    .face-mode.muted .eye { height: 12px; border-radius: 999px; transform: translateY(9px); }
-    .face-mode.muted .mouth { width: 38px; left: 86px; height: 8px; border-bottom-width: 4px; opacity: 0.7; }
     @keyframes breathe {
       0%, 100% { transform: translateY(0) rotate(-0.5deg); }
       50% { transform: translateY(-4px) rotate(0.5deg); }
@@ -157,6 +131,10 @@
     @keyframes speakingBob {
       0%, 100% { transform: translateY(0); }
       50% { transform: translateY(-7px); }
+    }
+    @keyframes blinkFrame {
+      0%, 89%, 92%, 100% { opacity: 0; }
+      90%, 91% { opacity: 1; }
     }
     @keyframes talk {
       from { height: 22px; top: 166px; }
@@ -278,6 +256,8 @@
     .chip.active { color: #6ee7b7; border-color: rgba(110, 231, 183, 0.2); }
     @media (prefers-reduced-motion: reduce) {
       .avatar.speaking,
+      .face-mode .face,
+      .face-mode.speaking .face,
       .brainline::after { animation: none; }
     }
   </style>
@@ -296,7 +276,17 @@
     </aside>
 
     <main class="main-stage">
-      <div id="avatar" class="avatar"><span class="avatar-letter">N</span><div id="face" class="face"><span class="eye left"></span><span class="eye right"></span><span class="cheek left"></span><span class="cheek right"></span><span class="mouth"></span></div></div>
+      <div id="avatar" class="avatar">
+        <span class="avatar-letter">N</span>
+        <div id="face" class="face" aria-hidden="true">
+          <img class="face-frame listening" src="/assets/nora-face/nora-listening.jpg" alt="" />
+          <img class="face-frame thinking" src="/assets/nora-face/nora-thinking.jpg" alt="" />
+          <img class="face-frame speaking" src="/assets/nora-face/nora-speaking.jpg" alt="" />
+          <img class="face-frame smiling" src="/assets/nora-face/nora-smiling.jpg" alt="" />
+          <img class="face-frame muted" src="/assets/nora-face/nora-muted.jpg" alt="" />
+          <img class="face-frame blink" src="/assets/nora-face/nora-blink.jpg" alt="" />
+        </div>
+      </div>
       <div class="name">Nora</div>
       <div class="role">PM Agent — LimeLight Marketing</div>
       <div id="status" class="status">Connecting...</div>
@@ -357,6 +347,7 @@
     let isSpeaking = false;
     let scheduledEndTime = 0;
     let responseStartedAt = 0;
+    let settleVisualTimer = null;
 
     if (VISUAL_MODE === 'face') {
       document.body.classList.add('face-mode');
@@ -364,9 +355,22 @@
     }
 
     function setVisualState(state) {
+      if (settleVisualTimer) {
+        clearTimeout(settleVisualTimer);
+        settleVisualTimer = null;
+      }
       document.body.classList.toggle('thinking', state === 'thinking');
       document.body.classList.toggle('speaking', state === 'speaking');
+      document.body.classList.toggle('smiling', state === 'smiling');
       document.body.classList.toggle('muted', isMuted);
+    }
+
+    function settleVisualState(state = 'listening', delayMs = 900) {
+      if (settleVisualTimer) clearTimeout(settleVisualTimer);
+      settleVisualTimer = setTimeout(() => {
+        settleVisualTimer = null;
+        setVisualState(isMuted ? 'muted' : state);
+      }, delayMs);
     }
 
     function setSignal(key, value, tone = '') {
@@ -719,7 +723,8 @@
             const elapsed = responseStartedAt ? `${Date.now() - responseStartedAt}ms` : 'done';
             setSignal('thinking', 'quiet', '');
             setSignal('speaking', isMuted ? 'chat posted' : 'complete', isMuted ? 'warn' : '');
-            setVisualState('listening');
+            setVisualState(isMuted ? 'muted' : 'smiling');
+            settleVisualState('listening', 1200);
             note(`response completed in ${elapsed}`);
             const outputItems = msg.response.output || [];
             for (const item of outputItems) {

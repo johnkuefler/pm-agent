@@ -105,7 +105,7 @@ const NORA_BRAIN_CAPABILITIES = [
   },
   {
     id: 'learning', label: 'Learning', layer: 'background', x: .28, y: .75,
-    description: 'Behavior experiments, tested developmental self-model changes, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, autonomous play, and DIALS. Later holdout evidence—not a compelling story—decides what can enter the autobiography.',
+    description: 'Behavior experiments, tested developmental self-model changes, compact procedures, retrieved work patterns, self-chosen source-bound reading encounters, autonomous play, and DIALS. Later holdout evidence—not a compelling story—decides what can enter the autobiography; learning never directly rewrites the persona.',
     links: ['relationships', 'reflection', 'background'],
     read: state => {
       const experiments = state.experiments || [];

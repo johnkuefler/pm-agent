@@ -76,6 +76,18 @@ test('Recall bot config preserves webhook and voice-agent contracts', () => {
   assert.equal(config.webhook_url, 'https://nora.example.com/webhook/status');
 });
 
+test('expressive meeting face uses on-brand image states with blinking', () => {
+  const voiceAgentHtml = fs.readFileSync(path.join(__dirname, '../../voice-agent.html'), 'utf8');
+  for (const state of ['listening', 'thinking', 'speaking', 'smiling', 'muted', 'blink']) {
+    assert.match(voiceAgentHtml, new RegExp(`/assets/nora-face/nora-${state}\\.jpg`));
+    assert.ok(fs.existsSync(path.join(__dirname, `../../public/nora-face/nora-${state}.jpg`)), `${state} face frame exists`);
+  }
+  assert.match(voiceAgentHtml, /@keyframes blinkFrame/);
+  assert.match(voiceAgentHtml, /:not\(\.speaking\):not\(\.muted\) \.face-frame\.blink/);
+  assert.doesNotMatch(voiceAgentHtml, /class="eye/);
+  assert.doesNotMatch(voiceAgentHtml, /class="mouth/);
+});
+
 test('intelligence grounding augments rather than replaces Nora expressive voice', () => {
   const episode = helpers.intelligenceStore.recordEpisodeEvent({ correlation: 'slack:C1:launch', title: 'Launch follow-up', channel: 'slack', actor: 'John', text: 'Can you confirm launch QA?', summary: 'John asked Nora to confirm launch QA.', open_loop: { what: 'Confirm launch QA', owner: 'Nora' } });
   helpers.intelligenceStore.addCommitment({ what: 'Confirm launch QA', owner: 'Nora', episode_id: episode.id });
