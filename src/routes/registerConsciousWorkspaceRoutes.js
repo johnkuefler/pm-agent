@@ -50,6 +50,36 @@ function publicFeedback(feedback) {
   };
 }
 
+function publicFocusCommitment(record, ledger) {
+  return { ...record, audit: consciousWorkspace.auditFocusCommitment(record, ledger) };
+}
+
+function publicFocusOutcome(record, ledger) {
+  const manifest = record.cycle_outcome_manifest || {};
+  return {
+    id: record.id,
+    focus_commitment_id: record.focus_commitment_id,
+    frame_id: record.frame_id,
+    cycle_id: record.cycle_id,
+    selected_focus_key: record.selected_focus_key,
+    outcome: record.outcome,
+    observed_expression: record.observed_expression,
+    evidence: record.evidence || [],
+    cycle_outcome: {
+      status: manifest.status || null,
+      finished: manifest.finished || null,
+      moment_id: manifest.moment_id || null,
+      closure_commitment: manifest.closure_commitment || null,
+      action_count: Array.isArray(manifest.actions) ? manifest.actions.length : 0,
+    },
+    cycle_outcome_commitment: record.cycle_outcome_commitment,
+    outcome_commitment: record.outcome_commitment,
+    resolved_by: record.resolved_by,
+    resolved_at: record.resolved_at,
+    audit: consciousWorkspace.auditFocusOutcome(record, ledger),
+  };
+}
+
 function durableMindChangeInput(frame, ledger) {
   const changed = frame?.changed_mind;
   const receipt = changed?.revision_receipt;
@@ -91,6 +121,10 @@ function registerConsciousWorkspaceRoutes(app, deps) {
       current: publicFrame(ledger.current, ledger),
       recent_frames: ledger.frames.slice(-limit).map(frame => publicFrame(frame, ledger)),
       recent_feedback: ledger.feedback.slice(-limit).map(publicFeedback),
+      recent_focus_commitments: ledger.focus_commitments.slice(-limit)
+        .map(record => publicFocusCommitment(record, ledger)),
+      recent_focus_outcomes: ledger.focus_outcomes.slice(-limit)
+        .map(record => publicFocusOutcome(record, ledger)),
     });
   });
 
@@ -128,7 +162,20 @@ function registerConsciousWorkspaceRoutes(app, deps) {
       res.status(400).json({ error: error.message });
     }
   });
+
+  app.post('/conscious-workspace/focus-commitments', requireAuth, async (req, res) => {
+    try {
+      const result = consciousWorkspace.commitFocus(req.body || {}, loadConsciousWorkspace());
+      if (result.created) await saveConsciousWorkspace(result.ledger);
+      res.json({ ok: true,
+        focus_commitment: publicFocusCommitment(result.focus_commitment, result.ledger),
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
 }
 
-module.exports = { publicFrame, publicFeedback, durableMindChangeInput,
+module.exports = { publicFrame, publicFeedback, publicFocusCommitment, publicFocusOutcome,
+  durableMindChangeInput,
   registerConsciousWorkspaceRoutes };

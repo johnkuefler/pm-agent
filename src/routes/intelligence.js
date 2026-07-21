@@ -4,7 +4,7 @@ const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const expectationForecast = require('../intelligence/expectation-forecast');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), recordLifecycleWorkspace = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
   const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
@@ -518,13 +518,17 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try {
       const validationPayload = { ...(req.body || {}) };
       delete validationPayload.validation_commitment;
+      const workspaceFocusValidation = validateLifecycleWorkspaceOutcome({
+        cycleId: req.params.id, completion: validationPayload,
+      });
       const validationCommitment = expectationForecast.commitment({
         operation: 'complete_cycle', id: req.params.id, payload: validationPayload,
       });
       if (req.query.validate_only === '1') {
         const validation = store.validateCycleCompletion(req.params.id, validationPayload);
         if (!validation) return res.status(404).json({ error: 'intelligence cycle not found' });
-        return res.json({ ok: true, validation, validation_commitment: validationCommitment });
+        return res.json({ ok: true, validation: { ...validation,
+          workspace_focus: workspaceFocusValidation }, validation_commitment: validationCommitment });
       }
       if (req.query.require_validation === '1' && req.body?.validation_commitment !== validationCommitment) {
         return res.status(400).json({ error: 'cycle completion validation_commitment does not match this exact payload' });
@@ -536,6 +540,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
       void recordLifecycleWorkspace({ phase: 'closure', cycle })
         .catch(error => console.error('Lifecycle workspace closure failed:', error.message));
+      void recordLifecycleWorkspaceOutcome({ cycle, input: validationPayload })
+        .catch(error => console.error('Lifecycle workspace focus outcome failed:', error.message));
       progressHourlyCycle(req.params.id, {
         label: 'Closing the hourly pass',
         detail: 'Preserving the completed cycle and preparing its continuity handoff.',

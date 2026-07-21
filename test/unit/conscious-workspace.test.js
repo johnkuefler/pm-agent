@@ -128,3 +128,65 @@ test('changed-mind records require committed prior focus, feedback, and a change
     evidence: [{ type: 'cycle', id: 'cycle-claim' }],
   }, revised.ledger), /server-derived/);
 });
+
+test('selected lifecycle focus is committed before action and resolved against its closed experience', () => {
+  const created = workspace.createFrame({
+    id: 'cw-lifecycle-cycle-focus-operations', mode: 'operational',
+    current_activity: 'Running the forecast-bound operational pass.',
+    why_this: 'The forecast is committed and candidates now compete for access.',
+    attention_candidates: candidates, selected_focus_key: 'task:deadline',
+    intended_next_action: 'Complete authorized work and close the lifecycle.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-focus' }],
+    lifecycle: { cycle_id: 'cycle-focus', moment_id: 'moment-focus', phase: 'operations' },
+  }, workspace.emptyLedger(), { now: new Date('2026-07-21T15:00:00.000Z') });
+  assert.throws(() => workspace.commitFocus({
+    frame_id: created.frame.id, selected_focus_key: created.frame.selected_focus_key,
+    disposition: 'defer_no_optional_latitude', planned_expression: 'Defer it.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-focus' }],
+  }, created.ledger), /only an optional focus/);
+
+  const committed = workspace.commitFocus({
+    frame_id: created.frame.id, selected_focus_key: created.frame.selected_focus_key,
+    disposition: 'follow_after_required_checks',
+    planned_expression: 'Check the deadline evidence before deciding whether to notify anyone.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-focus' }],
+  }, created.ledger, { now: new Date('2026-07-21T15:01:00.000Z') });
+  assert.equal(workspace.auditFocusCommitment(committed.focus_commitment,
+    committed.ledger).complete_chain_verified, true);
+  assert.equal(committed.report.prospectively_committed_focuses, 1);
+  const retry = workspace.commitFocus({
+    frame_id: created.frame.id, selected_focus_key: created.frame.selected_focus_key,
+    disposition: 'follow_after_required_checks',
+    planned_expression: 'Check the deadline evidence before deciding whether to notify anyone.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-focus' }],
+  }, committed.ledger, { now: new Date('2026-07-21T15:02:00.000Z') });
+  assert.equal(retry.created, false);
+  assert.equal(retry.focus_commitment.id, committed.focus_commitment.id);
+  assert.throws(() => workspace.commitFocus({
+    frame_id: created.frame.id, selected_focus_key: created.frame.selected_focus_key,
+    disposition: 'follow_after_required_checks', planned_expression: 'A rewritten plan.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-focus' }],
+  }, committed.ledger), /different focus commitment/);
+
+  const cycle = { id: 'cycle-focus', status: 'completed',
+    finished: '2026-07-21T15:20:00.000Z', summary: 'Verified the deadline evidence.',
+    actions: [{ type: 'observe', id: 'tw-1' }] };
+  const moment = { id: 'moment-focus', cycle_id: 'cycle-focus', status: 'completed',
+    closure_commitment: 'a'.repeat(64),
+    audit: { complete_lifecycle_verified: true, evidence_eligible: true } };
+  const resolved = workspace.resolveFocus({
+    focus_commitment_id: committed.focus_commitment.id, outcome: 'enacted',
+    observed_expression: 'Read the current task evidence and withheld an unsupported notification.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-focus' },
+      { type: 'experience_moment', id: 'moment-focus' }],
+  }, committed.ledger, { cycle, moment, now: new Date(cycle.finished) });
+  assert.equal(workspace.auditFocusOutcome(resolved.focus_outcome,
+    resolved.ledger).complete_chain_verified, true);
+  assert.equal(resolved.report.replay_verified_focus_outcomes, 1);
+  assert.equal(resolved.report.focus_outcome_counts.enacted, 1);
+
+  const tampered = structuredClone(resolved.ledger);
+  tampered.focus_outcomes[0].observed_expression = 'A rewritten result';
+  assert.equal(workspace.auditFocusOutcome(tampered.focus_outcomes[0], tampered)
+    .complete_chain_verified, false);
+});

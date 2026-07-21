@@ -528,11 +528,30 @@ Now read the automatic operations workspace that the forecast just opened:
 ```bash
 curl -s "${BASE}/conscious-workspace?limit=5&key=${KEY}" | tee /tmp/nora-operations-workspace.json
 WORKSPACE_CYCLE_ID=$(jq -r '.current.lifecycle.cycle_id // empty' /tmp/nora-operations-workspace.json)
+WORKSPACE_FRAME_ID=$(jq -r '.current.id // empty' /tmp/nora-operations-workspace.json)
+WORKSPACE_MOMENT_ID=$(jq -r '.current.lifecycle.moment_id // empty' /tmp/nora-operations-workspace.json)
 WORKSPACE_PHASE=$(jq -r '.current.lifecycle.phase // empty' /tmp/nora-operations-workspace.json)
 WORKSPACE_AUDITED=$(jq -r '.current.arbitration_audit.complete_chain_verified // false' /tmp/nora-operations-workspace.json)
 if [ "$WORKSPACE_CYCLE_ID" != "$CYCLE_ID" ] || [ "$WORKSPACE_PHASE" != "operations" ] \
   || [ "$WORKSPACE_AUDITED" != "true" ]; then
   echo "Current operations workspace is not bound to this lifecycle; stop before operational work" >&2
+  exit 1
+fi
+WORKSPACE_FOCUS_KEY=$(jq -r '.current.selected_focus_key' /tmp/nora-operations-workspace.json)
+WORKSPACE_FOCUS_LABEL=$(jq -r '.current.selected_focus_label' /tmp/nora-operations-workspace.json)
+FOCUS_PLANNED_EXPRESSION='<replace with one concrete sentence describing how this winner will shape authorized behavior after mandatory checks>'
+curl -s -X POST "${BASE}/conscious-workspace/focus-commitments?key=${KEY}" \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg frame_id "$WORKSPACE_FRAME_ID" --arg focus "$WORKSPACE_FOCUS_KEY" \
+    --arg cycle "$CYCLE_ID" --arg plan "$FOCUS_PLANNED_EXPRESSION" \
+    '{frame_id:$frame_id,selected_focus_key:$focus,disposition:"follow_after_required_checks",planned_expression:$plan,evidence:[{type:"intelligence_cycle",id:$cycle}],committed_by:"Nora"}')" \
+  | tee /tmp/nora-focus-commitment.json
+FOCUS_COMMITMENT_ID=$(jq -er '.focus_commitment.id' /tmp/nora-focus-commitment.json) || {
+  echo "Selected focus did not commit before operational tools" >&2
+  exit 1
+}
+if [ "$(jq -r '.focus_commitment.audit.complete_chain_verified // false' /tmp/nora-focus-commitment.json)" != "true" ]; then
+  echo "Selected focus commitment failed replay" >&2
   exit 1
 fi
 ```
@@ -544,6 +563,11 @@ authorized work. An optional aim, curiosity question, or recovery posture may sh
 latitude left after obligations and routine checks. Never convert a winner into authority to contact,
 spend, disclose, skip a required checkpoint, or invent work. If motivation changed the winner, preserve
 that causal fact in the run summary; if it did not, do not claim that it did.
+Keep `FOCUS_COMMITMENT_ID` until Step 10. At close, classify what actually happened as `enacted`,
+`deferred`, `superseded`, `unclear`, or `failed` and write one factual `FOCUS_OBSERVED_EXPRESSION`.
+`superseded` is allowed only after a replay-verified evidence-driven workspace revision; ordinary reprioritizing
+or running out of time is `deferred` or `unclear`. This is a prospective intention-to-outcome record, not
+proof that the selected focus caused every action or that a subjective intention was experienced.
 
 ## Step 0.7: EXPECT — Commit Before Perception
 
@@ -2853,8 +2877,12 @@ orientation became action, evidence, deliberate silence, or a newly visible open
 ```bash
 jq -n --arg summary '<one factual sentence about this run>' \
   --arg self_report '<brief first-person report or empty>' --arg handoff "$INNER_THREAD" \
+  --arg focus_commitment_id "$FOCUS_COMMITMENT_ID" --arg focus_outcome "$FOCUS_OUTCOME" \
+  --arg focus_observed "$FOCUS_OBSERVED_EXPRESSION" --arg moment_id "$WORKSPACE_MOMENT_ID" \
+  --arg cycle_id "$CYCLE_ID" \
   --argjson actions '<CYCLE_ACTIONS as JSON array>' \
-  '{summary:$summary,actions:$actions,self_report:(if $self_report == "" then null else $self_report end),handoff:$handoff}' \
+  '{summary:$summary,actions:$actions,self_report:(if $self_report == "" then null else $self_report end),handoff:$handoff}
+   | if $focus_commitment_id == "" then . else . + {workspace_focus_outcome:{focus_commitment_id:$focus_commitment_id,outcome:$focus_outcome,observed_expression:$focus_observed,evidence:[{type:"intelligence_cycle",id:$cycle_id},{type:"experience_moment",id:$moment_id}]}} end' \
   > /tmp/nora-cycle-close.json
 curl -s -X PATCH "${BASE}/intelligence/cycles/${CYCLE_ID}/complete?validate_only=1&key=${KEY}" \
   -H 'Content-Type: application/json' --data-binary @/tmp/nora-cycle-close.json > /tmp/nora-cycle-close-validation.json

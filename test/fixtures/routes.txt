@@ -365,6 +365,8 @@ POST /gifts/defaults
 GET /gifts/goody/products
 GET /gifts/goody/cards
 GET /gifts/intents
+GET /gifts/deliberations
+POST /gifts/deliberations
 GET /gifts/intents/:id
 POST /gifts/intents
 POST /gifts/intents/:id/approve
@@ -387,6 +389,7 @@ POST /epistemics/claims/:id/resolve
 GET /conscious-workspace
 POST /conscious-workspace/frames
 POST /conscious-workspace/feedback
+POST /conscious-workspace/focus-commitments
 GET /consequence-reviews/report
 GET /consequence-reviews/actions
 GET /consequence-reviews/actions/:id

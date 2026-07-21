@@ -431,6 +431,8 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: currentCognitiveInputs,
     recordLifecycleWorkspace,
+    validateLifecycleWorkspaceOutcome,
+    recordLifecycleWorkspaceOutcome,
 });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
 
@@ -1000,6 +1002,63 @@ async function recordLifecycleWorkspace({ phase, cycle, moment = null, at = null
     label: `Workspace ${phase}`, detail: result.definition?.activity || `Lifecycle ${phase} is current.`,
     meta: { cycle_id: cycle.id, frame_id: result.frame.id, phase } });
   return result.frame;
+}
+
+function validateLifecycleWorkspaceOutcome({ cycleId, completion = {} } = {}) {
+  const ledger = loadConsciousWorkspace();
+  const focus = ledger.focus_commitments.find(item => item.cycle_id === cycleId);
+  if (!focus) return { required: false, valid: true };
+  if (!consciousWorkspace.auditFocusCommitment(focus, ledger).complete_chain_verified) {
+    throw new Error('the lifecycle focus commitment does not replay');
+  }
+  const input = completion.workspace_focus_outcome;
+  if (!input || typeof input !== 'object') {
+    throw new Error(`workspace_focus_outcome is required for committed focus ${focus.id}`);
+  }
+  if (input.focus_commitment_id !== focus.id) {
+    throw new Error('workspace_focus_outcome must cite the exact pre-action focus commitment');
+  }
+  if (!consciousWorkspace.FOCUS_OUTCOMES.includes(input.outcome)) {
+    throw new Error(`workspace focus outcome must be one of: ${consciousWorkspace.FOCUS_OUTCOMES.join(', ')}`);
+  }
+  if (!String(input.observed_expression || '').trim()) {
+    throw new Error('workspace focus outcome observed_expression is required');
+  }
+  const frame = ledger.frames.find(item => item.id === focus.frame_id);
+  const evidence = Array.isArray(input.evidence) ? input.evidence : [];
+  if (!evidence.some(item => item?.type === 'intelligence_cycle' && item?.id === cycleId)
+    || !evidence.some(item => item?.type === 'experience_moment'
+      && item?.id === frame?.lifecycle?.moment_id)) {
+    throw new Error('workspace focus outcome must cite the exact cycle and experience moment');
+  }
+  if (input.outcome === 'superseded' && !ledger.frames.some(item =>
+    item.revision_of_frame_id === focus.frame_id
+      && consciousWorkspace.auditRevision(item, ledger).complete_chain_verified)) {
+    throw new Error('superseded focus requires a replay-verified evidence-driven workspace revision');
+  }
+  if (input.outcome === 'failed' && completion.status !== 'failed') {
+    throw new Error('workspace focus outcome failed requires a failed cycle completion');
+  }
+  return { required: true, valid: true, focus_commitment_id: focus.id,
+    selected_focus_key: focus.selected_focus_key };
+}
+
+async function recordLifecycleWorkspaceOutcome({ cycle, input = {} } = {}) {
+  const ledger = loadConsciousWorkspace();
+  const focus = ledger.focus_commitments.find(item => item.cycle_id === cycle?.id);
+  if (!focus) return null;
+  const moment = (intelligence.experienceStreamSnapshot({ limit: 500 }).moments || [])
+    .find(item => item.cycle_id === cycle.id);
+  const result = consciousWorkspace.resolveFocus(input.workspace_focus_outcome || {}, ledger, {
+    cycle, moment, now: cycle.finished ? new Date(cycle.finished) : new Date(),
+  });
+  if (result.created) await saveConsciousWorkspace(result.ledger);
+  if (result.created) runtimeActivity.record({ lane: 'system', kind: 'workspace_focus_outcome',
+    label: 'Resolved selected focus',
+    detail: `${result.focus_outcome.outcome}: ${result.focus_outcome.observed_expression}`,
+    meta: { cycle_id: cycle.id, frame_id: focus.frame_id,
+      focus_commitment_id: focus.id, focus_outcome_id: result.focus_outcome.id } });
+  return result.focus_outcome;
 }
 
 async function reconcileLifecycleWorkspace({ limit = 24 } = {}) {

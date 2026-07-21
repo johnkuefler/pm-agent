@@ -10,6 +10,8 @@ const CANDIDATE_TYPES = Object.freeze([
   'consequence', 'curiosity', 'memory', 'api_opportunity', 'gift', 'inhibition', 'other',
 ]);
 const REVISION_EFFECTS = Object.freeze(['contradicted', 'redirected']);
+const FOCUS_DISPOSITIONS = Object.freeze(['follow_after_required_checks', 'defer_no_optional_latitude']);
+const FOCUS_OUTCOMES = Object.freeze(['enacted', 'deferred', 'superseded', 'unclear', 'failed']);
 
 function normalizeText(value, max = 1000) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, max);
@@ -28,7 +30,7 @@ function commitment(value) {
 }
 
 function emptyLedger() {
-  return { version: 2, current: null, frames: [], feedback: [] };
+  return { version: 3, current: null, frames: [], feedback: [], focus_commitments: [], focus_outcomes: [] };
 }
 
 function normalizeLedger(value = {}) {
@@ -36,11 +38,21 @@ function normalizeLedger(value = {}) {
   const frames = Array.isArray(ledger.frames) ? ledger.frames.map(normalizeFrameRecord).filter(Boolean).slice(-500) : [];
   const current = normalizeFrameRecord(ledger.current) || frames.at(-1) || null;
   return {
-    version: 2,
+    version: 3,
     current,
     frames,
     feedback: Array.isArray(ledger.feedback) ? ledger.feedback.map(normalizeFeedbackRecord).filter(Boolean).slice(-500) : [],
+    focus_commitments: Array.isArray(ledger.focus_commitments)
+      ? ledger.focus_commitments.map(normalizeFocusCommitmentRecord).filter(Boolean).slice(-500) : [],
+    focus_outcomes: Array.isArray(ledger.focus_outcomes)
+      ? ledger.focus_outcomes.map(normalizeFocusOutcomeRecord).filter(Boolean).slice(-500) : [],
   };
+}
+
+function ledgerView(value) {
+  return value?.version === 3 && Array.isArray(value.frames) && Array.isArray(value.feedback)
+    && Array.isArray(value.focus_commitments) && Array.isArray(value.focus_outcomes)
+    ? value : normalizeLedger(value);
 }
 
 function normalizeEvidence(evidence, { required = true } = {}) {
@@ -330,8 +342,251 @@ function addFeedback(input = {}, ledger = emptyLedger(), { now = new Date() } = 
   return { ledger: current, feedback: record, report: report(current) };
 }
 
-function auditRevision(frame, ledger = emptyLedger()) {
+function focusCommitmentPayload(record = {}) {
+  return {
+    protocol_version: record.protocol_version,
+    id: record.id,
+    frame_id: record.frame_id,
+    frame_commitment: record.frame_commitment,
+    arbitration_receipt_commitment: record.arbitration_receipt_commitment,
+    cycle_id: record.cycle_id,
+    selected_focus_key: record.selected_focus_key,
+    selected_focus_type: record.selected_focus_type,
+    selected_focus_authority_class: record.selected_focus_authority_class,
+    disposition: record.disposition,
+    planned_expression: record.planned_expression,
+    evidence: record.evidence,
+    committed_by: record.committed_by,
+    committed_at: record.committed_at,
+  };
+}
+
+function auditFocusCommitment(record, ledger = emptyLedger()) {
+  const current = ledgerView(ledger);
+  const frame = current.frames.find(item => item.id === record?.frame_id);
+  const candidate = frame?.attention_candidates?.find(item => item.key === record?.selected_focus_key);
+  const receiptVerified = Boolean(record?.commitment_hash
+    && commitment(focusCommitmentPayload(record)) === record.commitment_hash);
+  const frameVerified = Boolean(frame && frame.frame_commitment === record.frame_commitment
+    && frame.frame_commitment === commitment(frameManifest(frame))
+    && frame.lifecycle?.phase === 'operations' && frame.lifecycle.cycle_id === record.cycle_id
+    && frame.selected_focus_key === record.selected_focus_key
+    && motivationalArbitration.audit(frame.arbitration_receipt).complete_chain_verified
+    && frame.arbitration_receipt.receipt_commitment === record.arbitration_receipt_commitment);
+  const candidateVerified = Boolean(candidate && candidate.type === record.selected_focus_type
+    && candidate.authority_class === record.selected_focus_authority_class);
+  const dispositionVerified = FOCUS_DISPOSITIONS.includes(record?.disposition)
+    && (record.disposition !== 'defer_no_optional_latitude' || candidate?.authority_class === 'optional');
+  const evidenceVerified = Array.isArray(record?.evidence) && record.evidence.some(item =>
+    item.type === 'intelligence_cycle' && item.id === record.cycle_id);
+  return { complete_chain_verified: receiptVerified && frameVerified && candidateVerified
+      && dispositionVerified && evidenceVerified,
+    receipt_verified: receiptVerified, frame_verified: frameVerified,
+    candidate_verified: candidateVerified, disposition_verified: dispositionVerified,
+    evidence_verified: evidenceVerified };
+}
+
+function commitFocus(input = {}, ledger = emptyLedger(), { now = new Date() } = {}) {
   const current = normalizeLedger(ledger);
+  const frameId = normalizeText(input.frame_id, 120);
+  const frame = current.frames.find(item => item.id === frameId);
+  if (!frame || frame.lifecycle?.phase !== 'operations' || !frame.lifecycle.cycle_id) {
+    throw new Error('focus commitments require an operations workspace frame');
+  }
+  if (current.current?.id !== frame.id) {
+    throw new Error('focus commitments require the current operations workspace frame');
+  }
+  if (frame.frame_commitment !== commitment(frameManifest(frame))
+    || !motivationalArbitration.audit(frame.arbitration_receipt).complete_chain_verified) {
+    throw new Error('focus commitments require a replay-verified arbitrated frame');
+  }
+  const selectedFocusKey = normalizeText(input.selected_focus_key, 120);
+  if (selectedFocusKey !== frame.selected_focus_key) {
+    throw new Error('selected_focus_key must match the server-selected workspace focus');
+  }
+  const candidate = frame.attention_candidates.find(item => item.key === selectedFocusKey);
+  if (!candidate) throw new Error('selected workspace candidate is missing');
+  const disposition = normalizeText(input.disposition, 80);
+  if (!FOCUS_DISPOSITIONS.includes(disposition)) {
+    throw new Error(`focus disposition must be one of: ${FOCUS_DISPOSITIONS.join(', ')}`);
+  }
+  if (disposition === 'defer_no_optional_latitude' && candidate.authority_class !== 'optional') {
+    throw new Error('only an optional focus may be deferred for lack of discretionary latitude');
+  }
+  const plannedExpression = normalizeText(input.planned_expression, 900);
+  if (!plannedExpression) throw new Error('planned_expression is required before operational tools');
+  if (/^(?:<replace|probe|test|testing|placeholder|schema|junk)\b/i.test(plannedExpression)) {
+    throw new Error('planned_expression must describe the actual prospective behavior');
+  }
+  const evidence = normalizeEvidence(input.evidence);
+  if (!evidence.some(item => item.type === 'intelligence_cycle' && item.id === frame.lifecycle.cycle_id)) {
+    throw new Error('focus commitment evidence must cite the exact intelligence cycle');
+  }
+  const committedBy = normalizeText(input.committed_by || 'Nora', 80);
+  const existing = current.focus_commitments.find(item => item.cycle_id === frame.lifecycle.cycle_id);
+  if (existing) {
+    const sameRequest = existing.frame_id === frame.id
+      && existing.selected_focus_key === selectedFocusKey
+      && existing.disposition === disposition
+      && existing.planned_expression === plannedExpression
+      && existing.committed_by === committedBy
+      && canonical(existing.evidence) === canonical(evidence);
+    if (!sameRequest || !auditFocusCommitment(existing, current).complete_chain_verified) {
+      throw new Error('this intelligence cycle already has a different focus commitment');
+    }
+    return { ledger: current, focus_commitment: existing, report: report(current), created: false };
+  }
+  const at = now instanceof Date ? now : new Date(now);
+  const record = {
+    protocol_version: 1,
+    id: `cw-focus-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`,
+    frame_id: frame.id,
+    frame_commitment: frame.frame_commitment,
+    arbitration_receipt_commitment: frame.arbitration_receipt.receipt_commitment,
+    cycle_id: frame.lifecycle.cycle_id,
+    selected_focus_key: candidate.key,
+    selected_focus_type: candidate.type,
+    selected_focus_authority_class: candidate.authority_class,
+    disposition,
+    planned_expression: plannedExpression,
+    evidence,
+    committed_by: committedBy,
+    committed_at: at.toISOString(),
+  };
+  record.commitment_hash = commitment(focusCommitmentPayload(record));
+  current.focus_commitments.push(record);
+  current.focus_commitments = current.focus_commitments.slice(-500);
+  return { ledger: current, focus_commitment: record, report: report(current), created: true };
+}
+
+function focusOutcomePayload(record = {}) {
+  return {
+    protocol_version: record.protocol_version,
+    id: record.id,
+    focus_commitment_id: record.focus_commitment_id,
+    focus_commitment_hash: record.focus_commitment_hash,
+    frame_id: record.frame_id,
+    cycle_id: record.cycle_id,
+    selected_focus_key: record.selected_focus_key,
+    outcome: record.outcome,
+    observed_expression: record.observed_expression,
+    evidence: record.evidence,
+    cycle_outcome_manifest: record.cycle_outcome_manifest,
+    cycle_outcome_commitment: record.cycle_outcome_commitment,
+    resolved_by: record.resolved_by,
+    resolved_at: record.resolved_at,
+  };
+}
+
+function auditFocusOutcome(record, ledger = emptyLedger()) {
+  const current = ledgerView(ledger);
+  const focus = current.focus_commitments.find(item => item.id === record?.focus_commitment_id);
+  const focusAudit = auditFocusCommitment(focus, current);
+  const manifest = record?.cycle_outcome_manifest;
+  const receiptVerified = Boolean(record?.outcome_commitment
+    && commitment(focusOutcomePayload(record)) === record.outcome_commitment);
+  const focusVerified = Boolean(focusAudit.complete_chain_verified
+    && focus.commitment_hash === record.focus_commitment_hash
+    && focus.frame_id === record.frame_id && focus.cycle_id === record.cycle_id
+    && focus.selected_focus_key === record.selected_focus_key);
+  const cycleVerified = Boolean(manifest && manifest.id === record?.cycle_id
+    && ['completed', 'failed'].includes(manifest.status)
+    && /^[a-f0-9]{64}$/.test(String(manifest.closure_commitment || ''))
+    && manifest.lifecycle_audit?.complete_lifecycle_verified === true
+    && manifest.lifecycle_audit?.evidence_eligible === true
+    && commitment(manifest) === record.cycle_outcome_commitment);
+  const evidenceVerified = Array.isArray(record?.evidence) && record.evidence.some(item =>
+    item.type === 'intelligence_cycle' && item.id === record.cycle_id)
+    && record.evidence.some(item => item.type === 'experience_moment'
+      && item.id === manifest?.moment_id);
+  const outcomeVerified = FOCUS_OUTCOMES.includes(record?.outcome)
+    && (record.outcome !== 'failed' || manifest?.status === 'failed');
+  const revisionVerified = record?.outcome !== 'superseded' || current.frames.some(frame =>
+    frame.revision_of_frame_id === record.frame_id
+      && auditRevision(frame, current).complete_chain_verified);
+  return { complete_chain_verified: receiptVerified && focusVerified && cycleVerified
+      && evidenceVerified && outcomeVerified && revisionVerified,
+    receipt_verified: receiptVerified, focus_verified: focusVerified,
+    cycle_verified: cycleVerified, evidence_verified: evidenceVerified,
+    outcome_verified: outcomeVerified, revision_verified: revisionVerified };
+}
+
+function resolveFocus(input = {}, ledger = emptyLedger(), { cycle, moment, now = new Date() } = {}) {
+  const current = normalizeLedger(ledger);
+  const focus = current.focus_commitments.find(item => item.id === input.focus_commitment_id)
+    || current.focus_commitments.find(item => item.cycle_id === cycle?.id);
+  if (!focus || !auditFocusCommitment(focus, current).complete_chain_verified) {
+    throw new Error('a replay-verified pre-action focus commitment is required');
+  }
+  const existing = current.focus_outcomes.find(item => item.focus_commitment_id === focus.id);
+  if (existing) return { ledger: current, focus_outcome: existing, report: report(current), created: false };
+  if (!cycle || cycle.id !== focus.cycle_id || !['completed', 'failed'].includes(cycle.status)) {
+    throw new Error('focus outcome requires the exact closed intelligence cycle');
+  }
+  if (!moment || moment.cycle_id !== cycle.id || moment.status !== cycle.status
+    || moment.audit?.complete_lifecycle_verified !== true || moment.audit?.evidence_eligible !== true
+    || !/^[a-f0-9]{64}$/.test(String(moment.closure_commitment || ''))) {
+    throw new Error('focus outcome requires a replay-verified experience lifecycle');
+  }
+  const outcome = normalizeText(input.outcome, 40);
+  if (!FOCUS_OUTCOMES.includes(outcome)) {
+    throw new Error(`focus outcome must be one of: ${FOCUS_OUTCOMES.join(', ')}`);
+  }
+  if (outcome === 'failed' && cycle.status !== 'failed') {
+    throw new Error('focus outcome failed requires a failed intelligence cycle');
+  }
+  if (outcome === 'superseded' && !current.frames.some(frame => frame.revision_of_frame_id === focus.frame_id
+    && auditRevision(frame, current).complete_chain_verified)) {
+    throw new Error('superseded focus requires a replay-verified evidence-driven workspace revision');
+  }
+  const observedExpression = normalizeText(input.observed_expression, 1200);
+  if (!observedExpression) throw new Error('observed_expression is required');
+  if (/^(?:<replace|probe|test|testing|placeholder|schema|junk)\b/i.test(observedExpression)) {
+    throw new Error('observed_expression must describe the actual lifecycle outcome');
+  }
+  const evidence = normalizeEvidence(input.evidence);
+  if (!evidence.some(item => item.type === 'intelligence_cycle' && item.id === cycle.id)
+    || !evidence.some(item => item.type === 'experience_moment' && item.id === moment.id)) {
+    throw new Error('focus outcome evidence must cite the exact cycle and experience moment');
+  }
+  const at = now instanceof Date ? now : new Date(now);
+  const cycleOutcomeManifest = {
+    id: cycle.id,
+    status: cycle.status,
+    finished: cycle.finished,
+    summary: cycle.summary || '',
+    actions: Array.isArray(cycle.actions) ? cycle.actions : [],
+    moment_id: moment.id,
+    closure_commitment: moment.closure_commitment,
+    lifecycle_audit: {
+      complete_lifecycle_verified: true,
+      evidence_eligible: true,
+    },
+  };
+  const record = {
+    protocol_version: 1,
+    id: `cw-outcome-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`,
+    focus_commitment_id: focus.id,
+    focus_commitment_hash: focus.commitment_hash,
+    frame_id: focus.frame_id,
+    cycle_id: focus.cycle_id,
+    selected_focus_key: focus.selected_focus_key,
+    outcome,
+    observed_expression: observedExpression,
+    evidence,
+    cycle_outcome_manifest: cycleOutcomeManifest,
+    cycle_outcome_commitment: commitment(cycleOutcomeManifest),
+    resolved_by: normalizeText(input.resolved_by || 'Nora runtime', 80),
+    resolved_at: at.toISOString(),
+  };
+  record.outcome_commitment = commitment(focusOutcomePayload(record));
+  current.focus_outcomes.push(record);
+  current.focus_outcomes = current.focus_outcomes.slice(-500);
+  return { ledger: current, focus_outcome: record, report: report(current), created: true };
+}
+
+function auditRevision(frame, ledger = emptyLedger()) {
+  const current = ledgerView(ledger);
   const receipt = frame?.changed_mind?.revision_receipt;
   if (!receipt) return { complete_chain_verified: false, reason: 'missing_revision_receipt' };
   const prior = current.frames.find(item => item.id === receipt.prior_frame_id);
@@ -379,6 +634,18 @@ function normalizeFeedbackRecord(record) {
   return record;
 }
 
+function normalizeFocusCommitmentRecord(record) {
+  if (!record || typeof record !== 'object' || !record.id || !record.frame_id
+    || !record.cycle_id || !record.commitment_hash) return null;
+  return record;
+}
+
+function normalizeFocusOutcomeRecord(record) {
+  if (!record || typeof record !== 'object' || !record.id || !record.focus_commitment_id
+    || !record.cycle_id || !record.outcome_commitment) return null;
+  return record;
+}
+
 function report(ledger = emptyLedger()) {
   const current = normalizeLedger(ledger);
   const latest = current.current;
@@ -401,6 +668,13 @@ function report(ledger = emptyLedger()) {
     grounded_mind_changes: current.frames.filter(frame =>
       auditRevision(frame, current).complete_chain_verified).length,
     current_grounded_mind_change: auditRevision(latest, current).complete_chain_verified,
+    prospectively_committed_focuses: current.focus_commitments.filter(item =>
+      auditFocusCommitment(item, current).complete_chain_verified).length,
+    replay_verified_focus_outcomes: current.focus_outcomes.filter(item =>
+      auditFocusOutcome(item, current).complete_chain_verified).length,
+    focus_outcome_counts: Object.fromEntries(FOCUS_OUTCOMES.map(outcome => [outcome,
+      current.focus_outcomes.filter(item => item.outcome === outcome
+        && auditFocusOutcome(item, current).complete_chain_verified).length])),
     lifecycle_bound_frames: current.frames.filter(frame => frame.lifecycle?.source === 'server_lifecycle').length,
     lifecycle_cycles_covered: new Set(current.frames.filter(frame => frame.lifecycle?.cycle_id)
       .map(frame => frame.lifecycle.cycle_id)).size,
@@ -410,12 +684,18 @@ function report(ledger = emptyLedger()) {
 
 module.exports = {
   CANDIDATE_TYPES,
+  FOCUS_DISPOSITIONS,
+  FOCUS_OUTCOMES,
   MODES,
   addFeedback,
+  auditFocusCommitment,
+  auditFocusOutcome,
   createFrame,
+  commitFocus,
   emptyLedger,
   normalizeLedger,
   report,
+  resolveFocus,
   auditArbitration: motivationalArbitration.audit,
   auditRevision,
 };

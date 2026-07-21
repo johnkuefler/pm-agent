@@ -1548,18 +1548,43 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   assert.equal(operationsWorkspace.current.attention_candidates.every(candidate =>
     candidate.evidence.some(item => item.type === 'intelligence_cycle' && item.id === nextCycleId)), true);
   assert.equal(operationsWorkspace.current.arbitration_audit.complete_chain_verified, true);
+  const focusCommitment = await request('/conscious-workspace/focus-commitments', {
+    method: 'POST', body: {
+      frame_id: operationsWorkspace.current.id,
+      selected_focus_key: operationsWorkspace.current.selected_focus_key,
+      disposition: 'follow_after_required_checks',
+      planned_expression: 'Follow the selected focus after the mandatory lifecycle checks.',
+      evidence: [{ type: 'intelligence_cycle', id: nextCycleId }],
+    },
+  });
+  assert.equal(focusCommitment.body.focus_commitment.audit.complete_chain_verified, true);
   const forecastedLock = await request('/run-lock');
   assert.equal(forecastedLock.body.lifecycle.forecast_committed, true);
   assert.notEqual(forecastedLock.body.lifecycle.lifecycle_stage, 'forecast_required');
   assert.doesNotMatch(forecastedLock.body.lifecycle.next_required_action,
     /\/self-forecast before operational tools$/);
+  const missingFocusOutcome = await request(`/intelligence/cycles/${nextCycleId}/complete?validate_only=1`, {
+    method: 'PATCH', body: { summary: 'Missing the committed focus outcome.', actions: [] },
+  });
+  assert.equal(missingFocusOutcome.response.status, 400);
+  assert.match(missingFocusOutcome.body.error, /workspace_focus_outcome is required/);
   assert.equal((await request(`/intelligence/cycles/${nextCycleId}/complete`, { method: 'PATCH', body: {
     summary: 'Observed the lifecycle integration path.', actions: [],
+    workspace_focus_outcome: {
+      focus_commitment_id: focusCommitment.body.focus_commitment.id,
+      outcome: 'enacted',
+      observed_expression: 'Kept the selected focus active through the bounded integration observation.',
+      evidence: [{ type: 'intelligence_cycle', id: nextCycleId },
+        { type: 'experience_moment', id: nextMomentId }],
+    },
   } })).body.cycle.status, 'completed');
   const closureWorkspace = (await request('/conscious-workspace?limit=20')).body;
   assert.equal(closureWorkspace.current.lifecycle.cycle_id, nextCycleId);
   assert.equal(closureWorkspace.current.lifecycle.phase, 'closure');
   assert.ok(closureWorkspace.report.lifecycle_cycles_covered >= 2);
+  assert.ok(closureWorkspace.report.prospectively_committed_focuses >= 1);
+  assert.ok(closureWorkspace.report.replay_verified_focus_outcomes >= 1);
+  assert.equal(closureWorkspace.recent_focus_outcomes.at(-1).audit.complete_chain_verified, true);
   const completedLock = await request('/run-lock');
   assert.equal(completedLock.body.lifecycle.lifecycle_stage, 'release_required');
   assert.equal(completedLock.body.lifecycle.cycle_status, 'completed');

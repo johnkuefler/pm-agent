@@ -655,7 +655,14 @@ async function loadWorkspaceArbitrationGlance(token = intelligenceLoadToken) {
       : 'The same candidate also won on base priority.';
     const lifecycle = frame.lifecycle?.phase
       ? ` Server-bound ${frame.lifecycle.phase} frame for ${frame.lifecycle.cycle_id}.` : '';
-    target.innerHTML = `<span>Why this focus won</span><strong>${escHtml(selected.label || frame.selected_focus_label || receipt.selected_winner_key)}</strong><p>${escHtml(changed)} ${escHtml(forces.length ? `Applied: ${forces.join(', ')}.` : 'No verified motive changed its score.')}${escHtml(lifecycle)}</p>`;
+    const focusCommitment = value.recent_focus_commitments?.at(-1);
+    const focusOutcome = value.recent_focus_outcomes?.at(-1);
+    const followThrough = focusOutcome?.audit?.complete_chain_verified === true
+      ? ` Prospectively committed focus resolved ${focusOutcome.outcome}: ${focusOutcome.observed_expression}`
+      : focusCommitment?.audit?.complete_chain_verified === true
+        ? ' Selected focus was committed before tools and is awaiting lifecycle closure.'
+        : ' No prospective focus-to-action receipt exists yet.';
+    target.innerHTML = `<span>Why this focus won</span><strong>${escHtml(selected.label || frame.selected_focus_label || receipt.selected_winner_key)}</strong><p>${escHtml(changed)} ${escHtml(forces.length ? `Applied: ${forces.join(', ')}.` : 'No verified motive changed its score.')}${escHtml(lifecycle)}${escHtml(followThrough)}</p>`;
   } catch (error) {
     if (error.name !== 'AbortError' && token === intelligenceLoadToken) {
       target.innerHTML = '<span>Why this focus won</span><strong>Choice receipt unavailable</strong><p>The rest of Nora\'s dashboard remains live.</p>';
