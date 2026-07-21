@@ -1925,6 +1925,15 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    is not contradiction. At or after the due date, resolve it `unclear` if the relevant natural test never
    occurred; do not keep it open indefinitely or reinterpret unrelated traffic as evidence.
 
+   A preemptible background watcher also checks at most one open-prediction/later-interaction pair per
+   cycle after delayed interaction review finishes. It accepts only a replay-verified message written by
+   the same Slack requester after formation and on or before the frozen due time. It commits either one
+   proposed resolution or a durable abstention, so a restart cannot make the same ambiguous exchange look
+   like fresh evidence. A generic thanks, silence, topic overlap, Nora's own answer, another participant's
+   reply, or an interaction outside the prediction window must be an abstention. A resolution from this
+   watcher still waits for the same provider-disjoint exact-message review before it can affect any
+   teammate frame. Do not duplicate or override a background resolution.
+
    If the natural observation later occurs, resolve it exactly once through
    `POST /relationships/perspectives/{id}/resolve` as `supported`, `contradicted`, `unclear`, or `retired`,
    with what was observed, confounds, and exact cited human Slack messages using the same

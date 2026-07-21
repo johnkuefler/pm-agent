@@ -58,6 +58,7 @@ const epistemicAgendaAccessOutcome = require('./epistemic-agenda-access-outcome'
 const relationalAffect = require('./relational-affect');
 const relationalAffectStudy = require('./relational-affect-study');
 const teammatePerspective = require('./teammate-perspective');
+const teammatePerspectiveResolution = require('./teammate-perspective-resolution-autopilot');
 const interactivePerformance = require('./interactive-performance');
 const capabilityBoundary = require('./capability-boundary');
 const teammatePerspectiveStudy = require('./teammate-perspective-study');
@@ -164,6 +165,7 @@ function emptyState() {
       meeting_professional_reflection: { attempts: [] },
       common_ground: { records: [] },
       common_ground_formation: { attempts: [] },
+      teammate_perspective_resolution: { attempts: [] },
       counterfactual_agency: { experiments: [], models: [] },
       research_ledger: { events: [], anchors: [] },
       authorship_boundary: { challenges: [], studies: [] },
@@ -568,6 +570,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     state.cognition.common_ground_formation.attempts =
       state.cognition.common_ground_formation.attempts.slice(-300);
+    state.cognition.teammate_perspective_resolution = { attempts: [],
+      ...(state.cognition.teammate_perspective_resolution || {}) };
+    if (!Array.isArray(state.cognition.teammate_perspective_resolution.attempts)) {
+      state.cognition.teammate_perspective_resolution.attempts = [];
+    }
+    state.cognition.teammate_perspective_resolution.attempts =
+      state.cognition.teammate_perspective_resolution.attempts.slice(-500);
     if (!Array.isArray(state.cognition.self_model.claims)) state.cognition.self_model.claims = [];
     if (loadedVersion < 51) {
       for (const claim of state.cognition.self_model.claims) {
@@ -1825,43 +1834,130 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function resolvePerspectiveInState(current, id, input = {}, resolvedAt = clock().toISOString()) {
+    const relationship = current.relationships.find(item =>
+      (item.perspectives || []).some(candidate => candidate.id === id));
+    const perspective = relationship?.perspectives.find(candidate => candidate.id === id);
+    if (!perspective) return null;
+    if (perspective.protocol_version !== teammatePerspective.PROTOCOL_VERSION) {
+      throw new Error('legacy perspective hypotheses cannot be promoted into calibrated evidence');
+    }
+    if (perspective.status !== 'open') throw new Error('teammate perspective is already resolved');
+    if (!teammatePerspective.auditPerspective(perspective, relationship.name).complete_chain_verified) {
+      throw new Error('teammate perspective formation no longer verifies');
+    }
+    if (!['supported', 'contradicted', 'unclear', 'retired'].includes(input.outcome)
+      || String(input.observed || '').trim().length < 10
+      || !teammatePerspective.validCanonicalEvidenceRefs(input.evidence)) {
+      throw new Error('outcome, observed behavior, and stable evidence are required');
+    }
+    if (new Date(resolvedAt) <= new Date(perspective.formation_record.formed_at)) {
+      throw new Error('teammate perspective resolution must follow formation');
+    }
+    const resolutionRecord = {
+      formation_commitment: perspective.formation_commitment,
+      source_replay_contract_version: teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION,
+      outcome: input.outcome,
+      observed: String(input.observed).trim().slice(0, 1600),
+      evidence: input.evidence.slice(0, 20),
+      confounds: Array.isArray(input.confounds) ? input.confounds.map(String).slice(0, 10) : [],
+      resolved_at: resolvedAt,
+    };
+    perspective.status = input.outcome === 'retired' ? 'retired' : 'awaiting_independent_review';
+    perspective.resolution_record = resolutionRecord;
+    perspective.resolution_commitment = teammatePerspective.commitment(resolutionRecord);
+    perspective.updated = resolutionRecord.resolved_at;
+    relationship.updated = perspective.updated;
+    return perspectiveSnapshotForResponse(perspective, relationship);
+  }
+
   function resolvePerspective(id, input = {}) {
+    return mutate(current => resolvePerspectiveInState(current, id, input));
+  }
+
+  function teammatePerspectiveResolutionSnapshot() {
+    const attempts = state.cognition.teammate_perspective_resolution?.attempts || [];
+    const verified = attempts.filter(attempt => {
+      const relationship = state.relationships.find(item => (item.perspectives || [])
+        .some(perspective => perspective.id === attempt.perspective_id));
+      const perspective = relationship?.perspectives.find(item => item.id === attempt.perspective_id);
+      return Boolean(perspective
+        && teammatePerspectiveResolution.auditAttempt(attempt,
+          perspective).complete_chain_verified);
+    });
+    return { protocol_version: teammatePerspectiveResolution.PROTOCOL_VERSION,
+      attempts: JSON.parse(JSON.stringify(attempts)), report: {
+        total: attempts.length,
+        resolved: attempts.filter(item => item.decision === 'resolve').length,
+        abstained: attempts.filter(item => item.decision === 'abstain').length,
+        replay_verified: verified.length,
+      } };
+  }
+
+  function recordTeammatePerspectiveResolutionAttempt(input = {}) {
     return mutate(current => {
-      const relationship = current.relationships.find(item =>
-        (item.perspectives || []).some(candidate => candidate.id === id));
-      const perspective = relationship?.perspectives.find(candidate => candidate.id === id);
-      if (!perspective) return null;
-      if (perspective.protocol_version !== teammatePerspective.PROTOCOL_VERSION) {
-        throw new Error('legacy perspective hypotheses cannot be promoted into calibrated evidence');
+      requireResearchLedgerIntegrity(current);
+      const relationship = current.relationships.find(item => (item.perspectives || [])
+        .some(perspective => perspective.id === input.perspective_id));
+      const perspective = relationship?.perspectives.find(item => item.id === input.perspective_id);
+      if (!perspective || perspective.status !== 'open') {
+        throw new Error('resolution attempt requires one current open teammate perspective');
       }
-      if (perspective.status !== 'open') throw new Error('teammate perspective is already resolved');
-      if (!teammatePerspective.auditPerspective(perspective, relationship.name).complete_chain_verified) {
-        throw new Error('teammate perspective formation no longer verifies');
+      const resolutionState = current.cognition.teammate_perspective_resolution
+        || (current.cognition.teammate_perspective_resolution = { attempts: [] });
+      if (input.attempt_key !== teammatePerspectiveResolution.attemptKey(
+        perspective.id, input.interaction_id)
+        || resolutionState.attempts.some(item => item.attempt_key === input.attempt_key)) {
+        throw new Error('this perspective and interaction already have a committed resolution attempt');
       }
-      if (!['supported', 'contradicted', 'unclear', 'retired'].includes(input.outcome)
-        || String(input.observed || '').trim().length < 10
-        || !teammatePerspective.validCanonicalEvidenceRefs(input.evidence)) {
-        throw new Error('outcome, observed behavior, and stable evidence are required');
+      const receipt = input.generation_receipt;
+      const output = input.output;
+      if (!teammatePerspectiveResolution.auditReceipt(receipt, perspective).complete_chain_verified
+        || teammatePerspectiveResolution.canonicalJson(output)
+          !== teammatePerspectiveResolution.canonicalJson(receipt.output)
+        || receipt.packet?.future_interaction?.id !== input.interaction_id) {
+        throw new Error('teammate resolution attempt requires a replay-valid provider receipt');
       }
-      const resolvedAt = clock().toISOString();
-      if (new Date(resolvedAt) <= new Date(perspective.formation_record.formed_at)) {
-        throw new Error('teammate perspective resolution must follow formation');
+      let resolved = null;
+      if (output.decision === 'resolve') {
+        const evidenceById = new Map(receipt.packet.future_interaction.evidence
+          .map(item => [item.ref.id, item.ref]));
+        const evidence = output.candidate.evidence_ids.map(id => evidenceById.get(id));
+        if (evidence.some(ref => !ref)) throw new Error('resolution evidence left the frozen packet');
+        resolved = resolvePerspectiveInState(current, perspective.id, {
+          outcome: output.candidate.outcome, observed: output.candidate.observed,
+          evidence, confounds: output.candidate.confounds,
+        }, receipt.packet.observed_at);
+      } else if (output.decision !== 'abstain') {
+        throw new Error('teammate resolution attempt must resolve or abstain');
       }
-      const resolutionRecord = {
-        formation_commitment: perspective.formation_commitment,
-        source_replay_contract_version: teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION,
-        outcome: input.outcome,
-        observed: String(input.observed).trim().slice(0, 1600),
-        evidence: input.evidence.slice(0, 20),
-        confounds: Array.isArray(input.confounds) ? input.confounds.map(String).slice(0, 10) : [],
-        resolved_at: resolvedAt,
+      const attemptPayload = {
+        protocol_version: teammatePerspectiveResolution.PROTOCOL_VERSION,
+        id: input.id || `teammate-resolution-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        attempt_key: input.attempt_key, perspective_id: perspective.id,
+        interaction_id: input.interaction_id, decision: output.decision,
+        outcome: output.candidate?.outcome || null,
+        resolution_commitment: resolved?.resolution_commitment || null,
+        generation_receipt: JSON.parse(JSON.stringify(receipt)),
+        completed_at: clock().toISOString(),
       };
-      perspective.status = input.outcome === 'retired' ? 'retired' : 'awaiting_independent_review';
-      perspective.resolution_record = resolutionRecord;
-      perspective.resolution_commitment = teammatePerspective.commitment(resolutionRecord);
-      perspective.updated = resolutionRecord.resolved_at;
-      relationship.updated = perspective.updated;
-      return perspectiveSnapshotForResponse(perspective, relationship);
+      const attempt = { ...attemptPayload,
+        attempt_commitment: teammatePerspectiveResolution.commitment(attemptPayload) };
+      if (!teammatePerspectiveResolution.auditAttempt(attempt,
+        perspective).complete_chain_verified) {
+        throw new Error('committed teammate resolution attempt failed replay audit');
+      }
+      resolutionState.attempts.push(attempt);
+      resolutionState.attempts = resolutionState.attempts.slice(-500);
+      researchLedgerAppend(current, {
+        kind: output.decision === 'resolve' ? 'teammate_perspective_natural_resolution'
+          : 'teammate_perspective_resolution_abstained',
+        subject_type: 'teammate_perspective', subject_id: perspective.id,
+        payload: { attempt_commitment: attempt.attempt_commitment,
+          interaction_id: input.interaction_id,
+          resolution_commitment: attempt.resolution_commitment },
+      });
+      return JSON.parse(JSON.stringify(attempt));
     });
   }
 
@@ -27425,6 +27521,7 @@ ${episodes.map(item => {
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
+    teammatePerspectiveResolutionSnapshot, recordTeammatePerspectiveResolutionAttempt,
     recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment,
     createProcedure, changeProcedureStatus, recordProcedureInteractionOutcome, runProcedureSelectionPass,
     procedureStatsSnapshot, procedureContextSelection, procedureAudit, procedureOutcomeAudit,

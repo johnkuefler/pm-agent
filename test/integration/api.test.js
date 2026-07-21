@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const cognitiveParameters = require('../../src/intelligence/cognitive-parameters');
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-api-'));
 Object.assign(process.env, {
@@ -1182,7 +1183,7 @@ test('public identity and prompt endpoints retain their response contracts', asy
   const dialsResponse = await fetch(base + '/cognitive-parameters');
   assert.equal(dialsResponse.status, 200);
   const dials = await dialsResponse.json();
-  assert.equal(dials.status.parameter_count, 111);
+  assert.equal(dials.status.parameter_count, Object.keys(cognitiveParameters.DEFINITIONS).length);
   assert.equal(dials.status.default_equivalent, true);
   assert.equal(dials.status.autonomous_tuning_enabled, false);
   assert.equal(dials.status.integrity.valid, true);

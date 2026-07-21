@@ -1294,8 +1294,21 @@ an open prediction has no prompt authority; Slack or meeting activity can still 
 The stored formation retains the exact inert evidence packet and cryptographically binds that packet, every
 source interaction id and independent-review commitment, the prompt protocol, provider identity and response,
 normalized output, evidence references, and append-only perspective record. A later replay recomputes these
-links; a changed source signal, cited message, probability, or output invalidates the whole perspective. Nora
-may resolve only from naturally occurring later evidence. A provider-disjoint dual-role OpenAI consensus then
+links; a changed source signal, cited message, probability, or output invalidates the whole perspective.
+
+A separate preemptible outcome watcher closes the prospective loop without asking an hourly prompt to remember
+it. After delayed interaction review, it considers at most one open-prediction/later-interaction pair per
+background cycle. Eligibility requires the same named requester, a Slack-author commitment matching that
+requester's original user id, exact human wording replayed from the interaction-review receipt, strict temporal
+separation from formation, and evidence no later than the frozen prediction deadline. The Anthropic subject
+pass receives the frozen prediction and this one later interaction. It must either propose `supported`,
+`contradicted`, or `unclear` using only supplied message ids, or abstain. Generic thanks, silence, topic overlap,
+Nora's own output, hidden-state inference, and another participant's message cannot resolve a prediction.
+Both resolutions and abstentions are atomically committed to a bounded attempt ledger; after restart the same
+prediction/interaction pair cannot be retried as fresh evidence. Provider or schema failures fail closed and
+may retry because no scientific judgment was committed.
+
+Nora may resolve only from naturally occurring later evidence. A provider-disjoint dual-role OpenAI consensus then
 reviews the resolution without receiving Nora's outcome label or narrative. Only three scored predictions
 across two observable dimensions that beat their frozen controls can become ordinary person-bound operating
 context. Supported and contradicted patterns both remain visible. This is fallible functional social modeling,

@@ -60,6 +60,7 @@ const commonGroundFormation = require('./src/intelligence/common-ground-formatio
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
 const teammatePerspectiveFormationAutopilot = require('./src/intelligence/teammate-perspective-formation-autopilot');
+const teammatePerspectiveResolutionAutopilot = require('./src/intelligence/teammate-perspective-resolution-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
 const epistemicAgenda = require('./src/intelligence/epistemic-agenda');
@@ -1417,7 +1418,10 @@ function _dailySeed(str) {
 // readout. Pure code, no LLM (it belongs to her unconscious). Computed every 60s into
 // _soma; injected into the volatile prompt tail next to the mood; surfaced in GET /self.
 // The mood engine owns her PSYCHOLOGICAL state (clock, outcomes); this owns the PHYSICAL.
-let _soma = { feel: '', score: 0, vitals: { processEpochId: _somaProcessEpochId }, updated_at: null };
+let _soma = { feel: '', score: 0, vitals: {
+  errors10: 0, warns10: 0, loopLag: 0, uptimeMin: 0, onBackup: false,
+  memCount: 0, embedBacklog: 0, processEpochId: _somaProcessEpochId,
+}, updated_at: null };
 async function computeSoma() {
   try {
     const now = Date.now();
@@ -10603,6 +10607,8 @@ let _teammatePerspectiveReviewAutopilotInFlight = false;
 let _teammatePerspectiveReviewAutopilotLastCycle = null;
 let _teammatePerspectiveFormationInFlight = false;
 let _teammatePerspectiveFormationLastCycle = null;
+let _teammatePerspectiveResolutionInFlight = false;
+let _teammatePerspectiveResolutionLastCycle = null;
 let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
@@ -11161,6 +11167,19 @@ function teammatePerspectiveFormationRuntimeConfig(env = process.env) {
   };
 }
 
+function teammatePerspectiveResolutionRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_TEAMMATE_PERSPECTIVE_RESOLUTION_AUTOPILOT !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_TEAMMATE_PERSPECTIVE_RESOLUTION_MODEL
+      || teammatePerspectiveResolutionAutopilot.DEFAULT_MODEL).slice(0, 160),
+    reason: enabled ? 'provider_credentials_default'
+      : !env.ANTHROPIC_API_KEY ? 'missing_anthropic_key' : 'explicitly_disabled',
+  };
+}
+
 function professionalViewpointReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_PROFESSIONAL_VIEWPOINT_REFLECTION !== '0'
@@ -11380,6 +11399,17 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     report: intelligence.teammatePerspectiveModelsSnapshot().report,
     scientific_boundary: 'This is a receipt-bound Nora-side prospective hypothesis formed from replay-verified observable Slack outcomes. It predicts only future observable work behavior, cannot steer the event, and requires later provider-disjoint review before entering a teammate model. It is not mind reading, a personality judgment, intimacy, subjective experience, or consciousness evidence.',
   };
+  const teammatePerspectiveResolutionConfig = teammatePerspectiveResolutionRuntimeConfig();
+  const teammatePerspectiveResolutionStatus = {
+    protocol_version: teammatePerspectiveResolutionAutopilot.PROTOCOL_VERSION,
+    enabled: teammatePerspectiveResolutionConfig.enabled,
+    model: teammatePerspectiveResolutionConfig.model,
+    background_only: true,
+    maximum_attempts_per_cycle: teammatePerspectiveResolutionAutopilot.MAX_ATTEMPTS_PER_CYCLE,
+    last_cycle: _teammatePerspectiveResolutionLastCycle,
+    report: intelligence.teammatePerspectiveResolutionSnapshot().report,
+    scientific_boundary: 'This is a receipt-bound Nora-side comparison of one frozen prospective teammate prediction with one later, naturally occurring replay-verified Slack outcome from that same teammate. Abstentions are durable, the interaction cannot be steered, and any proposed result remains unusable until provider-disjoint exact-message review. It is not mind reading, private-state inference, intimacy, subjective experience, or consciousness evidence.',
+  };
   const professionalViewpointConfig = professionalViewpointReflectionRuntimeConfig();
   const professionalViewpointStatus = intelligence.professionalViewpointReflectionSnapshot();
   const professionalViewpointReflectionStatus = {
@@ -11501,6 +11531,7 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     common_ground_formation: commonGroundFormationStatus,
     common_ground_review: commonGroundReview,
     teammate_perspective_formation: teammatePerspectiveFormationStatus,
+    teammate_perspective_resolution: teammatePerspectiveResolutionStatus,
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
@@ -11688,6 +11719,60 @@ async function runTeammatePerspectiveFormationAutopilotRuntime({ post = axios.po
     return _teammatePerspectiveFormationLastCycle;
   } finally {
     _teammatePerspectiveFormationInFlight = false;
+  }
+}
+
+async function runTeammatePerspectiveResolutionAutopilotRuntime({ post = axios.post } = {}) {
+  const config = teammatePerspectiveResolutionRuntimeConfig();
+  if (!config.enabled) {
+    _teammatePerspectiveResolutionLastCycle = {
+      protocol_version: teammatePerspectiveResolutionAutopilot.PROTOCOL_VERSION,
+      state: 'disabled', attempted: 0, resolved: 0, abstained: 0, failures: [],
+      reason: config.reason, at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveResolutionLastCycle;
+  }
+  if (intelligence.teammatePerspectiveStudyActive()) {
+    _teammatePerspectiveResolutionLastCycle = {
+      protocol_version: teammatePerspectiveResolutionAutopilot.PROTOCOL_VERSION,
+      state: 'waiting_for_active_teammate_perspective_trial', attempted: 0,
+      resolved: 0, abstained: 0, failures: [], at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveResolutionLastCycle;
+  }
+  if (_teammatePerspectiveResolutionInFlight) return {
+    protocol_version: teammatePerspectiveResolutionAutopilot.PROTOCOL_VERSION,
+    state: 'in_flight', attempted: 0, resolved: 0, abstained: 0, failures: [],
+  };
+  _teammatePerspectiveResolutionInFlight = true;
+  try {
+    const snapshot = intelligence.teammatePerspectiveResolutionSnapshot();
+    const cycle = await teammatePerspectiveResolutionAutopilot.runCycle({
+      interactions: loadInteractions(), relationships: intelligence.list('relationships'),
+      attempts: snapshot.attempts, enabled: true, model: config.model, now: new Date(),
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: { 'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01' },
+          timeout: 45000,
+        });
+        return response.data;
+      },
+      commitAttempt: input => intelligence.recordTeammatePerspectiveResolutionAttempt(input),
+    });
+    _teammatePerspectiveResolutionLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _teammatePerspectiveResolutionLastCycle;
+  } catch (error) {
+    _teammatePerspectiveResolutionLastCycle = {
+      protocol_version: teammatePerspectiveResolutionAutopilot.PROTOCOL_VERSION,
+      state: 'failed_closed', attempted: 0, resolved: 0, abstained: 0,
+      failures: [{ reason: String(error.response?.data?.error?.message
+        || error.message || error).slice(0, 300) }], at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveResolutionLastCycle;
+  } finally {
+    _teammatePerspectiveResolutionInFlight = false;
   }
 }
 
@@ -12702,6 +12787,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     dream_insight_reflection: 'Testing a dream insight',
     post_delivery_self_evaluation: 'Reviewing a delivered response',
     interaction_outcome_review: 'Checking interaction outcomes',
+    teammate_perspective_resolution: 'Checking a teammate prediction against later evidence',
     teammate_perspective_formation: 'Forming a falsifiable teammate prediction',
     behavioral_fingerprint_schedule: 'Checking behavioral fingerprint timing',
     behavioral_fingerprint_subject: 'Running a blinded fingerprint item',
@@ -12779,6 +12865,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['interaction_outcome_review',
         () => runInteractionOutcomeReviewAutopilotRuntime({ post: priorityPost,
           signal: lease.signal })],
+      ['teammate_perspective_resolution',
+        () => runTeammatePerspectiveResolutionAutopilotRuntime({ post: priorityPost })],
       ['teammate_perspective_formation',
         () => runTeammatePerspectiveFormationAutopilotRuntime({ post: priorityPost })],
       ['behavioral_fingerprint_schedule', () => runBehavioralFingerprintSchedulingRuntime()],
@@ -13029,6 +13117,8 @@ module.exports = {
     runInteractionOutcomeReviewAutopilotRuntime,
     teammatePerspectiveFormationRuntimeConfig,
     runTeammatePerspectiveFormationAutopilotRuntime,
+    teammatePerspectiveResolutionRuntimeConfig,
+    runTeammatePerspectiveResolutionAutopilotRuntime,
     commitAutomatedInteractionOutcome,
     recordAutomatedInteractionReviewAttempt,
     fetchSlackLanding,
