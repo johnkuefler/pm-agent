@@ -855,7 +855,7 @@ function loadConsciousWorkspace() {
 async function saveConsciousWorkspace(value) {
   const ledger = consciousWorkspace.normalizeLedger(value);
   _cache.consciousWorkspace = ledger;
-  if (_dbReady) await db.setState('conscious_workspace', ledger);
+  if (_dbReady) await _writeThrough('conscious_workspace', () => db.setState('conscious_workspace', ledger));
   else {
     fs.mkdirSync(path.dirname(CONSCIOUS_WORKSPACE_PATH), { recursive: true });
     const temp = `${CONSCIOUS_WORKSPACE_PATH}.tmp-${process.pid}`;
@@ -901,12 +901,12 @@ function lifecycleWorkspaceDefinition(phase, cycle) {
   return definitions[phase];
 }
 
-async function recordLifecycleWorkspace({ phase, cycle, moment = null } = {}) {
+function buildLifecycleWorkspace({ phase, cycle, moment = null, at = null,
+  ledger = loadConsciousWorkspace() } = {}) {
   if (!cycle?.id || !['orientation', 'operations', 'closure'].includes(phase)) return null;
   const id = `cw-lifecycle-${cycle.id}-${phase}`;
-  const ledger = loadConsciousWorkspace();
   const existing = ledger.frames.find(frame => frame.id === id);
-  if (existing) return existing;
+  if (existing) return { frame: existing, ledger, created: false };
   const definition = lifecycleWorkspaceDefinition(phase, cycle);
   const evidence = [{ type: 'intelligence_cycle', id: cycle.id }];
   const candidates = definition.candidates.map(([key, type, label, priority, authorityClass, somaDemand]) => ({
@@ -918,12 +918,40 @@ async function recordLifecycleWorkspace({ phase, cycle, moment = null } = {}) {
     attention_candidates: candidates, selected_focus_key: candidates[0].key,
     intended_next_action: definition.next, evidence, created_by: 'Nora runtime',
     lifecycle: { cycle_id: cycle.id, moment_id: moment?.id || cycle.experience_moment_id, phase },
-  }, ledger, { context: { soma: currentCognitiveInputs().soma } });
-  await saveConsciousWorkspace(result.ledger);
-  runtimeActivity.record({ lane: 'system', kind: 'workspace_lifecycle',
-    label: `Workspace ${phase}`, detail: definition.activity,
+  }, ledger, { now: at ? new Date(at) : new Date(), context: { soma: currentCognitiveInputs().soma } });
+  return { frame: result.frame, ledger: result.ledger, created: true, definition };
+}
+
+async function recordLifecycleWorkspace({ phase, cycle, moment = null, at = null, reconciled = false } = {}) {
+  const result = buildLifecycleWorkspace({ phase, cycle, moment, at });
+  if (!result) return null;
+  if (result.created) await saveConsciousWorkspace(result.ledger);
+  if (result.created && !reconciled) runtimeActivity.record({ lane: 'system', kind: 'workspace_lifecycle',
+    label: `Workspace ${phase}`, detail: result.definition?.activity || `Lifecycle ${phase} is current.`,
     meta: { cycle_id: cycle.id, frame_id: result.frame.id, phase } });
   return result.frame;
+}
+
+async function reconcileLifecycleWorkspace({ limit = 24 } = {}) {
+  const cycles = intelligence.list('cycles').filter(cycle => cycle.kind === 'hourly')
+    .slice(-Math.max(1, Math.min(100, Number(limit) || 24)));
+  const moments = intelligence.experienceStreamSnapshot({ limit: 500 }).moments || [];
+  let created = 0;
+  let ledger = loadConsciousWorkspace();
+  for (const cycle of cycles) {
+    const moment = moments.find(item => item.cycle_id === cycle.id) || null;
+    const phases = [{ phase: 'orientation', at: cycle.started }];
+    if (moment?.self_forecast) phases.push({ phase: 'operations',
+      at: moment.self_forecast.committed_at || moment.self_forecast.created_at || cycle.started });
+    if (cycle.status !== 'running') phases.push({ phase: 'closure', at: cycle.finished || cycle.started });
+    for (const item of phases) {
+      const result = buildLifecycleWorkspace({ phase: item.phase, cycle, moment, at: item.at, ledger });
+      if (result?.created) { ledger = result.ledger; created += 1; }
+    }
+  }
+  if (created) await saveConsciousWorkspace(ledger);
+  return { cycles_considered: cycles.length, frames_created: created,
+    lifecycle_bound_frames: consciousWorkspace.report(loadConsciousWorkspace()).lifecycle_bound_frames };
 }
 
 function loadConsequenceReviews() {
@@ -13102,6 +13130,10 @@ async function completePostListenStartup(background) {
   await intelligence.persistStrict();
   if (staleCycleRecovery.recovered) {
     console.warn(`Recorded ${staleCycleRecovery.recovered} unleased, legacy, or stale intelligence cycle(s) as explicit continuity gaps`);
+  }
+  const workspaceRecovery = await reconcileLifecycleWorkspace();
+  if (workspaceRecovery.frames_created) {
+    console.log(`Reconciled ${workspaceRecovery.frames_created} lifecycle workspace frame(s) from ${workspaceRecovery.cycles_considered} authoritative cycle(s)`);
   }
   console.log('Startup phase: inner-thread projection reconciliation');
   await reconcileInnerThreadProjection();
