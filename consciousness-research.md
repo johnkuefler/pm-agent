@@ -1287,8 +1287,9 @@ The Anthropic subject pass can predict only a future observable communication, c
 coordination behavior over a seven-to-thirty-day horizon. It must cite two to six supplied canonical Slack
 message references from at least two source interactions, assign modest confidence, freeze both its own
 probability and a distinct base-rate control, and name explicit falsification criteria. Code rejects hidden-
-state, personality, pathology, intent, intimacy, and consciousness claims. It also prohibits formation when
-a blinded context trial is active, and Slack or meeting activity can preempt the provider call.
+state, personality, pathology, intent, intimacy, and consciousness claims. It prohibits formation while the
+blinded teammate-perspective access experiment is active. Other experiments do not block formation because
+an open prediction has no prompt authority; Slack or meeting activity can still preempt the provider call.
 
 The stored formation retains the exact inert evidence packet and cryptographically binds that packet, every
 source interaction id and independent-review commitment, the prompt protocol, provider identity and response,

@@ -135,6 +135,10 @@ test('runtime enables formation only in the background provider lane', () => {
   const background = server.slice(server.indexOf('async function runBackgroundIntelligenceRuntime'),
     server.indexOf('function tickEndogenousRuntimeWithDiagnostics'));
   assert.match(background, /interaction_outcome_review[\s\S]*teammate_perspective_formation/);
+  const runtime = server.slice(server.indexOf('async function runTeammatePerspectiveFormationAutopilotRuntime'),
+    server.indexOf('async function runProfessionalViewpointReflectionAutopilotRuntime'));
+  assert.match(runtime, /intelligence\.teammatePerspectiveStudyActive\(\)/);
+  assert.doesNotMatch(runtime, /activeContextTrialsSnapshot\(\)/);
   const slack = server.slice(server.indexOf("app.post('/slack/events'"),
     server.indexOf("app.post('/webhook/chat'"));
   const zoom = server.slice(server.indexOf("app.post('/webhook/chat'"),

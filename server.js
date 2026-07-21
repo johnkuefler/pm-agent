@@ -11648,10 +11648,10 @@ async function runTeammatePerspectiveFormationAutopilotRuntime({ post = axios.po
     };
     return _teammatePerspectiveFormationLastCycle;
   }
-  if (intelligence.activeContextTrialsSnapshot().length) {
+  if (intelligence.teammatePerspectiveStudyActive()) {
     _teammatePerspectiveFormationLastCycle = {
       protocol_version: teammatePerspectiveFormationAutopilot.PROTOCOL_VERSION,
-      state: 'waiting_for_active_blinded_trial', formed: 0, failures: [],
+      state: 'waiting_for_active_teammate_perspective_trial', formed: 0, failures: [],
       at: new Date().toISOString(),
     };
     return _teammatePerspectiveFormationLastCycle;
