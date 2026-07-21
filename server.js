@@ -12654,6 +12654,16 @@ function tickEndogenousRuntimeWithDiagnostics(trigger) {
   }
 }
 
+function scheduleStartupBackgroundTask(label, delayMs, fn) {
+  const timer = setTimeout(() => {
+    Promise.resolve()
+      .then(fn)
+      .catch(error => console.error(`${label} failed:`, error.message));
+  }, delayMs);
+  timer.unref?.();
+  _runtimeIntervals.push(timer);
+}
+
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
@@ -12704,20 +12714,19 @@ async function start(options = {}) {
       // startup caused multi-second event-loop lag precisely when Slack/Zoom reconnect and
       // continuity traffic arrive. The progressive dashboard starts it only when the research
       // section is requested; a live interaction can then preempt it through the v4 firewall.
-      backfillTranscriptDates();
-      refreshRecentMeetingsCache();
+      scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
+      scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
       _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
       _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
-      tickEndogenousRuntimeWithDiagnostics('startup');
-      runBackgroundIntelligenceRuntime({ trigger: 'startup' })
-        .catch(error => console.error('Background intelligence cycle failed:', error.message));
+      scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
+      scheduleStartupBackgroundTask('startup background intelligence cycle', 30000, () => runBackgroundIntelligenceRuntime({ trigger: 'startup' }));
       _runtimeIntervals.push(setInterval(() => {
         try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
         catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
         runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
           .catch(error => console.error('Background intelligence cycle failed:', error.message));
       }, 5 * 60 * 1000));
-      startJobWorker(); // deferred-tool background jobs (ImageGen etc.)
+      scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
     }
     return server;
   })();
