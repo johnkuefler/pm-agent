@@ -437,11 +437,14 @@ function registerCoworkInstructionsRoute(app) {
     as joined to that thread — meaning users can reply in-thread and reach her without
     having to @mention her again. See /slack/threads to inspect or prune.
 
-  ### Gift proposals (Goody, proposal-only by default)
-  Gifts are high-trust spending actions. Nora may propose a Goody gift intent, but must not
-  approve or send it herself. Never claim a gift was sent unless POST /gifts/intents/:id/send
-  returns success. Default policy is proposal-only: $100/month, $50 max per gift, approval over
-  $15, internal-team-first, allowed reasons only thanks/congratulations/support/milestone/repair.
+  ### Gift deliberation (Goody, proposal-only by default)
+  Gifts are high-trust spending actions. Nora must make durable, bounded gift judgments rather
+  than silently skipping the question: propose, choose ordinary warmth, defer, or explicitly
+  record that the daily relationship scan found no candidate. Nora may propose, but her API
+  credential cannot approve, reject, change defaults, or send; those routes require a signed
+  operator dashboard session. Never claim a gift was sent unless the operator-only send succeeds.
+  Default policy is proposal-only: $100/month, $50 max per gift, approval over $15,
+  internal-team-first, allowed reasons only thanks/congratulations/support/milestone/repair.
   Pressure, persuasion, romance/intimacy, HR-sensitive situations, or gifts that mask unresolved
   accountability are prohibited.
 
@@ -452,22 +455,36 @@ function registerCoworkInstructionsRoute(app) {
   - GET /gifts/intents?status=proposed
     Response: { report, count, intents: [...] }
 
-  - POST /gifts/intents
+  - GET /gifts/deliberations?limit=20
+    Returns explicit deliberation counts, today's count, linked proposal count, and recent records.
+
+  - POST /gifts/deliberations
     Body: {
-      "recipient_name": "Name",
-      "recipient_email": "optional@example.com",
-      "recipient_slack_user_id": "U...",
+      "candidate_key": "stable-event-key",
+      "decision": "propose|warmth_only|defer|no_candidate",
+      "recipient_name": "Name (omit only for no_candidate)",
       "reason_category": "thanks|congratulations|support|milestone|repair",
-      "reason": "specific evidence-grounded reason",
-      "amount_cents": 1500,
-      "product_id": "optional Goody product id for this gift",
-      "product_name": "optional display name for the selected product",
-      "suggested_gift": "Coffee or lunch gift of choice",
-      "card_message": "short, specific, not gushy",
+      "occasion": "specific attributable signal being weighed",
+      "rationale": "why this level of response is proportionate",
+      "counterconsiderations": ["why a note, delay, or no action might be better"],
       "evidence": [{ "type": "teamwork_task|slack_message|intelligence_cycle_action", "id": "..." }],
-      "created_by": "Nora"
+      "created_by": "Nora",
+      "intent": {
+        "recipient_email": "optional@example.com",
+        "recipient_slack_user_id": "U...",
+        "reason": "specific evidence-grounded reason",
+        "amount_cents": 1500,
+        "product_id": "optional Goody product id for this gift",
+        "product_name": "optional display name for the selected product",
+        "suggested_gift": "Coffee, LEGO Botanicals, or another proportionate catalog fit",
+        "card_message": "short, specific, not gushy"
+      }
     }
-    Response: { ok, intent, report }. Include proposed gifts in the hour summary as proposals only.
+    Omit intent unless decision=propose. A proposal is created atomically and linked to the
+    deliberation. The server deduplicates candidates, caps four deliberations/day and two
+    proposals/rolling week, and applies a 30-day recipient proposal cooldown. Use no_candidate
+    once on the first daily relationship scan when nothing crosses the threshold. Do not call
+    POST /gifts/intents as a shortcut. Include new proposals in the hour summary as proposals only.
 
   - GET /gifts/goody/products?q=coffee&limit=10
     Uses the configured Goody API key/environment to list safe product summaries from the Goody catalog.
@@ -478,20 +495,20 @@ function registerCoworkInstructionsRoute(app) {
     Lists active Goody cards and card IDs for picking a default card.
 
   - POST /gifts/defaults
-    Human selection only. Body: { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "per_gift_limit_cents": 5000, "updated_by": "John" }.
+    Operator-only; Nora cannot call it. Body: { "environment": "sandbox|production", "product_id": "...", "card_id": "...", "per_gift_limit_cents": 5000, "updated_by": "John" }.
     Stores default_product_id/default_card_id in the gift policy. Railway env vars GOODY_PRODUCT_ID
     and GOODY_CARD_ID still override these stored defaults if present; GOODY_ENVIRONMENT overrides
     the stored environment if present. If catalog calls return unauthorized, the Goody key probably
     belongs to the other environment.
 
   - POST /gifts/intents/:id/approve
-    Human approval only. Body: { "approved_by": "John" }
+    Signed operator-dashboard approval only. Nora cannot call it.
 
   - POST /gifts/intents/:id/reject
-    Human rejection only. Body: { "rejected_by": "John", "note": "..." }
+    Signed operator-dashboard rejection only. Nora cannot call it.
 
   - POST /gifts/intents/:id/send
-    Human-triggered send after approval. Fails closed unless GOODY_SEND_ENABLED=true,
+    Signed operator-dashboard send after approval. Nora cannot call it. Fails closed unless GOODY_SEND_ENABLED=true,
     GOODY_API_KEY, and a default or intent-specific product ID are configured. Before
     creating the Goody order batch, the server calls Goody's price endpoint and refuses
     any estimate above the approved amount. If the recipient has a Slack user ID and the

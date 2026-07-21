@@ -8439,6 +8439,7 @@ registerTaskRoutes(app, {
 
 registerGiftRoutes(app, {
   requireAuth,
+  requireOperatorAuth,
   loadGiftLedger,
   saveGiftLedger,
   deliverGiftLink: deliverGoodyGiftLink,

@@ -3,6 +3,7 @@
 const goodyGifting = require('../gifting/goody');
 
 function publicIntent(intent) {
+  if (!intent) return null;
   return {
     id: intent.id,
     status: intent.status,
@@ -46,15 +47,35 @@ function publicIntent(intent) {
   };
 }
 
+function publicDeliberation(record) {
+  if (!record) return null;
+  return {
+    id: record.id,
+    candidate_key: record.candidate_key,
+    decision: record.decision,
+    recipient_name: record.recipient_name || null,
+    reason_category: record.reason_category || null,
+    occasion: record.occasion,
+    rationale: record.rationale,
+    counterconsiderations: record.counterconsiderations || [],
+    evidence: record.evidence || [],
+    evidence_commitment: record.evidence_commitment,
+    intent_id: record.intent_id || null,
+    deliberation_commitment: record.deliberation_commitment,
+    created_by: record.created_by,
+    created_at: record.created_at,
+  };
+}
+
 function registerGiftRoutes(app, deps) {
-  const { requireAuth, loadGiftLedger, saveGiftLedger, deliverGiftLink = null } = deps;
+  const { requireAuth, requireOperatorAuth, loadGiftLedger, saveGiftLedger, deliverGiftLink = null } = deps;
 
   app.get('/gifts/policy', requireAuth, (_req, res) => {
     const ledger = loadGiftLedger();
     res.json(goodyGifting.policyReport(ledger));
   });
 
-  app.post('/gifts/defaults', requireAuth, async (req, res) => {
+  app.post('/gifts/defaults', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = goodyGifting.updateGiftDefaults(loadGiftLedger(), {
         product_id: req.body?.product_id,
@@ -109,6 +130,31 @@ function registerGiftRoutes(app, deps) {
     });
   });
 
+  app.get('/gifts/deliberations', requireAuth, (req, res) => {
+    const ledger = loadGiftLedger();
+    const decision = req.query.decision ? String(req.query.decision) : '';
+    const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+    const records = decision ? ledger.deliberations.filter(item => item.decision === decision) : ledger.deliberations;
+    res.json({
+      report: goodyGifting.deliberationReport(ledger),
+      policy_report: goodyGifting.policyReport(ledger),
+      count: records.length,
+      deliberations: records.slice(-limit).reverse().map(publicDeliberation),
+    });
+  });
+
+  app.post('/gifts/deliberations', requireAuth, async (req, res) => {
+    try {
+      const result = goodyGifting.createDeliberation(req.body || {}, loadGiftLedger());
+      if (!result.already_recorded) await saveGiftLedger(result.ledger);
+      res.json({ ok: true, already_recorded: result.already_recorded,
+        deliberation: publicDeliberation(result.deliberation),
+        intent: publicIntent(result.intent), report: result.report, policy_report: result.policy_report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   app.get('/gifts/intents/:id', requireAuth, (req, res) => {
     const ledger = loadGiftLedger();
     const intent = ledger.intents.find(item => item.id === req.params.id);
@@ -116,7 +162,9 @@ function registerGiftRoutes(app, deps) {
     res.json({ intent: publicIntent(intent), report: goodyGifting.policyReport(ledger) });
   });
 
-  app.post('/gifts/intents', requireAuth, async (req, res) => {
+  // Direct intent creation is retained for operator repair/import only. Nora's proposal lane is
+  // /gifts/deliberations so every proposal has an explicit alternatives-and-evidence receipt.
+  app.post('/gifts/intents', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = goodyGifting.createIntent(req.body || {}, loadGiftLedger());
       await saveGiftLedger(result.ledger);
@@ -126,7 +174,7 @@ function registerGiftRoutes(app, deps) {
     }
   });
 
-  app.post('/gifts/intents/:id/approve', requireAuth, async (req, res) => {
+  app.post('/gifts/intents/:id/approve', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = goodyGifting.approveIntent(loadGiftLedger(), req.params.id, {
         approvedBy: req.body?.approved_by || 'John',
@@ -138,7 +186,7 @@ function registerGiftRoutes(app, deps) {
     }
   });
 
-  app.post('/gifts/intents/:id/reject', requireAuth, async (req, res) => {
+  app.post('/gifts/intents/:id/reject', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = goodyGifting.rejectIntent(loadGiftLedger(), req.params.id, {
         rejectedBy: req.body?.rejected_by || 'John',
@@ -151,7 +199,7 @@ function registerGiftRoutes(app, deps) {
     }
   });
 
-  app.post('/gifts/intents/:id/send', requireAuth, async (req, res) => {
+  app.post('/gifts/intents/:id/send', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = await goodyGifting.sendIntent(loadGiftLedger(), req.params.id, {
         sentBy: req.body?.sent_by || 'John',
@@ -188,4 +236,4 @@ function registerGiftRoutes(app, deps) {
   });
 }
 
-module.exports = { publicIntent, registerGiftRoutes };
+module.exports = { publicIntent, publicDeliberation, registerGiftRoutes };

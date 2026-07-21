@@ -46,6 +46,71 @@ test('Goody gift intents reject pressure, thin reasons, and oversized gifts', ()
   assert.throws(() => goody.createIntent({ ...base, amount_cents: 5001 }, ledger), /per-gift limit/);
 });
 
+test('gift deliberation makes proposal or abstention explicit and atomically creates an intent', () => {
+  const base = {
+    candidate_key: 'milestone:chelsea-eight-docs',
+    recipient_name: 'Chelsea Galindo',
+    reason_category: 'milestone',
+    occasion: 'Chelsea shipped all eight copy documents and surfaced an SEO risk before handoff.',
+    rationale: 'The completed body of work and proactive risk catch make a modest gift proportionate, not merely routine thanks.',
+    counterconsiderations: ['A specific Slack note may already be enough recognition.'],
+    evidence: [{ type: 'teamwork_task', id: 'tw-39585335' }],
+    created_by: 'Nora',
+  };
+  const proposed = goody.createDeliberation({ ...base, id: 'delib-chelsea', decision: 'propose',
+    intent: {
+      id: 'gift-from-deliberation', amount_cents: 2400,
+      reason: 'Chelsea shipped eight copy documents and proactively caught the SEO length risk before handoff.',
+      suggested_gift: 'LEGO Botanicals Petite Sunny Bouquet',
+      card_message: 'Eight docs and a risk catch before handoff. That was a strong finish—thank you.',
+      recipient_slack_user_id: 'U03CJSL85AL',
+    },
+  }, goody.emptyLedger(), { now: new Date('2026-07-21T14:00:00Z') });
+  assert.equal(proposed.deliberation.decision, 'propose');
+  assert.equal(proposed.deliberation.intent_id, 'gift-from-deliberation');
+  assert.equal(proposed.intent.status, 'proposed');
+  assert.equal(proposed.ledger.intents.length, 1);
+  assert.equal(proposed.ledger.deliberations.length, 1);
+  assert.match(proposed.deliberation.deliberation_commitment, /^[a-f0-9]{64}$/);
+
+  const duplicate = goody.createDeliberation({ ...base, decision: 'warmth_only' }, proposed.ledger,
+    { now: new Date('2026-07-21T15:00:00Z') });
+  assert.equal(duplicate.already_recorded, true);
+  assert.equal(duplicate.deliberation.decision, 'propose');
+  assert.equal(duplicate.ledger.deliberations.length, 1);
+
+  const abstained = goody.createDeliberation({
+    id: 'delib-none', candidate_key: 'daily-scan:2026-07-22', decision: 'no_candidate',
+    occasion: 'The daily relationship scan found routine task movement but no substantial milestone or repair moment.',
+    rationale: 'Nothing observed today crossed the evidence threshold for spending, so no gift proposal is proportionate.',
+    counterconsiderations: ['Ordinary warmth remains available if a specific contribution deserves acknowledgment.'],
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-2026-07-22' }], created_by: 'Nora',
+  }, proposed.ledger, { now: new Date('2026-07-22T14:00:00Z') });
+  assert.equal(abstained.deliberation.decision, 'no_candidate');
+  assert.equal(abstained.intent, null);
+  assert.equal(abstained.report.counts.no_candidate, 1);
+});
+
+test('gift deliberation enforces proportionality budgets and recipient cooldown', () => {
+  const candidate = (key, recipient, day) => ({
+    candidate_key: key, decision: 'propose', recipient_name: recipient, reason_category: 'thanks',
+    occasion: `${recipient} completed a substantial deliverable and caught a material handoff risk on ${day}.`,
+    rationale: 'The completed milestone and attributable risk prevention justify considering a modest bounded gift.',
+    counterconsiderations: ['A personal note could be sufficient.'],
+    evidence: [{ type: 'teamwork_task', id: `tw-${key}` }],
+    intent: { amount_cents: 1500, reason: `${recipient} completed a substantial deliverable and caught a material handoff risk.`,
+      suggested_gift: 'A modest Goody gift', card_message: 'Thank you for the strong finish.' },
+  });
+  const first = goody.createDeliberation(candidate('one', 'Person One', 'Monday'), goody.emptyLedger(),
+    { now: new Date('2026-07-21T10:00:00Z') });
+  assert.throws(() => goody.createDeliberation(candidate('one-again', 'Person One', 'Tuesday'), first.ledger,
+    { now: new Date('2026-07-22T10:00:00Z') }), /recipient.*cooldown/);
+  const second = goody.createDeliberation(candidate('two', 'Person Two', 'Tuesday'), first.ledger,
+    { now: new Date('2026-07-22T10:00:00Z') });
+  assert.throws(() => goody.createDeliberation(candidate('three', 'Person Three', 'Wednesday'), second.ledger,
+    { now: new Date('2026-07-23T10:00:00Z') }), /weekly gift proposal budget/);
+});
+
 test('Goody send readiness fails closed until explicit credentials and send flag exist', () => {
   const priorKey = process.env.GOODY_API_KEY;
   const priorEnabled = process.env.GOODY_SEND_ENABLED;

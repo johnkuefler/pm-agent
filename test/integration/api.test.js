@@ -250,6 +250,7 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
 
   const defaults = await request('/gifts/defaults', {
     method: 'POST',
+    headers: { 'X-Nora-Operator-Token': createOperatorToken() },
     body: {
       environment: 'production',
       product_id: 'product-integration',
@@ -263,18 +264,43 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
   assert.equal(defaults.body.report.goody_product_configured, true);
   assert.equal(defaults.body.report.default_product_id, 'product-integration');
 
-  const created = await request('/gifts/intents', { method: 'POST', body: {
-    id: 'gift-integration-chelsea',
+  const deliberated = await request('/gifts/deliberations', { method: 'POST', body: {
+    id: 'gift-deliberation-integration',
+    candidate_key: 'milestone:integration-chelsea',
+    decision: 'warmth_only',
     recipient_name: 'Chelsea Galindo',
-    recipient_slack_user_id: 'U03CJSL85AL',
+    reason_category: 'thanks',
+    occasion: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+    rationale: 'A specific personal note is proportionate for this fixture, so the system should record an explicit abstention from spending.',
+    counterconsiderations: ['A modest gift would also be reasonable for a larger milestone.'],
+    evidence: [{ type: 'teamwork_task', id: 'tw-39585335' }],
+  } });
+  assert.equal(deliberated.body.deliberation.decision, 'warmth_only');
+  assert.equal(deliberated.body.intent, null);
+  const deliberations = await request('/gifts/deliberations');
+  assert.equal(deliberations.body.report.counts.warmth_only, 1);
+
+  const directProposal = await request('/gifts/intents', { method: 'POST', body: {
+    recipient_name: 'Chelsea Galindo',
     reason_category: 'thanks',
     reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
     amount_cents: 1500,
-    product_id: 'product-integration',
-    product_name: 'Integration default gift',
-    suggested_gift: 'Coffee or lunch gift of choice',
-    card_message: 'Thank you for closing the loop and flagging the risk early.',
     evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-mrtrx1a5-lyyo:1784585763.285619' }],
+  } });
+  assert.equal(directProposal.response.status, 401);
+
+  const created = await request('/gifts/deliberations', { method: 'POST', body: {
+    id: 'gift-deliberation-proposal-integration', candidate_key: 'milestone:integration-gift',
+    decision: 'propose', recipient_name: 'Chelsea Galindo', reason_category: 'thanks',
+    occasion: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+    rationale: 'The complete package plus proactive risk detection make a modest gift proportionate to the observed contribution.',
+    counterconsiderations: ['A specific note might already provide enough recognition.'],
+    evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-mrtrx1a5-lyyo:1784585763.285619' }],
+    intent: { id: 'gift-integration-chelsea', recipient_slack_user_id: 'U03CJSL85AL',
+      reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
+      amount_cents: 1500, product_id: 'product-integration', product_name: 'Integration default gift',
+      suggested_gift: 'Coffee or lunch gift of choice',
+      card_message: 'Thank you for closing the loop and flagging the risk early.' },
   } });
   assert.equal(created.body.ok, true);
   assert.equal(created.body.intent.status, 'proposed');
@@ -282,13 +308,22 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
   assert.equal(created.body.intent.requires_approval, true);
   assert.match(created.body.intent.request_commitment, /^[a-f0-9]{64}$/);
 
-  const approved = await request('/gifts/intents/gift-integration-chelsea/approve', {
+  const selfApproval = await request('/gifts/intents/gift-integration-chelsea/approve', {
     method: 'POST', body: { approved_by: 'John' },
+  });
+  assert.equal(selfApproval.response.status, 401);
+  assert.match(selfApproval.body.error, /signed dashboard session/);
+
+  const approved = await request('/gifts/intents/gift-integration-chelsea/approve', {
+    method: 'POST', headers: { 'X-Nora-Operator-Token': createOperatorToken() }, body: { approved_by: 'John' },
   });
   assert.equal(approved.body.intent.status, 'approved');
   assert.equal(approved.body.report.approved_or_sent_cents, 1500);
 
-  const send = await request('/gifts/intents/gift-integration-chelsea/send', { method: 'POST' });
+  const selfSend = await request('/gifts/intents/gift-integration-chelsea/send', { method: 'POST' });
+  assert.equal(selfSend.response.status, 401);
+  const send = await request('/gifts/intents/gift-integration-chelsea/send', { method: 'POST',
+    headers: { 'X-Nora-Operator-Token': createOperatorToken() } });
   assert.equal(send.response.status, 409);
   assert.match(send.body.error, /GOODY_SEND_ENABLED/);
 });

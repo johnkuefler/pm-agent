@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 
 const DEFAULT_POLICY = Object.freeze({
-  version: 1,
+  version: 2,
   mode: 'proposal_only',
   currency: 'USD',
   monthly_budget_cents: 10000,
@@ -16,7 +16,14 @@ const DEFAULT_POLICY = Object.freeze({
   goody_environment: 'sandbox',
   default_product_id: '',
   default_card_id: '',
+  max_deliberations_per_day: 4,
+  max_proposals_per_rolling_week: 2,
+  recipient_proposal_cooldown_days: 30,
 });
+
+const DELIBERATION_DECISIONS = Object.freeze([
+  'propose', 'warmth_only', 'defer', 'no_candidate',
+]);
 
 const GOODY_BASE_URLS = Object.freeze({
   production: 'https://api.ongoody.com',
@@ -39,15 +46,17 @@ function commitment(value) {
 }
 
 function emptyLedger(policy = DEFAULT_POLICY) {
-  return { version: 1, policy: { ...DEFAULT_POLICY, ...(policy || {}) }, intents: [] };
+  return { version: 2, policy: { ...DEFAULT_POLICY, ...(policy || {}) }, intents: [], deliberations: [] };
 }
 
 function normalizeLedger(value = {}) {
   const ledger = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   return {
-    version: 1,
-    policy: { ...DEFAULT_POLICY, ...(ledger.policy || {}) },
+    version: 2,
+    policy: { ...DEFAULT_POLICY, ...(ledger.policy || {}), version: 2 },
     intents: Array.isArray(ledger.intents) ? ledger.intents.map(normalizeIntentRecord).filter(Boolean).slice(-500) : [],
+    deliberations: Array.isArray(ledger.deliberations)
+      ? ledger.deliberations.map(normalizeDeliberationRecord).filter(Boolean).slice(-1000) : [],
   };
 }
 
@@ -80,6 +89,55 @@ function monthKey(date = new Date()) {
 
 function normalizeReasonCategory(value) {
   return normalizeText(value, 80).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function utcDay(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error('gift deliberation requires a valid time');
+  return date.toISOString().slice(0, 10);
+}
+
+function deliberationPayload(record = {}) {
+  return {
+    id: record.id,
+    candidate_key: record.candidate_key,
+    decision: record.decision,
+    recipient_name: record.recipient_name || null,
+    reason_category: record.reason_category || null,
+    occasion: record.occasion,
+    rationale: record.rationale,
+    counterconsiderations: record.counterconsiderations,
+    evidence: record.evidence,
+    evidence_commitment: record.evidence_commitment,
+    intent_id: record.intent_id || null,
+    created_by: record.created_by,
+    created_at: record.created_at,
+  };
+}
+
+function normalizeDeliberationRecord(record) {
+  if (!record || typeof record !== 'object' || !record.id || !record.candidate_key) return null;
+  return {
+    ...record,
+    decision: DELIBERATION_DECISIONS.includes(record.decision) ? record.decision : 'defer',
+    counterconsiderations: Array.isArray(record.counterconsiderations)
+      ? record.counterconsiderations.map(item => normalizeText(item, 400)).filter(Boolean).slice(0, 5) : [],
+    evidence: Array.isArray(record.evidence) ? record.evidence : [],
+  };
+}
+
+function deliberationReport(ledger = emptyLedger(), { now = new Date() } = {}) {
+  const current = normalizeLedger(ledger);
+  const day = utcDay(now);
+  const counts = Object.fromEntries(DELIBERATION_DECISIONS.map(decision => [decision,
+    current.deliberations.filter(item => item.decision === decision).length]));
+  return {
+    total: current.deliberations.length,
+    today: current.deliberations.filter(item => utcDay(item.created_at) === day).length,
+    counts,
+    proposals_created: current.deliberations.filter(item => item.intent_id).length,
+    latest_at: current.deliberations.at(-1)?.created_at || null,
+  };
 }
 
 function splitName(fullName) {
@@ -248,6 +306,95 @@ function createIntent(input = {}, ledger = emptyLedger(), { now = new Date() } =
   current.intents.push(record);
   current.intents = current.intents.slice(-500);
   return { ledger: current, intent: record, report: policyReport(current, { now }) };
+}
+
+function createDeliberation(input = {}, ledger = emptyLedger(), { now = new Date() } = {}) {
+  let current = normalizeLedger(ledger);
+  const decision = normalizeText(input.decision, 40).toLowerCase();
+  if (!DELIBERATION_DECISIONS.includes(decision)) {
+    throw new Error(`gift deliberation decision must be one of: ${DELIBERATION_DECISIONS.join(', ')}`);
+  }
+  const evidence = normalizeEvidence(input.evidence);
+  const evidenceCommitment = commitment(evidence);
+  const recipientName = normalizeText(input.recipient_name || input.intent?.recipient_name, 120);
+  const reasonCategory = decision === 'no_candidate' ? ''
+    : normalizeReasonCategory(input.reason_category || input.intent?.reason_category);
+  const occasion = normalizeText(input.occasion, 700);
+  const rationale = normalizeText(input.rationale, 900);
+  if (occasion.length < 20) throw new Error('gift deliberation occasion must describe the observed signal');
+  if (rationale.length < 30) throw new Error('gift deliberation rationale must explain the proportional choice');
+  if (decision !== 'no_candidate' && !recipientName) throw new Error('recipient_name is required unless no candidate exists');
+  if (decision !== 'no_candidate' && !current.policy.allowed_reasons.includes(reasonCategory)) {
+    throw new Error('gift deliberation reason_category is not allowed by policy');
+  }
+  const counterconsiderations = (Array.isArray(input.counterconsiderations)
+    ? input.counterconsiderations : []).map(item => normalizeText(item, 400)).filter(Boolean).slice(0, 5);
+  if (!counterconsiderations.length) {
+    throw new Error('gift deliberation requires at least one counterconsideration');
+  }
+  const candidateKey = normalizeText(input.candidate_key, 160)
+    || `gift-candidate-${commitment({ recipientName, occasion, evidence }).slice(0, 20)}`;
+  const existing = current.deliberations.find(item => item.candidate_key === candidateKey
+    || (item.evidence_commitment === evidenceCommitment
+      && String(item.recipient_name || '').toLowerCase() === recipientName.toLowerCase()));
+  if (existing) {
+    return { ledger: current, deliberation: existing,
+      intent: existing.intent_id ? current.intents.find(item => item.id === existing.intent_id) || null : null,
+      already_recorded: true, report: deliberationReport(current, { now }), policy_report: policyReport(current, { now }) };
+  }
+  const todayCount = current.deliberations.filter(item => utcDay(item.created_at) === utcDay(now)).length;
+  if (todayCount >= Number(current.policy.max_deliberations_per_day || 4)) {
+    throw new Error('daily gift deliberation budget is exhausted');
+  }
+
+  let intent = null;
+  if (decision === 'propose') {
+    const nowMs = now instanceof Date ? now.getTime() : new Date(now).getTime();
+    const weekAgo = nowMs - 7 * 86400000;
+    const recentProposals = current.deliberations.filter(item => item.intent_id
+      && new Date(item.created_at).getTime() >= weekAgo).length;
+    if (recentProposals >= Number(current.policy.max_proposals_per_rolling_week || 2)) {
+      throw new Error('rolling weekly gift proposal budget is exhausted');
+    }
+    const cooldownMs = Number(current.policy.recipient_proposal_cooldown_days || 30) * 86400000;
+    const recentRecipientIntent = current.intents.find(item =>
+      String(item.recipient_name || '').toLowerCase() === recipientName.toLowerCase()
+      && ['proposed', 'approved', 'sent'].includes(item.status)
+      && nowMs - new Date(item.created_at).getTime() < cooldownMs);
+    if (recentRecipientIntent) throw new Error('recipient is within the gift proposal cooldown');
+    const intentInput = { ...(input.intent || {}),
+      recipient_name: recipientName,
+      reason_category: reasonCategory,
+      evidence,
+      created_by: normalizeText(input.created_by || 'Nora', 80) };
+    const created = createIntent(intentInput, current, { now });
+    current = created.ledger;
+    intent = created.intent;
+  }
+
+  const createdAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  const record = {
+    id: input.id ? normalizeText(input.id, 120)
+      : `gift-delib-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`,
+    candidate_key: candidateKey,
+    decision,
+    recipient_name: recipientName || null,
+    reason_category: reasonCategory || null,
+    occasion,
+    rationale,
+    counterconsiderations,
+    evidence,
+    evidence_commitment: evidenceCommitment,
+    intent_id: intent?.id || null,
+    created_by: normalizeText(input.created_by || 'Nora', 80),
+    created_at: createdAt,
+  };
+  if (current.deliberations.some(item => item.id === record.id)) throw new Error('gift deliberation id already exists');
+  record.deliberation_commitment = commitment(deliberationPayload(record));
+  current.deliberations.push(record);
+  current.deliberations = current.deliberations.slice(-1000);
+  return { ledger: current, deliberation: record, intent, already_recorded: false,
+    report: deliberationReport(current, { now }), policy_report: policyReport(current, { now }) };
 }
 
 function approveIntent(ledger = emptyLedger(), id, { approvedBy = 'John', now = new Date() } = {}) {
@@ -528,11 +675,14 @@ module.exports = {
   ALLOWED_SEND_METHODS,
   ALLOWED_GOODY_ENVIRONMENTS,
   DEFAULT_POLICY,
+  DELIBERATION_DECISIONS,
   GOODY_BASE_URLS,
   approveIntent,
   buildGoodyOrderPayload,
   commitment,
+  createDeliberation,
   createIntent,
+  deliberationReport,
   emptyLedger,
   extractHighPriceCents,
   listGoodyCards,

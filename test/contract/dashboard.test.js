@@ -45,6 +45,10 @@ test('dashboard presentation and behavior live in focused external assets', () =
     assert.doesNotThrow(() => new vm.Script(code, { filename: file }));
   }
   const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  const adminJs = fs.readFileSync(path.join(root, 'public/js/dashboard-admin.js'), 'utf8');
+  assert.match(html, /id="gift-deliberation-list"/);
+  assert.match(adminJs, /\/gifts\/deliberations\?limit=20/);
+  assert.match(adminJs, /operatorApi\(`\/gifts\/intents/);
   assert.match(intelligenceJs, /authorship-boundary\/studies/);
   assert.match(intelligenceJs, /Only completed independently curated confirmatory studies enter the indicator/);
   assert.match(intelligenceJs, /matched self-prediction/);

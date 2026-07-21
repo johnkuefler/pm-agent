@@ -2,7 +2,54 @@
 
     async function loadAdmin() {
       // Run all sub-loaders in parallel for snappy refresh
-      await Promise.all([loadApiOpportunities(), loadMcpConnections(), loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+      await Promise.all([loadGiftDeliberations(), loadApiOpportunities(), loadMcpConnections(), loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
+    }
+
+    async function loadGiftDeliberations() {
+      const policyEl = document.getElementById('gift-policy-state');
+      const intentEl = document.getElementById('gift-intent-list');
+      const deliberationEl = document.getElementById('gift-deliberation-list');
+      if (!policyEl || !intentEl || !deliberationEl) return;
+      try {
+        const [intentResponse, deliberationResponse] = await Promise.all([
+          api('/gifts/intents'), api('/gifts/deliberations?limit=20'),
+        ]);
+        const intents = await intentResponse.json(); const deliberations = await deliberationResponse.json();
+        if (!intentResponse.ok || !deliberationResponse.ok) throw new Error(intents.error || deliberations.error || 'Gift state unavailable');
+        const p = intents.report || {}; const d = deliberations.report || {};
+        policyEl.innerHTML = `<strong>$${((p.remaining_cents || 0) / 100).toFixed(2)} remaining this month</strong> &middot; ${d.total || 0} deliberations &middot; ${d.proposals_created || 0} proposals &middot; ${p.goody_send_enabled ? 'Goody ready' : 'sending disabled'}`;
+        const actionable = (intents.intents || []).slice().reverse();
+        intentEl.innerHTML = actionable.length ? `<div class="intelligence-meta" style="margin-top:12px;">Gift proposals</div>${actionable.map(item => {
+          const actions = item.status === 'proposed'
+            ? `<button class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','approve')">Approve</button><button class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject')">Reject</button>`
+            : item.status === 'approved'
+              ? `<button class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','send')">Send through Goody</button><button class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject')">Reject</button>` : '';
+          const link = item.goody_gift_link ? ` &middot; <a href="${escHtml(item.goody_gift_link)}" target="_blank" rel="noopener">gift link</a>` : '';
+          return `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name)} &middot; $${((item.amount_cents || 0) / 100).toFixed(2)} <span style="font-size:12px;color:var(--muted);">${escHtml(item.status)}</span></div><div class="memory-meta">${escHtml(item.reason)}${link}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
+        }).join('')}` : '<p class="empty">No gift proposals yet.</p>';
+        const records = deliberations.deliberations || [];
+        deliberationEl.innerHTML = records.length ? `<div class="intelligence-meta" style="margin-top:12px;">Recent deliberations</div>${records.map(item => `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name || 'Daily scan')} <span style="font-size:12px;color:var(--muted);">${escHtml(item.decision.replaceAll('_', ' '))}</span></div><div class="memory-meta">${escHtml(item.occasion)}</div><div class="memory-meta">Why: ${escHtml(item.rationale)}</div>${item.counterconsiderations?.length ? `<div class="memory-meta">Against: ${escHtml(item.counterconsiderations.join(' · '))}</div>` : ''}</div></div>`).join('')}` : '<p class="empty">No gift deliberations recorded yet.</p>';
+      } catch (e) {
+        policyEl.textContent = 'Gift state unavailable.';
+        intentEl.innerHTML = ''; deliberationEl.innerHTML = `<p class="empty">${escHtml(e.message)}</p>`;
+      }
+    }
+
+    async function decideGiftIntent(id, action) {
+      const toast = document.getElementById('gift-toast');
+      let body = action === 'approve' ? { approved_by: 'John' } : action === 'send'
+        ? { sent_by: 'John', delivered_by: 'Nora' }
+        : { rejected_by: 'John', note: prompt('Why reject this gift?', '') || '' };
+      if ((action === 'approve' || action === 'send') && !confirm(`${action === 'send' ? 'Send' : 'Approve'} this gift?`)) return;
+      toast.className = 'toast'; toast.textContent = action === 'send' ? 'Creating the Goody gift...' : 'Saving decision...';
+      try {
+        const r = await operatorApi(`/gifts/intents/${encodeURIComponent(id)}/${action}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const value = await r.json(); toast.className = r.ok ? 'toast ok' : 'toast err';
+        toast.textContent = r.ok ? (action === 'send' ? `Gift sent${value.delivery?.ok ? ' and link delivered in Slack.' : '.'}` : action === 'approve' ? 'Gift approved.' : 'Gift rejected.') : (value.error || 'Gift decision failed');
+        await loadGiftDeliberations();
+      } catch (e) { toast.className = 'toast err'; toast.textContent = e.message; }
     }
 
     async function loadApiOpportunities() {
