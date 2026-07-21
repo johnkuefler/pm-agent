@@ -2,9 +2,24 @@
 
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const expectationForecast = require('../intelligence/expectation-forecast');
+const consequenceReview = require('../intelligence/consequence-review');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function validateDueConsequenceReviews({ cycleId, store, ledger, now = new Date() }) {
+  const cycle = store.list('cycles').find(item => item.id === cycleId);
+  if (!cycle?.run_lock_holder) return { required: false, valid: true, due_action_ids: [] };
+  const due = consequenceReview.dueActions(ledger, { now, status: 'open', limit: 200 });
+  if (due.length) {
+    const ids = due.map(item => item.id);
+    const error = new Error(`resolve or honestly reschedule due consequence reviews before closing this hourly cycle: ${ids.join(', ')}`);
+    error.code = 'due_consequence_reviews_required';
+    error.due_action_ids = ids;
+    throw error;
+  }
+  return { required: true, valid: true, due_action_ids: [] };
+}
+
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getConsequenceReviews = () => consequenceReview.emptyLedger(), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
   const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
@@ -521,6 +536,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       const workspaceFocusValidation = validateLifecycleWorkspaceOutcome({
         cycleId: req.params.id, completion: validationPayload,
       });
+      const consequenceValidation = validateDueConsequenceReviews({ cycleId: req.params.id,
+        store, ledger: getConsequenceReviews(), now: new Date() });
       const validationCommitment = expectationForecast.commitment({
         operation: 'complete_cycle', id: req.params.id, payload: validationPayload,
       });
@@ -528,7 +545,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         const validation = store.validateCycleCompletion(req.params.id, validationPayload);
         if (!validation) return res.status(404).json({ error: 'intelligence cycle not found' });
         return res.json({ ok: true, validation: { ...validation,
-          workspace_focus: workspaceFocusValidation }, validation_commitment: validationCommitment });
+          workspace_focus: workspaceFocusValidation,
+          consequence_follow_through: consequenceValidation },
+        validation_commitment: validationCommitment });
       }
       if (req.query.require_validation === '1' && req.body?.validation_commitment !== validationCommitment) {
         return res.status(400).json({ error: 'cycle completion validation_commitment does not match this exact payload' });
@@ -549,7 +568,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       });
       if (store.interventionActive('integrated_self_binding')) return res.json({ ok: true, cycle: { id: cycle.id, status: cycle.status, experimental_access_sealed: true } });
       res.json({ ok: true, cycle });
-    } catch (error) { res.status(400).json({ error: error.message }); }
+    } catch (error) { res.status(400).json({ error: error.message,
+      ...(error.code ? { code: error.code } : {}),
+      ...(error.due_action_ids ? { due_action_ids: error.due_action_ids } : {}) }); }
   });
 
   app.get('/cognition', requireAuth, async (req, res) => {
@@ -1502,4 +1523,4 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   };
 }
 
-module.exports = { registerIntelligenceRoutes };
+module.exports = { registerIntelligenceRoutes, validateDueConsequenceReviews };

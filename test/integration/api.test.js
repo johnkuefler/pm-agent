@@ -1576,7 +1576,16 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   });
   assert.equal(missingFocusOutcome.response.status, 400);
   assert.match(missingFocusOutcome.body.error, /workspace_focus_outcome is required/);
-  assert.equal((await request(`/intelligence/cycles/${nextCycleId}/complete`, { method: 'PATCH', body: {
+  const dueConsequence = await request('/consequence-reviews/actions', { method: 'POST', body: {
+    id: 'cr-lifecycle-gate', action_type: 'teamwork_comment',
+    description: 'Asked an owner to clarify a blocked task before closing the hourly pass.',
+    intended_effect: 'Produce a later observable ownership decision.',
+    success_criteria: 'A task update or explicit absence of a decision is recorded at review time.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-lifecycle-gate' }],
+    consequence_due: '2026-07-01T12:00:00.000Z',
+  } });
+  assert.equal(dueConsequence.body.ok, true);
+  const completionPayload = {
     summary: 'Observed the lifecycle integration path.', actions: [],
     workspace_focus_outcome: {
       focus_commitment_id: focusCommitment.body.focus_commitment.id,
@@ -1585,7 +1594,27 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
       evidence: [{ type: 'intelligence_cycle', id: nextCycleId },
         { type: 'experience_moment', id: nextMomentId }],
     },
-  } })).body.cycle.status, 'completed');
+  };
+  const blockedByConsequence = await request(`/intelligence/cycles/${nextCycleId}/complete`, {
+    method: 'PATCH', body: completionPayload,
+  });
+  assert.equal(blockedByConsequence.response.status, 400);
+  assert.equal(blockedByConsequence.body.code, 'due_consequence_reviews_required');
+  assert.deepEqual(blockedByConsequence.body.due_action_ids, ['cr-lifecycle-gate']);
+  const deferredConsequence = await request('/consequence-reviews/actions/cr-lifecycle-gate/observe', {
+    method: 'POST', body: {
+      outcome: 'not_yet',
+      observed_effect: 'The checked task still has no owner decision to evaluate.',
+      evidence: [{ type: 'teamwork_task', id: 'tw-lifecycle-gate-check' }],
+      next_review_due: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    },
+  });
+  assert.equal(deferredConsequence.body.ok, true);
+  assert.equal(deferredConsequence.body.action.status, 'open');
+  assert.ok(deferredConsequence.body.action.effective_review_due
+    > deferredConsequence.body.action.consequence_due);
+  assert.equal((await request(`/intelligence/cycles/${nextCycleId}/complete`, { method: 'PATCH',
+    body: completionPayload })).body.cycle.status, 'completed');
   const closureWorkspace = (await request('/conscious-workspace?limit=20')).body;
   assert.equal(closureWorkspace.current.lifecycle.cycle_id, nextCycleId);
   assert.equal(closureWorkspace.current.lifecycle.phase, 'closure');

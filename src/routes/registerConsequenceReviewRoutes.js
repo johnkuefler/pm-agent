@@ -19,6 +19,8 @@ function publicAction(action) {
     epistemic_claim_refs: action.epistemic_claim_refs || [],
     evidence: action.evidence || [],
     consequence_due: action.consequence_due,
+    latest_review_due: action.latest_review_due || null,
+    effective_review_due: action.latest_review_due || action.consequence_due,
     latest_outcome: action.latest_outcome || null,
     latest_observation_id: action.latest_observation_id || null,
     latest_observation_at: action.latest_observation_at || null,
@@ -44,6 +46,7 @@ function publicObservation(observation) {
     should_change_behavior: Boolean(observation.should_change_behavior),
     behavior_update: observation.behavior_update || '',
     followup_action: observation.followup_action || '',
+    next_review_due: observation.next_review_due || null,
     observation_commitment: observation.observation_commitment,
     observed_by: observation.observed_by,
     observed_at: observation.observed_at,
@@ -68,12 +71,14 @@ function registerConsequenceReviewRoutes(app, deps) {
     else if (status) actions = actions.filter(action => action.status === status);
     if (type) actions = actions.filter(action => action.action_type === type);
     if (!includeFuture && (status === 'open' || status === 'due')) {
-      actions = actions.filter(action => new Date(action.consequence_due).getTime() <= Date.now());
+      actions = actions.filter(action => new Date(action.latest_review_due
+        || action.consequence_due).getTime() <= Date.now());
     }
     res.json({
       report: consequenceReview.report(ledger),
       actions: actions
-        .sort((a, b) => String(a.consequence_due).localeCompare(String(b.consequence_due)))
+        .sort((a, b) => String(a.latest_review_due || a.consequence_due)
+          .localeCompare(String(b.latest_review_due || b.consequence_due)))
         .slice(0, limit)
         .map(publicAction),
     });

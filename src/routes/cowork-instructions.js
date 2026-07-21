@@ -733,7 +733,10 @@ function registerCoworkInstructionsRoute(app) {
 
   - GET /consequence-reviews/actions?status=due
     Lists open actions whose consequence_due has arrived. Use at the start or end of a run to review
-    consequences that are ready to check.
+    consequences that are ready to check. An hourly lifecycle cannot close while this queue is nonempty.
+    Resolve each due record from later observable evidence, or record not_yet with evidence of the check
+    and a next_review_due after the observation and within thirty days. This is follow-through, not a demand
+    to invent an outcome; lack of outcome evidence must remain explicit.
 
   - GET /consequence-reviews/actions?status=open&include_future=true
     Lists open consequence watch items, including future-due ones.
@@ -763,6 +766,7 @@ function registerCoworkInstructionsRoute(app) {
       "should_change_behavior": true,
       "behavior_update": "what Nora should do differently next time",
       "followup_action": "optional next action",
+      "next_review_due": "required only for not_yet; ISO timestamp after this check and within 30 days",
       "observed_by": "Nora"
     }
     Backfired, neutral, and unclear outcomes are valid learning. Do not hide them; record them.

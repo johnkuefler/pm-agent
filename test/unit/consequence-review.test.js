@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const consequences = require('../../src/intelligence/consequence-review');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { validateDueConsequenceReviews } = require('../../src/routes/intelligence');
 
 test('consequence actions require intended effect, evidence, and success criteria', () => {
   const created = consequences.createAction({
@@ -19,7 +20,7 @@ test('consequence actions require intended effect, evidence, and success criteri
     evidence: [{ type: 'teamwork_task', id: 'tw-123' }],
     consequence_due: '2026-07-21T15:00:00.000Z',
     created_by: 'Nora',
-  }, consequences.emptyLedger());
+  }, consequences.emptyLedger(), { now: new Date('2026-07-21T10:00:00.000Z') });
 
   assert.equal(created.action.status, 'open');
   assert.equal(created.action.action_type, 'deadline_flag');
@@ -76,6 +77,43 @@ test('consequence observations preserve wrong or backfired outcomes as behavior 
     evidence: [{ type: 'slack_message', id: '123.999' }],
     should_change_behavior: true,
   }), /behavior_update/);
+});
+
+test('hourly closure requires due consequence follow-through and honest deferrals reschedule it', () => {
+  const now = new Date('2026-07-21T13:00:00.000Z');
+  const created = consequences.createAction({
+    id: 'cr-follow-through', action_type: 'teamwork_comment',
+    description: 'Asked the task owner to clarify whether the blocked launch date remains real.',
+    intended_effect: 'Produce a concrete owner decision about the launch date.',
+    success_criteria: 'The task records a decision, changed date, or explicit continuing uncertainty.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-123' }],
+    consequence_due: '2026-07-21T12:00:00.000Z',
+  }, consequences.emptyLedger(), { now: new Date('2026-07-21T10:00:00.000Z') });
+  const store = { list: () => [{ id: 'cycle-hourly', run_lock_holder: 'run-1' }] };
+  assert.throws(() => validateDueConsequenceReviews({ cycleId: 'cycle-hourly', store,
+    ledger: created.ledger, now }), error => error.code === 'due_consequence_reviews_required'
+      && error.due_action_ids[0] === 'cr-follow-through');
+  assert.throws(() => consequences.observeAction(created.ledger, created.action.id, {
+    outcome: 'not_yet', observed_effect: 'No owner response or task change is visible yet.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-123-at-check' }],
+  }, { now }), /next_review_due/);
+  const deferred = consequences.observeAction(created.ledger, created.action.id, {
+    outcome: 'not_yet', observed_effect: 'No owner response or task change is visible yet.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-123-at-check' }],
+    next_review_due: '2026-07-22T13:00:00.000Z',
+  }, { now });
+  assert.equal(deferred.action.status, 'open');
+  assert.equal(deferred.action.latest_review_due, '2026-07-22T13:00:00.000Z');
+  assert.equal(consequences.dueActions(deferred.ledger, { now }).length, 0);
+  assert.equal(consequences.verifiedLesson(deferred.ledger, deferred.action.id,
+    deferred.observation.id), true);
+  assert.deepEqual(validateDueConsequenceReviews({ cycleId: 'cycle-hourly', store,
+    ledger: deferred.ledger, now }), { required: true, valid: true, due_action_ids: [] });
+  assert.equal(consequences.dueActions(deferred.ledger, {
+    now: new Date('2026-07-22T13:00:01.000Z'),
+  }).length, 1);
+  assert.deepEqual(validateDueConsequenceReviews({ cycleId: 'research-cycle', store,
+    ledger: created.ledger, now }), { required: false, valid: true, due_action_ids: [] });
 });
 
 test('observed consequence lessons can enter prompt context as bounded prior evidence', async () => {

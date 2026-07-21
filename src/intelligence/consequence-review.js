@@ -147,7 +147,7 @@ function createAction(input = {}, ledger = emptyLedger(), { now = new Date() } =
     consequence_due: action.consequence_due,
   });
   current.actions.push(action);
-  return { ledger: current, action, report: report(current) };
+  return { ledger: current, action, report: report(current, { now }) };
 }
 
 function observeAction(ledger = emptyLedger(), id, input = {}, { now = new Date() } = {}) {
@@ -155,6 +155,19 @@ function observeAction(ledger = emptyLedger(), id, input = {}, { now = new Date(
   const action = current.actions.find(item => item.id === id);
   if (!action) throw new Error('consequence action not found');
   const outcome = normalizeOutcome(input.outcome);
+  const observedAt = now instanceof Date ? now : new Date(now);
+  let nextReviewDue = null;
+  if (outcome === 'not_yet') {
+    if (!input.next_review_due) {
+      throw new Error('next_review_due is required when consequence outcome is not_yet');
+    }
+    const candidate = new Date(input.next_review_due);
+    if (!Number.isFinite(candidate.getTime()) || candidate <= observedAt
+      || candidate.getTime() > observedAt.getTime() + 30 * 24 * 60 * 60 * 1000) {
+      throw new Error('next_review_due must be after the observation and within thirty days');
+    }
+    nextReviewDue = candidate.toISOString();
+  }
   const observedEffect = normalizeText(input.observed_effect, 1200);
   if (!observedEffect) throw new Error('observed_effect is required');
   const evidence = normalizeEvidence(input.evidence);
@@ -167,8 +180,9 @@ function observeAction(ledger = emptyLedger(), id, input = {}, { now = new Date(
     should_change_behavior: Boolean(input.should_change_behavior),
     behavior_update: normalizeText(input.behavior_update, 900),
     followup_action: normalizeText(input.followup_action, 700),
+    next_review_due: nextReviewDue,
     observed_by: normalizeText(input.observed_by || 'Nora', 80),
-    observed_at: now instanceof Date ? now.toISOString() : new Date(now).toISOString(),
+    observed_at: observedAt.toISOString(),
   };
   if (observation.should_change_behavior && !observation.behavior_update) {
     throw new Error('behavior_update is required when should_change_behavior is true');
@@ -181,14 +195,16 @@ function observeAction(ledger = emptyLedger(), id, input = {}, { now = new Date(
     evidence,
     should_change_behavior: observation.should_change_behavior,
     behavior_update: observation.behavior_update,
+    next_review_due: observation.next_review_due,
   });
   action.status = outcome === 'not_yet' ? 'open' : 'observed';
   action.latest_outcome = outcome;
   action.latest_observation_id = observation.id;
   action.latest_observation_at = observation.observed_at;
+  action.latest_review_due = observation.next_review_due || action.latest_review_due || null;
   action.behavior_update = observation.behavior_update || action.behavior_update || '';
   current.observations.push(observation);
-  return { ledger: current, action, observation, report: report(current) };
+  return { ledger: current, action, observation, report: report(current, { now }) };
 }
 
 function closeAction(ledger = emptyLedger(), id, input = {}, { now = new Date() } = {}) {
@@ -208,7 +224,7 @@ function closeAction(ledger = emptyLedger(), id, input = {}, { now = new Date() 
     reason: action.closed_reason,
     closed_at: action.closed_at,
   });
-  return { ledger: current, action, report: report(current) };
+  return { ledger: current, action, report: report(current, { now }) };
 }
 
 function dueActions(ledger = emptyLedger(), { now = new Date(), includeFuture = false, status = 'open', limit = 50 } = {}) {
@@ -216,8 +232,10 @@ function dueActions(ledger = emptyLedger(), { now = new Date(), includeFuture = 
   const time = now instanceof Date ? now.getTime() : new Date(now).getTime();
   return current.actions
     .filter(action => !status || action.status === status)
-    .filter(action => includeFuture || new Date(action.consequence_due).getTime() <= time)
-    .sort((a, b) => String(a.consequence_due).localeCompare(String(b.consequence_due)))
+    .filter(action => includeFuture
+      || new Date(action.latest_review_due || action.consequence_due).getTime() <= time)
+    .sort((a, b) => String(a.latest_review_due || a.consequence_due)
+      .localeCompare(String(b.latest_review_due || b.consequence_due)))
     .slice(0, Math.max(1, Math.min(200, Number(limit) || 50)));
 }
 
@@ -257,7 +275,7 @@ function actionManifest(action = {}) {
 }
 
 function observationManifest(observation = {}, action = {}) {
-  return {
+  const manifest = {
     action_id: action.id,
     action_commitment: action.action_commitment,
     outcome: observation.outcome,
@@ -266,6 +284,11 @@ function observationManifest(observation = {}, action = {}) {
     should_change_behavior: observation.should_change_behavior,
     behavior_update: observation.behavior_update,
   };
+  // Preserve verification of v2 observations committed before review deferrals existed.
+  if (Object.hasOwn(observation, 'next_review_due')) {
+    manifest.next_review_due = observation.next_review_due || null;
+  }
+  return manifest;
 }
 
 function ledgerIndexes(ledger) {

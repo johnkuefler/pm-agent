@@ -430,6 +430,7 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
       ? db.setState(`research_projection_${projection}_v1`, envelope) : null,
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: currentCognitiveInputs,
+    getConsequenceReviews: loadConsequenceReviews,
     recordLifecycleWorkspace,
     validateLifecycleWorkspaceOutcome,
     recordLifecycleWorkspaceOutcome,
