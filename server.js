@@ -17,6 +17,7 @@ const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
 const { registerGiftRoutes } = require('./src/routes/registerGiftRoutes');
 const { registerApiOpportunityRoutes } = require('./src/routes/registerApiOpportunityRoutes');
+const { registerOperationalEpistemicsRoutes } = require('./src/routes/registerOperationalEpistemicsRoutes');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
@@ -79,6 +80,7 @@ const interactivePerformance = require('./src/intelligence/interactive-performan
 const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const apiOpportunities = require('./src/integrations/api-opportunities');
+const operationalEpistemics = require('./src/intelligence/operational-epistemics');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const app = express();
@@ -88,6 +90,7 @@ const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
 const API_OPPORTUNITIES_PATH = path.join(LOCAL_DATA_DIR, 'nora-api-opportunities.json');
+const OPERATIONAL_EPISTEMICS_PATH = path.join(LOCAL_DATA_DIR, 'nora-operational-epistemics.json');
 const READING_LIBRARY_DIR = process.env.NORA_DATA_DIR
   ? path.join(LOCAL_DATA_DIR, 'reading-library')
   : fs.existsSync('/data') ? '/data/reading-library' : path.join(LOCAL_DATA_DIR, 'reading-library');
@@ -742,6 +745,27 @@ async function saveApiRegistry(value) {
   return registry;
 }
 
+function loadEpistemicsLedger() {
+  if (_dbReady) return operationalEpistemics.normalizeLedger(_cache.operationalEpistemics);
+  if (_cache.operationalEpistemics) return operationalEpistemics.normalizeLedger(_cache.operationalEpistemics);
+  try { _cache.operationalEpistemics = operationalEpistemics.normalizeLedger(JSON.parse(fs.readFileSync(OPERATIONAL_EPISTEMICS_PATH, 'utf8'))); }
+  catch { _cache.operationalEpistemics = operationalEpistemics.emptyLedger(); }
+  return _cache.operationalEpistemics;
+}
+
+async function saveEpistemicsLedger(value) {
+  const ledger = operationalEpistemics.normalizeLedger(value);
+  if (_dbReady) await db.setState('operational_epistemics', ledger);
+  else {
+    fs.mkdirSync(path.dirname(OPERATIONAL_EPISTEMICS_PATH), { recursive: true });
+    const temp = `${OPERATIONAL_EPISTEMICS_PATH}.tmp-${process.pid}`;
+    fs.writeFileSync(temp, JSON.stringify(ledger, null, 2));
+    fs.renameSync(temp, OPERATIONAL_EPISTEMICS_PATH);
+  }
+  _cache.operationalEpistemics = ledger;
+  return ledger;
+}
+
 // Slack threads Nora has replied in. Used to keep conversations going without re-mention.
 // Persisted so a deploy/restart doesn't drop active conversations.
 //
@@ -1166,6 +1190,7 @@ async function initPersistence() {
       await db.getState('drive_artifact_uploads'));
     _cache.giftLedger = goodyGifting.normalizeLedger(await db.getState('gift_ledger'));
     _cache.apiOpportunities = apiOpportunities.normalizeRegistry(await db.getState('api_opportunities'));
+    _cache.operationalEpistemics = operationalEpistemics.normalizeLedger(await db.getState('operational_epistemics'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -8197,6 +8222,12 @@ registerApiOpportunityRoutes(app, {
   requireAuth,
   loadApiRegistry,
   saveApiRegistry,
+});
+
+registerOperationalEpistemicsRoutes(app, {
+  requireAuth,
+  loadEpistemicsLedger,
+  saveEpistemicsLedger,
 });
 
 registerRuntimeActivityRoutes(app, {

@@ -320,6 +320,37 @@ test('API opportunities are proposal-first and approval-gated', async () => {
   assert.equal(approved.body.proposal.status, 'approved');
 });
 
+test('operational epistemics track claim stance and resolution', async () => {
+  const report = await request('/epistemics/report');
+  assert.equal(report.body.total_claims, 0);
+
+  const created = await request('/epistemics/claims', { method: 'POST', body: {
+    id: 'ep-integration-claim',
+    statement: 'The integration task appears blocked on a missing confirmation.',
+    stance: 'inferred',
+    confidence: 0.61,
+    domain: 'project',
+    subject_ref: 'tw-integration',
+    rationale: 'The most recent source asks for confirmation and no later answer is present.',
+    falsifier: 'A later source answers the confirmation or shows work resumed.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-integration' }],
+    created_by: 'Nora',
+  } });
+  assert.equal(created.body.ok, true);
+  assert.equal(created.body.claim.status, 'open');
+  assert.equal(created.body.claim.stance, 'inferred');
+  assert.match(created.body.claim.claim_commitment, /^[a-f0-9]{64}$/);
+
+  const resolved = await request('/epistemics/claims/ep-integration-claim/resolve', { method: 'POST', body: {
+    outcome: 'verified',
+    observed: 'A later checked source still shows no confirmation and no resumed work.',
+    evidence: [{ type: 'teamwork_task', id: 'tw-integration-later' }],
+    resolved_by: 'Nora',
+  } });
+  assert.equal(resolved.body.claim.status, 'verified');
+  assert.equal(resolved.body.report.counts.verified, 1);
+});
+
 test('run lock enforces holder ownership', async () => {
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'one', ttl_seconds: 60 } })).body.acquired, true);
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'two', ttl_seconds: 60 } })).body.acquired, false);

@@ -1658,6 +1658,28 @@ Rules:
 - Only after approval may you call `/api-opportunities/proposals/:id/execute`, and only for approved HTTPS GET APIs with `auth_model: "none"`.
 - If an API needs signup, OAuth, payment, or an API key, propose it as `requires_human_setup` and stop. Do not attempt to create the account yourself.
 
+### Operational Epistemics
+
+Treat important operational claims as first-class objects with epistemic status, not vibes. Use this lane when a claim matters for a decision, a deadline flag, a teammate ping, a gift/warmth proposal, a memory update, or a correction from John.
+
+Before asserting something consequential, ask: is this `observed`, `inferred`, an `assumption`, or `uncertain`? If it is likely to matter later, record it with `POST /epistemics/claims`:
+
+```json
+{
+  "statement": "The task appears blocked on a missing client confirmation.",
+  "stance": "inferred",
+  "confidence": 0.62,
+  "domain": "project",
+  "subject_ref": "tw-...",
+  "rationale": "The latest task comment asks for confirmation and no later answer is present.",
+  "falsifier": "A later source answers the confirmation or shows work resumed.",
+  "evidence": [{ "type": "teamwork_task", "id": "tw-..." }],
+  "created_by": "Nora"
+}
+```
+
+Use modest confidence. Assumptions must remain low-confidence. Uncertain claims should stay visibly uncertain rather than being laundered into facts. When later evidence confirms, contradicts, or fails to settle the claim, call `POST /epistemics/claims/:id/resolve` with outcome `verified`, `contradicted`, `unclear`, `superseded`, or `retired`, an observed summary, and exact evidence. Never delete or silently overwrite a wrong claim; contradiction is useful learning evidence.
+
 ## Step 7.4: Nightly Dreaming Round (consolidate + reflect + review)
 
 `curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"reflection"}' >/dev/null || true`

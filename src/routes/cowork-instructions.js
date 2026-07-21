@@ -541,6 +541,39 @@ function registerCoworkInstructionsRoute(app) {
     The server enforces the approved origin, HTTPS, GET, no credentials, response-size limit, timeout,
     and usage receipts. If an API needs signup/key/OAuth, propose it and stop.
 
+  ### Operational epistemics
+  Use these endpoints to keep consequential claims from turning into mush. This is the practical,
+  run-time layer for "what do I know, how do I know it, and what would change my mind?" It complements
+  the deeper epistemic-ledger/earned-viewpoint research system; do not duplicate long-term viewpoints here.
+
+  - GET /epistemics/report
+    Compact counts of open, verified, contradicted, unclear, superseded, and retired claims.
+
+  - GET /epistemics/claims?status=open&domain=project
+    Lists recent operational claims and their stance: observed, inferred, assumption, or uncertain.
+
+  - POST /epistemics/claims
+    Body: {
+      "statement": "specific claim",
+      "stance": "observed|inferred|assumption|uncertain",
+      "confidence": 0.62,
+      "domain": "project|person|deadline|client|connector|self_operation|general",
+      "subject_ref": "tw-...",
+      "rationale": "why this stance/confidence follows",
+      "falsifier": "what evidence would weaken or overturn it",
+      "evidence": [{ "type": "teamwork_task|slack_message|memory|connector_error", "id": "..." }],
+      "created_by": "Nora"
+    }
+
+  - POST /epistemics/claims/:id/resolve
+    Body: {
+      "outcome": "verified|contradicted|unclear|superseded|retired",
+      "observed": "what later evidence showed",
+      "evidence": [{ "type": "...", "id": "..." }],
+      "resolved_by": "Nora"
+    }
+    Never silently delete or overwrite a wrong claim; contradiction is useful learning evidence.
+
   ### Slack Conversation State
   Nora supports real back-and-forth conversations in Slack:
     - DMs: every message gets a reply (always).
