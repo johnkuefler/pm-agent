@@ -188,7 +188,7 @@ function automationReceipt({ packet, output, response = {}, model = DEFAULT_MODE
     transport: 'server_direct_anthropic_json_schema',
     system_prompt_commitment: commitment(systemPrompt()),
     output_schema_commitment: commitment(outputSchema(packet)),
-    temperature: 0, thinking: { type: 'disabled' }, max_tokens: 900,
+    thinking: { type: 'disabled' }, max_tokens: 900,
   };
   const receipt = {
     protocol_version: PROTOCOL_VERSION,
@@ -220,7 +220,7 @@ async function runCycle({ interactions = [], relationships = [], enabled = true,
   if (!group) return result;
   try {
     const packet = evidencePacket(group, now);
-    const response = await callProvider({ model, max_tokens: 900, temperature: 0,
+    const response = await callProvider({ model, max_tokens: 900,
       thinking: { type: 'disabled' }, system: systemPrompt(),
       messages: [{ role: 'user', content: userPrompt(packet) }],
       output_config: { format: { type: 'json_schema',
@@ -246,7 +246,8 @@ async function runCycle({ interactions = [], relationships = [], enabled = true,
     result.person = group.person; result.dimension = output.dimension;
   } catch (error) {
     result.state = 'failed_closed';
-    result.failures.push({ person: group.person, reason: String(error.message || error).slice(0, 300) });
+    result.failures.push({ person: group.person,
+      reason: String(error.response?.data?.error?.message || error.message || error).slice(0, 300) });
   }
   return result;
 }

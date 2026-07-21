@@ -84,7 +84,6 @@ function validFormationAutomation(formation = {}) {
     && canonicalJson(allowedEvidenceIds) === canonicalJson(packetEvidenceIds.slice(0, 12))
     && receipt.packet_commitment === commitment(packet)
     && receipt.prompt_manifest?.transport === 'server_direct_anthropic_json_schema'
-    && receipt.prompt_manifest?.temperature === 0
     && receipt.prompt_manifest?.thinking?.type === 'disabled'
     && receipt.prompt_manifest?.max_tokens === 900
     && /^[a-f0-9]{64}$/i.test(String(receipt.prompt_manifest?.system_prompt_commitment || ''))

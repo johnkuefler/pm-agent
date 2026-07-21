@@ -77,7 +77,7 @@ test('replay-reviewed outcomes can form one bounded Nora-authored prospective te
     commitPerspective: input => store.observePerspective(input),
   });
   assert.equal(cycle.state, 'formed');
-  assert.equal(providerRequest.temperature, 0);
+  assert.equal(providerRequest.temperature, undefined);
   assert.deepEqual(providerRequest.thinking, { type: 'disabled' });
   assert.equal(providerRequest.output_config.format.type, 'json_schema');
   assert.deepEqual(providerRequest.output_config.format.schema.required,
