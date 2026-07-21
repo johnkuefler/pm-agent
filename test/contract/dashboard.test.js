@@ -67,6 +67,7 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(intelligenceJs, /relational_delta/);
   assert.match(intelligenceJs, /evidence_delta/);
   assert.match(intelligenceJs, /revision_audit/);
+  assert.match(intelligenceJs, /Server-bound/);
   assert.match(intelligenceJs, /consequence_delta/);
   assert.match(intelligenceJs, /Adaptive epistemic action/);
   assert.match(intelligenceJs, /answer-key commitments verified/);

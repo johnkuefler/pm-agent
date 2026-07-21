@@ -130,6 +130,16 @@ function normalizeChangedMind(value = {}) {
   };
 }
 
+function normalizeLifecycle(value = {}) {
+  if (!value || typeof value !== 'object') return null;
+  const cycleId = normalizeText(value.cycle_id, 160);
+  const phase = normalizeText(value.phase, 40);
+  if (!cycleId || !['orientation', 'operations', 'closure'].includes(phase)) return null;
+  return { cycle_id: cycleId, phase,
+    moment_id: normalizeText(value.moment_id, 160) || null,
+    source: 'server_lifecycle' };
+}
+
 function feedbackCommitmentVerified(feedback, frame) {
   return Boolean(feedback && frame && feedback.frame_id === frame.id
     && feedback.feedback_commitment === commitment({
@@ -195,6 +205,7 @@ function frameManifest(frame) {
     uncertainties: frame.uncertainties, inhibited_actions: frame.inhibited_actions,
     intended_next_action: frame.intended_next_action, changed_mind: frame.changed_mind,
     evidence: frame.evidence,
+    ...(frame.lifecycle ? { lifecycle: frame.lifecycle } : {}),
   };
 }
 
@@ -274,6 +285,7 @@ function createFrame(input = {}, ledger = emptyLedger(), { now = new Date(), con
       epistemic_status: 'server_derived_committed_selection_revision',
       revision_receipt: revision,
     } : null,
+    lifecycle: normalizeLifecycle(input.lifecycle),
     arbitration_receipt: arbitrationReceipt,
     evidence,
     created_by: normalizeText(input.created_by || 'Nora', 80),
@@ -356,6 +368,7 @@ function normalizeFrameRecord(record) {
     epistemic_claim_refs: Array.isArray(record.epistemic_claim_refs) ? record.epistemic_claim_refs : [],
     relationship_refs: Array.isArray(record.relationship_refs) ? record.relationship_refs : [],
     consequence_watchlist: Array.isArray(record.consequence_watchlist) ? record.consequence_watchlist : [],
+    lifecycle: normalizeLifecycle(record.lifecycle),
     submitted_focus_key: record.submitted_focus_key || record.selected_focus_key,
     arbitration_receipt: record.arbitration_receipt || null,
   };
@@ -388,6 +401,10 @@ function report(ledger = emptyLedger()) {
     grounded_mind_changes: current.frames.filter(frame =>
       auditRevision(frame, current).complete_chain_verified).length,
     current_grounded_mind_change: auditRevision(latest, current).complete_chain_verified,
+    lifecycle_bound_frames: current.frames.filter(frame => frame.lifecycle?.source === 'server_lifecycle').length,
+    lifecycle_cycles_covered: new Set(current.frames.filter(frame => frame.lifecycle?.cycle_id)
+      .map(frame => frame.lifecycle.cycle_id)).size,
+    current_lifecycle_phase: latest?.lifecycle?.phase || null,
   };
 }
 

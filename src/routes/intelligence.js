@@ -4,7 +4,7 @@ const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const expectationForecast = require('../intelligence/expectation-forecast');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), recordLifecycleWorkspace = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
   const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
@@ -404,6 +404,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         soma: authoritativeInputs.soma || null, wants: authoritativeInputs.wants || [], predictions: getPredictions(),
         resume_active: true };
       const started = await store.openOrResumeCycle(cognitiveInput);
+      void recordLifecycleWorkspace({ phase: 'orientation', cycle: started.cycle,
+        moment: started.moment }).catch(error => console.error('Lifecycle workspace orientation failed:', error.message));
       progressHourlyCycle(started.cycle.id, {
         label: 'Planning the run',
         detail: 'Committing a testable forecast before operational work begins.',
@@ -449,6 +451,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       forecast = store.preregisterCycleSelfForecast(req.params.id, req.body || {});
       if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
       await store.persistStrict();
+      const forecastCycle = store.list('cycles').find(item => item.id === req.params.id);
+      void recordLifecycleWorkspace({ phase: 'operations', cycle: forecastCycle })
+        .catch(error => console.error('Lifecycle workspace operations failed:', error.message));
       progressHourlyCycle(req.params.id, {
         label: 'Working the hourly pass',
         detail: 'The forecast is committed and operational work is underway.',
@@ -529,6 +534,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         ...validationPayload, substrate_at_close: authoritativeInputs.soma || null,
       });
       if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
+      void recordLifecycleWorkspace({ phase: 'closure', cycle })
+        .catch(error => console.error('Lifecycle workspace closure failed:', error.message));
       progressHourlyCycle(req.params.id, {
         label: 'Closing the hourly pass',
         detail: 'Preserving the completed cycle and preparing its continuity handoff.',

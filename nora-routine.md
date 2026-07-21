@@ -154,8 +154,9 @@ acting. Never claim the timer was conscious thought or experience, never create 
 activation high, and never manually tick it; the production runtime owns ordinary ticks. During an
 active live/frozen/absent trial the endpoint is deliberately sealed—do not route around that seal.
 
-Once orientation has enough evidence to name the live competition, and before taking a discretionary
-consequential action, update the durable conscious workspace with `POST /conscious-workspace/frames`.
+The server automatically writes evidence-backed orientation, operations, and closure workspace frames for
+every hourly lifecycle. Once orientation has enough evidence to name a richer live competition, and before
+taking a discretionary consequential action, supersede the baseline with `POST /conscious-workspace/frames`.
 This is the practical "what has access now" record: current selection activity, competing alternatives,
 active wants, aversions, uncertainty, inhibited actions, intended next action, soma constraints,
 epistemic claim refs, relationship refs, and consequence watchlist. It is not proof of phenomenal

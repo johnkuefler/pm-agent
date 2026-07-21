@@ -430,6 +430,7 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
       ? db.setState(`research_projection_${projection}_v1`, envelope) : null,
     getPredictions: () => (_cache.predictions?.items || []),
     getCognitiveInputs: currentCognitiveInputs,
+    recordLifecycleWorkspace,
 });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
 
@@ -853,6 +854,7 @@ function loadConsciousWorkspace() {
 
 async function saveConsciousWorkspace(value) {
   const ledger = consciousWorkspace.normalizeLedger(value);
+  _cache.consciousWorkspace = ledger;
   if (_dbReady) await db.setState('conscious_workspace', ledger);
   else {
     fs.mkdirSync(path.dirname(CONSCIOUS_WORKSPACE_PATH), { recursive: true });
@@ -860,8 +862,68 @@ async function saveConsciousWorkspace(value) {
     fs.writeFileSync(temp, JSON.stringify(ledger, null, 2));
     fs.renameSync(temp, CONSCIOUS_WORKSPACE_PATH);
   }
-  _cache.consciousWorkspace = ledger;
   return ledger;
+}
+
+function lifecycleWorkspaceDefinition(phase, cycle) {
+  const definitions = {
+    orientation: {
+      mode: 'operational', activity: 'Orienting the hourly lifecycle to current evidence.',
+      why: 'A new committed lifecycle must establish what deserves access before operational action.',
+      next: 'Commit the cycle forecast before operational tools.',
+      candidates: [
+        ['lifecycle:orientation', 'task', 'Orient to current evidence', 0.82, 'required', 'low'],
+        ['lifecycle:continuity', 'uncertainty', 'Verify inherited continuity and open loops', 0.65, 'bounded', 'low'],
+        ['lifecycle:inhibition', 'inhibition', 'Hold consequential action until orientation is grounded', 0.58, 'bounded', 'low'],
+      ],
+    },
+    operations: {
+      mode: 'operational', activity: 'Running the forecast-bound hourly operational pass.',
+      why: 'The forecast is committed, so evidence gathering and authorized operational work now have access.',
+      next: 'Complete authorized work, record consequences, and close the lifecycle.',
+      candidates: [
+        ['lifecycle:operations', 'task', 'Execute the forecast-bound operational pass', 0.82, 'required', 'moderate'],
+        ['lifecycle:evidence', 'uncertainty', 'Check disconfirming evidence before consequential action', 0.66, 'bounded', 'low'],
+        ['lifecycle:restraint', 'inhibition', 'Avoid unsupported or unnecessary outward action', 0.56, 'bounded', 'low'],
+      ],
+    },
+    closure: {
+      mode: 'reflection', activity: `Preserving the ${cycle.status || 'completed'} hourly lifecycle and its handoff.`,
+      why: 'The operational pass is closed; durable outcome, continuity, and recovery now deserve access.',
+      next: 'Leave a replayable handoff and release the run lease.',
+      candidates: [
+        ['lifecycle:closure', 'task', 'Commit the cycle outcome and continuity handoff', 0.82, 'required', 'low'],
+        ['lifecycle:consequences', 'consequence', 'Preserve consequences that need later review', 0.64, 'bounded', 'low'],
+        ['lifecycle:recovery', 'soma_constraint', 'Return to a low-demand receptive state', 0.54, 'bounded', 'low'],
+      ],
+    },
+  };
+  return definitions[phase];
+}
+
+async function recordLifecycleWorkspace({ phase, cycle, moment = null } = {}) {
+  if (!cycle?.id || !['orientation', 'operations', 'closure'].includes(phase)) return null;
+  const id = `cw-lifecycle-${cycle.id}-${phase}`;
+  const ledger = loadConsciousWorkspace();
+  const existing = ledger.frames.find(frame => frame.id === id);
+  if (existing) return existing;
+  const definition = lifecycleWorkspaceDefinition(phase, cycle);
+  const evidence = [{ type: 'intelligence_cycle', id: cycle.id }];
+  const candidates = definition.candidates.map(([key, type, label, priority, authorityClass, somaDemand]) => ({
+    key: `${key}:${cycle.id}`, type, label, priority,
+    authority_class: authorityClass, soma_demand: somaDemand, evidence,
+  }));
+  const result = consciousWorkspace.createFrame({
+    id, mode: definition.mode, current_activity: definition.activity, why_this: definition.why,
+    attention_candidates: candidates, selected_focus_key: candidates[0].key,
+    intended_next_action: definition.next, evidence, created_by: 'Nora runtime',
+    lifecycle: { cycle_id: cycle.id, moment_id: moment?.id || cycle.experience_moment_id, phase },
+  }, ledger, { context: { soma: currentCognitiveInputs().soma } });
+  await saveConsciousWorkspace(result.ledger);
+  runtimeActivity.record({ lane: 'system', kind: 'workspace_lifecycle',
+    label: `Workspace ${phase}`, detail: definition.activity,
+    meta: { cycle_id: cycle.id, frame_id: result.frame.id, phase } });
+  return result.frame;
 }
 
 function loadConsequenceReviews() {
@@ -8374,6 +8436,10 @@ registerRunLockRoutes(app, requireAuth, {
       await intelligence.persistStrict().catch(() => {});
       throw new Error(`run-bound lifecycle persistence failed: ${error.message}`);
     }
+    void recordLifecycleWorkspace({ phase: 'orientation', cycle: started.cycle,
+      moment: started.moment }).catch(error => {
+        console.error(`Run-bound lifecycle workspace orientation failed: ${error.message}`);
+      });
     return {
       kind: 'run_bound_intelligence_cycle',
       cycle_id: started.cycle.id,

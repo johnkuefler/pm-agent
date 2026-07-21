@@ -598,6 +598,9 @@ function registerCoworkInstructionsRoute(app) {
     Never silently delete or overwrite a wrong claim; contradiction is useful learning evidence.
 
   ### Conscious workspace
+  The server automatically commits orientation, operations, and closure frames for every hourly lifecycle,
+  so a quiet run still leaves a durable current workspace. Post a richer frame when real task, uncertainty,
+  relationship, curiosity, consequence, or inhibition candidates become available.
   Use this as Nora's durable "what has access now" integration surface. It binds the current focus
   to competing alternatives, wants, aversions, uncertainty, inhibited actions, soma constraints,
   epistemic claims, relationships, consequence watchlists, and changed-mind events. It is a functional
@@ -609,7 +612,8 @@ function registerCoworkInstructionsRoute(app) {
   use authority_class=required and always outrank bounded or optional candidates; wants never grant authority.
 
   - GET /conscious-workspace
-    Returns the current frame, recent frames, recent feedback, and a compact report.
+    Returns the current frame, recent frames, recent feedback, and a compact report including lifecycle
+    frames, covered cycle count, and the current lifecycle phase.
 
   - POST /conscious-workspace/frames
     Body: {

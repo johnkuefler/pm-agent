@@ -653,7 +653,9 @@ async function loadWorkspaceArbitrationGlance(token = intelligenceLoadToken) {
       : receipt.choice_changed_by_motivation
       ? `Without those influences, ${receipt.baseline_winner_key} would have won.`
       : 'The same candidate also won on base priority.';
-    target.innerHTML = `<span>Why this focus won</span><strong>${escHtml(selected.label || frame.selected_focus_label || receipt.selected_winner_key)}</strong><p>${escHtml(changed)} ${escHtml(forces.length ? `Applied: ${forces.join(', ')}.` : 'No verified motive changed its score.')}</p>`;
+    const lifecycle = frame.lifecycle?.phase
+      ? ` Server-bound ${frame.lifecycle.phase} frame for ${frame.lifecycle.cycle_id}.` : '';
+    target.innerHTML = `<span>Why this focus won</span><strong>${escHtml(selected.label || frame.selected_focus_label || receipt.selected_winner_key)}</strong><p>${escHtml(changed)} ${escHtml(forces.length ? `Applied: ${forces.join(', ')}.` : 'No verified motive changed its score.')}${escHtml(lifecycle)}</p>`;
   } catch (error) {
     if (error.name !== 'AbortError' && token === intelligenceLoadToken) {
       target.innerHTML = '<span>Why this focus won</span><strong>Choice receipt unavailable</strong><p>The rest of Nora\'s dashboard remains live.</p>';

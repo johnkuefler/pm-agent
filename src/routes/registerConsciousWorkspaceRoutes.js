@@ -22,6 +22,7 @@ function publicFrame(frame, ledger = null) {
     epistemic_claim_refs: frame.epistemic_claim_refs || [],
     relationship_refs: frame.relationship_refs || [],
     consequence_watchlist: frame.consequence_watchlist || [],
+    lifecycle: frame.lifecycle || null,
     changed_mind: frame.changed_mind || null,
     revision_of_frame_id: frame.revision_of_frame_id || null,
     revision_audit: frame.changed_mind && ledger
