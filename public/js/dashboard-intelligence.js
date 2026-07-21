@@ -642,6 +642,8 @@ async function loadWorkspaceArbitrationGlance(token = intelligenceLoadToken) {
     const selected = receipt.scored_candidates?.find(item => item.key === receipt.selected_winner_key) || {};
     const forces = [
       selected.desire_delta ? `aim ${selected.desire_delta > 0 ? '+' : ''}${selected.desire_delta.toFixed(2)}` : null,
+      selected.curiosity_delta ? `curiosity ${selected.curiosity_delta > 0 ? '+' : ''}${selected.curiosity_delta.toFixed(2)}` : null,
+      selected.relational_delta ? `relationship ${selected.relational_delta > 0 ? '+' : ''}${selected.relational_delta.toFixed(2)}` : null,
       selected.consequence_delta ? `consequence ${selected.consequence_delta > 0 ? '+' : ''}${selected.consequence_delta.toFixed(2)}` : null,
       selected.soma_delta ? `body ${selected.soma_delta > 0 ? '+' : ''}${selected.soma_delta.toFixed(2)}` : null,
     ].filter(Boolean);

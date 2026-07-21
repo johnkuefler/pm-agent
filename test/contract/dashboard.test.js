@@ -63,6 +63,8 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(intelligenceJs, /causal self-authored goal guidance/);
   assert.match(intelligenceJs, /Why this focus won/);
   assert.match(intelligenceJs, /choice_changed_by_motivation/);
+  assert.match(intelligenceJs, /curiosity_delta/);
+  assert.match(intelligenceJs, /relational_delta/);
   assert.match(intelligenceJs, /consequence_delta/);
   assert.match(intelligenceJs, /Adaptive epistemic action/);
   assert.match(intelligenceJs, /answer-key commitments verified/);

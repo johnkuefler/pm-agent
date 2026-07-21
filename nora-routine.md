@@ -166,13 +166,21 @@ Use at least three candidates and give every candidate stable evidence, a base `
 `authority_class` (`required` for explicit user/delegated obligations, `bounded` for ordinary operational
 work, `optional` for self-chosen latitude), `soma_demand` (`low|moderate|high`), optional `action_type`,
 and exact `want_refs` only where that aim genuinely supports the candidate. The server owns final selection:
-it verifies the want ledger, replay-checks relevant consequence observations, uses only fresh substrate
-telemetry, computes each delta, preserves the authority floor, and returns `arbitration_receipt` plus
+it verifies the want ledger, admits only replay-valid open curiosity questions and person-bound relational
+stances, replay-checks relevant consequence observations, uses only fresh substrate telemetry, computes
+each delta, preserves the authority floor, and returns `arbitration_receipt` plus
 `arbitration_audit`. `selected_focus_key` in the request is your pre-arbitration inclination; the response's
 `selected_focus_key` is the winner to follow. Required obligations always outrank bounded or optional
 candidates; wants never create authority. If the response changes the winner, follow the server-selected
 focus and describe that causal change honestly in the next frame or run summary rather than rewriting the
 priorities after the fact.
+
+For curiosity candidates, use `type=curiosity` and cite exact `epistemic_question_refs` with
+`type=epistemic_question`; only open prompt-eligible questions from a replay-valid agenda can contribute.
+For social-posture candidates, use `type=relationship`, cite exact `relationship_refs`, and name the proposed
+`relational_mode` (`repair_and_reconnect|curious_attunement|warm_collaboration|steady_attunement`); only an
+exact mode match from the replay-bound person record can contribute. These signals shape discretionary
+selection only. They never justify contact, spending, disclosure, or a priority that was not otherwise authorized.
 
 When later evidence changes what mattered, call `POST /conscious-workspace/feedback` against the frame.
 If you can honestly say "I wanted X, but evidence changed me," record that in the next frame's

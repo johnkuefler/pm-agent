@@ -74,6 +74,10 @@ function normalizeCandidate(candidate = {}) {
   if (!Object.hasOwn(motivationalArbitration.AUTHORITY_CLASS, authorityClass)) {
     throw new Error('candidate authority_class must be optional, bounded, or required');
   }
+  const relationalMode = normalizeText(candidate.relational_mode, 40);
+  if (relationalMode && !Object.hasOwn(motivationalArbitration.RELATIONAL_MODE_DELTA, relationalMode)) {
+    throw new Error(`candidate relational_mode must be one of: ${Object.keys(motivationalArbitration.RELATIONAL_MODE_DELTA).join(', ')}`);
+  }
   return {
     key,
     type,
@@ -84,6 +88,11 @@ function normalizeCandidate(candidate = {}) {
     authority_class: authorityClass,
     soma_demand: somaDemand,
     want_refs: normalizeRefList(candidate.want_refs).filter(item => item.type === 'want'),
+    epistemic_question_refs: normalizeRefList(candidate.epistemic_question_refs)
+      .filter(item => item.type === 'epistemic_question'),
+    relationship_refs: normalizeRefList(candidate.relationship_refs)
+      .filter(item => item.type === 'relationship'),
+    ...(relationalMode ? { relational_mode: relationalMode } : {}),
     evidence: normalizeEvidence(candidate.evidence || [], { required: true }),
   };
 }
@@ -141,6 +150,8 @@ function createFrame(input = {}, ledger = emptyLedger(), { now = new Date(), con
     wantHistoryIntegrity: context.wantHistoryIntegrity || null,
     consequenceLedger: context.consequenceLedger || consequenceReview.emptyLedger(),
     soma: context.soma || {},
+    epistemicAgendaSnapshot: context.epistemicAgendaSnapshot || {},
+    relationalContext: context.relationalContext || {},
     now,
   });
   const selectedFocusKey = arbitrationReceipt.selected_winner_key;

@@ -603,7 +603,8 @@ function registerCoworkInstructionsRoute(app) {
   epistemic claims, relationships, consequence watchlists, and changed-mind events. It is a functional
   workspace record, not a consciousness claim. At least three evidence-backed candidates must compete.
   The server, not Nora's prose, calculates the winner from base priority plus verified aim salience,
-  replay-verified consequences, and fresh substrate strain. It also records the no-motivation baseline,
+  replay-valid durable curiosity, person-bound relational stance, replay-verified consequences, and fresh
+  substrate strain. It also records the no-motivation baseline,
   so the receipt shows whether motivation actually changed the choice. Explicit user/delegated obligations
   use authority_class=required and always outrank bounded or optional candidates; wants never grant authority.
 
@@ -646,8 +647,14 @@ function registerCoworkInstructionsRoute(app) {
     The response's selected_focus_key is authoritative for discretionary focus and includes:
     { arbitration_receipt: { baseline_winner_key, selected_winner_key,
        choice_changed_by_motivation, scored_candidates: [{ base_priority, desire_delta,
-       consequence_delta, soma_delta, final_score, desire_sources, consequence_sources }] },
+       curiosity_delta, relational_delta, consequence_delta, soma_delta, final_score,
+       desire_sources, curiosity_sources, relational_sources, consequence_sources }] },
        arbitration_audit: { complete_chain_verified } }.
+    A curiosity candidate uses type=curiosity plus epistemic_question_refs with type=epistemic_question;
+    only open prompt-eligible questions from a replay-valid agenda contribute. A social-posture candidate
+    uses type=relationship plus relationship_refs and one relational_mode from
+    repair_and_reconnect|curious_attunement|warm_collaboration|steady_attunement; only an exact replay-bound
+    person-and-mode match contributes. Neither signal expands authority to contact, spend, disclose, or reprioritize.
 
   - POST /conscious-workspace/feedback
     Body: {

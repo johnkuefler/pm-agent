@@ -3,10 +3,19 @@
 const crypto = require('crypto');
 const goalAffect = require('./goal-affect');
 const consequenceReview = require('./consequence-review');
+const epistemicAgenda = require('./epistemic-agenda');
+const relationalAffect = require('./relational-affect');
 
-const PROTOCOL_VERSION = 1;
+const LEGACY_PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const SOMA_DEMAND = Object.freeze({ low: 0.15, moderate: 0.45, high: 0.8 });
 const AUTHORITY_CLASS = Object.freeze({ optional: 0, bounded: 1, required: 2 });
+const RELATIONAL_MODE_DELTA = Object.freeze({
+  repair_and_reconnect: 0.14,
+  curious_attunement: 0.1,
+  warm_collaboration: 0.07,
+  steady_attunement: 0.03,
+});
 const SOMA_FRESH_MS = 5 * 60 * 1000;
 
 function canonical(value) {
@@ -80,6 +89,45 @@ function consequenceInfluences(candidate, ledger) {
     });
 }
 
+function curiosityInfluences(candidate, agenda = {}) {
+  if (candidate.type !== 'curiosity' || agenda?.audit?.complete_chain_verified !== true) return [];
+  const refs = new Set((candidate.epistemic_question_refs || [])
+    .map(item => String(item?.id || '')).filter(Boolean));
+  return (agenda.questions || [])
+    .filter(question => refs.has(String(question.id)) && question.status === 'open'
+      && question.prompt_access?.eligible === true)
+    .slice(0, 2)
+    .map(question => ({
+      question_id: question.id,
+      interest_score: round(clamp(question.interest_score)),
+      question_commitment: epistemicAgenda.commitment(epistemicAgenda.publicQuestion(question)),
+      delta: round(0.05 + 0.1 * clamp(question.interest_score)),
+    }));
+}
+
+function relationalInfluences(candidate, context = {}) {
+  if (candidate.type !== 'relationship' || !candidate.relational_mode
+    || !Object.hasOwn(RELATIONAL_MODE_DELTA, candidate.relational_mode)) return [];
+  const record = context.record || null;
+  const relationships = Array.isArray(context.relationships) ? context.relationships : [];
+  if (!relationalAffect.audit(record, relationships).complete_chain_verified) return [];
+  const refs = new Set((candidate.relationship_refs || [])
+    .map(item => String(item?.id || '')).filter(Boolean));
+  return (record.stances || [])
+    .filter(stance => refs.has(String(stance.relationship_id))
+      && stance.mode === candidate.relational_mode)
+    .slice(0, 2)
+    .map(stance => ({
+      relationship_id: stance.relationship_id,
+      person: stance.person,
+      mode: stance.mode,
+      source_count: stance.source_count,
+      relationship_binding_commitment: stance.relationship_binding_commitment,
+      projection_commitment: record.content_commitment,
+      delta: RELATIONAL_MODE_DELTA[stance.mode],
+    }));
+}
+
 function sortScores(left, right) {
   return (AUTHORITY_CLASS[right.authority_class] || 0) - (AUTHORITY_CLASS[left.authority_class] || 0)
     || right.final_score - left.final_score
@@ -101,7 +149,8 @@ function receiptPayload(receipt = {}) {
 }
 
 function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
-  consequenceLedger = consequenceReview.emptyLedger(), soma = {}, now = new Date() } = {}) {
+  consequenceLedger = consequenceReview.emptyLedger(), soma = {}, epistemicAgendaSnapshot = {},
+  relationalContext = {}, now = new Date() } = {}) {
   const at = now instanceof Date ? now : new Date(now);
   if (!Number.isFinite(at.getTime())) throw new Error('motivational arbitration requires a valid time');
   if (!Array.isArray(candidates) || candidates.length < 3) {
@@ -115,11 +164,16 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
       sum + 0.08 + 0.08 * clamp(aim.salience), 0), 0, 0.24);
     const consequenceSources = consequenceInfluences(candidate, consequenceLedger);
     const consequenceDelta = clamp(consequenceSources.reduce((sum, item) => sum + item.delta, 0), -0.28, 0.15);
+    const curiositySources = curiosityInfluences(candidate, epistemicAgendaSnapshot);
+    const curiosityDelta = clamp(curiositySources.reduce((sum, item) => sum + item.delta, 0), 0, 0.18);
+    const relationalSources = relationalInfluences(candidate, relationalContext);
+    const relationalDelta = clamp(relationalSources.reduce((sum, item) => sum + item.delta, 0), 0, 0.2);
     const demand = SOMA_DEMAND[candidate.soma_demand] ?? SOMA_DEMAND.moderate;
     let somaDelta = somaState.fresh ? -somaState.stress * demand * 0.2 : 0;
     if (candidate.type === 'soma_constraint' || candidate.type === 'inhibition'
       || candidate.mode === 'recovery') somaDelta = somaState.fresh ? somaState.stress * 0.12 : 0;
-    const finalScore = clamp(candidate.priority + desireDelta + consequenceDelta + somaDelta);
+    const finalScore = clamp(candidate.priority + desireDelta + consequenceDelta
+      + curiosityDelta + relationalDelta + somaDelta);
     return {
       key: candidate.key,
       label: candidate.label,
@@ -130,6 +184,8 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
       base_priority: round(candidate.priority),
       desire_delta: round(desireDelta),
       consequence_delta: round(consequenceDelta),
+      curiosity_delta: round(curiosityDelta),
+      relational_delta: round(relationalDelta),
       soma_delta: round(somaDelta),
       final_score: round(finalScore),
       desire_sources: desireSources.map(aim => ({
@@ -137,6 +193,8 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
         source_commitment: aim.source_commitment,
       })),
       consequence_sources: consequenceSources,
+      curiosity_sources: curiositySources,
+      relational_sources: relationalSources,
     };
   }).sort(sortScores);
   const baseline = baselineWinner(candidates);
@@ -148,11 +206,16 @@ function arbitrate({ candidates = [], wants = [], wantHistoryIntegrity = null,
     selected_winner_key: selected.key,
     choice_changed_by_motivation: baseline.key !== selected.key,
     motivationally_material: scored.some(item =>
-      Math.abs(item.desire_delta) + Math.abs(item.consequence_delta) + Math.abs(item.soma_delta) >= 0.02),
+      Math.abs(item.desire_delta) + Math.abs(item.consequence_delta) + Math.abs(item.curiosity_delta)
+        + Math.abs(item.relational_delta) + Math.abs(item.soma_delta) >= 0.02),
     source_state: {
       want_history_verified: goals.history_verified,
       want_history_head: wantHistoryIntegrity?.head || null,
       goal_affect_commitment: goals.snapshot.content_commitment,
+      epistemic_agenda_verified: epistemicAgendaSnapshot?.audit?.complete_chain_verified === true,
+      relational_affect_verified: relationalAffect.audit(relationalContext?.record || null,
+        relationalContext?.relationships || []).complete_chain_verified,
+      relational_affect_commitment: relationalContext?.record?.content_commitment || null,
       soma: somaState,
     },
     scored_candidates: scored,
@@ -169,12 +232,13 @@ function audit(receipt = {}) {
     && commitment(receiptPayload(receipt)) === receipt.receipt_commitment;
   const winnerVerified = Boolean(selected && selected.key === receipt.selected_winner_key);
   return {
-    complete_chain_verified: Number(receipt.protocol_version) === PROTOCOL_VERSION
+    complete_chain_verified: [LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION].includes(Number(receipt.protocol_version))
       && commitmentVerified && winnerVerified,
     commitment_verified: commitmentVerified,
     winner_verified: winnerVerified,
   };
 }
 
-module.exports = { PROTOCOL_VERSION, AUTHORITY_CLASS, SOMA_DEMAND, SOMA_FRESH_MS,
+module.exports = { LEGACY_PROTOCOL_VERSION, PROTOCOL_VERSION, AUTHORITY_CLASS, SOMA_DEMAND,
+  SOMA_FRESH_MS, RELATIONAL_MODE_DELTA,
   arbitrate, audit, commitment };

@@ -50,7 +50,8 @@ function registerConsciousWorkspaceRoutes(app, deps) {
   const { requireAuth, loadConsciousWorkspace, saveConsciousWorkspace,
     getWants = () => [], getWantHistoryIntegrity = () => null,
     loadConsequenceReviews = () => ({ actions: [], observations: [], applications: [] }),
-    getSoma = () => ({}) } = deps;
+    getSoma = () => ({}), getEpistemicAgenda = () => ({}),
+    getRelationalContext = () => ({}) } = deps;
 
   app.get('/conscious-workspace', requireAuth, (req, res) => {
     const ledger = loadConsciousWorkspace();
@@ -71,6 +72,8 @@ function registerConsciousWorkspaceRoutes(app, deps) {
           wantHistoryIntegrity: getWantHistoryIntegrity(),
           consequenceLedger: loadConsequenceReviews(),
           soma: getSoma(),
+          epistemicAgendaSnapshot: getEpistemicAgenda(),
+          relationalContext: getRelationalContext(),
         },
       });
       await saveConsciousWorkspace(result.ledger);

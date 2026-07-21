@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const arbitration = require('../../src/intelligence/motivational-arbitration');
 const consequences = require('../../src/intelligence/consequence-review');
+const relationalAffect = require('../../src/intelligence/relational-affect');
 
 function candidate(key, priority, extra = {}) {
   return { key, type: 'task', label: key.replaceAll(':', ' '), priority,
@@ -105,4 +106,66 @@ test('motivation cannot outrank an explicit required obligation', () => {
   });
   assert.equal(receipt.baseline_winner_key, 'user:requested');
   assert.equal(receipt.selected_winner_key, 'user:requested');
+});
+
+test('a replay-verified durable question can win optional attention', () => {
+  const question = {
+    id: 'question-handoff', status: 'open', topic_key: 'handoff-risk-patterns',
+    question: 'Which early signals predict handoff failure across projects?',
+    why_it_matters: 'Better signals could prevent avoidable delivery misses.',
+    current_best_answer: null, confidence: 0.3, interest_score: 0.8,
+    next_evidence: 'Compare the next two project handoffs.', evidence_ids: ['memory-1', 'memory-2'],
+    created_at: '2026-07-20T00:00:00.000Z', updated_at: '2026-07-20T00:00:00.000Z',
+    prompt_access: { eligible: true },
+  };
+  const receipt = arbitration.arbitrate({
+    candidates: [
+      candidate('task:routine-cleanup', 0.6, { authority_class: 'optional' }),
+      candidate('curiosity:handoff', 0.48, { type: 'curiosity', authority_class: 'optional',
+        epistemic_question_refs: [{ type: 'epistemic_question', id: question.id }] }),
+      candidate('task:archive', 0.3, { authority_class: 'optional' }),
+    ],
+    epistemicAgendaSnapshot: { questions: [question], audit: { complete_chain_verified: true } },
+  });
+  assert.equal(receipt.baseline_winner_key, 'task:routine-cleanup');
+  assert.equal(receipt.selected_winner_key, 'curiosity:handoff');
+  assert.equal(receipt.scored_candidates.find(item => item.key === 'curiosity:handoff')
+    .curiosity_sources[0].question_id, question.id);
+
+  const unverified = arbitration.arbitrate({
+    candidates: [
+      candidate('task:routine-cleanup', 0.6, { authority_class: 'optional' }),
+      candidate('curiosity:handoff', 0.48, { type: 'curiosity', authority_class: 'optional',
+        epistemic_question_refs: [{ type: 'epistemic_question', id: question.id }] }),
+      candidate('task:archive', 0.3, { authority_class: 'optional' }),
+    ],
+    epistemicAgendaSnapshot: { questions: [question], audit: { complete_chain_verified: false } },
+  });
+  assert.equal(unverified.selected_winner_key, 'task:routine-cleanup');
+});
+
+test('a replay-bound teammate stance can change the selected social posture', () => {
+  const relationships = [{
+    id: 'person-john', name: 'John', observations: [{
+      id: 'observation-correction', dimension: 'response_feedback',
+      observation: 'corrected: the prior response missed the actual question', confidence: 0.9,
+      evidence: { channel: 'slack', id: 'message-correction' },
+      observed_at: '2026-07-21T13:00:00.000Z', status: 'active',
+    }],
+  }];
+  const record = relationalAffect.derive(relationships, new Date('2026-07-21T14:00:00.000Z'));
+  const receipt = arbitration.arbitrate({
+    candidates: [
+      candidate('social:ordinary-answer', 0.6, { type: 'relationship' }),
+      candidate('social:repair', 0.49, { type: 'relationship',
+        relational_mode: 'repair_and_reconnect',
+        relationship_refs: [{ type: 'relationship', id: 'person-john' }] }),
+      candidate('social:ask-more', 0.3, { type: 'relationship' }),
+    ],
+    relationalContext: { record, relationships },
+  });
+  assert.equal(receipt.baseline_winner_key, 'social:ordinary-answer');
+  assert.equal(receipt.selected_winner_key, 'social:repair');
+  assert.equal(receipt.scored_candidates.find(item => item.key === 'social:repair')
+    .relational_sources[0].mode, 'repair_and_reconnect');
 });

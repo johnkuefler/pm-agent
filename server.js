@@ -8467,6 +8467,13 @@ registerConsciousWorkspaceRoutes(app, {
   getWantHistoryIntegrity: () => _cache.wantsHistoryIntegrity || null,
   loadConsequenceReviews,
   getSoma: () => ({ ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) }),
+  getEpistemicAgenda: () => intelligence.epistemicAgendaSnapshot(),
+  getRelationalContext: () => {
+    const snapshot = intelligence.relationalAffectSnapshot();
+    const current = snapshot.current ? { ...snapshot.current } : null;
+    if (current) delete current.audit;
+    return { record: current, relationships: intelligence.list('relationships') };
+  },
 });
 
 registerConsequenceReviewRoutes(app, {
