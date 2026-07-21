@@ -169,6 +169,13 @@
         <div style="font-size:12px;color:var(--muted);margin-top:4px;">Optional. Picks one project to prime Nora's context for this meeting - she'll have full memory + details for it loaded.</div>
         <textarea id="join-mandate" placeholder="Mandate (optional): what she's there to accomplish in your place. e.g. 'Get them to commit to a launch date. Don't give ground on the QA window. If pricing comes up, take it back to me.'" style="margin-top:8px;min-height:60px;"></textarea>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;">Her agenda for this meeting. She'll open with it if it's her meeting to run, hold its positions, punt what it doesn't cover (per the Charter), and measure her debrief to you against it.</div>
+        <label style="display:flex;align-items:flex-start;gap:10px;margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);cursor:pointer;">
+          <input id="join-expressive-face" type="checkbox" style="margin-top:3px;" />
+          <span>
+            <span style="display:block;color:var(--text);font-size:13px;font-weight:600;">Use expressive face for this meeting</span>
+            <span style="display:block;color:var(--muted);font-size:12px;line-height:1.4;margin-top:2px;">Opt-in only. Nora's meeting video becomes an animated face that emotes while listening/thinking/speaking instead of the simple signal dashboard.</span>
+          </span>
+        </label>
         <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>

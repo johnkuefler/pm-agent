@@ -16,6 +16,12 @@ const ACTION_TYPES = Object.freeze([
 
 const STATUSES = Object.freeze(['open', 'observed', 'closed', 'retired']);
 const OUTCOMES = Object.freeze(['helped', 'neutral', 'backfired', 'unclear', 'not_yet']);
+const STOPWORDS = new Set([
+  'about', 'after', 'again', 'before', 'being', 'could', 'from', 'have', 'help',
+  'into', 'just', 'more', 'next', 'only', 'over', 'that', 'their', 'there',
+  'these', 'they', 'this', 'what', 'when', 'where', 'which', 'with', 'would',
+  'your',
+]);
 
 function normalizeText(value, max = 1000) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, max);
@@ -253,6 +259,85 @@ function report(ledger = emptyLedger(), { now = new Date() } = {}) {
   };
 }
 
+function tokenize(value) {
+  return (String(value || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])
+    .filter(term => !STOPWORDS.has(term));
+}
+
+function actionSearchText(action = {}, observations = []) {
+  return [
+    action.action_type,
+    action.description,
+    action.intended_effect,
+    action.success_criteria,
+    action.expected_signal,
+    action.beneficiary,
+    action.target_ref,
+    action.source_ref,
+    ...observations.flatMap(observation => [
+      observation.outcome,
+      observation.observed_effect,
+      observation.behavior_update,
+      observation.followup_action,
+    ]),
+  ].filter(Boolean).join(' ').toLowerCase();
+}
+
+function promptLessons(ledger = emptyLedger(), { query = '', person = '', limit = 3 } = {}) {
+  const current = normalizeLedger(ledger);
+  const observationsByAction = new Map();
+  for (const observation of current.observations) {
+    const list = observationsByAction.get(observation.action_id) || [];
+    list.push(observation);
+    observationsByAction.set(observation.action_id, list);
+  }
+  const terms = tokenize(`${query} ${person}`);
+  return current.actions
+    .filter(action => action.status === 'observed' && action.latest_observation_id)
+    .map(action => {
+      const observations = (observationsByAction.get(action.id) || [])
+        .sort((a, b) => String(b.observed_at).localeCompare(String(a.observed_at)));
+      const latest = observations.find(item => item.id === action.latest_observation_id) || observations[0];
+      if (!latest) return null;
+      const learningSignal = latest.should_change_behavior || latest.behavior_update
+        || ['helped', 'backfired'].includes(latest.outcome);
+      if (!learningSignal) return null;
+      const haystack = actionSearchText(action, observations);
+      const relevance = terms.length ? terms.filter(term => haystack.includes(term)).length : 0;
+      const personMatch = person && haystack.includes(String(person).trim().toLowerCase()) ? 1 : 0;
+      return { action, observation: latest, relevance: relevance + personMatch };
+    })
+    .filter(Boolean)
+    .filter(item => !terms.length || item.relevance > 0)
+    .sort((a, b) => b.relevance - a.relevance
+      || Number(Boolean(b.observation.should_change_behavior)) - Number(Boolean(a.observation.should_change_behavior))
+      || String(b.observation.observed_at).localeCompare(String(a.observation.observed_at)))
+    .slice(0, Math.max(0, Math.min(8, Number(limit) || 0)))
+    .map(({ action, observation }) => ({
+      action_id: action.id,
+      action_type: action.action_type,
+      intended_effect: action.intended_effect,
+      success_criteria: action.success_criteria,
+      outcome: observation.outcome,
+      observed_effect: observation.observed_effect,
+      behavior_update: observation.behavior_update || '',
+      evidence: observation.evidence || [],
+      action_commitment: action.action_commitment,
+      observation_commitment: observation.observation_commitment,
+      observed_at: observation.observed_at,
+    }));
+}
+
+function renderPromptLessons(lessons = []) {
+  if (!Array.isArray(lessons) || !lessons.length) return '';
+  return lessons.map(item => {
+    const update = item.behavior_update ? ` Behavior update: ${item.behavior_update}` : '';
+    const evidence = (item.evidence || []).slice(0, 3)
+      .map(ref => `${ref.type}:${ref.id || ref.url || 'ref'}`).join(', ');
+    return `- ${item.action_type}: intended ${item.intended_effect}; observed ${item.outcome} - ${item.observed_effect}.${update} Evidence ${evidence || 'committed'}; observation ${String(item.observation_commitment || '').slice(0, 12)}.`;
+  }).join('\n');
+}
+
 module.exports = {
   ACTION_TYPES,
   OUTCOMES,
@@ -263,5 +348,7 @@ module.exports = {
   emptyLedger,
   normalizeLedger,
   observeAction,
+  promptLessons,
   report,
+  renderPromptLessons,
 };

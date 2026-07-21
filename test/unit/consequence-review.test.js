@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const consequences = require('../../src/intelligence/consequence-review');
+const { createIntelligenceStore } = require('../../src/intelligence/store');
 
 test('consequence actions require intended effect, evidence, and success criteria', () => {
   const created = consequences.createAction({
@@ -75,4 +76,48 @@ test('consequence observations preserve wrong or backfired outcomes as behavior 
     evidence: [{ type: 'slack_message', id: '123.999' }],
     should_change_behavior: true,
   }), /behavior_update/);
+});
+
+test('observed consequence lessons can enter prompt context as bounded prior evidence', async () => {
+  const created = consequences.createAction({
+    id: 'cr-john-deadline',
+    action_type: 'deadline_flag',
+    description: 'Sent John a concise deadline uncertainty note.',
+    intended_effect: 'Help John decide whether to push the date or clear a blocker.',
+    success_criteria: 'A later reply or task update shows whether the concise nudge clarified the next step.',
+    expected_signal: 'Slack reply or Teamwork date update.',
+    beneficiary: 'John and the project team',
+    target_ref: 'slack:John',
+    evidence: [{ type: 'slack_message', id: 'C1:1.000:1.000' }],
+  }, consequences.emptyLedger(), { now: new Date('2026-07-20T10:00:00.000Z') });
+  const observed = consequences.observeAction(created.ledger, 'cr-john-deadline', {
+    outcome: 'helped',
+    observed_effect: 'John replied with the needed owner decision and the Teamwork task moved.',
+    evidence: [{ type: 'slack_message', id: 'C1:2.000:2.000' }],
+    should_change_behavior: true,
+    behavior_update: 'For John deadline ambiguity, lead with the concrete recommendation before detail.',
+  }, { now: new Date('2026-07-20T12:00:00.000Z') });
+
+  const lessons = consequences.promptLessons(observed.ledger, {
+    person: 'John',
+    query: 'deadline ambiguity recommendation',
+  });
+  assert.equal(lessons.length, 1);
+  assert.equal(lessons[0].outcome, 'helped');
+  assert.match(consequences.renderPromptLessons(lessons), /Behavior update/);
+
+  const store = createIntelligenceStore({ db: {}, isDbReady: () => false });
+  await store.init();
+  const prompt = store.promptContext({
+    person: 'John',
+    query: 'deadline ambiguity recommendation',
+    consequenceContext: { lessons, rendered: consequences.renderPromptLessons(lessons) },
+  });
+  assert.match(prompt, /Observed consequences from prior Nora actions/);
+  assert.match(prompt, /Completion is not consequence/);
+  assert.match(prompt, /lead with the concrete recommendation/);
+  assert.equal(consequences.promptLessons(observed.ledger, {
+    person: 'Maya',
+    query: 'creative review',
+  }).length, 0);
 });

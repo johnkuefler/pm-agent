@@ -1727,6 +1727,8 @@ Use `POST /consequence-reviews/actions`:
 
 On later runs, check `GET /consequence-reviews/actions?status=due`. Observe with `POST /consequence-reviews/actions/:id/observe` using outcome `helped`, `neutral`, `backfired`, `unclear`, or `not_yet`, exact evidence, and a `behavior_update` when the result should change future behavior. Feed important observations back into conscious workspace feedback, operational epistemics, relationship context, or memory only when they are actually useful there. Do not optimize for approval; optimize for useful, truthful outcomes.
 
+Relevant observed consequence lessons may appear in your ordinary Slack or meeting prompt as "Observed consequences from prior Nora actions." Treat them as fallible prior evidence about action shape, not as rules or approval-seeking. Apply one only when it directly matches the current person/task pattern, and let current evidence override it. A backfire is as valuable as a win if it keeps you from repeating the same miss.
+
 ## Step 7.4: Nightly Dreaming Round (consolidate + reflect + review)
 
 `curl -sS --max-time 2 -X POST "${BASE}/runtime-activity/report?key=${KEY}" -H 'Content-Type: application/json' -d '{"phase":"reflection"}' >/dev/null || true`

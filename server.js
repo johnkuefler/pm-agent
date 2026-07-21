@@ -2084,6 +2084,15 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const dreamInsightContext = intelligence.dreamInsightContextForAssignment(contextAssignment);
   const teammatePerspectiveContext = intelligence.teammatePerspectiveContextForAssignment(
     contextAssignment, intelligencePerson);
+  const consequenceLessons = !contextAssignment ? consequenceReview.promptLessons(loadConsequenceReviews(), {
+    query: conversationText,
+    person: intelligencePerson,
+    limit: latencyCritical ? 2 : 3,
+  }) : [];
+  const consequenceContext = consequenceLessons.length ? {
+    lessons: consequenceLessons,
+    rendered: consequenceReview.renderPromptLessons(consequenceLessons),
+  } : null;
   const endogenousContext = intelligence.endogenousContextForAssignment(contextAssignment);
   const intelligenceContextResult = intelligence.promptContext({
     person: intelligencePerson,
@@ -2117,6 +2126,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
     selfModelTrustContext,
     dreamInsightContext,
     teammatePerspectiveContext,
+    consequenceContext,
     endogenousContext,
     integratedSelfContext,
     cognitivePulseContext,
@@ -2635,6 +2645,7 @@ function voiceMeetingContextPacket(session, { systemPrompt = '', voiceTools = []
     mode: session?.dummy ? 'test agent' : session?.oneOnOne ? 'one-on-one' : participants >= 3 ? 'group listening' : 'meeting',
     eagerness: session?.currentEagerness || null,
     muted: !!session?.muted,
+    visual_mode: normalizeVoiceVisualMode(session?.voiceVisualMode),
     project_hint: session?.project_hint || '',
     has_mandate: !!session?.meetingMeta?.mandate,
     prompt_chars: systemPrompt ? systemPrompt.length : null,
@@ -3452,10 +3463,16 @@ console.log(`🔑 Loaded ${Object.keys(sessionTokens).length} persisted session 
 // Shared builder for the Recall bot config (used by manual /join and calendar
 // auto-join). Includes everything except meeting_url, which Recall auto-populates
 // for calendar-event bots and is passed explicitly for direct bot creates.
-function buildBotConfig(serverHost, sessionToken, botName = 'Nora') {
+function normalizeVoiceVisualMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return mode === 'face' || mode === 'expressive_face' ? 'face' : 'signal';
+}
+
+function buildBotConfig(serverHost, sessionToken, botName = 'Nora', opts = {}) {
   const SERVER_URL = `https://${serverHost}`;
   const WS_URL = `wss://${serverHost}`;
-  const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}`;
+  const visualMode = normalizeVoiceVisualMode(opts.visualMode);
+  const voiceAgentUrl = `${SERVER_URL}/voice-agent?wss=${encodeURIComponent(WS_URL + '/ws/openai-relay')}&server=${encodeURIComponent(SERVER_URL)}&token=${sessionToken}&visual=${encodeURIComponent(visualMode)}`;
   return {
     bot_name: botName,
     output_media: {
@@ -3483,7 +3500,7 @@ function buildBotConfig(serverHost, sessionToken, botName = 'Nora') {
   };
 }
 
-function newSession(projectHint = null) {
+function newSession(projectHint = null, opts = {}) {
   // Nora joins muted by default. The mute UI on the dashboard polls /mute every 20s
   // and surfaces an unmute button as soon as the bot connects, so flipping her on
   // is one click when she's actually needed to speak. Combined with the muted-mode
@@ -3492,7 +3509,7 @@ function newSession(projectHint = null) {
   // oneOnOneAuto: while true, oneOnOne is auto-managed from live participant presence (on at join /
   // ≤1 human, off once a 2nd human is present). A manual toggle on the dashboard turns auto off so
   // the human's choice sticks. participants: the set of present HUMANS (bot excluded), keyed by id.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, utterancesSinceEval: 0, leanIn: true, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, utterancesSinceEval: 0, leanIn: true, voiceVisualMode: normalizeVoiceVisualMode(opts.visualMode), speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -3516,7 +3533,7 @@ function extractMeetingUrl(text) {
 
 // Core join logic, shared by POST /join (dashboard button) and the Slack "join a meeting" tool.
 // Creates the Recall bot, wires the session (project hint, sender, mandate), returns the bot id.
-async function startMeetingJoin({ meeting_url, project, sender, mandate, source = 'manual_join', host }) {
+async function startMeetingJoin({ meeting_url, project, sender, mandate, visual_mode, source = 'manual_join', host }) {
   if (!meeting_url) throw new Error('meeting_url is required');
   // Normalize project hint to a canonical project name when it matches; else pass through as a hint.
   let projectHint = null;
@@ -3526,14 +3543,16 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, source 
     projectHint = match ? match.name : trimmed;
   }
   const sessionToken = crypto.randomBytes(32).toString('hex');
-  const botConfig = buildBotConfig(host || publicHost(), sessionToken);
+  const visualMode = normalizeVoiceVisualMode(visual_mode);
+  const botConfig = buildBotConfig(host || publicHost(), sessionToken, 'Nora', { visualMode });
   const botRes = await axios.post(`${RECALL_BASE}/bot/`, { meeting_url, ...botConfig }, { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
   const botId = botRes.data.id;
   activeBotId = botId;
   sessionTokens[sessionToken] = botId;
   persistSessionTokens();
-  if (!sessions[botId]) sessions[botId] = newSession(projectHint);
+  if (!sessions[botId]) sessions[botId] = newSession(projectHint, { visualMode });
   else if (projectHint) sessions[botId].project_hint = projectHint;
+  sessions[botId].voiceVisualMode = visualMode;
   sessions[botId].trialUnitKey = botId;
   // Capture sender identity so Nora knows who sent her in — usually the person she'll talk to.
   const senderName = (typeof sender === 'string' && sender.trim()) ? sender.trim() : null;
@@ -3543,14 +3562,14 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, source 
   const mandateText = (typeof mandate === 'string' && mandate.trim()) ? mandate.trim().slice(0, 2000) : null;
   if (mandateText) sessions[botId].meetingMeta = { ...(sessions[botId].meetingMeta || {}), mandate: mandateText };
   console.log(`✅ Nora joined via output_media. Bot ID: ${botId} (source: ${source})${projectHint ? ` (project hint: ${projectHint})` : ''}${senderName ? ` (sender: ${senderName})` : ''}${mandateText ? ' (with mandate)' : ''}`);
-  return { bot_id: botId, project_hint: projectHint || null, sender: senderName };
+  return { bot_id: botId, project_hint: projectHint || null, sender: senderName, visual_mode: visualMode };
 }
 
 app.post('/join', requireAuth, async (req, res) => {
   try {
-    const { meeting_url, project, sender, mandate } = req.body;
+    const { meeting_url, project, sender, mandate, visual_mode } = req.body;
     if (!meeting_url) return res.status(400).json({ error: 'meeting_url is required' });
-    const result = await startMeetingJoin({ meeting_url, project, sender, mandate, host: req.get('host') });
+    const result = await startMeetingJoin({ meeting_url, project, sender, mandate, visual_mode, host: req.get('host') });
     res.json(result);
   } catch (err) {
     console.error('Join error:', err.response?.data || err.message);
