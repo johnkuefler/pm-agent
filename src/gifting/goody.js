@@ -425,7 +425,6 @@ function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
   const config = goodyConfig(policy);
   const productId = normalizeText(intent.product_id || config.product_id, 120);
   if (!productId) throw new Error('a gift product_id or configured default product is required before sending gifts');
-  if (intent.card_message && !config.card_id) throw new Error('GOODY_CARD_ID is required when sending a card message');
   if (config.send_method === 'email_and_link' && !intent.recipient_email) {
     throw new Error('recipient_email is required for Goody email delivery');
   }
@@ -439,7 +438,7 @@ function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
     recipients: [recipient],
     cart: { items: [{ product_id: productId, quantity: 1 }] },
     customer_reference_id: `nora-${intent.id}-${String(intent.approval_commitment || intent.request_commitment || '').slice(0, 12)}`,
-    ...(intent.card_message ? { message: intent.card_message, card_id: config.card_id } : {}),
+    ...(intent.card_message && config.card_id ? { message: intent.card_message, card_id: config.card_id } : {}),
     ...(config.payment_method_id ? { payment_method_id: config.payment_method_id } : {}),
     ...(config.workspace_id ? { workspace_id: config.workspace_id } : {}),
   };

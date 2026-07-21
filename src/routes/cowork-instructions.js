@@ -492,7 +492,7 @@ function registerCoworkInstructionsRoute(app) {
 
   - POST /gifts/intents/:id/send
     Human-triggered send after approval. Fails closed unless GOODY_SEND_ENABLED=true,
-    GOODY_API_KEY, GOODY_PRODUCT_ID, and required GOODY_CARD_ID are configured. Before
+    GOODY_API_KEY, and a default or intent-specific product ID are configured. Before
     creating the Goody order batch, the server calls Goody's price endpoint and refuses
     any estimate above the approved amount. If the recipient has a Slack user ID and the
     order response includes a gift link, the endpoint DMs the gift link and records
