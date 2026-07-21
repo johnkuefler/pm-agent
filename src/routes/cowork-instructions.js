@@ -208,6 +208,7 @@ function registerCoworkInstructionsRoute(app) {
                           weekdays:HH:MM          — Mon-Fri only
                           weekly:dayname:HH:MM    — e.g., weekly:friday:16:00
                           monthly:N:HH:MM         — Nth day (1-31, clamped to month length)
+                          every:N:weeks:HH:MM     — e.g., every:2:weeks:10:30
                         When set, completion auto-rolls scheduled_for to the next fire time
                         and resets the task to pending. If you set recurrence without
                         scheduled_for, the server seeds the first fire time from the rule.

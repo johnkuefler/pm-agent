@@ -7,6 +7,7 @@
 //   weekdays:HH:MM          — Mon-Fri at HH:MM
 //   weekly:dayname:HH:MM    — e.g., weekly:friday:16:00 (sunday..saturday)
 //   monthly:N:HH:MM         — Nth day of month at HH:MM (1-31; clamped to last day)
+//   every:N:weeks:HH:MM     — every N weeks from the most recent completion/seed
 const SCHEDULE_TZ = 'America/Chicago';
 const WEEKDAY_INDEX = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
 
@@ -129,6 +130,16 @@ function computeNextRun(rule, fromTime = new Date()) {
       candidate = tryBuild(nextYear, nextMonth, dom, hh, mm);
     }
     return candidate.toISOString();
+  }
+
+  if (kind === 'every') {
+    const interval = Number(parts[1]); const unit = parts[2];
+    const hh = Number(parts[3]); const mm = Number(parts[4]);
+    if (!Number.isInteger(interval) || interval < 1 || interval > 52 || unit !== 'weeks'
+      || !Number.isInteger(hh) || hh < 0 || hh > 23 || !Number.isInteger(mm) || mm < 0 || mm > 59) return null;
+    const target = new Date(fromTime.getTime() + interval * 7 * 24 * 60 * 60 * 1000);
+    const p = getDatePartsInTz(target, tz);
+    return tryBuild(p.year, p.month, p.day, hh, mm).toISOString();
   }
 
   return null;

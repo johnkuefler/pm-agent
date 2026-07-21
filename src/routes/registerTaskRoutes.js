@@ -57,7 +57,7 @@ function registerTaskRoutes(app, deps) {
       source_channel, source_user, source_external_id, context, metadata } = req.body;
     if (!action) return res.status(400).json({ error: 'action is required' });
     if (recurrence && !isValidRecurrence(recurrence)) {
-      return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, or monthly:N:HH:MM' });
+      return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, monthly:N:HH:MM, or every:N:weeks:HH:MM' });
     }
     let effectiveScheduledFor = scheduled_for || null;
     // If a recurrence is set but no explicit first-fire time, seed scheduled_for from the rule.
@@ -146,7 +146,7 @@ function registerTaskRoutes(app, deps) {
     if (!task) return res.status(404).json({ error: 'task not found' });
     const { action, detail, assignee, due, scheduled_for, recurrence } = req.body;
     if (recurrence !== undefined && recurrence !== null && recurrence !== '' && !isValidRecurrence(recurrence)) {
-      return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, or monthly:N:HH:MM' });
+      return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, monthly:N:HH:MM, or every:N:weeks:HH:MM' });
     }
     if (action !== undefined) task.action = action;
     if (detail !== undefined) task.detail = detail;

@@ -191,6 +191,13 @@ test('tasks preserve validation, scheduling, filtering, completion, and deletion
   assert.ok(rolled.body.rolled_to);
   await request(`/tasks/${recurring.body.id}`, { method: 'DELETE' });
 
+  const biweekly = await request('/tasks', { method: 'POST', body: { action: 'Biweekly agenda', recurrence: 'every:2:weeks:09:00' } });
+  assert.equal(biweekly.body.recurrence, 'every:2:weeks:09:00');
+  const biweeklyRolled = await request(`/tasks/${biweekly.body.id}/complete`, { method: 'PATCH' });
+  assert.equal(biweeklyRolled.body.task.status, 'pending');
+  assert.equal(biweeklyRolled.body.task.recurrence, 'every:2:weeks:09:00');
+  await request(`/tasks/${biweekly.body.id}`, { method: 'DELETE' });
+
   const artifact = await request('/tasks', { method: 'POST', body: {
     action: 'build_abm_artifact', detail: 'Build the frozen-evidence brief', assignee: 'Nora',
     source_channel: 'limelight_abm', source_external_id: 'artifact-assignment-1',

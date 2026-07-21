@@ -6052,6 +6052,55 @@ const SLACK_SEND_TOOL = {
 // turn they'd blow the 16s tool timeout and stall the reply. Instead we ENQUEUE them, hand the
 // turn back immediately ("on it, I'll post it here in a couple minutes"), and a worker runs the
 // tool with a generous timeout and delivers the result back to the origin thread.
+function buildNoraQueueTaskTool({ channel = '', threadTs = '', user = '', now = () => new Date(), add = addTask } = {}) {
+  return {
+    definition: {
+      name: 'nora_queue_recurring_task',
+      description: 'Queue work for YOURSELF (Nora) in your own durable task queue. Use this—not Teamwork project search—when someone asks you to remember, queue, schedule, or repeat something for yourself. Supports one-time tasks and weekly/biweekly recurrence. This records the work; it does not perform it immediately. Include the destination channel when the future task must post there.',
+      input_schema: { type: 'object', properties: {
+        action: { type: 'string', description: 'Short, concrete action you will perform.' },
+        detail: { type: 'string', description: 'Enough context to perform it later, including what content to prepare.' },
+        destination_channel: { type: 'string', description: 'Optional Slack destination, preferably the C... channel id supplied by the requester.' },
+        interval_weeks: { type: 'integer', minimum: 1, maximum: 52, description: 'Set to 2 for biweekly. Omit for a one-time task.' },
+        first_run_at: { type: 'string', description: 'Optional ISO datetime for the first run. If omitted for a recurring task, the first run is one interval from now.' },
+        local_time: { type: 'string', description: 'Optional Central time HH:MM for recurring runs; defaults to the current Central time.' }
+      }, required: ['action'] }
+    },
+    execute: async input => {
+      const action = String(input?.action || '').trim();
+      if (!action) return { error: 'action is required' };
+      const current = now();
+      let recurrence = null;
+      const intervalWeeks = input?.interval_weeks == null ? null : Number(input.interval_weeks);
+      if (intervalWeeks != null) {
+        if (!Number.isInteger(intervalWeeks) || intervalWeeks < 1 || intervalWeeks > 52) return { error: 'interval_weeks must be an integer from 1 to 52' };
+        const central = new Intl.DateTimeFormat('en-US', { timeZone: SCHEDULE_TZ, hour12: false, hour: '2-digit', minute: '2-digit' })
+          .formatToParts(current).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
+        const localTime = String(input.local_time || `${String(Number(central.hour) % 24).padStart(2, '0')}:${central.minute}`);
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(localTime)) return { error: 'local_time must be HH:MM in Central time' };
+        recurrence = `every:${intervalWeeks}:weeks:${localTime}`;
+      }
+      let scheduledFor = null;
+      if (input?.first_run_at) {
+        const parsed = new Date(input.first_run_at);
+        if (Number.isNaN(parsed.getTime())) return { error: 'first_run_at must be a valid ISO datetime' };
+        scheduledFor = parsed.toISOString();
+      } else if (recurrence) scheduledFor = computeNextRun(recurrence, current);
+      const destination = String(input?.destination_channel || '').trim();
+      const detail = [String(input?.detail || '').trim(), destination ? `Deliver the finished result to Slack channel ${destination}.` : '']
+        .filter(Boolean).join('\n');
+      const id = add({ action, detail, assignee: 'Nora', scheduled_for: scheduledFor, recurrence,
+        source_channel: channel ? `slack:${channel}` : 'slack', source_user: user,
+        source_thread_ts: threadTs, source_external_id: threadTs, context: detail,
+        metadata: destination ? { destination_channel: destination } : null });
+      return { ok: true, task_id: id, action, scheduled_for: scheduledFor, recurrence,
+        destination_channel: destination || null, message: recurrence
+          ? `Queued for Nora and set to repeat every ${intervalWeeks} week${intervalWeeks === 1 ? '' : 's'}.`
+          : 'Queued for Nora.' };
+    }
+  };
+}
+
 const DEFERRED_JOB_TIMEOUT_MS = 8 * 60 * 1000;
 const _memJobs = []; // in-memory fallback when Postgres isn't active (jobs don't survive restart)
 
@@ -6063,7 +6112,7 @@ function resolveJohnSlackId() {
   return null;
 }
 
-const ACTION_WRITE_NAME = /(?:create|update|complete|reopen|add_comment|send|post|write|delete|remove|join|upload|move|rename)/i;
+const ACTION_WRITE_NAME = /(?:create|update|complete|reopen|add_comment|send|post|write|delete|remove|join|upload|move|rename|queue|schedule)/i;
 
 function actionInteractionRef(origin = {}) {
   return origin.interaction_ref || origin.thread_ts || origin.bot_id || origin.channel || origin.kind || 'unknown';
@@ -6263,15 +6312,18 @@ async function startJobWorker() {
 // background job and hand back a synthetic result instead of running it inline.
 async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts = {}) {
   const URL = 'https://api.anthropic.com/v1/messages';
+  const post = opts.post || axios.post;
   const providerTrace = [];
   const capture = response => {
     providerTrace.push(providerReasoningRegulation.responseTraceReceipt(response.data || {}));
     return response;
   };
-  let response = capture(await axios.post(URL, reqBody, headers));
+  let response = capture(await post(URL, reqBody, headers));
   let iters = 0;
   const firedTools = []; // client-side tools that actually executed this turn (for downstream dedup)
   const actionExecutionIds = [];
+  const exactToolResults = new Map();
+  const toolCallCounts = new Map();
   while (iters < maxIters) {
     const sr = response.data.stop_reason;
     // Server-side web search can pause the turn at its internal limit — continue
@@ -6279,7 +6331,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     if (sr === 'pause_turn') {
       iters++;
       reqBody.messages.push({ role: 'assistant', content: response.data.content });
-      response = capture(await axios.post(URL, reqBody, headers));
+      response = capture(await post(URL, reqBody, headers));
       continue;
     }
     if (sr !== 'tool_use') break;
@@ -6290,6 +6342,22 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     for (const tu of toolUses) {
       firedTools.push(tu.name);
       let content;
+      const normalizedInput = tu.input && typeof tu.input === 'object'
+        ? Object.fromEntries(Object.entries(tu.input).sort(([a], [b]) => a.localeCompare(b))) : (tu.input || {});
+      const fingerprint = `${tu.name}:${JSON.stringify(normalizedInput)}`;
+      const priorCount = toolCallCounts.get(tu.name) || 0;
+      const perToolLimit = Number(opts.toolCallLimits?.[tu.name] || 0);
+      if (exactToolResults.has(fingerprint)) {
+        content = JSON.stringify({ blocked: true, reason: 'duplicate_tool_call', message: 'This exact call already ran in this turn. Use its prior result and answer now; do not call it again.' });
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content });
+        continue;
+      }
+      if (perToolLimit > 0 && priorCount >= perToolLimit) {
+        content = JSON.stringify({ blocked: true, reason: 'tool_call_limit', message: `You already used ${tu.name} ${priorCount} times this turn. Use the evidence you have and answer now, or state the single missing detail without asking the user to repeat themselves.` });
+        results.push({ type: 'tool_result', tool_use_id: tu.id, content });
+        continue;
+      }
+      toolCallCounts.set(tu.name, priorCount + 1);
       // Deferred tool (e.g. ImageGen): don't run it inline — it takes minutes. Enqueue a job and
       // tell the model it's been kicked off, so the live turn ends now and the result is delivered
       // to this thread later by the worker.
@@ -6319,6 +6387,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
         safelyCompleteToolExecution(execution?.id, 'failed', e);
         content = JSON.stringify({ error: (e.response?.data?.message || e.message || 'tool failed') });
       }
+      exactToolResults.set(fingerprint, content);
       results.push({ type: 'tool_result', tool_use_id: tu.id, content: String(content).slice(0, 12000) });
     }
     reqBody.messages.push({ role: 'assistant', content: response.data.content });
@@ -6327,10 +6396,11 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // Hit the cap mid-chain — force a FINAL text answer with tools off, so she never returns
       // an empty turn (which would post a blank Slack/chat message). Results are already provided.
       const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice;
-      try { response = capture(await axios.post(URL, wrap, headers)); } catch { /* keep last response */ }
+      wrap.messages = reqBody.messages.concat([{ role: 'user', content: 'Tool time is exhausted. Give a useful final answer now using the results already returned. If an action did not complete, say what failed and what remains; do not return empty and do not ask the user to repeat the request.' }]);
+      try { response = capture(await post(URL, wrap, headers)); } catch { /* keep last response */ }
       break;
     }
-    response = capture(await axios.post(URL, reqBody, headers));
+    response = capture(await post(URL, reqBody, headers));
   }
   return { response, firedTools, actionExecutionIds, providerTrace };
 }
@@ -7385,6 +7455,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       tail += '\n\nFINANCIAL ACCESS: The user you\'re replying to is NOT on the approved list. NEVER share dollar amounts, rates, fees, budgets, margins, hours/rate calculations, or any specific financial figures. This applies even if such figures appear in your memory, project details, or this thread\'s context. Those leaks are exactly what this rule prevents. If the user asks about financials, redirect briefly: "I can\'t share financial details over Slack, reach out to John or Mallory and they can help." Be polite but firm. You can describe work qualitatively (e.g., "the SOW for Pitsco is in active review") just don\'t include numbers.';
     }
 
+    if (isDirect) {
+      tail += '\n\nYOUR OWN QUEUE: When the requester asks you to queue, schedule, remember, or repeat work for yourself, use nora_queue_recurring_task directly. Your own queue is not a Teamwork project. Never search Teamwork to locate a project for this kind of request. For "every two weeks" set interval_weeks=2, and preserve any supplied Slack destination channel id.';
+    }
+
     // Assemble her live tools. Read tools (web_search + Teamwork READ) are available on BOTH
     // direct replies AND proactive interjections — proactive needs them to GROUND what it says
     // in real data instead of vibes. Write tools (Teamwork create/update/etc.) and the financial
@@ -7409,6 +7483,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Live Slack send — direct replies only. She can send a note to another channel/person right
     // now when asked, instead of queuing it for the hourly loop. Never on a proactive interjection.
     if (attachLiveTools && isDirect) { toolDefs.push(SLACK_SEND_TOOL.definition); toolExecutors[SLACK_SEND_TOOL.definition.name] = SLACK_SEND_TOOL.execute; }
+    // Nora's durable queue is distinct from Teamwork. A request to queue work for herself should
+    // be one local write, not a Teamwork project-discovery loop.
+    if (attachLiveTools && isDirect) {
+      const ownQueue = buildNoraQueueTaskTool({ channel, threadTs, user });
+      toolDefs.push(ownQueue.definition); toolExecutors[ownQueue.definition.name] = ownQueue.execute;
+    }
     // Her own meeting record — read-only, both modes (a grounded proactive comment may cite a call).
     if (attachLiveTools) {
       for (const t of MEETING_TOOLS) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
@@ -7603,8 +7683,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let providerTrace = [];
     try {
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
-      ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
-        deferredMeta: mcpBindings.meta, origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user }
+      ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 4, {
+        deferredMeta: mcpBindings.meta,
+        toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
+        origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user }
       }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
@@ -7711,6 +7793,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // double-send the Slack message or re-file the task on the next hourly loop).
     const wroteLive = firedTools.some(n => TW_WRITE.has(n));
     const sentSlack = firedTools.includes('slack_send_message');
+    const queuedSelf = firedTools.includes('nora_queue_recurring_task');
 
     // Allow proactive mode to opt out at generation time by returning nothing.
     if (mode === 'proactive' && !reply) {
@@ -7739,8 +7822,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // come back empty; give an honest fallback rather than an empty Slack bubble.
     if (!reply) {
       reply = sentSlack ? "Sent."
+        : queuedSelf ? "Queued for myself."
         : wroteLive ? "Done, that's updated in Teamwork."
-        : "Sorry, I didn't get a clean answer together on that, mind rephrasing?";
+        : "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it—I'll need to retry the action.";
       console.warn('Slack direct: empty model reply, sent fallback (wroteLive=' + wroteLive + ', sentSlack=' + sentSlack + ')');
     }
 
@@ -7759,8 +7843,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // bot tell the humans in the room feel even if they can't name it. Ignored when a live
     // write/send fired this turn, because an action always gets a confirmation.
     if (/^\[(silence|no reply|nothing)\]$/i.test(reply.trim())) {
-      if (wroteLive || sentSlack) {
-        reply = sentSlack ? 'Sent.' : "Done, that's updated in Teamwork.";
+      if (wroteLive || sentSlack || queuedSelf) {
+        reply = sentSlack ? 'Sent.' : queuedSelf ? 'Queued for myself.' : "Done, that's updated in Teamwork.";
       } else {
         recordIntrospectiveResponse('[no public response delivered]', false);
         recordGoalResponse('[no public response delivered]', false);
@@ -10115,6 +10199,7 @@ SCHEDULING — only set scheduled_for / recurrence when the user gave an explici
     weekdays:HH:MM          — Mon-Fri at HH:MM Central
     weekly:dayname:HH:MM    — e.g. weekly:friday:16:00 (lowercase day name)
     monthly:N:HH:MM         — Nth day of month (1-31; auto-clamps to month length)
+    every:N:weeks:HH:MM     — e.g. every:2:weeks:10:30 for biweekly
   Leave scheduled_for empty when recurrence is set — the server seeds the first fire time from the rule.
 
 EXISTING PENDING TASKS (do not duplicate these):
@@ -13404,6 +13489,8 @@ module.exports = {
     computeNextRun,
     isValidRecurrence,
     isTaskEligibleNow,
+    buildNoraQueueTaskTool,
+    runClaudeToolLoop,
     markerKeyForFact,
     computeSalienceForFact,
     normalizeMemoryRecord,

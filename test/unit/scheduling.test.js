@@ -54,6 +54,16 @@ test('monthly recurrence clamps oversized days to month end', () => {
   );
 });
 
+test('multi-week recurrence supports a true biweekly cadence in Central time', () => {
+  assert.equal(
+    helpers.computeNextRun('every:2:weeks:09:00', new Date('2026-07-21T18:30:00.000Z')),
+    '2026-08-04T14:00:00.000Z'
+  );
+  assert.equal(helpers.isValidRecurrence('every:2:weeks:09:00'), true);
+  assert.equal(helpers.isValidRecurrence('every:0:weeks:09:00'), false);
+  assert.equal(helpers.isValidRecurrence('every:2:days:09:00'), false);
+});
+
 test('recurrence remains on the requested wall time across DST', () => {
   assert.equal(
     helpers.computeNextRun('daily:09:00', new Date('2026-03-08T12:00:00.000Z')),
