@@ -881,11 +881,7 @@ function lifecycleWorkspaceDefinition(phase, cycle) {
       mode: 'operational', activity: 'Running the forecast-bound hourly operational pass.',
       why: 'The forecast is committed, so evidence gathering and authorized operational work now have access.',
       next: 'Complete authorized work, record consequences, and close the lifecycle.',
-      candidates: [
-        ['lifecycle:operations', 'task', 'Execute the forecast-bound operational pass', 0.82, 'required', 'moderate'],
-        ['lifecycle:evidence', 'uncertainty', 'Check disconfirming evidence before consequential action', 0.66, 'bounded', 'low'],
-        ['lifecycle:restraint', 'inhibition', 'Avoid unsupported or unnecessary outward action', 0.56, 'bounded', 'low'],
-      ],
+      candidates: [],
     },
     closure: {
       mode: 'reflection', activity: `Preserving the ${cycle.status || 'completed'} hourly lifecycle and its handoff.`,
@@ -901,24 +897,98 @@ function lifecycleWorkspaceDefinition(phase, cycle) {
   return definitions[phase];
 }
 
+function currentRelationalWorkspaceContext() {
+  const snapshot = intelligence.relationalAffectSnapshot();
+  const record = snapshot.current ? { ...snapshot.current } : null;
+  if (record) delete record.audit;
+  return { record, relationships: intelligence.list('relationships') };
+}
+
+function currentWorkspaceArbitrationContext() {
+  return {
+    wants: intelligence.interventionActive('goal_access') ? [] : (_cache.wants?.items || []),
+    wantHistoryIntegrity: _cache.wantsHistoryIntegrity || null,
+    consequenceLedger: loadConsequenceReviews(),
+    soma: currentCognitiveInputs().soma,
+    epistemicAgendaSnapshot: intelligence.epistemicAgendaSnapshot(),
+    relationalContext: currentRelationalWorkspaceContext(),
+  };
+}
+
+function lifecycleOperationsCandidates(cycle, evidence, { context = {}, now = new Date(),
+  includeCurrentMotives = true } = {}) {
+  const candidates = (cycle.recommendations || []).slice(0, 6).map((item, index) => ({
+    key: `cycle-recommendation:${item.type}:${item.id || index}:${cycle.id}`,
+    type: item.type === 'episode' ? 'memory' : item.type === 'prospection' ? 'uncertainty'
+      : item.type === 'experiment' ? 'curiosity' : 'task',
+    label: String(item.action || item.reason || `${item.type} needs attention`).slice(0, 240),
+    priority: item.priority === 'critical' ? 0.92 : item.priority === 'high' ? 0.8 : 0.65,
+    authority_class: item.type === 'commitment' && ['critical', 'high'].includes(item.priority)
+      ? 'required' : 'bounded',
+    soma_demand: item.priority === 'critical' ? 'high' : 'moderate',
+    evidence: [{ type: item.type || 'intelligence_cycle', id: item.id || cycle.id }, ...evidence].slice(0, 12),
+  }));
+  const wants = includeCurrentMotives ? (context.wants || []) : [];
+  if (includeCurrentMotives && context.wantHistoryIntegrity?.valid
+    && context.wantHistoryIntegrity.complete_chain_verified !== false) {
+    const aims = goalAffect.snapshot(wants, now).aims.slice(0, 2);
+    for (const aim of aims) candidates.push({
+      key: `want:${aim.want_id}:${cycle.id}`, type: 'want', label: aim.want,
+      priority: 0.46 + aim.salience * 0.08, authority_class: 'optional', soma_demand: 'low',
+      want_refs: [{ type: 'want', id: aim.want_id }],
+      evidence: [{ type: 'want', id: aim.want_id }, ...evidence],
+    });
+  }
+  const agenda = includeCurrentMotives ? (context.epistemicAgendaSnapshot || {}) : {};
+  if (agenda.audit?.complete_chain_verified === true) {
+    for (const question of agenda.questions.filter(item => item.status === 'open'
+      && item.prompt_access?.eligible).slice(0, 2)) candidates.push({
+      key: `curiosity:${question.id}:${cycle.id}`, type: 'curiosity', label: question.question,
+      priority: 0.44 + Math.max(0, Math.min(1, Number(question.interest_score) || 0)) * 0.1,
+      authority_class: 'optional', soma_demand: 'low',
+      epistemic_question_refs: [{ type: 'epistemic_question', id: question.id }],
+      evidence: [{ type: 'epistemic_question', id: question.id }, ...evidence],
+    });
+  }
+  candidates.push({ key: `lifecycle:recovery:${cycle.id}`, type: 'soma_constraint',
+    label: 'Choose a low-demand recovery posture if substrate strain warrants it', priority: 0.43,
+    authority_class: 'optional', soma_demand: 'low', evidence });
+  candidates.push({ key: `lifecycle:evidence:${cycle.id}`, type: 'uncertainty',
+    label: 'Check disconfirming evidence before consequential action', priority: 0.5,
+    authority_class: candidates.some(item => item.authority_class !== 'optional') ? 'bounded' : 'optional',
+    soma_demand: 'low', evidence });
+  candidates.push({ key: `lifecycle:restraint:${cycle.id}`, type: 'inhibition',
+    label: 'Avoid unsupported or unnecessary outward action', priority: 0.45,
+    authority_class: candidates.some(item => item.authority_class !== 'optional') ? 'bounded' : 'optional',
+    soma_demand: 'low', evidence });
+  return candidates.slice(0, 12);
+}
+
 function buildLifecycleWorkspace({ phase, cycle, moment = null, at = null,
-  ledger = loadConsciousWorkspace() } = {}) {
+  ledger = loadConsciousWorkspace(), historical = false } = {}) {
   if (!cycle?.id || !['orientation', 'operations', 'closure'].includes(phase)) return null;
   const id = `cw-lifecycle-${cycle.id}-${phase}`;
   const existing = ledger.frames.find(frame => frame.id === id);
   if (existing) return { frame: existing, ledger, created: false };
   const definition = lifecycleWorkspaceDefinition(phase, cycle);
   const evidence = [{ type: 'intelligence_cycle', id: cycle.id }];
-  const candidates = definition.candidates.map(([key, type, label, priority, authorityClass, somaDemand]) => ({
+  const now = at ? new Date(at) : new Date();
+  const context = phase === 'operations'
+    ? (historical ? {} : currentWorkspaceArbitrationContext())
+    : (historical ? {} : { soma: currentCognitiveInputs().soma });
+  const candidates = phase === 'operations' ? lifecycleOperationsCandidates(cycle, evidence, {
+    context, now, includeCurrentMotives: !historical,
+  })
+    : definition.candidates.map(([key, type, label, priority, authorityClass, somaDemand]) => ({
     key: `${key}:${cycle.id}`, type, label, priority,
     authority_class: authorityClass, soma_demand: somaDemand, evidence,
-  }));
+    }));
   const result = consciousWorkspace.createFrame({
     id, mode: definition.mode, current_activity: definition.activity, why_this: definition.why,
     attention_candidates: candidates, selected_focus_key: candidates[0].key,
     intended_next_action: definition.next, evidence, created_by: 'Nora runtime',
     lifecycle: { cycle_id: cycle.id, moment_id: moment?.id || cycle.experience_moment_id, phase },
-  }, ledger, { now: at ? new Date(at) : new Date(), context: { soma: currentCognitiveInputs().soma } });
+  }, ledger, { now, context });
   return { frame: result.frame, ledger: result.ledger, created: true, definition };
 }
 
@@ -945,7 +1015,8 @@ async function reconcileLifecycleWorkspace({ limit = 24 } = {}) {
       at: moment.self_forecast.committed_at || moment.self_forecast.created_at || cycle.started });
     if (cycle.status !== 'running') phases.push({ phase: 'closure', at: cycle.finished || cycle.started });
     for (const item of phases) {
-      const result = buildLifecycleWorkspace({ phase: item.phase, cycle, moment, at: item.at, ledger });
+      const result = buildLifecycleWorkspace({ phase: item.phase, cycle, moment, at: item.at,
+        ledger, historical: true });
       if (result?.created) { ledger = result.ledger; created += 1; }
     }
   }

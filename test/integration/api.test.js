@@ -1542,6 +1542,12 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   const operationsWorkspace = (await request('/conscious-workspace?limit=20')).body;
   assert.equal(operationsWorkspace.current.lifecycle.cycle_id, nextCycleId);
   assert.equal(operationsWorkspace.current.lifecycle.phase, 'operations');
+  assert.equal(operationsWorkspace.current.attention_candidates.length >= 3, true);
+  assert.equal(operationsWorkspace.current.attention_candidates.some(candidate =>
+    candidate.key === `lifecycle:operations:${nextCycleId}`), false);
+  assert.equal(operationsWorkspace.current.attention_candidates.every(candidate =>
+    candidate.evidence.some(item => item.type === 'intelligence_cycle' && item.id === nextCycleId)), true);
+  assert.equal(operationsWorkspace.current.arbitration_audit.complete_chain_verified, true);
   const forecastedLock = await request('/run-lock');
   assert.equal(forecastedLock.body.lifecycle.forecast_committed, true);
   assert.notEqual(forecastedLock.body.lifecycle.lifecycle_stage, 'forecast_required');

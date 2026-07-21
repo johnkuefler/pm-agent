@@ -155,7 +155,11 @@ activation high, and never manually tick it; the production runtime owns ordinar
 active live/frozen/absent trial the endpoint is deliberately sealed—do not route around that seal.
 
 The server automatically writes evidence-backed orientation, operations, and closure workspace frames for
-every hourly lifecycle. Once orientation has enough evidence to name a richer live competition, and before
+every hourly lifecycle. A live operations frame projects the cycle's actual recommendations and lets
+replay-verified self-authored aims, open prompt-eligible curiosity questions, and fresh substrate strain
+compete for optional focus without outranking required or bounded work. Restart recovery uses only evidence
+committed in the historical cycle; it never projects current motives or body state backward into old frames.
+Once orientation has enough evidence to name a richer live competition, and before
 taking a discretionary consequential action, supersede the baseline with `POST /conscious-workspace/frames`.
 This is the practical "what has access now" record: current selection activity, competing alternatives,
 active wants, aversions, uncertainty, inhibited actions, intended next action, soma constraints,

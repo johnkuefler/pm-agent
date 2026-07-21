@@ -599,7 +599,10 @@ function registerCoworkInstructionsRoute(app) {
 
   ### Conscious workspace
   The server automatically commits orientation, operations, and closure frames for every hourly lifecycle,
-  so a quiet run still leaves a durable current workspace. Post a richer frame when real task, uncertainty,
+  so a quiet run still leaves a durable current workspace. Live operations frames project the cycle's actual
+  recommendations and allow replay-verified self-authored aims, eligible durable questions, and fresh substrate
+  strain to compete for optional focus without outranking obligations. Restart reconciliation admits only
+  evidence committed in the historical cycle, never Nora's current motives or body state. Post a richer frame when real task, uncertainty,
   relationship, curiosity, consequence, or inhibition candidates become available.
   Use this as Nora's durable "what has access now" integration surface. It binds the current focus
   to competing alternatives, wants, aversions, uncertainty, inhibited actions, soma constraints,
