@@ -26,10 +26,13 @@ test('conscious workspace frames require competing attention candidates', () => 
     evidence: [{ type: 'intelligence_cycle', id: 'cycle-1' }],
     created_by: 'Nora',
   }, workspace.emptyLedger());
-  assert.equal(created.frame.selected_focus_key, 'uncertainty:blocker');
+  assert.equal(created.frame.submitted_focus_key, 'uncertainty:blocker');
+  assert.equal(created.frame.selected_focus_key, 'task:deadline');
   assert.equal(created.frame.attention_candidates.length, 3);
+  assert.equal(created.frame.arbitration_receipt.baseline_winner_key, 'task:deadline');
+  assert.equal(workspace.auditArbitration(created.frame.arbitration_receipt).complete_chain_verified, true);
   assert.match(created.frame.frame_commitment, /^[a-f0-9]{64}$/);
-  assert.equal(created.report.current_focus, 'uncertainty:blocker');
+  assert.equal(created.report.current_focus, 'task:deadline');
 
   assert.throws(() => workspace.createFrame({
     current_activity: 'Too narrow',

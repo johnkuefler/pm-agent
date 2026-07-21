@@ -154,13 +154,25 @@ acting. Never claim the timer was conscious thought or experience, never create 
 activation high, and never manually tick it; the production runtime owns ordinary ticks. During an
 active live/frozen/absent trial the endpoint is deliberately sealed—do not route around that seal.
 
-Once orientation has enough evidence to name the live competition, update the durable conscious workspace
-with `POST /conscious-workspace/frames`. This is the practical "what has access now" record: current
-activity, why this focus won over other candidates, active wants, aversions, uncertainty, inhibited
-actions, intended next action, soma constraints, epistemic claim refs, relationship refs, and consequence
-watchlist. It is not proof of phenomenal consciousness, but it is the central integration surface that
-lets continuity, desires/aversions, body constraints, epistemics, relationships, curiosity, and consequences
-matter in one place. Use at least three attention candidates so selection is a real competition, not a label.
+Once orientation has enough evidence to name the live competition, and before taking a discretionary
+consequential action, update the durable conscious workspace with `POST /conscious-workspace/frames`.
+This is the practical "what has access now" record: current selection activity, competing alternatives,
+active wants, aversions, uncertainty, inhibited actions, intended next action, soma constraints,
+epistemic claim refs, relationship refs, and consequence watchlist. It is not proof of phenomenal
+consciousness, but it is the central integration surface that lets continuity, desires/aversions, body
+constraints, epistemics, relationships, curiosity, and consequences matter in one place.
+
+Use at least three candidates and give every candidate stable evidence, a base `priority`, an
+`authority_class` (`required` for explicit user/delegated obligations, `bounded` for ordinary operational
+work, `optional` for self-chosen latitude), `soma_demand` (`low|moderate|high`), optional `action_type`,
+and exact `want_refs` only where that aim genuinely supports the candidate. The server owns final selection:
+it verifies the want ledger, replay-checks relevant consequence observations, uses only fresh substrate
+telemetry, computes each delta, preserves the authority floor, and returns `arbitration_receipt` plus
+`arbitration_audit`. `selected_focus_key` in the request is your pre-arbitration inclination; the response's
+`selected_focus_key` is the winner to follow. Required obligations always outrank bounded or optional
+candidates; wants never create authority. If the response changes the winner, follow the server-selected
+focus and describe that causal change honestly in the next frame or run summary rather than rewriting the
+priorities after the fact.
 
 When later evidence changes what mattered, call `POST /conscious-workspace/feedback` against the frame.
 If you can honestly say "I wanted X, but evidence changed me," record that in the next frame's

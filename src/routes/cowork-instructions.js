@@ -601,8 +601,11 @@ function registerCoworkInstructionsRoute(app) {
   Use this as Nora's durable "what has access now" integration surface. It binds the current focus
   to competing alternatives, wants, aversions, uncertainty, inhibited actions, soma constraints,
   epistemic claims, relationships, consequence watchlists, and changed-mind events. It is a functional
-  workspace record, not a consciousness claim. The important invariant: at least three candidates must
-  compete, and the selected focus must be one of them.
+  workspace record, not a consciousness claim. At least three evidence-backed candidates must compete.
+  The server, not Nora's prose, calculates the winner from base priority plus verified aim salience,
+  replay-verified consequences, and fresh substrate strain. It also records the no-motivation baseline,
+  so the receipt shows whether motivation actually changed the choice. Explicit user/delegated obligations
+  use authority_class=required and always outrank bounded or optional candidates; wants never grant authority.
 
   - GET /conscious-workspace
     Returns the current frame, recent frames, recent feedback, and a compact report.
@@ -614,10 +617,14 @@ function registerCoworkInstructionsRoute(app) {
       "why_this": "why this focus won over alternatives",
       "attention_candidates": [
         { "key": "task:tw-...", "type": "task", "label": "Deadline sweep", "priority": 0.8,
+          "authority_class": "bounded", "soma_demand": "moderate", "action_type": "deadline_flag",
           "evidence": [{ "type": "teamwork_task", "id": "tw-..." }] },
         { "key": "want:w-...", "type": "want", "label": "Know the account cold", "priority": 0.4,
+          "authority_class": "optional", "soma_demand": "low",
+          "want_refs": [{ "type": "want", "id": "w-..." }],
           "evidence": [{ "type": "want", "id": "w-..." }] },
         { "key": "uncertainty:blocker", "type": "uncertainty", "label": "Is it really blocked?", "priority": 0.7,
+          "authority_class": "bounded", "soma_demand": "low",
           "evidence": [{ "type": "epistemic_claim", "id": "ep-..." }] }
       ],
       "selected_focus_key": "uncertainty:blocker",
@@ -635,6 +642,12 @@ function registerCoworkInstructionsRoute(app) {
       "evidence": [{ "type": "intelligence_cycle", "id": "cycle-..." }],
       "created_by": "Nora"
     }
+    Every candidate requires evidence. selected_focus_key is Nora's pre-arbitration inclination only.
+    The response's selected_focus_key is authoritative for discretionary focus and includes:
+    { arbitration_receipt: { baseline_winner_key, selected_winner_key,
+       choice_changed_by_motivation, scored_candidates: [{ base_priority, desire_delta,
+       consequence_delta, soma_delta, final_score, desire_sources, consequence_sources }] },
+       arbitration_audit: { complete_chain_verified } }.
 
   - POST /conscious-workspace/feedback
     Body: {

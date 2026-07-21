@@ -11,6 +11,7 @@ function publicFrame(frame) {
     why_this: frame.why_this,
     attention_candidates: frame.attention_candidates || [],
     selected_focus_key: frame.selected_focus_key,
+    submitted_focus_key: frame.submitted_focus_key || frame.selected_focus_key,
     selected_focus_label: frame.selected_focus_label || '',
     active_want_refs: frame.active_want_refs || [],
     aversions: frame.aversions || [],
@@ -22,6 +23,9 @@ function publicFrame(frame) {
     relationship_refs: frame.relationship_refs || [],
     consequence_watchlist: frame.consequence_watchlist || [],
     changed_mind: frame.changed_mind || null,
+    arbitration_receipt: frame.arbitration_receipt || null,
+    arbitration_audit: frame.arbitration_receipt
+      ? consciousWorkspace.auditArbitration(frame.arbitration_receipt) : null,
     evidence: frame.evidence || [],
     frame_commitment: frame.frame_commitment,
     created_by: frame.created_by,
@@ -43,7 +47,10 @@ function publicFeedback(feedback) {
 }
 
 function registerConsciousWorkspaceRoutes(app, deps) {
-  const { requireAuth, loadConsciousWorkspace, saveConsciousWorkspace } = deps;
+  const { requireAuth, loadConsciousWorkspace, saveConsciousWorkspace,
+    getWants = () => [], getWantHistoryIntegrity = () => null,
+    loadConsequenceReviews = () => ({ actions: [], observations: [], applications: [] }),
+    getSoma = () => ({}) } = deps;
 
   app.get('/conscious-workspace', requireAuth, (req, res) => {
     const ledger = loadConsciousWorkspace();
@@ -58,7 +65,14 @@ function registerConsciousWorkspaceRoutes(app, deps) {
 
   app.post('/conscious-workspace/frames', requireAuth, async (req, res) => {
     try {
-      const result = consciousWorkspace.createFrame(req.body || {}, loadConsciousWorkspace());
+      const result = consciousWorkspace.createFrame(req.body || {}, loadConsciousWorkspace(), {
+        context: {
+          wants: getWants(),
+          wantHistoryIntegrity: getWantHistoryIntegrity(),
+          consequenceLedger: loadConsequenceReviews(),
+          soma: getSoma(),
+        },
+      });
       await saveConsciousWorkspace(result.ledger);
       res.json({ ok: true, frame: publicFrame(result.frame), report: result.report });
     } catch (error) {

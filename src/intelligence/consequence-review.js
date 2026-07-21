@@ -580,4 +580,5 @@ module.exports = {
   report,
   renderPromptLessons,
   resolvePromptApplication,
+  verifiedLesson,
 };

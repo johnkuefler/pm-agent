@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const consequenceReview = require('./consequence-review');
+const motivationalArbitration = require('./motivational-arbitration');
 
 const MODES = Object.freeze(['operational', 'social', 'reflection', 'idle_learning', 'recovery']);
 const CANDIDATE_TYPES = Object.freeze([
@@ -25,7 +27,7 @@ function commitment(value) {
 }
 
 function emptyLedger() {
-  return { version: 1, current: null, frames: [], feedback: [] };
+  return { version: 2, current: null, frames: [], feedback: [] };
 }
 
 function normalizeLedger(value = {}) {
@@ -33,7 +35,7 @@ function normalizeLedger(value = {}) {
   const frames = Array.isArray(ledger.frames) ? ledger.frames.map(normalizeFrameRecord).filter(Boolean).slice(-500) : [];
   const current = normalizeFrameRecord(ledger.current) || frames.at(-1) || null;
   return {
-    version: 1,
+    version: 2,
     current,
     frames,
     feedback: Array.isArray(ledger.feedback) ? ledger.feedback.map(normalizeFeedbackRecord).filter(Boolean).slice(-500) : [],
@@ -60,13 +62,29 @@ function normalizeCandidate(candidate = {}) {
   const type = normalizeText(candidate.type || 'other', 80);
   if (!CANDIDATE_TYPES.includes(type)) throw new Error(`attention candidate type must be one of: ${CANDIDATE_TYPES.join(', ')}`);
   const priority = Number(candidate.priority);
+  const actionType = normalizeText(candidate.action_type, 80);
+  if (actionType && !consequenceReview.ACTION_TYPES.includes(actionType)) {
+    throw new Error(`candidate action_type must be one of: ${consequenceReview.ACTION_TYPES.join(', ')}`);
+  }
+  const somaDemand = normalizeText(candidate.soma_demand || 'moderate', 20);
+  if (!Object.hasOwn(motivationalArbitration.SOMA_DEMAND, somaDemand)) {
+    throw new Error('candidate soma_demand must be low, moderate, or high');
+  }
+  const authorityClass = normalizeText(candidate.authority_class || 'bounded', 20);
+  if (!Object.hasOwn(motivationalArbitration.AUTHORITY_CLASS, authorityClass)) {
+    throw new Error('candidate authority_class must be optional, bounded, or required');
+  }
   return {
     key,
     type,
     label: normalizeText(candidate.label, 240),
     priority: Number.isFinite(priority) ? Math.min(1, Math.max(0, priority)) : 0.5,
     status: normalizeText(candidate.status || 'competing', 80),
-    evidence: normalizeEvidence(candidate.evidence || [], { required: false }),
+    ...(actionType ? { action_type: actionType } : {}),
+    authority_class: authorityClass,
+    soma_demand: somaDemand,
+    want_refs: normalizeRefList(candidate.want_refs).filter(item => item.type === 'want'),
+    evidence: normalizeEvidence(candidate.evidence || [], { required: true }),
   };
 }
 
@@ -100,7 +118,7 @@ function normalizeChangedMind(value = {}) {
   };
 }
 
-function createFrame(input = {}, ledger = emptyLedger(), { now = new Date() } = {}) {
+function createFrame(input = {}, ledger = emptyLedger(), { now = new Date(), context = {} } = {}) {
   const current = normalizeLedger(ledger);
   const mode = normalizeText(input.mode || 'operational', 80);
   if (!MODES.includes(mode)) throw new Error(`mode must be one of: ${MODES.join(', ')}`);
@@ -113,9 +131,26 @@ function createFrame(input = {}, ledger = emptyLedger(), { now = new Date() } = 
   if (candidates.length < 3 || candidates.length > 12) {
     throw new Error('conscious workspace frames require three to twelve attention candidates');
   }
-  const selectedFocusKey = normalizeText(input.selected_focus_key || candidates[0]?.key, 120);
-  if (!candidates.some(candidate => candidate.key === selectedFocusKey)) {
+  const submittedFocusKey = normalizeText(input.selected_focus_key || candidates[0]?.key, 120);
+  if (!candidates.some(candidate => candidate.key === submittedFocusKey)) {
     throw new Error('selected_focus_key must match an attention candidate');
+  }
+  const arbitrationReceipt = motivationalArbitration.arbitrate({
+    candidates,
+    wants: context.wants || [],
+    wantHistoryIntegrity: context.wantHistoryIntegrity || null,
+    consequenceLedger: context.consequenceLedger || consequenceReview.emptyLedger(),
+    soma: context.soma || {},
+    now,
+  });
+  const selectedFocusKey = arbitrationReceipt.selected_winner_key;
+  const verifiedWantIds = new Set(arbitrationReceipt.scored_candidates
+    .flatMap(item => item.desire_sources.map(source => source.want_id)));
+  const suppliedWantRefs = normalizeRefList(input.active_want_refs).filter(item => item.type === 'want'
+    && verifiedWantIds.has(item.id));
+  const activeWantRefs = [...suppliedWantRefs];
+  for (const id of verifiedWantIds) {
+    if (!activeWantRefs.some(item => item.id === id)) activeWantRefs.push({ type: 'want', id });
   }
   const evidence = normalizeEvidence(input.evidence);
   const frame = {
@@ -126,7 +161,8 @@ function createFrame(input = {}, ledger = emptyLedger(), { now = new Date() } = 
     attention_candidates: candidates,
     selected_focus_key: selectedFocusKey,
     selected_focus_label: candidates.find(candidate => candidate.key === selectedFocusKey)?.label || '',
-    active_want_refs: normalizeRefList(input.active_want_refs),
+    submitted_focus_key: submittedFocusKey,
+    active_want_refs: activeWantRefs.slice(0, 8),
     aversions: normalizeStringList(input.aversions),
     uncertainties: normalizeStringList(input.uncertainties),
     inhibited_actions: normalizeStringList(input.inhibited_actions),
@@ -136,6 +172,7 @@ function createFrame(input = {}, ledger = emptyLedger(), { now = new Date() } = 
     relationship_refs: normalizeRefList(input.relationship_refs),
     consequence_watchlist: normalizeRefList(input.consequence_watchlist),
     changed_mind: normalizeChangedMind(input.changed_mind),
+    arbitration_receipt: arbitrationReceipt,
     evidence,
     created_by: normalizeText(input.created_by || 'Nora', 80),
     created_at: now instanceof Date ? now.toISOString() : new Date(now).toISOString(),
@@ -145,7 +182,9 @@ function createFrame(input = {}, ledger = emptyLedger(), { now = new Date() } = 
     mode: frame.mode,
     current_activity: frame.current_activity,
     selected_focus_key: frame.selected_focus_key,
+    submitted_focus_key: frame.submitted_focus_key,
     attention_candidates: frame.attention_candidates,
+    arbitration_receipt: frame.arbitration_receipt,
     uncertainties: frame.uncertainties,
     inhibited_actions: frame.inhibited_actions,
     intended_next_action: frame.intended_next_action,
@@ -195,6 +234,8 @@ function normalizeFrameRecord(record) {
     epistemic_claim_refs: Array.isArray(record.epistemic_claim_refs) ? record.epistemic_claim_refs : [],
     relationship_refs: Array.isArray(record.relationship_refs) ? record.relationship_refs : [],
     consequence_watchlist: Array.isArray(record.consequence_watchlist) ? record.consequence_watchlist : [],
+    submitted_focus_key: record.submitted_focus_key || record.selected_focus_key,
+    arbitration_receipt: record.arbitration_receipt || null,
   };
 }
 
@@ -216,6 +257,12 @@ function report(ledger = emptyLedger()) {
     open_uncertainties: latest?.uncertainties?.length || 0,
     inhibited_actions: latest?.inhibited_actions?.length || 0,
     consequence_watch_count: latest?.consequence_watchlist?.length || 0,
+    arbitrated_frames: current.frames.filter(frame =>
+      motivationalArbitration.audit(frame.arbitration_receipt).complete_chain_verified).length,
+    motivation_changed_choice_count: current.frames.filter(frame => frame.arbitration_receipt
+      && motivationalArbitration.audit(frame.arbitration_receipt).complete_chain_verified
+      && frame.arbitration_receipt.choice_changed_by_motivation).length,
+    current_choice_changed_by_motivation: latest?.arbitration_receipt?.choice_changed_by_motivation === true,
   };
 }
 
@@ -227,4 +274,5 @@ module.exports = {
   emptyLedger,
   normalizeLedger,
   report,
+  auditArbitration: motivationalArbitration.audit,
 };

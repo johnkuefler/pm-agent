@@ -8462,6 +8462,11 @@ registerConsciousWorkspaceRoutes(app, {
   requireAuth,
   loadConsciousWorkspace,
   saveConsciousWorkspace,
+  getWants: () => intelligence.interventionActive('goal_access')
+    ? [] : (_cache.wants?.items || []),
+  getWantHistoryIntegrity: () => _cache.wantsHistoryIntegrity || null,
+  loadConsequenceReviews,
+  getSoma: () => ({ ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) }),
 });
 
 registerConsequenceReviewRoutes(app, {

@@ -423,7 +423,10 @@ test('conscious workspace records active focus with competition and feedback', a
     created_by: 'Nora',
   } });
   assert.equal(frame.body.ok, true);
-  assert.equal(frame.body.frame.selected_focus_key, 'uncertainty:latest-source');
+  assert.equal(frame.body.frame.submitted_focus_key, 'uncertainty:latest-source');
+  assert.equal(frame.body.frame.selected_focus_key, 'task:tw-1');
+  assert.equal(frame.body.frame.arbitration_audit.complete_chain_verified, true);
+  assert.equal(frame.body.frame.arbitration_receipt.baseline_winner_key, 'task:tw-1');
   assert.match(frame.body.frame.frame_commitment, /^[a-f0-9]{64}$/);
 
   const feedback = await request('/conscious-workspace/feedback', { method: 'POST', body: {
@@ -479,6 +482,56 @@ test('consequence reviews bind actions to later observed outcomes', async () => 
   assert.equal(observed.body.action.latest_outcome, 'helped');
   assert.match(observed.body.observation.observation_commitment, /^[a-f0-9]{64}$/);
   assert.equal(observed.body.report.behavior_updates, 1);
+
+  const learnedFrame = await request('/conscious-workspace/frames', { method: 'POST', body: {
+    id: 'cw-integration-learned-consequence',
+    mode: 'operational',
+    current_activity: 'Choosing whether a concise deadline nudge is warranted.',
+    why_this: 'A prior verified outcome may distinguish two otherwise close options.',
+    attention_candidates: [
+      {
+        key: 'action:concise-deadline-note',
+        type: 'task',
+        label: 'Send teammate a concise note asking for a deadline decision',
+        priority: 0.55,
+        action_type: 'slack_message',
+        evidence: [{ type: 'teamwork_task', id: 'tw-integration' }],
+      },
+      {
+        key: 'inhibition:hold-the-note',
+        type: 'task',
+        label: 'Hold the deadline note until another source appears',
+        priority: 0.6,
+        evidence: [{ type: 'teamwork_task', id: 'tw-integration' }],
+      },
+      {
+        key: 'uncertainty:review-context',
+        type: 'uncertainty',
+        label: 'Review the existing task context again',
+        priority: 0.4,
+        evidence: [{ type: 'teamwork_task', id: 'tw-integration' }],
+      },
+    ],
+    selected_focus_key: 'inhibition:hold-the-note',
+    active_want_refs: [],
+    aversions: ['Avoid unnecessary teammate interruptions.'],
+    uncertainties: ['Whether the prior outcome generalizes to this deadline.'],
+    inhibited_actions: [],
+    intended_next_action: 'Follow the server-selected focus.',
+    epistemic_claim_refs: [],
+    evidence: [{ type: 'integration', id: 'cw-learned-consequence-test' }],
+    created_by: 'Nora',
+  } });
+  assert.equal(learnedFrame.body.ok, true);
+  assert.equal(learnedFrame.body.frame.arbitration_receipt.baseline_winner_key, 'inhibition:hold-the-note');
+  assert.equal(learnedFrame.body.frame.selected_focus_key, 'action:concise-deadline-note');
+  assert.equal(learnedFrame.body.frame.arbitration_receipt.choice_changed_by_motivation, true);
+  assert.equal(
+    learnedFrame.body.frame.arbitration_receipt.scored_candidates
+      .find((candidate) => candidate.key === 'action:concise-deadline-note')
+      .consequence_sources[0].outcome,
+    'helped',
+  );
 });
 
 test('run lock enforces holder ownership', async () => {

@@ -135,6 +135,7 @@ async function loadIntelligence() {
     renderIntelligenceGlance(summary);
     renderNoraBrain({ dashboard: summary });
     renderCognitionSummary(summary.cognition || {});
+    loadWorkspaceArbitrationGlance(token);
     intelligenceLoadedSections.add('cognition');
     markIntelligenceSectionReady('cognition');
     observeIntelligenceSections(token);
@@ -616,7 +617,43 @@ function renderIntelligenceGlance(summary = {}) {
     <article class="intelligence-glance-item">
       <span>Follow-through</span><strong>${overview.commitments?.open || 0} open promises</strong>
       <p>${overview.experiments?.active || 0} active experiment${overview.experiments?.active === 1 ? '' : 's'}. ${overview.cycles?.running || 0} operational run${overview.cycles?.running === 1 ? '' : 's'} in progress.</p>
+    </article>
+    <article id="workspace-arbitration-glance" class="intelligence-glance-item">
+      <span>Why this focus won</span><strong>Loading the latest choice receipt</strong>
+      <p>Checking whether wants, consequences, or current substrate strain changed the winner.</p>
     </article>`;
+}
+
+async function loadWorkspaceArbitrationGlance(token = intelligenceLoadToken) {
+  const target = document.getElementById('workspace-arbitration-glance');
+  if (!target) return;
+  try {
+    const value = await intelligenceJson('/conscious-workspace?limit=1', intelligenceAbortController?.signal);
+    if (token !== intelligenceLoadToken) return;
+    const frame = value.current || {}; const receipt = frame.arbitration_receipt;
+    if (!receipt) {
+      target.innerHTML = '<span>Why this focus won</span><strong>Awaiting the first arbitrated frame</strong><p>Earlier workspace frames predate causal motive scoring.</p>';
+      return;
+    }
+    if (frame.arbitration_audit?.complete_chain_verified !== true) {
+      target.innerHTML = '<span>Why this focus won</span><strong>Choice receipt failed integrity</strong><p>The dashboard will not interpret an unverified arbitration record.</p>';
+      return;
+    }
+    const selected = receipt.scored_candidates?.find(item => item.key === receipt.selected_winner_key) || {};
+    const forces = [
+      selected.desire_delta ? `aim ${selected.desire_delta > 0 ? '+' : ''}${selected.desire_delta.toFixed(2)}` : null,
+      selected.consequence_delta ? `consequence ${selected.consequence_delta > 0 ? '+' : ''}${selected.consequence_delta.toFixed(2)}` : null,
+      selected.soma_delta ? `body ${selected.soma_delta > 0 ? '+' : ''}${selected.soma_delta.toFixed(2)}` : null,
+    ].filter(Boolean);
+    const changed = receipt.choice_changed_by_motivation
+      ? `Without those influences, ${receipt.baseline_winner_key} would have won.`
+      : 'The same candidate also won on base priority.';
+    target.innerHTML = `<span>Why this focus won</span><strong>${escHtml(selected.label || frame.selected_focus_label || receipt.selected_winner_key)}</strong><p>${escHtml(changed)} ${escHtml(forces.length ? `Applied: ${forces.join(', ')}.` : 'No verified motive changed its score.')}</p>`;
+  } catch (error) {
+    if (error.name !== 'AbortError' && token === intelligenceLoadToken) {
+      target.innerHTML = '<span>Why this focus won</span><strong>Choice receipt unavailable</strong><p>The rest of Nora\'s dashboard remains live.</p>';
+    }
+  }
 }
 
 function renderCognitionSummary(cognition) {
