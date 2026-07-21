@@ -169,8 +169,12 @@ function behavioralFingerprintControls() {
 }
 
 function rawCognitiveParameterLedger() {
-  return _dbReady && _cache.cognitiveParameters ? _cache.cognitiveParameters
-    : cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
+  // Startup hydrates this cache immediately before schema adoption, while `_dbReady` is
+  // intentionally still false. Once hydrated, the cache is already the authoritative raw
+  // document for validation/repair; gating it on `_dbReady` made startup inspect a synthetic
+  // default and leave the stale persisted ledger untouched until a manual repair.
+  return _cache.cognitiveParameters
+    || cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
 }
 
 function verifiedCognitiveParameterLedger() {
