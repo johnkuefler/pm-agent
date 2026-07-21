@@ -66,13 +66,22 @@ test('replay-reviewed outcomes can form one bounded Nora-authored prospective te
     evidence_ids: [first.evidenceId, second.evidenceId],
     rationale: 'Two independently reviewed corrections on separate days support a modest prospective test.',
   };
+  let providerRequest = null;
   const cycle = await formation.runCycle({
     interactions: [first.interaction, second.interaction], relationships: [], now,
-    callProvider: async () => ({ id: 'anthropic-formation-1', model: formation.DEFAULT_MODEL,
-      content: [{ type: 'text', text: JSON.stringify(output) }] }),
+    callProvider: async request => {
+      providerRequest = request;
+      return { id: 'anthropic-formation-1', model: formation.DEFAULT_MODEL,
+        content: [{ type: 'text', text: JSON.stringify(output) }] };
+    },
     commitPerspective: input => store.observePerspective(input),
   });
   assert.equal(cycle.state, 'formed');
+  assert.equal(providerRequest.temperature, 0);
+  assert.deepEqual(providerRequest.thinking, { type: 'disabled' });
+  assert.equal(providerRequest.output_config.format.type, 'json_schema');
+  assert.deepEqual(providerRequest.output_config.format.schema.required,
+    formation.outputSchema(formation.evidencePacket(groups[0], now)).required);
   const relationship = store.list('relationships')[0];
   const perspective = relationship.perspectives[0];
   const audit = teammatePerspective.auditPerspective(perspective, relationship.name);
