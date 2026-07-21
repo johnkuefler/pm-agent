@@ -1755,7 +1755,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (current.relationships.some(item => (item.perspectives || []).some(candidate => candidate.id === id))) {
         throw new Error('teammate perspective id already exists');
       }
-      const formedAt = clock().toISOString();
+      const observedAt = clock();
+      const automatedFormedAt = input.automation_receipt?.created_at
+        ? new Date(input.automation_receipt.created_at) : null;
+      if (automatedFormedAt && (!Number.isFinite(automatedFormedAt.getTime())
+        || Math.abs(observedAt.getTime() - automatedFormedAt.getTime()) > 5 * 60 * 1000)) {
+        throw new Error('automated teammate perspective formation time is outside the commit window');
+      }
+      const formedAt = automatedFormedAt ? automatedFormedAt.toISOString() : observedAt.toISOString();
       const formationRecord = {
         protocol_version: teammatePerspective.PROTOCOL_VERSION,
         source_replay_contract_version: teammatePerspective.SOURCE_REPLAY_CONTRACT_VERSION,
@@ -1772,6 +1779,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             ? input.prediction.falsification_criteria.map(value => String(value).trim()).filter(Boolean).slice(0, 8) : [],
         },
         formed_at: formedAt,
+        ...(input.automation_receipt ? {
+          automation_receipt: JSON.parse(JSON.stringify(input.automation_receipt)),
+          automation_packet: JSON.parse(JSON.stringify(input.automation_packet || null)),
+          automation_output: JSON.parse(JSON.stringify(input.automation_output || null)),
+        } : {}),
       };
       if (!teammatePerspective.validFormation(formationRecord)) {
         throw new Error('perspective hypotheses require an allowed observable dimension, evidence, a future bounded prediction, probability, base-rate control, and falsification criteria');

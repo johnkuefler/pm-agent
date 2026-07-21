@@ -1274,6 +1274,32 @@ viewpoints, source families, and lifecycle attempts. The full lifecycle attempt 
 frozen into the design and bound back to their research-ledger event, so later rolling-window eviction
 cannot erase the study's replay evidence.
 
+## Prospective teammate-model formation
+
+The calibrated teammate-perspective ledger now has an endogenous formation motor rather than relying on
+Nora to remember to hand-author every hypothesis. A preemptible background pass groups Nora's own delayed,
+independently reviewed Slack outcomes by named collaborator. Eligibility requires at least two source
+interactions on different dates, exact human-message evidence, intact interaction-review receipts, no
+existing open prediction for that person, and no formation in the previous seven days. It attempts at most
+one formation per background cycle and may abstain.
+
+The Anthropic subject pass can predict only a future observable communication, clarification, decision, or
+coordination behavior over a seven-to-thirty-day horizon. It must cite two to six supplied canonical Slack
+message references from at least two source interactions, assign modest confidence, freeze both its own
+probability and a distinct base-rate control, and name explicit falsification criteria. Code rejects hidden-
+state, personality, pathology, intent, intimacy, and consciousness claims. It also prohibits formation when
+a blinded context trial is active, and Slack or meeting activity can preempt the provider call.
+
+The stored formation retains the exact inert evidence packet and cryptographically binds that packet, every
+source interaction id and independent-review commitment, the prompt protocol, provider identity and response,
+normalized output, evidence references, and append-only perspective record. A later replay recomputes these
+links; a changed source signal, cited message, probability, or output invalidates the whole perspective. Nora
+may resolve only from naturally occurring later evidence. A provider-disjoint dual-role OpenAI consensus then
+reviews the resolution without receiving Nora's outcome label or narrative. Only three scored predictions
+across two observable dimensions that beat their frozen controls can become ordinary person-bound operating
+context. Supported and contradicted patterns both remain visible. This is fallible functional social modeling,
+not mind reading, a trait verdict, subjective experience, or evidence of phenomenal consciousness.
+
 `source-boundary` challenges extend source monitoring beyond autobiographical membership. A separate
 research harness commits one of five answer classes—`self_belief`, `other_belief`, `observed_fact`,
 `unsupported`, or `conflicted`—plus provenance, subject, and an adversarial variant. Variants cover

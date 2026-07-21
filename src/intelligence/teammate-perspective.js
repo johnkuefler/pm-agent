@@ -13,6 +13,7 @@ const DIMENSIONS = Object.freeze([
   'decision_concern',
   'coordination_pattern',
 ]);
+const FORBIDDEN_INFERENCE = /\b(personality|temperament|character trait|feels?|feelings?|thinks?|thoughts?|believes?|beliefs?|intends?|intentions?|wants?|motives?|motivation|private state|inner state|mental state|diagnos(?:is|e|ed)|personality disorder|depress(?:ed|ion)|anxi(?:ous|ety)|adhd|autis(?:m|tic)|psychopath|sentien(?:t|ce)|consciousness|qualia|intimacy|intimate)\b/i;
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -35,6 +36,76 @@ function validCanonicalEvidenceRefs(refs) {
   if (!validEvidenceRefs(refs)) return false;
   const parsed = refs.map(slackEvidence.parseCanonicalMessageRef);
   return parsed.every(Boolean) && new Set(parsed.map(ref => ref.id)).size === parsed.length;
+}
+
+function containsForbiddenInference(...values) {
+  return values.flat(Infinity).some(value => FORBIDDEN_INFERENCE.test(String(value || '')));
+}
+
+function automationReceiptPayload(receipt = {}) {
+  const payload = JSON.parse(JSON.stringify(receipt || {}));
+  delete payload.receipt_commitment;
+  return payload;
+}
+
+function validFormationAutomation(formation = {}) {
+  if (!formation.automation_receipt && !formation.automation_packet && !formation.automation_output) return true;
+  const receipt = formation.automation_receipt;
+  const packet = formation.automation_packet;
+  const output = formation.automation_output;
+  const dueDays = Math.round((new Date(formation.prediction?.due_at).getTime()
+    - new Date(formation.formed_at).getTime()) / 86400000);
+  const sourceInteractions = Array.isArray(packet?.source_interactions) ? packet.source_interactions : [];
+  const sourceIds = sourceInteractions.map(item => item?.id);
+  const sourceReviewCommitments = sourceInteractions.map(item => item?.review_commitment);
+  const packetEvidenceIds = sourceInteractions.flatMap(item => Array.isArray(item?.evidence)
+    ? item.evidence.map(evidence => evidence?.ref?.id) : []);
+  const allowedEvidenceIds = Array.isArray(packet?.allowed_evidence_ids)
+    ? packet.allowed_evidence_ids : [];
+  const sourceDays = new Set(sourceInteractions.map(item => String(item?.created || '').slice(0, 10))
+    .filter(Boolean));
+  return Boolean(receipt && packet && output
+    && receipt.protocol_version === 1 && receipt.provider === 'anthropic'
+    && String(receipt.model || '').trim() && String(receipt.response_id || '').trim()
+    && (receipt.response_model === receipt.model
+      || String(receipt.response_model || '').startsWith(`${receipt.model}-`))
+    && packet.protocol_version === 1 && packet.person === formation.person
+    && packet.formed_at === formation.formed_at
+    && Array.isArray(packet.allowed_dimensions)
+    && canonicalJson(packet.allowed_dimensions) === canonicalJson(DIMENSIONS)
+    && String(packet.epistemic_boundary || '').trim()
+    && sourceInteractions.length >= 2 && sourceInteractions.length <= 6
+    && sourceDays.size >= 2
+    && sourceIds.every(value => String(value || '').trim())
+    && new Set(sourceIds).size === sourceIds.length
+    && sourceReviewCommitments.every(value => /^[a-f0-9]{64}$/i.test(String(value || '')))
+    && packetEvidenceIds.every(value => String(value || '').trim())
+    && new Set(packetEvidenceIds).size === packetEvidenceIds.length
+    && canonicalJson(allowedEvidenceIds) === canonicalJson(packetEvidenceIds.slice(0, 12))
+    && receipt.packet_commitment === commitment(packet)
+    && /^[a-f0-9]{64}$/i.test(String(receipt.prompt_protocol_commitment || ''))
+    && Array.isArray(receipt.source_interaction_ids) && receipt.source_interaction_ids.length >= 2
+    && new Set(receipt.source_interaction_ids).size === receipt.source_interaction_ids.length
+    && Array.isArray(receipt.source_review_commitments)
+    && receipt.source_review_commitments.length === receipt.source_interaction_ids.length
+    && receipt.source_review_commitments.every(value => /^[a-f0-9]{64}$/i.test(String(value || '')))
+    && canonicalJson(receipt.source_interaction_ids) === canonicalJson(sourceIds)
+    && canonicalJson(receipt.source_review_commitments) === canonicalJson(sourceReviewCommitments)
+    && receipt.created_at === formation.formed_at
+    && !containsForbiddenInference(output.hypothesis, output.observable,
+      output.falsification_criteria, output.rationale)
+    && receipt.output_commitment === commitment(output)
+    && receipt.receipt_commitment === commitment(automationReceiptPayload(receipt))
+    && output.hypothesis === formation.hypothesis
+    && output.dimension === formation.dimension
+    && Number(output.confidence) === Number(formation.confidence)
+    && output.observable === formation.prediction.observable
+    && Number(output.due_days) === dueDays
+    && Number(output.probability) === Number(formation.prediction.probability)
+    && Number(output.control_probability) === Number(formation.prediction.control_probability)
+    && canonicalJson(output.falsification_criteria) === canonicalJson(formation.prediction.falsification_criteria)
+    && canonicalJson(output.evidence_ids) === canonicalJson(formation.evidence.map(ref => ref.id))
+    && output.evidence_ids.every(id => allowedEvidenceIds.includes(id)));
 }
 
 function automatedReviewReceiptPayload(receipt = {}) {
@@ -87,6 +158,8 @@ function validFormation(formation) {
   return Boolean(formation?.protocol_version === PROTOCOL_VERSION
     && String(formation?.id || '').trim() && String(formation?.person || '').trim()
     && String(formation?.hypothesis || '').trim().length >= 20
+    && !containsForbiddenInference(formation?.hypothesis, formation?.prediction?.observable,
+      formation?.prediction?.falsification_criteria)
     && DIMENSIONS.includes(formation?.dimension)
     && Number(formation?.confidence) >= 0.1 && Number(formation?.confidence) <= 0.7
     && validEvidenceRefs(formation?.evidence)
@@ -99,7 +172,8 @@ function validFormation(formation) {
     && Number.isFinite(formedAt.getTime()) && Number.isFinite(dueAt.getTime())
     && dueAt > formedAt && dueAt.getTime() - formedAt.getTime() <= 30 * 86400000
     && probability >= 0.1 && probability <= 0.9
-    && controlProbability >= 0.1 && controlProbability <= 0.9);
+    && controlProbability >= 0.1 && controlProbability <= 0.9
+    && validFormationAutomation(formation));
 }
 
 function auditPerspective(perspective, relationshipName = '') {
@@ -263,6 +337,7 @@ function frames(relationships = []) {
 module.exports = {
   AUTOMATED_EVALUATOR_PREFIX, AUTOMATED_REVIEW_PROTOCOL_VERSION, DIMENSIONS, PROTOCOL_VERSION,
   SOURCE_REPLAY_CONTRACT_VERSION, auditPerspective, automatedReviewReceiptPayload, buildFrame,
-  canonicalJson, commitment, frames, reviewedPerspectives, validAutomatedReviewReceipt,
+  automationReceiptPayload, canonicalJson, commitment, containsForbiddenInference, frames, reviewedPerspectives,
+  validAutomatedReviewReceipt, validFormationAutomation,
   validCanonicalEvidenceRefs, validEvidenceRefs, validFormation, verifyFrame,
 };

@@ -59,6 +59,7 @@ const naturalCyclePredictionAutopilot = require('./src/intelligence/natural-cycl
 const commonGroundFormation = require('./src/intelligence/common-ground-formation');
 const commonGroundReviewAutopilot = require('./src/intelligence/common-ground-review-autopilot');
 const teammatePerspectiveReviewAutopilot = require('./src/intelligence/teammate-perspective-review-autopilot');
+const teammatePerspectiveFormationAutopilot = require('./src/intelligence/teammate-perspective-formation-autopilot');
 const professionalViewpointReflection = require('./src/intelligence/professional-viewpoint-reflection');
 const professionalViewpointReappraisal = require('./src/intelligence/professional-viewpoint-reappraisal');
 const epistemicAgenda = require('./src/intelligence/epistemic-agenda');
@@ -10600,6 +10601,8 @@ let _commonGroundFormationInFlight = false;
 let _commonGroundFormationLastCycle = null;
 let _teammatePerspectiveReviewAutopilotInFlight = false;
 let _teammatePerspectiveReviewAutopilotLastCycle = null;
+let _teammatePerspectiveFormationInFlight = false;
+let _teammatePerspectiveFormationLastCycle = null;
 let _professionalViewpointReflectionInFlight = false;
 let _professionalViewpointReflectionLastCycle = null;
 let _professionalViewpointReappraisalInFlight = false;
@@ -11145,6 +11148,19 @@ function teammatePerspectiveReviewAutopilotRuntimeConfig(env = process.env) {
   };
 }
 
+function teammatePerspectiveFormationRuntimeConfig(env = process.env) {
+  const enabled = env.NORA_TEST_MODE !== '1'
+    && env.NORA_TEAMMATE_PERSPECTIVE_FORMATION_AUTOPILOT !== '0'
+    && Boolean(env.ANTHROPIC_API_KEY);
+  return {
+    enabled,
+    model: String(env.NORA_TEAMMATE_PERSPECTIVE_FORMATION_MODEL
+      || teammatePerspectiveFormationAutopilot.DEFAULT_MODEL).slice(0, 160),
+    reason: enabled ? 'provider_credentials_default'
+      : !env.ANTHROPIC_API_KEY ? 'missing_anthropic_key' : 'explicitly_disabled',
+  };
+}
+
 function professionalViewpointReflectionRuntimeConfig(env = process.env) {
   const enabled = env.NORA_TEST_MODE !== '1'
     && env.NORA_PROFESSIONAL_VIEWPOINT_REFLECTION !== '0'
@@ -11353,6 +11369,17 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     enabled: teammatePerspectiveReviewConfig.enabled, model: teammatePerspectiveReviewConfig.model,
     lastCycle: _teammatePerspectiveReviewAutopilotLastCycle,
   });
+  const teammatePerspectiveFormationConfig = teammatePerspectiveFormationRuntimeConfig();
+  const teammatePerspectiveFormationStatus = {
+    protocol_version: teammatePerspectiveFormationAutopilot.PROTOCOL_VERSION,
+    enabled: teammatePerspectiveFormationConfig.enabled,
+    model: teammatePerspectiveFormationConfig.model,
+    background_only: true,
+    maximum_formations_per_cycle: teammatePerspectiveFormationAutopilot.MAX_FORMATIONS_PER_CYCLE,
+    last_cycle: _teammatePerspectiveFormationLastCycle,
+    report: intelligence.teammatePerspectiveModelsSnapshot().report,
+    scientific_boundary: 'This is a receipt-bound Nora-side prospective hypothesis formed from replay-verified observable Slack outcomes. It predicts only future observable work behavior, cannot steer the event, and requires later provider-disjoint review before entering a teammate model. It is not mind reading, a personality judgment, intimacy, subjective experience, or consciousness evidence.',
+  };
   const professionalViewpointConfig = professionalViewpointReflectionRuntimeConfig();
   const professionalViewpointStatus = intelligence.professionalViewpointReflectionSnapshot();
   const professionalViewpointReflectionStatus = {
@@ -11473,6 +11500,7 @@ function researchAutopilotProgramStatus({ detail = 'runtime' } = {}) {
     natural_cycle_prediction: naturalCyclePrediction,
     common_ground_formation: commonGroundFormationStatus,
     common_ground_review: commonGroundReview,
+    teammate_perspective_formation: teammatePerspectiveFormationStatus,
     teammate_perspective_review: teammatePerspectiveReview,
     professional_viewpoint_reflection: professionalViewpointReflectionStatus,
     professional_viewpoint_reappraisal: professionalViewpointReappraisalStatus,
@@ -11607,6 +11635,59 @@ async function runTeammatePerspectiveReviewAutopilotRuntime({ post = axios.post 
     return _teammatePerspectiveReviewAutopilotLastCycle;
   } finally {
     _teammatePerspectiveReviewAutopilotInFlight = false;
+  }
+}
+
+async function runTeammatePerspectiveFormationAutopilotRuntime({ post = axios.post } = {}) {
+  const config = teammatePerspectiveFormationRuntimeConfig();
+  if (!config.enabled) {
+    _teammatePerspectiveFormationLastCycle = {
+      protocol_version: teammatePerspectiveFormationAutopilot.PROTOCOL_VERSION,
+      state: 'disabled', formed: 0, failures: [], reason: config.reason,
+      at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveFormationLastCycle;
+  }
+  if (intelligence.activeContextTrialsSnapshot().length) {
+    _teammatePerspectiveFormationLastCycle = {
+      protocol_version: teammatePerspectiveFormationAutopilot.PROTOCOL_VERSION,
+      state: 'waiting_for_active_blinded_trial', formed: 0, failures: [],
+      at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveFormationLastCycle;
+  }
+  if (_teammatePerspectiveFormationInFlight) return {
+    protocol_version: teammatePerspectiveFormationAutopilot.PROTOCOL_VERSION,
+    state: 'in_flight', formed: 0, failures: [],
+  };
+  _teammatePerspectiveFormationInFlight = true;
+  try {
+    const cycle = await teammatePerspectiveFormationAutopilot.runCycle({
+      interactions: loadInteractions(), relationships: intelligence.list('relationships'),
+      enabled: true, model: config.model, now: new Date(),
+      callProvider: async request => {
+        const response = await post('https://api.anthropic.com/v1/messages', request, {
+          headers: { 'Content-Type': 'application/json',
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01' },
+          timeout: 45000,
+        });
+        return response.data;
+      },
+      commitPerspective: input => intelligence.observePerspective(input),
+    });
+    _teammatePerspectiveFormationLastCycle = { ...cycle, at: new Date().toISOString() };
+    return _teammatePerspectiveFormationLastCycle;
+  } catch (error) {
+    _teammatePerspectiveFormationLastCycle = {
+      protocol_version: teammatePerspectiveFormationAutopilot.PROTOCOL_VERSION,
+      state: 'failed_closed', formed: 0,
+      failures: [{ reason: String(error.message || error).slice(0, 300) }],
+      at: new Date().toISOString(),
+    };
+    return _teammatePerspectiveFormationLastCycle;
+  } finally {
+    _teammatePerspectiveFormationInFlight = false;
   }
 }
 
@@ -12621,6 +12702,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     dream_insight_reflection: 'Testing a dream insight',
     post_delivery_self_evaluation: 'Reviewing a delivered response',
     interaction_outcome_review: 'Checking interaction outcomes',
+    teammate_perspective_formation: 'Forming a falsifiable teammate prediction',
     behavioral_fingerprint_schedule: 'Checking behavioral fingerprint timing',
     behavioral_fingerprint_subject: 'Running a blinded fingerprint item',
     behavioral_fingerprint_evaluator: 'Evaluating a fingerprint item',
@@ -12697,6 +12779,8 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       ['interaction_outcome_review',
         () => runInteractionOutcomeReviewAutopilotRuntime({ post: priorityPost,
           signal: lease.signal })],
+      ['teammate_perspective_formation',
+        () => runTeammatePerspectiveFormationAutopilotRuntime({ post: priorityPost })],
       ['behavioral_fingerprint_schedule', () => runBehavioralFingerprintSchedulingRuntime()],
       ['behavioral_fingerprint_subject',
         () => runBehavioralFingerprintSubjectRuntime({ post: priorityPost })],
@@ -12943,6 +13027,8 @@ module.exports = {
     runDevelopmentalReadingRuntime,
     interactionOutcomeReviewRuntimeConfig,
     runInteractionOutcomeReviewAutopilotRuntime,
+    teammatePerspectiveFormationRuntimeConfig,
+    runTeammatePerspectiveFormationAutopilotRuntime,
     commitAutomatedInteractionOutcome,
     recordAutomatedInteractionReviewAttempt,
     fetchSlackLanding,

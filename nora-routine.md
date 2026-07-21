@@ -1916,6 +1916,15 @@ The server logged every Slack reply she sent. Now read back what happened **arou
    that could actually be checked within thirty days; never private thoughts, feelings, personality,
    pathology, intent, or consciousness. Do not edit the prediction after formation.
 
+   The background server may also form at most one such prediction from two or more of your own
+   independently reviewed Slack outcomes on different dates. That automated formation is bound to the
+   exact source interactions, review receipts, cited human messages, evidence packet, provider response,
+   and stored prediction. Treat it exactly like a prediction you formed here: do not duplicate it or
+   assume it is true. On each ordinary run, inspect any open prediction for a naturally occurring later
+   interaction that directly tests its observable or falsifier. Absence of evidence before the due date
+   is not contradiction. At or after the due date, resolve it `unclear` if the relevant natural test never
+   occurred; do not keep it open indefinitely or reinterpret unrelated traffic as evidence.
+
    If the natural observation later occurs, resolve it exactly once through
    `POST /relationships/perspectives/{id}/resolve` as `supported`, `contradicted`, `unclear`, or `retired`,
    with what was observed, confounds, and exact cited human Slack messages using the same
