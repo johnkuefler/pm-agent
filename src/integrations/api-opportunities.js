@@ -5,7 +5,7 @@ const dns = require('dns').promises;
 const net = require('net');
 
 const DEFAULT_POLICY = Object.freeze({
-  version: 1,
+  version: 2,
   mode: 'proposal_first',
   allowed_methods: ['GET'],
   allowed_auth_models: ['none'],
@@ -280,6 +280,7 @@ async function executeApprovedGet(registry = emptyRegistry(), id, {
   interactionRef = null,
   fetchImpl = globalThis.fetch,
   resolveDns = dns.lookup,
+  timeoutMs = null,
   now = new Date(),
 } = {}) {
   const current = normalizeRegistry(registry);
@@ -296,7 +297,8 @@ async function executeApprovedGet(registry = emptyRegistry(), id, {
     response = await fetchImpl(url, {
       method: 'GET', redirect: 'manual',
       headers: { Accept: 'application/json, text/plain;q=0.8, */*;q=0.5', 'User-Agent': 'Nora-PM-Agent/1.0' },
-      signal: AbortSignal.timeout(Number(current.policy.request_timeout_ms) || 8000),
+      signal: AbortSignal.timeout(Math.max(500, Math.min(Number(timeoutMs)
+        || Number(current.policy.request_timeout_ms) || 8000, Number(current.policy.request_timeout_ms) || 8000))),
     });
     if (response.status >= 300 && response.status < 400) throw new Error('approved API redirects are refused; approve the final origin explicitly');
     contentType = response.headers.get('content-type') || '';

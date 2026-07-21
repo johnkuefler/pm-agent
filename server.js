@@ -784,6 +784,7 @@ function executeApprovedApiTool(proposal, args = {}, context = {}) {
       path: proposal.tool?.path || proposal.sample_path || '/', query,
       requester: context.requester || 'Nora', purpose: args.purpose || '',
       surface: context.surface || 'live_tool', interactionRef: context.interactionRef || null,
+      timeoutMs: 3500,
     });
     await saveApiRegistry(result.registry);
     return { usage: result.usage, response: result.response,
