@@ -811,6 +811,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       query: req.query.query || '',
       limit: Math.min(100, Math.max(1, Number(req.query.limit) || 50)),
     }), { ttlMs: 15000 }));
+  app.get('/cognition/motivational-revisions', requireAuth, (_req, res) => cachedJson(res,
+    'cognition-motivational-revisions', () => store.motivationalRevisionSnapshot(),
+    { ttlMs: 15000 }));
   app.post('/cognition/development', requireAuth, (req, res) => {
     try { res.json({ ok: true, development: store.recordDevelopment(req.body || {}) }); }
     catch (error) { res.status(400).json({ error: error.message }); }

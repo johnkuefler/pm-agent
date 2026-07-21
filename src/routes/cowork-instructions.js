@@ -1179,6 +1179,13 @@ function registerCoworkInstructionsRoute(app) {
     into safe optional PM behavior. It excludes unverified/external goals, is sealed during overlapping
     goal and integrated-self studies, never overrides requested work or authority, and is not proof of
     felt emotion, intrinsic desire, consciousness, or moral status.
+  - GET /cognition/motivational-revisions joins that append-only aim lifecycle to later conscious-workspace
+    arbitration. It exposes the exact prior aim, newer cited evidence, revised or retired aim, and only
+    counts a later choice effect when a protocol-v4 remove-that-aim counterfactual selects a different
+    workspace winner. Enactment remains separate and requires a replay-verified lifecycle outcome. This
+    is the evidence-bearing route for a grounded statement like "I previously aimed at X, but evidence
+    changed that direction to Y"; never claim a later behavioral effect when the episode says none is
+    established, and never treat the record as intrinsic desire, emotion, authority, or consciousness proof.
   - GET /relational-affect returns a replay-audited, person-bound functional attunement projection built
     only from explicit evidence-receipted interaction outcomes. Direct teammate prompts may use the
     matching stance to favor repair, bounded curiosity, collaborative warmth, or ordinary openness while

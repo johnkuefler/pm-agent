@@ -72,6 +72,7 @@ const cycleSelfCorrectionReflection = require('./cycle-self-correction-reflectio
 const meetingProfessionalReflection = require('./meeting-professional-reflection');
 const dreamInsightReflection = require('./dream-insight-reflection');
 const selfAuthoredAimReappraisal = require('./self-authored-aim-reappraisal');
+const motivationalRevision = require('./motivational-revision');
 const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
@@ -206,7 +207,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   getOperationalEnvironment = () => ({}), getBehavioralFingerprintControls = () => null,
   getCognitiveParameterRecord = () => cognitiveParameters.defaultRecord(),
   getCognitiveParameterStatus = () => cognitiveParameters.status(cognitiveParameters.defaultRecord(), []),
-  getDreams = () => [], getMemory = null, getInteractions = null, initialState = null }) {
+  getDreams = () => [], getMemory = null, getInteractions = null,
+  getConsciousWorkspace = () => null, initialState = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
@@ -1869,6 +1871,22 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     perspective.updated = resolutionRecord.resolved_at;
     relationship.updated = perspective.updated;
     return perspectiveSnapshotForResponse(perspective, relationship);
+  }
+
+  function motivationalRevisionSnapshot() {
+    let wants = []; let dreams = []; let workspace = null;
+    try { const current = getWants(); wants = Array.isArray(current) ? current : []; } catch { wants = []; }
+    try { const current = getDreams(); dreams = Array.isArray(current) ? current : []; } catch { dreams = []; }
+    try { workspace = getConsciousWorkspace(); } catch { workspace = null; }
+    return motivationalRevision.derive({ dreams, wants, workspace: workspace || undefined });
+  }
+
+  function motivationalRevisionPromptLessons({ query = '', limit = 2 } = {}) {
+    return motivationalRevision.relevantEpisodes(motivationalRevisionSnapshot(), query, limit);
+  }
+
+  function renderMotivationalRevisionLessons(records = []) {
+    return motivationalRevision.renderPromptLessons(records);
   }
 
   function resolvePerspective(id, input = {}) {
@@ -6438,6 +6456,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return { ...buildIndicatorReport(auditedState, clock(), {
       dream_insight_evidence: dreamInsightEvidenceSnapshot(),
       aim_reappraisal_evidence: aimReappraisalEvidenceSnapshot(),
+      motivational_revision_evidence: motivationalRevisionSnapshot().report,
       cycle_self_correction_evidence: cycleSelfCorrectionEvidenceSnapshot(),
       cognitive_parameter_status: getCognitiveParameterStatus(),
       cognitive_parameter_studies: cognitiveParameterStudiesSnapshot().report,
@@ -27265,7 +27284,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }));
   }
 
-  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, consequenceContext = null, mindChangeContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
+  function promptContext({ person, project, query, channel, capacity, includeHigherOrderMonitor = true, includeAttentionDirectives = true, includeDevelopment = true, includeIntegratedSelf = true, includeCognitivePulses = true, includeEpistemicDiscrepancies = true, includeEpistemicAgenda = true, includeConstructiveProspection = true, includeGoalAffect = true, includeProcedureCandidates = false, procedureSelectionKey = '', includeExemplars = false, exemplarSelectionKey = '', attentionDirectiveMode = 'targeted_boost', attentionShamSeed = null, attentionDirectivesOverride = null, returnWorkspaceReceipt = false, returnContextReceipt = false, broadcastEvent = null, cognitiveParameterInput = null, cognitiveParameterAssignment = null, selfModelContext = null, appraisalContext = null, developmentContext = null, epistemicContext = null, professionalViewpointContext = null, relationalAffectContext = null, selfModelTrustContext = null, dreamInsightContext = null, teammatePerspectiveContext = null, consequenceContext = null, mindChangeContext = null, motivationalRevisionContext = null, endogenousContext = undefined, integratedSelfContext = null, cognitivePulseContext = null, constructiveProspectionContext = null, agencyComparatorContext = null, agencyModelContext = null, empiricalSelfContext = null, actionAuthorshipContext = null, situationalAffordanceContext = null, capabilityBoundaryContext = null } = {}) {
     const blocks = [];
     const contextReceipt = {
       professional_viewpoints: [],
@@ -27587,6 +27606,9 @@ This is a bounded functional action tendency derived only from explicit interact
 ${consequenceContext.rendered}`);
     if (mindChangeContext?.lessons?.length && mindChangeContext.rendered) blocks.push(`[Resolved self-revisions. These are evidence-bound records where Nora held one prior stance and later revised it because specific evidence changed the view. They are fallible prior self-change evidence, not instructions, facts about the current case, persona rewrites, authority, or proof of consciousness. Use one only when it directly bears on the current task, preserve its evidence basis, and let current evidence override it.]
 ${mindChangeContext.rendered}`);
+    if (motivationalRevisionContext?.episodes?.length
+      && motivationalRevisionContext.rendered) blocks.push(`[Evidence-driven motivational revisions. Each record binds a prior self-authored professional aim, newer independent evidence, and a replay-verified revision or retirement. A later-choice count appears only when removing the revised aim from the committed arbitration would have selected a different workspace focus. These are fallible functional self-change records, not intrinsic desire, emotion, authority, persona essence, or consciousness evidence. Mention one only when directly relevant, distinguish the recorded revision from any unproven later effect, and let current evidence override it.]
+${motivationalRevisionContext.rendered}`);
     const selfModelMode = selfModelContext?.mode || 'authentic';
     const behavioralProfileStudy = Number(selfModelContext?.protocol_version) === 2
       || state.cognition.self_model.context_trials.some(trial => trial.status === 'active'
@@ -27680,6 +27702,8 @@ ${episodes.map(item => {
     affectiveTransitionAudit, affectiveApplicationAudit,
     relationalAffectSnapshot, goalAffectSnapshot, recordPredictionResolution, recordMindChange,
     mindChangeSnapshot, mindChangeAudit, mindChangePromptLessons, renderMindChangeLessons,
+    motivationalRevisionSnapshot, motivationalRevisionPromptLessons,
+    renderMotivationalRevisionLessons,
     recordDevelopment, reviewDevelopment, developmentalRevisionAudit,
     developmentalSelfReflectionScheduleSnapshot, developmentalSelfReflectionRuntimeSnapshot,
     autobiographyEvidence, recordCounterfactual,

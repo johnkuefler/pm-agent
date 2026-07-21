@@ -424,7 +424,7 @@ function applicationVerified(wants, sourceDream, submission) {
   if (canonicalJson(closureEvidence) !== canonicalJson(output.evidence_ids)) return false;
   if (output.decision === 'retire') return true;
   const replacement = wants.find(item => item.id === replacementId(sourceDream, prior));
-  return Boolean(replacement && replacement.status === 'active'
+  return Boolean(replacement && ['active', 'retired'].includes(replacement.status)
     && auditReceipt(submission.receipt, { want: replacement, priorWant: prior }).complete_chain_verified);
 }
 

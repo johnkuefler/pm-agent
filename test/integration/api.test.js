@@ -794,6 +794,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     'embedding_backlog_probability', 'restart_probability',
   ]);
   assert.equal(immaturePrior.body.forecast_submission_contract.development_dispatch_retired, true);
+  const motivationalRevisions = await request('/cognition/motivational-revisions');
+  assert.equal(motivationalRevisions.response.status, 200);
+  assert.ok(Array.isArray(motivationalRevisions.body.episodes));
+  assert.equal(typeof motivationalRevisions.body.report.replay_verified_revisions, 'number');
   const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
     protocol_version: 4,
     predicted_action_types: ['integration_review'], surprise_probability: 0.2,

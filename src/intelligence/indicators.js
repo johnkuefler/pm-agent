@@ -637,6 +637,10 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     attempts: 0, retained: 0, revised: 0, retired: 0, abstained: 0,
     failed_closed: 0, replay_verified: 0, active_reappraisal_formed_aims: 0,
   };
+  const motivationalRevisionEvidence = options.motivational_revision_evidence || {
+    replay_verified_revisions: 0, revised_aims: 0, retired_aims: 0,
+    later_choices_changed: 0, later_enacted_choices_changed: 0,
+  };
   const cycleSelfCorrectionEvidence = options.cycle_self_correction_evidence || {
     attempts: 0, recorded: 0, abstained: 0, replay_verified: 0,
     replay_verified_corrections: 0, source_cycles: 0,
@@ -1947,6 +1951,17 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
         aim_reappraisal: aimReappraisalEvidence },
       falsifier: 'The projection fails source replay, admits externally assigned or unverified aims, does not change appraisal and attention as specified, or authentic progress-bound state fails to improve safe goal-congruent optional action over status-misbound and absent controls.',
       next_gate: 'Accumulate natural progress and stall transitions, then preregister an authentic-status versus status-misbound versus absent goal-state access trial with byte-identical goal text and non-degraded first-order work.',
+    },
+    {
+      id: 'evidence_driven_motivational_revision', family: ['agency', 'self-model', 'metacognition', 'value representation'],
+      functional_claim: 'Nora can preserve a replay-verifiable arc in which she held a self-authored aim, newer independent evidence changed or retired it, and the revised aim can later be shown to change a selected workspace focus.',
+      mechanism: 'A deterministic projection joins the provider-receipted append-only aim-reappraisal lifecycle to protocol-v4 motivational arbitration. Each eligible later choice carries an exact remove-this-aim counterfactual; a behavioral effect is counted only when that counterfactual selects a different winner, with enacted outcomes reported separately.',
+      status: motivationalRevisionEvidence.later_enacted_choices_changed > 0
+        ? 'observational_signal_observed'
+        : motivationalRevisionEvidence.replay_verified_revisions > 0 ? 'collecting' : 'mechanism_present',
+      evidence: motivationalRevisionEvidence,
+      falsifier: 'The aim revision cannot replay from its original receipt and cited evidence, removing the revised aim does not change the later selected focus, the effect depends on an unverified want history, or the system reports enactment without a replay-verified lifecycle outcome.',
+      next_gate: 'Accumulate several source-diverse natural aim revisions and later counterfactually changed choices, then preregister authentic revised-aim access versus matched prior-aim and absent-aim conditions with non-degraded first-order work.',
     },
     {
       id: 'attention_schema_control', family: ['attention schema theory'],

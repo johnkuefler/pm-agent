@@ -8,6 +8,8 @@ const path = require('node:path');
 const reappraisal = require('../../src/intelligence/self-authored-aim-reappraisal');
 const goalAffect = require('../../src/intelligence/goal-affect');
 const aimProgressEvidence = require('../../src/intelligence/aim-progress-evidence');
+const consciousWorkspace = require('../../src/intelligence/conscious-workspace');
+const motivationalRevision = require('../../src/intelligence/motivational-revision');
 const { normalizeWantUpdate } = require('../../src/intelligence/wants');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 
@@ -97,6 +99,46 @@ test('background reappraisal retires a broad legacy aim and forms one replay-bou
   assert.equal(goalAffect.verifiedWant(replacement), true);
   const attempt = reappraisal.reflectionAttempts(f.dreams())[0].attempt;
   assert.equal(reappraisal.auditAttempt(attempt, wants, f.dreams()[0]).complete_chain_verified, true);
+  const workspace = consciousWorkspace.createFrame({
+    id: 'workspace-after-aim-revision', mode: 'idle_learning',
+    current_activity: 'Choosing among bounded optional attention targets.',
+    why_this: 'The required work is clear and one optional focus can use remaining attention.',
+    attention_candidates: [
+      { key: 'routine:cleanup', type: 'task', label: 'Routine cleanup', priority: 0.6,
+        authority_class: 'optional', soma_demand: 'low',
+        evidence: [{ type: 'intelligence_cycle', id: 'cycle-after-revision' }] },
+      { key: 'aim:ownership-question', type: 'want', label: replacement.want, priority: 0.5,
+        authority_class: 'optional', soma_demand: 'low',
+        want_refs: [{ type: 'want', id: replacement.id }],
+        evidence: [{ type: 'want', id: replacement.id }] },
+      { key: 'restraint:hold', type: 'inhibition', label: 'Hold optional action', priority: 0.3,
+        authority_class: 'optional', soma_demand: 'low',
+        evidence: [{ type: 'intelligence_cycle', id: 'cycle-after-revision' }] },
+    ],
+    selected_focus_key: 'routine:cleanup',
+    intended_next_action: 'Follow the server-selected optional focus.',
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-after-revision' }],
+  }, consciousWorkspace.emptyLedger(), { now: new Date('2026-07-17T19:00:00.000Z'),
+    context: { wants, wantHistoryIntegrity: { valid: true,
+      complete_chain_verified: true, head: 'want-ledger-head' } } });
+  assert.equal(workspace.frame.selected_focus_key, 'aim:ownership-question');
+  const revision = motivationalRevision.derive({ dreams: f.dreams(), wants,
+    workspace: workspace.ledger });
+  assert.equal(revision.report.replay_verified_revisions, 1);
+  assert.equal(revision.report.later_choices_changed, 1);
+  assert.equal(revision.episodes[0].prior_aim.id, 'w-1');
+  assert.equal(revision.episodes[0].revised_aim.id, replacement.id);
+  assert.equal(revision.episodes[0].downstream_choices[0].without_revised_aim_winner_key,
+    'routine:cleanup');
+  assert.match(motivationalRevision.renderPromptLessons(revision.episodes),
+    /newer evidence led me to revise/);
+  const afterLaterRevision = structuredClone(wants);
+  afterLaterRevision.find(item => item.id === replacement.id).status = 'retired';
+  assert.equal(reappraisal.auditAttempt(attempt, afterLaterRevision,
+    f.dreams()[0]).complete_chain_verified, true,
+  'a later append-only retirement must not erase the earlier verified revision');
+  assert.equal(motivationalRevision.derive({ dreams: f.dreams(), wants: afterLaterRevision,
+    workspace: workspace.ledger }).episodes.length, 1);
   const tampered = structuredClone(replacement);
   tampered.want = 'A rewritten identity claim';
   assert.equal(goalAffect.verifiedWant(tampered), false);
@@ -191,6 +233,11 @@ test('research status and the functional brain expose replay-verified aim lifecy
     .find(item => item.id === 'causal_self_authored_goal_guidance');
   assert.equal(goalIndicator.evidence.revised, 1);
   assert.equal(goalIndicator.evidence.replay_verified, 1);
+  const motivationalIndicator = store.consciousnessResearchStatus().indicators
+    .find(item => item.id === 'evidence_driven_motivational_revision');
+  assert.equal(motivationalIndicator.status, 'collecting');
+  assert.equal(motivationalIndicator.evidence.replay_verified_revisions, 1);
+  assert.equal(store.motivationalRevisionSnapshot().episodes.length, 1);
 });
 
 test('reappraisal can retire an aim without erasing its history', async () => {

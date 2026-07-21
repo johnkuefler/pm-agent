@@ -34,6 +34,9 @@ test('a verified self-authored aim can causally change which workspace candidate
   assert.equal(receipt.selected_winner_key, 'curiosity:account');
   assert.equal(receipt.choice_changed_by_motivation, true);
   assert.equal(receipt.scored_candidates.find(item => item.key === 'curiosity:account').desire_sources[0].want_id, 'want-learn');
+  assert.equal(receipt.aim_counterfactuals[0].want_id, 'want-learn');
+  assert.equal(receipt.aim_counterfactuals[0].choice_changed_by_aim, true);
+  assert.equal(receipt.aim_counterfactuals[0].without_aim_winner_key, 'task:routine');
   assert.equal(arbitration.audit(receipt).complete_chain_verified, true);
   receipt.scored_candidates[0].final_score = 0;
   assert.equal(arbitration.audit(receipt).complete_chain_verified, false);
