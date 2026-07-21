@@ -243,6 +243,12 @@ function verifyRecord(record) {
   } catch (_) { return false; }
 }
 
+function verifyStoredRecordCommitment(record) {
+  if (!record || record.protocol_version !== PROTOCOL_VERSION || !Number.isInteger(record.revision)
+    || record.revision < 1 || record.autonomous_tuning_enabled !== AUTONOMOUS_TUNING_ENABLED) return false;
+  return record.content_commitment === commitment(manifest(record));
+}
+
 function createRevision(previous, patch, { updatedBy, note, now = new Date() } = {}) {
   if (!verifyRecord(previous)) throw new Error('current cognitive parameter document failed integrity');
   const actor = String(updatedBy || '').trim();
@@ -303,6 +309,72 @@ function auditLedger(ledger) {
     reason: !history.valid ? history.reason : ledger.ledger_commitment === expected ? null : 'ledger_commitment_failed' };
 }
 
+function auditTransportLedger(ledger) {
+  if (!ledger || ledger.protocol_version !== PROTOCOL_VERSION || !Array.isArray(ledger.history)) {
+    return { valid: false, reason: 'ledger_missing' };
+  }
+  const chain = [...ledger.history, ledger.current].filter(Boolean);
+  if (!chain.length) return { valid: false, reason: 'history_missing', records: 0 };
+  for (let index = 0; index < chain.length; index++) {
+    const record = chain[index];
+    if (!verifyStoredRecordCommitment(record)) return { valid: false, reason: 'record_commitment_failed', index, records: chain.length };
+    try { normalizeParams(record.params, { strict: true }); }
+    catch (error) { return { valid: false, reason: 'record_params_failed', error: error.message, index, records: chain.length }; }
+    if (index > 0 && (record.revision !== chain[index - 1].revision + 1
+      || record.previous_commitment !== chain[index - 1].content_commitment)) {
+      return { valid: false, reason: 'revision_chain_failed', index, records: chain.length };
+    }
+  }
+  const expected = commitment({ protocol_version: ledger.protocol_version,
+    history_commitments: ledger.history.map(item => item.content_commitment),
+    current_commitment: ledger.current?.content_commitment });
+  return { valid: ledger.ledger_commitment === expected,
+    reason: ledger.ledger_commitment === expected ? null : 'ledger_commitment_failed',
+    records: chain.length, ledger_commitment_verified: ledger.ledger_commitment === expected,
+    head_commitment: chain.at(-1).content_commitment,
+    oldest_retained_revision: chain[0].revision };
+}
+
+function createSchemaAdoptionLedger(ledger, { updatedBy = 'code_schema_migration', note = '', now = new Date() } = {}) {
+  const currentAudit = auditLedger(ledger);
+  if (currentAudit.valid) return { repaired: false, ledger: clone(ledger), audit: currentAudit };
+  const transportAudit = auditTransportLedger(ledger);
+  if (!transportAudit.valid) {
+    return { repaired: false, ledger: null, audit: currentAudit, transport_audit: transportAudit };
+  }
+  const previous = ledger.current;
+  const params = normalizeParams(previous.params, { strict: true });
+  const record = {
+    id: `cog-params-r${previous.revision + 1}`,
+    protocol_version: PROTOCOL_VERSION,
+    revision: previous.revision + 1,
+    params,
+    updated_at: now.toISOString(),
+    updated_by: String(updatedBy || 'code_schema_migration').slice(0, 120),
+    note: String(note || 'Adopted a transport-verified cognitive parameter ledger into the current bounded schema.').slice(0, 800),
+    previous_commitment: previous.content_commitment,
+    bounds_commitment: BOUNDS_COMMITMENT,
+    autonomous_tuning_enabled: AUTONOMOUS_TUNING_ENABLED,
+  };
+  record.content_commitment = commitment(manifest(record));
+  const next = createLedger(record, []);
+  next.schema_adoption = {
+    adopted_at: record.updated_at,
+    adopted_by: record.updated_by,
+    source_head_commitment: previous.content_commitment,
+    source_revision: previous.revision,
+    source_bounds_commitment: previous.bounds_commitment || null,
+    source_ledger_commitment: ledger.ledger_commitment || null,
+    source_transport_audit: transportAudit,
+    source_integrity_failure: currentAudit,
+    added_default_paths: changedPaths(previous.params || {}, params),
+  };
+  const nextAudit = auditLedger(next);
+  if (!nextAudit.valid) throw new Error('schema adoption produced an invalid cognitive parameter ledger');
+  return { repaired: true, ledger: next, audit: nextAudit, transport_audit: transportAudit,
+    source_audit: currentAudit, adoption: next.schema_adoption };
+}
+
 function bounds() {
   return Object.fromEntries(Object.entries(DEFINITIONS).map(([path, value]) => [path, clone(value)]));
 }
@@ -329,6 +401,7 @@ function status(record, history = []) {
 module.exports = {
   PROTOCOL_VERSION, AUTONOMOUS_TUNING_ENABLED, DEFINITIONS, DEFAULTS, BOUNDS_COMMITMENT,
   canonicalJson, commitment, normalizeParams, mergePatch, changedPaths, manifest,
-  defaultRecord, verifyRecord, createRevision, auditHistory, createLedger, auditLedger,
+  defaultRecord, verifyRecord, verifyStoredRecordCommitment, createRevision, auditHistory,
+  createLedger, auditLedger, auditTransportLedger, createSchemaAdoptionLedger,
   bounds, status, getPath,
 };

@@ -1,7 +1,7 @@
 'use strict';
 
 function registerCognitiveParameterRoutes(app, {
-  requireAuth, isDbReady, snapshot, update, rollback,
+  requireAuth, isDbReady, snapshot, update, rollback, repairSchema,
 }) {
   app.get('/cognitive-parameters', (_req, res) => res.json(snapshot({ includeHistory: false })));
 
@@ -37,6 +37,19 @@ function registerCognitiveParameterRoutes(app, {
     } catch (error) {
       const status = /autonomous cognitive parameter tuning is disabled/i.test(error.message) ? 403 : 400;
       return res.status(status).json({ error: error.message });
+    }
+  });
+
+  app.post('/cognitive-parameters/repair-schema', requireAuth, async (req, res) => {
+    if (!isDbReady()) return res.status(503).json({ error: 'Postgres not active' });
+    try {
+      const result = await repairSchema({
+        updatedBy: req.body?.updated_by || 'human_schema_repair',
+        note: req.body?.note,
+      });
+      return res.status(result.repaired ? 200 : 409).json({ ok: result.repaired, ...result });
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
     }
   });
 }

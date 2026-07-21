@@ -14,9 +14,10 @@ function harness(overrides = {}) {
   registerCognitiveParameterRoutes(app, {
     requireAuth: (_req, _res, next) => next(),
     isDbReady: () => true,
-    snapshot: options => ({ options, status: { parameter_count: 111 } }),
+    snapshot: options => ({ options, status: { parameter_count: 113 } }),
     update: async input => ({ changed_paths: ['workspace.capacity'], input }),
     rollback: async input => ({ changed_paths: ['workspace.capacity'], input }),
+    repairSchema: async input => ({ repaired: true, input }),
     ...overrides,
   });
   return routes;
@@ -78,4 +79,27 @@ test('DIALS rollback is an explicit new revision request, never a history rewrit
   assert.equal(res.statusCode, 200);
   assert.deepEqual(received, { targetCommitment: 'a'.repeat(64),
     updatedBy: 'John', note: 'Restore known-good behavior' });
+});
+
+test('DIALS schema repair is explicit and authenticated', async () => {
+  let received = null;
+  const unavailable = harness({ isDbReady: () => false });
+  const unavailableResponse = response();
+  await unavailable['POST /cognitive-parameters/repair-schema']({ body: {} }, unavailableResponse);
+  assert.equal(unavailableResponse.statusCode, 503);
+
+  const routes = harness({ repairSchema: async input => { received = input; return { repaired: true, adoption: { source_revision: 2 } }; } });
+  const res = response();
+  await routes['POST /cognitive-parameters/repair-schema']({ body: {
+    updated_by: 'John', note: 'Adopt current DIALS schema',
+  } }, res);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.body.ok, true);
+  assert.deepEqual(received, { updatedBy: 'John', note: 'Adopt current DIALS schema' });
+
+  const noRepair = harness({ repairSchema: async () => ({ repaired: false, source_audit: { valid: false } }) });
+  const noRepairResponse = response();
+  await noRepair['POST /cognitive-parameters/repair-schema']({ body: {} }, noRepairResponse);
+  assert.equal(noRepairResponse.statusCode, 409);
+  assert.equal(noRepairResponse.body.ok, false);
 });

@@ -124,6 +124,43 @@ test('DIALS ledger is replay-verifiable, append-only, and fails closed on corrup
   assert.equal(parameters.auditLedger(tampered).valid, false);
 });
 
+test('DIALS schema adoption repairs only transport-verified stale ledgers', () => {
+  const staleRecord = structuredClone(parameters.defaultRecord());
+  staleRecord.bounds_commitment = 'legacy-bounds';
+  delete staleRecord.params.memory.retrieval.emotional_weight;
+  delete staleRecord.params.memory.retrieval.social_weight;
+  staleRecord.content_commitment = parameters.commitment(parameters.manifest(staleRecord));
+  const staleLedger = {
+    protocol_version: parameters.PROTOCOL_VERSION,
+    history: [],
+    current: staleRecord,
+  };
+  staleLedger.ledger_commitment = parameters.commitment({
+    protocol_version: staleLedger.protocol_version,
+    history_commitments: [],
+    current_commitment: staleRecord.content_commitment,
+  });
+
+  assert.equal(parameters.auditLedger(staleLedger).valid, false);
+  assert.equal(parameters.auditTransportLedger(staleLedger).valid, true);
+  const adopted = parameters.createSchemaAdoptionLedger(staleLedger, {
+    updatedBy: 'test_migration',
+    note: 'Adopt stale schema in test',
+    now: new Date('2026-07-21T00:00:00.000Z'),
+  });
+  assert.equal(adopted.repaired, true);
+  assert.equal(parameters.auditLedger(adopted.ledger).valid, true);
+  assert.equal(adopted.ledger.current.previous_commitment, staleRecord.content_commitment);
+  assert.equal(adopted.ledger.current.params.memory.retrieval.emotional_weight, 0.08);
+  assert.equal(adopted.adoption.added_default_paths.includes('memory.retrieval.emotional_weight'), true);
+
+  const tampered = structuredClone(staleLedger);
+  tampered.current.params.workspace.capacity = 9;
+  const refused = parameters.createSchemaAdoptionLedger(tampered);
+  assert.equal(refused.repaired, false);
+  assert.equal(refused.transport_audit.valid, false);
+});
+
 test('pre-DIALS drive and appraisal behavior is exactly preserved by defaults', () => {
   const now = new Date('2026-07-17T12:00:00Z');
   const state = fixture();

@@ -208,6 +208,22 @@ function cognitiveParameterSnapshot({ includeHistory = false, fullHistory = fals
   return result;
 }
 
+async function repairCognitiveParameterLedger({ updatedBy = 'system_startup', note = '' } = {}) {
+  const raw = rawCognitiveParameterLedger();
+  const result = cognitiveParameters.createSchemaAdoptionLedger(raw, {
+    updatedBy,
+    note: note || 'Adopt stale but transport-verified DIALS into the current bounded schema.',
+    now: new Date(),
+  });
+  if (!result.repaired) return { repaired: false, status: cognitiveParameterStatus(),
+    source_audit: result.source_audit || result.audit,
+    transport_audit: result.transport_audit || null };
+  await db.setState('cognitive_parameters', result.ledger);
+  _cache.cognitiveParameters = result.ledger;
+  if (typeof intelligence?.noteExternalConfigurationChange === 'function') intelligence.noteExternalConfigurationChange();
+  return { repaired: true, adoption: result.adoption, status: cognitiveParameterStatus() };
+}
+
 async function saveCognitiveParameterRevision(record, previous, changedPaths) {
   const ledger = verifiedCognitiveParameterLedger();
   if (ledger.current.content_commitment !== previous.content_commitment) {
@@ -1272,7 +1288,17 @@ async function initPersistence() {
     _cache.persona = await db.getState('persona');
     _cache.cognitiveParameters = await db.getState('cognitive_parameters');
     if (!cognitiveParameters.auditLedger(_cache.cognitiveParameters).valid) {
-      console.error('cognitive parameter ledger failed integrity; functional dynamics are fail-closed to code defaults');
+      try {
+        const repair = await repairCognitiveParameterLedger({
+          updatedBy: 'system_startup',
+          note: 'Startup adopted a transport-verified stale DIALS schema into the current bounded defaults.',
+        });
+        if (repair.repaired) console.warn(`Adopted stale cognitive parameter ledger from ${repair.adoption.source_head_commitment}; functional dynamics restored to a replay-verified current schema`);
+        else console.error('cognitive parameter ledger failed integrity; functional dynamics are fail-closed to code defaults');
+      } catch (error) {
+        console.error('cognitive parameter ledger failed integrity; functional dynamics are fail-closed to code defaults');
+        console.error('cognitive parameter ledger repair failed:', error.message);
+      }
     }
     _cache.predictions = await db.getState('predictions');
     _cache.people = await db.getState('people');
@@ -2771,6 +2797,7 @@ registerCognitiveParameterRoutes(app, {
   snapshot: cognitiveParameterSnapshot,
   update: updateCognitiveParameterDocument,
   rollback: rollbackCognitiveParameterDocument,
+  repairSchema: repairCognitiveParameterLedger,
 });
 
 registerCognitiveParameterStudyRoutes(app, {
