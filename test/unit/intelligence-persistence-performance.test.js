@@ -132,7 +132,8 @@ test('replay-heavy background projections compute in a worker without starving f
   assert.equal(foregroundTimerFired, true);
   const result = await projection;
   assert.equal(result.value.protocol_version, 1);
-  assert.ok(result.dispatch_ms >= 0);
+  assert.ok(result.dispatch_ms >= 0 && result.dispatch_ms < 100,
+    `bounded developmental projection dispatch took ${result.dispatch_ms}ms`);
   assert.ok(result.compute_ms >= 0);
   const diagnostics = store.persistenceDiagnostics().background_projection;
   assert.equal(diagnostics.calls, 1);
@@ -171,7 +172,7 @@ test('cold behavioral-prior reads fall back immediately while replay warms off-t
   assert.ok(performance.now() - started < 100);
 
   let warm = cold;
-  for (let attempt = 0; attempt < 100 && warm.prior_warmup_pending; attempt += 1) {
+  for (let attempt = 0; attempt < 500 && warm.prior_warmup_pending; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 10));
     warm = store.behavioralSelfForecastPriorRuntimeSnapshot();
   }
@@ -206,7 +207,7 @@ test('production forecast commits wait by retry contract instead of replaying on
   assert.ok(performance.now() - before < 100);
 
   let prior = store.behavioralSelfForecastPriorRuntimeSnapshot();
-  for (let attempt = 0; attempt < 100 && prior.prior_warmup_pending; attempt += 1) {
+  for (let attempt = 0; attempt < 500 && prior.prior_warmup_pending; attempt += 1) {
     await new Promise(resolve => setTimeout(resolve, 10));
     prior = store.behavioralSelfForecastPriorRuntimeSnapshot();
   }

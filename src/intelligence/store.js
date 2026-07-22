@@ -1328,9 +1328,42 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
   function snapshotRevision() { return snapshotRevisionValue; }
+  function backgroundProjectionInput(method) {
+    if (method === 'developmentalSelfReflectionScheduleSnapshot') {
+      return {
+        version: state.version,
+        cognition: {
+          development: state.cognition?.development || [],
+          research_ledger: state.cognition?.research_ledger || { events: [], anchors: [] },
+        },
+      };
+    }
+    if (['developmentalSelfReflectionRuntimeSnapshot',
+      'behavioralSelfForecastPriorSnapshot',
+      'cycleSelfForecastRuntimePreparationSnapshot',
+      'experienceStreamSnapshot'].includes(method)) {
+      const cognition = state.cognition || {};
+      const selfModel = cognition.self_model || {};
+      return {
+        version: state.version,
+        cycles: state.cycles || [],
+        cognition: {
+          development: cognition.development || [],
+          experience_stream: cognition.experience_stream || [],
+          research_ledger: cognition.research_ledger || { events: [], anchors: [] },
+          self_model: {
+            context_trials: (selfModel.context_trials || []).filter(item => item.status === 'active')
+              .map(item => ({ status: item.status, intervention: item.intervention })),
+            behavioral_self_model: selfModel.behavioral_self_model || { revisions: [] },
+          },
+        },
+      };
+    }
+    return state;
+  }
   async function computeBackgroundProjection(method, args = {}) {
     try {
-      const result = await asyncProjection.run(state, method, args);
+      const result = await asyncProjection.run(backgroundProjectionInput(method), method, args);
       backgroundProjectionRuntime.calls += 1;
       backgroundProjectionRuntime.last_method = method;
       backgroundProjectionRuntime.last_dispatch_ms = result.dispatch_ms;

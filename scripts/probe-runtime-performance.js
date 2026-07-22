@@ -7,6 +7,7 @@ const DEFAULT_PATHS = Object.freeze([
   '/nora-bench',
   '/self-model?allow_stale=1&view=dashboard',
   '/consciousness-research/status',
+  '/consciousness-research/autopilot',
   '/runtime/performance',
   '/runtime-activity',
 ]);
@@ -20,12 +21,32 @@ async function probePath(baseUrl, path, { apiKey, fetchImpl = globalThis.fetch,
       signal: AbortSignal.timeout(timeoutMs),
     });
     const body = await response.arrayBuffer();
+    let diagnostics;
+    if (response.ok && path === '/runtime/performance') {
+      const runtime = JSON.parse(Buffer.from(body).toString('utf8'));
+      diagnostics = {
+        interactive_priority: runtime.interactive_priority,
+        background_work: runtime.background_work,
+        persistence: runtime.persistence ? {
+          pending_revisions: runtime.persistence.pending_revisions,
+          flush_running: runtime.persistence.flush_running,
+          strict_waiters: runtime.persistence.strict_waiters,
+          last_total_ms: runtime.persistence.last_total_ms,
+          failures: runtime.persistence.failures,
+        } : null,
+      };
+    } else if (response.ok && path === '/consciousness-research/autopilot') {
+      const runtime = JSON.parse(Buffer.from(body).toString('utf8'));
+      diagnostics = { background_intelligence_cycle: runtime.background_intelligence_cycle,
+        interactive_priority: runtime.interactive_priority };
+    }
     return {
       path,
       status: response.status,
       duration_ms: Math.round(performance.now() - started),
       response_kb: Math.round(body.byteLength / 1024),
       within_interactive_budget: response.ok && performance.now() - started <= budgetMs,
+      ...(diagnostics ? { diagnostics } : {}),
     };
   } catch (error) {
     return { path, error: error.message, duration_ms: Math.round(performance.now() - started),
