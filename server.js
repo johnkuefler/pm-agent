@@ -1654,8 +1654,16 @@ async function initPersistence() {
     await reembedIfModelChanged();
     setInterval(() => reembedIfModelChanged(), 24 * 60 * 60 * 1000);
   } catch (e) {
-    console.error('❌ Postgres init failed — falling back to JSON volume. Error:', e.message);
+    console.error('❌ Postgres init failed. Error:', e.message);
     _dbReady = false;
+    // A configured Postgres database is the durable source of truth. Serving Slack, meetings,
+    // or the hourly loop from the JSON volume after a transient database/DNS restart creates
+    // a split-brain window with stale state. Fail startup so Railway retries the container and
+    // only routes traffic once /health confirms Postgres is available. The fallback remains an
+    // explicit local/emergency escape hatch rather than an automatic production behavior.
+    if (process.env.NORA_ALLOW_JSON_DB_FALLBACK === '1') return;
+    console.error('Postgres is configured; refusing partial-state startup and waiting for a clean restart.');
+    throw e;
   }
 }
 

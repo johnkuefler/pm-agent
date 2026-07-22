@@ -30,6 +30,13 @@ const DB_DEGRADED_COOLDOWN_MS = Math.max(10000, Math.min(300000, Number(process.
 const dbRuntime = { consecutive_connection_failures: 0, degraded_until: 0, last_error: null,
   last_error_at: null, last_success_at: null };
 
+function recordConnectionFailure(error) {
+  dbRuntime.consecutive_connection_failures += 1;
+  dbRuntime.degraded_until = Date.now() + DB_DEGRADED_COOLDOWN_MS;
+  dbRuntime.last_error = String(error?.message || error).slice(0, 500);
+  dbRuntime.last_error_at = new Date().toISOString();
+}
+
 function dbEnabled() { return !!DATABASE_URL; }
 function isReady() { return ready; }
 
@@ -52,6 +59,17 @@ function getPool() {
     options: `-c search_path=${DB_SCHEMA},public`,
   });
   pool.on('error', (err) => console.error('pg pool error:', err.message));
+  // pg-pool owns an error listener while a client is idle, but temporarily removes it while
+  // the client is checked out for a transaction. A database restart during that window can
+  // otherwise become an unhandled Client "error" event and terminate the whole process.
+  // Keep one permanent listener on every physical connection; the awaiting query still
+  // rejects normally, while this listener records degradation and prevents a process crash.
+  pool.on('connect', (client) => {
+    client.on('error', (err) => {
+      recordConnectionFailure(err);
+      console.error('pg client error:', err.message);
+    });
+  });
   return pool;
 }
 
@@ -70,10 +88,7 @@ async function q(text, params) {
     return result;
   } catch (error) {
     if (isConnectionFailure(error)) {
-      dbRuntime.consecutive_connection_failures += 1;
-      dbRuntime.degraded_until = Date.now() + DB_DEGRADED_COOLDOWN_MS;
-      dbRuntime.last_error = String(error?.message || error).slice(0, 500);
-      dbRuntime.last_error_at = new Date().toISOString();
+      recordConnectionFailure(error);
     }
     throw error;
   }
