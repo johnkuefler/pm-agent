@@ -8526,7 +8526,7 @@ async function resolveChannelNames(channelIds) {
 // Skips DMs entirely — those go through the live handler reliably and there's no
 // channel-membership gap to worry about.
 app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
-  const minutes = Math.max(1, parseInt(req.query.minutes || '120', 10));
+  const minutes = Math.min(1440, Math.max(1, parseInt(req.query.minutes || '120', 10)));
   const sinceUnix = Math.floor((Date.now() - minutes * 60 * 1000) / 1000);
   const botToken = process.env.SLACK_BOT_TOKEN;
   if (!botToken) return res.status(500).json({ error: 'SLACK_BOT_TOKEN not set' });
@@ -8559,8 +8559,9 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
       return out;
     }
 
-    const publicChannels = await listChannelsOfType('public_channel');
-    const privateChannels = await listChannelsOfType('private_channel');
+    const [publicChannels, privateChannels] = await Promise.all([
+      listChannelsOfType('public_channel'), listChannelsOfType('private_channel'),
+    ]);
     const channels = [...publicChannels, ...privateChannels];
 
     const unhandled = [];
@@ -8568,11 +8569,15 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
     let scanErrors = 0;
     let historyScopeFailures = { public: 0, private: 0 };
 
-    for (const channel of channels) {
+    let nextChannelIndex = 0;
+    async function scanNextChannel() {
+      const channelIndex = nextChannelIndex++;
+      if (channelIndex >= channels.length) return;
+      const channel = channels[channelIndex];
       try {
         const histRes = await axios.get(
           `https://slack.com/api/conversations.history?channel=${channel.id}&oldest=${sinceUnix}&limit=100`,
-          { headers }
+          { headers, timeout: 6000 }
         );
         if (!histRes.data.ok) {
           scanErrors++;
@@ -8580,7 +8585,7 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
             if (channel.is_private) historyScopeFailures.private++;
             else historyScopeFailures.public++;
           }
-          continue;
+          return scanNextChannel();
         }
         scanned++;
         for (const msg of histRes.data.messages || []) {
@@ -8608,7 +8613,11 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
         scanErrors++;
         console.error(`history fetch failed for ${channel.id}:`, err.message);
       }
+      return scanNextChannel();
     }
+    // Slack has no batch history endpoint. A small bounded pool removes the old one-channel-at-a-
+    // time latency without creating an unbounded fan-out or overwhelming Slack's rate limits.
+    await Promise.all(Array.from({ length: Math.min(6, channels.length) }, () => scanNextChannel()));
 
     // Newest first — most actionable mentions surface at the top
     unhandled.sort((a, b) => parseFloat(b.ts) - parseFloat(a.ts));
@@ -9469,6 +9478,25 @@ app.get('/teamwork/team-capacity', requireAuth, async (req, res) => {
   }
 });
 
+const teamworkTaskProjectCache = new Map();
+const teamworkProjectStageCache = new Map();
+async function cachedConnectorValue(cache, key, ttlMs, load) {
+  const now = Date.now();
+  const prior = cache.get(key);
+  if (prior?.value && prior.expires_at > now) return prior.value;
+  if (prior?.in_flight) return prior.in_flight;
+  const inFlight = Promise.resolve().then(load).then(value => {
+    cache.set(key, { value, expires_at: Date.now() + ttlMs, in_flight: null });
+    if (cache.size > 2000) cache.delete(cache.keys().next().value);
+    return value;
+  }).catch(error => {
+    cache.delete(key);
+    throw error;
+  });
+  cache.set(key, { value: prior?.value || null, expires_at: prior?.expires_at || 0, in_flight: inFlight });
+  return inFlight;
+}
+
 app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
   const stage = req.query.stage;
   const { taskId } = req.params;
@@ -9483,43 +9511,44 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 
   try {
     // 1. Get the task to find its project ID — try v1 endpoint first (known structure from existing client)
-    const taskRes = await axios.get(`${twBase}/tasks/${taskId}.json`, { headers: twHeaders });
-    const taskData = taskRes.data;
-    const todoItem = taskData?.['todo-item'] || taskData?.task;
-    const projectId = todoItem?.['project-id'] || todoItem?.project?.id || todoItem?.projectId;
+    const projectId = await cachedConnectorValue(teamworkTaskProjectCache, String(taskId),
+      15 * 60 * 1000, async () => {
+        const taskRes = await axios.get(`${twBase}/tasks/${taskId}.json`, { headers: twHeaders,
+          timeout: 8000 });
+        const taskData = taskRes.data;
+        const todoItem = taskData?.['todo-item'] || taskData?.task;
+        return todoItem?.['project-id'] || todoItem?.project?.id || todoItem?.projectId || null;
+      });
     if (!projectId) return res.status(404).json({ error: 'could not determine project for task' });
 
-    // 2. Get workflows for the project
-    const wfRes = await axios.get(`${twBase}/projects/api/v3/projects/${projectId}/workflows.json`, { headers: twHeaders });
-    const workflows = wfRes.data?.workflows || [];
-    if (workflows.length === 0) return res.status(404).json({ error: 'no workflows found for this project' });
-
-    // 3. Search each workflow's stages for a matching stage name
-    let targetWorkflowId = null;
-    let targetStageId = null;
-
-    for (const wf of workflows) {
-      const stagesRes = await axios.get(`${twBase}/projects/api/v3/workflows/${wf.id}/stages.json`, { headers: twHeaders });
-      const stages = stagesRes.data?.stages || [];
-      const match = stages.find(s => s.name.toLowerCase() === stage.toLowerCase());
-      if (match) {
-        targetWorkflowId = wf.id;
-        targetStageId = match.id;
-        break;
-      }
-    }
-
-    if (!targetStageId) return res.status(404).json({ error: `stage "${stage}" not found in any workflow for this project` });
+    // 2. Workflow topology is shared by every task in a project and changes rarely. Cache it,
+    // single-flight concurrent misses, and fetch the workflows' stage lists in parallel.
+    const stageDirectory = await cachedConnectorValue(teamworkProjectStageCache, String(projectId),
+      15 * 60 * 1000, async () => {
+        const wfRes = await axios.get(`${twBase}/projects/api/v3/projects/${projectId}/workflows.json`,
+          { headers: twHeaders, timeout: 8000 });
+        const workflows = wfRes.data?.workflows || [];
+        const stageLists = await Promise.all(workflows.map(async wf => {
+          const stagesRes = await axios.get(`${twBase}/projects/api/v3/workflows/${wf.id}/stages.json`,
+            { headers: twHeaders, timeout: 8000 });
+          return (stagesRes.data?.stages || []).map(item => ({ workflowId: wf.id, stageId: item.id,
+            name: String(item.name || '') }));
+        }));
+        return Object.fromEntries(stageLists.flat().filter(item => item.name)
+          .map(item => [item.name.toLowerCase(), item]));
+      });
+    const target = stageDirectory[String(stage).toLowerCase()] || null;
+    if (!target) return res.status(404).json({ error: `stage "${stage}" not found in any workflow for this project` });
 
     // 4. Move the task to the target stage
     await axios.post(
-      `${twBase}/projects/api/v3/workflows/${targetWorkflowId}/stages/${targetStageId}/tasks.json`,
+      `${twBase}/projects/api/v3/workflows/${target.workflowId}/stages/${target.stageId}/tasks.json`,
       { taskIds: [parseInt(taskId, 10)] },
-      { headers: twHeaders }
+      { headers: twHeaders, timeout: 8000 }
     );
 
     console.log(`✅ Teamwork task ${taskId} moved to stage "${stage}"`);
-    res.json({ ok: true, taskId, stage, workflowId: targetWorkflowId, stageId: targetStageId });
+    res.json({ ok: true, taskId, stage, workflowId: target.workflowId, stageId: target.stageId });
   } catch (err) {
     console.error('Teamwork stage update error:', err.response?.data || err.message);
     res.status(err.response?.status || 500).json({ error: err.response?.data || err.message });

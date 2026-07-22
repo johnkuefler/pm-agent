@@ -165,6 +165,14 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
     'runtime telemetry must expose background queues that could threaten interactive latency');
+  assert.match(server, /const \[publicChannels, privateChannels\] = await Promise\.all/,
+    'Slack mention scans must list public and private memberships concurrently');
+  assert.match(server, /Math\.min\(6, channels\.length\)[\s\S]*scanNextChannel/,
+    'Slack history scans must use a bounded concurrent pool');
+  assert.match(server, /cachedConnectorValue\(teamworkProjectStageCache/,
+    'Teamwork workflow topology must be cached across repeated task moves');
+  assert.match(server, /Promise\.all\(workflows\.map/,
+    'Teamwork workflow stage metadata must load concurrently on a cache miss');
   assert.match(server, /deadlineMs: zoomAttachLiveTools \? 45000/,
     'typed meeting chat must bound the full model and tool loop');
   assert.match(server, /On it — checking the live details now\./,
