@@ -27,6 +27,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const background = snapshot.background_work || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
+  const realtimeTransport = snapshot.realtime_transport || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
@@ -84,6 +85,17 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (Number(entityWrites.pending) > 5) {
     degraded.push({ code: 'entity_write_backlog', count: Number(entityWrites.pending),
       message: 'Durable entity writes are accumulating.' });
+  }
+  const recentStaleSockets = (realtimeTransport.recent_stale || []).filter(item => {
+    const at = new Date(item?.at || 0).getTime();
+    return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
+  });
+  if (recentStaleSockets.length >= 3) {
+    actionRequired.push({ code: 'repeated_realtime_transport_stalls', count: recentStaleSockets.length,
+      message: 'The live meeting transport repeatedly became half-open recently.' });
+  } else if (recentStaleSockets.length) {
+    degraded.push({ code: 'realtime_transport_recovered', count: recentStaleSockets.length,
+      message: 'A half-open live meeting socket was detected and recycled recently.' });
   }
 
   if (!Number(responsiveness.current_protocol_samples)) {

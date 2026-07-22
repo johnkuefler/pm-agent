@@ -18,6 +18,7 @@ function healthySnapshot() {
     interactive_priority: { background_budget_cancellations: 0 },
     background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
+    realtime_transport: { recent_stale: [] },
   };
 }
 
@@ -80,4 +81,14 @@ test('reliability surfaces active and completed request deadline pressure', () =
   const repeated = assessRuntimeReliability(snapshot, { now });
   assert.equal(repeated.status, 'action_required');
   assert.equal(repeated.action_required[0].code, 'repeated_request_deadlines');
+});
+
+test('reliability escalates repeated half-open meeting sockets', () => {
+  const snapshot = healthySnapshot();
+  snapshot.realtime_transport.recent_stale = [1, 2, 3].map(index => ({
+    label: `socket-${index}`, reason: 'pong_timeout', at: `2026-07-22T18:5${index}:00.000Z`,
+  }));
+  const verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'repeated_realtime_transport_stalls');
 });

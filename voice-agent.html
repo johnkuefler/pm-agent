@@ -286,6 +286,11 @@
     let scheduledEndTime = 0;
     let responseStartedAt = 0;
     let settleVisualTimer = null;
+    let micCaptureReady = false;
+    let micCapturePromise = null;
+    let reconnectAttempt = 0;
+    let reconnectTimer = null;
+    let relayConnectTimer = null;
 
     setDiagnosticsVisible(diagnosticsVisible);
 
@@ -415,7 +420,10 @@
     }
 
     async function startMicCapture() {
-      try {
+      if (micCaptureReady) return;
+      if (micCapturePromise) return micCapturePromise;
+      micCapturePromise = (async () => {
+       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const track = stream.getAudioTracks()[0];
         console.log('🎤 Got audio track:', track.label, 'settings:', JSON.stringify(track.getSettings()));
@@ -442,6 +450,7 @@
         setSignal('muted', isMuted ? 'muted' : 'voice on', isMuted ? 'warn' : 'on');
         setVisualState('listening');
         note('microphone capture started');
+        micCaptureReady = true;
       } catch (err) {
         console.error('Mic capture error:', err);
         statusEl.textContent = 'Microphone error: ' + err.message;
@@ -449,6 +458,9 @@
         setSignal('connection', 'mic error', 'warn');
         note('microphone capture error');
       }
+      })();
+      try { return await micCapturePromise; }
+      finally { micCapturePromise = null; }
     }
 
     async function setupAudioWorklet(ctx, source) {
@@ -575,9 +587,19 @@
       const qs = relayParams.toString();
       if (qs) url += (url.includes('?') ? '&' : '?') + qs;
 
-      ws = new WebSocket(url);
+      const connectingWs = new WebSocket(url);
+      ws = connectingWs;
+      if (relayConnectTimer) clearTimeout(relayConnectTimer);
+      relayConnectTimer = setTimeout(() => {
+        if (ws === connectingWs && connectingWs.readyState === WebSocket.CONNECTING) {
+          console.warn('Relay WebSocket handshake timed out');
+          connectingWs.close();
+        }
+      }, 10000);
 
       ws.onopen = async () => {
+        clearTimeout(relayConnectTimer);
+        relayConnectTimer = null;
         console.log('✅ Relay WebSocket connected');
         statusEl.textContent = 'Connected — Starting mic...';
         statusEl.className = 'status connected';
@@ -641,6 +663,7 @@
           }
 
           if (msg.type === 'session.created') {
+            reconnectAttempt = 0;
             console.log('🧠 OpenAI session created');
             note('realtime session created');
           }
@@ -698,13 +721,22 @@
       };
 
       ws.onclose = () => {
+        clearTimeout(relayConnectTimer);
+        relayConnectTimer = null;
         console.log('WebSocket closed');
         statusEl.textContent = 'Disconnected — Reconnecting...';
         statusEl.className = 'status';
         setSignal('connection', 'reconnecting', 'warn');
         setSignal('listening', 'paused', '');
         note('relay socket closed');
-        setTimeout(connectRelay, 3000);
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        const delay = Math.min(15000, 1000 * (2 ** Math.min(reconnectAttempt, 4)))
+          + Math.floor(Math.random() * 500);
+        reconnectAttempt += 1;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connectRelay();
+        }, delay);
       };
 
       ws.onerror = (err) => {

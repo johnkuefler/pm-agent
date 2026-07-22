@@ -105,6 +105,7 @@ const consequenceReview = require('./src/intelligence/consequence-review');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
+const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-liveness');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
@@ -126,6 +127,7 @@ server.requestTimeout = 130000;
 server.keepAliveTimeout = 65000;
 const runtimeActivity = createRuntimeActivityStream();
 const requestPerformance = createRequestPerformanceMonitor();
+const websocketLiveness = createWebSocketLivenessMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
@@ -515,6 +517,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     interactive_priority: interactivePerformance.prioritySnapshot(),
     background_work: backgroundWorkSnapshot(),
     entity_writes: _writeThroughQueue.snapshot(),
+    realtime_transport: websocketLiveness.snapshot(),
   };
   res.json({ reliability: assessRuntimeReliability(snapshot), ...snapshot });
 });
@@ -10996,6 +10999,7 @@ videoWss.on('connection', (ws, req) => {
   }
   console.log(`📹 Recall video WS connected for bot: ${botId}`);
 
+  websocketLiveness.attach(ws, `Recall video (${botId})`);
   let msgCount = 0; // counts every WS message, incremented up front so logs aren't stuck on #0
 
   ws.on('message', (data, isBinary) => {
@@ -11103,6 +11107,25 @@ wss.on('connection', async (ws, req) => {
 
   console.log(`🔌 Voice agent WebSocket connected for bot: ${botId}`);
 
+  const session = sessions[botId];
+  let openaiWs = null;
+  // A reconnect can arrive before the old half-open pair emits close. Retire the old transport;
+  // ownership-aware cleanup below prevents its late close from erasing the new session pointers.
+  for (const previous of [session?.clientWs, session?.openaiWs]) {
+    if (previous && (previous.readyState === WebSocket.OPEN
+      || previous.readyState === WebSocket.CONNECTING)) {
+      try { previous.terminate(); } catch {}
+    }
+  }
+  websocketLiveness.attach(ws, `Recall voice relay (${botId})`, {
+    onStale: () => {
+      if (openaiWs && (openaiWs.readyState === WebSocket.OPEN
+        || openaiWs.readyState === WebSocket.CONNECTING)) {
+        try { openaiWs.terminate(); } catch {}
+      }
+    },
+  });
+
   // Voice owns the foreground from the first authenticated socket event, including prompt
   // assembly and the OpenAI handshake. Acquiring this later allowed background research to
   // compete during the most latency-sensitive part of meeting reconnect/startup.
@@ -11151,7 +11174,6 @@ wss.on('connection', async (ws, req) => {
   }
 
   // Build the system prompt with memory and context (or the dummy brief for test agents)
-  const session = sessions[botId];
   const systemPrompt = realtimePromptForSession(session);
   if (session) session.realtimePromptChars = systemPrompt.length;
   console.log(`📋 System prompt length: ${systemPrompt.length} chars${session?.dummy ? ' (dummy test agent)' : ''}${session?.project_hint ? ` (project hint: ${session.project_hint})` : ''}`);
@@ -11164,7 +11186,6 @@ wss.on('connection', async (ws, req) => {
     return;
   }
 
-  let openaiWs;
   try {
     // gpt-realtime-2.1 is GA-only. The OpenAI-Beta header below is intentionally
     // omitted (sending realtime=v1 pins the connection to the beta API where
@@ -11183,6 +11204,11 @@ wss.on('connection', async (ws, req) => {
     ws.close(4003, 'Failed to connect to OpenAI');
     return;
   }
+  websocketLiveness.attach(openaiWs, `OpenAI realtime (${botId})`, {
+    onStale: () => {
+      if (ws.readyState === WebSocket.OPEN) ws.close(4004, 'Voice provider heartbeat timed out');
+    },
+  });
 
   // Store WebSocket references on the session so /mute can send live updates
   if (session) {
@@ -11586,8 +11612,8 @@ wss.on('connection', async (ws, req) => {
     console.log(`🔌 Voice agent WebSocket closed for bot: ${botId}`);
     clearInterval(refreshInterval);
     if (sessions[botId]) {
-      sessions[botId].openaiWs = null;
-      sessions[botId].clientWs = null;
+      if (sessions[botId].openaiWs === openaiWs) sessions[botId].openaiWs = null;
+      if (sessions[botId].clientWs === ws) sessions[botId].clientWs = null;
     }
     if (openaiWs.readyState === WebSocket.OPEN || openaiWs.readyState === WebSocket.CONNECTING) {
       openaiWs.close();
