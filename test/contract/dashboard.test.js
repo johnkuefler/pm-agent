@@ -45,7 +45,19 @@ test('dashboard presentation and behavior live in focused external assets', () =
     assert.doesNotThrow(() => new vm.Script(code, { filename: file }));
   }
   const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  const coreJs = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
+  const meetingJs = fs.readFileSync(path.join(root, 'public/js/dashboard-meeting.js'), 'utf8');
   const adminJs = fs.readFileSync(path.join(root, 'public/js/dashboard-admin.js'), 'utf8');
+  assert.match(coreJs, /Dashboard request timed out/,
+    'every dashboard request must inherit a finite browser deadline');
+  assert.match(intelligenceJs, /if \(playroomPollInFlight\) return;/,
+    'playroom polling must remain single-flight');
+  assert.match(intelligenceJs, /if \(readingRoomPollInFlight\) return;/,
+    'reading polling must remain single-flight');
+  assert.match(meetingJs, /if \(meetingStatusRefreshInFlight\) return;/,
+    'meeting status polling must remain single-flight');
+  assert.match(meetingJs, /Promise\.all\(MEETING_FLAGS\.map/,
+    'meeting controls should load concurrently instead of serially taxing the dashboard');
   assert.match(html, /id="gift-deliberation-list"/);
   assert.match(adminJs, /\/gifts\/deliberations\?limit=20/);
   assert.match(adminJs, /operatorApi\(`\/gifts\/intents/);

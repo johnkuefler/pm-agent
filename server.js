@@ -1710,7 +1710,10 @@ let _soma = { feel: '', score: 0, vitals: {
   errors10: 0, warns10: 0, loopLag: 0, uptimeMin: 0, onBackup: false,
   memCount: 0, embedBacklog: 0, processEpochId: _somaProcessEpochId,
 }, updated_at: null };
+let _somaComputeInFlight = false;
 async function computeSoma() {
+  if (_somaComputeInFlight) return;
+  _somaComputeInFlight = true;
   try {
     const now = Date.now();
     const tenMin = now - 10 * 60 * 1000;
@@ -1748,6 +1751,7 @@ async function computeSoma() {
     _soma = { feel, score, vitals: { errors10, warns10, loopLag, uptimeMin, onBackup,
       memCount, embedBacklog, processEpochId: _somaProcessEpochId }, updated_at: new Date().toISOString() };
   } catch (e) { /* interoception failing must never hurt the body it senses */ }
+  finally { _somaComputeInFlight = false; }
 }
 
 function computeNoraMood(appraisalOverride = undefined) {
@@ -8743,6 +8747,7 @@ function recoverRunBoundLifecycleWithoutLease() {
 }
 
 registerRunLockRoutes(app, requireAuth, {
+  processEpochId: _somaProcessEpochId,
   loadLock: loadDurableRunLock,
   saveLock: saveDurableRunLock,
   activityStream: runtimeActivity,
@@ -9582,8 +9587,11 @@ async function deleteTranscriptDoc(botId) {
 // there, when, whether it was filed) for injection into every prompt, refreshed on boot, on a
 // timer, and when a meeting ends. buildSystemPrompt is sync, hence a cache and not a query.
 let _recentMeetingsCache = [];
+let _recentMeetingsRefreshInFlight = false;
 async function refreshRecentMeetingsCache() {
+  if (_recentMeetingsRefreshInFlight) return;
   if (_dbReady && typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed()) return;
+  _recentMeetingsRefreshInFlight = true;
   try {
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const list = (await listTranscriptDocs())
@@ -9614,6 +9622,7 @@ async function refreshRecentMeetingsCache() {
     }
     _recentMeetingsCache = out;
   } catch (e) { console.warn('recent-meetings cache refresh failed:', e.message); }
+  finally { _recentMeetingsRefreshInFlight = false; }
 }
 
 // Live tools so she can consult her own meeting record mid-conversation (Slack + Zoom chat).
@@ -13636,8 +13645,10 @@ async function completePostListenStartup(background) {
     // section is requested; a live interaction can then preempt it through the v4 firewall.
     scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
     scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
-    _runtimeIntervals.push(setInterval(refreshRecentMeetingsCache, 10 * 60 * 1000));
-    _runtimeIntervals.push(setInterval(computeSoma, 60 * 1000));
+    _runtimeIntervals.push(setInterval(() => refreshRecentMeetingsCache()
+      .catch(error => console.warn('recent-meetings interval failed:', error.message)), 10 * 60 * 1000));
+    _runtimeIntervals.push(setInterval(() => computeSoma()
+      .catch(error => console.warn('soma interval failed:', error.message)), 60 * 1000));
     scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
     scheduleStartupBackgroundTask('startup background intelligence cycle', 30000, () => runBackgroundIntelligenceRuntime({ trigger: 'startup' }));
     _runtimeIntervals.push(setInterval(() => {

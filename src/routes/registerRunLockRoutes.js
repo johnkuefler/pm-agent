@@ -8,6 +8,9 @@ function normalizeLock(value) {
     || expiresAt < acquiredAt) return null;
   return {
     holder: String(value.holder), acquired_at: acquiredAt, expires_at: expiresAt,
+    process_epoch_id: value.process_epoch_id ? String(value.process_epoch_id).slice(0, 180) : null,
+    last_refreshed_at: Number.isFinite(Number(value.last_refreshed_at))
+      ? Number(value.last_refreshed_at) : acquiredAt,
     lifecycle: value.lifecycle && typeof value.lifecycle === 'object' ? value.lifecycle : null,
   };
 }
@@ -15,7 +18,9 @@ function normalizeLock(value) {
 function registerRunLockRoutes(app, requireAuth, {
   onAcquire = null, onRelease = null, projectLifecycle = null,
   loadLock = null, saveLock = null, clock = () => Date.now(), activityStream = null,
+  processEpochId = null, restartResumeGraceMs = 10 * 60 * 1000,
 } = {}) {
+  const processStartedAt = Number(clock());
   let _runLock = null; // Default in-memory store when persistence is not injected.
   const readLock = async () => {
     const loaded = typeof loadLock === 'function' ? await loadLock() : _runLock;
@@ -33,6 +38,11 @@ function registerRunLockRoutes(app, requireAuth, {
     return res.status(503).json({ acquired: false, released: false,
       reason: `lock_persistence_${operation}_failed`, error: error.message });
   };
+  const restartResumeExpired = (lock, now) => Boolean(lock && processEpochId
+    && lock.process_epoch_id && lock.process_epoch_id !== processEpochId
+    && now - processStartedAt >= Math.max(60_000, Number(restartResumeGraceMs) || 10 * 60 * 1000));
+  const activeAt = (lock, now) => Boolean(lock && lock.expires_at > now
+    && !restartResumeExpired(lock, now));
   const visibleLifecycle = async (lifecycle, context = {}) => {
     if (!lifecycle || typeof projectLifecycle !== 'function') return lifecycle || null;
     try {
@@ -57,7 +67,7 @@ function registerRunLockRoutes(app, requireAuth, {
     let current;
     try { current = await readLock(); }
     catch (error) { return persistenceFailure(res, 'read', error); }
-    const active = current && current.expires_at > now;
+    const active = activeAt(current, now);
     if (active && current.holder !== holder) {
       let visible;
       visible = await visibleLifecycle(current.lifecycle, { holder: current.holder });
@@ -76,6 +86,7 @@ function registerRunLockRoutes(app, requireAuth, {
         if (typeof onRelease === 'function') await onRelease({
           holder: current.holder, lifecycle: current.lifecycle || null,
           released_at: new Date(now).toISOString(), expired: true,
+          restart_resume_expired: restartResumeExpired(current, now),
         });
         await writeLock(null);
         activityStream?.finish(`hourly:${current.holder}`, { status: 'failed',
@@ -107,7 +118,8 @@ function registerRunLockRoutes(app, requireAuth, {
       }
     }
     const next = { holder, acquired_at: active ? current.acquired_at : now,
-      expires_at: now + ttl * 1000, lifecycle };
+      expires_at: now + ttl * 1000, process_epoch_id: processEpochId || current?.process_epoch_id || null,
+      last_refreshed_at: now, lifecycle };
     try { await writeLock(next); }
     catch (error) {
       if (!active && lifecycle && typeof onRelease === 'function') {
@@ -145,7 +157,7 @@ function registerRunLockRoutes(app, requireAuth, {
     try { current = await readLock(); }
     catch (error) { return persistenceFailure(res, 'read', error); }
     const now = Number(clock());
-    const active = current && current.expires_at > now;
+    const active = activeAt(current, now);
     let lifecycle = null;
     if (active) {
       lifecycle = await visibleLifecycle(current.lifecycle, { holder: current.holder });
@@ -156,6 +168,7 @@ function registerRunLockRoutes(app, requireAuth, {
       expires_at: active ? new Date(current.expires_at).toISOString() : null,
       lifecycle,
       expired_lease_pending_recovery: Boolean(current && !active),
+      restart_resume_grace_expired: restartResumeExpired(current, now),
     });
   });
 
@@ -175,7 +188,7 @@ function registerRunLockRoutes(app, requireAuth, {
           holder: current.holder,
           lifecycle,
           released_at: new Date(Number(clock())).toISOString(),
-          expired: current.expires_at <= Number(clock()),
+          expired: current.expires_at <= Number(clock()) || restartResumeExpired(current, Number(clock())),
         }) || lifecycle;
       } catch (error) {
         console.error(`Run lock lifecycle release failed for ${current.holder}: ${error.message}`);

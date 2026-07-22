@@ -3,11 +3,24 @@
     // requireAuth middleware skips the check anyway, so this is no-op safe.
     const NORA_API_KEY = (document.querySelector('meta[name="nora-api-key"]') || {}).content || '';
     const NORA_OPERATOR_TOKEN = (document.querySelector('meta[name="nora-operator-token"]') || {}).content || '';
-    function api(path, opts) {
+    async function api(path, opts) {
       opts = opts || {};
       const headers = Object.assign({}, opts.headers || {});
       if (NORA_API_KEY) headers['Authorization'] = 'Bearer ' + NORA_API_KEY;
-      return fetch(path, Object.assign({}, opts, { headers: headers }));
+      const controller = new AbortController();
+      const upstreamSignal = opts.signal;
+      const abortFromUpstream = () => controller.abort(upstreamSignal.reason);
+      if (upstreamSignal && upstreamSignal.aborted) abortFromUpstream();
+      else if (upstreamSignal) upstreamSignal.addEventListener('abort', abortFromUpstream, { once: true });
+      const timeoutMs = Math.max(1000, Math.min(120000, Number(opts.timeoutMs) || 30000));
+      const timer = setTimeout(() => controller.abort(new DOMException('Dashboard request timed out', 'TimeoutError')), timeoutMs);
+      const requestOptions = Object.assign({}, opts, { headers: headers, signal: controller.signal });
+      delete requestOptions.timeoutMs;
+      try { return await fetch(path, requestOptions); }
+      finally {
+        clearTimeout(timer);
+        if (upstreamSignal) upstreamSignal.removeEventListener('abort', abortFromUpstream);
+      }
     }
     function operatorApi(path, opts) {
       opts = opts || {};

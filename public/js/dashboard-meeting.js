@@ -83,7 +83,11 @@ async function joinMeeting() {
       } catch (e) { console.error('Mute toggle failed:', e); }
     }
 
+    let meetingStatusRefreshInFlight = false;
+    let meetingControlsRefreshInFlight = false;
     async function checkMuteState() {
+      if (meetingStatusRefreshInFlight) return;
+      meetingStatusRefreshInFlight = true;
       try {
         const r = await api('/mute');
         const d = await r.json();
@@ -96,8 +100,9 @@ async function joinMeeting() {
         }
         controls.style.display = 'block';
         updateMuteUI(d.muted);
-        refreshMeetingControls();
+        await refreshMeetingControls();
       } catch {}
+      finally { meetingStatusRefreshInFlight = false; }
     }
 
     // The three in-meeting behavior toggles (1:1 / lean-in / proactive). Each has a
@@ -115,14 +120,17 @@ async function joinMeeting() {
       } catch (e) { console.error(ep + ' toggle failed:', e); }
     }
     async function refreshMeetingControls() {
-      for (const f of MEETING_FLAGS) {
-        try {
+      if (meetingControlsRefreshInFlight) return;
+      meetingControlsRefreshInFlight = true;
+      try {
+        await Promise.all(MEETING_FLAGS.map(async f => {
           const r = await api('/' + f.ep);
           const d = await r.json();
           const el = document.getElementById(f.pill);
           if (el) el.classList.toggle('on', !!d[f.key]);
-        } catch {}
-      }
+        }));
+      } catch {}
+      finally { meetingControlsRefreshInFlight = false; }
     }
 
     function updateMuteUI(muted) {

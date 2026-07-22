@@ -192,6 +192,46 @@ test('expired durable lease closes its lifecycle before a successor can start', 
   assert.equal(persisted.holder, 'run-new');
 });
 
+test('a restarted process gives the prior holder a bounded resume grace then gap-closes', async () => {
+  let persisted = null;
+  let now = Date.parse('2026-07-15T01:00:00.000Z');
+  const events = [];
+  const shared = {
+    clock: () => now,
+    loadLock: () => persisted,
+    saveLock: value => { persisted = value == null ? null : JSON.parse(JSON.stringify(value)); },
+    onAcquire: ({ holder }) => {
+      events.push(`acquire:${holder}`);
+      return { cycle_id: `cycle:${holder}`, moment_id: `moment:${holder}` };
+    },
+    onRelease: ({ holder, expired, restart_resume_expired }) => {
+      events.push(`release:${holder}:${expired}:${restart_resume_expired}`);
+    },
+    restartResumeGraceMs: 10 * 60 * 1000,
+  };
+  const first = routeHarness({ ...shared, processEpochId: 'epoch-one' });
+  await first.call('POST', '/run-lock', { body: { holder: 'run-before-restart', ttl_seconds: 3000 } });
+
+  const restarted = routeHarness({ ...shared, processEpochId: 'epoch-two' });
+  now += 9 * 60 * 1000;
+  assert.equal((await restarted.call('GET', '/run-lock')).body.locked, true,
+    'the original holder retains a fair restart-resume window');
+  now += 61 * 1000;
+  const stale = await restarted.call('GET', '/run-lock');
+  assert.equal(stale.body.locked, false);
+  assert.equal(stale.body.restart_resume_grace_expired, true);
+  const successor = await restarted.call('POST', '/run-lock', {
+    body: { holder: 'run-after-restart', ttl_seconds: 3000 },
+  });
+  assert.equal(successor.body.acquired, true);
+  assert.deepEqual(events, [
+    'acquire:run-before-restart',
+    'release:run-before-restart:true:true',
+    'acquire:run-after-restart',
+  ]);
+  assert.equal(persisted.process_epoch_id, 'epoch-two');
+});
+
 test('durable lease persistence failures fail closed and gap-close a just-opened lifecycle', async () => {
   const releases = [];
   const { call } = routeHarness({

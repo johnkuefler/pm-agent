@@ -2,8 +2,10 @@ let intelligenceSectionObserver = null;
 let intelligenceAbortController = null;
 let intelligenceLoadToken = 0;
 let playroomPollTimer = null;
+let playroomPollInFlight = false;
 let playroomLastBoard = null;
 let readingRoomPollTimer = null;
+let readingRoomPollInFlight = false;
 let activeIntelligenceView = 'overview';
 const intelligenceLoadedSections = new Set();
 const intelligenceSectionPromises = new Map();
@@ -291,8 +293,11 @@ function startReadingRoomPolling() {
   stopReadingRoomPolling();
   readingRoomPollTimer = setInterval(async () => {
     if (document.visibilityState !== 'visible' || !document.getElementById('page-intelligence')?.classList.contains('active')) return;
+    if (readingRoomPollInFlight) return;
+    readingRoomPollInFlight = true;
     try { renderReadingRoom(await intelligenceJson('/developmental-reading?limit=8', intelligenceAbortController?.signal)); }
     catch (error) { if (error.name !== 'AbortError') renderReadingRoomError(); }
+    finally { readingRoomPollInFlight = false; }
   }, 60000);
 }
 
@@ -477,8 +482,11 @@ function startPlayroomPolling() {
   stopPlayroomPolling();
   playroomPollTimer = setInterval(async () => {
     if (document.visibilityState !== 'visible' || !document.getElementById('page-intelligence')?.classList.contains('active')) return;
+    if (playroomPollInFlight) return;
+    playroomPollInFlight = true;
     try { renderPlayroom(await intelligenceJson('/playroom', intelligenceAbortController?.signal)); }
     catch (error) { if (error.name !== 'AbortError') renderPlayroomError(); }
+    finally { playroomPollInFlight = false; }
   }, 15000);
 }
 

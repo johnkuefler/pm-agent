@@ -74,8 +74,11 @@ function registerCoworkInstructionsRoute(app) {
     release_required, integrity_failure, and projection_failure. Only operational_cycle_active authorizes
     ordinary connector work; only release_required authorizes normal lease release. A false
     lifecycle_projection_integrity_verified value requires a stop and report, never inferred progress.
-    The exact lease and lifecycle tuple persist across server restarts. The same holder resumes it; another
-    holder remains excluded. An expired durable lease gap-closes its open lifecycle before a successor starts.
+    The exact lease and lifecycle tuple persist across server restarts. The same holder has ten minutes after
+    a process restart to resume it; another holder remains excluded during that grace. If nobody resumes the
+    prior-process lease inside that window, the next acquisition gap-closes its open lifecycle before a
+    successor starts instead of leaving the hourly loop wedged for the full lease TTL. A normally expired
+    durable lease follows the same explicit gap-close path.
     Persistence failure fails acquisition closed rather than falling back to an unprotected in-memory run.
     Lifecycle state commits before its lease; failed release persistence preserves the lease for recovery.
     A pre-durability run-bound lifecycle found after restart without any lease is sealed as an explicit
