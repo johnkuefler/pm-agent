@@ -555,6 +555,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
   });
   app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
+    const startedAt = performance.now();
     try {
       const validationPayload = { ...(req.body || {}) };
       delete validationPayload.validation_commitment;
@@ -581,6 +582,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       const cycle = store.completeCycle(req.params.id, {
         ...validationPayload, substrate_at_close: authoritativeInputs.soma || null,
       });
+      const completionMs = performance.now() - startedAt;
       if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
       void recordLifecycleWorkspace({ phase: 'closure', cycle })
         .catch(error => console.error('Lifecycle workspace closure failed:', error.message));
@@ -591,9 +593,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         detail: 'Preserving the completed cycle and preparing its continuity handoff.',
         meta: { phase: 'summary' },
       });
+      res.set('Server-Timing', `cycle-completion;dur=${completionMs.toFixed(1)}`);
       if (store.interventionActive('integrated_self_binding')) return res.json({ ok: true, cycle: { id: cycle.id, status: cycle.status, experimental_access_sealed: true } });
       res.json({ ok: true, cycle });
-    } catch (error) { res.status(400).json({ error: error.message,
+    } catch (error) { res.set('Server-Timing', `cycle-completion-failed;dur=${(performance.now() - startedAt).toFixed(1)}`); res.status(400).json({ error: error.message,
       ...(error.code ? { code: error.code } : {}),
       ...(error.due_action_ids ? { due_action_ids: error.due_action_ids } : {}) }); }
   });

@@ -89,9 +89,11 @@ const consciousWorkspace = require('./src/intelligence/conscious-workspace');
 const consequenceReview = require('./src/intelligence/consequence-review');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
+const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
+const requestPerformance = createRequestPerformanceMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
@@ -386,6 +388,7 @@ function _writeThrough(entity, fn) {
 
 // Book ingestion has its own authenticated envelope so large public-domain works do not
 // expand the body allowance for Slack or any other live surface.
+app.use(requestPerformance.middleware);
 app.use('/developmental-reading/sources', requireAuth, express.json({ limit: '8mb' }));
 
 // Capture raw body for Slack signature verification
@@ -438,6 +441,12 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     recordLifecycleWorkspaceOutcome,
 });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
+app.get('/runtime/performance', requireAuth, (req, res) => res.json({
+  requests: requestPerformance.snapshot(),
+  intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
+  persistence: intelligence.persistenceDiagnostics(),
+  interactive_priority: interactivePerformance.prioritySnapshot(),
+}));
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 

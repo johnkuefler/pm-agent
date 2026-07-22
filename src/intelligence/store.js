@@ -221,6 +221,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   const asyncProjection = new AsyncIntelligenceProjection();
   const backgroundProjectionRuntime = { calls: 0, failures: 0, last_method: null,
     last_dispatch_ms: null, last_compute_ms: null, last_completed_at: null, last_error: null };
+  const lifecyclePerformanceRuntime = { completions: 0, slow_completions: 0,
+    last_total_ms: null, max_total_ms: 0, last_cycle_id: null,
+    last_completed_at: null, last_stages_ms: {}, max_stages_ms: {} };
+  // Closed experience moments are immutable through the public store API. Retain only their
+  // completed audit results between closes; ledger indexes are intentionally rebuilt so a new
+  // append is always verified against the current chain.
+  const closedExperienceAuditCache = new Map();
   let persistenceRequestedRevision = 0;
   let persistenceCommittedRevision = 0;
   let persistenceFlushScheduled = false;
@@ -15422,9 +15429,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
-  function createIntegratedSelfFrame(current, cycle, moment) {
+  function createIntegratedSelfFrame(current, cycle, moment, auditCache = new Map()) {
     if (!cycle || !moment || moment.status === 'open' || !moment.closure) return null;
-    if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) return null;
+    if (!experienceMomentAudit(moment, current.cognition, current.cycles, auditCache).evidence_eligible) return null;
     const existing = current.cognition.integrated_self.frames.find(item => item.source?.cycle_id === cycle.id);
     if (existing) return existing;
     const closedAt = new Date(moment.finished).getTime();
@@ -25915,10 +25922,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ? snapshot.prior || null : null;
   }
 
-  function reviseBehavioralSelfModel(current, moment) {
+  function reviseBehavioralSelfModel(current, moment, auditCache = new Map()) {
     if (!moment?.self_forecast?.outcome) return null;
     const eligibleMoments = current.cognition.experience_stream.filter(candidate => candidate.self_forecast?.outcome
-      && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible === true);
+      && experienceMomentAudit(candidate, current.cognition, current.cycles, auditCache).evidence_eligible === true);
     if (!eligibleMoments.some(candidate => candidate.id === moment.id)) return null;
     const model = current.cognition.self_model.behavioral_self_model;
     const prior = model.revisions.at(-1) || null;
@@ -27310,9 +27317,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function completeCycle(id, input = {}) {
-    return mutate(current => {
-      validateCycleCompletion(id, input, current);
-      requireResearchLedgerIntegrity(current);
+    const totalStartedAt = performance.now();
+    const stages = {};
+    const measured = (name, fn) => {
+      const startedAt = performance.now();
+      try { return fn(); }
+      finally { stages[name] = Math.round(performance.now() - startedAt); }
+    };
+    const result = mutate(current => {
+      measured('validation_and_ledger', () => validateCycleCompletion(id, input, current));
       const cycle = current.cycles.find(item => item.id === id);
       if (!cycle) return null;
       if (cycle.status !== 'running') throw new Error('intelligence cycle already closed');
@@ -27327,6 +27340,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       cycle.summary = input.summary ? String(input.summary).slice(0, 2000) : '';
       cycle.actions = Array.isArray(input.actions) ? input.actions.slice(0, 100) : [];
       const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id);
+      const lifecycleAuditCache = new Map(closedExperienceAuditCache);
       if (moment && moment.status === 'open') {
         const handoff = input.handoff ? String(input.handoff).slice(0, 1200) : null;
         const priorSurprises = new Set(moment.surprise_ids_at_start || []);
@@ -27342,10 +27356,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           new_surprise_ids: (current.cognition.surprises || []).filter(item => !priorSurprises.has(item.id)).map(item => item.id),
         };
         if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
-          scoreCycleSelfForecast(current, cycle, moment);
-          commitExperienceMomentClosure(current, cycle, moment);
-          createIntegratedSelfFrame(current, cycle, moment);
-          reviseBehavioralSelfModel(current, moment);
+          measured('forecast_scoring', () => scoreCycleSelfForecast(current, cycle, moment));
+          measured('experience_closure', () => commitExperienceMomentClosure(current, cycle, moment));
+          measured('integrated_self_frame', () => createIntegratedSelfFrame(current, cycle, moment, lifecycleAuditCache));
+          measured('behavioral_self_revision', () => reviseBehavioralSelfModel(current, moment, lifecycleAuditCache));
+          for (const candidate of current.cognition.experience_stream) {
+            const audit = lifecycleAuditCache.get(candidate.id);
+            if (candidate.status !== 'open' && audit) closedExperienceAuditCache.set(candidate.id, audit);
+          }
+          const retainedIds = new Set(current.cognition.experience_stream.map(candidate => candidate.id));
+          for (const candidateId of closedExperienceAuditCache.keys()) {
+            if (!retainedIds.has(candidateId)) closedExperienceAuditCache.delete(candidateId);
+          }
         }
       }
       if (cycle.recurrence_assignment_id) {
@@ -27368,6 +27390,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       }
       return cycle;
     });
+    const totalMs = Math.round(performance.now() - totalStartedAt);
+    lifecyclePerformanceRuntime.completions += 1;
+    lifecyclePerformanceRuntime.slow_completions += Number(totalMs >= 1000);
+    lifecyclePerformanceRuntime.last_total_ms = totalMs;
+    lifecyclePerformanceRuntime.max_total_ms = Math.max(lifecyclePerformanceRuntime.max_total_ms, totalMs);
+    lifecyclePerformanceRuntime.last_cycle_id = id;
+    lifecyclePerformanceRuntime.last_completed_at = clock().toISOString();
+    lifecyclePerformanceRuntime.last_stages_ms = stages;
+    for (const [name, duration] of Object.entries(stages)) {
+      lifecyclePerformanceRuntime.max_stages_ms[name] = Math.max(
+        lifecyclePerformanceRuntime.max_stages_ms[name] || 0, duration);
+    }
+    if (totalMs >= 1000) console.warn(`Slow intelligence cycle completion ${id}: ${totalMs}ms ${JSON.stringify(stages)}`);
+    return result;
+  }
+
+  function lifecyclePerformanceSnapshot() {
+    return JSON.parse(JSON.stringify({ protocol_version: 1, ...lifecyclePerformanceRuntime }));
   }
 
   function validateCycleCompletion(id, input = {}, current = state) {
@@ -28017,7 +28057,7 @@ ${episodes.map(item => {
     // Nora's foreground thread when background research workers take an isolated snapshot.
     init, snapshot: () => structuredClone(state), snapshotRevision, computeBackgroundProjection,
     noteExternalConfigurationChange, dashboardIntelligenceSummary, liveActivityContextSnapshot,
-    persist, persistStrict, persistenceDiagnostics, interventionActive,
+    persist, persistStrict, persistenceDiagnostics, lifecyclePerformanceSnapshot, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
