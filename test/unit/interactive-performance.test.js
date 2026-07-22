@@ -149,8 +149,22 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'meeting-chat learning extractors must leave the foreground handler through one serialized queue');
   assert.match(server, /beginBackground\(`post-interaction:\$\{item\.label\}`\)/,
     'post-interaction extraction must share the preemptible background-provider gate');
+  assert.match(server, /enqueuePostInteractionExtraction\('meeting-debrief'/,
+    'meeting debrief generation and delivery must use the preemptible background queue');
+  assert.match(server, /enqueuePostInteractionExtraction\('meeting-intelligence'/,
+    'meeting intelligence extraction must use the preemptible background queue');
   assert.match(server, /async function extractMemory[\s\S]*?const response = await post\(/,
     'memory extraction must use the abortable priority transport');
+  assert.match(server, /now - lastScreenshareDescriptionAt\[botId\] < 5 \* 60 \* 1000/,
+    'screen-share persistence must not invoke vision more than once every five minutes');
+  assert.match(server, /finally \{\s*delete screenshareDescriptionInFlight\[botId\];\s*\}/,
+    'screen-share vision must release its single-flight guard after success or failure');
+  assert.match(server, /function scheduleTranscriptCheckpoint\(botId, transcript\)/,
+    'growing live transcripts must use coalesced checkpoints instead of one full write per utterance');
+  assert.match(server, /if \(ended\) \{[\s\S]*?_transcriptCheckpointPending\.delete\(botId\);/,
+    'the final transcript write must cancel any stale incremental checkpoint');
+  assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
+    'runtime telemetry must expose background queues that could threaten interactive latency');
   assert.match(server, /deadlineMs: zoomAttachLiveTools \? 45000/,
     'typed meeting chat must bound the full model and tool loop');
   assert.match(server, /On it — checking the live details now\./,

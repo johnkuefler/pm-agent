@@ -452,6 +452,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => res.json({
   intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
   persistence: intelligence.persistenceDiagnostics(),
   interactive_priority: interactivePerformance.prioritySnapshot(),
+  background_work: backgroundWorkSnapshot(),
 }));
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
@@ -3771,7 +3772,7 @@ app.post('/voice-agent/response', async (req, res) => {
     const isMuted = !!session.muted;
     session.transcript.push({ speaker: isMuted ? 'Nora (muted)' : 'Nora', text, timestamp: new Date().toISOString() });
     try {
-      saveTranscriptDoc(bot_id, session.transcript, null);
+      scheduleTranscriptCheckpoint(bot_id, session.transcript);
     } catch (err) {
       console.error('Transcript save error:', err.message);
     }
@@ -4406,7 +4407,7 @@ app.post('/webhook/transcript', async (req, res) => {
   // Persist transcript incrementally
   try {
     const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-    saveTranscriptDoc(bot_id, session.transcript, null);
+    scheduleTranscriptCheckpoint(bot_id, session.transcript);
   } catch (err) {
     console.error('Transcript save error:', err.message);
   }
@@ -4719,7 +4720,7 @@ app.post('/webhook/chat', async (req, res) => {
       session.transcript.push({ speaker: 'Nora (chat)', text: reply, timestamp: new Date().toISOString() });
       try {
         const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-        saveTranscriptDoc(bot_id, session.transcript, null);
+        scheduleTranscriptCheckpoint(bot_id, session.transcript);
       } catch (err) {
         console.error('Transcript save error:', err.message);
       }
@@ -4914,9 +4915,11 @@ app.post('/webhook/status', async (req, res) => {
         console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
         // Close the meeting's continuity loop while the transcript is fresh: summarize the
         // episode, preserve unresolved questions, and ledger only explicit promises.
-        extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta).catch(err => console.warn('meeting intelligence extraction failed:', err.message));
+        enqueuePostInteractionExtraction('meeting-intelligence', post =>
+          extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta, { post }));
         // Post-meeting debrief to John (fire-and-forget; captures its inputs before cleanup).
-        runMeetingDebrief(bot_id, transcriptData, session.meetingMeta).catch(() => {});
+        enqueuePostInteractionExtraction('meeting-debrief', post =>
+          runMeetingDebrief(bot_id, transcriptData, session.meetingMeta, { post }));
         // The meeting that just ended shows up in her self-awareness immediately.
         refreshRecentMeetingsCache().catch(() => {});
       } catch (err) {
@@ -9526,23 +9529,49 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 // ── Transcript persistence: Postgres when _dbReady, else JSON file on the volume ──
 // The old per-utterance full-file rewrite (worst fit for flat files) becomes a serialized
 // upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
-async function saveTranscriptDoc(botId, transcript, ended) {
+const _transcriptCheckpointTimers = new Map();
+const _transcriptCheckpointPending = new Map();
+function recordTranscriptEpisode(botId, transcript) {
   const latest = Array.isArray(transcript) && transcript.length ? transcript[transcript.length - 1] : null;
   if (latest) intelligence.recordEpisodeEvent({
     correlation: `meeting:${botId}`, title: 'Meeting', channel: 'meeting', kind: 'utterance',
     actor: latest.speaker, text: latest.text, at: latest.timestamp,
     source_ref: { channel: 'meeting', id: botId, captured_at: latest.timestamp },
   });
+}
+function scheduleTranscriptCheckpoint(botId, transcript) {
+  recordTranscriptEpisode(botId, transcript);
+  _transcriptCheckpointPending.set(botId, transcript);
+  if (_transcriptCheckpointTimers.has(botId)) return;
+  const timer = setTimeout(() => {
+    _transcriptCheckpointTimers.delete(botId);
+    const pending = _transcriptCheckpointPending.get(botId);
+    _transcriptCheckpointPending.delete(botId);
+    if (!pending) return;
+    saveTranscriptDoc(botId, pending, null, { recordEpisode: false })
+      .catch(error => console.error('Transcript checkpoint failed:', error.message));
+  }, 1000);
+  timer.unref?.();
+  _transcriptCheckpointTimers.set(botId, timer);
+}
+async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = true } = {}) {
+  if (ended) {
+    const timer = _transcriptCheckpointTimers.get(botId);
+    if (timer) clearTimeout(timer);
+    _transcriptCheckpointTimers.delete(botId);
+    _transcriptCheckpointPending.delete(botId);
+  }
+  if (recordEpisode) recordTranscriptEpisode(botId, transcript);
   if (_dbReady) return _writeThrough('transcript:' + botId, () => db.upsertTranscript(botId, ended || null, transcript || []));
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
   catch (e) { console.warn('transcript write failed:', e.message); }
 }
 
-async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {}) {
+async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {}, { post = axios.post } = {}) {
   if (!process.env.ANTHROPIC_API_KEY || !Array.isArray(transcriptData?.transcript) || !transcriptData.transcript.length) return null;
   const transcript = compactTranscript(transcriptData.transcript);
-  const response = await axios.post('https://api.anthropic.com/v1/messages', {
+  const response = await post('https://api.anthropic.com/v1/messages', {
     model: 'claude-sonnet-4-6', max_tokens: 1800,
     system: meetingIntelligenceSystemPrompt(),
     messages: [{ role: 'user', content: `Meeting metadata: ${JSON.stringify({ title: meetingMeta?.title || meetingMeta?.meeting_title || null, project: meetingMeta?.project || null })}\n\nTranscript:\n${transcript}` }],
@@ -10128,6 +10157,8 @@ function isAskingClarification(reply) {
 // transcript entries when the same slide stays up for minutes. Keyed by botId, value is
 // the last description text we appended.
 const lastScreenshareDescription = {};
+const lastScreenshareDescriptionAt = {};
+const screenshareDescriptionInFlight = {};
 
 // Generates a brief text description of a screen-share frame using Claude Haiku vision
 // and appends it to the meeting transcript so future readers (the cowork loop, Drive
@@ -10138,6 +10169,12 @@ async function describeScreenshareForTranscript(base64Png, botId) {
   // Dummy test agents don't persist transcripts, so there's nothing to describe-and-append.
   // The live model still sees the frame directly; this is just the persistence pass we skip.
   if (sessions[botId]?.dummy) return;
+  const now = Date.now();
+  if (screenshareDescriptionInFlight[botId]
+    || (lastScreenshareDescriptionAt[botId]
+      && now - lastScreenshareDescriptionAt[botId] < 5 * 60 * 1000)) return;
+  screenshareDescriptionInFlight[botId] = true;
+  lastScreenshareDescriptionAt[botId] = now;
   try {
     const res = await axios.post(
       'https://api.anthropic.com/v1/messages',
@@ -10181,7 +10218,7 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     session.transcript.push({ speaker: 'Screen share', text: description, timestamp: new Date().toISOString() });
     try {
       const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
-      saveTranscriptDoc(botId, session.transcript, null);
+      scheduleTranscriptCheckpoint(botId, session.transcript);
     } catch (err) {
       console.error('Transcript save error (screen-share desc):', err.message);
     }
@@ -10189,6 +10226,8 @@ async function describeScreenshareForTranscript(base64Png, botId) {
   } catch (err) {
     // Non-fatal — description failures shouldn't disturb the live session.
     console.warn('Screen-share description failed:', err.response?.data?.error?.message || err.message);
+  } finally {
+    delete screenshareDescriptionInFlight[botId];
   }
 }
 
@@ -10196,7 +10235,7 @@ async function describeScreenshareForTranscript(base64Png, botId) {
 // The core of "send her in your place": John can skip the meeting and still know exactly what
 // came out of it within a minute of it ending. Non-fatal everywhere; a failed debrief never
 // affects transcript filing or session teardown.
-async function runMeetingDebrief(botId, transcriptData, meetingMeta) {
+async function runMeetingDebrief(botId, transcriptData, meetingMeta, { post = axios.post } = {}) {
   try {
     const t = (transcriptData && transcriptData.transcript) || [];
     if (t.length < 10) return; // mic checks and micro-meetings don't need a debrief
@@ -10211,7 +10250,7 @@ async function runMeetingDebrief(botId, transcriptData, meetingMeta) {
     const mandateNote = meetingMeta && meetingMeta.mandate
       ? `\nJohn's mandate for this meeting was: "${meetingMeta.mandate}". Lead with how it went against that mandate.`
       : '';
-    const resp = await axios.post('https://api.anthropic.com/v1/messages', {
+    const resp = await post('https://api.anthropic.com/v1/messages', {
       model: 'claude-sonnet-4-6',
       max_tokens: 500,
       system: `You write Nora's post-meeting debrief DM to John Kuefler. Nora is LimeLight's AI PM and attended this meeting, sometimes in John's place. Write AS Nora in her voice: casual, direct, specific, no corporate filler, never an em dash. Shape: 2 to 6 short lines. First line is the headline of what actually happened. Then ONLY the sections that apply, inline, no headers: commitments Nora made (exact, with dates), asks of John or LimeLight that Nora punted (who asked, what they need, by when she promised him an answer), and decisions only John can make. Skip anything empty. If the meeting was routine and nothing needs John, say so in one line and stop.`,
@@ -10219,11 +10258,14 @@ async function runMeetingDebrief(botId, transcriptData, meetingMeta) {
     }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } });
     const text = (resp.data.content || []).filter(b => b.type === 'text').map(b => b.text).join(' ').trim();
     if (!text) return;
-    await axios.post('https://slack.com/api/chat.postMessage',
+    await post('https://slack.com/api/chat.postMessage',
       { channel: johnId, text },
       { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
     console.log(`📋 Meeting debrief DMed to John (${t.length} utterances${meetingMeta && meetingMeta.mandate ? ', mandate-measured' : ''})`);
-  } catch (e) { console.warn('meeting debrief failed (non-fatal):', e.message); }
+  } catch (e) {
+    if (e.code === 'ERR_CANCELED' || e.name === 'CanceledError' || e.name === 'AbortError') throw e;
+    console.warn('meeting debrief failed (non-fatal):', e.message);
+  }
 }
 
 async function extractMemory(context, trigger, reply, sourceBotId, { post = axios.post } = {}) {
@@ -10710,6 +10752,8 @@ videoWss.on('connection', (ws, req) => {
     console.log(`📹 Recall video WS closed for bot: ${botId}`);
     delete lastFrameSentAt[botId];
     delete lastScreenshareDescription[botId];
+    delete lastScreenshareDescriptionAt[botId];
+    delete screenshareDescriptionInFlight[botId];
   });
 
   ws.on('error', (err) => {
@@ -11257,6 +11301,19 @@ function backgroundPostWithPriority(post, lease) {
 const _postInteractionExtractionQueue = [];
 let _postInteractionExtractionBusy = false;
 let _postInteractionExtractionTimer = null;
+function backgroundWorkSnapshot() {
+  return {
+    post_interaction: {
+      queued: _postInteractionExtractionQueue.length,
+      busy: _postInteractionExtractionBusy,
+      next: _postInteractionExtractionQueue[0]?.label || null,
+    },
+    transcript_checkpoints: {
+      pending: _transcriptCheckpointPending.size,
+      scheduled: _transcriptCheckpointTimers.size,
+    },
+  };
+}
 function schedulePostInteractionExtractionDrain(delayMs = 1200) {
   if (_postInteractionExtractionTimer) return;
   _postInteractionExtractionTimer = setTimeout(() => {
