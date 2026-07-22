@@ -216,7 +216,7 @@ async function loadIntelligenceSection(name, token = intelligenceLoadToken) {
         if (token === intelligenceLoadToken) renderPlayroom(value);
       } else if (name === 'self-model') {
         const [model, proposals] = await Promise.all([
-          intelligenceJson('/self-model?allow_stale=1', signal),
+          intelligenceJson('/self-model?allow_stale=1&view=dashboard', signal),
           intelligenceJson('/self-model/claim-proposals', signal),
         ]);
         if (token === intelligenceLoadToken) renderSelfModel(model, proposals);

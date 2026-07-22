@@ -188,8 +188,8 @@ test('intelligence dashboard paints a fast summary before progressively loading 
     'an explicit section jump should load its bounded endpoint without waiting for viewport discovery');
   assert.match(intelligenceJs, /Details load when this section approaches the viewport/);
   assert.match(intelligenceJs, /consciousness-research\/ledger\?summary=1/);
-  assert.match(intelligenceJs, /self-model\?allow_stale=1/,
-    'the progressive dashboard must use the worker snapshot rather than force a live audit');
+  assert.match(intelligenceJs, /self-model\?allow_stale=1&view=dashboard/,
+    'the progressive dashboard must use the compact worker snapshot rather than force a live audit');
   assert.match(intelligenceJs, /self-model\/claim-proposals/);
   assert.match(intelligenceJs, /Self-knowledge formation/);
   assert.match(intelligenceJs, /source-diverse evidence/);

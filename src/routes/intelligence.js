@@ -5,6 +5,61 @@ const expectationForecast = require('../intelligence/expectation-forecast');
 const consequenceReview = require('../intelligence/consequence-review');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
+function compactSelfModelForDashboard(model = {}) {
+  const summarizeStudy = item => ({
+    title: item.title, study_phase: item.study_phase, status: item.status,
+    report: item.report, event_target: item.event_target, item_target: item.item_target,
+    audit: item.audit,
+  });
+  const summarizeTrial = item => ({
+    hypothesis: item.hypothesis, status: item.status, study_phase: item.study_phase,
+    assignment_progress: item.assignment_progress || {
+      assigned_total: (item.assignments || []).length,
+      resolved_total: (item.assignments || []).filter(assignment => assignment.status === 'resolved').length,
+    },
+    evaluator_target: item.evaluator_target, metric_rubrics: item.metric_rubrics,
+    evaluation: item.evaluation, goal_trial_audit: item.goal_trial_audit,
+    integrated_self_trial_audit: item.integrated_self_trial_audit,
+    cognitive_pulse_trial_audit: item.cognitive_pulse_trial_audit,
+  });
+  const fingerprints = model.behavioral_fingerprints || {};
+  const bank = fingerprints.bank || {};
+  const constructive = model.constructive_prospection || {};
+  return {
+    claims: (model.claims || []).filter(item => item.status === 'active').map(item => ({
+      status: item.status, statement: item.statement, domain: item.domain,
+      confidence: item.confidence, confidence_audit: item.confidence_audit,
+    })),
+    probes: (model.probes || []).filter(item => item.status === 'open').map(item => ({
+      status: item.status, question: item.question, prediction: item.prediction,
+    })),
+    prediction_studies: (model.prediction_studies || []).map(summarizeStudy),
+    metacognitive_control_studies: (model.metacognitive_control_studies || []).map(summarizeStudy),
+    epistemic_action_studies: (model.epistemic_action_studies || []).map(summarizeStudy),
+    episodic_prospection_studies: (model.episodic_prospection_studies || []).map(summarizeStudy),
+    constructive_prospection: {
+      report: constructive.report,
+      simulations: (constructive.simulations || []).filter(item => item.status === 'open').map(item => ({
+        status: item.status, title: item.title, decision_due: item.decision_due,
+        intended_option_key: item.intended_option_key,
+        options: (item.options || []).map(option => ({ key: option.key, action: option.action,
+          probability: option.probability, control_probability: option.control_probability })),
+      })),
+    },
+    behavioral_fingerprints: {
+      bank: { probe_count: bank.probe_count, form_count: bank.form_count },
+      runs: (fingerprints.runs || []).filter(item => item.status === 'active').map(item => ({
+        status: item.status, response_count: item.response_count, probe_count: item.probe_count,
+        scored_count: item.scored_count,
+      })),
+      drift: (fingerprints.drift || []).slice(-12), report: fingerprints.report,
+      automation: fingerprints.automation, epistemic_status: fingerprints.epistemic_status,
+    },
+    context_trials: (model.context_trials || []).map(summarizeTrial),
+    report: model.report,
+  };
+}
+
 function validateDueConsequenceReviews({ cycleId, store, ledger, now = new Date() }) {
   const cycle = store.list('cycles').find(item => item.id === cycleId);
   if (!cycle?.run_lock_holder) return { required: false, valid: true, due_action_ids: [] };
@@ -32,6 +87,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     projection: 'self_model',
     loadPersisted: () => loadResearchProjection('self_model'),
     savePersisted: envelope => saveResearchProjection('self_model', envelope) });
+  let dashboardSelfModelCache = null;
   const cognitionCache = createResearchProjectionCache({ ...projectionCacheOptions,
     projection: 'cognition',
     loadPersisted: () => loadResearchProjection('cognition'),
@@ -1115,6 +1171,18 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
           || req.query.require_current === '1',
       });
       projectionHeaders(res, snapshot);
+      if (req.query.view === 'dashboard') {
+        if (!dashboardSelfModelCache || dashboardSelfModelCache.revision !== snapshot.revision
+          || dashboardSelfModelCache.completed_at_ms !== snapshot.completed_at_ms) {
+          dashboardSelfModelCache = {
+            revision: snapshot.revision,
+            completed_at_ms: snapshot.completed_at_ms,
+            serialized: JSON.stringify(compactSelfModelForDashboard(JSON.parse(snapshot.serialized))),
+          };
+        }
+        res.set('X-Nora-Snapshot-Projection', 'dashboard');
+        return res.type('application/json').send(dashboardSelfModelCache.serialized);
+      }
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
       return res.status(503).json({ error: 'self-model snapshot unavailable', detail: error.message });
@@ -1618,4 +1686,5 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   };
 }
 
-module.exports = { registerIntelligenceRoutes, validateDueConsequenceReviews };
+module.exports = { registerIntelligenceRoutes, validateDueConsequenceReviews,
+  compactSelfModelForDashboard };
