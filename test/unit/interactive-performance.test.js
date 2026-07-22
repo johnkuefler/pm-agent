@@ -40,6 +40,7 @@ test('interactive latency firewall quarantines only extra-round or expanded-gene
 });
 
 test('Railway waits for readiness and gives graceful shutdown a bounded drain window', () => {
+  assert.equal(railwayConfig.deploy.startCommand, 'node server.js');
   assert.equal(railwayConfig.deploy.healthcheckPath, '/health');
   assert.equal(railwayConfig.deploy.healthcheckTimeout, 120);
   assert.equal(railwayConfig.deploy.drainingSeconds, 30);
