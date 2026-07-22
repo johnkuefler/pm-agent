@@ -187,6 +187,18 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.json(store.persistenceDiagnostics());
   });
 
+  app.get('/intelligence/persistence-footprint', requireAuth, async (_req, res) => {
+    try {
+      const projection = await store.computeBackgroundProjection('stateFootprintSnapshot');
+      res.set('X-Nora-Compute-Isolation', 'worker_thread');
+      res.set('Server-Timing', `footprint-worker;dur=${Number(projection.compute_ms || 0).toFixed(1)}, dispatch;dur=${Number(projection.dispatch_ms || 0).toFixed(1)}`);
+      res.set('Cache-Control', 'private, no-store');
+      res.json(projection.value);
+    } catch (error) {
+      res.status(503).json({ error: 'persistence footprint unavailable', detail: error.message });
+    }
+  });
+
   app.get('/intelligence/research-projection-runtime', requireAuth, (_req, res) => {
     res.set('Cache-Control', 'private, no-store');
     res.json({

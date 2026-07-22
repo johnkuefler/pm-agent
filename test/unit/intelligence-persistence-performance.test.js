@@ -166,6 +166,21 @@ test('dashboard and experience projections stay off the foreground event loop', 
   assert.equal(store.persistenceDiagnostics().background_projection.failures, 0);
 });
 
+test('persistence footprint diagnostics measure section growth in the projection worker', async () => {
+  const state = emptyState();
+  state.cognition.development = Array.from({ length: 25 }, (_, index) => ({
+    id: `development-${index}`, note: 'bounded-diagnostic-fixture'.repeat(20),
+  }));
+  const store = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: state });
+  await store.init();
+  const projection = await store.computeBackgroundProjection('stateFootprintSnapshot');
+  assert.ok(projection.value.total_bytes > 1_000);
+  assert.equal(projection.value.cognition_sections[0].key, 'development');
+  assert.equal(projection.value.cognition_sections[0].items, 25);
+  assert.ok(projection.compute_ms >= 0);
+});
+
 test('subject queue projection excludes completed study analysis before mapping', async () => {
   const state = emptyState();
   state.cognition.self_model.prediction_studies = [
