@@ -6,6 +6,14 @@ const axios = require('axios');
 // would otherwise retain sockets and async work indefinitely during a provider incident.
 axios.defaults.timeout = Math.max(1000, Math.min(120000,
   Number(process.env.NORA_HTTP_TIMEOUT_MS) || 30000));
+// Provider-specific ceilings keep a degraded connector from consuming the whole interactive
+// budget. File transfer gets more room than control-plane calls, but both remain terminal.
+const RECALL_JOIN_TIMEOUT_MS = 12000;
+const RECALL_CONTROL_TIMEOUT_MS = 6000;
+const CONNECTOR_AUTH_TIMEOUT_MS = 10000;
+const SLACK_CONTROL_TIMEOUT_MS = 6000;
+const SLACK_FILE_TIMEOUT_MS = 15000;
+const SLACK_FILE_MAX_BYTES = 25 * 1024 * 1024;
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -3909,7 +3917,10 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, meeting
   const sessionToken = crypto.randomBytes(32).toString('hex');
   const diagnostics = meeting_diagnostics === true;
   const botConfig = buildBotConfig(host || publicHost(), sessionToken, 'Nora', { diagnostics });
-  const botRes = await axios.post(`${RECALL_BASE}/bot/`, { meeting_url, ...botConfig }, { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
+  const botRes = await axios.post(`${RECALL_BASE}/bot/`, { meeting_url, ...botConfig }, {
+    headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+    timeout: RECALL_JOIN_TIMEOUT_MS,
+  });
   const botId = botRes.data.id;
   activeBotId = botId;
   sessionTokens[sessionToken] = botId;
@@ -3994,7 +4005,8 @@ app.post('/dummy/join', requireAuth, async (req, res) => {
       meeting_url,
       ...botConfig
     }, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+      timeout: RECALL_JOIN_TIMEOUT_MS,
     });
 
     const botId = botRes.data.id;
@@ -4094,7 +4106,10 @@ app.get('/calendar/oauth/callback', async (req, res) => {
       client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
       redirect_uri: getGoogleOAuthRedirectUri(req.get('host')),
       grant_type: 'authorization_code'
-    }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+    }).toString(), {
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      timeout: CONNECTOR_AUTH_TIMEOUT_MS,
+    });
     const { refresh_token, access_token } = tokenRes.data;
     if (!refresh_token) {
       return res.status(400).send('Google did not return a refresh_token. If you previously connected this account, revoke access at https://myaccount.google.com/permissions and try again.');
@@ -4102,7 +4117,8 @@ app.get('/calendar/oauth/callback', async (req, res) => {
 
     // 2. Fetch the user's email so we know whose calendar this is (and for the attendee match later).
     const userinfoRes = await axios.get('https://www.googleapis.com/oauth2/v2/userinfo', {
-      headers: { Authorization: `Bearer ${access_token}` }
+      headers: { Authorization: `Bearer ${access_token}` },
+      timeout: CONNECTOR_AUTH_TIMEOUT_MS,
     });
     const googleEmail = userinfoRes.data.email;
 
@@ -4118,7 +4134,8 @@ app.get('/calendar/oauth/callback', async (req, res) => {
       // until workspace-level webhook config is required.
       webhook_url: `${SERVER_URL}/webhook/recall-calendar`
     }, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' }
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' },
+      timeout: CONNECTOR_AUTH_TIMEOUT_MS,
     });
 
     saveCalendarState({
@@ -4162,7 +4179,8 @@ app.delete('/calendar', requireAuth, async (req, res) => {
   if (req.query.also_delete_on_recall === '1' && state.recall_calendar_id) {
     try {
       await axios.delete(`${RECALL_V2_BASE}/calendars/${state.recall_calendar_id}/`, {
-        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+        timeout: RECALL_CONTROL_TIMEOUT_MS,
       });
     } catch (err) {
       console.warn('Recall calendar delete failed (continuing with local clear):', err.response?.data || err.message);
@@ -4194,7 +4212,8 @@ app.post('/webhook/recall-calendar', async (req, res) => {
     const updatedSince = data.last_updated_ts || state.last_sync || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const params = new URLSearchParams({ calendar_id: state.recall_calendar_id, updated_at__gte: updatedSince });
     const listRes = await axios.get(`${RECALL_V2_BASE}/calendar-events/?${params.toString()}`, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+      timeout: RECALL_CONTROL_TIMEOUT_MS,
     });
     const events = listRes.data?.results || [];
     console.log(`📅 Re-listed ${events.length} calendar events since ${updatedSince}`);
@@ -4257,7 +4276,10 @@ app.post('/webhook/recall-calendar', async (req, res) => {
             deduplication_key: `nora-auto-${ev.id}`,
             bot_config: botConfig
           },
-          { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' } }
+          {
+            headers: { Authorization: `Token ${process.env.RECALL_API_KEY}`, 'Content-Type': 'application/json' },
+            timeout: RECALL_CONTROL_TIMEOUT_MS,
+          }
         );
         // Bot id could live in several spots depending on Recall response shape.
         // Try all the plausible paths and log the actual response if we miss — the
@@ -6333,7 +6355,11 @@ async function deliverJobResult(job, { ok, result, error }) {
   }
   // Meeting-origin (zoom chat or voice): try the meeting chat if the bot's still live, else DM John.
   if ((origin.kind === 'zoom_chat' || origin.kind === 'voice') && origin.bot_id) {
-    const sent = await axios.post(`${RECALL_BASE}/bot/${origin.bot_id}/send_chat_message/`, { message: text }, { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }).then(() => true).catch(() => false);
+    const sent = await axios.post(`${RECALL_BASE}/bot/${origin.bot_id}/send_chat_message/`,
+      { message: text }, {
+        headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+        timeout: RECALL_CONTROL_TIMEOUT_MS,
+      }).then(() => true).catch(() => false);
     if (sent) return;
   }
   const johnId = resolveJohnSlackId();
@@ -8548,7 +8574,7 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
       let cursor = '';
       do {
         const url = `https://slack.com/api/users.conversations?types=${type}&limit=200${cursor ? `&cursor=${cursor}` : ''}`;
-        const r = await axios.get(url, { headers });
+        const r = await axios.get(url, { headers, timeout: SLACK_CONTROL_TIMEOUT_MS });
         if (!r.data.ok) {
           if (r.data.error === 'missing_scope') {
             const need = type === 'public_channel' ? 'channels:read' : 'groups:read';
@@ -8674,7 +8700,8 @@ app.post('/notify', requireAuth, async (req, res) => {
       const dmRes = await axios.post('https://slack.com/api/conversations.open', {
         users: target
       }, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+        timeout: SLACK_CONTROL_TIMEOUT_MS,
       });
       channelId = dmRes.data.channel?.id || target;
     }
@@ -8685,13 +8712,19 @@ app.post('/notify', requireAuth, async (req, res) => {
     if (thread_ts) msgPayload.thread_ts = thread_ts;
 
     const msgRes = await axios.post('https://slack.com/api/chat.postMessage', msgPayload, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      timeout: SLACK_CONTROL_TIMEOUT_MS,
     });
 
     // Upload a file if provided
     if (file_url && file_name) {
       // Download the file first
-      const fileData = await axios.get(file_url, { responseType: 'arraybuffer' });
+      const fileData = await axios.get(file_url, {
+        responseType: 'arraybuffer',
+        timeout: SLACK_FILE_TIMEOUT_MS,
+        maxContentLength: SLACK_FILE_MAX_BYTES,
+        maxBodyLength: SLACK_FILE_MAX_BYTES,
+      });
       const formData = new FormData();
       formData.append('channels', channelId);
       formData.append('filename', file_name);
@@ -8700,7 +8733,9 @@ app.post('/notify', requireAuth, async (req, res) => {
       if (thread_ts) formData.append('thread_ts', thread_ts);
 
       await axios.post('https://slack.com/api/files.upload', formData, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+        timeout: SLACK_FILE_TIMEOUT_MS,
+        maxBodyLength: SLACK_FILE_MAX_BYTES,
       });
     }
 
@@ -9127,14 +9162,24 @@ app.get('/admin/drive/upload-artifact-status', requireAuth, (req, res) => {
 async function cancelRecallBot(botId) {
   const authHeader = { Authorization: `Token ${process.env.RECALL_API_KEY}` };
   try {
-    await axios.post(`${RECALL_BASE}/bot/${botId}/leave_call/`, {}, { headers: authHeader });
+    await axios.post(`${RECALL_BASE}/bot/${botId}/leave_call/`, {}, {
+      headers: authHeader, timeout: RECALL_CONTROL_TIMEOUT_MS,
+    });
     return { method: 'leave_call' };
   } catch (err) {
+    if (err.response?.status === 404) return { method: 'already_absent' };
     const code = err.response?.data?.code;
     const isUnstarted = code === 'cannot_command_unstarted_bot';
     if (!isUnstarted) throw err;
     // Bot hasn't started yet — DELETE removes the scheduled record entirely.
-    await axios.delete(`${RECALL_BASE}/bot/${botId}/`, { headers: authHeader });
+    try {
+      await axios.delete(`${RECALL_BASE}/bot/${botId}/`, {
+        headers: authHeader, timeout: RECALL_CONTROL_TIMEOUT_MS,
+      });
+    } catch (deleteError) {
+      if (deleteError.response?.status === 404) return { method: 'already_absent' };
+      throw deleteError;
+    }
     return { method: 'delete' };
   }
 }
@@ -9217,7 +9262,8 @@ app.get('/admin/active-bots', requireAuth, async (req, res) => {
       params.append('status', s);
     }
     const r = await axios.get(`${RECALL_BASE}/bot/?${params.toString()}`, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+      timeout: RECALL_CONTROL_TIMEOUT_MS,
     });
     // Recall paginates; for our scale the first page is more than enough. Slim the
     // shape down to what the UI actually needs.
@@ -9288,7 +9334,8 @@ app.get('/admin/scheduled-bots', requireAuth, async (req, res) => {
     params.append('join_at_before', horizonIso);
 
     const r = await axios.get(`${RECALL_BASE}/bot/?${params.toString()}`, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+      timeout: RECALL_CONTROL_TIMEOUT_MS,
     });
     const raw = Array.isArray(r.data?.results) ? r.data.results : Array.isArray(r.data) ? r.data : [];
     const bots = raw.map(b => {
@@ -9352,7 +9399,8 @@ app.post('/admin/scheduled-bots/dedupe', requireAuth, async (req, res) => {
     params.append('join_at_before', horizonIso);
 
     const listRes = await axios.get(`${RECALL_BASE}/bot/?${params.toString()}`, {
-      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+      headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+      timeout: RECALL_CONTROL_TIMEOUT_MS,
     });
     const raw = Array.isArray(listRes.data?.results) ? listRes.data.results : Array.isArray(listRes.data) ? listRes.data : [];
     const bots = raw
@@ -9445,7 +9493,8 @@ app.get('/admin/slack/bot-channels', requireAuth, async (req, res) => {
   try {
     const r = await axios.get('https://slack.com/api/users.conversations', {
       headers: { Authorization: `Bearer ${token}` },
-      params: { types: 'public_channel,private_channel', limit: 200, exclude_archived: true }
+      params: { types: 'public_channel,private_channel', limit: 200, exclude_archived: true },
+      timeout: SLACK_CONTROL_TIMEOUT_MS,
     });
     if (!r.data?.ok) return res.status(502).json({ error: r.data?.error || 'slack api error' });
     const channels = (r.data.channels || []).map(c => ({

@@ -203,6 +203,18 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'high-frequency realtime deltas must not flood production logs');
   assert.match(server, /axios\.defaults\.timeout = Math\.max/,
     'legacy connector requests must inherit a finite service-wide HTTP deadline');
+  assert.match(server, /RECALL_JOIN_TIMEOUT_MS = 12000/,
+    'meeting joins must fail cleanly inside a bounded provider deadline');
+  assert.match(server, /send_chat_message[\s\S]*?timeout: RECALL_CONTROL_TIMEOUT_MS/,
+    'meeting chat delivery must not occupy a live session for the global timeout');
+  assert.match(server, /cancelRecallBot[\s\S]*?timeout: RECALL_CONTROL_TIMEOUT_MS/,
+    'meeting removal must have a short terminal deadline');
+  assert.match(server, /err\.response\?\.status === 404\) return \{ method: 'already_absent' \}/,
+    'meeting cleanup must treat an already-removed remote bot as an idempotent success');
+  assert.match(server, /users\.conversations\?types=\$\{type\}[\s\S]*?SLACK_CONTROL_TIMEOUT_MS/,
+    'Slack mention discovery must not inherit the broad service timeout');
+  assert.match(server, /maxContentLength: SLACK_FILE_MAX_BYTES/,
+    'Slack file forwarding must bound both elapsed time and downloaded bytes');
   assert.match(server, /promptRefreshInFlight\) return;/,
     'periodic voice prompt refreshes must never overlap');
   assert.match(server, /if \(messageQueue\.length >= 500\) messageQueue\.shift\(\);/,
