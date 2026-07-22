@@ -751,7 +751,7 @@ async function upsertProject(project) {
 }
 
 async function loadAllDreams() {
-  const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.dreams ORDER BY ord ASC NULLS LAST, finished DESC`);
+  const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.dreams ORDER BY finished DESC NULLS LAST, ord ASC NULLS LAST`);
   return rows.map((r) => r.data);
 }
 const replaceAllDreams = makeReplaceAll('dreams', (d, i) => {
@@ -765,6 +765,37 @@ const replaceAllDreams = makeReplaceAll('dreams', (d, i) => {
     params: [d.id, d, d.date || null, d.finished || null, i],
   };
 });
+
+async function applyDreamChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
+  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    for (const dream of upserts) {
+      if (!dream?.id) continue;
+      const finishedMs = new Date(dream.finished || dream.started).getTime();
+      const ord = Number.isFinite(finishedMs) ? finishedMs : Date.now();
+      await client.query(
+        `INSERT INTO ${DB_SCHEMA}.dreams (id, data, date, finished, ord)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, date=EXCLUDED.date,
+           finished=EXCLUDED.finished`,
+        [dream.id, dream, dream.date || null, dream.finished || null, ord]
+      );
+    }
+    if (deletedIds.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.dreams WHERE id = ANY($1::text[])`, [deletedIds]);
+    }
+    await client.query('COMMIT');
+    return { upserted: upserts.length, deleted: deletedIds.length };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
 
 async function loadAllMcp() {
   const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.mcp_servers ORDER BY ord ASC NULLS LAST`);
@@ -1005,7 +1036,7 @@ module.exports = {
   loadAllTasks, replaceAllTasks, applyTaskChanges,
   loadAllProjects, replaceAllProjects, upsertProject,
   loadAllInteractions, replaceAllInteractions, appendInteraction, applyInteractionChanges,
-  loadAllDreams, replaceAllDreams,
+  loadAllDreams, replaceAllDreams, applyDreamChanges,
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers, applyMarkerChanges,
   loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,

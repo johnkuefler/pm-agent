@@ -595,6 +595,18 @@ test('interaction reviews update only changed durable rows', () => {
   assert.doesNotMatch(implementation, /replaceAllInteractions/);
 });
 
+test('dream reflection updates persist only changed dream rows', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('function saveDreams(dreams)');
+  const end = server.indexOf('\nconst MAX_DREAMS_KEPT', start);
+  assert.ok(start >= 0 && end > start);
+  const implementation = server.slice(start, end);
+  assert.match(implementation, /diffDreamPersistence\(_persistedDreamState, snapshot\)/);
+  assert.match(implementation, /db\.applyDreamChanges\(delta\)/);
+  assert.doesNotMatch(implementation, /replaceAllDreams/);
+  assert.match(implementation, /\{ strict: true \}/);
+});
+
 test('project-scoped memory activity upserts one project instead of rewriting the project ledger', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const start = server.indexOf('function bumpProjectActivity(name)');

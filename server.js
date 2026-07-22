@@ -114,6 +114,7 @@ const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
   require('./src/runtime/slack-thread-delta');
 const { captureInteractionPersistence, diffInteractionPersistence } =
   require('./src/runtime/interaction-delta');
+const { captureDreamPersistence, diffDreamPersistence } = require('./src/runtime/dream-delta');
 const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
 const server = http.createServer(app);
@@ -328,6 +329,7 @@ const _cache = {};   // entity → in-memory copy backing sync reads
 let _persistedTaskState = new Map();
 let _persistedSlackThreadState = new Map();
 let _persistedInteractionState = new Map();
+let _persistedDreamState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
@@ -1641,6 +1643,7 @@ async function initPersistence() {
     _cache.interactions = await db.loadAllInteractions();
     _persistedInteractionState = captureInteractionPersistence(_cache.interactions);
     _cache.dreams = await db.loadAllDreams();
+    _persistedDreamState = captureDreamPersistence(_cache.dreams);
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
     _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
@@ -10401,14 +10404,27 @@ function loadDreams() {
   catch { return []; }
 }
 function saveDreams(dreams) {
-  if (_dbReady) { _cache.dreams = dreams; _writeThrough('dreams', () => db.replaceAllDreams(dreams)); return; }
+  if (_dbReady) {
+    _cache.dreams = dreams;
+    const snapshot = JSON.parse(JSON.stringify(dreams));
+    return _writeThrough('dreams', async () => {
+      const delta = diffDreamPersistence(_persistedDreamState, snapshot);
+      await db.applyDreamChanges(delta);
+      _persistedDreamState = captureDreamPersistence(snapshot);
+    });
+  }
   try { fs.writeFileSync(getDreamsPath(), JSON.stringify(dreams, null, 2)); }
   catch (err) { console.error('Failed to persist dreams:', err.message); }
 }
 function saveDreamsStrict(dreams) {
   if (!_dbReady) { saveDreams(dreams); return Promise.resolve(); }
   _cache.dreams = dreams;
-  return _writeThrough('dreams', () => db.replaceAllDreams(dreams), { strict: true });
+  const snapshot = JSON.parse(JSON.stringify(dreams));
+  return _writeThrough('dreams', async () => {
+    const delta = diffDreamPersistence(_persistedDreamState, snapshot);
+    await db.applyDreamChanges(delta);
+    _persistedDreamState = captureDreamPersistence(snapshot);
+  }, { strict: true });
 }
 const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
 
