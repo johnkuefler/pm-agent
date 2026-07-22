@@ -17,6 +17,7 @@ function normalizeLock(value) {
 
 function registerRunLockRoutes(app, requireAuth, {
   onAcquire = null, onRelease = null, projectLifecycle = null,
+  canAcquire = null,
   loadLock = null, saveLock = null, clock = () => Date.now(), activityStream = null,
   processEpochId = null, restartResumeGraceMs = 10 * 60 * 1000,
 } = {}) {
@@ -98,6 +99,28 @@ function registerRunLockRoutes(app, requireAuth, {
           error: error.message });
       }
       current = null;
+    }
+
+    if (!active && typeof canAcquire === 'function') {
+      let gate;
+      try {
+        gate = await canAcquire({ holder, acquired_at: new Date(now).toISOString() });
+      } catch (error) {
+        console.error(`Run lock acquisition gate failed for ${holder}: ${error.message}`);
+        return res.status(503).json({ acquired: false,
+          reason: 'acquisition_gate_failed', error: error.message });
+      }
+      if (gate?.allowed === false) {
+        const retryAfterMs = Math.max(1000, Number(gate.retry_after_ms) || 30_000);
+        activityStream?.record({ id: `hourly:${holder}:interactive-deferred`, lane: 'work',
+          kind: 'hourly_run_deferred', label: 'Holding the hourly run for a live conversation',
+          detail: 'Interactive work retains exclusive foreground priority before a lifecycle opens.',
+          status: 'deferred', source: 'run-lock',
+          meta: { reason: gate.reason || 'interactive_priority', retry_after_ms: retryAfterMs } });
+        return res.json({ acquired: false, reason: gate.reason || 'interactive_priority',
+          retry_after_ms: retryAfterMs,
+          active_surfaces: gate.active_surfaces || {} });
+      }
     }
 
     let lifecycle = active ? current.lifecycle || null : null;

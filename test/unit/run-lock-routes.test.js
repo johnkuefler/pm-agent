@@ -123,6 +123,47 @@ test('run lock fails closed when its lifecycle cannot start', async () => {
   assert.equal((await call('GET', '/run-lock')).body.locked, false);
 });
 
+test('interactive priority defers a new hourly lifecycle but never strands its existing holder', async () => {
+  let blocked = true;
+  let acquisitions = 0;
+  const { call } = routeHarness({
+    canAcquire: () => blocked
+      ? { allowed: false, reason: 'interactive_active', retry_after_ms: 30_000,
+        active_surfaces: { realtime: 1 } }
+      : { allowed: true },
+    onAcquire: () => {
+      acquisitions += 1;
+      return { cycle_id: 'cycle-after-call', moment_id: 'moment-after-call' };
+    },
+  });
+
+  const deferred = await call('POST', '/run-lock', {
+    body: { holder: 'run-during-call', ttl_seconds: 3000 },
+  });
+  assert.equal(deferred.statusCode, 200);
+  assert.equal(deferred.body.acquired, false);
+  assert.equal(deferred.body.reason, 'interactive_active');
+  assert.equal(deferred.body.retry_after_ms, 30_000);
+  assert.deepEqual(deferred.body.active_surfaces, { realtime: 1 });
+  assert.equal(acquisitions, 0);
+  assert.equal((await call('GET', '/run-lock')).body.locked, false);
+
+  blocked = false;
+  const acquired = await call('POST', '/run-lock', {
+    body: { holder: 'run-after-call', ttl_seconds: 3000 },
+  });
+  assert.equal(acquired.body.acquired, true);
+  assert.equal(acquisitions, 1);
+
+  blocked = true;
+  const refreshed = await call('POST', '/run-lock', {
+    body: { holder: 'run-after-call', ttl_seconds: 3000 },
+  });
+  assert.equal(refreshed.body.acquired, true,
+    'the current holder must retain a path to close and release its lifecycle');
+  assert.equal(acquisitions, 1);
+});
+
 test('durable run lock survives route reconstruction and preserves the exact lifecycle', async () => {
   let persisted = null;
   let now = Date.parse('2026-07-15T01:00:00.000Z');

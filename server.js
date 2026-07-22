@@ -8861,6 +8861,22 @@ registerRunLockRoutes(app, requireAuth, {
   loadLock: loadDurableRunLock,
   saveLock: saveDurableRunLock,
   activityStream: runtimeActivity,
+  canAcquire: () => {
+    const priority = interactivePerformance.prioritySnapshot();
+    if (priority.active_interactions > 0) return {
+      allowed: false,
+      reason: 'interactive_active',
+      retry_after_ms: priority.interactive_active_retry_ms,
+      active_surfaces: priority.active_surfaces,
+    };
+    if (priority.quiet_remaining_ms > 0) return {
+      allowed: false,
+      reason: 'interactive_cooldown',
+      retry_after_ms: priority.quiet_remaining_ms,
+      active_surfaces: priority.active_surfaces,
+    };
+    return { allowed: true };
+  },
   projectLifecycle: ({ lifecycle, holder }) => {
     if (!lifecycle?.cycle_id) return lifecycle;
     const innerProjection = currentInnerThreadProjection();
