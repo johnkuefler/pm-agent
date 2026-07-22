@@ -236,8 +236,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'shutdown must flush raw transcript and deferred episode checkpoints before closing the database');
   assert.match(server, /const transcriptDrain = await drainTranscriptCheckpoints\(\)[\s\S]*intelligence\.persistStrict\(\)/,
     'graceful shutdown must order transcript durability before the final intelligence snapshot');
-  assert.match(server, /process\.once\('SIGTERM'[\s\S]*shutdown\('SIGTERM'\)/,
-    'production must handle SIGTERM through the graceful shutdown path');
+  assert.match(server, /_processRecovery\.install\(process\)/,
+    'production must route SIGTERM and fatal async errors through the bounded shutdown coordinator');
   assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,
     'dashboard warmup must populate the same cache used by live reads');
   assert.match(intelligenceRoutesSource, /app\.get\('\/intelligence'[\s\S]*workerCachedJson[\s\S]*dashboardIntelligenceOverview/,

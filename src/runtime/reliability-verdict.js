@@ -29,6 +29,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const entityWrites = snapshot.entity_writes || {};
   const realtimeTransport = snapshot.realtime_transport || {};
   const deferredJobs = snapshot.deferred_jobs || {};
+  const processHealth = snapshot.process_health || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
@@ -52,6 +53,10 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (Number(deferredJobs.memory_queue?.queued) > 10) {
     degraded.push({ code: 'deferred_job_memory_backlog', count: Number(deferredJobs.memory_queue.queued),
       message: 'Deferred connector work is accumulating in the bounded memory fallback.' });
+  }
+  if (processHealth.fatal === true && processHealth.state !== 'running') {
+    actionRequired.push({ code: 'fatal_process_recovery',
+      message: 'The process is draining after a fatal asynchronous error and will restart.' });
   }
   if (Object.values(responsiveness.surfaces || {}).some(surface => surface?.gate === 'failing')) {
     actionRequired.push({ code: 'interactive_latency_failing',

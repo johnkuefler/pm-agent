@@ -108,6 +108,7 @@ const { createRequestPerformanceMonitor } = require('./src/runtime/request-perfo
 const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-liveness');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health');
+const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
@@ -422,6 +423,7 @@ function autobiographyRecordFromLedger(revisions) {
 const _somaProcessEpochId = crypto.randomUUID();
 const _somaNerves = { errors: [], warns: [], loopLagMax: 0, runtimeReady: false };
 let _somaLoopLagLast = Date.now();
+let _somaLoopTimer = null;
 function sampleSomaLoopLag(now = Date.now()) {
   const lag = now - _somaLoopLagLast - 1000;
   _somaLoopLagLast = now;
@@ -442,7 +444,8 @@ function beginSomaRuntimeSampling(now = Date.now()) {
   const origErr = console.error.bind(console), origWarn = console.warn.bind(console);
   console.error = (...a) => { _somaNerves.errors.push(Date.now()); if (_somaNerves.errors.length > 600) _somaNerves.errors.splice(0, 300); origErr(...a); };
   console.warn = (...a) => { _somaNerves.warns.push(Date.now()); if (_somaNerves.warns.length > 600) _somaNerves.warns.splice(0, 300); origWarn(...a); };
-  setInterval(sampleSomaLoopLag, 1000).unref?.();
+  _somaLoopTimer = setInterval(sampleSomaLoopLag, 1000);
+  _somaLoopTimer.unref?.();
 }
 function _writeThrough(entity, fn, options = {}) {
   return _writeThroughQueue.enqueue(entity, fn, options);
@@ -519,6 +522,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     background_work: backgroundWorkSnapshot(),
     deferred_jobs: _deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
       pendingFinalizations: _pendingJobFinalizations.size }),
+    process_health: _processRecovery.snapshot(),
     entity_writes: _writeThroughQueue.snapshot(),
     realtime_transport: websocketLiveness.snapshot(),
   };
@@ -1561,7 +1565,9 @@ function startEmbeddingBackfiller() {
     finally { priorityLease.release(); }
   };
   _embedTimer = setInterval(tick, 20000);
-  setTimeout(tick, 4000); // first pass shortly after boot
+  const firstTick = setTimeout(tick, 4000); // first pass shortly after boot
+  firstTick.unref?.();
+  _runtimeIntervals.push(firstTick);
 }
 
 // Scheduled re-vectorization. Embeddings never drift on their own (the backfiller re-embeds
@@ -1725,7 +1731,10 @@ async function initPersistence() {
     // Re-vectorize on model change: once now, then daily (EMBED_MODEL only changes on deploy, so
     // the boot check is the load-bearing one; the daily timer is a cheap safety net).
     await reembedIfModelChanged();
-    setInterval(() => reembedIfModelChanged(), 24 * 60 * 60 * 1000);
+    const reembedTimer = setInterval(() => reembedIfModelChanged()
+      .catch(error => console.warn('embedding model interval failed:', error.message)), 24 * 60 * 60 * 1000);
+    reembedTimer.unref?.();
+    _runtimeIntervals.push(reembedTimer);
   } catch (e) {
     console.error('❌ Postgres init failed. Error:', e.message);
     _dbReady = false;
@@ -14328,6 +14337,7 @@ async function start(options = {}) {
 async function stop() {
   setServiceReadiness('draining');
   _somaNerves.runtimeReady = false;
+  if (_somaLoopTimer) { clearInterval(_somaLoopTimer); _somaLoopTimer = null; }
   for (const timer of _runtimeIntervals.splice(0)) {
     if (typeof timer?.close === 'function') timer.close();
     else clearInterval(timer);
@@ -14358,6 +14368,13 @@ async function stop() {
   if (transcriptDrain) throw transcriptDrain;
   if (persistenceDrain.status === 'rejected') throw persistenceDrain.reason;
 }
+
+const _processRecovery = createProcessRecovery({
+  stop,
+  beforeStop: state => setServiceReadiness(state.fatal ? 'fatal_recovery' : 'draining', {
+    error: state.error?.message || null,
+  }),
+});
 
 module.exports = {
   app,
@@ -14493,18 +14510,8 @@ module.exports = {
 };
 
 if (require.main === module) {
-  let shutdownStarted = false;
-  const shutdown = signal => {
-    if (shutdownStarted) return;
-    shutdownStarted = true;
-    console.log(`Received ${signal}; draining Nora before shutdown`);
-    stop().then(() => { process.exitCode = 0; })
-      .catch(error => { console.error('Graceful shutdown failed:', error.message); process.exitCode = 1; });
-  };
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
-  process.once('SIGINT', () => shutdown('SIGINT'));
+  _processRecovery.install(process);
   start().catch((err) => {
-    console.error('Failed to start Nora server:', err);
-    process.exitCode = 1;
+    _processRecovery.requestShutdown('startup_failure', { fatal: true, error: err });
   });
 }

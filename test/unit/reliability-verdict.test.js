@@ -20,6 +20,7 @@ function healthySnapshot() {
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
+    process_health: { state: 'running', fatal: false },
     realtime_transport: { recent_stale: [] },
   };
 }
@@ -107,4 +108,12 @@ test('deferred job persistence failures require action while one transient failu
   const failed = assessRuntimeReliability(stuck, { now });
   assert.equal(failed.status, 'action_required');
   assert.equal(failed.action_required[0].code, 'deferred_job_worker_failure');
+});
+
+test('fatal process recovery is visible as action required during its drain window', () => {
+  const snapshot = healthySnapshot();
+  snapshot.process_health = { state: 'draining', fatal: true };
+  const verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'fatal_process_recovery');
 });
