@@ -23,6 +23,7 @@ class AsyncIntelligenceProjection {
       if (!this.pending.size) worker.unref();
       if (message.error) job.reject(new Error(message.error));
       else job.resolve({ value: message.value, compute_ms: message.compute_ms,
+        init_ms: message.init_ms, projection_ms: message.projection_ms,
         dispatch_ms: job.dispatchMs });
     });
     worker.on('error', error => this.failWorker(error));

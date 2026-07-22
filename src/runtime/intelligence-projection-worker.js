@@ -43,13 +43,15 @@ parentPort.on('message', async ({ id, state, method, args }) => {
     if (!ALLOWED_METHODS.has(method)) throw new Error(`unsupported intelligence projection: ${method}`);
     if (method === 'stateFootprintSnapshot') {
       return parentPort.postMessage({ id, value: stateFootprintSnapshot(state),
-        compute_ms: performance.now() - started });
+        compute_ms: performance.now() - started, init_ms: 0,
+        projection_ms: performance.now() - started });
     }
     const context = args?.__context || {};
     const methodArgs = { ...(args || {}) };
     delete methodArgs.__context;
     const store = createIntelligenceStore({ filePath: null, db: {},
       isDbReady: () => false, initialState: state,
+      trustedNormalizedInitialState: true,
       getDreams: () => context.dreams || [],
       getWants: () => context.wants || [],
       getInteractions: () => context.interactions || [],
@@ -60,9 +62,14 @@ parentPort.on('message', async ({ id, state, method, args }) => {
           || parameterContext.current;
       },
     });
+    const initStarted = performance.now();
     await store.init();
+    const initMs = performance.now() - initStarted;
+    const projectionStarted = performance.now();
     const value = store[method](methodArgs);
-    parentPort.postMessage({ id, value, compute_ms: performance.now() - started });
+    const projectionMs = performance.now() - projectionStarted;
+    parentPort.postMessage({ id, value, compute_ms: performance.now() - started,
+      init_ms: initMs, projection_ms: projectionMs });
   } catch (error) {
     parentPort.postMessage({ id, error: String(error?.message || error) });
   }

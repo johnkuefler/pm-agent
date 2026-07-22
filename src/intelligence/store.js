@@ -213,6 +213,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   getDreams = () => [], getMemory = null, getInteractions = null,
   getConsciousWorkspace = () => null,
   getConsequenceReviews = () => null, initialState = null,
+  trustedNormalizedInitialState = false,
   strictPersistenceTimeoutMs: strictPersistenceTimeoutOverride = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
@@ -220,7 +221,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   const asyncSerializer = new AsyncJsonSerializer();
   const asyncProjection = new AsyncIntelligenceProjection();
   const backgroundProjectionRuntime = { calls: 0, failures: 0, last_method: null,
-    last_dispatch_ms: null, last_compute_ms: null, last_completed_at: null, last_error: null };
+    last_dispatch_ms: null, last_compute_ms: null, last_init_ms: null,
+    last_projection_ms: null, last_completed_at: null, last_error: null };
   const lifecyclePerformanceRuntime = { completions: 0, slow_completions: 0,
     last_total_ms: null, max_total_ms: 0, last_cycle_id: null,
     last_completed_at: null, last_stages_ms: {}, max_stages_ms: {} };
@@ -1151,6 +1153,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   async function init() {
     if (initialState && typeof initialState === 'object') {
+      // Projection workers receive a structured clone of this store's live state. It has already
+      // passed hydrate() and every subsequent mutation preserves those invariants. Re-running the
+      // full migration/normalization pass for each read-only projection adds hundreds of
+      // milliseconds at production state size and duplicates work without improving integrity.
+      // This path is deliberately opt-in and only used by the internal projection worker.
+      if (trustedNormalizedInitialState) {
+        state = initialState;
+        snapshotRevisionValue += 1;
+        return state;
+      }
       hydrate(initialState);
       return state;
     }
@@ -1372,6 +1384,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       backgroundProjectionRuntime.last_method = method;
       backgroundProjectionRuntime.last_dispatch_ms = result.dispatch_ms;
       backgroundProjectionRuntime.last_compute_ms = result.compute_ms;
+      backgroundProjectionRuntime.last_init_ms = result.init_ms;
+      backgroundProjectionRuntime.last_projection_ms = result.projection_ms;
       backgroundProjectionRuntime.last_completed_at = clock().toISOString();
       backgroundProjectionRuntime.last_error = null;
       return result;

@@ -156,6 +156,8 @@ test('replay-heavy background projections compute in a worker without starving f
   assert.equal(diagnostics.failures, 0);
   assert.equal(diagnostics.last_method, 'developmentalSelfReflectionScheduleSnapshot');
   assert.ok(diagnostics.last_compute_ms >= 0);
+  assert.ok(diagnostics.last_init_ms >= 0);
+  assert.ok(diagnostics.last_projection_ms >= 0);
 });
 
 test('dashboard and experience projections stay off the foreground event loop', async () => {
@@ -180,6 +182,31 @@ test('dashboard and experience projections stay off the foreground event loop', 
   assert.equal(expectations.value.report.total, 0);
   assert.ok(expectations.value.resolution_contract);
   assert.equal(store.persistenceDiagnostics().background_projection.failures, 0);
+});
+
+test('trusted normalized projection snapshots preserve replay-sensitive results without rehydrating', async () => {
+  const clock = () => new Date('2026-07-22T16:00:00.000Z');
+  const source = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: emptyState(), clock });
+  const normalized = await source.init();
+  const regular = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: structuredClone(normalized), clock });
+  const trusted = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: structuredClone(normalized),
+    trustedNormalizedInitialState: true, clock });
+  await regular.init();
+  await trusted.init();
+
+  const context = { cognitive_parameter_records: source.expectationForecastProjectionContext() };
+  assert.deepEqual(
+    trusted.expectationForecastRuntimeSnapshot({ summary: true }),
+    regular.expectationForecastRuntimeSnapshot({ summary: true }),
+  );
+  assert.deepEqual(trusted.experienceStreamSnapshot({ limit: 6 }),
+    regular.experienceStreamSnapshot({ limit: 6 }));
+  assert.deepEqual(trusted.dashboardIntelligenceSummary(), regular.dashboardIntelligenceSummary());
+  assert.deepEqual(context.cognitive_parameter_records,
+    source.expectationForecastProjectionContext());
 });
 
 test('persistence footprint diagnostics measure section growth in the projection worker', async () => {
