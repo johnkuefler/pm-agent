@@ -13723,6 +13723,7 @@ function backgroundIntelligenceRuntimeBudget(env = process.env) {
   return {
     step_timeout_ms: bounded(env.NORA_BACKGROUND_STEP_TIMEOUT_MS, 50000, 5000, 90000),
     cycle_timeout_ms: bounded(env.NORA_BACKGROUND_CYCLE_TIMEOUT_MS, 180000, 30000, 300000),
+    max_event_loop_lag_ms: bounded(env.NORA_BACKGROUND_MAX_LOOP_LAG_MS, 250, 50, 2000),
   };
 }
 
@@ -13741,7 +13742,7 @@ async function runBackgroundActionWithinBudget(name, action, timeoutMs) {
 }
 
 async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = 'scheduler',
-  budget = backgroundIntelligenceRuntimeBudget() } = {}) {
+  budget = backgroundIntelligenceRuntimeBudget(), scheduledSteps: injectedScheduledSteps = null } = {}) {
   if (_backgroundIntelligenceCycleInFlight) {
     return { protocol_version: interactivePerformance.PROTOCOL_VERSION, state: 'in_flight',
       trigger, at: new Date().toISOString() };
@@ -13807,10 +13808,16 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     const startedAt = Date.now();
     let lastProbeAt = startedAt;
     let maximumEventLoopLagMs = 0;
+    let eventLoopPressure = false;
     const probe = setInterval(() => {
       const observedAt = Date.now();
-      maximumEventLoopLagMs = Math.max(maximumEventLoopLagMs, observedAt - lastProbeAt - 25);
+      const observedLagMs = Math.max(0, observedAt - lastProbeAt - 25);
+      maximumEventLoopLagMs = Math.max(maximumEventLoopLagMs, observedLagMs);
       lastProbeAt = observedAt;
+      if (!eventLoopPressure && observedLagMs > budget.max_event_loop_lag_ms) {
+        eventLoopPressure = true;
+        lease.cancel(`event_loop_lag:${name}:${Math.round(observedLagMs)}ms`);
+      }
     }, 25);
     probe.unref?.();
     let stepFailed = false;
@@ -13825,13 +13832,21 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
         code: error.code || null, error: String(error.message || error).slice(0, 300) };
     }
     finally {
-      await new Promise(resolve => setImmediate(resolve));
+      // Re-enter the timers phase once before clearing the lag probe. If synchronous work blocked
+      // the loop, the overdue 25ms probe must get a chance to observe it; setImmediate alone can
+      // run first from an I/O/check-phase continuation and erase the evidence.
+      await new Promise(resolve => setTimeout(resolve, 0));
       clearInterval(probe);
       const wallMs = Date.now() - startedAt;
+      if (eventLoopPressure && !stepFailed) {
+        steps[name] = { state: 'deferred_event_loop_pressure',
+          maximum_event_loop_lag_ms: Math.max(0, maximumEventLoopLagMs),
+          observed_result: steps[name] };
+      }
       stepTimings[name] = { wall_ms: wallMs,
         maximum_event_loop_lag_ms: Math.max(0, maximumEventLoopLagMs) };
-      if (maximumEventLoopLagMs > 250) {
-        console.warn(`Background intelligence step ${name} blocked the event loop for ${maximumEventLoopLagMs}ms`);
+      if (eventLoopPressure) {
+        console.warn(`Background intelligence step ${name} exceeded the ${budget.max_event_loop_lag_ms}ms event-loop budget (${maximumEventLoopLagMs}ms); remaining background work cancelled`);
       }
       const resultState = String(steps[name]?.state || (steps[name]?.ran === false ? 'not_due' : 'completed'));
       runtimeActivity.finish(stepActivity.id, {
@@ -13847,7 +13862,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     return !lease.wasStopped();
   };
   try {
-    const scheduledSteps = [
+    const scheduledSteps = injectedScheduledSteps || [
       ['ecological_expiry', () => expireDueCognitiveInitiationEcologicalOutcomesRuntime()],
       ['cognitive_initiation_policy_probe', () => runDueCognitiveInitiationPolicyProbeRuntime({ post: priorityPost })],
       ['cognitive_pulse', () => runCognitivePulseRuntime({ post: priorityPost })],

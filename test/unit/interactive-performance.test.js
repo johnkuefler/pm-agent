@@ -127,10 +127,36 @@ test('background runtime budgets actively cancel their provider lane', async () 
   const configured = __test.backgroundIntelligenceRuntimeBudget({
     NORA_BACKGROUND_STEP_TIMEOUT_MS: '7000',
     NORA_BACKGROUND_CYCLE_TIMEOUT_MS: '45000',
+    NORA_BACKGROUND_MAX_LOOP_LAG_MS: '175',
   });
-  assert.deepEqual(configured, { step_timeout_ms: 7000, cycle_timeout_ms: 45000 });
+  assert.deepEqual(configured, {
+    step_timeout_ms: 7000, cycle_timeout_ms: 45000, max_event_loop_lag_ms: 175,
+  });
   await assert.rejects(() => __test.runBackgroundActionWithinBudget('hung-provider',
     () => new Promise(() => {}), 10), error => error.code === 'background_step_timeout');
+  performance.resetPriorityGateForTest();
+});
+
+test('one event-loop stall cancels the remaining background cycle', async () => {
+  performance.resetPriorityGateForTest();
+  const { __test } = require('../../server');
+  let secondStepRan = false;
+  const result = await __test.runBackgroundIntelligenceRuntime({
+    trigger: 'loop-pressure-test',
+    budget: { step_timeout_ms: 1000, cycle_timeout_ms: 2000, max_event_loop_lag_ms: 50 },
+    scheduledSteps: [
+      ['blocking-step', () => {
+        const until = Date.now() + 120;
+        while (Date.now() < until) { /* simulate accidental synchronous background work */ }
+        return { ran: true };
+      }],
+      ['must-not-run', () => { secondStepRan = true; return { ran: true }; }],
+    ],
+  });
+  assert.equal(result.state, 'deferred_runtime_budget');
+  assert.match(result.stopped_reason, /^event_loop_lag:blocking-step:/);
+  assert.equal(result.steps['blocking-step'].state, 'deferred_event_loop_pressure');
+  assert.equal(secondStepRan, false);
   performance.resetPriorityGateForTest();
 });
 
