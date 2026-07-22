@@ -109,6 +109,18 @@ test('deployment readiness waits for post-interaction, transcript, and persisten
   ]);
 });
 
+test('deployment readiness refuses to restart a runtime that needs reliability intervention', () => {
+  const result = assessDeployReadiness({ lock: { locked: false }, activeBots: { count: 0, bots: [] },
+    routine: validRoutine, runtimePerformance: {
+      reliability: { status: 'action_required',
+        action_required: [{ code: 'database_degraded', message: 'Database is degraded.' }] },
+      background_work: {}, persistence: {},
+    } });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.blockers, [{ kind: 'runtime_reliability', status: 'action_required',
+    signals: [{ code: 'database_degraded', message: 'Database is degraded.' }] }]);
+});
+
 test('deployment readiness fails closed when either authoritative probe fails', async () => {
   await assert.rejects(checkDeployReadiness({ apiKey: 'test-key',
     fetchImpl: async url => url.endsWith('/run-lock')

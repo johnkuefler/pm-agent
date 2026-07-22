@@ -69,6 +69,11 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
     }
   }
   if (runtimePerformance) {
+    if (runtimePerformance.reliability?.status === 'action_required') {
+      blockers.push({ kind: 'runtime_reliability', status: 'action_required',
+        signals: Array.isArray(runtimePerformance.reliability.action_required)
+          ? runtimePerformance.reliability.action_required : [] });
+    }
     const postInteraction = runtimePerformance.background_work?.post_interaction || {};
     const queued = Math.max(0, Number(postInteraction.queued) || 0);
     if (queued > 0 || postInteraction.busy === true) {

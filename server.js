@@ -105,6 +105,7 @@ const consequenceReview = require('./src/intelligence/consequence-review');
 const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
+const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
@@ -486,14 +487,17 @@ app.get('/health', (_req, res) => {
   res.set('Cache-Control', 'no-store');
   res.status(readiness.ready ? 200 : 503).json(readiness);
 });
-app.get('/runtime/performance', requireAuth, (req, res) => res.json({
-  requests: requestPerformance.snapshot(),
-  intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
-  persistence: intelligence.persistenceDiagnostics(),
-  interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
-  interactive_priority: interactivePerformance.prioritySnapshot(),
-  background_work: backgroundWorkSnapshot(),
-}));
+app.get('/runtime/performance', requireAuth, (req, res) => {
+  const snapshot = {
+    requests: requestPerformance.snapshot(),
+    intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
+    persistence: intelligence.persistenceDiagnostics(),
+    interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
+    interactive_priority: interactivePerformance.prioritySnapshot(),
+    background_work: backgroundWorkSnapshot(),
+  };
+  res.json({ reliability: assessRuntimeReliability(snapshot), ...snapshot });
+});
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 
