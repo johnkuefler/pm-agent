@@ -25501,14 +25501,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         || current.cognition.recurrent_signals.some(item => item.cycle_id === cycle.id)) {
         throw new Error('cycle self-forecast must be committed before evidence re-entry');
       }
-      const baselineMoments = current.cognition.experience_stream.filter(candidate => candidate.id !== moment.id
-        && candidate.status !== 'open'
-        && experienceMomentAudit(candidate, current.cognition, current.cycles).evidence_eligible);
       const committedAt = clock().toISOString();
       const submittedProtocolVersion = input.protocol_version == null
         ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
           ? 3 : input.self_state_prediction ? 2 : 1)
         : Number(input.protocol_version);
+      // Reject malformed subject input before opening the replay-heavy historical baseline. This
+      // is validation-order only: createRecord normalizes it again before commitment, while bad
+      // requests now fail in milliseconds instead of replaying the lifecycle and then returning 400.
+      cycleSelfForecast.normalizeForecast(input, submittedProtocolVersion);
+      const baselineAuditCache = new Map(closedExperienceAuditCache);
+      const baselineMoments = current.cognition.experience_stream.filter(candidate => candidate.id !== moment.id
+        && candidate.status !== 'open'
+        && experienceMomentAudit(candidate, current.cognition, current.cycles,
+          baselineAuditCache).evidence_eligible);
       const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
         candidate.id === moment.id ? highest : Math.max(highest,
           Number(candidate.self_forecast?.protocol_version) || 0), 0);

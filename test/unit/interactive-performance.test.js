@@ -149,6 +149,12 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'tool-backed meeting chat must acknowledge before a long live lookup');
   assert.match(server, /OpenAI Realtime handshake exceeded 8000ms/,
     'voice startup must fail cleanly instead of leaving a half-open meeting session');
+  assert.match(server, /axios\.defaults\.timeout = Math\.max/,
+    'legacy connector requests must inherit a finite service-wide HTTP deadline');
+  assert.match(server, /promptRefreshInFlight\) return;/,
+    'periodic voice prompt refreshes must never overlap');
+  assert.match(server, /if \(messageQueue\.length >= 500\) messageQueue\.shift\(\);/,
+    'a half-open realtime connection must not grow its audio queue without bound');
   assert.match(server, /rejectWithinAbortable\(\(\) => execute\(args\), 10000, `Realtime voice tool/,
     'live voice connector lookups must release the spoken turn on deadline');
   assert.match(server, /const volatileIntelligenceContext = latencyCritical[\s\S]*compactInteractiveIntelligenceContext/,
@@ -184,6 +190,13 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(intelligenceRoutes,
     /requireCurrentRevision: process\.env\.NORA_TEST_MODE === '1'[\s\S]*req\.query\.require_current === '1'/,
     'ordinary self-model reads must serve the access-safe projection without chasing every live revision');
+  const intelligenceStore = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence',
+    'store.js'), 'utf8');
+  const forecastMutation = intelligenceStore.slice(intelligenceStore.indexOf('function preregisterCycleSelfForecast'),
+    intelligenceStore.indexOf('function reviseCycleSelfForecast'));
+  assert.ok(forecastMutation.indexOf('cycleSelfForecast.normalizeForecast(input, submittedProtocolVersion)')
+    < forecastMutation.indexOf('const baselineMoments ='),
+  'malformed self-forecasts must fail before replaying the historical lifecycle baseline');
   assert.match(server, /model: slackResponseModel\(query\)/,
     'typed Zoom chat must share the bounded fast-turn model policy');
   assert.match(server, /beginBackground\('memory-embedding-backfill'\)/,

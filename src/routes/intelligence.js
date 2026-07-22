@@ -535,6 +535,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, forecast });
     } catch (error) {
       const retryable = Boolean(forecast);
+      console.warn('Cycle self-forecast rejected:', {
+        cycle_id: req.params.id,
+        error: String(error.message || error).slice(0, 500),
+        mutation_ms: Math.round(mutationMs),
+        total_ms: Math.round(performance.now() - startedAt),
+      });
       res.set('Server-Timing', `forecast-mutation;dur=${mutationMs.toFixed(1)}, failed-after;dur=${(performance.now() - startedAt).toFixed(1)}`);
       if (retryable) res.set('Retry-After', '5');
       res.status(retryable ? 503 : 400).json({ error: error.message,

@@ -72,10 +72,15 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
 }
 
 async function fetchJson(path, { baseUrl, apiKey, fetchImpl, timeoutMs = 30000 }) {
-  const response = await fetchImpl(`${baseUrl}${path}`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let response;
+  try {
+    response = await fetchImpl(`${baseUrl}${path}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    throw new Error(`${path} readiness probe failed before response: ${error.message}`);
+  }
   if (!response.ok) throw new Error(`${path} readiness probe failed with HTTP ${response.status}`);
   return response.json();
 }

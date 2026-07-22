@@ -1,6 +1,11 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+// Every outbound HTTP request must have a terminal condition. Latency-critical paths use tighter
+// local budgets; this ceiling protects older/admin/background integrations that omitted one and
+// would otherwise retain sockets and async work indefinitely during a provider incident.
+axios.defaults.timeout = Math.max(1000, Math.min(120000,
+  Number(process.env.NORA_HTTP_TIMEOUT_MS) || 30000));
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -11086,6 +11091,9 @@ wss.on('connection', async (ws, req) => {
       if (openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.send(str);
       } else {
+        // The upstream handshake is independently capped at eight seconds. This cap is a second
+        // line of defense against browser audio filling the heap while the provider is half-open.
+        if (messageQueue.length >= 500) messageQueue.shift();
         messageQueue.push(str);
       }
     } catch (err) {
@@ -11093,26 +11101,34 @@ wss.on('connection', async (ws, req) => {
     }
   });
 
-  // Periodically refresh Nora's instructions with latest memory
+  // Periodically refresh Nora's instructions with latest memory. Serialize refreshes and contain
+  // failures: an async interval must never overlap itself or create an unhandled rejection.
+  let promptRefreshInFlight = false;
   const refreshInterval = setInterval(async () => {
-    if (openaiWs.readyState !== WebSocket.OPEN) return;
-    const s = sessions[botId];
-    const isMuted = s?.muted;
-    const updatedPrompt = await realtimePromptWithRecall(s);
-    openaiWs.send(JSON.stringify({
-      type: 'session.update',
-      session: {
-        type: 'realtime',
-        output_modalities: isMuted ? ['text'] : ['audio'],
-        instructions: isMuted
-          ? updatedPrompt + MUTED_VOICE_NOTE
-          : updatedPrompt,
-        // Re-assert the live Teamwork READ tools on refresh (session.update merges, but keep it
-        // explicit so a config reset can't silently drop her ability to look things up mid-call).
-        ...(voiceTools.length ? { tools: voiceTools, tool_choice: 'auto' } : {})
-      }
-    }));
+    if (openaiWs.readyState !== WebSocket.OPEN || promptRefreshInFlight) return;
+    promptRefreshInFlight = true;
+    try {
+      const s = sessions[botId];
+      const isMuted = s?.muted;
+      const updatedPrompt = await realtimePromptWithRecall(s);
+      if (openaiWs.readyState !== WebSocket.OPEN) return;
+      openaiWs.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          type: 'realtime',
+          output_modalities: isMuted ? ['text'] : ['audio'],
+          instructions: isMuted
+            ? updatedPrompt + MUTED_VOICE_NOTE
+            : updatedPrompt,
+          // Re-assert the live Teamwork READ tools on refresh (session.update merges, but keep it
+          // explicit so a config reset can't silently drop her ability to look things up mid-call).
+          ...(voiceTools.length ? { tools: voiceTools, tool_choice: 'auto' } : {})
+        }
+      }));
     console.log('🔄 Refreshed Nora instructions with latest memory');
+    } catch (error) {
+      console.warn('Periodic realtime prompt refresh failed:', error.message);
+    } finally { promptRefreshInFlight = false; }
   }, 5 * 60 * 1000); // every 5 minutes
 
   // Cleanup
