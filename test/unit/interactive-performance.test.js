@@ -178,6 +178,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'dashboard warmup must populate the same cache used by live reads');
   assert.match(intelligenceRoutesSource, /warmExpectationSummary: \(\) => refreshWorkerSnapshot\('expectations:all:all:summary'/,
     'expectation warmup must populate the same cache used by hourly preflight reads');
+  assert.match(intelligenceRoutesSource, /worker-stale-coalesced/,
+    'rapid dashboard polls must coalesce expensive stale projection refreshes');
   assert.match(server, /if \(!firstDeliveryRecorded\) \{[\s\S]*slackLatencyTrace = recordInteractiveResponseLatency[\s\S]*firstDeliveryRecorded = true;/,
     'a reaction after an early progress message must not be misreported as a second first delivery');
   assert.match(server, /reactions\.add[\s\S]*timeout: 1500/,

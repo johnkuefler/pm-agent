@@ -5,6 +5,13 @@ const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const expectationForecast = require('../../src/intelligence/expectation-forecast');
+const { shouldRefreshWorkerSnapshot } = require('../../src/routes/intelligence');
+
+test('stale expectation calibration refreshes at most once per cooldown window', () => {
+  assert.equal(shouldRefreshWorkerSnapshot(null, 100000, 60000), true);
+  assert.equal(shouldRefreshWorkerSnapshot({ refresh_started_at_ms: 90000 }, 100000, 60000), false);
+  assert.equal(shouldRefreshWorkerSnapshot({ refresh_started_at_ms: 40000 }, 100000, 60000), true);
+});
 
 test('EXPECT scores source-bound outcomes and calibration without scoring unavailable perception', () => {
   const claims = expectationForecast.normalizeClaims([{ scope: 'slack_inbox', claims: [
@@ -163,6 +170,7 @@ test('EXPECT exposes compact calibration before forecast formation without addin
     'cowork-instructions.js'), 'utf8');
   assert.match(routes, /const summary = req\.query\.summary === '1'[\s\S]*expectationForecastRuntimeSnapshot[\s\S]*summary,/);
   assert.match(routes, /staleWhileRevalidate: summary/);
+  assert.match(routes, /staleRefreshMinIntervalMs: summary \? 60000 : 15000/);
   assert.match(routes, /warmExpectationSummary:[\s\S]*expectations:all:all:summary/);
   assert.match(storeSource, /function expectationForecastRuntimeSnapshot[\s\S]*resolution_contract: expectationForecast\.resolutionContract/);
   assert.match(routes, /validate_only[\s\S]*validation_commitment[\s\S]*require_validation/);

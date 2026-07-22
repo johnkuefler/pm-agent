@@ -6,6 +6,11 @@ const consequenceReview = require('../intelligence/consequence-review');
 const cycleSelfForecast = require('../intelligence/cycle-self-forecast');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
+function shouldRefreshWorkerSnapshot(cached, now, minimumIntervalMs) {
+  return !cached?.refresh_started_at_ms
+    || now - cached.refresh_started_at_ms >= minimumIntervalMs;
+}
+
 function compactSelfModelForDashboard(model = {}) {
   const summarizeStudy = item => ({
     title: item.title, study_phase: item.study_phase, status: item.status,
@@ -131,7 +136,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   }
 
   async function workerCachedJson(res, key, method, args = {}, {
-    ttlMs = 15000, staleWhileRevalidate = true,
+    ttlMs = 15000, staleWhileRevalidate = true, staleRefreshMinIntervalMs = ttlMs,
   } = {}) {
     const revision = store.snapshotRevision();
     const now = Date.now();
@@ -144,8 +149,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     }
     const refresh = () => refreshWorkerSnapshot(key, method, args, ttlMs);
     if (cached?.serialized && staleWhileRevalidate) {
-      refresh().catch(error => console.error(`Background projection ${key} failed:`, error.message));
-      res.set('X-Nora-Snapshot-Cache', 'worker-stale-refreshing');
+      const refreshDue = shouldRefreshWorkerSnapshot(cached, now, staleRefreshMinIntervalMs);
+      if (refreshDue) {
+        refresh().catch(error => console.error(`Background projection ${key} failed:`, error.message));
+      }
+      res.set('X-Nora-Snapshot-Cache', refreshDue
+        ? 'worker-stale-refreshing' : 'worker-stale-coalesced');
       res.set('X-Nora-Compute-Isolation', 'worker_thread');
       res.set('Cache-Control', 'private, no-store');
       return res.type('application/json').send(cached.serialized);
@@ -162,10 +171,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     const cached = workerSnapshotCache.get(key);
     if (cached?.in_flight) return cached.in_flight;
     const capturedRevision = store.snapshotRevision();
+    const refreshStartedAtMs = Date.now();
     const inFlight = store.computeBackgroundProjection(method, args).then(result => {
       const entry = { revision: capturedRevision, expires_at: Date.now() + ttlMs,
         serialized: JSON.stringify(result.value), compute_ms: result.compute_ms,
-        dispatch_ms: result.dispatch_ms, in_flight: null };
+        dispatch_ms: result.dispatch_ms, refresh_started_at_ms: refreshStartedAtMs,
+        in_flight: null };
       workerSnapshotCache.set(key, entry);
       return entry;
     }).catch(error => {
@@ -173,7 +184,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       if (prior) prior.in_flight = null;
       throw error;
     });
-    workerSnapshotCache.set(key, { ...(cached || {}), in_flight: inFlight });
+    workerSnapshotCache.set(key, { ...(cached || {}), in_flight: inFlight,
+      refresh_started_at_ms: refreshStartedAtMs });
     return inFlight;
   }
 
@@ -687,7 +699,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         // verified snapshot exists, serve it immediately while a new revision replays in the
         // worker. Forecast creation and resolution still enforce the current authoritative cycle,
         // ledger, and self-forecast synchronously, so stale calibration cannot authorize a write.
-        }, { ttlMs: 15000, staleWhileRevalidate: summary });
+        }, { ttlMs: 15000, staleWhileRevalidate: summary,
+          staleRefreshMinIntervalMs: summary ? 60000 : 15000 });
     }
     catch (error) { res.status(503).json({ error: 'expectation snapshot unavailable', detail: error.message }); }
   });
@@ -1747,4 +1760,4 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
 }
 
 module.exports = { registerIntelligenceRoutes, validateDueConsequenceReviews,
-  compactSelfModelForDashboard };
+  compactSelfModelForDashboard, shouldRefreshWorkerSnapshot };
