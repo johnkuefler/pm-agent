@@ -440,6 +440,59 @@ async function searchMemoryByVector(vec, limit = 12, opts = {}) {
   return rows.map(row => (row.metadata && typeof row.metadata === 'object' ? { ...row, ...row.metadata } : row));
 }
 
+// Apply only the rows changed by one serialized in-process memory mutation. Ordinary adds,
+// edits, and deletes should not rewrite the entire autobiographical store. The full replace
+// remains available for first-boot migration and schema backfills.
+async function applyMemoryChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
+  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    for (const change of upserts) {
+      const m = change.item;
+      await client.query(
+        `INSERT INTO ${DB_SCHEMA}.memory (id, fact, project, added, source, source_bot_id, ord, salience, recall_count, last_recalled, metadata, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb, now())
+         ON CONFLICT (id) DO UPDATE SET
+           fact = EXCLUDED.fact,
+           project = EXCLUDED.project,
+           added = EXCLUDED.added,
+           source = EXCLUDED.source,
+           source_bot_id = EXCLUDED.source_bot_id,
+           ord = EXCLUDED.ord,
+           salience = EXCLUDED.salience,
+           metadata = EXCLUDED.metadata,
+           recall_count = GREATEST(${DB_SCHEMA}.memory.recall_count, EXCLUDED.recall_count),
+           last_recalled = GREATEST(${DB_SCHEMA}.memory.last_recalled, EXCLUDED.last_recalled),
+           updated_at = now(),
+           embedding = CASE WHEN ${DB_SCHEMA}.memory.fact IS DISTINCT FROM EXCLUDED.fact
+                            THEN NULL ELSE ${DB_SCHEMA}.memory.embedding END`,
+        [m.id, m.fact, m.project || '', m.added || null, m.source || null,
+          m.source_bot_id || null, change.ord,
+          (typeof m.salience === 'number' ? m.salience : 0.3), m.recall_count || 0,
+          m.last_recalled || null,
+          JSON.stringify({ kind: m.kind, confidence: m.confidence, status: m.status,
+            source_ref: m.source_ref, valid_from: m.valid_from, valid_until: m.valid_until,
+            last_verified: m.last_verified, verification_count: m.verification_count,
+            supersedes: m.supersedes, contradicted_by: m.contradicted_by,
+            sensitivity: m.sensitivity, emotional_weight: m.emotional_weight,
+            social_weight: m.social_weight })]
+      );
+    }
+    if (deletedIds.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.memory WHERE id = ANY($1::text[])`, [deletedIds]);
+    }
+    await client.query('COMMIT');
+    return { upserted: upserts.length, deleted: deletedIds.length };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // Retrieval strengthening (reconsolidation): every time memories surface via semantic recall
 // they get stronger. Fire-and-forget from the caller; races with replaceAll are absorbed by
 // the GREATEST() merge in the upsert.
@@ -780,7 +833,7 @@ async function close() { if (pool) await pool.end().catch(() => {}); pool = null
 module.exports = {
   dbEnabled, isReady, init, close, q, embed, count, backgroundAllowed, diagnostics,
   EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
-  loadAllMemory, replaceAllMemory, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
+  loadAllMemory, replaceAllMemory, applyMemoryChanges, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
   loadAllTasks, replaceAllTasks,
   loadAllProjects, replaceAllProjects,

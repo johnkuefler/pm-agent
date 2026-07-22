@@ -48,23 +48,23 @@ function registerMemoryRoutes(app, deps) {
         expectation_surprise: { id: expectationSurprise.id, forecast_id: expectationSurprise.forecast_id,
           claim_id: expectationSurprise.prediction_id, scope: expectationSurprise.scope },
       } : {}) });
-    const { memory } = await mutateMemory(m => { m.push(entry); });
+    await mutateMemory(m => { m.push(entry); });
     if (canonicalProject) bumpProjectActivity(canonicalProject);
     console.log('🧠 Memory added:', fact);
-    res.json({ ok: true, id: entry.id, memory });
+    res.json({ ok: true, id: entry.id, memory: entry });
   });
 
   // PREFERRED delete path: by stable id, immune to array-shift. The cowork loop (esp. the
   // dream's batch pruning) MUST use this, not the index endpoint below.
   app.delete('/memory/by-id/:id', requireAuth, async (req, res) => {
-    const { result, memory } = await mutateMemory(m => {
+    const { result } = await mutateMemory(m => {
       const i = m.findIndex(x => x.id === req.params.id);
       if (i === -1) return null;
       return m.splice(i, 1)[0];
     });
     if (!result) return res.status(404).json({ error: 'id not found' });
     console.log('🧠 Memory removed (by id):', result.fact);
-    res.json({ ok: true, removed: result, memory });
+    res.json({ ok: true, removed: result });
   });
 
   // Atomic bulk delete by id — the dream prunes a whole set in ONE serialized operation

@@ -106,6 +106,7 @@ const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
+const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
@@ -547,8 +548,13 @@ function loadMemory() {
 // filesystem, so a reader can never observe a half-written file (which, under the old
 // direct writeFileSync, could corrupt memory if a read raced a large write). In DB mode
 // the whole set is upserted transactionally (equally atomic) and the JSON path is skipped.
-function saveMemory(memory) {
-  if (_dbReady) { _cache.memory = memory; return _writeThrough('memory', () => db.replaceAllMemory(memory)); }
+function saveMemory(memory, delta = null) {
+  if (_dbReady) {
+    _cache.memory = memory;
+    if (delta && !delta.upserts.length && !delta.deleted_ids.length) return Promise.resolve();
+    return _writeThrough('memory', () => delta
+      ? db.applyMemoryChanges(delta) : db.replaceAllMemory(memory));
+  }
   const p = getMemoryPath();
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(memory, null, 2));
@@ -596,10 +602,12 @@ function mutateMemory(mutator) {
       if (!m.id) m.id = newMemoryId();
       Object.assign(m, normalizeMemoryRecord(m));
     }
+    const before = captureMemoryPersistence(memory);
     const result = mutator(memory);
     // Salience-tag anything new (loaded entries already carry theirs from the DB).
     for (const m of memory) { if (m && m.salience === undefined) m.salience = computeSalienceForFact(m.fact, m.source); }
-    await saveMemory(memory); // awaits the Postgres write (or resolves immediately in JSON mode)
+    const delta = diffMemoryPersistence(before, memory);
+    await saveMemory(memory, delta); // awaits only changed Postgres rows (or the JSON fallback)
     return { result, memory };
   });
   // Keep the chain alive even if a mutation throws, so one failure doesn't wedge the queue.
