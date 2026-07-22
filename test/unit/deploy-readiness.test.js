@@ -25,6 +25,11 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
           background_provider_in_flight: 0 },
       });
       if (url.endsWith('/self-model/fingerprints')) return response({ report: { active: 0 }, runs: [] });
+      if (url.endsWith('/runtime/performance')) return response({ background_work: {
+        post_interaction: { queued: 0, busy: false },
+        transcript_checkpoints: { pending: 0, scheduled: 0 },
+      }, persistence: { pending_revisions: 0, strict_waiters: 0, flush_running: false,
+        cycle_open: { in_flight: false } } });
       return response({ count: 0, bots: [] });
     } });
   assert.equal(result.ready, true);
@@ -33,6 +38,7 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
     'https://nora.example/admin/active-bots',
     'https://nora.example/consciousness-research/autopilot',
     'https://nora.example/routine', 'https://nora.example/run-lock',
+    'https://nora.example/runtime/performance',
     'https://nora.example/self-model/fingerprints',
   ]);
   assert.ok(calls.every(item => item.authorization === 'Bearer test-key'));
@@ -87,6 +93,20 @@ test('deployment readiness preserves the build bound to an active behavioral fin
   assert.equal(result.ready, false);
   assert.deepEqual(result.blockers, [{ kind: 'build_bound_behavioral_fingerprint', count: 1,
     run_ids: ['fingerprint-1'] }]);
+});
+
+test('deployment readiness waits for post-interaction, transcript, and persistence drains', () => {
+  const result = assessDeployReadiness({ lock: { locked: false }, activeBots: { count: 0, bots: [] },
+    routine: validRoutine, runtimePerformance: {
+      background_work: { post_interaction: { queued: 2, busy: true, next: 'meeting-intelligence' },
+        transcript_checkpoints: { pending: 1, scheduled: 2 } },
+      persistence: { pending_revisions: 1, strict_waiters: 1, flush_running: true,
+        cycle_open: { in_flight: true } },
+    } });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.blockers.map(item => item.kind), [
+    'post_interaction_work_pending', 'transcript_checkpoint_pending', 'persistence_work_pending',
+  ]);
 });
 
 test('deployment readiness fails closed when either authoritative probe fails', async () => {

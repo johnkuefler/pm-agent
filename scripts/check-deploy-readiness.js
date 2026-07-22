@@ -20,7 +20,7 @@ function assessRoutineContract(routine = {}) {
 }
 
 function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
-  researchAutopilot = null, behavioralFingerprints = null } = {}) {
+  researchAutopilot = null, behavioralFingerprints = null, runtimePerformance = null } = {}) {
   const blockers = [];
   if (lock.locked) blockers.push({ kind: 'run_lock', holder: lock.holder || null,
     cycle_id: lock.lifecycle?.cycle_id || null, cycle_status: lock.lifecycle?.cycle_status || null });
@@ -68,6 +68,30 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
         run_ids: activeRuns.map(run => run.id).filter(Boolean) });
     }
   }
+  if (runtimePerformance) {
+    const postInteraction = runtimePerformance.background_work?.post_interaction || {};
+    const queued = Math.max(0, Number(postInteraction.queued) || 0);
+    if (queued > 0 || postInteraction.busy === true) {
+      blockers.push({ kind: 'post_interaction_work_pending', queued,
+        busy: postInteraction.busy === true, next: postInteraction.next || null });
+    }
+    const checkpoints = runtimePerformance.background_work?.transcript_checkpoints || {};
+    const pendingCheckpoints = Math.max(0, Number(checkpoints.pending) || 0);
+    const scheduledCheckpoints = Math.max(0, Number(checkpoints.scheduled) || 0);
+    if (pendingCheckpoints > 0 || scheduledCheckpoints > 0) {
+      blockers.push({ kind: 'transcript_checkpoint_pending', pending: pendingCheckpoints,
+        scheduled: scheduledCheckpoints });
+    }
+    const persistence = runtimePerformance.persistence || {};
+    const persistencePending = Math.max(0, Number(persistence.pending_revisions) || 0);
+    const strictWaiters = Math.max(0, Number(persistence.strict_waiters) || 0);
+    if (persistencePending > 0 || strictWaiters > 0 || persistence.flush_running === true
+      || persistence.cycle_open?.in_flight === true) {
+      blockers.push({ kind: 'persistence_work_pending', pending_revisions: persistencePending,
+        strict_waiters: strictWaiters, flush_running: persistence.flush_running === true,
+        cycle_open_in_flight: persistence.cycle_open?.in_flight === true });
+    }
+  }
   return { ready: blockers.length === 0, blockers };
 }
 
@@ -93,7 +117,8 @@ async function checkDeployReadiness({
   if (!apiKey) throw new Error('NORA_API_KEY is required for the deployment readiness check');
   if (typeof fetchImpl !== 'function') throw new Error('deployment readiness check requires fetch');
   const normalizedBase = String(baseUrl).replace(/\/+$/, '');
-  const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints] = await Promise.all([
+  const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints,
+    runtimePerformance] = await Promise.all([
     fetchJson('/run-lock', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/admin/active-bots', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/routine', { baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000 }),
@@ -103,9 +128,10 @@ async function checkDeployReadiness({
     fetchJson('/self-model/fingerprints', {
       baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000,
     }),
+    fetchJson('/runtime/performance', { baseUrl: normalizedBase, apiKey, fetchImpl }),
   ]);
   return { ...assessDeployReadiness({ lock, activeBots, routine, researchAutopilot,
-    behavioralFingerprints }),
+    behavioralFingerprints, runtimePerformance }),
     checked_at: new Date().toISOString(),
     base_url: normalizedBase };
 }
