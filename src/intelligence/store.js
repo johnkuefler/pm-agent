@@ -25594,6 +25594,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       payload: { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment } });
   }
 
+  function auditCurrentCycleSelfForecast(record, moment, cognition, cycles) {
+    // Closed experience moments are immutable and were replay-verified by the off-event-loop
+    // preparation worker. Seed the request-local audit with those exact results so committing or
+    // retrying the current forecast verifies only the new open-moment material on the foreground
+    // thread instead of replaying the full historical chain again.
+    return cycleSelfForecastAudit(record, moment, cognition, cycles,
+      new Map(closedExperienceAuditCache));
+  }
+
   function preregisterCycleSelfForecast(id, input = {}) {
     const submittedProtocolVersion = input.protocol_version == null
       ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
@@ -25616,7 +25625,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           throw new Error('cycle self-forecast is already committed with different content');
         }
         return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
-          audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+          audit: auditCurrentCycleSelfForecast(moment.self_forecast, moment,
+            current.cognition, current.cycles) };
       }
       if ((moment.attention_rounds || []).length !== 1
         || current.cognition.recurrent_signals.some(item => item.cycle_id === cycle.id)) {
@@ -25699,7 +25709,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           payload: { offer_commitment: moment.self_forecast.self_correction.offer_commitment } });
       }
       return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
-        audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+        audit: auditCurrentCycleSelfForecast(moment.self_forecast, moment,
+          current.cognition, current.cycles) };
     });
   }
 
@@ -25729,7 +25740,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           throw new Error('cycle self-forecast correction is already committed with different content');
         }
         return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
-          audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+          audit: auditCurrentCycleSelfForecast(moment.self_forecast, moment,
+            current.cognition, current.cycles) };
       }
       if ((moment.attention_rounds || []).length !== 1
         || current.cognition.recurrent_signals.some(item => item.cycle_id === cycle.id)) {
@@ -25745,7 +25757,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_type: 'experience_self_forecast', subject_id: moment.self_forecast.id,
         payload: { revision_commitment: revision.revision_commitment } });
       return { ...JSON.parse(JSON.stringify(moment.self_forecast)),
-        audit: cycleSelfForecastAudit(moment.self_forecast, moment, current.cognition, current.cycles) };
+        audit: auditCurrentCycleSelfForecast(moment.self_forecast, moment,
+          current.cognition, current.cycles) };
     });
   }
 

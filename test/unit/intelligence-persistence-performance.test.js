@@ -297,4 +297,10 @@ test('production forecast commits wait by retry contract instead of replaying on
   assert.equal(prior.prior_warmup_pending, false);
   const forecast = store.preregisterCycleSelfForecast(started.cycle.id, input);
   assert.equal(forecast.audit.preregistration_verified, true);
+  const retryStarted = performance.now();
+  const retry = store.preregisterCycleSelfForecast(started.cycle.id, input);
+  assert.equal(retry.forecast_commitment, forecast.forecast_commitment);
+  assert.equal(retry.audit.preregistration_verified, true);
+  assert.ok(performance.now() - retryStarted < 100,
+    'an idempotent forecast retry reuses prepared closed-history audits');
 });
