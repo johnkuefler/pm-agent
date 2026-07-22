@@ -26,7 +26,7 @@ function closeWithHandoff(store, { id, inherited, handoff }) {
 }
 
 test('production continuity handoffs bind exact cycle closure, inherited state, and predecessor lineage', async () => {
-  const { dir, store, setNow } = await setup();
+  const { dir, filePath, store, setNow } = await setup();
   const firstText = 'I am carrying the unresolved launch evidence into the next run.';
   const firstCycle = closeWithHandoff(store, {
     id: 'continuity-cycle-1',
@@ -79,8 +79,9 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
   assert.equal(store.continuityProjectionAudit(validProjection).usable, true);
   const cachedPerformance = store.continuityProjectionAuditPerformance();
   assert.equal(cachedPerformance.protocol_version, 1);
-  assert.equal(cachedPerformance.full_audits, 2);
-  assert.equal(cachedPerformance.cache_hits, 2);
+  assert.equal(cachedPerformance.full_audits, 0);
+  assert.equal(cachedPerformance.transport_full_audits, 0);
+  assert.ok(cachedPerformance.transport_cache_hits >= 1);
   assert.equal(cachedPerformance.cached_commitment, second.commitment);
   assert.equal(store.continuityProjectionAudit({ ...validProjection, content: 'Tampered database projection.' }).usable, false);
   assert.equal(store.continuityProjectionAudit({ content: 'Legacy overwrite after chain start.' }).verified_chain_required, true);
@@ -88,7 +89,8 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
   assert.equal(store.continuityProjectionAudit(validProjection).usable, true);
   const reusedPerformance = store.continuityProjectionAuditPerformance();
   assert.equal(reusedPerformance.full_audits, cachedPerformance.full_audits);
-  assert.equal(reusedPerformance.cache_hits, cachedPerformance.cache_hits + 3);
+  assert.equal(reusedPerformance.transport_cache_hits,
+    cachedPerformance.transport_cache_hits + 3);
   const recovery = store.continuityProjectionRecovery({ ...validProjection, content: 'Stale materialized view.' });
   assert.equal(recovery.required, true);
   assert.equal(recovery.repairable, true);
@@ -102,6 +104,15 @@ test('production continuity handoffs bind exact cycle closure, inherited state, 
     /exactly match the latest/);
   assert.throws(() => store.continuityProjectionRepair({ ...validProjection, continuity_commitment: first.commitment }),
     /exactly match the latest/);
+  await store.persist();
+  const restarted = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false });
+  await restarted.init();
+  const restartAudit = restarted.continuityProjectionAudit(validProjection);
+  assert.equal(restartAudit.usable, true);
+  assert.equal(restartAudit.replay_audit_deferred, true);
+  const restartPerformance = restarted.continuityProjectionAuditPerformance();
+  assert.equal(restartPerformance.full_audits, 0);
+  assert.equal(restartPerformance.transport_full_audits, 1);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

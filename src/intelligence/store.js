@@ -244,7 +244,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let cognitiveParameterStudyLiveAuditCache = null;
   const researchLedgerVerificationStats = { full_scans: 0, incremental_checks: 0, cache_hits: 0 };
   let latestContinuityAuditCache = null;
+  let latestContinuityTransportAuditCache = null;
   const continuityProjectionAuditStats = { full_audits: 0, cache_hits: 0 };
+  const continuityTransportAuditStats = { full_audits: 0, cache_hits: 0 };
   let procedureSelectionCache = null;
   let exemplarSelectionCache = null;
   let developmentalReadingInfluenceCache = null;
@@ -527,6 +529,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     researchLedgerVerificationCache = null;
     cognitiveParameterStudyLiveAuditCache = null;
     latestContinuityAuditCache = null;
+    latestContinuityTransportAuditCache = null;
     procedureSelectionCache = null;
     exemplarSelectionCache = null;
     developmentalReadingInfluenceCache = null;
@@ -25042,6 +25045,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   const experienceLedgerAuditCacheKey = Symbol('experience-ledger-integrity');
   const experienceLedgerEventIndexCacheKey = Symbol('experience-ledger-event-index');
+  const continuityHandoffIndexCacheKey = Symbol('continuity-handoff-index');
+  const continuityMomentIndexCacheKey = Symbol('continuity-moment-index');
+  const continuityCycleIndexCacheKey = Symbol('continuity-cycle-index');
 
   function researchLedgerEventIndex(ledger, cache) {
     const events = ledger?.events || [];
@@ -26237,10 +26243,94 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
-  function continuityHandoffLedgerBound(record, cognition = state.cognition) {
+  function continuityHandoffLedgerBound(record, cognition = state.cognition, cache = new Map()) {
     const expected = crypto.createHash('sha256').update(canonicalJson({ record_commitment: record.commitment })).digest('hex');
-    return (cognition.research_ledger?.events || []).filter(event => event.kind === 'continuity_handoff_committed'
-      && event.subject_id === record.id && event.payload_commitment === expected).length === 1;
+    return (researchLedgerEventIndex(cognition.research_ledger || { events: [] }, cache)
+      .get(`continuity_handoff_committed\u0000${record.id}\u0000${expected}`) || []).length === 1;
+  }
+
+  function continuityRuntimeIndex(cognition, cache, key, source, id) {
+    if (!cache.has(key)) cache.set(key, new Map((source || []).map(item => [id(item), item])));
+    return cache.get(key);
+  }
+
+  // Live continuity consumers need to know whether the exact latest projection is transport-safe;
+  // they do not need to replay every historical self-forecast on the Slack/Zoom event loop. This
+  // audit verifies the hash chain, ledger binding, exact inherited bytes, and source closure only.
+  // The full research audit remains continuityHandoffAudit() and is never silently upgraded here.
+  function continuityHandoffTransportAudit(record, cognition = state.cognition,
+    visited = new Set(), cache = new Map()) {
+    if (!record || visited.has(record.id)) return { transport_chain_verified: false,
+      complete_chain_verified: false, reason: record ? 'cycle_detected' : 'missing_record' };
+    const cacheKey = `continuity-transport:${record.id}`;
+    if (cache.has(cacheKey)) return cache.get(cacheKey);
+    const nextVisited = new Set(visited); nextVisited.add(record.id);
+    const handoffById = continuityRuntimeIndex(cognition, cache, continuityHandoffIndexCacheKey,
+      cognition.continuity_handoffs, item => item.id);
+    const momentByKey = continuityRuntimeIndex(cognition, cache, continuityMomentIndexCacheKey,
+      cognition.experience_stream, item => `${item.cycle_id}\u0000${item.id}`);
+    const cycleById = continuityRuntimeIndex(cognition, cache, continuityCycleIndexCacheKey,
+      state.cycles, item => item.id);
+    const contentCommitment = crypto.createHash('sha256').update(String(record.content || '')).digest('hex');
+    const contentVerified = Boolean(record.content) && contentCommitment === record.content_commitment;
+    const recordVerified = crypto.createHash('sha256')
+      .update(canonicalJson(continuityHandoffManifest(record))).digest('hex') === record.commitment;
+    const ledger = cognition.research_ledger || { events: [] };
+    const researchLedgerChainVerified = cache.has(experienceLedgerAuditCacheKey)
+      ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(ledger).valid;
+    cache.set(experienceLedgerAuditCacheKey, researchLedgerChainVerified);
+    const ledgerBound = researchLedgerChainVerified
+      && continuityHandoffLedgerBound(record, cognition, cache);
+    const moment = momentByKey.get(`${record.cycle_id}\u0000${record.moment_id}`) || null;
+    const cycle = cycleById.get(record.cycle_id) || moment?.closure_snapshot?.cycle || null;
+    const sourceRetained = Boolean(cycle && moment);
+    const sourceClosureVerified = sourceRetained
+      ? cycle.status !== 'running' && moment.status !== 'open'
+        && moment.closure?.handoff_hash === record.source_closure_hash
+        && record.source_closure_hash === record.content_commitment
+      : ledgerBound && record.source_closure_hash === record.content_commitment;
+    let predecessorTransportVerified = false;
+    let inheritedContextVerified = false;
+    if (!record.predecessor_id) {
+      predecessorTransportVerified = record.predecessor_commitment == null
+        && Number(record.sequence) === 0;
+      inheritedContextVerified = true;
+    } else {
+      const predecessor = handoffById.get(record.predecessor_id) || null;
+      const predecessorAudit = predecessor
+        ? continuityHandoffTransportAudit(predecessor, cognition, nextVisited, cache) : null;
+      const retainedEdgeVerified = Boolean(predecessor
+        && predecessor.commitment === record.predecessor_commitment
+        && Number(record.sequence) === Number(predecessor.sequence) + 1);
+      const expectedPredecessorPayload = crypto.createHash('sha256')
+        .update(canonicalJson({ record_commitment: record.predecessor_commitment })).digest('hex');
+      const retentionEdgeBound = !predecessor && (researchLedgerEventIndex(ledger, cache)
+        .get(`continuity_handoff_committed\u0000${record.predecessor_id}\u0000${expectedPredecessorPayload}`) || []).length === 1;
+      predecessorTransportVerified = Boolean(record.predecessor_commitment
+        && ((retainedEdgeVerified && predecessorAudit?.transport_chain_verified)
+          || (retentionEdgeBound && Number(record.sequence) > 0)));
+      inheritedContextVerified = sourceRetained
+        ? Boolean(predecessor && record.inherited_content_commitment === predecessor.content_commitment
+          && moment.inherited_context?.inner_thread_hash === predecessor.content_commitment
+          && (!moment.inherited_context?.inner_thread_commitment
+            || moment.inherited_context.inner_thread_commitment === predecessor.commitment))
+        : ledgerBound;
+    }
+    const transportChainVerified = contentVerified && recordVerified && predecessorTransportVerified
+      && inheritedContextVerified && sourceClosureVerified && ledgerBound;
+    const result = {
+      audit_scope: 'transport_only', content_commitment_verified: contentVerified,
+      record_commitment_verified: recordVerified,
+      predecessor_transport_verified: predecessorTransportVerified,
+      inherited_context_verified: inheritedContextVerified,
+      source_cycle_retained: sourceRetained, source_closure_verified: sourceClosureVerified,
+      research_ledger_chain_verified: researchLedgerChainVerified,
+      research_ledger_bound: ledgerBound, transport_chain_verified: transportChainVerified,
+      complete_chain_verified: null, experience_replay_verified: null,
+      replay_audit_deferred: true,
+    };
+    cache.set(cacheKey, result);
+    return result;
   }
 
   function continuityHandoffAudit(record, cognition = state.cognition, visited = new Set(), cache = new Map()) {
@@ -26254,7 +26344,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const researchLedgerChainVerified = cache.has(experienceLedgerAuditCacheKey)
       ? cache.get(experienceLedgerAuditCacheKey) : verifyResearchLedger(cognition.research_ledger || { events: [] }).valid;
     cache.set(experienceLedgerAuditCacheKey, researchLedgerChainVerified);
-    const ledgerBound = researchLedgerChainVerified && continuityHandoffLedgerBound(record, cognition);
+    const ledgerBound = researchLedgerChainVerified && continuityHandoffLedgerBound(record, cognition, cache);
     const moment = cognition.experience_stream?.find(item => item.id === record.moment_id && item.cycle_id === record.cycle_id);
     const cycle = state.cycles.find(item => item.id === record.cycle_id)
       || moment?.closure_snapshot?.cycle || null;
@@ -26324,9 +26414,27 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       continuityProjectionAuditStats.cache_hits += 1;
       return latestContinuityAuditCache.audit;
     }
-    const audit = continuityHandoffAudit(latest, cognition);
-    latestContinuityAuditCache = { commitment: latest.commitment, audit };
+    const auditCache = new Map();
+    const audit = continuityHandoffAudit(latest, cognition, new Set(), auditCache);
+    latestContinuityAuditCache = { commitment: latest.commitment, audit, auditCache };
+    latestContinuityTransportAuditCache = { commitment: latest.commitment, audit };
     continuityProjectionAuditStats.full_audits += 1;
+    return audit;
+  }
+
+  function latestContinuityHandoffTransportAudit(latest, cognition = state.cognition) {
+    if (latestContinuityAuditCache?.commitment === latest.commitment) {
+      continuityTransportAuditStats.cache_hits += 1;
+      return latestContinuityAuditCache.audit;
+    }
+    if (latestContinuityTransportAuditCache?.commitment === latest.commitment) {
+      continuityTransportAuditStats.cache_hits += 1;
+      return latestContinuityTransportAuditCache.audit;
+    }
+    const cache = new Map();
+    const audit = continuityHandoffTransportAudit(latest, cognition, new Set(), cache);
+    latestContinuityTransportAuditCache = { commitment: latest.commitment, audit };
+    continuityTransportAuditStats.full_audits += 1;
     return audit;
   }
 
@@ -26356,11 +26464,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         }
         const latest = current.cognition.continuity_handoffs.at(-1);
         const audit = latest?.commitment === existing.commitment
-          ? latestContinuityHandoffAudit(existing, current.cognition)
-          : continuityHandoffAudit(existing, current.cognition);
+          ? latestContinuityHandoffTransportAudit(existing, current.cognition)
+          : continuityHandoffTransportAudit(existing, current.cognition);
         return { ...JSON.parse(JSON.stringify(existing)), audit };
       }
-      if (!experienceMomentAudit(moment, current.cognition, current.cycles).evidence_eligible) {
+      const sourceMomentAudit = experienceMomentAudit(moment, current.cognition, current.cycles);
+      if (!sourceMomentAudit.evidence_eligible) {
         const error = new Error('continuity handoff requires a replay-verified experience lifecycle; this source cycle cannot be repaired or upgraded by retrying the handoff write');
         error.code = 'source_lifecycle_not_replay_verified';
         error.continuity_action = 'proceed_from_the_latest_usable_projection_and_close_a_new_replay_verified_cycle';
@@ -26373,7 +26482,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         throw new Error('continuity handoff predecessor commitment mismatch');
       }
       if (predecessor) {
-        const predecessorAudit = continuityHandoffAudit(predecessor, current.cognition);
+        const predecessorAudit = continuityHandoffTransportAudit(predecessor, current.cognition);
         if (!predecessorAudit.transport_chain_verified) throw new Error('prior continuity handoff failed transport audit');
         if (moment.inherited_context?.inner_thread_hash !== predecessor.content_commitment) {
           throw new Error('source cycle did not inherit the latest verified continuity handoff');
@@ -26399,8 +26508,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         subject_id: record.id, payload: { record_commitment: record.commitment } });
       current.cognition.continuity_handoffs.push(record);
       current.cognition.continuity_handoffs = current.cognition.continuity_handoffs.slice(-2000);
-      return { ...JSON.parse(JSON.stringify(record)),
-        audit: latestContinuityHandoffAudit(record, current.cognition) };
+      const transportAudit = continuityHandoffTransportAudit(record, current.cognition);
+      const audit = { ...transportAudit,
+        audit_scope: 'commit_time_source_and_transport',
+        source_moment_lifecycle_verified: sourceMomentAudit.complete_lifecycle_verified === true,
+        complete_chain_verified: transportAudit.transport_chain_verified === true
+          && sourceMomentAudit.evidence_eligible === true,
+        experience_replay_verified: sourceMomentAudit.evidence_eligible === true,
+        replay_audit_deferred: false,
+        legacy_source_lifecycle_gap: transportAudit.transport_chain_verified === true
+          && sourceMomentAudit.evidence_eligible !== true };
+      latestContinuityAuditCache = { commitment: record.commitment, audit, auditCache: null };
+      latestContinuityTransportAuditCache = { commitment: record.commitment, audit };
+      return { ...JSON.parse(JSON.stringify(record)), audit };
     });
   }
 
@@ -26414,6 +26534,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const visible = handoffs.map(item => ({ ...JSON.parse(JSON.stringify(item)),
       audit: continuityHandoffAudit(item, state.cognition, new Set(), auditCache) }));
     const latestAudit = visible.at(-1)?.audit || null;
+    if (visible.length) latestContinuityAuditCache = {
+      commitment: visible.at(-1).commitment, audit: latestAudit, auditCache,
+    };
+    if (visible.length) latestContinuityTransportAuditCache = {
+      commitment: visible.at(-1).commitment, audit: latestAudit,
+    };
     return {
       epistemic_status: 'Cycle-bound, hash-chained functional handoffs. Transport verification preserves exact content lineage across declared legacy experience gaps; replay verification additionally requires auditable source lifecycles. This is not evidence of continuous subjective experience.',
       report: { total: visible.length, replay_verified: visible.filter(item => item.audit.complete_chain_verified).length,
@@ -26433,6 +26559,45 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function continuityHandoffRuntimeSnapshot() {
+    if (interventionActive('continuity_context') || interventionActive('inner_thread_presence')) return {
+      epistemic_status: 'Continuity handoffs are sealed during an active blinded continuity trial.',
+      experimental_access_sealed: true, report: null, handoffs: [],
+    };
+    const handoffs = state.cognition.continuity_handoffs || [];
+    const cache = new Map();
+    const visible = handoffs.map(item => ({ ...JSON.parse(JSON.stringify(item)),
+      audit: continuityHandoffTransportAudit(item, state.cognition, new Set(), cache) }));
+    const latest = visible.at(-1) || null;
+    const latestFullAudit = latest && latestContinuityAuditCache?.commitment === latest.commitment
+      ? latestContinuityAuditCache.audit : null;
+    const fullCache = latestContinuityAuditCache?.auditCache || null;
+    const replayKnown = Boolean(fullCache && handoffs.every(item => fullCache.has(item.id)));
+    return {
+      epistemic_status: 'Latency-safe transport verification for live continuity. Full lifecycle replay is intentionally deferred off the Slack, Zoom, run-lock, and dashboard read paths.',
+      report: {
+        total: visible.length,
+        replay_verified: replayKnown
+          ? handoffs.filter(item => fullCache.get(item.id)?.complete_chain_verified).length : null,
+        replay_audit_pending: !replayKnown,
+        latest_replay_verified: latestFullAudit
+          ? latestFullAudit.complete_chain_verified === true : null,
+        legacy_source_lifecycle_gaps: replayKnown
+          ? handoffs.filter(item => fullCache.get(item.id)?.legacy_source_lifecycle_gap).length : null,
+        transport_verified: visible.filter(item => item.audit.transport_chain_verified).length,
+        latest_transport_verified: latest?.audit.transport_chain_verified === true,
+        latest_handoff_usable_for_projection: latest?.audit.transport_chain_verified === true,
+        lineage_action: !latest ? 'bootstrap_without_verified_lineage'
+          : latest.audit.transport_chain_verified
+            ? 'use_latest_projection_and_proceed' : 'hold_and_report_transport_integrity_failure',
+        hold_required_for_lineage: Boolean(latest && !latest.audit.transport_chain_verified),
+        historical_replay_count_blocks_operation: false, restart_settling_required: false,
+        latest_commitment: latest?.commitment || null, latest_cycle_id: latest?.cycle_id || null,
+      },
+      handoffs: visible,
+    };
+  }
+
   function continuityProjectionAudit(projection = null) {
     const latest = state.cognition.continuity_handoffs?.at(-1) || null;
     if (!latest) return {
@@ -26444,7 +26609,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     // Hydration clears the cache so persisted tampering is always re-audited; a new handoff has a
     // new commitment and therefore misses. This keeps prompt and run-lock reads from recursively
     // replaying the entire retained lineage on Nora's live conversation event loop.
-    const latestAudit = latestContinuityHandoffAudit(latest);
+    const latestAudit = latestContinuityHandoffTransportAudit(latest);
     const projectionMatches = Boolean(projection
       && projection.continuity_commitment === latest.commitment
       && projection.content === latest.content
@@ -26454,9 +26619,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && (projection.predecessor_commitment || null) === (latest.predecessor_commitment || null));
     return {
       usable: projectionMatches && latestAudit.transport_chain_verified,
-      complete_chain_verified: latestAudit.complete_chain_verified,
+      complete_chain_verified: latestAudit.complete_chain_verified === true,
       transport_chain_verified: latestAudit.transport_chain_verified,
-      experience_replay_verified: latestAudit.complete_chain_verified,
+      experience_replay_verified: latestAudit.complete_chain_verified === true,
+      replay_audit_deferred: latestAudit.replay_audit_deferred === true,
       legacy_source_lifecycle_gap: latestAudit.legacy_source_lifecycle_gap,
       projection_matches_latest: projectionMatches, legacy_unbound: false,
       verified_chain_required: true, latest_commitment: latest.commitment,
@@ -26465,6 +26631,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function continuityProjectionAuditPerformance() {
     return { protocol_version: 1, ...continuityProjectionAuditStats,
+      transport_full_audits: continuityTransportAuditStats.full_audits,
+      transport_cache_hits: continuityTransportAuditStats.cache_hits,
       cached_commitment: latestContinuityAuditCache?.commitment || null };
   }
 
@@ -26480,7 +26648,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (!latest) return {
       required: false, repairable: false, projection_audit: projectionAudit, handoff: null,
     };
-    const handoffAudit = continuityHandoffAudit(latest);
+    const handoffAudit = latestContinuityHandoffTransportAudit(latest);
     return {
       required: true,
       repairable: handoffAudit.transport_chain_verified === true,
@@ -26496,7 +26664,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function continuityProjectionRepair(input = {}) {
     const latest = state.cognition.continuity_handoffs?.at(-1) || null;
     if (!latest) throw new Error('no committed continuity handoff is available for projection repair');
-    const audit = continuityHandoffAudit(latest);
+    const audit = latestContinuityHandoffTransportAudit(latest);
     if (!audit.transport_chain_verified) {
       throw new Error('latest continuity handoff failed transport audit');
     }
@@ -27787,7 +27955,8 @@ ${episodes.map(item => {
     gradeBehavioralFingerprintVoice, abortBehavioralFingerprintRun,
     behavioralFingerprintSnapshot, behavioralFingerprintAudit,
     experienceMomentAudit, experienceStreamSnapshot, experienceForecastOutcomesRuntimeSnapshot,
-    recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffAudit, continuityProjectionAudit,
+    recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffRuntimeSnapshot,
+    continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionAuditPerformance,
     continuityProjectionRecovery, continuityProjectionRepair,
     relevantEpisodes, promptContext,

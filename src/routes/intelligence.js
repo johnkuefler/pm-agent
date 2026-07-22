@@ -403,7 +403,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     cachedJson(res, `experience-stream:${limit}`, () => store.experienceStreamSnapshot({ limit }), { ttlMs: 15000 });
   });
   app.get('/continuity-handoffs', requireAuth, (req, res) => {
-    cachedJson(res, `continuity-handoffs:${req.query.summary === '1' ? 'summary' : 'full'}`, () => store.continuityHandoffSnapshot(), {
+    cachedJson(res, `continuity-handoffs:${req.query.summary === '1' ? 'summary' : 'full'}`, () => store.continuityHandoffRuntimeSnapshot(), {
       ttlMs: 15000,
       project: value => req.query.summary === '1'
         ? { epistemic_status: value.epistemic_status, report: value.report }
