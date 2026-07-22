@@ -677,12 +677,17 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       return res.status(400).json({ error: error.message });
     }
     try {
+      const summary = req.query.summary === '1';
       return await workerCachedJson(res,
-        `expectations:${scope || 'all'}:${since || 'all'}:${req.query.summary === '1' ? 'summary' : 'full'}`,
+        `expectations:${scope || 'all'}:${since || 'all'}:${summary ? 'summary' : 'full'}`,
         'expectationForecastRuntimeSnapshot', {
-          scope, since, summary: req.query.summary === '1',
+          scope, since, summary,
           __context: { cognitive_parameter_records: store.expectationForecastProjectionContext() },
-        }, { ttlMs: 15000, staleWhileRevalidate: false });
+        // The compact preflight is advisory calibration over closed historical records. Once a
+        // verified snapshot exists, serve it immediately while a new revision replays in the
+        // worker. Forecast creation and resolution still enforce the current authoritative cycle,
+        // ledger, and self-forecast synchronously, so stale calibration cannot authorize a write.
+        }, { ttlMs: 15000, staleWhileRevalidate: summary });
     }
     catch (error) { res.status(503).json({ error: 'expectation snapshot unavailable', detail: error.message }); }
   });
@@ -1718,6 +1723,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     warmDashboardSummary: () => refreshWorkerSnapshot('dashboard-summary',
       'dashboardIntelligenceSummary', {
         __context: { dreams: getDreams(), wants: getWants(), interactions: getInteractions() },
+      }, 15000),
+    warmExpectationSummary: () => refreshWorkerSnapshot('expectations:all:all:summary',
+      'expectationForecastRuntimeSnapshot', {
+        scope: null, since: null, summary: true,
+        __context: { cognitive_parameter_records: store.expectationForecastProjectionContext() },
       }, 15000),
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
     warmCognition: () => cognitionCache.refresh({ force: true }),

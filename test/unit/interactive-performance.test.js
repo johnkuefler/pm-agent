@@ -172,8 +172,12 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'runtime telemetry must expose background queues that could threaten interactive latency');
   assert.match(server, /startup dashboard projection warmup[\s\S]*warmDashboardSummary/,
     'the first dashboard visitor after a restart must not pay the cold projection cost');
+  assert.match(server, /startup expectation calibration warmup[\s\S]*warmExpectationSummary/,
+    'the first hourly preflight after a restart must not pay the cold replay cost');
   assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,
     'dashboard warmup must populate the same cache used by live reads');
+  assert.match(intelligenceRoutesSource, /warmExpectationSummary: \(\) => refreshWorkerSnapshot\('expectations:all:all:summary'/,
+    'expectation warmup must populate the same cache used by hourly preflight reads');
   assert.match(server, /if \(!firstDeliveryRecorded\) \{[\s\S]*slackLatencyTrace = recordInteractiveResponseLatency[\s\S]*firstDeliveryRecorded = true;/,
     'a reaction after an early progress message must not be misreported as a second first delivery');
   assert.match(server, /reactions\.add[\s\S]*timeout: 1500/,

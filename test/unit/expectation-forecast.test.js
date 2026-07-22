@@ -161,7 +161,9 @@ test('EXPECT exposes compact calibration before forecast formation without addin
   const routine = fs.readFileSync(path.join(__dirname, '..', '..', 'nora-routine.md'), 'utf8');
   const instructions = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes',
     'cowork-instructions.js'), 'utf8');
-  assert.match(routes, /expectationForecastRuntimeSnapshot[\s\S]*summary: req\.query\.summary === '1'/);
+  assert.match(routes, /const summary = req\.query\.summary === '1'[\s\S]*expectationForecastRuntimeSnapshot[\s\S]*summary,/);
+  assert.match(routes, /staleWhileRevalidate: summary/);
+  assert.match(routes, /warmExpectationSummary:[\s\S]*expectations:all:all:summary/);
   assert.match(storeSource, /function expectationForecastRuntimeSnapshot[\s\S]*resolution_contract: expectationForecast\.resolutionContract/);
   assert.match(routes, /validate_only[\s\S]*validation_commitment[\s\S]*require_validation/);
   assert.deepEqual(expectationForecast.resolutionContract().evidence_types_by_scope.run_shape,

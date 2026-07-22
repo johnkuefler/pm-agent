@@ -13871,6 +13871,8 @@ async function completePostListenStartup(background) {
     scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
     scheduleStartupBackgroundTask('startup dashboard projection warmup', 2000,
       () => intelligenceRoutesRuntime.warmDashboardSummary());
+    scheduleStartupBackgroundTask('startup expectation calibration warmup', 4000,
+      () => intelligenceRoutesRuntime.warmExpectationSummary());
     scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
     _runtimeIntervals.push(setInterval(() => refreshRecentMeetingsCache()
       .catch(error => console.warn('recent-meetings interval failed:', error.message)), 10 * 60 * 1000));
