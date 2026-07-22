@@ -33,6 +33,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const deferredJobs = snapshot.deferred_jobs || {};
   const processHealth = snapshot.process_health || {};
   const researchProjections = snapshot.research_projections || {};
+  const processResources = snapshot.process_resources || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
@@ -75,6 +76,27 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
         count: failures || undefined, age_ms: inFlightAgeMs || undefined,
         message: `${projection} is slow or backing off in its isolated background lane.` });
     }
+  }
+  const memory = processResources.memory || {};
+  const memoryPressure = Math.max(Number(memory.heap_utilization) || 0,
+    Number(memory.constrained_rss_utilization) || 0);
+  if (memoryPressure >= 0.92) {
+    actionRequired.push({ code: 'critical_process_memory_pressure', utilization: memoryPressure,
+      message: 'The process is close to its measured memory ceiling.' });
+  } else if (memoryPressure >= 0.8) {
+    degraded.push({ code: 'process_memory_pressure', utilization: memoryPressure,
+      message: 'Process memory pressure is elevated.' });
+  }
+  const loopWindows = [processResources.event_loop?.current_window,
+    processResources.event_loop?.last_complete_window].filter(Boolean);
+  const loopP99 = Math.max(0, ...loopWindows.map(window => Number(window.p99_ms) || 0));
+  const loopMax = Math.max(0, ...loopWindows.map(window => Number(window.max_ms) || 0));
+  if (loopP99 >= 1000 || loopMax >= 5000) {
+    actionRequired.push({ code: 'critical_event_loop_delay', p99_ms: loopP99, max_ms: loopMax,
+      message: 'The Node event loop is stalling long enough to jeopardize live responses.' });
+  } else if (loopP99 >= 250 || loopMax >= 1500) {
+    degraded.push({ code: 'event_loop_delay', p99_ms: loopP99, max_ms: loopMax,
+      message: 'Recent event-loop delay is elevated.' });
   }
   if (Object.values(responsiveness.surfaces || {}).some(surface => surface?.gate === 'failing')) {
     actionRequired.push({ code: 'interactive_latency_failing',

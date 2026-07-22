@@ -268,8 +268,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Teamwork workflow stage metadata must load concurrently on a cache miss');
   assert.match(server, /deadlineMs: zoomAttachLiveTools \? 45000/,
     'typed meeting chat must bound the full model and tool loop');
-  assert.match(server, /On it — checking the live details now\./,
-    'tool-backed meeting chat must acknowledge before a long live lookup');
+  assert.doesNotMatch(server, /On it — checking the live details now\./,
+    'interactive chat must wait for a coherent answer instead of posting a generic progress message');
   assert.match(server, /OpenAI Realtime handshake exceeded 8000ms/,
     'voice startup must fail cleanly instead of leaving a half-open meeting session');
   assert.match(server, /conversation\.item\.input_audio_transcription\.delta/,
@@ -689,6 +689,8 @@ test('Slack waits for one coherent reply instead of posting a generic progress m
   assert.ok(start >= 0 && end > start);
   assert.doesNotMatch(slackHandler, /on it\s*[—-]+\s*checking the live details/i);
   assert.doesNotMatch(slackHandler, /earlyStatus(?:Timer|Promise)/);
+  assert.match(slackHandler, /reply = reply\.replace\(\/\^\\s\*on it/,
+    'Slack must strip the historical generic progress preamble if the model reproduces it');
 });
 
 test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {

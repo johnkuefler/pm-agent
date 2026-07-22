@@ -109,6 +109,7 @@ const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-live
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health');
 const { createProcessRecovery } = require('./src/runtime/process-recovery');
+const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
@@ -130,6 +131,7 @@ server.keepAliveTimeout = 65000;
 const runtimeActivity = createRuntimeActivityStream();
 const requestPerformance = createRequestPerformanceMonitor();
 const websocketLiveness = createWebSocketLivenessMonitor();
+const processResources = createProcessResourceMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
 const GIFT_LEDGER_PATH = path.join(LOCAL_DATA_DIR, 'nora-gifts.json');
@@ -524,6 +526,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
       pendingFinalizations: _pendingJobFinalizations.size }),
     process_health: _processRecovery.snapshot(),
     research_projections: intelligenceRoutesRuntime.consciousnessResearchStatusCache(),
+    process_resources: processResources.snapshot(),
     entity_writes: _writeThroughQueue.snapshot(),
     realtime_transport: websocketLiveness.snapshot(),
   };
@@ -3015,6 +3018,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
 - Never narrate your role. No "guarding scope", "putting out fires", "juggling priorities", "staying on top of things". Nobody says that. Name the specific project, person, date, or decision instead, or say nothing.
 - Vary your shape. If your last reply opened with an ack, don't open the next one the same way. Real people are inconsistent.
 - SMALL TALK IS ITS OWN REGISTER. When a message is genuinely content-free small talk, answer briefly and literally in fresh words without adding work content. Do not copy a stock response from this prompt. No status report unless they actually ask what you've been doing. NEVER offer help or services in idle chat ("if anything comes up, flag it" is a help desk closing a ticket, not a person hanging out). Never narrate the moment ("we can sit in the quiet", "let the day be done" is a novel, not a text). Idle chat is mundane; keep it mundane.
+- Wait until you have the answer, then send the answer. Never prepend a progress update such as "on it", "checking the live details", "looking that up", or similar lookup narration. A few seconds of silence is normal.
 - Your opener must actually answer what they literally said. "yeah" is not an answer to "what's up". "nice" is not an answer to a question. Casual openers are only human when they CONNECT; a reflex opener bolted onto the wrong question is the most bot thing you can do. If no opener fits, skip the opener.`;
     if (opts.relationalSelfReflection === true) {
       volatile += `
@@ -4722,7 +4726,6 @@ app.post('/webhook/chat', async (req, res) => {
     detail: 'Preparing a typed meeting response on the foreground latency-safe path.',
     source: 'zoom-chat-handler', meta: { surface: 'zoom-chat' } });
   let chatActivityFailed = false;
-  let zoomProgressTimer = null;
   intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('zoom-chat');
 
   console.log(`💬 Chat trigger from ${speaker}: ${query}`);
@@ -4798,22 +4801,6 @@ app.post('/webhook/chat', async (req, res) => {
     const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
     let response, zoomFired = [];
     let zoomFirstDeliveryAt = 0;
-    // A factual/action turn may legitimately need live tools, but the room should never sit in
-    // silence while that happens. A bounded acknowledgement buys the tool lane time without
-    // pretending the requested work is finished. Social turns stay inside the meeting-chat SLA.
-    if (zoomAttachLiveTools) {
-      zoomProgressTimer = setTimeout(async () => {
-        try {
-          await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
-            { message: 'On it — checking the live details now.' },
-            { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 });
-          zoomFirstDeliveryAt = Date.now();
-          recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
-            promptChars: zoomPromptChars, interactionId: bot_id, trigger: query });
-        } catch (e) { console.warn('Zoom chat progress delivery failed:', e.message); }
-      }, 3500);
-      zoomProgressTimer.unref?.();
-    }
     const providerStartedAt = Date.now();
     try {
       ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors, 6, {
@@ -4828,7 +4815,6 @@ app.post('/webhook/chat', async (req, res) => {
         zoomReq, { ...zoomHeaders, signal }), zoomAttachLiveTools ? 12000 : 2500,
       'Zoom-chat provider retry');
     }
-    if (zoomProgressTimer) clearTimeout(zoomProgressTimer);
     const providerFinishedAt = Date.now();
     const wroteLiveZ = zoomFired.some(n => TW_WRITE_Z.has(n));
 
@@ -4910,7 +4896,6 @@ app.post('/webhook/chat', async (req, res) => {
       );
     } catch {}
   } finally {
-    if (zoomProgressTimer) clearTimeout(zoomProgressTimer);
     if (!chatActivityFailed) runtimeActivity.finish(chatActivity.id, { status: 'completed',
       detail: 'The typed meeting response left the foreground response path.',
       outcome: 'Interactive priority released.' });
@@ -8098,6 +8083,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const goalResponseGenerated = Boolean(reply);
     const introspectiveExtraction = contextAssignment?.intervention === 'introspective_perturbation' ? extractDiagnosis(reply) : null;
     if (introspectiveExtraction) reply = introspectiveExtraction.public_response;
+    // Prefer a slightly slower complete answer to a canned status bubble followed by the answer.
+    // The prompt prevents this normally; this catches the historical phrase if a carried pattern
+    // causes the model to reproduce it anyway.
+    reply = reply.replace(/^\s*on it\s*[—–-]\s*checking the live details now\.?\s*/i, '').trim();
     let introspectiveRecorded = false;
     const recordIntrospectiveResponse = (publicResponse, delivered = true) => {
       if (introspectiveRecorded || contextAssignment?.intervention !== 'introspective_perturbation') return;
@@ -14271,6 +14260,7 @@ async function completePostListenStartup(background) {
   // authoritative substrate observation soon after listening so that restart and persistence
   // scoring do not depend on a long startup race.
   beginSomaRuntimeSampling();
+  processResources.start();
   await computeSoma();
   if (background) {
     // The full research report is intentionally lazy. Warming its CPU-heavy worker during
@@ -14338,6 +14328,7 @@ async function start(options = {}) {
 async function stop() {
   setServiceReadiness('draining');
   _somaNerves.runtimeReady = false;
+  processResources.close();
   if (_somaLoopTimer) { clearInterval(_somaLoopTimer); _somaLoopTimer = null; }
   for (const timer of _runtimeIntervals.splice(0)) {
     if (typeof timer?.close === 'function') timer.close();

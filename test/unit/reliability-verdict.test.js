@@ -22,6 +22,8 @@ function healthySnapshot() {
       memory_queue: { queued: 0 } },
     process_health: { state: 'running', fatal: false },
     research_projections: {},
+    process_resources: { memory: { heap_utilization: 0.1, constrained_rss_utilization: 0.2 },
+      event_loop: { current_window: { p99_ms: 20, max_ms: 30 }, last_complete_window: null } },
     realtime_transport: { recent_stale: [] },
   };
 }
@@ -138,4 +140,23 @@ test('slow and repeatedly failing research projections escalate without taxing l
   const failed = healthySnapshot();
   failed.research_projections.self_model = { in_flight: false, consecutive_failures: 3 };
   assert.equal(assessRuntimeReliability(failed, { now }).status, 'action_required');
+});
+
+test('process memory and event-loop pressure escalate before requests time out', () => {
+  const delayed = healthySnapshot();
+  delayed.process_resources.event_loop.current_window = { p99_ms: 300, max_ms: 800 };
+  let verdict = assessRuntimeReliability(delayed, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'event_loop_delay');
+
+  delayed.process_resources.event_loop.current_window = { p99_ms: 1200, max_ms: 5200 };
+  verdict = assessRuntimeReliability(delayed, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'critical_event_loop_delay');
+
+  const memory = healthySnapshot();
+  memory.process_resources.memory.constrained_rss_utilization = 0.93;
+  verdict = assessRuntimeReliability(memory, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'critical_process_memory_pressure');
 });
