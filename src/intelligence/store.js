@@ -1346,6 +1346,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       flush_running: persistenceFlushRunning,
       strict_waiters: persistenceWaiters.filter(item => item.strict).length,
       strict_timeout_ms: strictPersistenceTimeoutMs,
+      serializer: asyncSerializer.diagnostics(),
       cycle_open: { ...cycleOpenRuntime },
       background_projection: { ...backgroundProjectionRuntime },
       database: typeof db?.diagnostics === 'function' ? db.diagnostics() : null,
