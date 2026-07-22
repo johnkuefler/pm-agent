@@ -125,6 +125,7 @@ test('background runtime budgets actively cancel their provider lane', async () 
 test('live server opts eligible Slack work into complete trials but isolates relational turns', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const storeSource = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence', 'store.js'), 'utf8');
+  const intelligenceRoutesSource = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
   assert.match(server, /contextTrialsEnabled: conversationPolicy\.contextTrialsEnabled, latencyCritical: true/);
   assert.match(server, /relationalSelfReflection: conversationPolicy\.relationalSelfReflection/);
   assert.match(server, /const enabled = Boolean\(assignment\)/);
@@ -166,6 +167,10 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
     'runtime telemetry must expose background queues that could threaten interactive latency');
+  assert.match(server, /startup dashboard projection warmup[\s\S]*warmDashboardSummary/,
+    'the first dashboard visitor after a restart must not pay the cold projection cost');
+  assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,
+    'dashboard warmup must populate the same cache used by live reads');
   assert.match(server, /if \(!firstDeliveryRecorded\) \{[\s\S]*slackLatencyTrace = recordInteractiveResponseLatency[\s\S]*firstDeliveryRecorded = true;/,
     'a reaction after an early progress message must not be misreported as a second first delivery');
   assert.match(server, /reactions\.add[\s\S]*timeout: 1500/,

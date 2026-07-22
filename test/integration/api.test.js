@@ -811,7 +811,7 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.ok(Array.isArray(consequenceRevisions.body.episodes));
   assert.equal(typeof consequenceRevisions.body.report
     .replay_verified_consequence_changed_choices, 'number');
-  const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`, { method: 'POST', body: {
+  const selfForecastPayload = {
     protocol_version: 4,
     predicted_action_types: ['integration_review'], surprise_probability: 0.2,
     control_at_close: 0.7, confidence: 0.7,
@@ -830,7 +830,16 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     },
     rationale: 'The integration cycle has one bounded review path and no expected external dependency.',
     evidence: [{ type: 'intelligence_cycle', id: cycle.body.cycle.id }],
-  } });
+  };
+  const selfForecastPreview = await request(
+    `/intelligence/cycles/${cycle.body.cycle.id}/self-forecast?validate_only=1`,
+    { method: 'POST', body: selfForecastPayload });
+  assert.equal(selfForecastPreview.response.status, 200);
+  assert.equal(selfForecastPreview.body.validation.valid, true);
+  assert.equal((await request('/experience-stream?limit=1')).body.moments[0].self_forecast, null,
+    'forecast validation must not mutate the active lifecycle');
+  const selfForecast = await request(`/intelligence/cycles/${cycle.body.cycle.id}/self-forecast`,
+    { method: 'POST', body: selfForecastPayload });
   assert.equal(selfForecast.response.status, 200);
   assert.equal(selfForecast.body.forecast.audit.preregistration_verified, true);
   const attentionTarget = cycle.body.moment.attention.slots[0];

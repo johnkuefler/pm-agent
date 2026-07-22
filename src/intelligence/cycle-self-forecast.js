@@ -59,6 +59,10 @@ function submissionContract(protocolVersion = 4) {
       required_probability_fields: [...SUBSTRATE_PREDICTION_KEYS],
       value_constraint: 'finite number from zero through one inclusive',
     },
+    predicted_action_types: {
+      minimum_items: 1, maximum_items: 5, distinct: true,
+      value_constraint: 'non-empty action-type strings not listed in retired_action_types',
+    },
     self_state_prediction: {
       required_fields: ['attention_slot_types_at_close', 'appraisal_at_close', 'expected_action_count', 'reentry_probability'],
       appraisal_at_close: {
@@ -77,6 +81,13 @@ function submissionContract(protocolVersion = 4) {
     metacognitive_prediction: {
       required_fields: ['predicted_success_probability', 'predicted_largest_error_domain'],
       allowed_largest_error_domains: [...ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN],
+      predicted_success_probability_constraint: 'must exactly match top-level confidence',
+    },
+    rationale: { minimum_characters: 20, maximum_characters: 1200 },
+    evidence: {
+      minimum_items: 1, maximum_items: 12,
+      item_required_fields: ['type', 'id_or_url'],
+      active_cycle_example: { type: 'intelligence_cycle', id: '<active cycle id>' },
     },
     retired_action_types: [...RETIRED_ACTION_TYPES],
     development_dispatch_retired: true,

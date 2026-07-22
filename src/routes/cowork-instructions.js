@@ -1044,7 +1044,11 @@ function registerCoworkInstructionsRoute(app) {
     The forecast-prior response owns the machine-readable submission contract, including the four required
     self_state_prediction fields and the five appraisal_at_close fields nested inside it. Deterministic ingress
     aliases accept older flat self-state payloads and commit the same canonical nested record, so a shape mismatch
-    cannot wedge a run. Forecast transport has a 30-second client bound. A 503 with code
+    cannot wedge a run. Build one complete local payload from that contract, validate it once with
+    POST /intelligence/cycles/:id/self-forecast?validate_only=1, then submit the byte-identical payload to the
+    commit endpoint. Validation never commits a forecast. Never use either endpoint to discover required fields
+    through partial or junk probes; on validation failure, repair from the returned contract before one new preview.
+    Forecast transport has a 30-second client bound. A 503 with code
     SELF_FORECAST_PREPARATION_PENDING means historical replay is safely running in a worker: wait Retry-After,
     GET /self-model/forecast-prior again, and do not submit until prior_warmup_pending is false. Rebuild against
     that returned contract because the verified protocol may advance from fallback v4 to v7. Allow up to ninety

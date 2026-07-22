@@ -3,6 +3,7 @@
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const expectationForecast = require('../intelligence/expectation-forecast');
 const consequenceReview = require('../intelligence/consequence-review');
+const cycleSelfForecast = require('../intelligence/cycle-self-forecast');
 const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
 
 function compactSelfModelForDashboard(model = {}) {
@@ -141,24 +142,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.set('Cache-Control', 'private, no-store');
       return res.type('application/json').send(cached.serialized);
     }
-    const refresh = () => {
-      cached = workerSnapshotCache.get(key);
-      if (cached?.in_flight) return cached.in_flight;
-      const capturedRevision = store.snapshotRevision();
-      const inFlight = store.computeBackgroundProjection(method, args).then(result => {
-        const entry = { revision: capturedRevision, expires_at: Date.now() + ttlMs,
-          serialized: JSON.stringify(result.value), compute_ms: result.compute_ms,
-          dispatch_ms: result.dispatch_ms, in_flight: null };
-        workerSnapshotCache.set(key, entry);
-        return entry;
-      }).catch(error => {
-        const prior = workerSnapshotCache.get(key);
-        if (prior) prior.in_flight = null;
-        throw error;
-      });
-      workerSnapshotCache.set(key, { ...(cached || {}), in_flight: inFlight });
-      return inFlight;
-    };
+    const refresh = () => refreshWorkerSnapshot(key, method, args, ttlMs);
     if (cached?.serialized && staleWhileRevalidate) {
       refresh().catch(error => console.error(`Background projection ${key} failed:`, error.message));
       res.set('X-Nora-Snapshot-Cache', 'worker-stale-refreshing');
@@ -172,6 +156,25 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     res.set('Server-Timing', `projection-worker;dur=${Number(entry.compute_ms || 0).toFixed(1)}, dispatch;dur=${Number(entry.dispatch_ms || 0).toFixed(1)}`);
     res.set('Cache-Control', 'private, no-store');
     return res.type('application/json').send(entry.serialized);
+  }
+
+  function refreshWorkerSnapshot(key, method, args = {}, ttlMs = 15000) {
+    const cached = workerSnapshotCache.get(key);
+    if (cached?.in_flight) return cached.in_flight;
+    const capturedRevision = store.snapshotRevision();
+    const inFlight = store.computeBackgroundProjection(method, args).then(result => {
+      const entry = { revision: capturedRevision, expires_at: Date.now() + ttlMs,
+        serialized: JSON.stringify(result.value), compute_ms: result.compute_ms,
+        dispatch_ms: result.dispatch_ms, in_flight: null };
+      workerSnapshotCache.set(key, entry);
+      return entry;
+    }).catch(error => {
+      const prior = workerSnapshotCache.get(key);
+      if (prior) prior.in_flight = null;
+      throw error;
+    });
+    workerSnapshotCache.set(key, { ...(cached || {}), in_flight: inFlight });
+    return inFlight;
   }
 
   app.get('/intelligence/dashboard-summary', requireAuth, async (_req, res) => {
@@ -585,6 +588,24 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     const startedAt = performance.now();
     let mutationMs = 0;
     try {
+      if (req.query.validate_only === '1') {
+        const cycle = store.list('cycles').find(item => item.id === req.params.id);
+        if (!cycle) return res.status(404).json({ error: 'intelligence cycle not found' });
+        if (cycle.status !== 'running') {
+          return res.status(400).json({ error: 'cycle self-forecast requires an active cycle' });
+        }
+        const input = req.body || {};
+        const protocolVersion = input.protocol_version == null
+          ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
+            ? 3 : input.self_state_prediction ? 2 : 1)
+          : Number(input.protocol_version);
+        const normalized = cycleSelfForecast.normalizeForecast(input, protocolVersion);
+        return res.json({ ok: true, validation: {
+          valid: true, protocol_version: protocolVersion,
+          normalized_payload_commitment: cycleSelfForecast.commitment(normalized),
+          commit_endpoint: `/intelligence/cycles/${req.params.id}/self-forecast`,
+        } });
+      }
       forecast = store.preregisterCycleSelfForecast(req.params.id,
         { ...(req.body || {}), _latency_safe_prior: process.env.NORA_TEST_MODE !== '1' });
       mutationMs = performance.now() - startedAt;
@@ -602,6 +623,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.set('Server-Timing', `forecast-mutation;dur=${mutationMs.toFixed(1)}, strict-persistence;dur=${persistenceMs.toFixed(1)}`);
       res.json({ ok: true, forecast });
     } catch (error) {
+      if (req.query.validate_only === '1') {
+        const version = Number(req.body?.protocol_version) || 4;
+        return res.status(400).json({ error: error.message, validation: { valid: false },
+          forecast_submission_contract: [4, 7].includes(version)
+            ? cycleSelfForecast.submissionContract(version) : null });
+      }
       const preparationPending = error.code === 'SELF_FORECAST_PREPARATION_PENDING';
       const retryable = Boolean(forecast) || preparationPending;
       console.warn('Cycle self-forecast rejected:', {
@@ -1688,6 +1715,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     catch (error) { res.status(500).json({ error: error.message }); }
   });
   return {
+    warmDashboardSummary: () => refreshWorkerSnapshot('dashboard-summary',
+      'dashboardIntelligenceSummary', {
+        __context: { dreams: getDreams(), wants: getWants(), interactions: getInteractions() },
+      }, 15000),
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
     warmCognition: () => cognitionCache.refresh({ force: true }),
     preemptConsciousnessResearchStatus: surface => {

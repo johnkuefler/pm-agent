@@ -13806,6 +13806,8 @@ async function completePostListenStartup(background) {
     // continuity traffic arrive. The progressive dashboard starts it only when the research
     // section is requested; a live interaction can then preempt it through the v4 firewall.
     scheduleStartupBackgroundTask('startup transcript date backfill', 8000, () => backfillTranscriptDates());
+    scheduleStartupBackgroundTask('startup dashboard projection warmup', 2000,
+      () => intelligenceRoutesRuntime.warmDashboardSummary());
     scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
     _runtimeIntervals.push(setInterval(() => refreshRecentMeetingsCache()
       .catch(error => console.warn('recent-meetings interval failed:', error.message)), 10 * 60 * 1000));
