@@ -112,3 +112,52 @@ test('production snapshots compress off-thread and recover exactly without the l
   assert.deepEqual(recovered.snapshot().persistence_load_fixture,
     state.persistence_load_fixture);
 });
+
+test('replay-heavy background projections compute in a worker without starving foreground timers', async () => {
+  const state = emptyState();
+  state.persistence_load_fixture = Array.from({ length: 20_000 }, (_, index) => ({
+    id: index, text: `background-state-${index}-${'x'.repeat(120)}`,
+  }));
+  const store = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: state });
+  await store.init();
+  let foregroundTimerFired = false;
+  const foreground = new Promise(resolve => setTimeout(() => {
+    foregroundTimerFired = true;
+    resolve();
+  }, 0));
+  const projection = store.computeBackgroundProjection(
+    'developmentalSelfReflectionScheduleSnapshot');
+  await foreground;
+  assert.equal(foregroundTimerFired, true);
+  const result = await projection;
+  assert.equal(result.value.protocol_version, 1);
+  assert.ok(result.dispatch_ms >= 0);
+  assert.ok(result.compute_ms >= 0);
+  const diagnostics = store.persistenceDiagnostics().background_projection;
+  assert.equal(diagnostics.calls, 1);
+  assert.equal(diagnostics.failures, 0);
+  assert.equal(diagnostics.last_method, 'developmentalSelfReflectionScheduleSnapshot');
+  assert.ok(diagnostics.last_compute_ms >= 0);
+});
+
+test('cold behavioral-prior reads fall back immediately while replay warms off-thread', async () => {
+  const store = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: emptyState() });
+  await store.init();
+  const started = performance.now();
+  const cold = store.behavioralSelfForecastPriorRuntimeSnapshot();
+  assert.equal(cold.required_forecast_protocol_version, 4);
+  assert.equal(cold.available, false);
+  assert.equal(cold.prior_warmup_pending, true);
+  assert.ok(performance.now() - started < 100);
+
+  let warm = cold;
+  for (let attempt = 0; attempt < 100 && warm.prior_warmup_pending; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    warm = store.behavioralSelfForecastPriorRuntimeSnapshot();
+  }
+  assert.equal(warm.prior_warmup_pending, false);
+  assert.equal(warm.required_forecast_protocol_version, 4);
+  assert.equal(store.persistenceDiagnostics().background_projection.failures, 0);
+});

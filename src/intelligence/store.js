@@ -6,6 +6,7 @@ const crypto = require('crypto');
 const { gunzipSync } = require('node:zlib');
 const { performance } = require('node:perf_hooks');
 const { AsyncJsonSerializer } = require('../runtime/async-json-serializer');
+const { AsyncIntelligenceProjection } = require('../runtime/async-intelligence-projection');
 const { normalizeCommitment } = require('./models');
 const { clamp01, computeAppraisal, computeDrives, scoreWorkspace, calibration } = require('./cognition');
 const { selfModelReport } = require('./self-model');
@@ -217,6 +218,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
   const asyncSerializer = new AsyncJsonSerializer();
+  const asyncProjection = new AsyncIntelligenceProjection();
+  const backgroundProjectionRuntime = { calls: 0, failures: 0, last_method: null,
+    last_dispatch_ms: null, last_compute_ms: null, last_completed_at: null, last_error: null };
   let persistenceRequestedRevision = 0;
   let persistenceCommittedRevision = 0;
   let persistenceFlushScheduled = false;
@@ -252,6 +256,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let developmentalReadingInfluenceCache = null;
   let developmentalReadingAuditCache = null;
   let professionalViewpointUsefulnessCache = null;
+  let behavioralSelfPriorRuntimeCache = null;
+  let behavioralSelfPriorWarmup = null;
   let consequenceBehaviorRevisionCache = null;
 
   function cognitiveParameterRecord(commitment = null) {
@@ -535,6 +541,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     developmentalReadingInfluenceCache = null;
     developmentalReadingAuditCache = null;
     professionalViewpointUsefulnessCache = null;
+    behavioralSelfPriorRuntimeCache = null;
+    behavioralSelfPriorWarmup = null;
     snapshotRevisionValue += 1;
     state.version = 100;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
@@ -1307,11 +1315,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       strict_waiters: persistenceWaiters.filter(item => item.strict).length,
       strict_timeout_ms: strictPersistenceTimeoutMs,
       cycle_open: { ...cycleOpenRuntime },
+      background_projection: { ...backgroundProjectionRuntime },
       database: typeof db?.diagnostics === 'function' ? db.diagnostics() : null,
       ...persistenceRuntime,
     };
   }
   function snapshotRevision() { return snapshotRevisionValue; }
+  async function computeBackgroundProjection(method, args = {}) {
+    try {
+      const result = await asyncProjection.run(state, method, args);
+      backgroundProjectionRuntime.calls += 1;
+      backgroundProjectionRuntime.last_method = method;
+      backgroundProjectionRuntime.last_dispatch_ms = result.dispatch_ms;
+      backgroundProjectionRuntime.last_compute_ms = result.compute_ms;
+      backgroundProjectionRuntime.last_completed_at = clock().toISOString();
+      backgroundProjectionRuntime.last_error = null;
+      return result;
+    } catch (error) {
+      backgroundProjectionRuntime.failures += 1;
+      backgroundProjectionRuntime.last_method = method;
+      backgroundProjectionRuntime.last_error = String(error?.message || error).slice(0, 500);
+      throw error;
+    }
+  }
   function noteExternalConfigurationChange() {
     snapshotRevisionValue += 1;
     procedureSelectionCache = null;
@@ -25482,10 +25508,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       // Resolve the moment-bound prior independently of what the caller submitted. A richer
       // historical protocol can never make a missing current prior appear; when replay cannot
       // produce the exact lagged prior, protocol 4 is the honest contract for this one cycle.
-      const availableBehavioralSelfPrior = submittedProtocolVersion >= 5
-        || highestPriorProtocol >= 5
-        ? behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles)
-        : null;
+      const priorMayBeRequired = submittedProtocolVersion >= 5 || highestPriorProtocol >= 5;
+      const availableBehavioralSelfPrior = !priorMayBeRequired ? null
+        : input._latency_safe_prior === true
+          ? cachedBehavioralSelfPriorForMoment(moment)
+          : behavioralSelfForecastPriorForMoment(moment, current.cognition, current.cycles);
       const behavioralSelfPrior = submittedProtocolVersion >= 5
         ? availableBehavioralSelfPrior : null;
       const candidateTrustPolicy = behavioralSelfPrior
@@ -25812,6 +25839,80 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       prior_use_schema: priorUseSchema,
       ...(prior ? { audit: behavioralSelfForecastPriorAudit(prior, moment) } : {}),
     };
+  }
+
+  function behavioralSelfPriorRuntimeKey() {
+    const moments = state.cognition.experience_stream || [];
+    const openMoment = moments.find(item => item.status === 'open') || null;
+    const latestClosed = [...moments].reverse().find(item => item.status !== 'open') || null;
+    const boundMoment = openMoment || latestClosed;
+    const latestRevision = state.cognition.self_model?.behavioral_self_model?.revisions?.at(-1) || null;
+    const activeOverlaps = (state.cognition.self_model?.context_trials || [])
+      .filter(trial => trial.status === 'active'
+        && ['self_model_access', 'integrated_self_binding'].includes(trial.intervention))
+      .map(trial => `${trial.id}:${trial.intervention}`).sort();
+    return canonicalJson({ moment_id: boundMoment?.id || null,
+      predecessor_id: openMoment?.predecessor_id || latestClosed?.id || null,
+      latest_revision_commitment: latestRevision?.revision_commitment || null,
+      active_overlaps: activeOverlaps });
+  }
+
+  function latencySafeBehavioralPriorFallback() {
+    const openMoment = (state.cognition.experience_stream || []).find(item => item.status === 'open') || null;
+    return {
+      epistemic_status: 'The richer lagged behavioral prior is being replay-audited off the live event loop. This cycle uses the explicit protocol-v4 fallback rather than blocking operational work or claiming an unverified prior.',
+      experimental_access_sealed: false, available: false,
+      active_cycle_bound: Boolean(openMoment), cycle_id: openMoment?.cycle_id || null,
+      moment_id: openMoment?.id || null, prior: null, trust_policy: null,
+      trust_policy_verified: false, prior_warmup_pending: true,
+      required_forecast_protocol_version: 4,
+      forecast_submission_contract: cycleSelfForecast.submissionContract(4),
+      prior_use_schema: {
+        protocol_version: 1,
+        dispositions: cycleSelfForecast.BEHAVIORAL_PRIOR_USE_DISPOSITIONS,
+        estimate_refs: cycleSelfForecast.BEHAVIORAL_PRIOR_ESTIMATE_REFS,
+        epistemic_limit: 'No behavioral prior may be claimed or used until its replay audit completes.',
+      },
+    };
+  }
+
+  function warmBehavioralSelfPriorRuntime(key) {
+    if (behavioralSelfPriorWarmup?.key === key) return;
+    const promise = computeBackgroundProjection('behavioralSelfForecastPriorSnapshot')
+      .then(result => {
+        if (behavioralSelfPriorRuntimeKey() === key) {
+          behavioralSelfPriorRuntimeCache = { key, snapshot: result.value,
+            compute_ms: result.compute_ms, dispatch_ms: result.dispatch_ms,
+            warmed_at: clock().toISOString() };
+        }
+      })
+      .catch(error => {
+        console.warn('behavioral self prior background warmup failed:', error.message);
+      })
+      .finally(() => {
+        if (behavioralSelfPriorWarmup?.promise === promise) behavioralSelfPriorWarmup = null;
+      });
+    behavioralSelfPriorWarmup = { key, promise };
+  }
+
+  function behavioralSelfForecastPriorRuntimeSnapshot() {
+    const key = behavioralSelfPriorRuntimeKey();
+    if (behavioralSelfPriorRuntimeCache?.key === key) {
+      return { ...JSON.parse(JSON.stringify(behavioralSelfPriorRuntimeCache.snapshot)),
+        prior_warmup_pending: false,
+        prior_warmup: { compute_ms: behavioralSelfPriorRuntimeCache.compute_ms,
+          dispatch_ms: behavioralSelfPriorRuntimeCache.dispatch_ms,
+          warmed_at: behavioralSelfPriorRuntimeCache.warmed_at } };
+    }
+    warmBehavioralSelfPriorRuntime(key);
+    return latencySafeBehavioralPriorFallback();
+  }
+
+  function cachedBehavioralSelfPriorForMoment(moment) {
+    if (!moment || behavioralSelfPriorRuntimeCache?.key !== behavioralSelfPriorRuntimeKey()) return null;
+    const snapshot = behavioralSelfPriorRuntimeCache.snapshot;
+    return snapshot?.available === true && snapshot.cycle_id === moment.cycle_id
+      ? snapshot.prior || null : null;
   }
 
   function reviseBehavioralSelfModel(current, moment) {
@@ -27914,7 +28015,7 @@ ${episodes.map(item => {
   return {
     // State is JSON-like, but native structured clone avoids running a second full JSON encoder on
     // Nora's foreground thread when background research workers take an isolated snapshot.
-    init, snapshot: () => structuredClone(state), snapshotRevision,
+    init, snapshot: () => structuredClone(state), snapshotRevision, computeBackgroundProjection,
     noteExternalConfigurationChange, dashboardIntelligenceSummary, liveActivityContextSnapshot,
     persist, persistStrict, persistenceDiagnostics, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
@@ -27949,6 +28050,7 @@ ${episodes.map(item => {
     recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
+    behavioralSelfForecastPriorRuntimeSnapshot,
     createBehavioralFingerprintRun, behavioralFingerprintSubjectQueue,
     behavioralFingerprintAutomationPlan,
     submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,

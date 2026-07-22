@@ -597,7 +597,8 @@ function status({ dreams = [], developments = [], moments = [], autobiography = 
 async function runCycle({ store, loadDreams, saveDreams, getAutobiography, commitAutobiography,
   enabled = true, subjectEnabled = true, evaluatorEnabled = true,
   subjectModel = SUBJECT_MODEL, evaluatorModel = EVALUATOR_MODEL,
-  callSubject, callEvaluator, now = new Date() } = {}) {
+  callSubject, callEvaluator, getScheduleSnapshot = null, getRuntimeSnapshot = null,
+  now = new Date() } = {}) {
   const result = { protocol_version: PROTOCOL_VERSION, state: enabled ? 'idle' : 'disabled',
     provider_calls: 0, development_id: null, autobiography_revision_id: null, failure: null };
   if (!enabled) return result;
@@ -608,13 +609,16 @@ async function runCycle({ store, loadDreams, saveDreams, getAutobiography, commi
   }
   const dreams = loadDreams(); const autobiographyState = getAutobiography();
   if (typeof store.developmentalSelfReflectionScheduleSnapshot === 'function') {
-    const schedule = store.developmentalSelfReflectionScheduleSnapshot();
+    const schedule = typeof getScheduleSnapshot === 'function'
+      ? await getScheduleSnapshot() : store.developmentalSelfReflectionScheduleSnapshot();
     const decision = scheduleDecision({ dreams, developments: schedule.developments || [],
       revisions: autobiographyState.revisions || [], subjectEnabled,
       subjectAvailable: typeof callSubject === 'function', now });
     if (!decision.requires_full_cycle) return { ...result, state: decision.state };
   }
-  const runtime = store.developmentalSelfReflectionRuntimeSnapshot({ limit: 72 });
+  const runtime = typeof getRuntimeSnapshot === 'function'
+    ? await getRuntimeSnapshot({ limit: 72 })
+    : store.developmentalSelfReflectionRuntimeSnapshot({ limit: 72 });
   const developments = runtime.developments || []; const moments = runtime.moments || [];
 
   const uncited = developments.find(item => item.origin?.creator_id === CREATOR_ID

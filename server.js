@@ -12571,6 +12571,10 @@ async function runDevelopmentalSelfReflectionRuntime({ post = axios.post } = {})
   try {
     const cycle = await developmentalSelfReflection.runCycle({
       store: intelligence, loadDreams, saveDreams: saveDreamsStrict,
+      getScheduleSnapshot: async () => (await intelligence.computeBackgroundProjection(
+        'developmentalSelfReflectionScheduleSnapshot')).value,
+      getRuntimeSnapshot: async args => (await intelligence.computeBackgroundProjection(
+        'developmentalSelfReflectionRuntimeSnapshot', args)).value,
       getAutobiography: () => ({ record: JSON.parse(JSON.stringify(_cache.autobiography || null)),
         revisions: JSON.parse(JSON.stringify(_cache.autobiographyRevisions || [])) }),
       commitAutobiography: async input => (await commitAutobiographyRevision(input)).current,

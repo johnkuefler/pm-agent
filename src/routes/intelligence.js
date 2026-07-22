@@ -465,7 +465,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     const startedAt = performance.now();
     let mutationMs = 0;
     try {
-      forecast = store.preregisterCycleSelfForecast(req.params.id, req.body || {});
+      forecast = store.preregisterCycleSelfForecast(req.params.id,
+        { ...(req.body || {}), _latency_safe_prior: true });
       mutationMs = performance.now() - startedAt;
       if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
       await store.persistStrict();
@@ -1056,7 +1057,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     }
   });
   app.get('/self-model/forecast-prior', requireAuth,
-    (req, res) => res.json(store.behavioralSelfForecastPriorSnapshot()));
+    (req, res) => res.json(store.behavioralSelfForecastPriorRuntimeSnapshot()));
   app.get('/self-model/cycle-calibration', requireAuth,
     (req, res) => res.json(store.behavioralSelfCalibrationSnapshot()));
   app.get('/self-model/fingerprints', requireAuth,
