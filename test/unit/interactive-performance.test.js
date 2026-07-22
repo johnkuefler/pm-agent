@@ -143,6 +143,14 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'bounded Slack social and self-reflective turns must omit irrelevant live-tool schemas');
   assert.match(server, /const zoomAttachLiveTools = zoomConversationPolicy\.attachLiveTools/,
     'bounded Zoom-chat social and self-reflective turns must omit irrelevant live-tool schemas');
+  assert.match(server, /deadlineMs: zoomAttachLiveTools \? 45000/,
+    'typed meeting chat must bound the full model and tool loop');
+  assert.match(server, /On it — checking the live details now\./,
+    'tool-backed meeting chat must acknowledge before a long live lookup');
+  assert.match(server, /OpenAI Realtime handshake exceeded 8000ms/,
+    'voice startup must fail cleanly instead of leaving a half-open meeting session');
+  assert.match(server, /rejectWithinAbortable\(\(\) => execute\(args\), 10000, `Realtime voice tool/,
+    'live voice connector lookups must release the spoken turn on deadline');
   assert.match(server, /const volatileIntelligenceContext = latencyCritical[\s\S]*compactInteractiveIntelligenceContext/,
     'changing cognition must stay bounded outside the stable provider-cache prefix');
   assert.match(server, /beginInteractive\('slack'\)/);

@@ -4526,7 +4526,7 @@ app.post('/webhook/chat', async (req, res) => {
       : 'Back on, I can talk on the call again.';
     try {
       await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`, { message: confirm },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 });
     } catch (e) { console.warn('mute-confirm chat send failed:', e.message); }
     return; // command handled; don't run the normal reply path
   }
@@ -4542,7 +4542,7 @@ app.post('/webhook/chat', async (req, res) => {
       : "Got it, name only. I'll stay quiet on the call unless someone actually says \"Nora\".";
     try {
       await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`, { message: confirm },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } });
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 });
     } catch (e) { console.warn('mode-confirm chat send failed:', e.message); }
     return;
   }
@@ -4557,6 +4557,7 @@ app.post('/webhook/chat', async (req, res) => {
     detail: 'Preparing a typed meeting response on the foreground latency-safe path.',
     source: 'zoom-chat-handler', meta: { surface: 'zoom-chat' } });
   let chatActivityFailed = false;
+  let zoomProgressTimer = null;
   intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('zoom-chat');
 
   console.log(`💬 Chat trigger from ${speaker}: ${query}`);
@@ -4631,16 +4632,38 @@ app.post('/webhook/chat', async (req, res) => {
     };
     const zoomHeaders = { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' } };
     let response, zoomFired = [];
+    let zoomFirstDeliveryAt = 0;
+    // A factual/action turn may legitimately need live tools, but the room should never sit in
+    // silence while that happens. A bounded acknowledgement buys the tool lane time without
+    // pretending the requested work is finished. Social turns stay inside the meeting-chat SLA.
+    if (zoomAttachLiveTools) {
+      zoomProgressTimer = setTimeout(async () => {
+        try {
+          await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
+            { message: 'On it — checking the live details now.' },
+            { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 });
+          zoomFirstDeliveryAt = Date.now();
+          recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
+            promptChars: zoomPromptChars, interactionId: bot_id, trigger: query });
+        } catch (e) { console.warn('Zoom chat progress delivery failed:', e.message); }
+      }, 3500);
+      zoomProgressTimer.unref?.();
+    }
     const providerStartedAt = Date.now();
     try {
       ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors, 6, {
-        deferredMeta: zoomMcp.meta, origin: { kind: 'zoom_chat', bot_id, requester: speaker }
+        deferredMeta: zoomMcp.meta, origin: { kind: 'zoom_chat', bot_id, requester: speaker },
+        deadlineMs: zoomAttachLiveTools ? 45000 : Math.max(1000, 5000 - (Date.now() - interactionStartedAt)),
+        providerTimeoutMs: zoomAttachLiveTools ? 20000 : Math.max(1000, 5000 - (Date.now() - interactionStartedAt))
       }));
     } catch (err) {
       console.warn('Zoom chat reply with tools failed; retrying without:', err.response?.data?.error?.message || err.message);
       delete zoomReq.tools; zoomReq.messages = history.slice();
-      response = await axios.post('https://api.anthropic.com/v1/messages', zoomReq, zoomHeaders);
+      response = await rejectWithinAbortable(signal => axios.post('https://api.anthropic.com/v1/messages',
+        zoomReq, { ...zoomHeaders, signal }), zoomAttachLiveTools ? 12000 : 2500,
+      'Zoom-chat provider retry');
     }
+    if (zoomProgressTimer) clearTimeout(zoomProgressTimer);
     const providerFinishedAt = Date.now();
     const wroteLiveZ = zoomFired.some(n => TW_WRITE_Z.has(n));
 
@@ -4664,9 +4687,9 @@ app.post('/webhook/chat', async (req, res) => {
     await axios.post(
       `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
       { message: reply },
-      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
     );
-    recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
+    if (!zoomFirstDeliveryAt) recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
       promptChars: zoomPromptChars,
       stages: {
         prepare_ms: providerStartedAt - interactionStartedAt,
@@ -4714,10 +4737,11 @@ app.post('/webhook/chat', async (req, res) => {
       await axios.post(
         `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
         { message: "Sorry, I hit an error processing that." },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
       );
     } catch {}
   } finally {
+    if (zoomProgressTimer) clearTimeout(zoomProgressTimer);
     if (!chatActivityFailed) runtimeActivity.finish(chatActivity.id, { status: 'completed',
       detail: 'The typed meeting response left the foreground response path.',
       outcome: 'Interactive priority released.' });
@@ -5715,7 +5739,9 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled,
     } else {
       const execute = executors[name] || TEAMWORK_TOOLS.find(t => t.definition.name === name)?.execute;
       if (!execute) throw new Error(`unknown tool ${name}`);
-      output = await execute(args);
+      // Voice lookups are read-only. If a connector cannot answer inside a spoken-turn budget,
+      // return control to the model so Nora can say so and the room can keep moving.
+      output = await rejectWithinAbortable(() => execute(args), 10000, `Realtime voice tool ${name}`);
       safelyCompleteToolExecution(actionExecution?.id, 'succeeded', output);
     }
   } catch (e) {
@@ -10747,7 +10773,19 @@ wss.on('connection', async (ws, req) => {
   const voiceBundle = realtimeVoiceTools();
   const voiceTools = voiceBundle.tools;
 
+  // A half-open upstream socket otherwise leaves the meeting UI saying "connected" while no
+  // intelligence is actually listening. Fail visibly and let Recall/browser reconnect cleanly.
+  const openaiHandshakeTimer = setTimeout(() => {
+    if (openaiWs.readyState === WebSocket.CONNECTING) {
+      console.error('OpenAI Realtime handshake exceeded 8000ms');
+      try { openaiWs.terminate(); } catch {}
+      if (ws.readyState === WebSocket.OPEN) ws.close(4003, 'Voice provider connection timed out');
+    }
+  }, 8000);
+  openaiHandshakeTimer.unref?.();
+
   openaiWs.on('open', () => {
+    clearTimeout(openaiHandshakeTimer);
     console.log('🧠 Connected to OpenAI Realtime API');
 
     const isMuted = session?.muted;
@@ -11091,6 +11129,7 @@ wss.on('connection', async (ws, req) => {
   });
 
   openaiWs.on('close', () => {
+    clearTimeout(openaiHandshakeTimer);
     console.log('🧠 OpenAI Realtime connection closed');
     if (ws.readyState === WebSocket.OPEN) {
       ws.close();
@@ -11098,6 +11137,7 @@ wss.on('connection', async (ws, req) => {
   });
 
   openaiWs.on('error', (err) => {
+    clearTimeout(openaiHandshakeTimer);
     console.error('OpenAI WebSocket error:', err.message);
   });
 
