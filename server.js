@@ -9974,6 +9974,17 @@ function saveInteractions(items) {
   try { fs.writeFileSync(getInteractionsPath(), JSON.stringify(items, null, 2)); }
   catch (err) { console.error('Failed to persist interactions:', err.message); }
 }
+
+function persistInteractionAppend(items, interaction, deletedIds = []) {
+  if (_dbReady) {
+    _cache.interactions = items;
+    const snapshot = JSON.parse(JSON.stringify(interaction));
+    const removals = deletedIds.slice();
+    _writeThrough('interactions', () => db.appendInteraction(snapshot, removals));
+    return;
+  }
+  saveInteractions(items);
+}
 const MAX_INTERACTIONS_KEPT = 600; // a few weeks of Slack activity; trims oldest beyond this
 
 // Append one interaction. Fire-and-forget from the Slack handler; failures are non-fatal
@@ -10067,8 +10078,9 @@ function logInteraction(entry) {
       }
     }
     items.push(interaction);
-    if (items.length > MAX_INTERACTIONS_KEPT) items.splice(0, items.length - MAX_INTERACTIONS_KEPT);
-    saveInteractions(items);
+    const removed = items.length > MAX_INTERACTIONS_KEPT
+      ? items.splice(0, items.length - MAX_INTERACTIONS_KEPT) : [];
+    persistInteractionAppend(items, interaction, removed.map(item => item.id).filter(Boolean));
     if (interaction.cognitive_parameter_assignment_id) {
       try {
         intelligence.markCognitiveParameterAssignmentDelivered(

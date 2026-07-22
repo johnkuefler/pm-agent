@@ -642,6 +642,38 @@ const replaceAllInteractions = makeReplaceAll('interactions', (x, i) => {
   };
 });
 
+// The live Slack path appends one interaction at a time. Persist that append directly instead
+// of replaying the entire bounded review ledger after every human-facing response.
+async function appendInteraction(item, deletedIds = []) {
+  if (!item?.id) throw new Error('interaction append requires an id');
+  const snapshot = JSON.parse(JSON.stringify(item));
+  const createdMs = new Date(snapshot.created).getTime();
+  const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    await client.query(
+      `INSERT INTO ${DB_SCHEMA}.interactions (id, data, created, reviewed, ord)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, created=EXCLUDED.created,
+         reviewed=EXCLUDED.reviewed, ord=EXCLUDED.ord`,
+      [snapshot.id, snapshot, snapshot.created || null, !!snapshot.reviewed, ord]
+    );
+    if (deletedIds.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.interactions WHERE id = ANY($1::text[])`,
+        [deletedIds]);
+    }
+    await client.query('COMMIT');
+    return { appended: snapshot.id, deleted: deletedIds.length };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 async function loadAllDreams() {
   const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.dreams ORDER BY ord ASC NULLS LAST, finished DESC`);
   return rows.map((r) => r.data);
@@ -837,7 +869,7 @@ module.exports = {
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
   loadAllTasks, replaceAllTasks,
   loadAllProjects, replaceAllProjects,
-  loadAllInteractions, replaceAllInteractions,
+  loadAllInteractions, replaceAllInteractions, appendInteraction,
   loadAllDreams, replaceAllDreams,
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers,
