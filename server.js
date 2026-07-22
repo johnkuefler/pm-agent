@@ -108,6 +108,7 @@ const { createRequestPerformanceMonitor } = require('./src/runtime/request-perfo
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
+const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
@@ -677,8 +678,13 @@ function loadMarkers() {
   try { return JSON.parse(fs.readFileSync(getMarkersPath(), 'utf8')); }
   catch { return {}; }
 }
-function saveMarkersFile(markers) {
-  if (_dbReady) { _cache.markers = markers; return _writeThrough('markers', () => db.replaceAllMarkers(markers)); }
+function saveMarkersFile(markers, delta = null) {
+  if (_dbReady) {
+    _cache.markers = markers;
+    if (delta && !delta.upserts.length && !delta.deleted_keys.length) return Promise.resolve();
+    return _writeThrough('markers', () => delta
+      ? db.applyMarkerChanges(delta) : db.replaceAllMarkers(markers));
+  }
   const p = getMarkersPath();
   const tmp = `${p}.tmp-${process.pid}`;
   fs.writeFileSync(tmp, JSON.stringify(markers, null, 2));
@@ -690,8 +696,9 @@ let _markerMutationChain = Promise.resolve();
 function mutateMarkers(mutator) {
   const run = _markerMutationChain.then(async () => {
     const markers = loadMarkers();
+    const before = captureMarkerPersistence(markers);
     const result = mutator(markers);
-    await saveMarkersFile(markers);
+    await saveMarkersFile(markers, diffMarkerPersistence(before, markers));
     return { result, markers };
   });
   _markerMutationChain = run.then(() => {}, () => {});

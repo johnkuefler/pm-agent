@@ -815,6 +815,33 @@ async function listTranscripts() {
   );
   return rows;
 }
+
+async function applyMarkerChanges({ upserts = [], deleted_keys: deletedKeys = [] } = {}) {
+  if (!upserts.length && !deletedKeys.length) return { upserted: 0, deleted: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    for (const change of upserts) {
+      await client.query(
+        `INSERT INTO ${DB_SCHEMA}.markers (key, value, updated_at) VALUES ($1,$2, now())
+         ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+        [change.key, change.value]
+      );
+    }
+    if (deletedKeys.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.markers WHERE key = ANY($1::text[])`,
+        [deletedKeys]);
+    }
+    await client.query('COMMIT');
+    return { upserted: upserts.length, deleted: deletedKeys.length };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
 async function getTranscript(botId) {
   const { rows } = await q(`SELECT bot_id, ended, transcript FROM ${DB_SCHEMA}.transcripts WHERE bot_id=$1`, [botId]);
   return rows[0] || null;
@@ -886,7 +913,7 @@ module.exports = {
   loadAllInteractions, replaceAllInteractions, appendInteraction,
   loadAllDreams, replaceAllDreams,
   loadAllMcp, replaceAllMcp,
-  loadAllMarkers, replaceAllMarkers,
+  loadAllMarkers, replaceAllMarkers, applyMarkerChanges,
   loadAllSlackThreads, replaceAllSlackThreads,
   upsertTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
