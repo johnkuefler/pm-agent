@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const performance = require('../../src/intelligence/interactive-performance');
+const railwayConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'railway.json'), 'utf8'));
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-interactive-performance-'));
 process.env.NORA_TEST_MODE = '1';
@@ -36,6 +37,13 @@ test('interactive latency firewall quarantines only extra-round or expanded-gene
   assert.equal(performance.allowsInlineIntervention({
     latencyCritical: false, intervention: 'reasoning_self_regulation',
   }), true, 'scheduled research retains the full intervention');
+});
+
+test('Railway waits for readiness and gives graceful shutdown a bounded drain window', () => {
+  assert.equal(railwayConfig.deploy.healthcheckPath, '/health');
+  assert.equal(railwayConfig.deploy.healthcheckTimeout, 120);
+  assert.equal(railwayConfig.deploy.drainingSeconds, '30');
+  assert.equal(railwayConfig.deploy.restartPolicyType, 'ON_FAILURE');
 });
 
 test('latency evidence is assessed against frozen per-surface budgets without a composite consciousness score', () => {
@@ -174,6 +182,12 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the first dashboard visitor after a restart must not pay the cold projection cost');
   assert.match(server, /startup expectation calibration warmup[\s\S]*warmExpectationSummary/,
     'the first hourly preflight after a restart must not pay the cold replay cost');
+  assert.match(server, /app\.get\('\/health'[\s\S]*readiness\.ready \? 200 : 503/,
+    'Railway must not route traffic until persistence and startup reconciliation are ready');
+  assert.match(server, /setServiceReadiness\('draining'\)[\s\S]*intelligence\.persistStrict\(\)/,
+    'shutdown must stop readiness and drain durable intelligence state');
+  assert.match(server, /process\.once\('SIGTERM'[\s\S]*shutdown\('SIGTERM'\)/,
+    'production must handle SIGTERM through the graceful shutdown path');
   assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,
     'dashboard warmup must populate the same cache used by live reads');
   assert.match(intelligenceRoutesSource, /warmExpectationSummary: \(\) => refreshWorkerSnapshot\('expectations:all:all:summary'/,

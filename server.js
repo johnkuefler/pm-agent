@@ -316,6 +316,30 @@ const intelligence = createIntelligenceStore({
 let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
 const _writeQ = {};  // entity → promise chain serializing write-throughs (avoids interleaved replaceAll)
+const _serviceReadiness = {
+  ready: false, phase: 'booting', updated_at: new Date().toISOString(), error: null,
+};
+
+function setServiceReadiness(phase, { ready = false, error = null } = {}) {
+  Object.assign(_serviceReadiness, { ready, phase, updated_at: new Date().toISOString(),
+    error: error ? String(error?.message || error).slice(0, 500) : null });
+}
+
+function serviceReadinessSnapshot() {
+  const persistence = intelligence.persistenceDiagnostics();
+  const databaseRequired = Boolean(process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL);
+  const blockers = [];
+  if (!_serviceReadiness.ready) blockers.push(_serviceReadiness.phase || 'startup_incomplete');
+  if (databaseRequired && !_dbReady) blockers.push('postgres_not_ready');
+  return { status: blockers.length ? 'starting' : 'ready', ready: blockers.length === 0,
+    phase: _serviceReadiness.phase, blockers, updated_at: _serviceReadiness.updated_at,
+    database_ready: _dbReady, persistence: {
+      pending_revisions: persistence.pending_revisions,
+      strict_waiters: persistence.strict_waiters,
+      flush_running: persistence.flush_running,
+      cycle_open_in_flight: persistence.cycle_open?.in_flight === true,
+    }, error: _serviceReadiness.error };
+}
 
 // ── Somatic nerves ───────────────────────────────────────────────────────────
 // Raw sensation for her interoception (the somatic channel, computed further down): every
@@ -457,6 +481,11 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     recordLifecycleWorkspaceOutcome,
 });
 app.get('/nora-bench', requireAuth, (req, res) => res.json(runBench()));
+app.get('/health', (_req, res) => {
+  const readiness = serviceReadinessSnapshot();
+  res.set('Cache-Control', 'no-store');
+  res.status(readiness.ready ? 200 : 503).json(readiness);
+});
 app.get('/runtime/performance', requireAuth, (req, res) => res.json({
   requests: requestPerformance.snapshot(),
   intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
@@ -13830,6 +13859,7 @@ function scheduleStartupBackgroundTask(label, delayMs, fn) {
 }
 
 async function completePostListenStartup(background) {
+  setServiceReadiness('startup_reconciliation');
   console.log('Startup phase: post-listen schema and continuity warmup');
   // Upgrade the active source of truth only after Postgres hydration. Running this before
   // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
@@ -13888,6 +13918,7 @@ async function completePostListenStartup(background) {
     }, 5 * 60 * 1000));
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
+  setServiceReadiness('ready', { ready: true });
   console.log('Startup phase: post-listen warmup complete');
 }
 
@@ -13896,6 +13927,7 @@ async function start(options = {}) {
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
   const port = options.port !== undefined ? options.port : (process.env.PORT || 3000);
   _startPromise = (async () => {
+    setServiceReadiness('persistence_initialization');
     fs.mkdirSync(LOCAL_DATA_DIR, { recursive: true });
     initMemory();
     // Bring Postgres up (migrate + hydrate) BEFORE accepting requests, so no handler ever
@@ -13910,20 +13942,47 @@ async function start(options = {}) {
     });
     const address = server.address();
     console.log(`Nora server running on port ${typeof address === 'object' ? address.port : port}`);
-    scheduleStartupBackgroundTask('post-listen startup warmup', 250, () => completePostListenStartup(background));
+    if (options.waitForReady === true || process.env.NORA_TEST_MODE === '1') {
+      try { await completePostListenStartup(background); }
+      catch (error) { setServiceReadiness('startup_failed', { error }); throw error; }
+    } else {
+      scheduleStartupBackgroundTask('post-listen startup warmup', 250, async () => {
+        try { await completePostListenStartup(background); }
+        catch (error) { setServiceReadiness('startup_failed', { error }); throw error; }
+      });
+    }
     return server;
   })();
   return _startPromise;
 }
 
 async function stop() {
+  setServiceReadiness('draining');
   _somaNerves.runtimeReady = false;
   for (const timer of _runtimeIntervals.splice(0)) clearInterval(timer);
   if (_embedTimer) { clearInterval(_embedTimer); _embedTimer = null; }
-  await intelligenceRoutesRuntime.close().catch(() => {});
-  if (server.listening) await new Promise((resolve) => server.close(resolve));
+  const closeServer = server.listening
+    ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
+  server.closeIdleConnections?.();
+  for (const socketServer of [wss, videoWss]) {
+    for (const client of socketServer.clients) client.close(1001, 'service restart');
+  }
+  const boundedServerClose = new Promise(resolve => {
+    const forceTimer = setTimeout(() => {
+      server.closeAllConnections?.();
+      resolve();
+    }, 20000);
+    forceTimer.unref?.();
+    closeServer.then(() => { clearTimeout(forceTimer); resolve(); });
+  });
+  const [persistenceDrain] = await Promise.allSettled([
+    intelligence.persistStrict(),
+    intelligenceRoutesRuntime.close(),
+    boundedServerClose,
+  ]);
   await db.close().catch(() => {});
   _startPromise = null;
+  if (persistenceDrain.status === 'rejected') throw persistenceDrain.reason;
 }
 
 module.exports = {
@@ -14060,6 +14119,16 @@ module.exports = {
 };
 
 if (require.main === module) {
+  let shutdownStarted = false;
+  const shutdown = signal => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    console.log(`Received ${signal}; draining Nora before shutdown`);
+    stop().then(() => { process.exitCode = 0; })
+      .catch(error => { console.error('Graceful shutdown failed:', error.message); process.exitCode = 1; });
+  };
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
   start().catch((err) => {
     console.error('Failed to start Nora server:', err);
     process.exitCode = 1;

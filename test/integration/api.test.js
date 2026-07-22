@@ -65,6 +65,17 @@ async function request(url, options = {}) {
   return { response, body };
 }
 
+test('deployment health exposes completed startup and drained persistence without authentication', async () => {
+  const response = await fetch(base + '/health');
+  const health = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(health.status, 'ready');
+  assert.equal(health.ready, true);
+  assert.deepEqual(health.blockers, []);
+  assert.equal(health.persistence.pending_revisions, 0);
+  assert.equal(health.persistence.strict_waiters, 0);
+});
+
 test('authentication protects APIs and dashboard independently', async () => {
   const api = await fetch(base + '/memory');
   assert.equal(api.status, 401);
