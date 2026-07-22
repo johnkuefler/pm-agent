@@ -1341,7 +1341,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (['developmentalSelfReflectionRuntimeSnapshot',
       'behavioralSelfForecastPriorSnapshot',
       'cycleSelfForecastRuntimePreparationSnapshot',
-      'experienceStreamSnapshot'].includes(method)) {
+      'experienceStreamSnapshot',
+      'expectationForecastRuntimeSnapshot'].includes(method)) {
       const cognition = state.cognition || {};
       const selfModel = cognition.self_model || {};
       return {
@@ -1351,6 +1352,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           development: cognition.development || [],
           experience_stream: cognition.experience_stream || [],
           research_ledger: cognition.research_ledger || { events: [], anchors: [] },
+          expectations: cognition.expectations || { forecasts: [] },
+          surprises: cognition.surprises || [],
           self_model: {
             context_trials: (selfModel.context_trials || []).filter(item => item.status === 'active')
               .map(item => ({ status: item.status, intervention: item.intervention })),
@@ -14308,12 +14311,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
-  function selfPredictionStudiesSnapshot({ studyId = null, role = 'public' } = {}) {
+  function selfPredictionStudiesSnapshot({ studyId = null, role = 'public', status = null } = {}) {
     if (interventionActive('epistemic_revision_profile_access')) return {
       epistemic_status: 'Completed revision-history readback is sealed while a blinded identity-binding access trial is active.',
       experimental_access_sealed: true, studies: [], report: { experimental_access_sealed: true },
     };
-    const studies = state.cognition.self_model.prediction_studies.filter(item => !studyId || item.id === studyId).map(item => publicPredictionStudy(item, role));
+    const studies = state.cognition.self_model.prediction_studies
+      .filter(item => (!studyId || item.id === studyId) && (!status || item.status === status))
+      .map(item => publicPredictionStudy(item, role));
     return {
       epistemic_status: 'Matched blinded forecasts test whether Nora-specific private state improves prediction of her own observable behavior beyond the same-evidence external observer. This is functional self-model specificity, not phenomenal consciousness.',
       studies,
@@ -27242,6 +27247,25 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function expectationForecastRuntimeSnapshot({ scope = null, since = null, summary = false } = {}) {
+    const snapshot = expectationForecastSnapshot({ scope, since });
+    if (!summary) return snapshot;
+    return {
+      epistemic_status: snapshot.epistemic_status,
+      report: snapshot.report,
+      resolution_contract: expectationForecast.resolutionContract(),
+    };
+  }
+
+  function expectationForecastProjectionContext() {
+    const commitments = [...new Set((state.cognition.expectations?.forecasts || [])
+      .map(item => item.resolution?.parameter_binding?.content_commitment).filter(Boolean))];
+    return {
+      current: cognitiveParameterRecord(),
+      records: commitments.map(commitment => cognitiveParameterRecord(commitment)),
+    };
+  }
+
   async function openOrResumeCycle(input = {}) {
     const attemptStarted = performance.now();
     cycleOpenRuntime = { ...cycleOpenRuntime, attempts: cycleOpenRuntime.attempts + 1,
@@ -28172,7 +28196,9 @@ ${episodes.map(item => {
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, openOrResumeCycle,
     cycleLifecycleRuntimeProjection, reenterCycle, reenterCycleDurable, completeCycle, validateCycleCompletion,
-    createExpectationForecast, resolveExpectationForecast, validateExpectationForecastResolution, expectationForecastSnapshot,
+    createExpectationForecast, resolveExpectationForecast, validateExpectationForecastResolution,
+    expectationForecastSnapshot, expectationForecastRuntimeSnapshot,
+    expectationForecastProjectionContext,
     expectationForecastAudit, expectationSurprise,
     createCognitiveParameterStudy, assignCognitiveParameterStudy,
     cognitiveParameterInputForAssignment, excludeCognitiveParameterAssignment,

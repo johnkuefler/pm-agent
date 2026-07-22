@@ -157,7 +157,28 @@ test('dashboard and experience projections stay off the foreground event loop', 
   assert.ok((await dashboard).value.overview);
   const experience = await store.computeBackgroundProjection('experienceStreamSnapshot', { limit: 6 });
   assert.deepEqual(experience.value.moments, []);
+  const expectations = await store.computeBackgroundProjection('expectationForecastRuntimeSnapshot', {
+    summary: true,
+    __context: { cognitive_parameter_records: store.expectationForecastProjectionContext() },
+  });
+  assert.equal(expectations.value.report.total, 0);
+  assert.ok(expectations.value.resolution_contract);
   assert.equal(store.persistenceDiagnostics().background_projection.failures, 0);
+});
+
+test('subject queue projection excludes completed study analysis before mapping', async () => {
+  const state = emptyState();
+  state.cognition.self_model.prediction_studies = [
+    { id: 'completed-malformed', status: 'completed' },
+    { id: 'active-study', title: 'Active', status: 'active', study_phase: 'pilot',
+      target_construct: 'general_self_prediction', created: new Date().toISOString(),
+      events: [], analysis_plan: {}, model_control: null },
+  ];
+  const store = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: state });
+  await store.init();
+  const snapshot = store.selfPredictionStudiesSnapshot({ role: 'subject', status: 'active' });
+  assert.deepEqual(snapshot.studies.map(item => item.id), ['active-study']);
 });
 
 test('cold behavioral-prior reads fall back immediately while replay warms off-thread', async () => {

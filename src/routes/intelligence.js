@@ -628,17 +628,24 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         retryable, retry_contract: retryable ? 'retry once after Retry-After with the byte-identical forecast payload' : null });
     }
   });
-  app.get('/expectations', requireAuth, (req, res) => {
+  app.get('/expectations', requireAuth, async (req, res) => {
+    const scope = req.query.scope || null;
+    const since = req.query.since || null;
     try {
-      const snapshot = store.expectationForecastSnapshot({ scope: req.query.scope || null,
-        since: req.query.since || null });
-      if (req.query.summary === '1') return res.json({
-        epistemic_status: snapshot.epistemic_status, report: snapshot.report,
-        resolution_contract: expectationForecast.resolutionContract(),
-      });
-      return res.json(snapshot);
+      if (scope && !expectationForecast.SCOPES.has(scope)) throw new Error('invalid expectation scope');
+      if (since && !Number.isFinite(new Date(since).getTime())) throw new Error('since must be a valid date');
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
     }
-    catch (error) { res.status(400).json({ error: error.message }); }
+    try {
+      return await workerCachedJson(res,
+        `expectations:${scope || 'all'}:${since || 'all'}:${req.query.summary === '1' ? 'summary' : 'full'}`,
+        'expectationForecastRuntimeSnapshot', {
+          scope, since, summary: req.query.summary === '1',
+          __context: { cognitive_parameter_records: store.expectationForecastProjectionContext() },
+        }, { ttlMs: 15000, staleWhileRevalidate: false });
+    }
+    catch (error) { res.status(503).json({ error: 'expectation snapshot unavailable', detail: error.message }); }
   });
   app.post('/expectations', requireAuth, async (req, res) => {
     let forecast = null;
@@ -1394,8 +1401,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/self-model/prediction-studies', requireAuth, (req, res) => res.json(store.selfPredictionStudiesSnapshot()));
   app.get('/self-model/prediction-studies/subject-queue', requireAuth, (req, res) => {
-    const snapshot = store.selfPredictionStudiesSnapshot({ role: 'subject' });
-    const studies = snapshot.studies.filter(item => item.status === 'active');
+    const snapshot = store.selfPredictionStudiesSnapshot({ role: 'subject', status: 'active' });
+    const studies = snapshot.studies;
     res.json({
       epistemic_status: snapshot.epistemic_status,
       experimental_access_sealed: snapshot.experimental_access_sealed === true,

@@ -11,6 +11,7 @@ const ALLOWED_METHODS = new Set([
   'cycleSelfForecastRuntimePreparationSnapshot',
   'dashboardIntelligenceSummary',
   'experienceStreamSnapshot',
+  'expectationForecastRuntimeSnapshot',
 ]);
 
 parentPort.on('message', async ({ id, state, method, args }) => {
@@ -25,6 +26,12 @@ parentPort.on('message', async ({ id, state, method, args }) => {
       getDreams: () => context.dreams || [],
       getWants: () => context.wants || [],
       getInteractions: () => context.interactions || [],
+      getCognitiveParameterRecord: commitment => {
+        const parameterContext = context.cognitive_parameter_records || {};
+        if (!commitment) return parameterContext.current;
+        return (parameterContext.records || []).find(item => item.content_commitment === commitment)
+          || parameterContext.current;
+      },
     });
     await store.init();
     const value = store[method](methodArgs);
