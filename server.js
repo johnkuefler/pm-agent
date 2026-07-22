@@ -523,6 +523,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     deferred_jobs: _deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
       pendingFinalizations: _pendingJobFinalizations.size }),
     process_health: _processRecovery.snapshot(),
+    research_projections: intelligenceRoutesRuntime.consciousnessResearchStatusCache(),
     entity_writes: _writeThroughQueue.snapshot(),
     realtime_transport: websocketLiveness.snapshot(),
   };

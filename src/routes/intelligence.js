@@ -991,6 +991,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
       if (error.code === 'cold_projection_refreshing') res.set('Retry-After', '5');
+      else if (Number(error.retry_after_ms) > 0) {
+        res.set('Retry-After', String(Math.max(1, Math.ceil(Number(error.retry_after_ms) / 1000))));
+      }
       return res.status(503).json({ error: 'research status snapshot unavailable', detail: error.message });
     }
   });
@@ -1238,6 +1241,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         requireCurrentExperimentalAccess: true,
         requireCurrentRevision: process.env.NORA_TEST_MODE === '1'
           || req.query.require_current === '1',
+        waitForCold: process.env.NORA_TEST_MODE === '1',
+        waitForRequiredRefresh: process.env.NORA_TEST_MODE === '1',
       });
       projectionHeaders(res, snapshot);
       if (req.query.view === 'dashboard') {
@@ -1254,6 +1259,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       }
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
+      if (['cold_projection_refreshing', 'required_projection_refreshing'].includes(error.code)) {
+        res.set('Retry-After', '5');
+      } else if (Number(error.retry_after_ms) > 0) {
+        res.set('Retry-After', String(Math.max(1, Math.ceil(Number(error.retry_after_ms) / 1000))));
+      }
       return res.status(503).json({ error: 'self-model snapshot unavailable', detail: error.message });
     }
   });

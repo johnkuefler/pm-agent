@@ -21,6 +21,7 @@ function healthySnapshot() {
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
     process_health: { state: 'running', fatal: false },
+    research_projections: {},
     realtime_transport: { recent_stale: [] },
   };
 }
@@ -116,4 +117,25 @@ test('fatal process recovery is visible as action required during its drain wind
   const verdict = assessRuntimeReliability(snapshot, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'fatal_process_recovery');
+});
+
+test('slow and repeatedly failing research projections escalate without taxing live requests', () => {
+  const slow = healthySnapshot();
+  slow.research_projections.research_status = {
+    in_flight: true, consecutive_failures: 0,
+    last_refresh_started_at: new Date(now - (2 * 60 * 1000 + 1)).toISOString(),
+  };
+  const degraded = assessRuntimeReliability(slow, { now });
+  assert.equal(degraded.status, 'degraded');
+  assert.equal(degraded.degraded[0].code, 'research_projection_recovering');
+
+  slow.research_projections.research_status.last_refresh_started_at =
+    new Date(now - 166000).toISOString();
+  const stuck = assessRuntimeReliability(slow, { now });
+  assert.equal(stuck.status, 'action_required');
+  assert.equal(stuck.action_required[0].code, 'research_projection_stuck');
+
+  const failed = healthySnapshot();
+  failed.research_projections.self_model = { in_flight: false, consecutive_failures: 3 };
+  assert.equal(assessRuntimeReliability(failed, { now }).status, 'action_required');
 });

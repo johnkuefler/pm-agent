@@ -1,6 +1,8 @@
 'use strict';
 
 const RECENT_SLOW_WINDOW_MS = 15 * 60 * 1000;
+const PROJECTION_SLOW_REFRESH_MS = 2 * 60 * 1000;
+const PROJECTION_STUCK_REFRESH_MS = 165 * 1000;
 
 function recentSlowRequests(requests, now) {
   return (requests?.recent_slow_requests || []).filter(item => {
@@ -30,6 +32,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const realtimeTransport = snapshot.realtime_transport || {};
   const deferredJobs = snapshot.deferred_jobs || {};
   const processHealth = snapshot.process_health || {};
+  const researchProjections = snapshot.research_projections || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
@@ -57,6 +60,21 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (processHealth.fatal === true && processHealth.state !== 'running') {
     actionRequired.push({ code: 'fatal_process_recovery',
       message: 'The process is draining after a fatal asynchronous error and will restart.' });
+  }
+  for (const [projection, runtime] of Object.entries(researchProjections)) {
+    const failures = Number(runtime?.consecutive_failures) || 0;
+    const startedAt = new Date(runtime?.last_refresh_started_at || 0).getTime();
+    const inFlightAgeMs = runtime?.in_flight && Number.isFinite(startedAt) && startedAt > 0
+      ? Math.max(0, (Number(now) || Date.now()) - startedAt) : 0;
+    if (failures >= 3 || inFlightAgeMs >= PROJECTION_STUCK_REFRESH_MS) {
+      actionRequired.push({ code: 'research_projection_stuck', projection,
+        count: failures || undefined, age_ms: inFlightAgeMs || undefined,
+        message: `${projection} cannot complete its isolated background projection.` });
+    } else if (failures > 0 || inFlightAgeMs >= PROJECTION_SLOW_REFRESH_MS) {
+      degraded.push({ code: 'research_projection_recovering', projection,
+        count: failures || undefined, age_ms: inFlightAgeMs || undefined,
+        message: `${projection} is slow or backing off in its isolated background lane.` });
+    }
   }
   if (Object.values(responsiveness.surfaces || {}).some(surface => surface?.gate === 'failing')) {
     actionRequired.push({ code: 'interactive_latency_failing',
@@ -138,4 +156,5 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   };
 }
 
-module.exports = { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS, recentRequestDeadlines };
+module.exports = { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS,
+  PROJECTION_SLOW_REFRESH_MS, PROJECTION_STUCK_REFRESH_MS, recentRequestDeadlines };

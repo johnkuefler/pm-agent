@@ -8,7 +8,8 @@ const { fork } = require('node:child_process');
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
 const DEFAULT_PROJECTION_FAILURE_RETRY_MS = 30 * 1000;
-const DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS = 30 * 60 * 1000;
+const DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS = 3 * 60 * 1000;
 
 const PERSISTED_PROJECTION_PROTOCOL_VERSION = 2;
 
@@ -347,6 +348,7 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
   now = () => new Date(), maxAgeMs = 60 * 60 * 1000,
   minRefreshIntervalMs = 15 * 60 * 1000,
   failureRetryMs = DEFAULT_PROJECTION_FAILURE_RETRY_MS,
+  maxFailureRetryMs = DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS,
   refreshTimeoutMs = DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS,
   workerPath = path.join(__dirname, 'research-status-worker.js'),
   createWorker = options => createLowPriorityResearchProcess(workerPath, options.workerData,
@@ -451,6 +453,12 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     if (inFlight) return inFlight;
     if (shouldDeferRefresh()) throw deferredError();
     const startedAt = Date.now();
+    if (consecutiveFailures > 0 && startedAt < nextRefreshEligibleAt) {
+      const error = new Error(`${projection} refresh is in failure backoff`);
+      error.code = 'projection_failure_backoff';
+      error.retry_after_ms = nextRefreshEligibleAt - startedAt;
+      throw error;
+    }
     if (!force && current && startedAt < nextRefreshEligibleAt) return current;
     lastRefreshStartedAt = startedAt;
     const { workerData, capture_ms } = capture();
@@ -527,13 +535,18 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       return value;
     }, error => {
       lastRefreshFailedAt = Date.now();
-      nextRefreshEligibleAt = lastRefreshFailedAt
-        + Math.max(0, Number(failureRetryMs) || DEFAULT_PROJECTION_FAILURE_RETRY_MS);
       consecutiveFailures += 1;
+      const baseRetryMs = Math.max(1, Number(failureRetryMs) || DEFAULT_PROJECTION_FAILURE_RETRY_MS);
+      const maximumRetryMs = Math.max(baseRetryMs,
+        Number(maxFailureRetryMs) || DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS);
+      const retryDelayMs = Math.min(maximumRetryMs,
+        baseRetryMs * (2 ** Math.min(10, consecutiveFailures - 1)));
+      nextRefreshEligibleAt = lastRefreshFailedAt + retryDelayMs;
       lastRefreshError = {
         code: error.code || 'projection_refresh_failure',
         message: String(error.message || error).slice(0, 500),
         at: new Date(lastRefreshFailedAt).toISOString(),
+        retry_in_ms: retryDelayMs,
       };
       throw error;
     }).finally(() => { inFlight = null; });
@@ -541,7 +554,7 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
   }
 
   async function get({ requireCurrentExperimentalAccess = false, requireCurrentRevision = false,
-    waitForCold = true } = {}) {
+    waitForCold = true, waitForRequiredRefresh = true } = {}) {
     await hydrate();
     const revision = store.snapshotRevision();
     const accessFingerprint = typeof store.experimentalAccessFingerprint === 'function'
@@ -551,6 +564,18 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
     const revisionChanged = Boolean(current && current.revision !== revision);
     const buildChanged = current?.build_stale === true;
     if (accessChanged || (requireCurrentRevision && (revisionChanged || buildChanged))) {
+      if (!waitForRequiredRefresh) {
+        if (consecutiveFailures > 0 && Date.now() < nextRefreshEligibleAt) {
+          const error = new Error(`${projection} refresh is in failure backoff`);
+          error.code = 'projection_failure_backoff';
+          error.retry_after_ms = nextRefreshEligibleAt - Date.now();
+          throw error;
+        }
+        if (!inFlight && !shouldDeferRefresh()) refresh({ force: true }).catch(() => {});
+        const error = new Error(`${projection} required projection refresh in progress`);
+        error.code = 'required_projection_refreshing';
+        throw error;
+      }
       const value = await refresh({ force: true });
       const latestFingerprint = typeof store.experimentalAccessFingerprint === 'function'
         ? store.experimentalAccessFingerprint() : null;
@@ -564,6 +589,12 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       return { ...value, cache_state: accessChanged ? 'seal-refresh' : 'revision-refresh', stale: false };
     }
     if (!current) {
+      if (consecutiveFailures > 0 && Date.now() < nextRefreshEligibleAt) {
+        const error = new Error(`${projection} refresh is in failure backoff`);
+        error.code = 'projection_failure_backoff';
+        error.retry_after_ms = nextRefreshEligibleAt - Date.now();
+        throw error;
+      }
       if (!waitForCold) {
         if (!inFlight && !shouldDeferRefresh()) refresh({ force: true }).catch(() => {});
         const error = new Error(`${projection} cold projection refresh in progress`);
@@ -647,6 +678,7 @@ module.exports = {
   DEFAULT_MAX_AGE_MS,
   DEFAULT_MIN_REFRESH_INTERVAL_MS,
   DEFAULT_PROJECTION_FAILURE_RETRY_MS,
+  DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS,
   DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS,
   PERSISTED_PROJECTION_PROTOCOL_VERSION,
   projectionBuildIdentity,

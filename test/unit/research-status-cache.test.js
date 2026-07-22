@@ -11,14 +11,16 @@ const { createResearchStatusCache, createResearchProjectionCache,
   createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope,
   PERSISTED_PROJECTION_PROTOCOL_VERSION, projectionBuildIdentity } =
   require('../../src/intelligence/research-status-cache');
-const { DEFAULT_PROJECTION_FAILURE_RETRY_MS, DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS } =
+const { DEFAULT_PROJECTION_FAILURE_RETRY_MS, DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS,
+  DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS } =
   require('../../src/intelligence/research-status-cache');
 
 const OBSERVED_AT = new Date('2026-07-17T15:00:00.000Z');
 
 test('production projection retry and timeout defaults are bounded and distinct', () => {
   assert.equal(DEFAULT_PROJECTION_FAILURE_RETRY_MS, 30 * 1000);
-  assert.equal(DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS, 10 * 60 * 1000);
+  assert.equal(DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS, 30 * 60 * 1000);
+  assert.equal(DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS, 3 * 60 * 1000);
   assert.ok(DEFAULT_PROJECTION_FAILURE_RETRY_MS < DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS);
 });
 
@@ -373,6 +375,38 @@ test('a preempted prior-build refresh retries promptly instead of waiting the su
   assert.equal(cache.status().refresh_error, null);
 });
 
+test('production-style self-model reads fail fast while an access-seal refresh runs', async t => {
+  const store = await createStore(t);
+  const envelope = createPersistedProjectionEnvelope({
+    serialized: JSON.stringify(store.selfModelSnapshot()),
+    revision: store.snapshotRevision(),
+    experimental_access_fingerprint: store.experimentalAccessFingerprint(),
+    generated_at: OBSERVED_AT.toISOString(), completed_at: new Date().toISOString(),
+    build_identity: projectionBuildIdentity(),
+  }, 'self_model');
+  let workerCreated = 0;
+  const cache = createResearchProjectionCache({
+    projection: 'self_model', store, loadPersisted: async () => envelope,
+    createWorker: () => {
+      workerCreated += 1;
+      const worker = new EventEmitter();
+      worker.research_release_cpu_budget = () => {};
+      worker.terminate = async () => { setImmediate(() => worker.emit('exit', 1)); return 0; };
+      return worker;
+    },
+  });
+  t.after(() => cache.close());
+  await cache.hydrate();
+  store.createContextTrial({ id: 'production-fast-seal-refresh',
+    hypothesis: 'A sealed projection refresh must stay outside the HTTP request.',
+    outcome_metric: 'bounded_request_latency', surfaces: ['slack'], sample_target_per_group: 2 });
+
+  await assert.rejects(cache.get({ requireCurrentExperimentalAccess: true,
+    waitForRequiredRefresh: false }), error => error.code === 'required_projection_refreshing');
+  assert.equal(workerCreated, 1);
+  assert.equal(cache.status().in_flight, true);
+});
+
 test('a wedged projection worker times out and exposes bounded retry diagnostics', async t => {
   const store = await createStore(t);
   let terminated = false;
@@ -391,6 +425,37 @@ test('a wedged projection worker times out and exposes bounded retry diagnostics
   assert.equal(terminated, true);
   assert.equal(cache.status().consecutive_failures, 1);
   assert.equal(cache.status().refresh_error.code, 'projection_refresh_timeout');
+});
+
+test('repeated projection failures back off exponentially and cannot be forced into a hot loop', async t => {
+  const store = await createStore(t);
+  let attempts = 0;
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store, failureRetryMs: 5, maxFailureRetryMs: 12,
+    createWorker: () => {
+      attempts += 1;
+      const worker = new EventEmitter();
+      worker.research_release_cpu_budget = () => {};
+      worker.terminate = async () => 0;
+      setImmediate(() => worker.emit('error', new Error(`failure ${attempts}`)));
+      return worker;
+    },
+  });
+  t.after(() => cache.close());
+
+  await assert.rejects(cache.refresh(), /failure 1/);
+  assert.equal(cache.status().refresh_error.retry_in_ms, 5);
+  await assert.rejects(cache.refresh({ force: true }), error =>
+    error.code === 'projection_failure_backoff');
+  assert.equal(attempts, 1);
+
+  await new Promise(resolve => setTimeout(resolve, 7));
+  await assert.rejects(cache.refresh(), /failure 2/);
+  assert.equal(cache.status().refresh_error.retry_in_ms, 10);
+  await new Promise(resolve => setTimeout(resolve, 12));
+  await assert.rejects(cache.refresh(), /failure 3/);
+  assert.equal(cache.status().refresh_error.retry_in_ms, 12);
+  assert.equal(attempts, 3);
 });
 
 test('cold HTTP-style reads fail fast while isolated projection generation continues', async t => {
@@ -417,6 +482,8 @@ test('HTTP projections expose the low-priority isolation receipt for production 
   assert.match(routes, /projection: 'cognition'/);
   assert.match(routes, /requireCurrentExperimentalAccess: true/);
   assert.match(routes, /waitForCold: false/);
+  assert.match(routes, /waitForRequiredRefresh: process\.env\.NORA_TEST_MODE === '1'/);
+  assert.match(routes, /required_projection_refreshing/);
   assert.match(routes, /Retry-After/);
   assert.match(routes, /research-projection-runtime/);
 });
