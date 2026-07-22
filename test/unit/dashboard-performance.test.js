@@ -81,6 +81,10 @@ test('dashboard summary stays compact and advances with store mutations', async 
   });
   store.recordTrace({ channel: 'meeting', action: 'response_latency', decision: 'within_budget',
     outcome: { ...interactivePerformance.assess('realtime', 1400), stages: {} } });
+  const liveResponsiveness = store.interactivePerformanceSnapshot();
+  assert.equal(liveResponsiveness.surfaces.realtime.p95_ms, 1400);
+  assert.equal(liveResponsiveness.protocol.protocol_version,
+    interactivePerformance.PROTOCOL_VERSION);
   assert.ok(store.snapshotRevision() > initialRevision);
   const updated = store.dashboardIntelligenceSummary();
   assert.ok(Buffer.byteLength(JSON.stringify(updated)) < 15000, 'evidence-rich summary must remain compact');

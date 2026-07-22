@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test --test-concurrency=1",
-    "test:unit": "node --test --test-concurrency=1 test/unit",
+    "test:unit": "node --test --test-concurrency=1 \"test/unit/*.test.js\"",
     "deploy:check": "node scripts/check-deploy-readiness.js",
     "reading:seed:first": "node scripts/seed-first-reading-source.js",
     "reading:seed:library": "node scripts/seed-reading-library.js",

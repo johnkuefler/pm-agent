@@ -117,14 +117,20 @@ test('named and one-on-one barge-ins preempt stale voice work while group cross-
   const sent = [];
   const ws = { send: message => sent.push(JSON.parse(message)) };
   const group = { voiceResponseActive: true, voiceResponseAt: Date.now(), speakersHeard: new Set(['John', 'Andy']), oneOnOne: false, muted: false };
+  group.voiceSpeechStoppedAt = Date.now() - 120;
+  group.voiceTranscriptCompletedAt = Date.now() - 20;
   helpers.maybeTriggerVoiceResponse(ws, group, 'Nora, are you there?');
   assert.equal(sent[0].type, 'response.cancel');
   assert.equal(group.pendingVoiceTurn.addressed, true);
+  assert.equal(typeof group.pendingVoiceTurn.speech_stopped_at, 'number');
+  assert.equal(typeof group.pendingVoiceTurn.transcript_completed_at, 'number');
   group.voiceResponseActive = false;
   helpers.resumePendingVoiceTurn(ws, group);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(sent[1].type, 'response.create');
   assert.match(sent[1].response.instructions, /called by name/);
+  assert.equal(group.voiceTurnStartedAt, group.voiceSpeechStoppedAt);
+  assert.equal(group.voiceTurnTranscribedAt, group.voiceTranscriptCompletedAt);
 
   const crossTalk = { voiceResponseActive: true, voiceResponseAt: Date.now(), speakersHeard: new Set(['John', 'Andy']), oneOnOne: false };
   helpers.maybeTriggerVoiceResponse(ws, crossTalk, 'yeah, I agree with that');

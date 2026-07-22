@@ -1,6 +1,6 @@
 'use strict';
 
-const PROTOCOL_VERSION = 11;
+const PROTOCOL_VERSION = 12;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
@@ -17,6 +17,8 @@ const BUDGET_MS = Object.freeze({
 // Protocol v10 gives the serialized background lane a hard cancellation budget so a stalled
 // provider cannot monopolize scheduled intelligence indefinitely. Protocol v11 adds explicit
 // retry guidance so deferred queues back off during long calls instead of polling every 1.5s.
+// Protocol v12 measures realtime latency from the detected end of human speech, rather than from
+// response.create, and reports transcription, server queue, and provider/audio stages separately.
 const PROMPT_BUDGET_CHARS = Object.freeze({
   slack: 38000,
   'zoom-chat': 40000,
@@ -50,7 +52,7 @@ const protocol = Object.freeze({
   prediction: 'Human-facing cognition can stay within channel-specific first-delivery and prompt-size budgets when extra provider-round research is excluded from interactive paths and background inference yields to live work.',
   intervention: 'Slack, Zoom chat, and realtime voice permit context-only cognition inline, quarantine response-taxing study arms before eligibility work, lazily resolve only the admitted active study, abort timed-out semantic retrieval, preempt background provider inference including memory embedding backfill, suppress remote prompt refresh during active or just-finished speech, and hold background lanes through a short post-interaction quiet window. Bounded relational and self-reflective Slack or Zoom-chat turns omit PM tool schemas and task-performance study enrollment, prioritize conversation continuity and grounded functional self-state, and retain ordinary interaction review for repair learning. Live prompts use a deterministic persona compilation that removes only sections duplicated by final-position channel policy while retaining the editable source document, distinctive vocabulary, situational tone, authority, team, company, and context instructions. They also use a bounded relevance-preserving memory window, marker-grounded action ledger, one shared epistemic contract, and a limited-attention envelope for accumulated cognitive packets; sealed experimental packets and operational capability constraints outrank latent context.',
   controls: 'Scheduled research retains the quarantined interventions through one serialized, preemptible provider lane; ordinary live tool use remains available when the requested work itself requires it. Deterministic routing fixtures verify that personal self-state questions and their non-operational repairs remain outside PM-task enrollment while status and action requests remain eligible.',
-  outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger, with the exact live prompt character count and bounded stage timings attached to the same receipt.',
+  outcome: 'First delivered Slack message, Zoom chat message, or first realtime audio measured from the accepted interaction trigger. Realtime starts at detected human speech-end so transcription delay is included, with the exact live prompt character count and bounded stage timings attached to the same receipt.',
   minimum_samples_per_surface: 20,
   prompt_budgets_chars: PROMPT_BUDGET_CHARS,
   falsifier: 'A surface has at least 20 recent observations and its p95 first-delivery latency or prompt size remains above budget, or the firewall suppresses the one main response needed to do the requested work.',

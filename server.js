@@ -490,6 +490,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => res.json({
   requests: requestPerformance.snapshot(),
   intelligence_lifecycle: intelligence.lifecyclePerformanceSnapshot(),
   persistence: intelligence.persistenceDiagnostics(),
+  interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
   interactive_priority: interactivePerformance.prioritySnapshot(),
   background_work: backgroundWorkSnapshot(),
 }));
@@ -4452,6 +4453,7 @@ app.post('/webhook/transcript', async (req, res) => {
       if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
         try {
           const updatedPrompt = await realtimePromptWithRecall(session);
+          session.realtimePromptChars = updatedPrompt.length;
           session.openaiWs.send(JSON.stringify({
             type: 'session.update',
             session: { type: 'realtime', instructions: updatedPrompt }
@@ -4494,6 +4496,7 @@ function applyMute(session, enabled) {
   console.log(`🔇 Mute ${enabled ? 'enabled' : 'disabled'}`);
   if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
     const updatedPrompt = realtimePromptForSession(session);
+    session.realtimePromptChars = updatedPrompt.length;
     const voiceTools = realtimeVoiceTools().tools;
     session.openaiWs.send(JSON.stringify({
       type: 'session.update',
@@ -5975,6 +5978,8 @@ function resumePendingVoiceTurn(openaiWs, session) {
   if (!pending) return false;
   session.pendingVoiceTurn = null;
   session.voiceCancelRequested = false;
+  session.voiceSpeechStoppedAt = pending.speech_stopped_at || pending.queued_at;
+  session.voiceTranscriptCompletedAt = pending.transcript_completed_at || pending.queued_at;
   setImmediate(() => maybeTriggerVoiceResponse(openaiWs, session, pending.text));
   return true;
 }
@@ -5992,7 +5997,11 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
     // 1:1, a barge-in is also the next real turn. Queue the latest turn, cancel once, and resume as
     // soon as response.done/error releases the gate. Group cross-talk never queues a reply.
     if (addressed || session.oneOnOne || soloHuman) {
-      session.pendingVoiceTurn = { text: userText, queued_at: Date.now(), addressed };
+      session.pendingVoiceTurn = {
+        text: userText, queued_at: Date.now(), addressed,
+        speech_stopped_at: session.voiceSpeechStoppedAt || null,
+        transcript_completed_at: session.voiceTranscriptCompletedAt || null,
+      };
       if (!session.voiceCancelRequested) {
         session.voiceCancelRequested = true;
         try { openaiWs.send(JSON.stringify({ type: 'response.cancel' })); } catch {}
@@ -6054,6 +6063,8 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       session.voiceResponseActive = true;
       session.voiceResponseAt = Date.now();
       session.voiceTriggerAt = session.voiceResponseAt;
+      session.voiceTurnStartedAt = session.voiceSpeechStoppedAt || session.voiceResponseAt;
+      session.voiceTurnTranscribedAt = session.voiceTranscriptCompletedAt || session.voiceResponseAt;
       session.voiceTriggerReason = why;
       session.voiceFirstAudioPending = !session.muted;
       const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_voice_response',
@@ -10977,6 +10988,7 @@ wss.on('connection', async (ws, req) => {
   // Build the system prompt with memory and context (or the dummy brief for test agents)
   const session = sessions[botId];
   const systemPrompt = realtimePromptForSession(session);
+  if (session) session.realtimePromptChars = systemPrompt.length;
   console.log(`📋 System prompt length: ${systemPrompt.length} chars${session?.dummy ? ' (dummy test agent)' : ''}${session?.project_hint ? ` (project hint: ${session.project_hint})` : ''}`);
 
   // Connect to OpenAI Realtime API
@@ -11173,6 +11185,11 @@ wss.on('connection', async (ws, req) => {
 
       if (msg.type === 'input_audio_buffer.speech_started') {
         const s = sessions[botId];
+        if (s) {
+          s.voiceHumanSpeechStartedAt = Date.now();
+          s.voiceSpeechStoppedAt = null;
+          s.voiceTranscriptCompletedAt = null;
+        }
         if (s?.voiceResponseActive) queueRealtimeTrace({ channel: 'meeting', action: 'barge_in',
           decision: 'yield', confidence: 1, at: new Date().toISOString(),
           interaction_id: botId,
@@ -11180,13 +11197,26 @@ wss.on('connection', async (ws, req) => {
             'Realtime interrupt_response enabled'] });
       }
 
+      if (msg.type === 'input_audio_buffer.speech_stopped') {
+        const s = sessions[botId];
+        if (s) s.voiceSpeechStoppedAt = Date.now();
+      }
+
       if (msg.type === 'response.output_audio.delta') {
         const s = sessions[botId];
         if (s?.voiceFirstAudioPending && s.voiceTriggerAt) {
-          const latencyMs = Date.now() - s.voiceTriggerAt;
+          const deliveredAt = Date.now();
+          const turnStartedAt = s.voiceTurnStartedAt || s.voiceTriggerAt;
+          const transcribedAt = s.voiceTurnTranscribedAt || s.voiceTriggerAt;
+          const latencyMs = deliveredAt - turnStartedAt;
           s.voiceFirstAudioPending = false;
-          recordInteractiveResponseLatency({ surface: 'realtime', startedAt: s.voiceTriggerAt,
-            promptChars: systemPrompt.length, interactionId: botId,
+          recordInteractiveResponseLatency({ surface: 'realtime', startedAt: turnStartedAt,
+            stages: {
+              transcription: Math.max(0, transcribedAt - turnStartedAt),
+              server_queue: Math.max(0, s.voiceTriggerAt - transcribedAt),
+              provider_to_audio: Math.max(0, deliveredAt - s.voiceTriggerAt),
+            },
+            promptChars: s.realtimePromptChars || systemPrompt.length, interactionId: botId,
             trigger: s.voiceTriggerReason || 'voice turn', traceSink: queueRealtimeTrace });
           console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
           if (s.runtimeVoiceActivityId) runtimeActivity.progress(s.runtimeVoiceActivityId, {
@@ -11206,6 +11236,7 @@ wss.on('connection', async (ws, req) => {
           console.log('🗣️ User (transcribed by Whisper):', userText.slice(0, 200));
           const session = sessions[botId];
           if (session) {
+            session.voiceTranscriptCompletedAt = Date.now();
             // Recall's /webhook/transcript pushes this same utterance into the buffer WITH the real
             // speaker name. Only add the unnamed Whisper copy as a fallback when Recall's transcript
             // stream looks dead, so the buffer isn't full of duplicate "Participant:" lines diluting
@@ -11365,6 +11396,7 @@ wss.on('connection', async (ws, req) => {
       const isMuted = s?.muted;
       const updatedPrompt = await realtimePromptWithRecall(s);
       if (openaiWs.readyState !== WebSocket.OPEN) return;
+      if (s) s.realtimePromptChars = updatedPrompt.length;
       openaiWs.send(JSON.stringify({
         type: 'session.update',
         session: {

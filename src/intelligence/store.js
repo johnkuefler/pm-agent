@@ -27671,6 +27671,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return JSON.parse(JSON.stringify({ protocol_version: 1, ...lifecyclePerformanceRuntime }));
   }
 
+  function interactivePerformanceSnapshot() {
+    return interactivePerformance.summarize(state.traces, clock().getTime());
+  }
+
   function validateCycleCompletion(id, input = {}, current = state) {
     requireResearchLedgerIntegrity(current);
     const cycle = current.cycles.find(item => item.id === id);
@@ -28322,7 +28326,8 @@ ${episodes.map(item => {
     init, snapshot: () => structuredClone(state), snapshotRevision, computeBackgroundProjection,
     noteExternalConfigurationChange, dashboardIntelligenceSummary, dashboardIntelligenceOverview,
     liveActivityContextSnapshot,
-    persist, persistStrict, persistenceDiagnostics, lifecyclePerformanceSnapshot, interventionActive,
+    persist, persistStrict, persistenceDiagnostics, lifecyclePerformanceSnapshot,
+    interactivePerformanceSnapshot, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
