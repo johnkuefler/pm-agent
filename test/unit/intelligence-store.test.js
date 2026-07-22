@@ -233,6 +233,18 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   const trace = store.recordTrace({ action: 'reply', decision: 'responded', reasons: ['direct question'], interaction_id: 'ix-1' });
   assert.equal(store.updateTraceOutcome(null, { interaction_id: 'ix-1', outcome: 'landed', signal: 'John used the answer' }).id, trace.id);
   assert.equal(store.get('traces', trace.id).outcome, 'landed');
+  const deferredAt = '2026-07-11T14:59:58.000Z';
+  const deferredTraces = store.recordTraces([
+    { channel: 'meeting', action: 'response_latency', decision: 'within_budget',
+      interaction_id: 'meeting-1', at: deferredAt },
+    { channel: 'meeting', action: 'barge_in', decision: 'yield',
+      interaction_id: 'meeting-1', at: '2026-07-11T14:59:59.000Z' },
+  ]);
+  assert.equal(deferredTraces.length, 2);
+  assert.equal(deferredTraces[0].at, deferredAt,
+    'batched post-meeting telemetry retains the original observation time');
+  assert.deepEqual(store.list('traces').slice(-2).map(item => item.action),
+    ['response_latency', 'barge_in']);
   const experiment = store.createExperiment({ behavior: 'Lead with the answer', hypothesis: 'Replies will land better' });
   store.recordExperimentSample({ experiment_id: experiment.id, outcome: 'landed', value: 1 });
   assert.equal(store.get('experiments', experiment.id).samples.length, 1);

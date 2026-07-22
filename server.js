@@ -1963,13 +1963,13 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
 }
 
 function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, promptChars = null,
-  interactionId = null, trigger = null } = {}) {
+  interactionId = null, trigger = null, traceSink = null } = {}) {
   if (!startedAt || !interactivePerformance.BUDGET_MS[surface]) return null;
   const assessment = interactivePerformance.assess(surface, Date.now() - startedAt,
     { promptChars, stages });
   const boundedStages = assessment.stages;
   try {
-    const trace = intelligence.recordTrace({
+    const traceInput = {
       channel: surface === 'realtime' ? 'meeting' : surface,
       action: 'response_latency',
       decision: assessment.within_budget ? 'within_budget' : 'over_budget',
@@ -1982,7 +1982,10 @@ function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, pro
       interaction_id: interactionId,
       preview: trigger ? String(trigger).slice(0, 120) : String(assessment.latency_ms),
       outcome: assessment,
-    });
+      at: new Date().toISOString(),
+    };
+    const trace = typeof traceSink === 'function'
+      ? traceSink(traceInput) : intelligence.recordTrace(traceInput);
     console.log(`⚡ ${surface} first delivery ${assessment.latency_ms}ms / ${assessment.budget_ms}ms (${assessment.within_budget ? 'within budget' : 'over budget'})`);
     return trace;
   } catch (error) {
@@ -10928,8 +10931,31 @@ wss.on('connection', async (ws, req) => {
   // assembly and the OpenAI handshake. Acquiring this later allowed background research to
   // compete during the most latency-sensitive part of meeting reconnect/startup.
   const realtimePriorityLease = interactivePerformance.beginInteractive('realtime');
+  const deferredRealtimeTraces = [];
+  const queueRealtimeTrace = input => {
+    const trace = { ...input, at: input.at || new Date().toISOString() };
+    deferredRealtimeTraces.push(trace);
+    return trace;
+  };
   intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('realtime');
-  ws.once('close', () => realtimePriorityLease.release());
+  ws.once('close', () => {
+    realtimePriorityLease.release();
+    if (deferredRealtimeTraces.length) {
+      const traces = deferredRealtimeTraces.splice(0);
+      const flush = () => {
+        const priority = interactivePerformance.prioritySnapshot();
+        if (priority.active_interactions > 0 || priority.quiet_remaining_ms > 0) {
+          const timer = setTimeout(flush, Math.max(1000,
+            priority.quiet_remaining_ms || priority.interactive_active_retry_ms));
+          timer.unref?.();
+          return;
+        }
+        try { intelligence.recordTraces(traces); }
+        catch (error) { console.warn('Deferred realtime trace flush failed:', error.message); }
+      };
+      setImmediate(flush);
+    }
+  });
 
   // Mark this bot as the active session for dashboard controls (mute, proactive,
   // one-on-one). Done at WS-connect time so calendar-auto-joined bots show up in
@@ -11147,7 +11173,11 @@ wss.on('connection', async (ws, req) => {
 
       if (msg.type === 'input_audio_buffer.speech_started') {
         const s = sessions[botId];
-        if (s?.voiceResponseActive) intelligence.recordTrace({ channel: 'meeting', action: 'barge_in', decision: 'yield', confidence: 1, reasons: ['human speech started while Nora was responding', 'Realtime interrupt_response enabled'] });
+        if (s?.voiceResponseActive) queueRealtimeTrace({ channel: 'meeting', action: 'barge_in',
+          decision: 'yield', confidence: 1, at: new Date().toISOString(),
+          interaction_id: botId,
+          reasons: ['human speech started while Nora was responding',
+            'Realtime interrupt_response enabled'] });
       }
 
       if (msg.type === 'response.output_audio.delta') {
@@ -11157,7 +11187,7 @@ wss.on('connection', async (ws, req) => {
           s.voiceFirstAudioPending = false;
           recordInteractiveResponseLatency({ surface: 'realtime', startedAt: s.voiceTriggerAt,
             promptChars: systemPrompt.length, interactionId: botId,
-            trigger: s.voiceTriggerReason || 'voice turn' });
+            trigger: s.voiceTriggerReason || 'voice turn', traceSink: queueRealtimeTrace });
           console.log(`🎙️ First audio in ${latencyMs}ms (${s.voiceTriggerReason || 'voice turn'})`);
           if (s.runtimeVoiceActivityId) runtimeActivity.progress(s.runtimeVoiceActivityId, {
             label: 'Speaking in a live meeting',

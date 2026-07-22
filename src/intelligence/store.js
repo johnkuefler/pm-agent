@@ -81,16 +81,20 @@ const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime'
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
 function canonicalJson(value, memo = null) {
-  if (value && typeof value === 'object' && memo?.has(value)) return memo.get(value);
+  // canonicalJson is also used directly as an Array#map callback throughout the store. In that
+  // form JavaScript supplies the numeric array index as the second argument; only an actual
+  // WeakMap is a memoization context.
+  const cache = memo instanceof WeakMap ? memo : null;
+  if (value && typeof value === 'object' && cache?.has(value)) return cache.get(value);
   let serialized;
   if (Array.isArray(value)) {
-    serialized = `[${value.map(item => canonicalJson(item, memo)).join(',')}]`;
+    serialized = `[${value.map(item => canonicalJson(item, cache)).join(',')}]`;
   } else if (value && typeof value === 'object') {
-    serialized = `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key], memo)}`).join(',')}}`;
+    serialized = `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key], cache)}`).join(',')}}`;
   } else {
     serialized = JSON.stringify(value);
   }
-  if (value && typeof value === 'object') memo?.set(value, serialized);
+  if (value && typeof value === 'object') cache?.set(value, serialized);
   return serialized;
 }
 
@@ -24893,30 +24897,39 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return result;
   }
 
-  function recordTrace(input = {}) {
+  function normalizeTrace(input = {}) {
+    return {
+      id: input.id || `trace-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      at: input.at || clock().toISOString(),
+      channel: input.channel || null,
+      action: input.action || 'respond',
+      decision: input.decision || null,
+      confidence: input.confidence ?? null,
+      reasons: Array.isArray(input.reasons) ? input.reasons : [],
+      memory_ids: Array.isArray(input.memory_ids) ? input.memory_ids : [],
+      source_refs: Array.isArray(input.source_refs) ? input.source_refs : [],
+      charter_rule: input.charter_rule || null,
+      episode_id: input.episode_id || null,
+      interaction_id: input.interaction_id || null,
+      preview: input.preview ? String(input.preview).slice(0, 500) : '',
+      outcome: input.outcome || null,
+      signal: input.signal || null,
+      reviewed_at: input.reviewed_at || null,
+    };
+  }
+
+  function recordTraces(inputs = []) {
+    const normalized = (Array.isArray(inputs) ? inputs : []).map(normalizeTrace);
+    if (!normalized.length) return [];
     return mutate(current => {
-      const trace = {
-        id: input.id || `trace-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-        at: input.at || clock().toISOString(),
-        channel: input.channel || null,
-        action: input.action || 'respond',
-        decision: input.decision || null,
-        confidence: input.confidence ?? null,
-        reasons: Array.isArray(input.reasons) ? input.reasons : [],
-        memory_ids: Array.isArray(input.memory_ids) ? input.memory_ids : [],
-        source_refs: Array.isArray(input.source_refs) ? input.source_refs : [],
-        charter_rule: input.charter_rule || null,
-        episode_id: input.episode_id || null,
-        interaction_id: input.interaction_id || null,
-        preview: input.preview ? String(input.preview).slice(0, 500) : '',
-        outcome: input.outcome || null,
-        signal: input.signal || null,
-        reviewed_at: input.reviewed_at || null,
-      };
-      current.traces.push(trace);
+      current.traces.push(...normalized);
       current.traces = current.traces.slice(-1000);
-      return trace;
+      return normalized;
     });
+  }
+
+  function recordTrace(input = {}) {
+    return recordTraces([input])[0];
   }
 
   function updateTraceOutcome(id, input = {}) {
@@ -28314,7 +28327,7 @@ ${episodes.map(item => {
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
     teammatePerspectiveResolutionSnapshot, recordTeammatePerspectiveResolutionAttempt,
-    recordTrace, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment,
+    recordTrace, recordTraces, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment,
     createProcedure, changeProcedureStatus, recordProcedureInteractionOutcome, runProcedureSelectionPass,
     procedureStatsSnapshot, procedureContextSelection, procedureAudit, procedureOutcomeAudit,
     procedureSelectionPassAudit,

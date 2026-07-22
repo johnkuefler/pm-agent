@@ -571,6 +571,16 @@ test('scheduled intelligence defers without touching providers while a person ha
   performance.resetPriorityGateForTest();
 });
 
+test('realtime telemetry is batched until the voice foreground and cooldown have ended', () => {
+  const serverSource = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  assert.match(serverSource, /const deferredRealtimeTraces = \[\]/);
+  assert.match(serverSource, /traceSink: queueRealtimeTrace/);
+  assert.match(serverSource, /queueRealtimeTrace\(\{[\s\S]{0,120}action: 'barge_in'/);
+  assert.match(serverSource,
+    /priority\.active_interactions > 0 \|\| priority\.quiet_remaining_ms > 0/);
+  assert.match(serverSource, /intelligence\.recordTraces\(traces\)/);
+});
+
 test('embedding transport accepts foreground preemption instead of lingering to its private timeout', async () => {
   const db = require('../../db');
   const originalFetch = global.fetch;

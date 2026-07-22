@@ -325,7 +325,8 @@ test('server sequences trust research after broadcast and keeps it background-on
   assert.match(server, /require\('\.\/src\/intelligence\/self-model-trust-research-autopilot'\)/);
   assert.match(server, /selfModelTrustResearchAutopilot\.runCycle\(\{/);
   assert.match(server, /self_model_trust: selfModelTrust/);
-  assert.match(server, /selfModelTrustAvailable: isDirect && !lightweightSocial/);
+  assert.match(server,
+    /selfModelTrustAvailable: isDirect && conversationPolicy\.pmLearningEnabled/);
   assert.match(server, /protocol_version: 3/);
   assert.ok(server.indexOf('globalBroadcastResearchAutopilot.runCycle')
     < server.indexOf('selfModelTrustResearchAutopilot.runCycle'));
