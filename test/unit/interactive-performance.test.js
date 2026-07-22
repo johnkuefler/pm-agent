@@ -176,6 +176,12 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Slack history scans must use a bounded concurrent pool');
   assert.match(storeSource, /function behavioralFingerprintRunsRuntimeSnapshot\(\)[\s\S]*behavioralFingerprintRuns\(\)/,
     'fingerprint scheduling must not clone Nora\'s entire intelligence state');
+  assert.match(server, /epistemicAgenda\.runCycle\([\s\S]*loadMemories: \(\) => \[\.\.\.loadMemory\(\)/,
+    'epistemic cooldown checks must run before loading the memory ledger');
+  assert.match(server, /selfAuthoredAimReflection\.runCycle\([\s\S]*loadMemories: loadMemory/,
+    'aim reflection eligibility checks must run before loading the memory ledger');
+  assert.match(server, /selfAuthoredAimReappraisal\.runCycle\([\s\S]*loadMemories: loadMemory/,
+    'aim reappraisal eligibility checks must run before loading the memory ledger');
   assert.match(server, /cachedConnectorValue\(teamworkProjectStageCache/,
     'Teamwork workflow topology must be cached across repeated task moves');
   assert.match(server, /Promise\.all\(workflows\.map/,

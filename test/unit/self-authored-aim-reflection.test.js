@@ -92,7 +92,8 @@ test('background aim reflection forms one replay-bound professional direction', 
   const repeated = await reflection.runCycle({
     loadDreams: () => structuredClone(dreams), saveDreams: () => {},
     loadWants: () => structuredClone(wants), saveWants: async () => {},
-    memories: fixtureMemories(), now: new Date('2026-07-17T12:00:00.000Z'),
+    loadMemories: () => { throw new Error('daily limit must not load the memory ledger'); },
+    now: new Date('2026-07-17T12:00:00.000Z'),
     callProvider: async () => { calls += 1; throw new Error('must not call twice today'); },
   });
   assert.equal(repeated.state, 'daily_attempt_limit');

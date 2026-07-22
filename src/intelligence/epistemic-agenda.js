@@ -356,7 +356,7 @@ function auditReceipt(receipt = {}) {
   return { ...checks, complete_chain_verified: Object.values(checks).every(Boolean) };
 }
 
-async function runCycle({ store, memories = [], callProvider, enabled = true, model = DEFAULT_MODEL,
+async function runCycle({ store, memories = [], loadMemories = null, callProvider, enabled = true, model = DEFAULT_MODEL,
   now = new Date() } = {}) {
   const base = { protocol_version: PROTOCOL_VERSION, state: enabled ? 'idle' : 'disabled',
     provider_calls: 0, action: null, question_id: null };
@@ -373,7 +373,8 @@ async function runCycle({ store, memories = [], callProvider, enabled = true, mo
     && (!lastForm || now.getTime() - lastForm >= MIN_FORM_INTERVAL_MS);
   const mode = formationDue ? 'form' : open.length ? 'revisit' : 'form';
   if (!open.length && lastForm && !formationDue) return { ...base, state: 'formation_cooldown' };
-  const packet = packetFor({ memories, questions: snapshot.questions, now, mode });
+  const evidenceMemories = typeof loadMemories === 'function' ? loadMemories() : memories;
+  const packet = packetFor({ memories: evidenceMemories, questions: snapshot.questions, now, mode });
   if (mode === 'form' && (packet.evidence.length < 2 || evidenceContextCount(packet.evidence) < 2)) {
     return { ...base, state: 'insufficient_evidence' };
   }

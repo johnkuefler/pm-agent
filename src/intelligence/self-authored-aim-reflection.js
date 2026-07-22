@@ -380,7 +380,8 @@ function status(dreams = [], wants = [], { enabled = true, model = DEFAULT_MODEL
 }
 
 async function runCycle({ loadDreams, saveDreams, loadWants, saveWants, memories = [],
-  currentViewpoints = [], enabled = true, sealed = false, model = DEFAULT_MODEL,
+  loadMemories = null, currentViewpoints = [], loadCurrentViewpoints = null,
+  enabled = true, sealed = false, model = DEFAULT_MODEL,
   callProvider, now = new Date() } = {}) {
   const result = { protocol_version: PROTOCOL_VERSION, state: enabled ? 'idle' : 'disabled',
     provider_calls: 0, source_dream_id: null, decision: null, want_id: null, failure: null };
@@ -420,7 +421,11 @@ async function runCycle({ loadDreams, saveDreams, loadWants, saveWants, memories
   const sourceDream = selectSourceDream(dreams);
   if (!sourceDream) return { ...result, state: 'no_unprocessed_dream' };
   result.source_dream_id = sourceDream.id;
-  const packet = packetFor({ memories, sourceDream, wants: active, currentViewpoints, now });
+  const evidenceMemories = typeof loadMemories === 'function' ? loadMemories() : memories;
+  const viewpoints = typeof loadCurrentViewpoints === 'function'
+    ? loadCurrentViewpoints() : currentViewpoints;
+  const packet = packetFor({ memories: evidenceMemories, sourceDream, wants: active,
+    currentViewpoints: viewpoints, now });
   if (packet.evidence.length < 2 || !independentEvidence(packet.evidence)) {
     return { ...result, state: 'insufficient_date_or_project_separated_evidence' };
   }

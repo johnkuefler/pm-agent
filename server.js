@@ -12673,7 +12673,7 @@ async function runEpistemicAgendaRuntime({ post = axios.post } = {}) {
     const commissionedReadingEvidence = targetQuestion
       ? intelligence.developmentalReadingCuriosityEvidence({ questionId: targetQuestion.id }) : [];
     const cycle = await epistemicAgenda.runCycle({ store: intelligence,
-      memories: [...loadMemory(), ...commissionedReadingEvidence],
+      loadMemories: () => [...loadMemory(), ...commissionedReadingEvidence],
       enabled: true, model: config.model, callProvider: async request => {
         const response = await post('https://api.anthropic.com/v1/messages', request, {
           headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY,
@@ -12787,8 +12787,8 @@ async function runSelfAuthoredAimReflectionAutopilotRuntime({ post = axios.post 
       loadDreams, saveDreams,
       loadWants: () => JSON.parse(JSON.stringify(_cache.wants?.items || [])),
       saveWants: (items, options = {}) => persistWantsUpdate(items, options),
-      memories: loadMemory(),
-      currentViewpoints: intelligence.earnedViewpointsSnapshot().viewpoints || [],
+      loadMemories: loadMemory,
+      loadCurrentViewpoints: () => intelligence.earnedViewpointsSnapshot().viewpoints || [],
       enabled: true,
       sealed: intelligence.interventionActive('goal_access'),
       model: config.model,
@@ -12837,7 +12837,7 @@ async function runSelfAuthoredAimReappraisalAutopilotRuntime({ post = axios.post
       loadDreams, saveDreams,
       loadWants: () => JSON.parse(JSON.stringify(_cache.wants?.items || [])),
       saveWants: (items, options = {}) => persistWantsUpdate(items, options),
-      memories: loadMemory(), enabled: true,
+      loadMemories: loadMemory, enabled: true,
       sealed: intelligence.interventionActive('goal_access'), model: config.model,
       callProvider: async request => {
         const response = await post('https://api.anthropic.com/v1/messages', request, {

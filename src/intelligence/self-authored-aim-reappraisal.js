@@ -521,7 +521,7 @@ async function recoverPendingApplication({ dreams, wants, saveWants, now }) {
       ? replacementId(pending.dream, wants.find(item => item.id === submission.output.aim_id)) : null };
 }
 
-async function runCycle({ loadDreams, saveDreams, loadWants, saveWants, memories = [],
+async function runCycle({ loadDreams, saveDreams, loadWants, saveWants, memories = [], loadMemories = null,
   enabled = true, sealed = false, model = DEFAULT_MODEL, callProvider,
   now = new Date() } = {}) {
   const result = { protocol_version: PROTOCOL_VERSION, state: enabled ? 'idle' : 'disabled',
@@ -544,7 +544,8 @@ async function runCycle({ loadDreams, saveDreams, loadWants, saveWants, memories
   const sourceDream = selectSourceDream(dreams);
   if (!sourceDream) return { ...result, state: 'no_unprocessed_dream' };
   result.source_dream_id = sourceDream.id;
-  const packet = packetFor({ memories, sourceDream, wants: active, now });
+  const evidenceMemories = typeof loadMemories === 'function' ? loadMemories() : memories;
+  const packet = packetFor({ memories: evidenceMemories, sourceDream, wants: active, now });
   if (packet.evidence.length < 2 || !eligibleForNewEvidence(packet)) {
     return { ...result, state: 'no_new_aim_evidence' };
   }

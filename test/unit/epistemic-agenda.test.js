@@ -386,7 +386,8 @@ test('cooldown and no-new-evidence paths make no provider call', async () => {
   await agenda.runCycle({ store, memories: memories(), now,
     callProvider: async request => response(request, formationOutput()) });
   let calls = 0;
-  const cooled = await agenda.runCycle({ store, memories: memories(),
+  const cooled = await agenda.runCycle({ store,
+    loadMemories: () => { throw new Error('cooldown must not load the memory ledger'); },
     now: new Date('2026-07-18T13:00:00.000Z'), callProvider: async () => { calls += 1; } });
   assert.equal(cooled.state, 'cooldown');
   assert.equal(calls, 0);
