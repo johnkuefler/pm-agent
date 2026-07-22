@@ -2503,6 +2503,12 @@ test('experience moments form a bounded, evidence-linked continuity chain', asyn
   assert.equal(firstClosed.audit.evidence_eligible, true);
   assert.equal(store.cycleLifecycleRuntimeProjection(first.cycle.id, first.moment.id).handoff_eligible, true);
   assert.equal(firstClosed.start_snapshot, undefined);
+  const compactedFirst = store.snapshot().cognition.experience_stream[0];
+  assert.equal(compactedFirst.start_snapshot, null);
+  assert.equal(compactedFirst.start_snapshot_compacted, true);
+  assert.equal(compactedFirst.closure_snapshot, null);
+  assert.equal(compactedFirst.closure_snapshot_compacted, true);
+  assert.equal(compactedFirst.closure_cycle.id, first.cycle.id);
   const developmentalRuntime = store.developmentalSelfReflectionRuntimeSnapshot();
   const developmentalSchedule = store.developmentalSelfReflectionScheduleSnapshot();
   assert.equal(developmentalSchedule.protocol_version, 1);

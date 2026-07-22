@@ -864,6 +864,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (moment.self_forecast === undefined) moment.self_forecast = null;
       if (moment.operational_environment === undefined) moment.operational_environment = null;
       if (moment.operational_environment_commitment === undefined) moment.operational_environment_commitment = null;
+      compactExperienceMomentSnapshots(moment);
     }
     state.cognition.experience_stream = state.cognition.experience_stream.slice(-500);
     if (!Array.isArray(state.cognition.continuity_handoffs)) state.cognition.continuity_handoffs = [];
@@ -15429,7 +15430,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (!frame) return { complete_chain_verified: false };
     const moment = state.cognition.experience_stream.find(item => item.id === frame.source?.moment_id);
     const cycle = state.cycles.find(item => item.id === frame.source?.cycle_id)
-      || moment?.closure_snapshot?.cycle || null;
+      || moment?.closure_snapshot?.cycle || moment?.closure_cycle || null;
     const substrate = frame.substrate?.observation_id
       ? state.cognition.interoception.observations.find(item => item.id === frame.substrate.observation_id) : null;
     const predecessor = frame.temporal?.predecessor_frame_id
@@ -25436,7 +25437,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     const startSnapshot = experienceMomentStartSnapshot(moment);
     const expectedStartCommitment = crypto.createHash('sha256').update(canonicalJson(startSnapshot)).digest('hex');
-    const startSnapshotVerified = canonicalJson(moment.start_snapshot) === canonicalJson(startSnapshot);
+    const startSnapshotVerified = moment.start_snapshot_compacted === true
+      ? moment.start_snapshot == null && moment.start_commitment === expectedStartCommitment
+      : canonicalJson(moment.start_snapshot) === canonicalJson(startSnapshot);
     const startVerified = startSnapshotVerified && moment.start_commitment === expectedStartCommitment
       && eventBound('experience_moment_started', {
         start_commitment: moment.start_commitment,
@@ -25466,19 +25469,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const cycle = (cycles || []).find(item => item.id === moment.cycle_id);
     const closed = moment.status !== 'open' && Boolean(moment.closure) && Boolean(moment.finished);
     let closureSnapshotVerified = false; let closureVerified = false; let lifecycleVerified = false;
-    if (closed && moment.closure_snapshot) {
-      const storedMomentProjection = { ...moment.closure_snapshot, cycle: null };
+    if (closed && (moment.closure_snapshot || moment.closure_snapshot_compacted === true)) {
+      const storedClosure = moment.closure_snapshot || null;
+      const storedMomentProjection = storedClosure ? { ...storedClosure, cycle: null } : null;
       const currentMomentProjection = experienceMomentClosureSnapshot(moment, null);
-      const embeddedCycle = moment.closure_snapshot.cycle;
+      const embeddedCycle = storedClosure?.cycle || moment.closure_cycle || cycle || null;
       const embeddedCycleVerified = Boolean(embeddedCycle && embeddedCycle.id === moment.cycle_id
         && embeddedCycle.experience_moment_id === moment.id && embeddedCycle.started === moment.started
         && embeddedCycle.status === moment.status && embeddedCycle.finished === moment.finished
         && embeddedCycle.summary === moment.closure.summary
         && canonicalJson(embeddedCycle.actions || []) === canonicalJson(moment.closure.actions || []));
-      closureSnapshotVerified = canonicalJson(storedMomentProjection) === canonicalJson(currentMomentProjection)
-        && embeddedCycleVerified
-        && (!cycle || canonicalJson(moment.closure_snapshot) === canonicalJson(experienceMomentClosureSnapshot(moment, cycle)));
-      const closureCommitment = crypto.createHash('sha256').update(canonicalJson(moment.closure_snapshot)).digest('hex');
+      const reconstructedClosure = experienceMomentClosureSnapshot(moment, embeddedCycle);
+      closureSnapshotVerified = moment.closure_snapshot_compacted === true
+        ? storedClosure == null && embeddedCycleVerified
+          && moment.closure_commitment === crypto.createHash('sha256')
+            .update(canonicalJson(reconstructedClosure)).digest('hex')
+          && (!cycle || canonicalJson(reconstructedClosure)
+            === canonicalJson(experienceMomentClosureSnapshot(moment, cycle)))
+        : canonicalJson(storedMomentProjection) === canonicalJson(currentMomentProjection)
+          && embeddedCycleVerified
+          && (!cycle || canonicalJson(storedClosure)
+            === canonicalJson(experienceMomentClosureSnapshot(moment, cycle)));
+      const closureCommitment = crypto.createHash('sha256')
+        .update(canonicalJson(storedClosure || reconstructedClosure)).digest('hex');
       const lifecycleCommitment = crypto.createHash('sha256').update(canonicalJson(experienceMomentLifecyclePayload(moment))).digest('hex');
       closureVerified = closureSnapshotVerified && moment.closure_commitment === closureCommitment
         && eventBound('experience_moment_closed', { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment });
@@ -25509,9 +25522,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function commitExperienceMomentClosure(current, cycle, moment) {
-    moment.closure_snapshot = experienceMomentClosureSnapshot(moment, cycle);
+    const closureSnapshot = experienceMomentClosureSnapshot(moment, cycle);
     moment.closure_commitment = crypto.createHash('sha256')
-      .update(canonicalJson(moment.closure_snapshot)).digest('hex');
+      .update(canonicalJson(closureSnapshot)).digest('hex');
+    moment.closure_cycle = JSON.parse(JSON.stringify(closureSnapshot.cycle));
+    moment.closure_snapshot = null;
+    moment.closure_snapshot_compacted = true;
     moment.lifecycle_commitment = crypto.createHash('sha256')
       .update(canonicalJson(experienceMomentLifecyclePayload(moment))).digest('hex');
     researchLedgerAppend(current, { kind: 'experience_moment_closed', subject_type: 'experience_moment', subject_id: moment.id,
@@ -25907,6 +25923,34 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ...(prior ? { audit: behavioralSelfForecastPriorAudit(prior, moment, state.cognition,
         state.cycles, replayCache) } : {}),
     };
+  }
+
+  function compactExperienceMomentSnapshots(moment) {
+    if (Number(moment?.lifecycle_protocol_version) !== 2) return false;
+    let compacted = false;
+    const startSnapshot = experienceMomentStartSnapshot(moment);
+    const startCommitment = crypto.createHash('sha256')
+      .update(canonicalJson(startSnapshot)).digest('hex');
+    if (moment.start_snapshot && moment.start_commitment === startCommitment
+      && canonicalJson(moment.start_snapshot) === canonicalJson(startSnapshot)) {
+      moment.start_snapshot = null;
+      moment.start_snapshot_compacted = true;
+      compacted = true;
+    }
+    if (moment.status !== 'open' && moment.closure_snapshot) {
+      const embeddedCycle = moment.closure_snapshot.cycle || null;
+      const closureSnapshot = experienceMomentClosureSnapshot(moment, embeddedCycle);
+      const closureCommitment = crypto.createHash('sha256')
+        .update(canonicalJson(closureSnapshot)).digest('hex');
+      if (moment.closure_commitment === closureCommitment
+        && canonicalJson(moment.closure_snapshot) === canonicalJson(closureSnapshot)) {
+        moment.closure_cycle = embeddedCycle ? JSON.parse(JSON.stringify(embeddedCycle)) : null;
+        moment.closure_snapshot = null;
+        moment.closure_snapshot_compacted = true;
+        compacted = true;
+      }
+    }
+    return compacted;
   }
 
   // Worker-only preparation for the live forecast commit. It performs replay verification away
@@ -26493,7 +26537,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const ledgerBound = researchLedgerChainVerified
       && continuityHandoffLedgerBound(record, cognition, cache);
     const moment = momentByKey.get(`${record.cycle_id}\u0000${record.moment_id}`) || null;
-    const cycle = cycleById.get(record.cycle_id) || moment?.closure_snapshot?.cycle || null;
+    const cycle = cycleById.get(record.cycle_id) || moment?.closure_snapshot?.cycle
+      || moment?.closure_cycle || null;
     const sourceRetained = Boolean(cycle && moment);
     const sourceClosureVerified = sourceRetained
       ? cycle.status !== 'running' && moment.status !== 'open'
@@ -26558,7 +26603,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const ledgerBound = researchLedgerChainVerified && continuityHandoffLedgerBound(record, cognition, cache);
     const moment = cognition.experience_stream?.find(item => item.id === record.moment_id && item.cycle_id === record.cycle_id);
     const cycle = state.cycles.find(item => item.id === record.cycle_id)
-      || moment?.closure_snapshot?.cycle || null;
+      || moment?.closure_snapshot?.cycle || moment?.closure_cycle || null;
     const sourceRetained = Boolean(cycle && moment);
     const momentAudit = sourceRetained ? experienceMomentAudit(moment, cognition) : null;
     const sourceClosureVerified = sourceRetained
@@ -27238,8 +27283,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         self_forecast: null,
         closure_commitment: null, lifecycle_commitment: null, legacy_gap_commitment: null,
       };
-      moment.start_snapshot = experienceMomentStartSnapshot(moment);
-      moment.start_commitment = crypto.createHash('sha256').update(canonicalJson(moment.start_snapshot)).digest('hex');
+      const startSnapshot = experienceMomentStartSnapshot(moment);
+      moment.start_commitment = crypto.createHash('sha256')
+        .update(canonicalJson(startSnapshot)).digest('hex');
+      moment.start_snapshot = null;
+      moment.start_snapshot_compacted = true;
       cycle.experience_moment_id = moment.id;
       current.cycles.push(cycle);
       current.cycles = current.cycles.slice(-240);
@@ -27569,6 +27617,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const visible = JSON.parse(JSON.stringify(item));
       delete visible.start_snapshot;
       delete visible.closure_snapshot;
+      delete visible.closure_cycle;
+      delete visible.start_snapshot_compacted;
+      delete visible.closure_snapshot_compacted;
       visible.audit = audit;
       if (sealAppraisal) delete visible.appraisal_at_start;
       if (sealAttention) {
