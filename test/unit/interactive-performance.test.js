@@ -593,6 +593,17 @@ test('project-scoped memory activity upserts one project instead of rewriting th
   assert.match(server, /db\.upsertProject\(snapshot\)/);
 });
 
+test('Slack thread activity persists only changed thread rows', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('function saveSlackThreads(threads)');
+  const end = server.indexOf('\n// In-memory cache of joined threads', start);
+  assert.ok(start >= 0 && end > start);
+  const implementation = server.slice(start, end);
+  assert.match(implementation, /diffSlackThreadPersistence\(_persistedSlackThreadState, snapshot\)/);
+  assert.match(implementation, /db\.applySlackThreadChanges\(delta\)/);
+  assert.doesNotMatch(implementation, /replaceAllSlackThreads/);
+});
+
 test('Slack uses a fast Claude path only for bounded conversational turns', async () => {
   const { __test } = require('../../server');
   assert.equal(__test.slackResponseModel('whatd you do today'), 'claude-sonnet-4-6');

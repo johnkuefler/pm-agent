@@ -110,6 +110,8 @@ const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runti
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
+const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
+  require('./src/runtime/slack-thread-delta');
 const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
 const server = http.createServer(app);
@@ -322,6 +324,7 @@ const intelligence = createIntelligenceStore({
 let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
 let _persistedTaskState = new Map();
+let _persistedSlackThreadState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
@@ -1242,7 +1245,14 @@ function loadSlackThreads() {
 }
 
 function saveSlackThreads(threads) {
-  if (_dbReady) { return _writeThrough('slack_threads', () => db.replaceAllSlackThreads(threads)); }
+  if (_dbReady) {
+    const snapshot = JSON.parse(JSON.stringify(threads));
+    return _writeThrough('slack_threads', async () => {
+      const delta = diffSlackThreadPersistence(_persistedSlackThreadState, snapshot);
+      await db.applySlackThreadChanges(delta);
+      _persistedSlackThreadState = captureSlackThreadPersistence(snapshot);
+    });
+  }
   fs.writeFileSync(getSlackThreadsPath(), JSON.stringify(threads, null, 2));
 }
 
@@ -1683,6 +1693,7 @@ async function initPersistence() {
     _cache.people = await db.getState('people');
     _cache.runLock = await db.getState('run_lock');
     slackJoinedThreads = await db.loadAllSlackThreads();
+    _persistedSlackThreadState = captureSlackThreadPersistence(slackJoinedThreads);
     slackProactiveChannels = new Set((await db.getState('slack_proactive_channels')) || []);
     slackFinancialApproved = (await db.getState('slack_financial_approved')) || {};
     const tok = (await db.getState('session_tokens')) || {};

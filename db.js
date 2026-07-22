@@ -846,6 +846,38 @@ async function listTranscripts() {
   return rows;
 }
 
+async function applySlackThreadChanges({ upserts = [], deleted_keys: deletedKeys = [] } = {}) {
+  if (!upserts.length && !deletedKeys.length) return { upserted: 0, deleted: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    for (const item of upserts) {
+      if (!item?.key) continue;
+      const value = item.value || {};
+      await client.query(
+        `INSERT INTO ${DB_SCHEMA}.slack_threads (key, joined_at, last_addressed, msgs_since_addressed)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (key) DO UPDATE SET joined_at=EXCLUDED.joined_at,
+           last_addressed=EXCLUDED.last_addressed, msgs_since_addressed=EXCLUDED.msgs_since_addressed`,
+        [item.key, value.joined_at || null, value.last_addressed || null,
+          value.msgs_since_addressed || 0]
+      );
+    }
+    if (deletedKeys.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.slack_threads WHERE key = ANY($1::text[])`,
+        [deletedKeys]);
+    }
+    await client.query('COMMIT');
+    return { upserted: upserts.length, deleted: deletedKeys.length };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function applyMarkerChanges({ upserts = [], deleted_keys: deletedKeys = [] } = {}) {
   if (!upserts.length && !deletedKeys.length) return { upserted: 0, deleted: 0 };
   const client = await getPool().connect();
@@ -944,7 +976,7 @@ module.exports = {
   loadAllDreams, replaceAllDreams,
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers, applyMarkerChanges,
-  loadAllSlackThreads, replaceAllSlackThreads,
+  loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,
   upsertTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
   enqueueJob, claimNextQueuedJob, finishJob, requeueRunningJobs, recentJobs,
