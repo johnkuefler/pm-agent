@@ -59,6 +59,21 @@ function submissionContract(protocolVersion = 4) {
       required_probability_fields: [...SUBSTRATE_PREDICTION_KEYS],
       value_constraint: 'finite number from zero through one inclusive',
     },
+    self_state_prediction: {
+      required_fields: ['attention_slot_types_at_close', 'appraisal_at_close', 'expected_action_count', 'reentry_probability'],
+      appraisal_at_close: {
+        required_fields: ['valence', 'arousal', 'control', 'social_safety', 'coherence'],
+        value_constraint: 'finite number from zero through one inclusive',
+        control_constraint: 'must exactly match top-level control_at_close',
+      },
+      attention_slot_types_at_close: 'array of zero to seven action-type strings',
+      expected_action_count: 'integer from zero through one hundred inclusive',
+      reentry_probability: 'finite number from zero through one inclusive',
+      accepted_compatibility_shapes: [
+        'The five appraisal values may appear directly inside self_state_prediction; ingress deterministically nests them under appraisal_at_close.',
+        'The four self-state fields may appear at forecast top level when self_state_prediction is absent; ingress deterministically wraps them.',
+      ],
+    },
     metacognitive_prediction: {
       required_fields: ['predicted_success_probability', 'predicted_largest_error_domain'],
       allowed_largest_error_domains: [...ERROR_DOMAINS, SUBSTRATE_ERROR_DOMAIN],
@@ -205,7 +220,13 @@ function scoreSubstratePrediction(prediction, actual) {
 }
 
 function normalizeSelfStatePrediction(input = {}, controlAtClose, protocolVersion = 2) {
-  const appraisal = input.appraisal_at_close || {};
+  // Compatibility ingress for two payload shapes that older hourly callers produced. Both aliases
+  // normalize into the exact same canonical forecast before hashing, so accepting them changes no
+  // research commitment or scoring semantics and cannot create two records for one judgment.
+  const appraisal = input.appraisal_at_close || Object.fromEntries(
+    ['valence', 'arousal', 'control', 'social_safety', 'coherence']
+      .filter(key => Object.prototype.hasOwnProperty.call(input, key))
+      .map(key => [key, input[key]]));
   const normalizedAppraisal = {
     valence: clamp01(appraisal.valence), arousal: clamp01(appraisal.arousal),
     control: clamp01(appraisal.control), social_safety: clamp01(appraisal.social_safety),
@@ -413,10 +434,17 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
     evidence: validateEvidence(input.evidence),
   };
   if (Number(protocolVersion) >= 2) {
-    if (!input.self_state_prediction || typeof input.self_state_prediction !== 'object') {
+    const topLevelSelfState = Object.fromEntries(
+      ['attention_slot_types_at_close', 'appraisal_at_close', 'expected_action_count', 'reentry_probability']
+        .filter(key => Object.prototype.hasOwnProperty.call(input, key))
+        .map(key => [key, input[key]]));
+    const selfStatePrediction = input.self_state_prediction && typeof input.self_state_prediction === 'object'
+      ? input.self_state_prediction
+      : Object.keys(topLevelSelfState).length ? topLevelSelfState : null;
+    if (!selfStatePrediction) {
       throw new Error('protocol-v2 cycle self-forecast requires self_state_prediction');
     }
-    normalized.self_state_prediction = normalizeSelfStatePrediction(input.self_state_prediction,
+    normalized.self_state_prediction = normalizeSelfStatePrediction(selfStatePrediction,
       controlAtClose, protocolVersion);
   }
   if (Number(protocolVersion) >= 3) {

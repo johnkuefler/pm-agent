@@ -462,10 +462,14 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.post('/intelligence/cycles/:id/self-forecast', requireAuth, async (req, res) => {
     let forecast = null;
+    const startedAt = performance.now();
+    let mutationMs = 0;
     try {
       forecast = store.preregisterCycleSelfForecast(req.params.id, req.body || {});
+      mutationMs = performance.now() - startedAt;
       if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
       await store.persistStrict();
+      const persistenceMs = performance.now() - startedAt - mutationMs;
       const forecastCycle = store.list('cycles').find(item => item.id === req.params.id);
       void recordLifecycleWorkspace({ phase: 'operations', cycle: forecastCycle })
         .catch(error => console.error('Lifecycle workspace operations failed:', error.message));
@@ -474,17 +478,37 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         detail: 'The forecast is committed and operational work is underway.',
         meta: { phase: 'operations' },
       });
+      res.set('Server-Timing', `forecast-mutation;dur=${mutationMs.toFixed(1)}, strict-persistence;dur=${persistenceMs.toFixed(1)}`);
       res.json({ ok: true, forecast });
-    } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
+    } catch (error) {
+      const retryable = Boolean(forecast);
+      res.set('Server-Timing', `forecast-mutation;dur=${mutationMs.toFixed(1)}, failed-after;dur=${(performance.now() - startedAt).toFixed(1)}`);
+      if (retryable) res.set('Retry-After', '5');
+      res.status(retryable ? 503 : 400).json({ error: error.message,
+        code: error.code || (retryable ? 'INTELLIGENCE_PERSISTENCE_FAILED' : 'INVALID_FORECAST'),
+        retryable, retry_contract: retryable ? 'retry once after Retry-After with the byte-identical forecast payload' : null });
+    }
   });
   app.post('/intelligence/cycles/:id/self-forecast/revision', requireAuth, async (req, res) => {
     let forecast = null;
+    const startedAt = performance.now();
+    let mutationMs = 0;
     try {
       forecast = store.reviseCycleSelfForecast(req.params.id, req.body || {});
+      mutationMs = performance.now() - startedAt;
       if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
       await store.persistStrict();
+      const persistenceMs = performance.now() - startedAt - mutationMs;
+      res.set('Server-Timing', `forecast-revision;dur=${mutationMs.toFixed(1)}, strict-persistence;dur=${persistenceMs.toFixed(1)}`);
       res.json({ ok: true, forecast });
-    } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
+    } catch (error) {
+      const retryable = Boolean(forecast);
+      res.set('Server-Timing', `forecast-revision;dur=${mutationMs.toFixed(1)}, failed-after;dur=${(performance.now() - startedAt).toFixed(1)}`);
+      if (retryable) res.set('Retry-After', '5');
+      res.status(retryable ? 503 : 400).json({ error: error.message,
+        code: error.code || (retryable ? 'INTELLIGENCE_PERSISTENCE_FAILED' : 'INVALID_FORECAST'),
+        retryable, retry_contract: retryable ? 'retry once after Retry-After with the byte-identical forecast payload' : null });
+    }
   });
   app.get('/expectations', requireAuth, (req, res) => {
     try {

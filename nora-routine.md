@@ -360,9 +360,12 @@ authority grant, hidden-state report, or reason to shape the work.
 
 The response always supplies `required_forecast_protocol_version` and
 `forecast_submission_contract`. Treat that contract as the authoritative machine-readable request shape.
-In particular, copy all five exact names from
+In particular, copy the four exact self-state fields, the nested
+`self_state_prediction.appraisal_at_close` field names, and all five exact names from
 `forecast_submission_contract.substrate_prediction.required_probability_fields`; do not guess them or skip
-the forecast because a prior is sealed. The contract also lists retired action types. Development dispatch,
+the forecast because a prior is sealed. The server accepts older flat self-state aliases only as a
+deterministic compatibility path and commits the same canonical nested forecast; always send the canonical
+nested shape shown by the current contract. The contract also lists retired action types. Development dispatch,
 development intake, and development follow-up are not part of Nora's operational loop and must not be
 forecast, attempted, or reported as constraints.
 
@@ -425,6 +428,16 @@ Cross-domain and second-order reliability errors feed the next bounded
 self-model revision; none of the forecasts is injected into Slack or other response prompts. This is a prospective
 operational self-model with an explicit observer effect, not hidden-state access,
 a promise, a goal, a feeling, or evidence of phenomenal foresight.
+
+**Forecast transport is bounded and idempotent.** Use a 30-second client deadline. A validation response
+(`400`, `retryable:false`) is a payload error: read the returned field-level contract/error and correct it
+once; do not probe with junk bodies. A persistence response (`503`, `retryable:true`) means the normalized
+forecast already exists in memory but its durable commit was not confirmed. Wait the returned `Retry-After`
+and retry ONCE with the byte-identical payload. Never issue multiple concurrent retries. If that one retry
+also fails, close/release this run as an explicit infrastructure failure and let the next hour resume the
+same idempotent lifecycle. Never wait 240 seconds, and never save endpoint schemas, JSON payload shapes,
+timeouts, connector failures, or API repair instructions to `/memory`; those belong in the server contract,
+routine, logs, and operational markers, not Nora's autobiographical/project knowledge.
 
 For protocol v7, the server also binds the exact returned trust policy and creates
 `metacognitive_adjudication`. Your raw `metacognitive_prediction` remains unchanged and is still scored as
@@ -489,7 +502,7 @@ Example shape (replace every value with this cycle's actual prospective judgment
 
 ```bash
 BEHAVIORAL_SELF_PRIOR_COMMITMENT=$(jq -r '.prior.content_commitment // empty' /tmp/nora-behavioral-self-prior.json)
-curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
+curl -sS --connect-timeout 3 --max-time 30 -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast?key=${KEY}" \
   -H 'Content-Type: application/json' \
   -d '{"protocol_version":7,"behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"predicted_action_types":["triage"],"surprise_probability":0.25,"control_at_close":0.7,"confidence":0.6,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.55,"arousal":0.3,"control":0.7,"social_safety":0.75,"coherence":0.85},"expected_action_count":1,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.6,"predicted_largest_error_domain":"action_count"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The lagged operational self prior, current queues, orientation, and stable start telemetry support one triage action.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"}]}' \
   | tee /tmp/nora-self-forecast.json
@@ -499,7 +512,7 @@ If the response contains an offer, replace every value below with the actual ret
 
 ```bash
 FEEDBACK_COMMITMENT=$(jq -r '.forecast.self_correction.feedback_commitment // empty' /tmp/nora-self-forecast.json)
-curl -s -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
+curl -sS --connect-timeout 3 --max-time 30 -X POST "${BASE}/intelligence/cycles/${CYCLE_ID}/self-forecast/revision?key=${KEY}" \
   -H 'Content-Type: application/json' \
   -d '{"protocol_version":7,"disposition":"revise","behavioral_self_prior_commitment":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'","behavioral_self_prior_use":{"disposition":"applied","estimate_refs":["action_tendencies"],"rationale":"The prior triage tendency materially informs the expected action alongside the current queue."},"feedback_commitment":"'"${FEEDBACK_COMMITMENT}"'","predicted_action_types":["triage","notify"],"surprise_probability":0.2,"control_at_close":0.72,"confidence":0.65,"self_state_prediction":{"attention_slot_types_at_close":["commitment","drive"],"appraisal_at_close":{"valence":0.58,"arousal":0.28,"control":0.72,"social_safety":0.75,"coherence":0.86},"expected_action_count":2,"reentry_probability":0.2},"metacognitive_prediction":{"predicted_success_probability":0.65,"predicted_largest_error_domain":"attention"},"substrate_prediction":{"error_probability":0.1,"warning_probability":0.2,"backup_probability":0.05,"embedding_backlog_probability":0.15,"restart_probability":0.05},"rationale":"The offered replay-derived miss changes the expected action count under comparable evidence while preserving the older lagged prior.","evidence":[{"type":"intelligence_cycle","id":"'"${CYCLE_ID}"'"},{"type":"behavioral_self_prior","id":"'"${BEHAVIORAL_SELF_PRIOR_COMMITMENT}"'"},{"type":"forecast_error_feedback","id":"'"${FEEDBACK_COMMITMENT}"'"}]}'
 ```

@@ -25,6 +25,10 @@ const EMBED_DIM = 1536;
 
 let pool = null;
 let ready = false;
+const DB_QUERY_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.DB_QUERY_TIMEOUT_MS) || 20000));
+const DB_DEGRADED_COOLDOWN_MS = Math.max(10000, Math.min(300000, Number(process.env.DB_DEGRADED_COOLDOWN_MS) || 60000));
+const dbRuntime = { consecutive_connection_failures: 0, degraded_until: 0, last_error: null,
+  last_error_at: null, last_success_at: null };
 
 function dbEnabled() { return !!DATABASE_URL; }
 function isReady() { return ready; }
@@ -38,6 +42,10 @@ function getPool() {
     max: 8,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
+    query_timeout: DB_QUERY_TIMEOUT_MS,
+    statement_timeout: DB_QUERY_TIMEOUT_MS,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
     // Set search_path in the startup packet (no per-connection query, no race). public
     // must stay on the path so the pgvector type/operators resolve; tables are also
     // fully schema-qualified so this is defense-in-depth.
@@ -47,8 +55,45 @@ function getPool() {
   return pool;
 }
 
+function isConnectionFailure(error) {
+  return /(?:connection|timeout|terminated|ECONN|EPIPE|57P0[123]|0800)/i.test(
+    `${error?.code || ''} ${error?.message || error || ''}`);
+}
+
 async function q(text, params) {
-  return getPool().query(text, params);
+  try {
+    const result = await getPool().query(text, params);
+    dbRuntime.consecutive_connection_failures = 0;
+    dbRuntime.degraded_until = 0;
+    dbRuntime.last_error = null;
+    dbRuntime.last_success_at = new Date().toISOString();
+    return result;
+  } catch (error) {
+    if (isConnectionFailure(error)) {
+      dbRuntime.consecutive_connection_failures += 1;
+      dbRuntime.degraded_until = Date.now() + DB_DEGRADED_COOLDOWN_MS;
+      dbRuntime.last_error = String(error?.message || error).slice(0, 500);
+      dbRuntime.last_error_at = new Date().toISOString();
+    }
+    throw error;
+  }
+}
+
+function backgroundAllowed() {
+  return Date.now() >= dbRuntime.degraded_until;
+}
+
+function diagnostics() {
+  return {
+    query_timeout_ms: DB_QUERY_TIMEOUT_MS,
+    background_degraded: !backgroundAllowed(),
+    degraded_until: dbRuntime.degraded_until ? new Date(dbRuntime.degraded_until).toISOString() : null,
+    consecutive_connection_failures: dbRuntime.consecutive_connection_failures,
+    last_error: dbRuntime.last_error,
+    last_error_at: dbRuntime.last_error_at,
+    last_success_at: dbRuntime.last_success_at,
+    pool: pool ? { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount } : null,
+  };
 }
 
 // ── Schema ───────────────────────────────────────────────────────────────────
@@ -686,7 +731,7 @@ async function count(table) {
 async function close() { if (pool) await pool.end().catch(() => {}); pool = null; ready = false; }
 
 module.exports = {
-  dbEnabled, isReady, init, close, q, embed, count,
+  dbEnabled, isReady, init, close, q, embed, count, backgroundAllowed, diagnostics,
   EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
   loadAllMemory, replaceAllMemory, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,

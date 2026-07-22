@@ -20,6 +20,11 @@ test('forecast submission contracts expose exact v4 and v7 schemas without reviv
 const behavioralSelfModel = require('../../src/intelligence/behavioral-self-model');
 
 test('cycle self-forecasts normalize prospective judgments and reject phenomenal claims', () => {
+  const contract = cycleSelfForecast.submissionContract(4);
+  assert.deepEqual(contract.self_state_prediction.required_fields,
+    ['attention_slot_types_at_close', 'appraisal_at_close', 'expected_action_count', 'reentry_probability']);
+  assert.deepEqual(contract.self_state_prediction.appraisal_at_close.required_fields,
+    ['valence', 'arousal', 'control', 'social_safety', 'coherence']);
   const normalized = cycleSelfForecast.normalizeForecast({
     predicted_action_types: ['Slack Response', 'slack-response', 'Review'],
     surprise_probability: 0.25, control_at_close: 0.7, confidence: 0.6,
@@ -42,6 +47,21 @@ test('cycle self-forecasts normalize prospective judgments and reject phenomenal
     },
   });
   assert.deepEqual(integrated.self_state_prediction.attention_slot_types_at_close, ['commitment', 'drive']);
+  const flatInsideSelfState = cycleSelfForecast.normalizeForecast({ ...normalized, protocol_version: 2,
+    self_state_prediction: {
+      attention_slot_types_at_close: ['Drive'], valence: 0.6, arousal: 0.3, control: 0.7,
+      social_safety: 0.8, coherence: 0.9, expected_action_count: 2, reentry_probability: 0.25,
+    },
+  });
+  assert.deepEqual(flatInsideSelfState.self_state_prediction.appraisal_at_close,
+    integrated.self_state_prediction.appraisal_at_close);
+  const flatAtForecastTop = cycleSelfForecast.normalizeForecast({ ...normalized, protocol_version: 2,
+    attention_slot_types_at_close: ['Drive'],
+    appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+      social_safety: 0.8, coherence: 0.9 },
+    expected_action_count: 2, reentry_probability: 0.25,
+  });
+  assert.equal(flatAtForecastTop.self_state_prediction.expected_action_count, 2);
   assert.throws(() => cycleSelfForecast.normalizeForecast({ ...normalized, protocol_version: 2,
     self_state_prediction: { ...integrated.self_state_prediction,
       appraisal_at_close: { ...integrated.self_state_prediction.appraisal_at_close, control: 0.2 } },

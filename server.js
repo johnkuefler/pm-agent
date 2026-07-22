@@ -1416,7 +1416,7 @@ let _embedTimer = null;
 function startEmbeddingBackfiller() {
   if (_embedTimer) return;
   const tick = async () => {
-    if (!_dbReady) return;
+    if (!_dbReady || (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed())) return;
     // Embedding new memories is useful, but it is never more important than a human waiting on
     // Slack or talking to Nora in a meeting. Share the same single background-provider lane as
     // reflection/research, and pass its abort signal to fetch so live work can stop an in-flight
@@ -1448,7 +1448,7 @@ function startEmbeddingBackfiller() {
 // WITHOUT wiping (the existing embeddings are already this model), so enabling this never triggers
 // a needless full re-embed.
 async function reembedIfModelChanged() {
-  if (!_dbReady) return;
+  if (!_dbReady || (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed())) return;
   try {
     const stored = await db.getState('embed_model');
     if (!stored) { await db.setState('embed_model', db.EMBED_MODEL); return; }
@@ -6265,7 +6265,10 @@ async function deliverJobResult(job, { ok, result, error }) {
 
 async function processNextJob() {
   let job = null;
-  if (_dbReady) { try { job = await db.claimNextQueuedJob(); } catch (e) { console.warn('claimNextQueuedJob:', e.message); return; } }
+  if (_dbReady) {
+    if (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed()) return;
+    try { job = await db.claimNextQueuedJob(); } catch (e) { console.warn('claimNextQueuedJob:', e.message); return; }
+  }
   else { const idx = _memJobs.findIndex(j => j.status === 'queued'); if (idx >= 0) { job = _memJobs[idx]; job.status = 'running'; } }
   if (!job) return;
   const jobActivity = runtimeActivity.begin({ id: `job:${job.id}`, lane: 'background',
@@ -9452,6 +9455,7 @@ async function deleteTranscriptDoc(botId) {
 // timer, and when a meeting ends. buildSystemPrompt is sync, hence a cache and not a query.
 let _recentMeetingsCache = [];
 async function refreshRecentMeetingsCache() {
+  if (_dbReady && typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed()) return;
   try {
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const list = (await listTranscriptDocs())

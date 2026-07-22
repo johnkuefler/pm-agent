@@ -1038,6 +1038,13 @@ function registerCoworkInstructionsRoute(app) {
     binds an opaque process epoch so restart is exact rather than inferred when current telemetry exists, and freezes behavioral,
     integrated-self, historical-success, and modal-error baselines at the same time and scores them
     automatically at closure, while substrate predictions are scored against exact start-state persistence.
+    The forecast-prior response owns the machine-readable submission contract, including the four required
+    self_state_prediction fields and the five appraisal_at_close fields nested inside it. Deterministic ingress
+    aliases accept older flat self-state payloads and commit the same canonical nested record, so a shape mismatch
+    cannot wedge a run. Forecast transport has a 30-second client bound. A retryable 503 may be retried once after
+    Retry-After with the byte-identical body; a 400 is validation and must not be retried unchanged or probed with
+    junk. API schemas, payload repairs, timeouts, and connector failures belong in this contract/routine/logs and
+    operational markers, never in Nora's memory.
     Protocol v5 requires the exact behavioral_self_prior_commitment and a matching behavioral_self_prior
     evidence reference. Protocol v6 additionally requires a behavioral_self_prior_use declaration made before
     action. That declaration says whether Nora applied specific available estimates, overrode them with

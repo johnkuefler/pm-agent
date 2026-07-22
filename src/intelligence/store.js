@@ -210,7 +210,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   getCognitiveParameterStatus = () => cognitiveParameters.status(cognitiveParameters.defaultRecord(), []),
   getDreams = () => [], getMemory = null, getInteractions = null,
   getConsciousWorkspace = () => null,
-  getConsequenceReviews = () => null, initialState = null }) {
+  getConsequenceReviews = () => null, initialState = null,
+  strictPersistenceTimeoutMs: strictPersistenceTimeoutOverride = null }) {
   let state = emptyState();
   let writeQueue = Promise.resolve();
   let snapshotRevisionValue = 0;
@@ -228,6 +229,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     last_total_ms: null, last_payload_bytes: null, last_committed_at: null,
     last_error: null,
   };
+  const strictPersistenceTimeoutMs = strictPersistenceTimeoutOverride == null
+    ? Math.max(5000, Math.min(60000,
+      Number(process.env.INTELLIGENCE_STRICT_PERSIST_TIMEOUT_MS) || 25000))
+    : Math.max(10, Math.min(60000, Number(strictPersistenceTimeoutOverride) || 25000));
   let cycleOpenRuntime = {
     attempts: 0, successes: 0, failures: 0, in_flight: false,
     last_refresh_ms: null, last_cycle_ms: null, last_commit_ms: null,
@@ -1226,12 +1231,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     }
     return enqueuePersistence();
   }
+  function boundStrictPersistence(operation) {
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`intelligence persistence exceeded ${strictPersistenceTimeoutMs}ms`);
+        error.code = 'INTELLIGENCE_PERSISTENCE_TIMEOUT';
+        reject(error);
+      }, strictPersistenceTimeoutMs);
+      timer.unref?.();
+    });
+    return Promise.race([operation, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+  }
   function persistStrict() {
     if (persistenceBatchDepth > 0) {
       persistenceBatchDirty = true;
       return Promise.resolve();
     }
-    return enqueuePersistence({ strict: true });
+    return boundStrictPersistence(enqueuePersistence({ strict: true }));
   }
   async function durableMutationBatch(fn) {
     const outermost = persistenceBatchDepth === 0;
@@ -1257,7 +1274,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       flush_scheduled: persistenceFlushScheduled,
       flush_running: persistenceFlushRunning,
       strict_waiters: persistenceWaiters.filter(item => item.strict).length,
+      strict_timeout_ms: strictPersistenceTimeoutMs,
       cycle_open: { ...cycleOpenRuntime },
+      database: typeof db?.diagnostics === 'function' ? db.diagnostics() : null,
       ...persistenceRuntime,
     };
   }
