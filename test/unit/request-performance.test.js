@@ -25,3 +25,18 @@ test('route templates take precedence over concrete ids', () => {
   assert.equal(normalizePath({ route: { path: '/cycles/:id' }, baseUrl: '/intelligence' }),
     '/intelligence/cycles/:id');
 });
+
+test('intentional event streams do not become false slow-request alarms', () => {
+  const monitor = createRequestPerformanceMonitor({ slowMs: 0 });
+  const req = { method: 'GET', path: '/runtime-activity/events' };
+  const res = new EventEmitter();
+  res.statusCode = 200;
+  res.getHeader = name => name.toLowerCase() === 'content-type'
+    ? 'text/event-stream; charset=utf-8' : undefined;
+  monitor.middleware(req, res, () => {});
+  res.emit('close');
+  const snapshot = monitor.snapshot();
+  assert.equal(snapshot.routes[0].streaming_count, 1);
+  assert.equal(snapshot.routes[0].slow_count, 0);
+  assert.deepEqual(snapshot.recent_slow_requests, []);
+});

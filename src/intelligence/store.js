@@ -27362,6 +27362,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id),
       cycle_status: cycle?.status || 'missing',
       forecast_committed: Boolean(moment?.self_forecast),
+      forecast_protocol_version: Number(moment?.self_forecast?.protocol_version) || null,
+      forecast_protocol_resolution_required: Boolean(cycle?.status === 'running'
+        && !moment?.self_forecast),
       forecast_correction_committed: Boolean(moment?.self_forecast?.self_correction?.revision),
       forecast_correction_required: Boolean(moment?.self_forecast?.self_correction
         && !moment.self_forecast.self_correction.revision),

@@ -24,13 +24,16 @@ function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
       finished = true;
       activeRequests = Math.max(0, activeRequests - 1);
       const durationMs = performance.now() - startedAt;
+      const contentType = String(res.getHeader?.('Content-Type') || '').toLowerCase();
+      const streaming = contentType.includes('text/event-stream');
       const path = normalizePath(req);
       const key = `${req.method} ${path}`;
       const previous = routes.get(key) || { method: req.method, path, count: 0,
-        slow_count: 0, last_ms: 0, max_ms: 0, mean_ms: 0, last_status: null,
+        slow_count: 0, streaming_count: 0, last_ms: 0, max_ms: 0, mean_ms: 0, last_status: null,
         last_completed_at: null };
       previous.count += 1;
-      previous.slow_count += Number(durationMs >= slowMs);
+      previous.streaming_count += Number(streaming);
+      previous.slow_count += Number(!streaming && durationMs >= slowMs);
       previous.last_ms = Math.round(durationMs);
       previous.max_ms = Math.max(previous.max_ms, Math.round(durationMs));
       previous.mean_ms = Math.round(((previous.mean_ms * (previous.count - 1)) + durationMs) / previous.count);
@@ -39,7 +42,7 @@ function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
       routes.delete(key);
       routes.set(key, previous);
       while (routes.size > maxRoutes) routes.delete(routes.keys().next().value);
-      if (durationMs >= slowMs) {
+      if (!streaming && durationMs >= slowMs) {
         recentSlow.push({ method: req.method, path, duration_ms: Math.round(durationMs),
           status: res.statusCode, completed_at: previous.last_completed_at });
         while (recentSlow.length > maxSlowEvents) recentSlow.shift();

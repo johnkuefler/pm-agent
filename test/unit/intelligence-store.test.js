@@ -2611,6 +2611,10 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(forecast.audit.preregistration_verified, true);
   assert.equal(forecast.baseline.kind, 'uninformative_prior');
   assert.equal(forecast.baseline.sample_size, 0);
+  const activeLifecycle = store.cycleLifecycleRuntimeProjection(started.cycle.id, started.moment.id);
+  assert.equal(activeLifecycle.forecast_committed, true);
+  assert.equal(activeLifecycle.forecast_protocol_version, 3);
+  assert.equal(activeLifecycle.forecast_protocol_resolution_required, false);
   const retry = store.preregisterCycleSelfForecast(started.cycle.id, forecast.forecast);
   assert.equal(retry.forecast_commitment, forecast.forecast_commitment);
   assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, {

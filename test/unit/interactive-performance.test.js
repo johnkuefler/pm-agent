@@ -226,6 +226,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'one Slack event must not create an unbounded sequential download batch');
   assert.match(server, /SLACK_FILE_BATCH_TIMEOUT_MS = 30000[\s\S]*?deadlineAt: batchDeadlineAt/,
     'all attachments in one Slack event must share a total download deadline');
+  assert.match(server, /forecast_protocol_version: projection\.forecast_protocol_version/,
+    'the run-lock projection must replace its stale forecast protocol fields after commit');
   assert.doesNotMatch(server.slice(server.indexOf('async function handleSlackFiles'),
     server.indexOf('// Inbox endpoints')), /api\.anthropic\.com/,
   'Slack file intake must not require a language-model call to acknowledge completion');
