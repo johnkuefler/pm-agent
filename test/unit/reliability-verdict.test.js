@@ -8,7 +8,7 @@ const now = Date.parse('2026-07-22T19:00:00.000Z');
 
 function healthySnapshot() {
   return {
-    requests: { recent_slow_requests: [] },
+    requests: { recent_slow_requests: [], recent_deadline_exceeded: [], active: [] },
     persistence: { failures: 0, pending_revisions: 0, strict_waiters: 0,
       database: { background_degraded: false, pool: { waiting: 0 } } },
     interactive_responsiveness: { current_protocol_samples: 0, surfaces: {
@@ -61,4 +61,23 @@ test('reliability exposes unresolved entity writes and meaningful queue accumula
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'entity_persistence_failure');
   assert.equal(verdict.degraded[0].code, 'entity_write_backlog');
+});
+
+test('reliability surfaces active and completed request deadline pressure', () => {
+  const snapshot = healthySnapshot();
+  snapshot.requests.active.push({ path: '/intelligence/cycles', age_ms: 40000, deadline_ms: 45000 });
+  snapshot.requests.recent_deadline_exceeded.push({
+    path: '/self-model/forecast-prior', at: '2026-07-22T18:58:00.000Z',
+  });
+  const verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.deepEqual(verdict.degraded.map(item => item.code),
+    ['recent_request_deadline', 'requests_nearing_deadline']);
+
+  snapshot.requests.recent_deadline_exceeded.push(
+    { path: '/cognition', at: '2026-07-22T18:57:00.000Z' },
+    { path: '/expectations', at: '2026-07-22T18:56:00.000Z' });
+  const repeated = assessRuntimeReliability(snapshot, { now });
+  assert.equal(repeated.status, 'action_required');
+  assert.equal(repeated.action_required[0].code, 'repeated_request_deadlines');
 });

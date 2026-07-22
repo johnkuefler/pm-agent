@@ -228,6 +228,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the first hourly preflight after a restart must not pay the cold replay cost');
   assert.match(server, /app\.get\('\/health'[\s\S]*readiness\.ready \? 200 : 503/,
     'Railway must not route traffic until persistence and startup reconciliation are ready');
+  assert.match(server, /server\.headersTimeout = 15000;[\s\S]*server\.requestTimeout = 130000;/,
+    'incomplete inbound requests must have bounded header and body windows');
   assert.match(server, /setServiceReadiness\('draining'\)[\s\S]*intelligence\.persistStrict\(\)/,
     'shutdown must stop readiness and drain durable intelligence state');
   assert.match(server, /async function drainTranscriptCheckpoints\(\)[\s\S]*flushTranscriptEpisodeCheckpoint/,

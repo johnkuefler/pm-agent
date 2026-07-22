@@ -10,6 +10,13 @@ function recentSlowRequests(requests, now) {
   });
 }
 
+function recentRequestDeadlines(requests, now) {
+  return (requests?.recent_deadline_exceeded || []).filter(item => {
+    const at = new Date(item?.at || 0).getTime();
+    return Number.isFinite(at) && at > 0 && now - at <= RECENT_SLOW_WINDOW_MS;
+  });
+}
+
 function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const actionRequired = [];
   const degraded = [];
@@ -40,10 +47,25 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       message: 'A human-facing response surface is exceeding its prompt-size gate.' });
   }
 
-  const slowRequests = recentSlowRequests(snapshot.requests, Number(now) || Date.now());
+  const assessedAt = Number(now) || Date.now();
+  const slowRequests = recentSlowRequests(snapshot.requests, assessedAt);
+  const requestDeadlines = recentRequestDeadlines(snapshot.requests, assessedAt);
+  if (requestDeadlines.length >= 3) {
+    actionRequired.push({ code: 'repeated_request_deadlines', count: requestDeadlines.length,
+      message: `${requestDeadlines.length} requests reached their terminal server deadline recently.` });
+  } else if (requestDeadlines.length) {
+    degraded.push({ code: 'recent_request_deadline', count: requestDeadlines.length,
+      message: 'A request reached its terminal server deadline recently.' });
+  }
   if (slowRequests.length) {
     degraded.push({ code: 'recent_slow_requests', count: slowRequests.length,
       message: `${slowRequests.length} request(s) exceeded the slow-response threshold recently.` });
+  }
+  const agingRequests = (snapshot.requests?.active || []).filter(item =>
+    Number(item.deadline_ms) > 0 && Number(item.age_ms) >= Math.max(1000, Number(item.deadline_ms) * 0.8));
+  if (agingRequests.length) {
+    degraded.push({ code: 'requests_nearing_deadline', count: agingRequests.length,
+      message: 'One or more active requests are nearing their terminal deadline.' });
   }
   if (Number(database.pool?.waiting) > 0) {
     degraded.push({ code: 'database_pool_waiting', count: Number(database.pool.waiting),
@@ -85,4 +107,4 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   };
 }
 
-module.exports = { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS };
+module.exports = { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS, recentRequestDeadlines };

@@ -118,6 +118,12 @@ const { captureDreamPersistence, diffDreamPersistence } = require('./src/runtime
 const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
 const server = http.createServer(app);
+// Bound incomplete inbound requests at the socket layer as well as completed Express handlers.
+// The longer body window preserves bounded artifact uploads; ordinary handlers have the tighter
+// 45-second terminal response deadline in request-performance middleware.
+server.headersTimeout = 15000;
+server.requestTimeout = 130000;
+server.keepAliveTimeout = 65000;
 const runtimeActivity = createRuntimeActivityStream();
 const requestPerformance = createRequestPerformanceMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
