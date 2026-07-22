@@ -45,8 +45,13 @@ class AsyncJsonSerializer {
     worker.on('error', error => this.failWorker(error, worker));
     worker.on('exit', code => {
       if (this.worker !== worker) return;
-      this.worker = null;
-      if (code !== 0) this.rejectPending(new Error(`JSON serializer worker exited with code ${code}`));
+      if (code !== 0 || this.pending.size) {
+        const error = new Error(`JSON serializer worker exited with code ${code}`);
+        error.code = 'JSON_SERIALIZER_WORKER_EXIT';
+        this.failWorker(error, worker);
+      } else {
+        this.worker = null;
+      }
     });
     this.worker = worker;
     return worker;
