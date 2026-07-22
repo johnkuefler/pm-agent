@@ -22,8 +22,11 @@ class AsyncJsonSerializer {
       this.pending.delete(message.id);
       if (!this.pending.size) worker.unref();
       if (message.error) job.reject(new Error(message.error));
-      else job.resolve({ json: message.json, serialization_ms: message.serialization_ms,
-        payload_bytes: message.payload_bytes, dispatch_ms: job.dispatchMs });
+      else job.resolve({ json: message.json,
+        compressed: message.compressed ? Buffer.from(message.compressed) : null,
+        serialization_ms: message.serialization_ms, compression_ms: message.compression_ms,
+        payload_bytes: message.payload_bytes, compressed_bytes: message.compressed_bytes,
+        dispatch_ms: job.dispatchMs });
     });
     worker.on('error', error => this.failWorker(error));
     worker.on('exit', code => {
@@ -47,7 +50,7 @@ class AsyncJsonSerializer {
     worker?.terminate().catch(() => {});
   }
 
-  stringify(value) {
+  stringify(value, { compress = false } = {}) {
     const worker = this.ensureWorker();
     const id = this.nextId++;
     worker.ref();
@@ -56,7 +59,7 @@ class AsyncJsonSerializer {
       this.pending.set(id, job);
       const started = performance.now();
       try {
-        worker.postMessage({ id, value });
+        worker.postMessage({ id, value, compress });
         job.dispatchMs = performance.now() - started;
       } catch (error) {
         this.pending.delete(id);

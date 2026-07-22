@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { gunzipSync } = require('node:zlib');
 const { performance } = require('node:perf_hooks');
 const { AsyncJsonSerializer } = require('../runtime/async-json-serializer');
 const { normalizeCommitment } = require('./models');
@@ -226,7 +227,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   const persistenceRuntime = {
     optimized_flushes: 0, coalesced_revisions: 0, failures: 0,
     last_dispatch_ms: null, last_serialization_ms: null, last_database_ms: null,
-    last_total_ms: null, last_payload_bytes: null, last_committed_at: null,
+    last_total_ms: null, last_payload_bytes: null, last_compressed_bytes: null,
+    last_compression_ratio: null, last_compression_ms: null, last_committed_at: null,
     last_error: null,
   };
   const strictPersistenceTimeoutMs = strictPersistenceTimeoutOverride == null
@@ -1134,6 +1136,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       return state;
     }
     if (isDbReady()) {
+      if (typeof db?.getCompressedState === 'function') {
+        const compressed = await db.getCompressedState('intelligence_v1');
+        if (compressed) {
+          if (compressed.codec !== 'gzip-json-v1') {
+            throw new Error(`unsupported intelligence snapshot codec: ${compressed.codec}`);
+          }
+          hydrate(JSON.parse(gunzipSync(compressed.data).toString('utf8')));
+          return state;
+        }
+      }
       const remote = await db.getState('intelligence_v1');
       if (remote) hydrate(remote);
       else await db.setState('intelligence_v1', state);
@@ -1145,7 +1157,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function optimizedPersistenceAvailable() {
-    return Boolean(isDbReady() && typeof db?.setStateSerialized === 'function');
+    return Boolean(isDbReady() && (typeof db?.setCompressedState === 'function'
+      || typeof db?.setStateSerialized === 'function'));
+  }
+
+  function compressedPersistenceAvailable() {
+    return Boolean(isDbReady() && typeof db?.setCompressedState === 'function');
   }
 
   function settlePersistenceWaiters(targetRevision, error = null) {
@@ -1173,9 +1190,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     try {
       // postMessage takes one native structured-clone snapshot at this revision. The costly JSON
       // traversal then happens in a worker, so Slack, Zoom, and lifecycle HTTP handlers stay live.
-      const serialized = await asyncSerializer.stringify(state);
+      const compressedMode = compressedPersistenceAvailable();
+      const serialized = await asyncSerializer.stringify(state, { compress: compressedMode });
       const databaseStarted = performance.now();
-      await db.setStateSerialized('intelligence_v1', serialized.json);
+      if (compressedMode) {
+        await db.setCompressedState('intelligence_v1', serialized.compressed,
+          { codec: 'gzip-json-v1', originalBytes: serialized.payload_bytes });
+      } else {
+        await db.setStateSerialized('intelligence_v1', serialized.json);
+      }
       const databaseMs = performance.now() - databaseStarted;
       persistenceCommittedRevision = targetRevision;
       persistenceRuntime.optimized_flushes += 1;
@@ -1183,9 +1206,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         targetRevision - priorCommittedRevision - 1);
       persistenceRuntime.last_dispatch_ms = serialized.dispatch_ms;
       persistenceRuntime.last_serialization_ms = serialized.serialization_ms;
+      persistenceRuntime.last_compression_ms = serialized.compression_ms;
       persistenceRuntime.last_database_ms = databaseMs;
       persistenceRuntime.last_total_ms = performance.now() - totalStarted;
       persistenceRuntime.last_payload_bytes = serialized.payload_bytes;
+      persistenceRuntime.last_compressed_bytes = serialized.compressed_bytes;
+      persistenceRuntime.last_compression_ratio = serialized.compressed_bytes
+        ? serialized.compressed_bytes / serialized.payload_bytes : null;
       persistenceRuntime.last_committed_at = clock().toISOString();
       persistenceRuntime.last_error = null;
       settlePersistenceWaiters(targetRevision);
@@ -1268,6 +1295,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return {
       protocol_version: 1,
       foreground_serialization: optimizedPersistenceAvailable() ? 'worker_thread' : 'legacy_fallback',
+      storage_codec: compressedPersistenceAvailable() ? 'gzip-json-v1' : 'json-v1',
       requested_revision: persistenceRequestedRevision,
       committed_revision: persistenceCommittedRevision,
       pending_revisions: Math.max(0, persistenceRequestedRevision - persistenceCommittedRevision),

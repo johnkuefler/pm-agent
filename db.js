@@ -203,6 +203,17 @@ async function init() {
       updated_at timestamptz NOT NULL DEFAULT now()
     );
 
+    -- Large replay snapshots live as compressed bytes so lifecycle commits do not repeatedly
+    -- transport and parse a multi-megabyte JSONB value. app_state remains the migration and
+    -- rollback source until a compressed snapshot has been committed successfully.
+    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.app_state_blobs (
+      key            text PRIMARY KEY,
+      value          bytea NOT NULL,
+      codec          text NOT NULL,
+      original_bytes bigint,
+      updated_at     timestamptz NOT NULL DEFAULT now()
+    );
+
     -- Background job queue: long-running MCP tool calls (e.g. ImageGen, minutes) that were
     -- deferred out of a live Slack/Zoom/voice turn so it doesn't time out. A worker claims
     -- queued rows, runs the tool, and delivers the result back to the origin thread.
@@ -718,6 +729,27 @@ async function setStateSerialized(key, serializedValue) {
     [key, serializedValue]
   );
 }
+async function getCompressedState(key) {
+  const { rows } = await q(
+    `SELECT value, codec, original_bytes, updated_at
+     FROM ${DB_SCHEMA}.app_state_blobs WHERE key=$1`, [key]
+  );
+  if (!rows.length) return null;
+  return { data: rows[0].value, codec: rows[0].codec,
+    original_bytes: Number(rows[0].original_bytes) || null, updated_at: rows[0].updated_at };
+}
+async function setCompressedState(key, value, { codec = 'gzip-json-v1', originalBytes = null } = {}) {
+  if (!Buffer.isBuffer(value) && !(value instanceof Uint8Array)) {
+    throw new TypeError('compressed app state must be bytes');
+  }
+  await q(
+    `INSERT INTO ${DB_SCHEMA}.app_state_blobs (key, value, codec, original_bytes, updated_at)
+     VALUES ($1,$2,$3,$4,now())
+     ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, codec=EXCLUDED.codec,
+       original_bytes=EXCLUDED.original_bytes, updated_at=now()`,
+    [key, Buffer.from(value), codec, originalBytes]
+  );
+}
 async function deleteState(key) {
   await q(`DELETE FROM ${DB_SCHEMA}.app_state WHERE key=$1`, [key]);
 }
@@ -743,6 +775,6 @@ module.exports = {
   loadAllMarkers, replaceAllMarkers,
   loadAllSlackThreads, replaceAllSlackThreads,
   upsertTranscript, listTranscripts, getTranscript, deleteTranscript,
-  getState, setState, setStateSerialized, deleteState,
+  getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
   enqueueJob, claimNextQueuedJob, finishJob, requeueRunningJobs, recentJobs,
 };
