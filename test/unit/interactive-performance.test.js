@@ -143,12 +143,24 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'bounded Slack social and self-reflective turns must omit irrelevant live-tool schemas');
   assert.match(server, /const zoomAttachLiveTools = zoomConversationPolicy\.attachLiveTools/,
     'bounded Zoom-chat social and self-reflective turns must omit irrelevant live-tool schemas');
+  assert.match(server, /enqueuePostInteractionExtraction\('slack'/,
+    'Slack learning extractors must leave the foreground handler through one serialized queue');
+  assert.match(server, /enqueuePostInteractionExtraction\('zoom-chat'/,
+    'meeting-chat learning extractors must leave the foreground handler through one serialized queue');
+  assert.match(server, /beginBackground\(`post-interaction:\$\{item\.label\}`\)/,
+    'post-interaction extraction must share the preemptible background-provider gate');
+  assert.match(server, /async function extractMemory[\s\S]*?const response = await post\(/,
+    'memory extraction must use the abortable priority transport');
   assert.match(server, /deadlineMs: zoomAttachLiveTools \? 45000/,
     'typed meeting chat must bound the full model and tool loop');
   assert.match(server, /On it — checking the live details now\./,
     'tool-backed meeting chat must acknowledge before a long live lookup');
   assert.match(server, /OpenAI Realtime handshake exceeded 8000ms/,
     'voice startup must fail cleanly instead of leaving a half-open meeting session');
+  assert.match(server, /conversation\.item\.input_audio_transcription\.delta/,
+    'high-frequency realtime transcript deltas must be classified for quiet logging');
+  assert.match(server, /!quietRealtimeEvents\.has\(msg\.type\)/,
+    'high-frequency realtime deltas must not flood production logs');
   assert.match(server, /axios\.defaults\.timeout = Math\.max/,
     'legacy connector requests must inherit a finite service-wide HTTP deadline');
   assert.match(server, /promptRefreshInFlight\) return;/,

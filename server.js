@@ -3784,7 +3784,7 @@ app.post('/voice-agent/response', async (req, res) => {
       axios.post(
         `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
         { message: text },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` } }
+        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
       ).then(() => console.log('💬 Posted muted reply to meeting chat:', text.slice(0, 120)))
        .catch(err => console.warn('Muted-reply chat post failed:', err.response?.data || err.message));
     }
@@ -3795,9 +3795,11 @@ app.post('/voice-agent/response', async (req, res) => {
 
     // Run extraction pipelines (memory, tasks, research)
     if (!isAskingClarification(text)) {
-      extractMemory(meetingContext, triggerText, text, bot_id).catch(() => {});
-      extractTasks(meetingContext, triggerText, text, { channel: 'zoom', bot_id }).catch(() => {});
-      extractResearchNeeds(meetingContext, triggerText, text, { channel: 'zoom', bot_id }).catch(() => {});
+      enqueuePostInteractionExtraction('zoom-voice', async post => {
+        await extractTasks(meetingContext, triggerText, text, { channel: 'zoom', bot_id }, { post });
+        await extractMemory(meetingContext, triggerText, text, bot_id, { post });
+        await extractResearchNeeds(meetingContext, triggerText, text, { channel: 'zoom', bot_id }, { post });
+      });
     }
   }
 });
@@ -4729,11 +4731,15 @@ app.post('/webhook/chat', async (req, res) => {
     if (!isAskingClarification(reply)) {
       if (wroteLiveZ) console.log('⏭️ Zoom chat: skipping task extraction (a live Teamwork write handled it)');
       else if (zoomConversationPolicy.boundedConversation) console.log('⏭️ Zoom chat: skipping task extraction (bounded conversation lane)');
-      else extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
-      extractMemory(meetingContext, query, reply, bot_id).catch(() => {});
-      if (!zoomConversationPolicy.boundedConversation) {
-        extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }).catch(() => {});
-      }
+      enqueuePostInteractionExtraction('zoom-chat', async post => {
+        if (!wroteLiveZ && !zoomConversationPolicy.boundedConversation) {
+          await extractTasks(meetingContext, query, reply, { channel: 'zoom', bot_id }, { post });
+        }
+        await extractMemory(meetingContext, query, reply, bot_id, { post });
+        if (!zoomConversationPolicy.boundedConversation) {
+          await extractResearchNeeds(meetingContext, query, reply, { channel: 'zoom', bot_id }, { post });
+        }
+      });
     }
   } catch (err) {
     chatActivityFailed = true;
@@ -8263,18 +8269,24 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // Slack send fired, so re-filing it as a queued task would duplicate it (and re-send the Slack
       // message on the next loop); or (b) this was a PROACTIVE interjection — an unsolicited
       // observation shouldn't manufacture queued work.
-      if (wroteLive || sentSlack || isProactive || conversationPolicy.boundedConversation) {
+      const shouldExtractTask = !(wroteLive || sentSlack || isProactive || conversationPolicy.boundedConversation);
+      if (!shouldExtractTask) {
         console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : isProactive ? 'proactive observation' : 'bounded conversation lane'})`);
-      } else {
-        extractTasks(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs,
-          external_id: triggerTs || null, attestation: sourceAttestation }).catch(() => {});
       }
       // Memory extraction runs in all cases — learning facts from the discussion is always useful.
-      extractMemory(text, text, reply).catch(() => {});
+      enqueuePostInteractionExtraction('slack', async post => {
+        if (shouldExtractTask) {
+          await extractTasks(text, text, reply, { channel: `slack:${channel}`, user,
+            thread_ts: sourceThreadTs, external_id: triggerTs || null,
+            attestation: sourceAttestation }, { post });
+        }
+        await extractMemory(text, text, reply, null, { post });
       // Research needs: also skip on proactive — don't queue research off chatter she wasn't asked about.
       if (!isProactive && !conversationPolicy.boundedConversation) {
-        extractResearchNeeds(text, text, reply, { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }).catch(() => {});
+          await extractResearchNeeds(text, text, reply,
+            { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }, { post });
       }
+      });
     } else {
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
@@ -10214,7 +10226,7 @@ async function runMeetingDebrief(botId, transcriptData, meetingMeta) {
   } catch (e) { console.warn('meeting debrief failed (non-fatal):', e.message); }
 }
 
-async function extractMemory(context, trigger, reply, sourceBotId) {
+async function extractMemory(context, trigger, reply, sourceBotId, { post = axios.post } = {}) {
   try {
     const projects = loadProjects();
     const projectNames = projects.map(p => p.name);
@@ -10222,7 +10234,7 @@ async function extractMemory(context, trigger, reply, sourceBotId) {
       ? `\n\nKnown projects: ${projectNames.join(', ')}. If the fact relates to one of these projects, use that exact name. If it relates to a different project, use whatever name was mentioned. If it's general (not project-specific), use "".`
       : '\n\nIf the fact relates to a specific project, include the project name as mentioned in conversation. If it\'s general, use "".';
 
-    const response = await axios.post(
+    const response = await post(
       'https://api.anthropic.com/v1/messages',
       {
         // Sonnet 4.6 (up from Haiku): extraction quality compounds — better memory feeds
@@ -10287,11 +10299,12 @@ Respond with a JSON array of objects with: "fact" (string), "project" (project n
       console.log(`🧠 Auto-saved ${added} memor${added === 1 ? 'y' : 'ies'}:`, items);
     }
   } catch (err) {
+    if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') throw err;
     console.error('Memory extraction error:', err.message);
   }
 }
 
-async function extractTasks(context, trigger, reply, source = {}) {
+async function extractTasks(context, trigger, reply, source = {}, { post = axios.post } = {}) {
   try {
     // Debounce: skip if we just ran extraction within the last 5 seconds for this bot
     const botId = source.bot_id || 'unknown';
@@ -10315,7 +10328,7 @@ async function extractTasks(context, trigger, reply, source = {}) {
       day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true
     }).format(new Date());
 
-    const response = await axios.post(
+    const response = await post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — sharper task extraction
@@ -10373,7 +10386,7 @@ Return a JSON array of objects with: action (short verb phrase — what to do), 
       try {
         const existingList = existingTasks.map(t => `- ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`).join('\n');
         const newList = filteredItems.map((t, i) => `${i}: ${t.action}${t.detail ? ' (' + t.detail + ')' : ''}${t.assignee ? ' [' + t.assignee + ']' : ''}`).join('\n');
-        const dedupRes = await axios.post(
+        const dedupRes = await post(
           'https://api.anthropic.com/v1/messages',
           {
             model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — better semantic dedup
@@ -10455,18 +10468,19 @@ Be strict — if in doubt, it's a duplicate. Return only indices of truly new ta
       });
     }
   } catch (err) {
+    if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') throw err;
     console.error('Task extraction error:', err.message);
   }
 }
 
-async function extractResearchNeeds(context, trigger, reply, source = {}) {
+async function extractResearchNeeds(context, trigger, reply, source = {}, { post = axios.post } = {}) {
   try {
     const memory = loadMemory();
     const projects = loadProjects();
     const memorySnapshot = memory.slice(-30).map(m => `- ${m.fact}${m.project ? ' [' + m.project + ']' : ''}`).join('\n');
     const projectList = projects.map(p => p.name).join(', ');
 
-    const response = await axios.post(
+    const response = await post(
       'https://api.anthropic.com/v1/messages',
       {
         model: 'claude-sonnet-4-6', // Sonnet 4.6 (up from Haiku) — better gap detection
@@ -10521,6 +10535,7 @@ If there is NO gap, return: { "needed": false }`,
     });
     console.log(`🔬 Research task created: ${result.topic}${result.project ? ' [' + result.project + ']' : ''}`);
   } catch (err) {
+    if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError') throw err;
     console.error('Research extraction error:', err.message);
   }
 }
@@ -10885,6 +10900,12 @@ wss.on('connection', async (ws, req) => {
 
   // Relay: OpenAI → Browser
   let openaiEventCount = 0;
+  const quietRealtimeEvents = new Set([
+    'response.output_audio.delta',
+    'response.output_audio_transcript.delta',
+    'response.output_text.delta',
+    'conversation.item.input_audio_transcription.delta',
+  ]);
   openaiWs.on('message', (data) => {
     try {
       const str = data.toString();
@@ -10900,7 +10921,7 @@ wss.on('connection', async (ws, req) => {
       if (benignDeleteMiss) {
         console.warn('OpenAI realtime cleanup skipped missing item:', msg.error?.message || 'delete item did not exist');
       }
-      if (!benignDeleteMiss && msg.type !== 'response.output_audio.delta') {
+      if (!benignDeleteMiss && !quietRealtimeEvents.has(msg.type)) {
         console.log(`⬅️ OpenAI → Browser [${msg.type}]`);
       }
 
@@ -11228,6 +11249,57 @@ let _autonomousPlayInFlight = false;
 
 function backgroundPostWithPriority(post, lease) {
   return (url, data, config = {}) => post(url, data, { ...config, signal: lease.signal });
+}
+
+// Post-response learning is valuable but never foreground work. Keep one bounded FIFO behind the
+// shared background-provider gate so three extractors from one reply cannot race each other or the
+// next human turn. Foreground preemption leaves the item queued for a later clean attempt.
+const _postInteractionExtractionQueue = [];
+let _postInteractionExtractionBusy = false;
+let _postInteractionExtractionTimer = null;
+function schedulePostInteractionExtractionDrain(delayMs = 1200) {
+  if (_postInteractionExtractionTimer) return;
+  _postInteractionExtractionTimer = setTimeout(() => {
+    _postInteractionExtractionTimer = null;
+    drainPostInteractionExtractionQueue().catch(error =>
+      console.warn('Post-interaction extraction queue failed:', error.message));
+  }, Math.max(100, Number(delayMs) || 1200));
+  _postInteractionExtractionTimer.unref?.();
+}
+function enqueuePostInteractionExtraction(label, run) {
+  if (typeof run !== 'function') return;
+  if (_postInteractionExtractionQueue.length >= 60) {
+    _postInteractionExtractionQueue.shift();
+    console.warn('Post-interaction extraction queue capped; dropped oldest pending item');
+  }
+  _postInteractionExtractionQueue.push({ label: String(label || 'interaction').slice(0, 100), run });
+  schedulePostInteractionExtractionDrain();
+}
+async function drainPostInteractionExtractionQueue() {
+  if (_postInteractionExtractionBusy || !_postInteractionExtractionQueue.length) return;
+  const item = _postInteractionExtractionQueue[0];
+  const lease = interactivePerformance.beginBackground(`post-interaction:${item.label}`);
+  if (!lease.allowed) {
+    schedulePostInteractionExtractionDrain(lease.retry_after_ms || 1500);
+    return;
+  }
+  _postInteractionExtractionBusy = true;
+  let completed = false;
+  try {
+    await item.run(backgroundPostWithPriority(axios.post, lease));
+    completed = true;
+  } catch (error) {
+    if (!lease.signal.aborted) {
+      completed = true;
+      console.warn(`Post-interaction extraction ${item.label} failed:`, error.message);
+    }
+  } finally {
+    lease.release();
+    _postInteractionExtractionBusy = false;
+    if (completed) _postInteractionExtractionQueue.shift();
+    if (_postInteractionExtractionQueue.length) schedulePostInteractionExtractionDrain(
+      completed ? 250 : 1500);
+  }
 }
 
 function backgroundPriorityDeferred(label, lease) {
