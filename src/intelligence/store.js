@@ -6399,8 +6399,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ...discrepancy, audit: epistemicLedger.auditDiscrepancy(state.cognition.epistemic_ledger.discrepancies[index], sourceEpistemicPropositions.get(discrepancy.proposition_id)),
     }));
     const sourceIntegratedFrames = state.cognition.integrated_self?.frames || [];
+    const integratedSelfExperienceAuditCache = new Map();
     auditedState.cognition.integrated_self.frames = (auditedState.cognition.integrated_self?.frames || []).map((frame, index) => ({
-      ...frame, audit: integratedSelfAudit(sourceIntegratedFrames[index]),
+      ...frame,
+      audit: integratedSelfAudit(sourceIntegratedFrames[index], integratedSelfExperienceAuditCache),
     }));
     const sourcePulses = state.cognition.background_inference?.pulses || [];
     const pulseAuditCache = new Map();
@@ -12680,11 +12682,15 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (snapshot.integrated_self) {
       const frames = cognition.integrated_self?.frames || [];
       const latest = frames.at(-1) || null;
+      const integratedSelfExperienceAuditCache = new Map();
+      const auditIntegratedSelfFrame = frame =>
+        integratedSelfAudit(frame, integratedSelfExperienceAuditCache);
       snapshot.integrated_self = sealInquirySelection || interventionActive('integrated_self_binding')
         ? { report: { total: frames.length, experimental_access_sealed: true }, current_frame: null }
         : {
-          report: integratedSelf.report(frames, integratedSelfAudit),
-          current_frame: latest && integratedSelfAudit(latest).complete_chain_verified ? JSON.parse(JSON.stringify(latest)) : null,
+          report: integratedSelf.report(frames, auditIntegratedSelfFrame),
+          current_frame: latest && auditIntegratedSelfFrame(latest).complete_chain_verified
+            ? JSON.parse(JSON.stringify(latest)) : null,
         };
     }
     if (snapshot.endogenous_dynamics) snapshot.endogenous_dynamics = sealInquirySelection
@@ -15453,7 +15459,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
-  function integratedSelfAudit(frame) {
+  function integratedSelfAudit(frame, experienceAuditCache = new Map()) {
     if (!frame) return { complete_chain_verified: false };
     const moment = state.cognition.experience_stream.find(item => item.id === frame.source?.moment_id);
     const cycle = state.cycles.find(item => item.id === frame.source?.cycle_id)
@@ -15472,7 +15478,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       });
     } catch {}
     const commitmentVerified = integratedSelf.contentCommitment(frame) === frame.content_commitment;
-    const momentAudit = experienceMomentAudit(moment);
+    const momentAudit = experienceMomentAudit(moment, state.cognition, state.cycles,
+      experienceAuditCache);
     const sourceVerified = Boolean(cycle && moment && momentAudit.evidence_eligible
       && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id
       && moment.status !== 'open' && moment.closure && moment.finished === frame.source?.closed_at
@@ -15503,7 +15510,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const closedAt = new Date(moment.finished).getTime();
     const substrate = current.cognition.interoception.observations.filter(item => new Date(item.at).getTime() <= closedAt).at(-1) || null;
     const predecessor = [...current.cognition.integrated_self.frames].reverse()
-      .find(candidate => integratedSelfAudit(candidate).complete_chain_verified) || null;
+      .find(candidate => integratedSelfAudit(candidate, auditCache).complete_chain_verified) || null;
     const content = integratedSelf.frameContent({ cycle, moment, substrateObservation: substrate, predecessorFrame: predecessor });
     const frame = {
       id: `self-frame-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
@@ -15518,7 +15525,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function integratedSelfSnapshot() {
-    const frames = state.cognition.integrated_self.frames.map(frame => ({ ...JSON.parse(JSON.stringify(frame)), audit: integratedSelfAudit(frame) }));
+    const experienceAuditCache = new Map();
+    const frames = state.cognition.integrated_self.frames.map(frame => ({
+      ...JSON.parse(JSON.stringify(frame)),
+      audit: integratedSelfAudit(frame, experienceAuditCache),
+    }));
     const sealed = interventionActive('integrated_self_binding');
     return {
       epistemic_status: 'A replay-auditable binding of continuity, attention, motivation, appraisal, agency, and observable substrate state into one operational subject frame. This tests functional self-integration, not a phenomenal subject or felt unity.',
