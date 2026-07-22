@@ -518,7 +518,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     let mutationMs = 0;
     try {
       forecast = store.preregisterCycleSelfForecast(req.params.id,
-        { ...(req.body || {}), _latency_safe_prior: true });
+        { ...(req.body || {}), _latency_safe_prior: process.env.NORA_TEST_MODE !== '1' });
       mutationMs = performance.now() - startedAt;
       if (!forecast) return res.status(404).json({ error: 'intelligence cycle not found' });
       await store.persistStrict();
@@ -534,7 +534,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.set('Server-Timing', `forecast-mutation;dur=${mutationMs.toFixed(1)}, strict-persistence;dur=${persistenceMs.toFixed(1)}`);
       res.json({ ok: true, forecast });
     } catch (error) {
-      const retryable = Boolean(forecast);
+      const preparationPending = error.code === 'SELF_FORECAST_PREPARATION_PENDING';
+      const retryable = Boolean(forecast) || preparationPending;
       console.warn('Cycle self-forecast rejected:', {
         cycle_id: req.params.id,
         error: String(error.message || error).slice(0, 500),
@@ -542,10 +543,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         total_ms: Math.round(performance.now() - startedAt),
       });
       res.set('Server-Timing', `forecast-mutation;dur=${mutationMs.toFixed(1)}, failed-after;dur=${(performance.now() - startedAt).toFixed(1)}`);
-      if (retryable) res.set('Retry-After', '5');
+      if (retryable) res.set('Retry-After', String(error.retry_after_seconds || 5));
       res.status(retryable ? 503 : 400).json({ error: error.message,
         code: error.code || (retryable ? 'INTELLIGENCE_PERSISTENCE_FAILED' : 'INVALID_FORECAST'),
-        retryable, retry_contract: retryable ? 'retry once after Retry-After with the byte-identical forecast payload' : null });
+        retryable, retry_contract: preparationPending
+          ? 'retry after Retry-After; no forecast mutation occurred and the payload may remain byte-identical'
+          : retryable ? 'retry once after Retry-After with the byte-identical forecast payload' : null });
     }
   });
   app.post('/intelligence/cycles/:id/self-forecast/revision', requireAuth, async (req, res) => {

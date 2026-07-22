@@ -25481,6 +25481,13 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function preregisterCycleSelfForecast(id, input = {}) {
+    const submittedProtocolVersion = input.protocol_version == null
+      ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
+        ? 3 : input.self_state_prediction ? 2 : 1)
+      : Number(input.protocol_version);
+    // Shape validation is intentionally outside the mutation and before ledger verification.
+    // Malformed traffic cannot purchase a full historical integrity replay.
+    cycleSelfForecast.normalizeForecast(input, submittedProtocolVersion);
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const cycle = current.cycles.find(item => item.id === id);
@@ -25502,19 +25509,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         throw new Error('cycle self-forecast must be committed before evidence re-entry');
       }
       const committedAt = clock().toISOString();
-      const submittedProtocolVersion = input.protocol_version == null
-        ? (input.substrate_prediction ? 4 : input.metacognitive_prediction
-          ? 3 : input.self_state_prediction ? 2 : 1)
-        : Number(input.protocol_version);
-      // Reject malformed subject input before opening the replay-heavy historical baseline. This
-      // is validation-order only: createRecord normalizes it again before commitment, while bad
-      // requests now fail in milliseconds instead of replaying the lifecycle and then returning 400.
-      cycleSelfForecast.normalizeForecast(input, submittedProtocolVersion);
-      const baselineAuditCache = new Map(closedExperienceAuditCache);
-      const baselineMoments = current.cognition.experience_stream.filter(candidate => candidate.id !== moment.id
-        && candidate.status !== 'open'
-        && experienceMomentAudit(candidate, current.cognition, current.cycles,
-          baselineAuditCache).evidence_eligible);
+      const runtimePreparation = behavioralSelfPriorRuntimeCache?.key === behavioralSelfPriorRuntimeKey()
+        && behavioralSelfPriorRuntimeCache.preparation?.cycle_id === moment.cycle_id
+        && behavioralSelfPriorRuntimeCache.preparation?.moment_id === moment.id
+        && behavioralSelfPriorRuntimeCache.preparation?.start_commitment === moment.start_commitment
+        ? behavioralSelfPriorRuntimeCache.preparation : null;
+      if (input._latency_safe_prior === true && !runtimePreparation) {
+        warmBehavioralSelfPriorRuntime(behavioralSelfPriorRuntimeKey());
+        const error = new Error('cycle self-forecast replay preparation is still running off the live event loop');
+        error.code = 'SELF_FORECAST_PREPARATION_PENDING';
+        error.retry_after_seconds = 3;
+        throw error;
+      }
       const highestPriorProtocol = current.cognition.experience_stream.reduce((highest, candidate) =>
         candidate.id === moment.id ? highest : Math.max(highest,
           Number(candidate.self_forecast?.protocol_version) || 0), 0);
@@ -25543,8 +25549,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const effectiveProtocolVersion = serverUpgradeToV7 ? 7 : submittedProtocolVersion;
       const behavioralSelfTrustPolicy = effectiveProtocolVersion >= 7
         ? candidateTrustPolicy : null;
+      const preparedBaseline = runtimePreparation?.baselines?.[effectiveProtocolVersion] || null;
+      let baselineMoments = [];
+      if (!preparedBaseline) {
+        const baselineAuditCache = new Map(closedExperienceAuditCache);
+        baselineMoments = current.cognition.experience_stream.filter(candidate => candidate.id !== moment.id
+          && candidate.status !== 'open'
+          && experienceMomentAudit(candidate, current.cognition, current.cycles,
+            baselineAuditCache).evidence_eligible);
+      }
       const forecastRecord = cycleSelfForecast.createRecord({
-        input: effectiveInput, cycle, moment, baselineMoments, behavioralSelfPrior,
+        input: effectiveInput, cycle, moment, baselineMoments, preparedBaseline, behavioralSelfPrior,
         behavioralSelfTrustPolicy, committedAt, submittedProtocolVersion,
       });
       const correctionFeedback = Number(forecastRecord.protocol_version) >= 3
@@ -25807,7 +25822,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
-  function behavioralSelfForecastPriorSnapshot() {
+  function behavioralSelfForecastPriorSnapshot(replayCache = new Map()) {
     const priorUseSchema = {
       protocol_version: 1,
       dispositions: cycleSelfForecast.BEHAVIORAL_PRIOR_USE_DISPOSITIONS,
@@ -25829,7 +25844,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       forecast_submission_contract: cycleSelfForecast.submissionContract(4),
       prior_use_schema: priorUseSchema,
     };
-    const prior = behavioralSelfForecastPriorForMoment(moment);
+    const prior = behavioralSelfForecastPriorForMoment(moment, state.cognition, state.cycles,
+      replayCache);
     const trustPolicy = prior ? behavioralSelfModel.trustPolicy({
       estimates: prior.estimates,
       sourceType: 'behavioral_self_prior', sourceId: prior.id,
@@ -25850,7 +25866,36 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       trust_policy: trustPolicy,
       trust_policy_verified: trustPolicy ? behavioralSelfModel.verifyTrustPolicy(trustPolicy) : false,
       prior_use_schema: priorUseSchema,
-      ...(prior ? { audit: behavioralSelfForecastPriorAudit(prior, moment) } : {}),
+      ...(prior ? { audit: behavioralSelfForecastPriorAudit(prior, moment, state.cognition,
+        state.cycles, replayCache) } : {}),
+    };
+  }
+
+  // Worker-only preparation for the live forecast commit. It performs replay verification away
+  // from the event loop, returns the two possible protocol baselines, and carries immutable closed
+  // audit results back to the main store cache. The public prior response remains compact.
+  function cycleSelfForecastRuntimePreparationSnapshot() {
+    const replayCache = new Map();
+    const priorSnapshot = behavioralSelfForecastPriorSnapshot(replayCache);
+    const openMoment = (state.cognition.experience_stream || []).find(item => item.status === 'open') || null;
+    const eligible = (state.cognition.experience_stream || []).filter(candidate => candidate.status !== 'open'
+      && experienceMomentAudit(candidate, state.cognition, state.cycles, replayCache).evidence_eligible);
+    const baselines = openMoment ? {
+      4: cycleSelfForecast.baselineFromMoments(eligible, 4,
+        { substrateAtStart: openMoment.substrate_at_start || null }),
+      7: cycleSelfForecast.baselineFromMoments(eligible, 7,
+        { substrateAtStart: openMoment.substrate_at_start || null }),
+    } : {};
+    return {
+      key: behavioralSelfPriorRuntimeKey(),
+      cycle_id: openMoment?.cycle_id || null,
+      moment_id: openMoment?.id || null,
+      start_commitment: openMoment?.start_commitment || null,
+      prior_snapshot: priorSnapshot,
+      baselines,
+      closed_audits: (state.cognition.experience_stream || [])
+        .filter(item => item.status !== 'open' && replayCache.has(item.id))
+        .map(item => [item.id, replayCache.get(item.id)]),
     };
   }
 
@@ -25891,10 +25936,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function warmBehavioralSelfPriorRuntime(key) {
     if (behavioralSelfPriorWarmup?.key === key) return;
-    const promise = computeBackgroundProjection('behavioralSelfForecastPriorSnapshot')
+    const promise = computeBackgroundProjection('cycleSelfForecastRuntimePreparationSnapshot')
       .then(result => {
         if (behavioralSelfPriorRuntimeKey() === key) {
-          behavioralSelfPriorRuntimeCache = { key, snapshot: result.value,
+          for (const [id, audit] of (result.value.closed_audits || [])) {
+            closedExperienceAuditCache.set(id, audit);
+          }
+          behavioralSelfPriorRuntimeCache = { key, snapshot: result.value.prior_snapshot,
+            preparation: {
+              cycle_id: result.value.cycle_id, moment_id: result.value.moment_id,
+              start_commitment: result.value.start_commitment,
+              baselines: result.value.baselines || {},
+            },
             compute_ms: result.compute_ms, dispatch_ms: result.dispatch_ms,
             warmed_at: clock().toISOString() };
         }
@@ -28096,7 +28149,7 @@ ${episodes.map(item => {
     recoverStaleCycles, preregisterCycleSelfForecast, reviseCycleSelfForecast, cycleSelfForecastAudit,
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
-    behavioralSelfForecastPriorRuntimeSnapshot,
+    behavioralSelfForecastPriorRuntimeSnapshot, cycleSelfForecastRuntimePreparationSnapshot,
     createBehavioralFingerprintRun, behavioralFingerprintSubjectQueue,
     behavioralFingerprintAutomationPlan,
     submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,

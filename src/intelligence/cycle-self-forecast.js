@@ -913,7 +913,7 @@ function forecastManifest(record) {
   };
 }
 
-function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPrior = null,
+function createRecord({ input, cycle, moment, baselineMoments, preparedBaseline = null, behavioralSelfPrior = null,
   behavioralSelfTrustPolicy = null, committedAt, submittedProtocolVersion = null }) {
   const protocolVersion = input.protocol_version == null
     ? (input.substrate_prediction ? 4 : input.metacognitive_prediction ? 3 : input.self_state_prediction ? 2 : 1) : Number(input.protocol_version);
@@ -942,9 +942,11 @@ function createRecord({ input, cycle, moment, baselineMoments, behavioralSelfPri
     || behavioralSelfTrustPolicy.source_commitment !== behavioralSelfPrior?.content_commitment)) {
     throw new Error('protocol-v7 forecast requires the exact committed behavioral self trust policy');
   }
-  const baseline = baselineFromMoments(baselineMoments, protocolVersion, {
-    substrateAtStart: moment.substrate_at_start || null,
-  });
+  const baseline = preparedBaseline
+    ? JSON.parse(JSON.stringify(preparedBaseline))
+    : baselineFromMoments(baselineMoments, protocolVersion, {
+      substrateAtStart: moment.substrate_at_start || null,
+    });
   const metacognitiveAdjudication = protocolVersion >= 7
     ? adjudicateMetacognitivePrediction({ forecast: normalizedForecast, baseline,
       trustPolicy: behavioralSelfTrustPolicy }) : null;

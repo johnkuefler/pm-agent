@@ -195,8 +195,11 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   const forecastMutation = intelligenceStore.slice(intelligenceStore.indexOf('function preregisterCycleSelfForecast'),
     intelligenceStore.indexOf('function reviseCycleSelfForecast'));
   assert.ok(forecastMutation.indexOf('cycleSelfForecast.normalizeForecast(input, submittedProtocolVersion)')
-    < forecastMutation.indexOf('const baselineMoments ='),
+    < forecastMutation.indexOf('let baselineMoments = []'),
   'malformed self-forecasts must fail before replaying the historical lifecycle baseline');
+  assert.ok(forecastMutation.indexOf('cycleSelfForecast.normalizeForecast(input, submittedProtocolVersion)')
+    < forecastMutation.indexOf('requireResearchLedgerIntegrity(current)'),
+  'malformed self-forecasts must fail before replaying research-ledger integrity');
   assert.match(server, /model: slackResponseModel\(query\)/,
     'typed Zoom chat must share the bounded fast-turn model policy');
   assert.match(server, /beginBackground\('memory-embedding-backfill'\)/,

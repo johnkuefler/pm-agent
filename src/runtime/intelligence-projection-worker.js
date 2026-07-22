@@ -8,6 +8,7 @@ const ALLOWED_METHODS = new Set([
   'developmentalSelfReflectionScheduleSnapshot',
   'developmentalSelfReflectionRuntimeSnapshot',
   'behavioralSelfForecastPriorSnapshot',
+  'cycleSelfForecastRuntimePreparationSnapshot',
   'dashboardIntelligenceSummary',
   'experienceStreamSnapshot',
 ]);

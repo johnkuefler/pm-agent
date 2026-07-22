@@ -1041,9 +1041,13 @@ function registerCoworkInstructionsRoute(app) {
     The forecast-prior response owns the machine-readable submission contract, including the four required
     self_state_prediction fields and the five appraisal_at_close fields nested inside it. Deterministic ingress
     aliases accept older flat self-state payloads and commit the same canonical nested record, so a shape mismatch
-    cannot wedge a run. Forecast transport has a 30-second client bound. A retryable 503 may be retried once after
-    Retry-After with the byte-identical body; a 400 is validation and must not be retried unchanged or probed with
-    junk. API schemas, payload repairs, timeouts, and connector failures belong in this contract/routine/logs and
+    cannot wedge a run. Forecast transport has a 30-second client bound. A 503 with code
+    SELF_FORECAST_PREPARATION_PENDING means historical replay is safely running in a worker: wait Retry-After,
+    GET /self-model/forecast-prior again, and do not submit until prior_warmup_pending is false. Rebuild against
+    that returned contract because the verified protocol may advance from fallback v4 to v7. Allow up to ninety
+    seconds total preparation time, then close the cycle failed instead of looping indefinitely. Other retryable
+    503 responses may be retried once after Retry-After with the byte-identical body; a 400 is validation and must
+    not be retried unchanged or probed with junk. API schemas, payload repairs, timeouts, and connector failures belong in this contract/routine/logs and
     operational markers, never in Nora's memory.
     Protocol v5 requires the exact behavioral_self_prior_commitment and a matching behavioral_self_prior
     evidence reference. Protocol v6 additionally requires a behavioral_self_prior_use declaration made before

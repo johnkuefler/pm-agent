@@ -179,3 +179,38 @@ test('cold behavioral-prior reads fall back immediately while replay warms off-t
   assert.equal(warm.required_forecast_protocol_version, 4);
   assert.equal(store.persistenceDiagnostics().background_projection.failures, 0);
 });
+
+test('production forecast commits wait by retry contract instead of replaying on the event loop', async () => {
+  const { store } = optimizedFixture();
+  await store.init();
+  const started = store.startCycle({ id: 'prepared-forecast-cycle', holder: 'nora-cowork' });
+  const input = {
+    protocol_version: 4, predicted_action_types: ['integration_review'],
+    surprise_probability: 0.2, control_at_close: 0.7, confidence: 0.7,
+    self_state_prediction: { attention_slot_types_at_close: [],
+      appraisal_at_close: { valence: 0.5, arousal: 0.5, control: 0.7,
+        social_safety: 0.5, coherence: 0.5 },
+      expected_action_count: 1, reentry_probability: 0.5 },
+    metacognitive_prediction: { predicted_success_probability: 0.7,
+      predicted_largest_error_domain: 'substrate' },
+    substrate_prediction: { error_probability: 0, warning_probability: 0,
+      backup_probability: 0, embedding_backlog_probability: 0,
+      restart_probability: 0 },
+    rationale: 'The production cycle has one bounded review path and no expected external dependency.',
+    evidence: [{ type: 'intelligence_cycle', id: started.cycle.id }],
+    _latency_safe_prior: true,
+  };
+  const before = performance.now();
+  assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, input),
+    error => error.code === 'SELF_FORECAST_PREPARATION_PENDING');
+  assert.ok(performance.now() - before < 100);
+
+  let prior = store.behavioralSelfForecastPriorRuntimeSnapshot();
+  for (let attempt = 0; attempt < 100 && prior.prior_warmup_pending; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 10));
+    prior = store.behavioralSelfForecastPriorRuntimeSnapshot();
+  }
+  assert.equal(prior.prior_warmup_pending, false);
+  const forecast = store.preregisterCycleSelfForecast(started.cycle.id, input);
+  assert.equal(forecast.audit.preregistration_verified, true);
+});
