@@ -2,6 +2,7 @@
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
     "startCommand": "node server.js",
+    "preDeployCommand": "npm run deploy:check",
     "healthcheckPath": "/health",
     "healthcheckTimeout": 120,
     "drainingSeconds": 30,
