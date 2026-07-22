@@ -80,10 +80,18 @@ const selfPredictionModelControl = require('./self-prediction-model-control');
 const selfPredictionSubjectRuntime = require('./self-prediction-subject-runtime');
 const { bootstrapDifference, pairedBootstrapDifference, pairedBootstrapAgainstBestControl, wilsonInterval } = require('./statistics');
 
-function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
-  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
-  return JSON.stringify(value);
+function canonicalJson(value, memo = null) {
+  if (value && typeof value === 'object' && memo?.has(value)) return memo.get(value);
+  let serialized;
+  if (Array.isArray(value)) {
+    serialized = `[${value.map(item => canonicalJson(item, memo)).join(',')}]`;
+  } else if (value && typeof value === 'object') {
+    serialized = `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(value[key], memo)}`).join(',')}}`;
+  } else {
+    serialized = JSON.stringify(value);
+  }
+  if (value && typeof value === 'object') memo?.set(value, serialized);
+  return serialized;
 }
 
 const STANDARD_METRIC_RUBRICS = {
@@ -25136,9 +25144,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   const experienceLedgerAuditCacheKey = Symbol('experience-ledger-integrity');
   const experienceLedgerEventIndexCacheKey = Symbol('experience-ledger-event-index');
+  const experienceCanonicalJsonCacheKey = Symbol('experience-canonical-json');
   const continuityHandoffIndexCacheKey = Symbol('continuity-handoff-index');
   const continuityMomentIndexCacheKey = Symbol('continuity-moment-index');
   const continuityCycleIndexCacheKey = Symbol('continuity-cycle-index');
+
+  function experienceCanonicalJson(value, cache) {
+    let memo = cache.get(experienceCanonicalJsonCacheKey);
+    if (!memo) {
+      memo = new WeakMap();
+      cache.set(experienceCanonicalJsonCacheKey, memo);
+    }
+    return canonicalJson(value, memo);
+  }
 
   function researchLedgerEventIndex(ledger, cache) {
     const events = ledger?.events || [];
@@ -25188,7 +25206,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function uniqueResearchLedgerEventIndex(ledger, cache, kind, subjectId, payload) {
-    const payloadCommitment = crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const payloadCommitment = crypto.createHash('sha256')
+      .update(experienceCanonicalJson(payload, cache)).digest('hex');
     const matches = researchLedgerEventIndex(ledger, cache)
       .get(`${kind}\u0000${subjectId}\u0000${payloadCommitment}`) || [];
     return matches.length === 1 ? matches[0] : -1;
@@ -25214,7 +25233,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     } : null;
     const protocolSelectionVerified = !record.protocol_selection
       || (Number(record.protocol_version) === 7
-        && canonicalJson(record.protocol_selection) === canonicalJson(expectedProtocolSelection));
+      && experienceCanonicalJson(record.protocol_selection, cache)
+        === experienceCanonicalJson(expectedProtocolSelection, cache));
     const preregistrationEventIndex = manifestVerified
       ? eventIndex('experience_self_forecast_preregistered', record.id,
         { forecast_commitment: record.forecast_commitment }) : -1;
@@ -25246,16 +25266,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         });
         behavioralSelfTrustPolicyVerified = behavioralSelfModel.verifyTrustPolicy(
           record.behavioral_self_trust_policy)
-          && canonicalJson(record.behavioral_self_trust_policy)
-            === canonicalJson(expectedTrustPolicy);
+          && experienceCanonicalJson(record.behavioral_self_trust_policy, cache)
+            === experienceCanonicalJson(expectedTrustPolicy, cache);
         const expectedAdjudication = behavioralSelfTrustPolicyVerified
           ? cycleSelfForecast.adjudicateMetacognitivePrediction({
             forecast: record.forecast, baseline: record.baseline,
             trustPolicy: expectedTrustPolicy,
           }) : null;
         metacognitiveAdjudicationVerified = Boolean(expectedAdjudication
-          && canonicalJson(record.metacognitive_adjudication)
-            === canonicalJson(expectedAdjudication));
+          && experienceCanonicalJson(record.metacognitive_adjudication, cache)
+            === experienceCanonicalJson(expectedAdjudication, cache));
       } catch (_) {
         behavioralSelfTrustPolicyVerified = false;
         metacognitiveAdjudicationVerified = false;
@@ -25270,11 +25290,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       && candidate.status !== 'open' && Number.isFinite(new Date(candidate.finished).getTime())
       && new Date(candidate.finished).getTime() <= committedAt
       && experienceMomentAudit(candidate, cognition, cycles, cache, nextVisited).evidence_eligible);
-    const baselineVerified = sourcesVerified && canonicalJson(cycleSelfForecast.baselineFromMoments(
+    const baselineVerified = sourcesVerified && experienceCanonicalJson(cycleSelfForecast.baselineFromMoments(
       eligibleHistoricalMoments, record.protocol_version, {
         substrateAtStart: moment.substrate_at_start || null,
-      }))
-      === canonicalJson(record.baseline);
+      }), cache)
+      === experienceCanonicalJson(record.baseline, cache);
     const correctionOffer = record.self_correction || null;
     const correctionRevision = correctionOffer?.revision || null;
     let correctionOfferVerified = correctionOffer == null;
@@ -25306,7 +25326,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       correctionFeedbackReplayVerified = Boolean(sourceMoment && expectedFeedback
         && sourceIndex >= 0 && sourceIndex < momentIndex
         && sourceMoment.self_forecast?.outcome_commitment === correctionOffer.feedback?.source_outcome_commitment
-        && canonicalJson(expectedFeedback) === canonicalJson(correctionOffer.feedback)
+        && experienceCanonicalJson(expectedFeedback, cache)
+          === experienceCanonicalJson(correctionOffer.feedback, cache)
         && experienceMomentAudit(sourceMoment, cognition, cycles, cache, nextVisited).evidence_eligible);
       correctionOfferLedgerBound = offerEventIndex >= 0;
       correctionRevealAfterInitial = Number.isFinite(revealAt) && revealAt >= committedAt
@@ -25331,8 +25352,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
             }) : null;
           correctionRevisionAdjudicationVerified = Number(record.protocol_version) < 7
             || Boolean(expectedRevisionAdjudication
-              && canonicalJson(correctionRevision.metacognitive_adjudication)
-                === canonicalJson(expectedRevisionAdjudication));
+              && experienceCanonicalJson(correctionRevision.metacognitive_adjudication, cache)
+                === experienceCanonicalJson(expectedRevisionAdjudication, cache));
         } catch (_) { correctionRevisionAdjudicationVerified = false; }
         const correctionDispositionValid = correctionRevision.disposition === 'revise'
           ? expectedChangedDomains.length > 0
@@ -25342,9 +25363,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
           && correctionRevision.initial_forecast_commitment === record.forecast_commitment
           && correctionRevision.offer_commitment === correctionOffer.offer_commitment
           && correctionRevision.feedback_commitment === correctionOffer.feedback_commitment
-          && canonicalJson(normalizedRevision) === canonicalJson(correctionRevision.forecast)
+          && experienceCanonicalJson(normalizedRevision, cache)
+            === experienceCanonicalJson(correctionRevision.forecast, cache)
           && correctionRevisionAdjudicationVerified
-          && canonicalJson(expectedChangedDomains) === canonicalJson(correctionRevision.changed_domains)
+          && experienceCanonicalJson(expectedChangedDomains, cache)
+            === experienceCanonicalJson(correctionRevision.changed_domains, cache)
           && correctionDispositionValid
           && correctionRevision.forecast.evidence?.some(item => item.type === 'forecast_error_feedback'
             && item.id === correctionOffer.feedback_commitment)
@@ -25380,7 +25403,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         scoredAt: record.outcome.scored_at,
       });
       const expectedCommitment = cycleSelfForecast.commitment({ forecast_commitment: record.forecast_commitment, outcome: expected });
-      outcomeVerified = canonicalJson(expected) === canonicalJson(record.outcome)
+      outcomeVerified = experienceCanonicalJson(expected, cache)
+        === experienceCanonicalJson(record.outcome, cache)
         && record.outcome_commitment === expectedCommitment;
       scoringBound = outcomeVerified && eventBound('experience_self_forecast_scored', record.id,
         { outcome_commitment: record.outcome_commitment });
@@ -25443,7 +25467,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     if (Number(moment.lifecycle_protocol_version) !== 2) {
       const legacyGapPayload = { id: moment.id, cycle_id: moment.cycle_id, predecessor_id: moment.predecessor_id || null,
         started: moment.started, finished: moment.finished, status: moment.status, recovery: moment.closure?.recovery || null };
-      const expectedLegacyGapCommitment = crypto.createHash('sha256').update(canonicalJson(legacyGapPayload)).digest('hex');
+      const expectedLegacyGapCommitment = crypto.createHash('sha256')
+        .update(experienceCanonicalJson(legacyGapPayload, cache)).digest('hex');
       const legacyGapRecorded = Boolean(researchLedgerChainVerified && moment.legacy_gap_commitment === expectedLegacyGapCommitment
         && eventBound('legacy_experience_gap_recorded', { gap_commitment: moment.legacy_gap_commitment }));
       const result = {
@@ -25455,10 +25480,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       cache.set(moment.id, result); return result;
     }
     const startSnapshot = experienceMomentStartSnapshot(moment);
-    const expectedStartCommitment = crypto.createHash('sha256').update(canonicalJson(startSnapshot)).digest('hex');
+    const expectedStartCommitment = crypto.createHash('sha256')
+      .update(experienceCanonicalJson(startSnapshot, cache)).digest('hex');
     const startSnapshotVerified = moment.start_snapshot_compacted === true
       ? moment.start_snapshot == null && moment.start_commitment === expectedStartCommitment
-      : canonicalJson(moment.start_snapshot) === canonicalJson(startSnapshot);
+      : experienceCanonicalJson(moment.start_snapshot, cache)
+        === experienceCanonicalJson(startSnapshot, cache);
     const startVerified = startSnapshotVerified && moment.start_commitment === expectedStartCommitment
       && eventBound('experience_moment_started', {
         start_commitment: moment.start_commitment,
@@ -25497,21 +25524,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && embeddedCycle.experience_moment_id === moment.id && embeddedCycle.started === moment.started
         && embeddedCycle.status === moment.status && embeddedCycle.finished === moment.finished
         && embeddedCycle.summary === moment.closure.summary
-        && canonicalJson(embeddedCycle.actions || []) === canonicalJson(moment.closure.actions || []));
+        && experienceCanonicalJson(embeddedCycle.actions || [], cache)
+          === experienceCanonicalJson(moment.closure.actions || [], cache));
       const reconstructedClosure = experienceMomentClosureSnapshot(moment, embeddedCycle);
       closureSnapshotVerified = moment.closure_snapshot_compacted === true
         ? storedClosure == null && embeddedCycleVerified
           && moment.closure_commitment === crypto.createHash('sha256')
-            .update(canonicalJson(reconstructedClosure)).digest('hex')
-          && (!cycle || canonicalJson(reconstructedClosure)
-            === canonicalJson(experienceMomentClosureSnapshot(moment, cycle)))
-        : canonicalJson(storedMomentProjection) === canonicalJson(currentMomentProjection)
+            .update(experienceCanonicalJson(reconstructedClosure, cache)).digest('hex')
+          && (!cycle || experienceCanonicalJson(reconstructedClosure, cache)
+            === experienceCanonicalJson(experienceMomentClosureSnapshot(moment, cycle), cache))
+        : experienceCanonicalJson(storedMomentProjection, cache)
+          === experienceCanonicalJson(currentMomentProjection, cache)
           && embeddedCycleVerified
-          && (!cycle || canonicalJson(storedClosure)
-            === canonicalJson(experienceMomentClosureSnapshot(moment, cycle)));
+          && (!cycle || experienceCanonicalJson(storedClosure, cache)
+            === experienceCanonicalJson(experienceMomentClosureSnapshot(moment, cycle), cache));
       const closureCommitment = crypto.createHash('sha256')
-        .update(canonicalJson(storedClosure || reconstructedClosure)).digest('hex');
-      const lifecycleCommitment = crypto.createHash('sha256').update(canonicalJson(experienceMomentLifecyclePayload(moment))).digest('hex');
+        .update(experienceCanonicalJson(storedClosure || reconstructedClosure, cache)).digest('hex');
+      const lifecycleCommitment = crypto.createHash('sha256')
+        .update(experienceCanonicalJson(experienceMomentLifecyclePayload(moment), cache)).digest('hex');
       closureVerified = closureSnapshotVerified && moment.closure_commitment === closureCommitment
         && eventBound('experience_moment_closed', { closure_commitment: moment.closure_commitment, lifecycle_commitment: moment.lifecycle_commitment });
       lifecycleVerified = moment.lifecycle_commitment === lifecycleCommitment;
@@ -25746,7 +25776,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         && experienceMomentAudit(moment, cognition, cycles, cache).evidence_eligible === true);
     const priorRevision = revisions.find(item => Number(item.revision_index) === Number(revision.revision_index) - 1);
     const ledger = cognition.research_ledger || { events: [] };
-    const payloadCommitment = payload => crypto.createHash('sha256').update(canonicalJson(payload)).digest('hex');
+    const payloadCommitment = payload => crypto.createHash('sha256')
+      .update(experienceCanonicalJson(payload, cache)).digest('hex');
     const eventBound = (kind, subjectId, payload) =>
       uniqueResearchLedgerEventIndex(ledger, cache, kind, subjectId, payload) >= 0;
     const retainedEdge = retainedIndex === 0 && Number(revision.revision_index) > 0 && !priorRevision
@@ -25767,10 +25798,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         createdAt: revision.created_at,
       });
     } catch (_) { expected = null; }
-    const contentVerified = behavioralSelfModel.commitment(behavioralSelfModel.revisionManifest(revision))
-      === revision.revision_commitment;
+    const contentVerified = crypto.createHash('sha256')
+      .update(experienceCanonicalJson(behavioralSelfModel.revisionManifest(revision), cache))
+      .digest('hex') === revision.revision_commitment;
     const sourceReplayVerified = Boolean(expected)
-      && behavioralSelfModel.canonicalJson(expected) === behavioralSelfModel.canonicalJson(revision);
+      && experienceCanonicalJson(expected, cache) === experienceCanonicalJson(revision, cache);
     const ledgerBindingVerified = eventBound('behavioral_self_model_revised', revision.id,
       { revision_commitment: revision.revision_commitment });
     const ledgerVerified = cache.has(experienceLedgerAuditCacheKey)
@@ -25883,7 +25915,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const contentCommitmentVerified = behavioralSelfModel.commitment(
       behavioralSelfModel.forecastPriorManifest(prior)) === prior.content_commitment;
     const exactReplayVerified = Boolean(expected)
-      && canonicalJson(expected) === canonicalJson(prior);
+      && experienceCanonicalJson(expected, cache) === experienceCanonicalJson(prior, cache);
     return {
       required: true,
       source_revision_verified: sourceRevisionVerified,

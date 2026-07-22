@@ -16,6 +16,12 @@ async function build(workerInput) {
     getWants: () => workerInput.wants || [],
     getOperationalEnvironment: () => workerInput.operational_environment || {},
     initialState: workerInput.state,
+    // The parent captures this state directly from the already-hydrated live store at an exact
+    // revision. Replaying every migration and normalization in the low-priority child turned a
+    // production self-model refresh into a multi-minute job. Mutations preserve the same store
+    // invariants, so the projection worker can adopt the trusted snapshot exactly as the other
+    // internal intelligence projection worker does.
+    trustedNormalizedInitialState: true,
   });
   await store.init();
   const projection = workerInput.projection || 'combined';
