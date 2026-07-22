@@ -753,6 +753,15 @@ function saveProjects(projects) {
   fs.writeFileSync(getProjectsPath(), JSON.stringify(projects, null, 2));
 }
 
+function persistProject(projects, project) {
+  if (_dbReady) {
+    _cache.projects = projects;
+    const snapshot = JSON.parse(JSON.stringify(project));
+    return _writeThrough('projects', () => db.upsertProject(snapshot));
+  }
+  return saveProjects(projects);
+}
+
 // Calendar connection state — recall_calendar_id + connected metadata for Nora's
 // Google Calendar auto-join integration. Single-record file (Nora has one mailbox).
 const CALENDAR_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-calendar.json');
@@ -784,14 +793,15 @@ function ensureProject(name) {
   const projects = loadProjects();
   const existing = projects.find(p => p.name.toLowerCase() === trimmed.toLowerCase());
   if (existing) return existing.name;
-  projects.push({
+  const project = {
     name: trimmed,
     details: '',
     created: new Date().toISOString(),
     last_activity: new Date().toISOString(),
     auto_created: true
-  });
-  saveProjects(projects);
+  };
+  projects.push(project);
+  persistProject(projects, project);
   console.log('📁 Project auto-created from memory scoping:', trimmed);
   return trimmed;
 }
@@ -803,7 +813,7 @@ function bumpProjectActivity(name) {
   const proj = projects.find(p => p.name.toLowerCase() === name.toLowerCase());
   if (!proj) return;
   proj.last_activity = new Date().toISOString();
-  saveProjects(projects);
+  persistProject(projects, proj);
 }
 
 function loadGiftLedger() {

@@ -572,6 +572,17 @@ test('Slack interaction logging appends one durable row instead of rewriting the
   assert.match(server, /db\.appendInteraction\(snapshot, removals\)/);
 });
 
+test('project-scoped memory activity upserts one project instead of rewriting the project ledger', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('function bumpProjectActivity(name)');
+  const end = server.indexOf('\nfunction loadGiftLedger', start);
+  assert.ok(start >= 0 && end > start);
+  const implementation = server.slice(start, end);
+  assert.match(implementation, /persistProject\(projects, proj\)/);
+  assert.doesNotMatch(implementation, /saveProjects\(projects\)/);
+  assert.match(server, /db\.upsertProject\(snapshot\)/);
+});
+
 test('Slack uses a fast Claude path only for bounded conversational turns', async () => {
   const { __test } = require('../../server');
   assert.equal(__test.slackResponseModel('whatd you do today'), 'claude-sonnet-4-6');

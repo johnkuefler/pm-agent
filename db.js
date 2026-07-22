@@ -674,6 +674,20 @@ async function appendInteraction(item, deletedIds = []) {
   }
 }
 
+async function upsertProject(project) {
+  if (!project?.name) throw new Error('project upsert requires a name');
+  const snapshot = JSON.parse(JSON.stringify(project));
+  await q(
+    `INSERT INTO ${DB_SCHEMA}.projects (name, details, created, last_activity, auto_created, data)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (name) DO UPDATE SET details=EXCLUDED.details, created=EXCLUDED.created,
+       last_activity=EXCLUDED.last_activity, auto_created=EXCLUDED.auto_created, data=EXCLUDED.data`,
+    [snapshot.name, snapshot.details || null, snapshot.created || null,
+      snapshot.last_activity || null, !!snapshot.auto_created, snapshot]
+  );
+  return snapshot.name;
+}
+
 async function loadAllDreams() {
   const { rows } = await q(`SELECT data FROM ${DB_SCHEMA}.dreams ORDER BY ord ASC NULLS LAST, finished DESC`);
   return rows.map((r) => r.data);
@@ -868,7 +882,7 @@ module.exports = {
   loadAllMemory, replaceAllMemory, applyMemoryChanges, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
   loadAllTasks, replaceAllTasks,
-  loadAllProjects, replaceAllProjects,
+  loadAllProjects, replaceAllProjects, upsertProject,
   loadAllInteractions, replaceAllInteractions, appendInteraction,
   loadAllDreams, replaceAllDreams,
   loadAllMcp, replaceAllMcp,
