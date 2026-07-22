@@ -89,6 +89,22 @@ test('durable cycle open and idempotent resume each commit one state revision', 
   assert.ok(diagnostics.cycle_open.last_total_ms >= diagnostics.cycle_open.last_refresh_ms);
 });
 
+test('durable cycle batches cannot wait indefinitely on a stalled persistence transport', async () => {
+  const db = { setStateSerialized: async () => new Promise(() => {}) };
+  const store = createIntelligenceStore({ filePath: 'unused', db,
+    isDbReady: () => true, initialState: emptyState(), strictPersistenceTimeoutMs: 20 });
+  await store.init();
+  await assert.rejects(store.openOrResumeCycle({ id: 'bounded-cycle-open',
+    holder: 'nora-cowork', resume_active: true }), error => {
+    assert.equal(error.code, 'INTELLIGENCE_PERSISTENCE_TIMEOUT');
+    assert.match(error.message, /persistence exceeded 20ms/);
+    return true;
+  });
+  const diagnostics = store.persistenceDiagnostics();
+  assert.equal(diagnostics.cycle_open.failures, 1);
+  assert.equal(diagnostics.cycle_open.in_flight, false);
+});
+
 test('production snapshots compress off-thread and recover exactly without the legacy JSON row', async () => {
   const state = emptyState();
   state.persistence_load_fixture = Array.from({ length: 20_000 }, (_, index) => ({

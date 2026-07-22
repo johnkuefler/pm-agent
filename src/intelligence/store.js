@@ -1305,7 +1305,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     finally { persistenceBatchDepth -= 1; }
     if (outermost && persistenceBatchDirty) {
       persistenceBatchDirty = false;
-      await enqueuePersistence({ strict: true });
+      await boundStrictPersistence(enqueuePersistence({ strict: true }));
     }
     if (mutationError) throw mutationError;
     return result;
