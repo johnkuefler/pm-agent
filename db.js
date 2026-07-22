@@ -32,7 +32,9 @@ const DB_INTERACTIVE_TIMEOUT_MS = Math.max(100, Math.min(3000,
 const DB_DEGRADED_COOLDOWN_MS = Math.max(10000, Math.min(300000, Number(process.env.DB_DEGRADED_COOLDOWN_MS) || 60000));
 const dbRuntime = { consecutive_connection_failures: 0, degraded_until: 0, last_error: null,
   last_error_at: null, last_success_at: null, interactive_queries: 0,
-  interactive_failures: 0, interactive_timeouts: 0, interactive_last_error: null };
+  interactive_failures: 0, interactive_timeouts: 0, interactive_last_error: null,
+  transactions: 0, transaction_failures: 0, discarded_transaction_clients: 0,
+  rollback_failures: 0 };
 
 function recordConnectionFailure(error) {
   dbRuntime.consecutive_connection_failures += 1;
@@ -123,6 +125,42 @@ async function q(text, params) {
   }
 }
 
+async function withTransaction(work) {
+  const client = await getPool().connect();
+  let discardError = null;
+  dbRuntime.transactions += 1;
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    const result = await work(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    dbRuntime.transaction_failures += 1;
+    if (isConnectionFailure(error)) {
+      discardError = error;
+      recordConnectionFailure(error);
+    } else {
+      try {
+        await client.query('ROLLBACK');
+      } catch (rollbackError) {
+        dbRuntime.rollback_failures += 1;
+        if (isConnectionFailure(rollbackError)) {
+          discardError = rollbackError;
+          recordConnectionFailure(rollbackError);
+        }
+      }
+    }
+    throw error;
+  } finally {
+    // node-postgres' client-side query timeout does not cancel the query on the server.
+    // Returning that connection to the pool can hand an in-flight or disconnected session to
+    // unrelated work. Passing the terminal error makes pg-pool destroy it instead.
+    if (discardError) dbRuntime.discarded_transaction_clients += 1;
+    client.release(discardError || undefined);
+  }
+}
+
 function backgroundAllowed() {
   return Date.now() >= dbRuntime.degraded_until;
 }
@@ -137,6 +175,12 @@ function diagnostics() {
     last_error_at: dbRuntime.last_error_at,
     last_success_at: dbRuntime.last_success_at,
     pool: pool ? { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount } : null,
+    transactions: {
+      attempts: dbRuntime.transactions,
+      failures: dbRuntime.transaction_failures,
+      discarded_clients: dbRuntime.discarded_transaction_clients,
+      rollback_failures: dbRuntime.rollback_failures,
+    },
     interactive: {
       timeout_ms: DB_INTERACTIVE_TIMEOUT_MS,
       queries: dbRuntime.interactive_queries,
@@ -396,10 +440,7 @@ async function loadAllMemory() {
 // each row's existing embedding UNLESS the fact text changed (then it is nulled so
 // the backfiller re-embeds). Rows absent from `items` are deleted.
 async function replaceAllMemory(items) {
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     const ids = [];
     let skipped = 0;
     for (let i = 0; i < items.length; i++) {
@@ -433,14 +474,8 @@ async function replaceAllMemory(items) {
     } else {
       await client.query(`DELETE FROM ${DB_SCHEMA}.memory`);
     }
-    await client.query('COMMIT');
     if (skipped) console.warn(`⚠️  replaceAllMemory skipped ${skipped} row(s) missing id/fact`);
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function memoryNeedingEmbedding(limit = 32) {
@@ -498,10 +533,7 @@ async function searchMemoryByVector(vec, limit = 12, opts = {}) {
 // remains available for first-boot migration and schema backfills.
 async function applyMemoryChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
   if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     for (const change of upserts) {
       const m = change.item;
       await client.query(
@@ -536,14 +568,8 @@ async function applyMemoryChanges({ upserts = [], deleted_ids: deletedIds = [] }
     if (deletedIds.length) {
       await client.query(`DELETE FROM ${DB_SCHEMA}.memory WHERE id = ANY($1::text[])`, [deletedIds]);
     }
-    await client.query('COMMIT');
     return { upserted: upserts.length, deleted: deletedIds.length };
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // Retrieval strengthening (reconsolidation): every time memories surface via semantic recall
@@ -594,10 +620,7 @@ async function embeddingStats() {
 // ── generic array-of-records tables (tasks/projects/interactions/dreams/mcp) ────
 function makeReplaceAll(table, mapRow) {
   return async function replaceAll(items) {
-    const client = await getPool().connect();
-    try {
-      await client.query('BEGIN');
-      await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    return withTransaction(async client => {
       const ids = [];
       for (let i = 0; i < items.length; i++) {
         const row = mapRow(items[i], i);
@@ -610,13 +633,7 @@ function makeReplaceAll(table, mapRow) {
       } else {
         await client.query(`DELETE FROM ${DB_SCHEMA}.${table}`);
       }
-      await client.query('COMMIT');
-    } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
+    });
   };
 }
 
@@ -649,10 +666,7 @@ async function loadAllProjects() {
   }));
 }
 async function replaceAllProjects(items) {
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     const names = [];
     for (const pj of items) {
       if (!pj || !pj.name) continue;
@@ -670,13 +684,7 @@ async function replaceAllProjects(items) {
     } else {
       await client.query(`DELETE FROM ${DB_SCHEMA}.projects`);
     }
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function loadAllInteractions() {
@@ -697,10 +705,7 @@ const replaceAllInteractions = makeReplaceAll('interactions', (x, i) => {
 
 async function applyTaskChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
   if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     for (const task of upserts) {
       const createdMs = new Date(task.created).getTime();
       const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
@@ -715,14 +720,8 @@ async function applyTaskChanges({ upserts = [], deleted_ids: deletedIds = [] } =
     if (deletedIds.length) {
       await client.query(`DELETE FROM ${DB_SCHEMA}.tasks WHERE id = ANY($1::text[])`, [deletedIds]);
     }
-    await client.query('COMMIT');
     return { upserted: upserts.length, deleted: deletedIds.length };
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // The live Slack path appends one interaction at a time. Persist that append directly instead
@@ -732,10 +731,7 @@ async function appendInteraction(item, deletedIds = []) {
   const snapshot = JSON.parse(JSON.stringify(item));
   const createdMs = new Date(snapshot.created).getTime();
   const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     await client.query(
       `INSERT INTO ${DB_SCHEMA}.interactions (id, data, created, reviewed, ord)
        VALUES ($1,$2,$3,$4,$5)
@@ -747,22 +743,13 @@ async function appendInteraction(item, deletedIds = []) {
       await client.query(`DELETE FROM ${DB_SCHEMA}.interactions WHERE id = ANY($1::text[])`,
         [deletedIds]);
     }
-    await client.query('COMMIT');
     return { appended: snapshot.id, deleted: deletedIds.length };
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function applyInteractionChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
   if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     for (const interaction of upserts) {
       if (!interaction?.id) continue;
       const createdMs = new Date(interaction.created).getTime();
@@ -779,14 +766,8 @@ async function applyInteractionChanges({ upserts = [], deleted_ids: deletedIds =
       await client.query(`DELETE FROM ${DB_SCHEMA}.interactions WHERE id = ANY($1::text[])`,
         [deletedIds]);
     }
-    await client.query('COMMIT');
     return { upserted: upserts.length, deleted: deletedIds.length };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function upsertProject(project) {
@@ -821,10 +802,7 @@ const replaceAllDreams = makeReplaceAll('dreams', (d, i) => {
 
 async function applyDreamChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
   if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     for (const dream of upserts) {
       if (!dream?.id) continue;
       const finishedMs = new Date(dream.finished || dream.started).getTime();
@@ -840,14 +818,8 @@ async function applyDreamChanges({ upserts = [], deleted_ids: deletedIds = [] } 
     if (deletedIds.length) {
       await client.query(`DELETE FROM ${DB_SCHEMA}.dreams WHERE id = ANY($1::text[])`, [deletedIds]);
     }
-    await client.query('COMMIT');
     return { upserted: upserts.length, deleted: deletedIds.length };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function loadAllMcp() {
@@ -872,10 +844,7 @@ async function loadAllMarkers() {
   return out;
 }
 async function replaceAllMarkers(map) {
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     const keys = Object.keys(map || {});
     for (const k of keys) {
       await client.query(
@@ -889,13 +858,7 @@ async function replaceAllMarkers(map) {
     } else {
       await client.query(`DELETE FROM ${DB_SCHEMA}.markers`);
     }
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // ── slack_threads (key→object map) ──────────────────────────────────────────────
@@ -912,10 +875,7 @@ async function loadAllSlackThreads() {
   return out;
 }
 async function replaceAllSlackThreads(map) {
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     const keys = Object.keys(map || {});
     for (const k of keys) {
       const v = map[k] || {};
@@ -932,13 +892,7 @@ async function replaceAllSlackThreads(map) {
     } else {
       await client.query(`DELETE FROM ${DB_SCHEMA}.slack_threads`);
     }
-    await client.query('COMMIT');
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 // ── transcripts (per-bot) ───────────────────────────────────────────────────────
@@ -964,10 +918,7 @@ async function listTranscripts() {
 
 async function applySlackThreadChanges({ upserts = [], deleted_keys: deletedKeys = [] } = {}) {
   if (!upserts.length && !deletedKeys.length) return { upserted: 0, deleted: 0 };
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     for (const item of upserts) {
       if (!item?.key) continue;
       const value = item.value || {};
@@ -984,22 +935,13 @@ async function applySlackThreadChanges({ upserts = [], deleted_keys: deletedKeys
       await client.query(`DELETE FROM ${DB_SCHEMA}.slack_threads WHERE key = ANY($1::text[])`,
         [deletedKeys]);
     }
-    await client.query('COMMIT');
     return { upserted: upserts.length, deleted: deletedKeys.length };
-  } catch (error) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 async function applyMarkerChanges({ upserts = [], deleted_keys: deletedKeys = [] } = {}) {
   if (!upserts.length && !deletedKeys.length) return { upserted: 0, deleted: 0 };
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+  return withTransaction(async client => {
     for (const change of upserts) {
       await client.query(
         `INSERT INTO ${DB_SCHEMA}.markers (key, value, updated_at) VALUES ($1,$2, now())
@@ -1011,14 +953,8 @@ async function applyMarkerChanges({ upserts = [], deleted_keys: deletedKeys = []
       await client.query(`DELETE FROM ${DB_SCHEMA}.markers WHERE key = ANY($1::text[])`,
         [deletedKeys]);
     }
-    await client.query('COMMIT');
     return { upserted: upserts.length, deleted: deletedKeys.length };
-  } catch (e) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw e;
-  } finally {
-    client.release();
-  }
+  });
 }
 async function getTranscript(botId) {
   const { rows } = await q(`SELECT bot_id, ended, transcript FROM ${DB_SCHEMA}.transcripts WHERE bot_id=$1`, [botId]);

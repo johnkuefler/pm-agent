@@ -7,6 +7,21 @@ const Module = require('node:module');
 
 test('semantic recall uses an independent fast-fail database pool and degrades cleanly', async () => {
   const pools = [];
+  class FakeClient {
+    constructor(plan = {}) {
+      this.plan = plan;
+      this.queries = [];
+      this.releaseError = null;
+    }
+    async query(text) {
+      const sql = typeof text === 'string' ? text : text.text;
+      this.queries.push(sql);
+      if (sql === 'ROLLBACK' && this.plan.rollbackError) throw this.plan.rollbackError;
+      if (this.plan.failPattern?.test(sql)) throw this.plan.error;
+      return { rows: [] };
+    }
+    release(error) { this.releaseError = error || null; }
+  }
   class FakePool extends EventEmitter {
     constructor(options) {
       super();
@@ -15,7 +30,15 @@ test('semantic recall uses an independent fast-fail database pool and degrades c
       this.idleCount = 0;
       this.waitingCount = 0;
       this.queries = [];
+      this.clients = [];
+      this.nextClientPlan = null;
       pools.push(this);
+    }
+    async connect() {
+      const client = new FakeClient(this.nextClientPlan || {});
+      this.nextClientPlan = null;
+      this.clients.push(client);
+      return client;
     }
     async query(config) {
       this.queries.push(config);
@@ -60,6 +83,38 @@ test('semantic recall uses an independent fast-fail database pool and degrades c
     assert.deepEqual(await db.searchMemoryByVector(vector, 4,
       { interactive: true, signal: aborted.signal }), []);
     assert.equal(pools[0].queries.length, 2, 'an already-aborted recall must not touch Postgres');
+
+    await db.applyMarkerChanges({ upserts: [{ key: 'healthy', value: { ok: true } }] });
+    assert.equal(pools.length, 2, 'durable writes must retain their separate background pool');
+    const normalClient = pools[1].clients[0];
+    assert.deepEqual(normalClient.queries.slice(0, 2), ['BEGIN', 'SET LOCAL search_path TO public, public']);
+    assert.equal(normalClient.queries.at(-1), 'COMMIT');
+    assert.equal(normalClient.releaseError, null);
+
+    const timeoutError = new Error('Query read timeout');
+    pools[1].nextClientPlan = { failPattern: /INSERT INTO .*markers/, error: timeoutError };
+    await assert.rejects(() => db.applyMarkerChanges({
+      upserts: [{ key: 'timeout', value: { ok: false } }],
+    }), timeoutError);
+    const timedOutClient = pools[1].clients[1];
+    assert.equal(timedOutClient.queries.includes('ROLLBACK'), false,
+      'a timed-out query may still be running and must not be reused for rollback');
+    assert.equal(timedOutClient.releaseError, timeoutError,
+      'pg-pool must destroy a client whose query timed out');
+    assert.equal(db.diagnostics().transactions.discarded_clients, 1);
+
+    const validationError = new Error('duplicate key');
+    pools[1].nextClientPlan = { failPattern: /INSERT INTO .*markers/, error: validationError };
+    await assert.rejects(() => db.applyMarkerChanges({
+      upserts: [{ key: 'ordinary-error', value: { ok: false } }],
+    }), validationError);
+    const rolledBackClient = pools[1].clients[2];
+    assert.equal(rolledBackClient.queries.at(-1), 'ROLLBACK');
+    assert.equal(rolledBackClient.releaseError, null,
+      'a successfully rolled-back ordinary SQL error leaves the connection reusable');
+    assert.deepEqual(db.diagnostics().transactions, {
+      attempts: 3, failures: 2, discarded_clients: 1, rollback_failures: 0,
+    });
   } finally {
     if (db) await db.close();
     Module._load = originalLoad;
