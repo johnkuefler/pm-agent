@@ -124,6 +124,7 @@ test('background runtime budgets actively cancel their provider lane', async () 
 
 test('live server opts eligible Slack work into complete trials but isolates relational turns', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const storeSource = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence', 'store.js'), 'utf8');
   assert.match(server, /contextTrialsEnabled: conversationPolicy\.contextTrialsEnabled, latencyCritical: true/);
   assert.match(server, /relationalSelfReflection: conversationPolicy\.relationalSelfReflection/);
   assert.match(server, /const enabled = Boolean\(assignment\)/);
@@ -165,10 +166,16 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
     'runtime telemetry must expose background queues that could threaten interactive latency');
+  assert.match(server, /if \(!firstDeliveryRecorded\) \{[\s\S]*slackLatencyTrace = recordInteractiveResponseLatency[\s\S]*firstDeliveryRecorded = true;/,
+    'a reaction after an early progress message must not be misreported as a second first delivery');
+  assert.match(server, /reactions\.add[\s\S]*timeout: 1500/,
+    'a delayed Slack reaction must fall back without holding the foreground turn');
   assert.match(server, /const \[publicChannels, privateChannels\] = await Promise\.all/,
     'Slack mention scans must list public and private memberships concurrently');
   assert.match(server, /Math\.min\(6, channels\.length\)[\s\S]*scanNextChannel/,
     'Slack history scans must use a bounded concurrent pool');
+  assert.match(storeSource, /function behavioralFingerprintRunsRuntimeSnapshot\(\)[\s\S]*behavioralFingerprintRuns\(\)/,
+    'fingerprint scheduling must not clone Nora\'s entire intelligence state');
   assert.match(server, /cachedConnectorValue\(teamworkProjectStageCache/,
     'Teamwork workflow topology must be cached across repeated task moves');
   assert.match(server, /Promise\.all\(workflows\.map/,
@@ -471,6 +478,8 @@ test('Slack uses a fast Claude path only for bounded conversational turns', asyn
   assert.equal(__test.slackResponseModel('whatd you do today'), 'claude-sonnet-4-6');
   assert.equal(__test.slackResponseModel('thanks for your work today'), 'claude-sonnet-4-6');
   assert.equal(__test.slackResponseModel('what is due tomorrow for me?'), 'claude-sonnet-4-6');
+  assert.equal(__test.slackResponseModel(`Team update: ${'Victory Propane launched cleanly and the rollout is continuing. '.repeat(8)}`),
+    'claude-sonnet-4-6');
   assert.equal(__test.slackResponseModel('Analyze the launch risks and build a mitigation plan.'),
     'claude-opus-4-8');
   assert.equal(__test.slackResponseModel('Why did the launch slip?'), 'claude-opus-4-8');

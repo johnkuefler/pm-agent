@@ -26119,6 +26119,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return cognition.self_model?.behavioral_fingerprints?.runs || [];
   }
 
+  // Internal scheduler view. Fingerprint evaluators only need the bounded run ledger;
+  // cloning the full intelligence state here can pause interactive Slack/meeting work.
+  function behavioralFingerprintRunsRuntimeSnapshot() {
+    return JSON.parse(JSON.stringify(behavioralFingerprintRuns()));
+  }
+
   function behavioralFingerprintAutomationPlan(now = clock()) {
     const observedAt = new Date(now);
     if (!Number.isFinite(observedAt.getTime())) throw new Error('behavioral fingerprint automation requires a valid clock');
@@ -28212,6 +28218,7 @@ ${episodes.map(item => {
     createBehavioralFingerprintRun, behavioralFingerprintSubjectQueue,
     behavioralFingerprintAutomationPlan,
     submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,
+    behavioralFingerprintRunsRuntimeSnapshot,
     gradeBehavioralFingerprintVoice, abortBehavioralFingerprintRun,
     behavioralFingerprintSnapshot, behavioralFingerprintAudit,
     experienceMomentAudit, experienceStreamSnapshot, experienceForecastOutcomesRuntimeSnapshot,

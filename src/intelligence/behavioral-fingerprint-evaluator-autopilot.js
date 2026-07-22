@@ -174,7 +174,10 @@ function parseGradeResponse(response, built, item, { model, now = new Date() } =
 }
 
 function activeAutomatedRun(store) {
-  return (store.snapshot()?.cognition?.self_model?.behavioral_fingerprints?.runs || [])
+  const runs = typeof store.behavioralFingerprintRunsRuntimeSnapshot === 'function'
+    ? store.behavioralFingerprintRunsRuntimeSnapshot()
+    : store.snapshot()?.cognition?.self_model?.behavioral_fingerprints?.runs || [];
+  return runs
     .find(run => run.status === 'active'
       && run.evaluator_policy?.mode === 'provider_disjoint_model_graded_baseline') || null;
 }

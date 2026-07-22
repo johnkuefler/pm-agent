@@ -4977,7 +4977,7 @@ async function getSlackUserName(userId) {
 function slackResponseModel(text, mode = 'normal') {
   const normalized = String(text || '').trim().toLowerCase().replace(/[\u2019']/g, '').replace(/\s+/g, ' ');
   const deepWork = /\b(analy[sz]e|analysis|strategy|strategic|plan|planning|trade-?offs?|recommend|recommendation|draft|write|rewrite|review|investigate|root cause|compare|prioriti[sz]e|risk assessment|explain|why)\b/.test(normalized);
-  const fastBoundedTurn = mode === 'normal' && normalized.length <= 240
+  const fastBoundedTurn = mode === 'normal' && normalized.length <= 1200
     && !/https?:\/\//.test(normalized) && !deepWork;
   return fastBoundedTurn ? 'claude-sonnet-4-6' : 'claude-opus-4-8';
 }
@@ -6285,7 +6285,7 @@ async function trySlackReaction(channel, timestamp, emoji, post = axios.post) {
   try {
     const response = await post('https://slack.com/api/reactions.add',
       { channel, name: emoji, timestamp },
-      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } });
+      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 1500 });
     if (response.data?.ok) {
       _slackReactionCapability = 'available';
       return { reacted: true, reason: null };
@@ -8049,9 +8049,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         reacted = (await trySlackReaction(channel, triggerTs, emoji)).reacted;
       }
       if (reacted) {
-        latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
-        recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
-          stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
+        if (!firstDeliveryRecorded) {
+          latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
+          slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+            stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
+          firstDeliveryRecorded = true;
+        }
         recordIntrospectiveResponse(`:${emoji}:`);
         recordGoalResponse(`:${emoji}:`, false);
         recordEndogenousAttentionResponse(`:${emoji}:`, false);
@@ -8134,6 +8137,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
           slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
             stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
+          firstDeliveryRecorded = true;
         }
       }
     } catch (error) {
