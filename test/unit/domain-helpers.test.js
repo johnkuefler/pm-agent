@@ -163,6 +163,7 @@ test('run-bound cycle detection covers durable and pre-durability holder forms',
 test('lightweight Slack thanks skip semantic recall without suppressing substantive questions', () => {
   assert.equal(helpers.isLightweightSocialSlackMessage('Thanks for your work today'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('good night!'), true);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Whew, long day'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('Thanks. What is due tomorrow?'), false);
   assert.equal(helpers.isLightweightSocialSlackMessage('Can you summarize the project evidence?'), false);
 });

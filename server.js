@@ -3089,7 +3089,9 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
 function isLightweightSocialSlackMessage(text) {
   const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (!normalized || normalized.length > 120 || /https?:\/\//.test(normalized)) return false;
-  return /^(thanks|thank you|ty|appreciate it|good night|goodnight|have a good (night|evening|weekend)|nice work|great work|good work)(?:\s+for\s+[^?]{1,80})?[!.]*$/.test(normalized);
+  return /^(thanks|thank you|ty|appreciate it|good night|goodnight|have a good (night|evening|weekend)|nice work|great work|good work)(?:\s+for\s+[^?]{1,80})?[!.]*$/.test(normalized)
+    || /^(?:whew|oof|ugh|man|wow)[,!.' ]*(?:(?:what|such) a )?(?:long|rough|busy|wild|crazy|weird|hard|good|great) day[!.]*$/.test(normalized)
+    || /^(?:it'?s|its|today was|that was)(?: been)? (?:a )?(?:long|rough|busy|wild|crazy|weird|hard|good|great) day[!.]*$/.test(normalized);
 }
 
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
@@ -7510,8 +7512,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let providerFinishedAt = null;
   let firstDeliveryRecorded = false;
   let slackLatencyTrace = null;
-  let earlyStatusTimer = null;
-  let earlyStatusPromise = null;
   let endogenousAssignmentForFailure = null;
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
@@ -7674,22 +7674,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const isDirect = mode !== 'proactive';
     const financialApproved = isFinancialApproved(user);
     const attachLiveTools = conversationPolicy.attachLiveTools;
-    if (attachLiveTools && isDirect) {
-      const delayMs = Math.max(0, 4500 - (Date.now() - interactionStartedAt));
-      earlyStatusTimer = setTimeout(() => {
-        earlyStatusPromise = (async () => {
-          const started = Date.now();
-          const posted = await postSlackMessage(channel, 'on it — checking the live details now.', threadTs);
-          if (!posted) return;
-          firstDeliveryRecorded = true;
-          latencyStages.delivery_ms = Date.now() - started;
-          slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
-            stages: { ...latencyStages, early_progress: Date.now() - interactionStartedAt },
-            promptChars: null, interactionId: turnRef, trigger: text });
-        })().catch(error => console.warn('Slack early progress delivery failed:', error.message));
-      }, delayMs);
-      earlyStatusTimer.unref?.();
-    }
     const affordanceStartedAt = Date.now();
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
@@ -8010,8 +7994,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           { ...anthropicHeaders, signal, timeout: 12000 }), 12000, 'Slack no-tools retry');
       } else { throw err; }
     }
-    if (earlyStatusTimer) clearTimeout(earlyStatusTimer);
-    if (earlyStatusPromise) await earlyStatusPromise;
     providerFinishedAt = Date.now();
     latencyStages.provider_ms = providerFinishedAt - providerStartedAt;
 
@@ -8456,8 +8438,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
   } catch (err) {
-    if (earlyStatusTimer) clearTimeout(earlyStatusTimer);
-    if (earlyStatusPromise) await earlyStatusPromise;
     console.error('Slack handler error:', err.response?.data || err.message);
     if (endogenousAssignmentForFailure?.intervention === 'endogenous_attention_selection') {
       try { intelligence.recordEndogenousAttentionResponse(endogenousAssignmentForFailure.assignment_id, {

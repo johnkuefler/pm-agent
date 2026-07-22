@@ -670,6 +670,16 @@ test('Slack enrichment deadlines abort their losing network requests', () => {
     /conversations\.history[\s\S]{0,450}timeout: 6000, signal/);
 });
 
+test('Slack waits for one coherent reply instead of posting a generic progress message', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('async function handleSlackImpl');
+  const end = server.indexOf('// Slack thread admin', start);
+  const slackHandler = server.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.doesNotMatch(slackHandler, /on it\s*[—-]+\s*checking the live details/i);
+  assert.doesNotMatch(slackHandler, /earlyStatus(?:Timer|Promise)/);
+});
+
 test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {
   performance.resetPriorityGateForTest();
   const foreground = performance.beginInteractive('realtime');
