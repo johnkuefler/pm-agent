@@ -229,6 +229,12 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   store.recordEpisodeEvent({ correlation: 'slack:C1:1', record_event: false, summary: 'John asked Nora to check launch readiness.', open_loop: { what: 'Confirm launch readiness', owner: 'Nora' } });
   assert.match(store.promptContext({ person: 'John', query: 'launch readiness', channel: 'slack:C1' }), /Relevant conversation continuity/);
 
+  await store.recordEpisodeEvents([
+    { correlation: 'meeting:batch', actor: 'John', text: 'First utterance', channel: 'meeting' },
+    { correlation: 'meeting:batch', actor: 'Nora', text: 'Second utterance', channel: 'meeting' },
+  ]);
+  assert.equal(store.snapshot().episodes.find(item => item.correlation === 'meeting:batch').events.length, 2);
+
   store.observeRelationship({ name: 'John', observation: 'Prefers the recommendation first', confidence: 0.9 });
   const trace = store.recordTrace({ action: 'reply', decision: 'responded', reasons: ['direct question'], interaction_id: 'ix-1' });
   assert.equal(store.updateTraceOutcome(null, { interaction_id: 'ix-1', outcome: 'landed', signal: 'John used the answer' }).id, trace.id);

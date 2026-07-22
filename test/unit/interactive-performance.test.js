@@ -201,6 +201,12 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'screen-share vision must release its single-flight guard after success or failure');
   assert.match(server, /function scheduleTranscriptCheckpoint\(botId, transcript\)/,
     'growing live transcripts must use coalesced checkpoints instead of one full write per utterance');
+  assert.match(server, /TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000/,
+    'live utterance episodes must batch full intelligence persistence away from the realtime cadence');
+  assert.match(server, /intelligence\.recordEpisodeEvents\(transcriptEpisodeInputs\(botId, entries\)\)/,
+    'one replay-safe episode batch must replace per-utterance full-state persistence');
+  assert.match(server, /beginBackground\(`transcript-episodes:\$\{botId\}`\)/,
+    'full episode snapshots must yield completely while realtime owns the foreground');
   assert.match(server, /if \(ended\) \{[\s\S]*?_transcriptCheckpointPending\.delete\(botId\);/,
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
@@ -213,6 +219,10 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Railway must not route traffic until persistence and startup reconciliation are ready');
   assert.match(server, /setServiceReadiness\('draining'\)[\s\S]*intelligence\.persistStrict\(\)/,
     'shutdown must stop readiness and drain durable intelligence state');
+  assert.match(server, /async function drainTranscriptCheckpoints\(\)[\s\S]*flushTranscriptEpisodeCheckpoint/,
+    'shutdown must flush raw transcript and deferred episode checkpoints before closing the database');
+  assert.match(server, /const transcriptDrain = await drainTranscriptCheckpoints\(\)[\s\S]*intelligence\.persistStrict\(\)/,
+    'graceful shutdown must order transcript durability before the final intelligence snapshot');
   assert.match(server, /process\.once\('SIGTERM'[\s\S]*shutdown\('SIGTERM'\)/,
     'production must handle SIGTERM through the graceful shutdown path');
   assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,

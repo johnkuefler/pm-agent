@@ -2022,6 +2022,12 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return perspectiveSnapshotForResponse(perspective, relationship);
   }
 
+  function recordEpisodeEvents(inputs = []) {
+    const batch = Array.isArray(inputs) ? inputs.filter(item => item && typeof item === 'object') : [];
+    if (!batch.length) return Promise.resolve([]);
+    return durableMutationBatch(() => batch.map(input => recordEpisodeEvent(input)));
+  }
+
   function motivationalRevisionSnapshot() {
     let wants = []; let dreams = []; let workspace = null;
     try { const current = getWants(); wants = Array.isArray(current) ? current : []; } catch { wants = []; }
@@ -28328,7 +28334,8 @@ ${episodes.map(item => {
     liveActivityContextSnapshot,
     persist, persistStrict, persistenceDiagnostics, lifecyclePerformanceSnapshot,
     interactivePerformanceSnapshot, interventionActive,
-    list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
+    list, get, addCommitment, updateCommitment, recordEpisodeEvent, recordEpisodeEvents,
+    observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
     teammatePerspectiveResolutionSnapshot, recordTeammatePerspectiveResolutionAttempt,

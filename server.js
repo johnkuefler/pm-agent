@@ -110,6 +110,7 @@ const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runti
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
+const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
@@ -9735,16 +9736,66 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 // upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
 const _transcriptCheckpointTimers = new Map();
 const _transcriptCheckpointPending = new Map();
-function recordTranscriptEpisode(botId, transcript) {
-  const latest = Array.isArray(transcript) && transcript.length ? transcript[transcript.length - 1] : null;
-  if (latest) intelligence.recordEpisodeEvent({
+const TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000;
+const _transcriptEpisodeTimers = new Map();
+const _transcriptEpisodePending = new Map();
+const _transcriptEpisodeRecordedCounts = new Map();
+const _transcriptEpisodeInFlight = new Map();
+function transcriptEpisodeInputs(botId, entries) {
+  return entries.map(item => ({
     correlation: `meeting:${botId}`, title: 'Meeting', channel: 'meeting', kind: 'utterance',
-    actor: latest.speaker, text: latest.text, at: latest.timestamp,
-    source_ref: { channel: 'meeting', id: botId, captured_at: latest.timestamp },
-  });
+    actor: item.speaker, text: item.text, at: item.timestamp,
+    source_ref: { channel: 'meeting', id: botId, captured_at: item.timestamp },
+  }));
+}
+async function flushTranscriptEpisodeCheckpoint(botId, transcript = null) {
+  const active = _transcriptEpisodeInFlight.get(botId);
+  if (active) await active;
+  const pending = transcript || _transcriptEpisodePending.get(botId);
+  if (!Array.isArray(pending) || !pending.length) return 0;
+  const batch = planTranscriptEpisodeBatch(_transcriptEpisodeRecordedCounts.get(botId), pending);
+  const entries = batch.entries;
+  if (!entries.length) return 0;
+  const operation = intelligence.recordEpisodeEvents(transcriptEpisodeInputs(botId, entries));
+  _transcriptEpisodeInFlight.set(botId, operation);
+  try {
+    await operation;
+    const nextRecorded = batch.next_recorded;
+    _transcriptEpisodeRecordedCounts.set(botId, nextRecorded);
+    if (nextRecorded >= pending.length && _transcriptEpisodePending.get(botId) === pending) {
+      _transcriptEpisodePending.delete(botId);
+    }
+    return entries.length;
+  } finally {
+    if (_transcriptEpisodeInFlight.get(botId) === operation) {
+      _transcriptEpisodeInFlight.delete(botId);
+    }
+  }
+}
+function scheduleTranscriptEpisodeCheckpoint(botId, transcript) {
+  _transcriptEpisodePending.set(botId, transcript);
+  if (_transcriptEpisodeTimers.has(botId)) return;
+  const timer = setTimeout(() => {
+    _transcriptEpisodeTimers.delete(botId);
+    const foregroundGate = interactivePerformance.beginBackground(`transcript-episodes:${botId}`);
+    if (!foregroundGate.allowed) {
+      const pending = _transcriptEpisodePending.get(botId);
+      if (pending) scheduleTranscriptEpisodeCheckpoint(botId, pending);
+      return;
+    }
+    flushTranscriptEpisodeCheckpoint(botId)
+      .catch(error => {
+        console.error('Transcript episode checkpoint failed:', error.message);
+        const pending = _transcriptEpisodePending.get(botId);
+        if (pending) scheduleTranscriptEpisodeCheckpoint(botId, pending);
+      })
+      .finally(() => foregroundGate.release());
+  }, TRANSCRIPT_EPISODE_CHECKPOINT_MS);
+  timer.unref?.();
+  _transcriptEpisodeTimers.set(botId, timer);
 }
 function scheduleTranscriptCheckpoint(botId, transcript) {
-  recordTranscriptEpisode(botId, transcript);
+  scheduleTranscriptEpisodeCheckpoint(botId, transcript);
   _transcriptCheckpointPending.set(botId, transcript);
   if (_transcriptCheckpointTimers.has(botId)) return;
   const timer = setTimeout(() => {
@@ -9764,12 +9815,35 @@ async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = tru
     if (timer) clearTimeout(timer);
     _transcriptCheckpointTimers.delete(botId);
     _transcriptCheckpointPending.delete(botId);
+    const episodeTimer = _transcriptEpisodeTimers.get(botId);
+    if (episodeTimer) clearTimeout(episodeTimer);
+    _transcriptEpisodeTimers.delete(botId);
   }
-  if (recordEpisode) recordTranscriptEpisode(botId, transcript);
+  if (recordEpisode) await flushTranscriptEpisodeCheckpoint(botId, transcript);
+  if (ended) {
+    _transcriptEpisodePending.delete(botId);
+    _transcriptEpisodeRecordedCounts.delete(botId);
+  }
   if (_dbReady) return _writeThrough('transcript:' + botId, () => db.upsertTranscript(botId, ended || null, transcript || []));
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
   try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
   catch (e) { console.warn('transcript write failed:', e.message); }
+}
+
+async function drainTranscriptCheckpoints() {
+  for (const timer of _transcriptCheckpointTimers.values()) clearTimeout(timer);
+  _transcriptCheckpointTimers.clear();
+  const rawPending = [..._transcriptCheckpointPending.entries()];
+  _transcriptCheckpointPending.clear();
+  for (const [botId, transcript] of rawPending) {
+    await saveTranscriptDoc(botId, transcript, null, { recordEpisode: false });
+  }
+  for (const timer of _transcriptEpisodeTimers.values()) clearTimeout(timer);
+  _transcriptEpisodeTimers.clear();
+  const episodeBotIds = [...new Set([
+    ..._transcriptEpisodePending.keys(), ..._transcriptEpisodeInFlight.keys(),
+  ])];
+  for (const botId of episodeBotIds) await flushTranscriptEpisodeCheckpoint(botId);
 }
 
 async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {}, { post = axios.post } = {}) {
@@ -11568,8 +11642,12 @@ function backgroundWorkSnapshot() {
       next: _postInteractionExtractionQueue[0]?.label || null,
     },
     transcript_checkpoints: {
-      pending: _transcriptCheckpointPending.size,
-      scheduled: _transcriptCheckpointTimers.size,
+      pending: _transcriptCheckpointPending.size + _transcriptEpisodePending.size
+        + _transcriptEpisodeInFlight.size,
+      scheduled: _transcriptCheckpointTimers.size + _transcriptEpisodeTimers.size,
+      transcript_pending: _transcriptCheckpointPending.size,
+      episode_pending: _transcriptEpisodePending.size,
+      episode_in_flight: _transcriptEpisodeInFlight.size,
     },
   };
 }
@@ -14124,6 +14202,7 @@ async function stop() {
     forceTimer.unref?.();
     closeServer.then(() => { clearTimeout(forceTimer); resolve(); });
   });
+  const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
   const [persistenceDrain] = await Promise.allSettled([
     intelligence.persistStrict(),
     intelligenceRoutesRuntime.close(),
@@ -14131,6 +14210,7 @@ async function stop() {
   ]);
   await db.close().catch(() => {});
   _startPromise = null;
+  if (transcriptDrain) throw transcriptDrain;
   if (persistenceDrain.status === 'rejected') throw persistenceDrain.reason;
 }
 
