@@ -1,6 +1,7 @@
 require('dotenv').config();
 const axios = require('axios');
 const crypto = require('crypto');
+axios.defaults.timeout = 12000;
 
 const RECALL_BASE = `https://${process.env.RECALL_REGION}.recall.ai/api/v1`;
 const SERVER_URL = 'https://pm-agent-production-c49e.up.railway.app';
@@ -42,14 +43,16 @@ async function sendNoraToMeeting(zoomUrl) {
     },
     webhook_url: `${SERVER_URL}/webhook/status`
   }, {
-    headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }
+    headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` },
+    timeout: 12000,
   });
 
   const botId = res.data.id;
   console.log('✅ Nora joined. Bot ID:', botId);
 
   // Register bot ID and session token with the server
-  await axios.post(`${SERVER_URL}/register-bot`, { bot_id: botId, session_token: sessionToken }).catch(() => {});
+  await axios.post(`${SERVER_URL}/register-bot`, { bot_id: botId, session_token: sessionToken },
+    { timeout: 6000 }).catch(() => {});
 
   return botId;
 }

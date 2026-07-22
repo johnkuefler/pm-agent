@@ -183,9 +183,12 @@ function registerProjectRoutes(app, deps) {
       let hasMore = true;
       let pagesFetched = 0;
       const MAX_PAGES = 20; // safety cap (~5000 projects)
+      const syncDeadlineAt = Date.now() + 30000;
       while (hasMore && pagesFetched < MAX_PAGES) {
+        const remainingMs = syncDeadlineAt - Date.now();
+        if (remainingMs <= 0) throw new Error('Teamwork project sync exceeded 30s total deadline');
         const url = `${twBase}/projects/api/v3/projects.json?status=ACTIVE&pageSize=${pageSize}&page=${page}&include=companies`;
-        const r = await axios.get(url, { headers: twHeaders });
+        const r = await axios.get(url, { headers: twHeaders, timeout: Math.min(8000, remainingMs) });
         const projects = r.data?.projects || [];
         const companies = r.data?.included?.companies || {};
         for (const p of projects) {

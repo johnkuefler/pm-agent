@@ -73,15 +73,17 @@ test('foreground interactions preempt one background provider lane and enforce a
   performance.resetPriorityGateForTest();
   const background = performance.beginBackground('nightly-reflection', { now: 100000 });
   assert.equal(background.allowed, true);
-  assert.equal(performance.beginBackground('second-job', { now: 100001 }).reason,
-    'background_provider_busy');
+  const busy = performance.beginBackground('second-job', { now: 100001 });
+  assert.equal(busy.reason, 'background_provider_busy');
+  assert.equal(busy.retry_after_ms, performance.BACKGROUND_BUSY_RETRY_MS);
 
   const foreground = performance.beginInteractive('slack', { now: 100010 });
   assert.equal(background.signal.aborted, true);
   assert.equal(background.wasPreempted(), true);
   assert.equal(background.preemptedBy(), 'slack');
-  assert.equal(performance.beginBackground('during-slack', { now: 100011 }).reason,
-    'interactive_active');
+  const duringSlack = performance.beginBackground('during-slack', { now: 100011 });
+  assert.equal(duringSlack.reason, 'interactive_active');
+  assert.equal(duringSlack.retry_after_ms, performance.INTERACTIVE_ACTIVE_RETRY_MS);
 
   foreground.release({ now: 100020 });
   background.release();
@@ -94,6 +96,7 @@ test('foreground interactions preempt one background provider lane and enforce a
   resumed.release();
   const snapshot = performance.prioritySnapshot(100020 + performance.INTERACTIVE_QUIET_WINDOW_MS);
   assert.equal(snapshot.maximum_background_provider_concurrency, 1);
+  assert.equal(snapshot.interactive_active_retry_ms, 30000);
   assert.equal(snapshot.background_preemptions, 1);
   assert.equal(snapshot.active_interactions, 0);
   performance.resetPriorityGateForTest();
@@ -215,6 +218,17 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Slack mention discovery must not inherit the broad service timeout');
   assert.match(server, /maxContentLength: SLACK_FILE_MAX_BYTES/,
     'Slack file forwarding must bound both elapsed time and downloaded bytes');
+  assert.match(server, /SLACK_FILE_DOWNLOAD_TIMEOUT_MS = 20000/,
+    'Slack attachment redirects must share one total deadline instead of resetting per hop');
+  assert.match(server, /I see the attachment[\s\S]*?timeout: SLACK_CONTROL_TIMEOUT_MS/,
+    'Slack file intake must acknowledge before starting the download');
+  assert.match(server, /MAX_INBOX_FILES_PER_MESSAGE = 5/,
+    'one Slack event must not create an unbounded sequential download batch');
+  assert.match(server, /SLACK_FILE_BATCH_TIMEOUT_MS = 30000[\s\S]*?deadlineAt: batchDeadlineAt/,
+    'all attachments in one Slack event must share a total download deadline');
+  assert.doesNotMatch(server.slice(server.indexOf('async function handleSlackFiles'),
+    server.indexOf('// Inbox endpoints')), /api\.anthropic\.com/,
+  'Slack file intake must not require a language-model call to acknowledge completion');
   assert.match(server, /promptRefreshInFlight\) return;/,
     'periodic voice prompt refreshes must never overlap');
   assert.match(server, /if \(messageQueue\.length >= 500\) messageQueue\.shift\(\);/,

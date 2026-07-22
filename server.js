@@ -11,6 +11,8 @@ axios.defaults.timeout = Math.max(1000, Math.min(120000,
 const RECALL_JOIN_TIMEOUT_MS = 12000;
 const RECALL_CONTROL_TIMEOUT_MS = 6000;
 const CONNECTOR_AUTH_TIMEOUT_MS = 10000;
+const GOOGLE_CONTROL_TIMEOUT_MS = 10000;
+const GOOGLE_UPLOAD_TIMEOUT_MS = 30000;
 const SLACK_CONTROL_TIMEOUT_MS = 6000;
 const SLACK_FILE_TIMEOUT_MS = 15000;
 const SLACK_FILE_MAX_BYTES = 25 * 1024 * 1024;
@@ -6815,6 +6817,9 @@ function sanitizeFilename(name) {
 }
 
 const MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024; // 25MB — covers typical decks/PDFs/images
+const MAX_INBOX_FILES_PER_MESSAGE = 5;
+const SLACK_FILE_DOWNLOAD_TIMEOUT_MS = 20000;
+const SLACK_FILE_BATCH_TIMEOUT_MS = 30000;
 
 // Download a Slack file by url_private_download. We manually follow redirects so the
 // Authorization header is preserved across them — axios's default auto-follow strips
@@ -6823,16 +6828,19 @@ const MAX_INBOX_FILE_BYTES = 25 * 1024 * 1024; // 25MB — covers typical decks/
 // we also sanity-check the content-type and first bytes; if Slack served us HTML
 // anyway (e.g., missing files:read scope), surface a clear error rather than write
 // garbage to disk.
-async function downloadSlackFile(downloadUrl, token, maxBytes) {
+async function downloadSlackFile(downloadUrl, token, maxBytes, { deadlineAt = null } = {}) {
   let url = downloadUrl;
   let lastStatus;
+  const terminalAt = deadlineAt || Date.now() + SLACK_FILE_DOWNLOAD_TIMEOUT_MS;
   for (let hop = 0; hop < 6; hop++) {
+    const remainingMs = Math.min(SLACK_FILE_DOWNLOAD_TIMEOUT_MS, terminalAt - Date.now());
+    if (remainingMs <= 0) throw new Error('Slack file download exceeded 20s total deadline');
     const res = await axios.get(url, {
       headers: { Authorization: `Bearer ${token}` },
       responseType: 'arraybuffer',
       maxRedirects: 0,            // we follow them manually so auth is preserved
       maxContentLength: maxBytes,
-      timeout: 60000,
+      timeout: remainingMs,
       validateStatus: s => (s >= 200 && s < 400)
     });
     lastStatus = res.status;
@@ -6867,9 +6875,25 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
   }
   ensureInboxDir();
 
+  // Confirm receipt before any download or model work. File intake is asynchronous from Slack's
+  // perspective, but the sender should still see an immediate, provider-independent response.
+  await axios.post('https://slack.com/api/chat.postMessage', {
+    channel, thread_ts: threadTs, text: 'I see the attachment — pulling it down now.'
+  }, {
+    headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' },
+    timeout: SLACK_CONTROL_TIMEOUT_MS,
+  }).catch(error => console.warn('Slack file receipt post failed:', error.message));
+
   const savedFiles = [];
   const failedFiles = [];
-  for (const f of event.files) {
+  const batchDeadlineAt = Date.now() + SLACK_FILE_BATCH_TIMEOUT_MS;
+  const files = event.files.slice(0, MAX_INBOX_FILES_PER_MESSAGE);
+  if (event.files.length > files.length) {
+    for (const f of event.files.slice(files.length)) {
+      failedFiles.push({ name: f.name, reason: `message exceeds ${MAX_INBOX_FILES_PER_MESSAGE}-file intake limit` });
+    }
+  }
+  for (const f of files) {
     const downloadUrl = f.url_private_download || f.url_private;
     if (!downloadUrl) {
       console.warn(`📎 File ${f.id} has no download URL; skipping`);
@@ -6882,12 +6906,13 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
       continue;
     }
     try {
-      const { body } = await downloadSlackFile(downloadUrl, slackToken, MAX_INBOX_FILE_BYTES);
+      const { body } = await downloadSlackFile(downloadUrl, slackToken, MAX_INBOX_FILE_BYTES,
+        { deadlineAt: batchDeadlineAt });
       const inboxId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const safeName = sanitizeFilename(f.name || f.title || `file-${f.id}`);
       const filename = `${inboxId}__${safeName}`;
       const fullPath = path.join(getInboxDir(), filename);
-      fs.writeFileSync(fullPath, body);
+      await fs.promises.writeFile(fullPath, body);
       console.log(`📎 Saved Slack file to inbox: ${filename} (${body.length} bytes, ${f.mimetype || 'unknown mime'})`);
       savedFiles.push({
         inbox_id: inboxId,
@@ -6913,7 +6938,10 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
         channel,
         thread_ts: threadTs,
         text
-      }, { headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' } });
+      }, {
+        headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' },
+        timeout: SLACK_CONTROL_TIMEOUT_MS,
+      });
     } catch {}
     return;
   }
@@ -6954,43 +6982,19 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
     context: `[Slack file upload]\nUser said: ${queryText || '(no text — file only)'}\nFiles: ${savedFiles.map(f => f.filename).join(', ')}`
   });
 
-  // Acknowledge in Slack so the user knows we got it. Use Haiku to generate a brief,
-  // natural reply that reflects what they actually asked — sounds more like Nora than
-  // a templated "got the file" string would. Fail-soft to a generic ack if Haiku errors.
-  let ackText;
-  if (process.env.ANTHROPIC_API_KEY) {
-    try {
-      const fileMeta = savedFiles.map(f => `${f.filename} (${f.mimetype || 'unknown'})`).join(', ');
-      const ackRes = await axios.post(
-        'https://api.anthropic.com/v1/messages',
-        {
-          model: 'claude-haiku-4-5-20251001',
-          max_tokens: 80,
-          temperature: 0.6,
-          system: 'You are Nora, LimeLight\'s PM agent. Someone just sent you file(s) in Slack with an instruction. Reply with ONE short sentence (under 20 words) acknowledging you got it and what you\'ll do, matching your direct, no-corporate-fluff voice. If they didn\'t give an instruction (file only, no text), ask briefly what they want done. Never say "got it", vary the opener. No emoji. No "I\'ll be sure to" or "happy to help". Plain text only, no markdown.',
-          messages: [{
-            role: 'user',
-            content: `Files received: ${fileMeta}\nUser said: ${queryText || '(no message text — they just dropped the file)'}`
-          }]
-        },
-        { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 10000 }
-      );
-      ackText = ackRes.data?.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim() || null;
-    } catch (err) {
-      console.warn('📎 Slack ACK Haiku call failed; using generic:', err.response?.data?.error?.message || err.message);
-    }
-  }
-  if (!ackText) {
-    ackText = queryText
-      ? `On it, I'll handle ${fileNoun} and follow up in this thread.`
-      : `Got the file${savedFiles.length > 1 ? 's' : ''}. What would you like me to do with ${savedFiles.length > 1 ? 'them' : 'it'}?`;
-  }
+  // Completion is deterministic: file intake must not depend on a second language-model call.
+  const ackText = queryText
+    ? `The ${savedFiles.length > 1 ? 'files are' : 'file is'} downloaded and queued. I'll follow up here.`
+    : `The ${savedFiles.length > 1 ? 'files are' : 'file is'} downloaded. What would you like me to do with ${savedFiles.length > 1 ? 'them' : 'it'}?`;
   try {
     await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       thread_ts: threadTs,
       text: ackText
-    }, { headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' } });
+    }, {
+      headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' },
+      timeout: SLACK_CONTROL_TIMEOUT_MS,
+    });
   } catch (err) {
     console.warn('📎 Slack ACK post failed:', err.response?.data || err.message);
   }
@@ -7092,7 +7096,10 @@ async function getGoogleAccessToken() {
     client_secret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
     refresh_token: refreshToken,
     grant_type: 'refresh_token'
-  }).toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  }).toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: CONNECTOR_AUTH_TIMEOUT_MS,
+  });
   if (!r.data?.access_token) {
     throw new Error('Google token refresh failed: ' + JSON.stringify(r.data));
   }
@@ -7128,7 +7135,8 @@ async function driveMultipartUpload({ bytes, name, parentId, mimetype, requestCo
         'Content-Length': body.length
       },
       maxBodyLength: 30 * 1024 * 1024,
-      maxContentLength: 30 * 1024 * 1024
+      maxContentLength: 30 * 1024 * 1024,
+      timeout: GOOGLE_UPLOAD_TIMEOUT_MS,
     }
   );
   return r.data;
@@ -7147,6 +7155,7 @@ async function driveFindArtifactByCommitment({ requestCommitment, parentId }) {
       supportsAllDrives: true,
       fields: 'files(id,name,webViewLink,mimeType,parents)',
     },
+    timeout: GOOGLE_CONTROL_TIMEOUT_MS,
   });
   return Array.isArray(r.data?.files) ? r.data.files[0] || null : null;
 }
@@ -8499,7 +8508,8 @@ app.delete('/slack/financial-approved/:userId', requireAuth, (req, res) => {
 async function getNoraBotUserId() {
   if (noraBotUserId) return noraBotUserId;
   const r = await axios.post('https://slack.com/api/auth.test', null, {
-    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    timeout: SLACK_CONTROL_TIMEOUT_MS,
   });
   if (!r.data.ok) throw new Error(`auth.test failed: ${r.data.error}`);
   noraBotUserId = r.data.user_id;

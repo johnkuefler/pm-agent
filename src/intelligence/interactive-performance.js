@@ -1,6 +1,6 @@
 'use strict';
 
-const PROTOCOL_VERSION = 10;
+const PROTOCOL_VERSION = 11;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
@@ -15,13 +15,16 @@ const BUDGET_MS = Object.freeze({
 // Protocol v9 isolates bounded relational/self-reflective turns from PM tool schemas and
 // task-performance experiments while preserving relevant continuity and functional self-state.
 // Protocol v10 gives the serialized background lane a hard cancellation budget so a stalled
-// provider cannot monopolize scheduled intelligence indefinitely.
+// provider cannot monopolize scheduled intelligence indefinitely. Protocol v11 adds explicit
+// retry guidance so deferred queues back off during long calls instead of polling every 1.5s.
 const PROMPT_BUDGET_CHARS = Object.freeze({
   slack: 38000,
   'zoom-chat': 40000,
   realtime: 45000,
 });
 const INTERACTIVE_QUIET_WINDOW_MS = 15000;
+const INTERACTIVE_ACTIVE_RETRY_MS = 30000;
+const BACKGROUND_BUSY_RETRY_MS = 5000;
 const activeInteractiveLeases = new Map();
 const activeBackgroundLeases = new Map();
 let leaseSequence = 0;
@@ -205,8 +208,11 @@ function beginBackground(label, { now = Date.now(), force = false } = {}) {
   else if (!force && activeBackgroundLeases.size) reason = 'background_provider_busy';
   if (reason) {
     backgroundDeferrals += 1;
+    const retryAfterMs = reason === 'interactive_cooldown' ? quietRemaining
+      : reason === 'interactive_active' ? INTERACTIVE_ACTIVE_RETRY_MS
+        : BACKGROUND_BUSY_RETRY_MS;
     return { allowed: false, label: String(label || 'background'), reason,
-      retry_after_ms: reason === 'interactive_cooldown' ? quietRemaining : null };
+      retry_after_ms: retryAfterMs };
   }
   const token = `background-${++leaseSequence}`;
   const controller = new AbortController();
@@ -245,6 +251,8 @@ function prioritySnapshot(now = Date.now()) {
     foreground_priority: true,
     maximum_background_provider_concurrency: 1,
     interactive_quiet_window_ms: INTERACTIVE_QUIET_WINDOW_MS,
+    interactive_active_retry_ms: INTERACTIVE_ACTIVE_RETRY_MS,
+    background_busy_retry_ms: BACKGROUND_BUSY_RETRY_MS,
     active_interactions: activeInteractiveLeases.size,
     active_surfaces: surfaces,
     background_provider_in_flight: activeBackgroundLeases.size,
@@ -276,6 +284,8 @@ module.exports = {
   BUDGET_MS,
   PROMPT_BUDGET_CHARS,
   INTERACTIVE_QUIET_WINDOW_MS,
+  INTERACTIVE_ACTIVE_RETRY_MS,
+  BACKGROUND_BUSY_RETRY_MS,
   protocol,
   isLatencyTaxedIntervention,
   allowsInlineIntervention,
