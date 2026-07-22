@@ -99,6 +99,29 @@ test('foreground interactions preempt one background provider lane and enforce a
   performance.resetPriorityGateForTest();
 });
 
+test('background runtime budgets actively cancel their provider lane', async () => {
+  performance.resetPriorityGateForTest();
+  const background = performance.beginBackground('bounded-work', { now: 200000 });
+  assert.equal(background.allowed, true);
+  assert.equal(background.cancel('step_timeout:test'), true);
+  assert.equal(background.signal.aborted, true);
+  assert.equal(background.wasStopped(), true);
+  assert.equal(background.wasPreempted(), false);
+  assert.equal(background.stopReason(), 'step_timeout:test');
+  assert.equal(performance.prioritySnapshot(200001).background_budget_cancellations, 1);
+  background.release();
+
+  const { __test } = require('../../server');
+  const configured = __test.backgroundIntelligenceRuntimeBudget({
+    NORA_BACKGROUND_STEP_TIMEOUT_MS: '7000',
+    NORA_BACKGROUND_CYCLE_TIMEOUT_MS: '45000',
+  });
+  assert.deepEqual(configured, { step_timeout_ms: 7000, cycle_timeout_ms: 45000 });
+  await assert.rejects(() => __test.runBackgroundActionWithinBudget('hung-provider',
+    () => new Promise(() => {}), 10), error => error.code === 'background_step_timeout');
+  performance.resetPriorityGateForTest();
+});
+
 test('live server opts eligible Slack work into complete trials but isolates relational turns', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.match(server, /contextTrialsEnabled: conversationPolicy\.contextTrialsEnabled, latencyCritical: true/);

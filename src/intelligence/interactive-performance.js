@@ -1,6 +1,6 @@
 'use strict';
 
-const PROTOCOL_VERSION = 9;
+const PROTOCOL_VERSION = 10;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
@@ -14,6 +14,8 @@ const BUDGET_MS = Object.freeze({
 // and tightens these ceilings around the measured compiled envelope.
 // Protocol v9 isolates bounded relational/self-reflective turns from PM tool schemas and
 // task-performance experiments while preserving relevant continuity and functional self-state.
+// Protocol v10 gives the serialized background lane a hard cancellation budget so a stalled
+// provider cannot monopolize scheduled intelligence indefinitely.
 const PROMPT_BUDGET_CHARS = Object.freeze({
   slack: 38000,
   'zoom-chat': 40000,
@@ -27,6 +29,7 @@ let lastInteractiveAt = 0;
 let lastInteractiveSurface = null;
 let backgroundPreemptions = 0;
 let backgroundDeferrals = 0;
+let backgroundBudgetCancellations = 0;
 
 // These interventions add a provider round trip, materially increase the main
 // generation budget, or otherwise hold a response after the first answer exists.
@@ -208,13 +211,22 @@ function beginBackground(label, { now = Date.now(), force = false } = {}) {
   const token = `background-${++leaseSequence}`;
   const controller = new AbortController();
   const record = { label: String(label || 'background'), controller, started_at: checkedAt,
-    preempted: false, preempted_by: null };
+    preempted: false, preempted_by: null, stopped_reason: null };
   activeBackgroundLeases.set(token, record);
   let released = false;
   return {
     allowed: true, token, label: record.label, signal: controller.signal,
-    wasPreempted: () => record.preempted || controller.signal.aborted,
+    wasPreempted: () => record.preempted,
+    wasStopped: () => controller.signal.aborted,
     preemptedBy: () => record.preempted_by,
+    stopReason: () => record.stopped_reason,
+    cancel(reason = 'runtime_budget') {
+      if (controller.signal.aborted) return false;
+      record.stopped_reason = String(reason || 'runtime_budget').slice(0, 160);
+      backgroundBudgetCancellations += 1;
+      controller.abort(new Error(`background intelligence cancelled: ${record.stopped_reason}`));
+      return true;
+    },
     release() {
       if (released) return;
       released = true;
@@ -241,6 +253,7 @@ function prioritySnapshot(now = Date.now()) {
     last_interactive_surface: lastInteractiveSurface,
     background_preemptions: backgroundPreemptions,
     background_deferrals: backgroundDeferrals,
+    background_budget_cancellations: backgroundBudgetCancellations,
   };
 }
 
@@ -255,6 +268,7 @@ function resetPriorityGateForTest() {
   lastInteractiveSurface = null;
   backgroundPreemptions = 0;
   backgroundDeferrals = 0;
+  backgroundBudgetCancellations = 0;
 }
 
 module.exports = {

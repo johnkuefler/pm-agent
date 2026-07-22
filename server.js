@@ -13223,7 +13223,33 @@ async function runSelfInductionSubjectRuntime(studyId, itemId, { post = axios.po
   }
 }
 
-async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = 'scheduler' } = {}) {
+function backgroundIntelligenceRuntimeBudget(env = process.env) {
+  const bounded = (value, fallback, minimum, maximum) => {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(minimum, Math.min(maximum, Math.round(number))) : fallback;
+  };
+  return {
+    step_timeout_ms: bounded(env.NORA_BACKGROUND_STEP_TIMEOUT_MS, 50000, 5000, 90000),
+    cycle_timeout_ms: bounded(env.NORA_BACKGROUND_CYCLE_TIMEOUT_MS, 180000, 30000, 300000),
+  };
+}
+
+async function runBackgroundActionWithinBudget(name, action, timeoutMs) {
+  let deadline = null;
+  const timedOut = new Promise((_, reject) => {
+    deadline = setTimeout(() => {
+      const error = new Error(`background step ${name} exceeded ${timeoutMs}ms runtime budget`);
+      error.code = 'background_step_timeout';
+      reject(error);
+    }, timeoutMs);
+    deadline.unref?.();
+  });
+  try { return await Promise.race([Promise.resolve().then(action), timedOut]); }
+  finally { if (deadline) clearTimeout(deadline); }
+}
+
+async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = 'scheduler',
+  budget = backgroundIntelligenceRuntimeBudget() } = {}) {
   if (_backgroundIntelligenceCycleInFlight) {
     return { protocol_version: interactivePerformance.PROTOCOL_VERSION, state: 'in_flight',
       trigger, at: new Date().toISOString() };
@@ -13245,6 +13271,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
   const priorityPost = backgroundPostWithPriority(post, lease);
   const steps = {};
   const stepTimings = {};
+  const cycleStartedAt = Date.now();
   const stepLabels = {
     ecological_expiry: 'Checking expired research follow-ups',
     cognitive_initiation_policy_probe: 'Checking a delayed cognition probe',
@@ -13274,7 +13301,13 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     developmental_reading: 'Reading and reflecting on a source',
   };
   const runStep = async (name, action) => {
-    if (lease.wasPreempted()) return false;
+    if (lease.wasStopped()) return false;
+    const cycleRemainingMs = budget.cycle_timeout_ms - (Date.now() - cycleStartedAt);
+    if (cycleRemainingMs <= 0) {
+      steps[name] = { state: 'deferred_runtime_budget', reason: 'background_cycle_timeout' };
+      lease.cancel(`cycle_timeout_before:${name}`);
+      return false;
+    }
     const stepActivity = runtimeActivity.begin({ lane: ['developmental_reading', 'developmental_reading_selection'].includes(name) ? 'learning'
       : name === 'autonomous_play' ? 'leisure' : 'background', kind: name,
     label: stepLabels[name] || 'Running a background step', detail: 'Checking whether this bounded activity is due now.',
@@ -13289,10 +13322,15 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     }, 25);
     probe.unref?.();
     let stepFailed = false;
-    try { steps[name] = await action(); }
+    let budgetExceeded = false;
+    const timeoutMs = Math.max(1, Math.min(budget.step_timeout_ms, cycleRemainingMs));
+    try { steps[name] = await runBackgroundActionWithinBudget(name, action, timeoutMs); }
     catch (error) {
       stepFailed = true;
-      steps[name] = { state: 'failed', error: String(error.message || error).slice(0, 300) };
+      budgetExceeded = error.code === 'background_step_timeout';
+      if (budgetExceeded) lease.cancel(`step_timeout:${name}`);
+      steps[name] = { state: budgetExceeded ? 'deferred_runtime_budget' : 'failed',
+        code: error.code || null, error: String(error.message || error).slice(0, 300) };
     }
     finally {
       await new Promise(resolve => setImmediate(resolve));
@@ -13305,15 +13343,16 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       }
       const resultState = String(steps[name]?.state || (steps[name]?.ran === false ? 'not_due' : 'completed'));
       runtimeActivity.finish(stepActivity.id, {
-        status: stepFailed ? 'failed' : lease.wasPreempted() ? 'preempted' : 'completed',
-        detail: stepFailed ? 'This background step failed without blocking live interactions.'
+        status: budgetExceeded ? 'deferred' : lease.wasPreempted() ? 'preempted' : stepFailed ? 'failed' : 'completed',
+        detail: budgetExceeded ? 'This background step exceeded its runtime budget and yielded for the next scheduler pass.'
           : lease.wasPreempted() ? 'The step yielded when a live interaction arrived.'
+            : stepFailed ? 'This background step failed without blocking live interactions.'
             : 'The bounded check reached a terminal state.',
         outcome: stepFailed ? 'Failure recorded in server diagnostics.' : `Result: ${resultState.replaceAll('_', ' ')}.`,
         meta: { result: resultState },
       });
     }
-    return !lease.wasPreempted();
+    return !lease.wasStopped();
   };
   try {
     const scheduledSteps = [
@@ -13360,21 +13399,27 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     for (const [name, action] of scheduledSteps) {
       if (!await runStep(name, action)) break;
     }
+    const stoppedReason = lease.stopReason();
     _backgroundIntelligenceCycleLast = {
       protocol_version: interactivePerformance.PROTOCOL_VERSION,
-      state: lease.wasPreempted() ? 'preempted_for_interactive_priority' : 'completed',
+      state: lease.wasPreempted() ? 'preempted_for_interactive_priority'
+        : stoppedReason ? 'deferred_runtime_budget' : 'completed',
       trigger,
       preempted_by: lease.preemptedBy(),
+      stopped_reason: stoppedReason,
+      runtime_budget: { ...budget, elapsed_ms: Date.now() - cycleStartedAt },
       steps,
       step_timings: stepTimings,
       at: new Date().toISOString(),
     };
     runtimeActivity.finish(backgroundActivity.id, {
-      status: lease.wasPreempted() ? 'preempted' : 'completed',
+      status: lease.wasPreempted() ? 'preempted' : stoppedReason ? 'deferred' : 'completed',
       detail: lease.wasPreempted()
         ? 'Background intelligence yielded immediately to live interactive work.'
+        : stoppedReason ? 'Background intelligence reached its runtime budget and will resume on a later pass.'
         : 'Every due background check reached a bounded terminal state.',
-      outcome: lease.wasPreempted() ? 'Live responsiveness retained priority.' : 'Background cycle complete.',
+      outcome: lease.wasPreempted() ? 'Live responsiveness retained priority.'
+        : stoppedReason ? 'Provider work was cancelled without wedging the scheduler.' : 'Background cycle complete.',
     });
     return _backgroundIntelligenceCycleLast;
   } catch (error) {
@@ -13580,6 +13625,8 @@ module.exports = {
     postDeliverySelfEvaluationRuntimeConfig,
     runPostDeliverySelfEvaluationRuntime,
     runBackgroundIntelligenceRuntime,
+    backgroundIntelligenceRuntimeBudget,
+    runBackgroundActionWithinBudget,
     runBehavioralFingerprintSubjectRuntime,
     runBehavioralFingerprintSchedulingRuntime,
     behavioralFingerprintEvaluatorRuntimeConfig,
