@@ -416,6 +416,7 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     activityStream: runtimeActivity,
     getDreams: loadDreams,
     getWants: () => (_cache.wants?.items || []),
+    getInteractions: loadInteractions,
     runSelfInquirySelectionSubject: runSelfInquirySelectionSubjectRuntime,
     runSelfInductionSubject: runSelfInductionSubjectRuntime,
     runCognitiveInitiationStudySubject: runCognitiveInitiationStudySubjectRuntime,

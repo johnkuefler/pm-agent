@@ -19,8 +19,9 @@ function validateDueConsequenceReviews({ cycleId, store, ledger, now = new Date(
   return { required: true, valid: true, due_action_ids: [] };
 }
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getConsequenceReviews = () => consequenceReview.emptyLedger(), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getInteractions = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getConsequenceReviews = () => consequenceReview.emptyLedger(), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
+  const workerSnapshotCache = new Map();
   const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
     shouldDeferRefresh: shouldDeferResearchStatusRefresh };
   const researchStatusCache = createResearchProjectionCache({ ...projectionCacheOptions,
@@ -72,8 +73,57 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     return res.type('application/json').send(serialized);
   }
 
-  app.get('/intelligence/dashboard-summary', requireAuth, (_req, res) => {
-    cachedJson(res, 'dashboard-summary', () => store.dashboardIntelligenceSummary(), { ttlMs: 5000 });
+  async function workerCachedJson(res, key, method, args = {}, {
+    ttlMs = 15000, staleWhileRevalidate = true,
+  } = {}) {
+    const revision = store.snapshotRevision();
+    const now = Date.now();
+    let cached = workerSnapshotCache.get(key);
+    if (cached?.serialized && cached.revision === revision && cached.expires_at > now) {
+      res.set('X-Nora-Snapshot-Cache', 'hit');
+      res.set('X-Nora-Compute-Isolation', 'worker_thread');
+      res.set('Cache-Control', 'private, no-store');
+      return res.type('application/json').send(cached.serialized);
+    }
+    const refresh = () => {
+      cached = workerSnapshotCache.get(key);
+      if (cached?.in_flight) return cached.in_flight;
+      const capturedRevision = store.snapshotRevision();
+      const inFlight = store.computeBackgroundProjection(method, args).then(result => {
+        const entry = { revision: capturedRevision, expires_at: Date.now() + ttlMs,
+          serialized: JSON.stringify(result.value), compute_ms: result.compute_ms,
+          dispatch_ms: result.dispatch_ms, in_flight: null };
+        workerSnapshotCache.set(key, entry);
+        return entry;
+      }).catch(error => {
+        const prior = workerSnapshotCache.get(key);
+        if (prior) prior.in_flight = null;
+        throw error;
+      });
+      workerSnapshotCache.set(key, { ...(cached || {}), in_flight: inFlight });
+      return inFlight;
+    };
+    if (cached?.serialized && staleWhileRevalidate) {
+      refresh().catch(error => console.error(`Background projection ${key} failed:`, error.message));
+      res.set('X-Nora-Snapshot-Cache', 'worker-stale-refreshing');
+      res.set('X-Nora-Compute-Isolation', 'worker_thread');
+      res.set('Cache-Control', 'private, no-store');
+      return res.type('application/json').send(cached.serialized);
+    }
+    const entry = await refresh();
+    res.set('X-Nora-Snapshot-Cache', 'miss');
+    res.set('X-Nora-Compute-Isolation', 'worker_thread');
+    res.set('Server-Timing', `projection-worker;dur=${Number(entry.compute_ms || 0).toFixed(1)}, dispatch;dur=${Number(entry.dispatch_ms || 0).toFixed(1)}`);
+    res.set('Cache-Control', 'private, no-store');
+    return res.type('application/json').send(entry.serialized);
+  }
+
+  app.get('/intelligence/dashboard-summary', requireAuth, async (_req, res) => {
+    try {
+      await workerCachedJson(res, 'dashboard-summary', 'dashboardIntelligenceSummary', {
+        __context: { dreams: getDreams(), wants: getWants(), interactions: getInteractions() },
+      }, { ttlMs: 15000, staleWhileRevalidate: process.env.NORA_TEST_MODE !== '1' });
+    } catch (error) { res.status(503).json({ error: 'dashboard summary is warming', detail: error.message }); }
   });
 
   app.get('/intelligence/persistence-runtime', requireAuth, (_req, res) => {
@@ -400,7 +450,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/experience-stream', requireAuth, (req, res) => {
     const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
-    cachedJson(res, `experience-stream:${limit}`, () => store.experienceStreamSnapshot({ limit }), { ttlMs: 15000 });
+    return workerCachedJson(res, `experience-stream:${limit}`, 'experienceStreamSnapshot', { limit },
+      { ttlMs: 30000, staleWhileRevalidate: false })
+      .catch(error => res.status(503).json({ error: 'experience stream is warming', detail: error.message }));
   });
   app.get('/continuity-handoffs', requireAuth, (req, res) => {
     cachedJson(res, `continuity-handoffs:${req.query.summary === '1' ? 'summary' : 'full'}`, () => store.continuityHandoffRuntimeSnapshot(), {

@@ -141,6 +141,24 @@ test('replay-heavy background projections compute in a worker without starving f
   assert.ok(diagnostics.last_compute_ms >= 0);
 });
 
+test('dashboard and experience projections stay off the foreground event loop', async () => {
+  const store = createIntelligenceStore({ filePath: 'unused', db: {},
+    isDbReady: () => false, initialState: emptyState() });
+  await store.init();
+  const dashboard = store.computeBackgroundProjection('dashboardIntelligenceSummary', {
+    __context: { dreams: [], wants: [], interactions: [] },
+  });
+  const foregroundWon = await Promise.race([
+    dashboard.then(() => false),
+    new Promise(resolve => setTimeout(() => resolve(true), 0)),
+  ]);
+  assert.equal(foregroundWon, true);
+  assert.ok((await dashboard).value.overview);
+  const experience = await store.computeBackgroundProjection('experienceStreamSnapshot', { limit: 6 });
+  assert.deepEqual(experience.value.moments, []);
+  assert.equal(store.persistenceDiagnostics().background_projection.failures, 0);
+});
+
 test('cold behavioral-prior reads fall back immediately while replay warms off-thread', async () => {
   const store = createIntelligenceStore({ filePath: 'unused', db: {},
     isDbReady: () => false, initialState: emptyState() });
