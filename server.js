@@ -107,6 +107,7 @@ const { createRuntimeActivityStream } = require('./src/runtime/activity-stream')
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
+const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
@@ -317,7 +318,9 @@ const intelligence = createIntelligenceStore({
 // live system running if Postgres ever hiccups.
 let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
-const _writeQ = {};  // entity → promise chain serializing write-throughs (avoids interleaved replaceAll)
+const _writeThroughQueue = createWriteThroughQueue({
+  onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
+});
 const _serviceReadiness = {
   ready: false, phase: 'booting', updated_at: new Date().toISOString(), error: null,
 };
@@ -420,11 +423,8 @@ function beginSomaRuntimeSampling(now = Date.now()) {
   console.warn = (...a) => { _somaNerves.warns.push(Date.now()); if (_somaNerves.warns.length > 600) _somaNerves.warns.splice(0, 300); origWarn(...a); };
   setInterval(sampleSomaLoopLag, 1000).unref?.();
 }
-function _writeThrough(entity, fn) {
-  const prev = _writeQ[entity] || Promise.resolve();
-  const next = prev.then(fn).catch((e) => console.error(`❌ db write-through [${entity}]:`, e.message));
-  _writeQ[entity] = next;
-  return next;
+function _writeThrough(entity, fn, options = {}) {
+  return _writeThroughQueue.enqueue(entity, fn, options);
 }
 
 // Book ingestion has its own authenticated envelope so large public-domain works do not
@@ -496,6 +496,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
     interactive_priority: interactivePerformance.prioritySnapshot(),
     background_work: backgroundWorkSnapshot(),
+    entity_writes: _writeThroughQueue.snapshot(),
   };
   res.json({ reliability: assessRuntimeReliability(snapshot), ...snapshot });
 });
@@ -10278,12 +10279,7 @@ function saveDreams(dreams) {
 function saveDreamsStrict(dreams) {
   if (!_dbReady) { saveDreams(dreams); return Promise.resolve(); }
   _cache.dreams = dreams;
-  const previous = _writeQ.dreams || Promise.resolve();
-  const operation = previous.then(() => db.replaceAllDreams(dreams));
-  _writeQ.dreams = operation.catch(error => {
-    console.error('Strict developmental dream persistence failed:', error.message);
-  });
-  return operation;
+  return _writeThrough('dreams', () => db.replaceAllDreams(dreams), { strict: true });
 }
 const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
 

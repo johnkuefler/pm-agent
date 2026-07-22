@@ -17,6 +17,7 @@ function healthySnapshot() {
     } },
     interactive_priority: { background_budget_cancellations: 0 },
     background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 } },
+    entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
   };
 }
 
@@ -51,4 +52,13 @@ test('reliability requires action for persistence or measured interaction failur
   assert.equal(verdict.status, 'action_required');
   assert.deepEqual(verdict.action_required.map(item => item.code),
     ['persistence_failure', 'interactive_latency_failing']);
+});
+
+test('reliability exposes unresolved entity writes and meaningful queue accumulation', () => {
+  const snapshot = healthySnapshot();
+  snapshot.entity_writes = { pending: 7, in_flight: 1, current_errors: 1 };
+  const verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'entity_persistence_failure');
+  assert.equal(verdict.degraded[0].code, 'entity_write_backlog');
 });

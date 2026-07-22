@@ -19,12 +19,17 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const priority = snapshot.interactive_priority || {};
   const background = snapshot.background_work || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
+  const entityWrites = snapshot.entity_writes || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
   }
   if (persistence.last_error) {
     actionRequired.push({ code: 'persistence_failure', message: 'State persistence has recorded a failure.' });
+  }
+  if (Number(entityWrites.current_errors) > 0) {
+    actionRequired.push({ code: 'entity_persistence_failure',
+      message: 'At least one durable entity write lane has an unresolved failure.' });
   }
   if (Object.values(responsiveness.surfaces || {}).some(surface => surface?.gate === 'failing')) {
     actionRequired.push({ code: 'interactive_latency_failing',
@@ -53,6 +58,10 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (backgroundQueued + checkpointPending > 5) {
     degraded.push({ code: 'background_backlog', count: backgroundQueued + checkpointPending,
       message: 'Deferred background work is accumulating.' });
+  }
+  if (Number(entityWrites.pending) > 5) {
+    degraded.push({ code: 'entity_write_backlog', count: Number(entityWrites.pending),
+      message: 'Durable entity writes are accumulating.' });
   }
 
   if (!Number(responsiveness.current_protocol_samples)) {

@@ -96,6 +96,13 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
         strict_waiters: strictWaiters, flush_running: persistence.flush_running === true,
         cycle_open_in_flight: persistence.cycle_open?.in_flight === true });
     }
+    const entityWrites = runtimePerformance.entity_writes || {};
+    const entityWritesPending = Math.max(0, Number(entityWrites.pending) || 0);
+    const entityWritesInFlight = Math.max(0, Number(entityWrites.in_flight) || 0);
+    if (entityWritesPending > 0 || entityWritesInFlight > 0) {
+      blockers.push({ kind: 'entity_write_pending', pending: entityWritesPending,
+        in_flight: entityWritesInFlight });
+    }
   }
   return { ready: blockers.length === 0, blockers };
 }
