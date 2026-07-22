@@ -5078,14 +5078,14 @@ let noraBotUserId = null;
 // null on failure — handleSlack falls back to the bare user ID.
 const slackUserNameCache = {};
 const SLACK_USER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-async function getSlackUserName(userId) {
+async function getSlackUserName(userId, { signal = undefined } = {}) {
   if (!userId) return null;
   const cached = slackUserNameCache[userId];
   if (cached && (Date.now() - cached.ts) < SLACK_USER_CACHE_TTL_MS) return cached.name;
   try {
     const r = await axios.get(`https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`, {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-      timeout: 5000
+      timeout: 5000, signal,
     });
     if (!r.data?.ok) {
       console.warn(`Slack users.info not ok for ${userId}: ${r.data?.error}`);
@@ -5096,7 +5096,7 @@ async function getSlackUserName(userId) {
     if (name) slackUserNameCache[userId] = { name, ts: Date.now() };
     return name;
   } catch (err) {
-    console.warn('Slack users.info lookup failed:', err.message);
+    if (!signal?.aborted) console.warn('Slack users.info lookup failed:', err.message);
     return null;
   }
 }
@@ -5257,13 +5257,14 @@ function extractUrls(text) {
 // SSRF guard: http/https only, no localhost/private ranges. Best-effort — returns null on
 // any failure or for non-HTML content. JS-heavy SPA pages may yield little body text; the
 // Slack unfurl (title/description) in the thread covers those.
-async function fetchUrlText(url) {
+async function fetchUrlText(url, { signal = undefined } = {}) {
   try {
     const u = new URL(url);
     if (!/^https?:$/.test(u.protocol)) return null;
     if (/^(localhost$|127\.|0\.0\.0\.0|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(u.hostname)) return null;
     const r = await axios.get(url, {
       timeout: 8000, maxRedirects: 5, responseType: 'text',
+      signal,
       maxContentLength: 6 * 1024 * 1024,
       headers: { 'User-Agent': 'NoraBot/1.0 (+https://limelightmarketing.com)', 'Accept': 'text/html,application/xhtml+xml' },
       validateStatus: s => s >= 200 && s < 400
@@ -5287,14 +5288,17 @@ async function fetchUrlText(url) {
 // including messages posted before she was mentioned, which her in-memory history misses.
 // Returns the raw Slack message array (newest-inclusive) or null on failure (e.g. missing
 // channels:history scope), in which case the caller falls back to in-memory history.
-async function fetchSlackThread(channel, threadTs) {
+async function fetchSlackThread(channel, threadTs, { signal = undefined } = {}) {
   try {
     const r = await axios.get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000, signal,
     });
     if (!r.data || !r.data.ok) { console.warn('conversations.replies not ok:', r.data && r.data.error); return null; }
     return Array.isArray(r.data.messages) ? r.data.messages : null;
-  } catch (err) { console.warn('fetchSlackThread failed:', err.message); return null; }
+  } catch (err) {
+    if (!signal?.aborted) console.warn('fetchSlackThread failed:', err.message);
+    return null;
+  }
 }
 
 // Pull the recent CHANNEL conversation (conversations.history) so a PROACTIVE interjection sees
@@ -5302,17 +5306,21 @@ async function fetchSlackThread(channel, threadTs) {
 // non-threaded channel message has no "thread," so fetchSlackThread would return just that one
 // line and Nora would be reacting with zero context. Returns the raw Slack messages in
 // chronological order (oldest→newest, ending with the trigger) or null on failure.
-async function fetchSlackChannelHistory(channel, latestTs, limit = 12) {
+async function fetchSlackChannelHistory(channel, latestTs, limit = 12,
+  { signal = undefined } = {}) {
   try {
     const params = new URLSearchParams({ channel, limit: String(limit), inclusive: 'true' });
     if (latestTs) params.set('latest', latestTs);
     const r = await axios.get(`https://slack.com/api/conversations.history?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000, signal,
     });
     if (!r.data || !r.data.ok) { console.warn('conversations.history not ok:', r.data && r.data.error); return null; }
     const msgs = Array.isArray(r.data.messages) ? r.data.messages : [];
     return msgs.slice().reverse(); // history returns newest→oldest; flip to chronological
-  } catch (err) { console.warn('fetchSlackChannelHistory failed:', err.message); return null; }
+  } catch (err) {
+    if (!signal?.aborted) console.warn('fetchSlackChannelHistory failed:', err.message);
+    return null;
+  }
 }
 
 // Landing reader for the dream's Review movement: given one of Nora's own messages (channel +
@@ -5374,7 +5382,7 @@ function scopeHintFor(err, isDM) {
 // user turn (or assistant, for Nora's own posts), with link-unfurl previews folded in so she
 // sees what a shared link was about even before we fetch the page. Consecutive same-role
 // turns are merged (the Messages API wants clean alternation at the boundaries).
-async function buildSlackThreadHistory(messages, noraUserId) {
+async function buildSlackThreadHistory(messages, noraUserId, { signal = undefined } = {}) {
   // Resolve every participant and mention concurrently behind one bounded caller budget. The old
   // per-message sequence could multiply Slack users.info latency across a busy first-contact thread.
   const userIds = new Set();
@@ -5382,8 +5390,8 @@ async function buildSlackThreadHistory(messages, noraUserId) {
     if (message?.user) userIds.add(message.user);
     for (const mention of String(message?.text || '').matchAll(/<@([A-Z0-9]+)>/g)) userIds.add(mention[1]);
   }
-  const resolvedNames = new Map(await Promise.all([...userIds].map(async userId => [userId,
-    await settleWithin(getSlackUserName(userId), 900, null, 'Slack thread participant lookup')])));
+  const resolvedNames = new Map(await Promise.all([...userIds]
+    .map(async userId => [userId, await getSlackUserName(userId, { signal })])));
   const resolveFromSnapshot = async userId => resolvedNames.get(userId) || null;
   const turns = [];
   for (const m of messages) {
@@ -7534,8 +7542,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // by NAME, not by opaque <@U123ABC> mention. Falls back to the user ID if lookup
     // fails — better something than nothing.
     const identityStartedAt = Date.now();
-    const requesterName = await settleWithin(getSlackUserName(user), 1200, null,
-      'Slack requester lookup');
+    const requesterName = await settleWithinAbortable(
+      signal => getSlackUserName(user, { signal }), 1200, null, 'Slack requester lookup');
     latencyStages.identity_ms = Date.now() - identityStartedAt;
     const userLabel = requesterName ? `${requesterName} (Slack: <@${user}>)` : `Slack user <@${user}>`;
     history.push({ role: 'user', content: `[${userLabel}]: ${text}` });
@@ -7556,13 +7564,15 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // Proactive interjection fires on a top-level channel message whose "thread" is just itself.
       // Pull the recent CHANNEL conversation instead so she grounds her chime-in in what's actually
       // being discussed around it — not a single decontextualized line.
-      threadMsgs = await settleWithin(fetchSlackChannelHistory(channel, threadTs, 12), 1800, null,
-        'Slack proactive context');
+      threadMsgs = await settleWithinAbortable(
+        signal => fetchSlackChannelHistory(channel, threadTs, 12, { signal }),
+        1800, null, 'Slack proactive context');
     } else if (isRealThread) {
       // Inside a real thread: pull the whole thread (authoritative — it includes messages posted
       // before she was mentioned AND her own threaded replies, which conversations.replies returns).
-      threadMsgs = await settleWithin(fetchSlackThread(channel, threadTs), 1800, null,
-        'Slack thread context');
+      threadMsgs = await settleWithinAbortable(
+        signal => fetchSlackThread(channel, threadTs, { signal }),
+        1800, null, 'Slack thread context');
     } else if (!isDM && firstContact) {
       // Top-level channel message, first turn of this session: bootstrap with recent channel context
       // so she isn't blind to what was just said before she was looped in. On CONTINUATION we do NOT
@@ -7571,15 +7581,17 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // under each message — so re-fetching every turn would silently drop her side of the convo and
       // she'd think she never answered. Trusting in-memory on continuation is what actually restores
       // continuity.) A 25-message window so the anchoring question survives some channel cross-talk.
-      threadMsgs = await settleWithin(fetchSlackChannelHistory(channel, threadTs, 25), 1800, null,
-        'Slack channel context');
+      threadMsgs = await settleWithinAbortable(
+        signal => fetchSlackChannelHistory(channel, threadTs, 25, { signal }),
+        1800, null, 'Slack channel context');
     }
     // Default to the accumulated in-memory history (carries her own replies across turns); only a
     // successful Slack fetch (real thread, proactive, or first-contact bootstrap) overrides it.
     let claudeMessages = history;
     if (threadMsgs && threadMsgs.length) {
-      const built = await settleWithin(buildSlackThreadHistory(threadMsgs, noraBotUserId), 1200, [],
-        'Slack thread identity enrichment');
+      const built = await settleWithinAbortable(
+        signal => buildSlackThreadHistory(threadMsgs, noraBotUserId, { signal }),
+        1200, [], 'Slack thread identity enrichment');
       if (built.length) claudeMessages = built;
     }
     latencyStages.thread_context_ms = Date.now() - threadContextStartedAt;
@@ -7621,8 +7633,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let urlBlock = '';
     const linkedContentStartedAt = Date.now();
     if (urls.length) {
-      const fetched = (await settleWithin(Promise.all(urls.map(async u => {
-        const c = await fetchUrlText(u);
+      const fetched = (await settleWithinAbortable(signal => Promise.all(urls.map(async u => {
+        const c = await fetchUrlText(u, { signal });
         return c ? `URL: ${u}\n${c}` : null;
       })), 2200, [], 'Slack linked-page enrichment')).filter(Boolean);
       if (fetched.length) {

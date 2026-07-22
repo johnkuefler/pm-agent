@@ -650,6 +650,26 @@ test('Slack uses a fast Claude path only for bounded conversational turns', asyn
   assert.equal(aborted, true);
 });
 
+test('Slack enrichment deadlines abort their losing network requests', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  assert.match(server,
+    /settleWithinAbortable\(\s*signal => getSlackUserName\(user, \{ signal \}\), 1200/);
+  assert.match(server,
+    /signal => fetchSlackThread\(channel, threadTs, \{ signal \}\)/);
+  assert.match(server,
+    /signal => fetchSlackChannelHistory\(channel, threadTs, 25, \{ signal \}\)/);
+  assert.match(server,
+    /signal => buildSlackThreadHistory\(threadMsgs, noraBotUserId, \{ signal \}\)/);
+  assert.match(server,
+    /fetchUrlText\(u, \{ signal \}\)/);
+  assert.match(server,
+    /users\.info[\s\S]{0,300}timeout: 5000, signal/);
+  assert.match(server,
+    /conversations\.replies[\s\S]{0,350}timeout: 6000, signal/);
+  assert.match(server,
+    /conversations\.history[\s\S]{0,450}timeout: 6000, signal/);
+});
+
 test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {
   performance.resetPriorityGateForTest();
   const foreground = performance.beginInteractive('realtime');
