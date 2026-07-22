@@ -109,6 +109,7 @@ const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict'
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
+const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const app = express();
 const server = http.createServer(app);
 const runtimeActivity = createRuntimeActivityStream();
@@ -319,6 +320,7 @@ const intelligence = createIntelligenceStore({
 // live system running if Postgres ever hiccups.
 let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
+let _persistedTaskState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
@@ -738,7 +740,15 @@ function loadTasks() {
 }
 
 function saveTasks(tasks) {
-  if (_dbReady) { _cache.tasks = tasks; return _writeThrough('tasks', () => db.replaceAllTasks(tasks)); }
+  if (_dbReady) {
+    _cache.tasks = tasks;
+    const snapshot = JSON.parse(JSON.stringify(tasks));
+    return _writeThrough('tasks', async () => {
+      const delta = diffTaskPersistence(_persistedTaskState, snapshot);
+      await db.applyTaskChanges(delta);
+      _persistedTaskState = captureTaskPersistence(snapshot);
+    });
+  }
   fs.writeFileSync(getTasksPath(), JSON.stringify(tasks, null, 2));
 }
 
@@ -1611,6 +1621,7 @@ async function initPersistence() {
     // Hydrate every in-memory cache from Postgres (now the source of truth).
     _cache.memory = await db.loadAllMemory();
     _cache.tasks = await db.loadAllTasks();
+    _persistedTaskState = captureTaskPersistence(_cache.tasks);
     _cache.projects = await db.loadAllProjects();
     _cache.markers = await db.loadAllMarkers();
     _cache.interactions = await db.loadAllInteractions();

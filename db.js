@@ -642,6 +642,36 @@ const replaceAllInteractions = makeReplaceAll('interactions', (x, i) => {
   };
 });
 
+async function applyTaskChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
+  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    for (const task of upserts) {
+      const createdMs = new Date(task.created).getTime();
+      const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
+      await client.query(
+        `INSERT INTO ${DB_SCHEMA}.tasks (id, data, status, created, scheduled_for, ord)
+         VALUES ($1,$2,$3,$4,$5,$6)
+         ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, status=EXCLUDED.status,
+           created=EXCLUDED.created, scheduled_for=EXCLUDED.scheduled_for`,
+        [task.id, task, task.status || null, task.created || null, task.scheduled_for || null, ord]
+      );
+    }
+    if (deletedIds.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.tasks WHERE id = ANY($1::text[])`, [deletedIds]);
+    }
+    await client.query('COMMIT');
+    return { upserted: upserts.length, deleted: deletedIds.length };
+  } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw e;
+  } finally {
+    client.release();
+  }
+}
+
 // The live Slack path appends one interaction at a time. Persist that append directly instead
 // of replaying the entire bounded review ledger after every human-facing response.
 async function appendInteraction(item, deletedIds = []) {
@@ -908,7 +938,7 @@ module.exports = {
   EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
   loadAllMemory, replaceAllMemory, applyMemoryChanges, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
-  loadAllTasks, replaceAllTasks,
+  loadAllTasks, replaceAllTasks, applyTaskChanges,
   loadAllProjects, replaceAllProjects, upsertProject,
   loadAllInteractions, replaceAllInteractions, appendInteraction,
   loadAllDreams, replaceAllDreams,
