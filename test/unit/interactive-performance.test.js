@@ -190,6 +190,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'production must handle SIGTERM through the graceful shutdown path');
   assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,
     'dashboard warmup must populate the same cache used by live reads');
+  assert.match(intelligenceRoutesSource, /app\.get\('\/intelligence'[\s\S]*workerCachedJson[\s\S]*dashboardIntelligenceOverview/,
+    'the legacy intelligence overview must not replay the dashboard synchronously on the event loop');
   assert.match(intelligenceRoutesSource, /warmExpectationSummary: \(\) => refreshWorkerSnapshot\('expectations:all:all:summary'/,
     'expectation warmup must populate the same cache used by hourly preflight reads');
   assert.match(intelligenceRoutesSource, /worker-stale-coalesced/,

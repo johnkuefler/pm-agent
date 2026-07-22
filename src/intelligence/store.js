@@ -12771,6 +12771,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  function dashboardIntelligenceOverview() {
+    const overview = dashboardIntelligenceSummary().overview;
+    return { ...overview, initiative: overview.initiative };
+  }
+
   function mindChangePayload(item = {}) {
     return {
       id: item.id, prior_belief: item.prior_belief, prior_confidence: item.prior_confidence,
@@ -28246,7 +28251,8 @@ ${episodes.map(item => {
     // State is JSON-like, but native structured clone avoids running a second full JSON encoder on
     // Nora's foreground thread when background research workers take an isolated snapshot.
     init, snapshot: () => structuredClone(state), snapshotRevision, computeBackgroundProjection,
-    noteExternalConfigurationChange, dashboardIntelligenceSummary, liveActivityContextSnapshot,
+    noteExternalConfigurationChange, dashboardIntelligenceSummary, dashboardIntelligenceOverview,
+    liveActivityContextSnapshot,
     persist, persistStrict, persistenceDiagnostics, lifecyclePerformanceSnapshot, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, observeRelationship,
     observePerspective, updatePerspective, resolvePerspective, perspectiveReviewQueue,

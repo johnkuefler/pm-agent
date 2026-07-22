@@ -173,6 +173,10 @@ test('dashboard and experience projections stay off the foreground event loop', 
   ]);
   assert.equal(foregroundWon, true);
   assert.ok((await dashboard).value.overview);
+  const overview = await store.computeBackgroundProjection('dashboardIntelligenceOverview', {
+    __context: { dreams: [], wants: [], interactions: [] },
+  });
+  assert.deepEqual(overview.value, (await dashboard).value.overview);
   const experience = await store.computeBackgroundProjection('experienceStreamSnapshot', { limit: 6 });
   assert.deepEqual(experience.value.moments, []);
   const expectations = await store.computeBackgroundProjection('expectationForecastRuntimeSnapshot', {

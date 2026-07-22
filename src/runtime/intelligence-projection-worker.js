@@ -10,6 +10,7 @@ const ALLOWED_METHODS = new Set([
   'behavioralSelfForecastPriorSnapshot',
   'cycleSelfForecastRuntimePreparationSnapshot',
   'dashboardIntelligenceSummary',
+  'dashboardIntelligenceOverview',
   'experienceStreamSnapshot',
   'expectationForecastRuntimeSnapshot',
   'stateFootprintSnapshot',

@@ -223,9 +223,14 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     });
   });
 
-  app.get('/intelligence', requireAuth, (req, res) => {
-    const overview = store.dashboardIntelligenceSummary().overview;
-    res.json({ ...overview, initiative: overview.initiative });
+  app.get('/intelligence', requireAuth, async (_req, res) => {
+    try {
+      await workerCachedJson(res, 'intelligence-overview', 'dashboardIntelligenceOverview', {
+        __context: { dreams: getDreams(), wants: getWants(), interactions: getInteractions() },
+      }, { ttlMs: 15000, staleWhileRevalidate: process.env.NORA_TEST_MODE !== '1' });
+    } catch (error) {
+      res.status(503).json({ error: 'intelligence overview is warming', detail: error.message });
+    }
   });
 
   app.get('/commitments', requireAuth, (req, res) => {
