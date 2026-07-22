@@ -28,6 +28,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
   const realtimeTransport = snapshot.realtime_transport || {};
+  const deferredJobs = snapshot.deferred_jobs || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
@@ -38,6 +39,19 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (Number(entityWrites.current_errors) > 0) {
     actionRequired.push({ code: 'entity_persistence_failure',
       message: 'At least one durable entity write lane has an unresolved failure.' });
+  }
+  if (Number(deferredJobs.consecutive_worker_failures) >= 3 || Number(deferredJobs.pending_finalizations) > 0) {
+    actionRequired.push({ code: 'deferred_job_worker_failure',
+      count: Number(deferredJobs.consecutive_worker_failures) || Number(deferredJobs.pending_finalizations),
+      message: 'The deferred connector worker cannot durably advance its queue.' });
+  } else if (Number(deferredJobs.consecutive_worker_failures) > 0) {
+    degraded.push({ code: 'deferred_job_worker_recovering',
+      count: Number(deferredJobs.consecutive_worker_failures),
+      message: 'The deferred connector worker is backing off after a transient failure.' });
+  }
+  if (Number(deferredJobs.memory_queue?.queued) > 10) {
+    degraded.push({ code: 'deferred_job_memory_backlog', count: Number(deferredJobs.memory_queue.queued),
+      message: 'Deferred connector work is accumulating in the bounded memory fallback.' });
   }
   if (Object.values(responsiveness.surfaces || {}).some(surface => surface?.gate === 'failing')) {
     actionRequired.push({ code: 'interactive_latency_failing',

@@ -107,6 +107,7 @@ const { createRuntimeActivityStream } = require('./src/runtime/activity-stream')
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
 const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-liveness');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
+const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
@@ -516,6 +517,8 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
     interactive_priority: interactivePerformance.prioritySnapshot(),
     background_work: backgroundWorkSnapshot(),
+    deferred_jobs: _deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
+      pendingFinalizations: _pendingJobFinalizations.size }),
     entity_writes: _writeThroughQueue.snapshot(),
     realtime_transport: websocketLiveness.snapshot(),
   };
@@ -6332,7 +6335,34 @@ function buildNoraQueueTaskTool({ channel = '', threadTs = '', user = '', now = 
 }
 
 const DEFERRED_JOB_TIMEOUT_MS = 8 * 60 * 1000;
+const DEFERRED_JOB_POLL_MS = 3000;
+const MAX_MEMORY_JOB_PENDING = 100;
+const MAX_MEMORY_JOB_RETAINED = 250;
 const _memJobs = []; // in-memory fallback when Postgres isn't active (jobs don't survive restart)
+const _pendingJobFinalizations = new Map();
+const _deferredJobHealth = createDeferredJobHealth({ pollMs: DEFERRED_JOB_POLL_MS });
+
+function pruneMemoryJobs() {
+  while (_memJobs.length > MAX_MEMORY_JOB_RETAINED) {
+    const terminal = _memJobs.findIndex(job => ['done', 'failed'].includes(job?.status));
+    if (terminal < 0) break;
+    _memJobs.splice(terminal, 1);
+  }
+}
+
+function enqueueMemoryJob(job) {
+  pruneMemoryJobs();
+  const active = _memJobs.filter(item => ['queued', 'running'].includes(item?.status)).length;
+  if (active >= MAX_MEMORY_JOB_PENDING) {
+    _deferredJobHealth.fallbackRejected();
+    const error = new Error(`deferred connector queue is at its ${MAX_MEMORY_JOB_PENDING}-job safety limit`);
+    error.code = 'deferred_job_queue_full';
+    throw error;
+  }
+  _memJobs.push({ ...job, status: 'queued', _queued_at: Date.now() });
+  _deferredJobHealth.fallbackEnqueued();
+  pruneMemoryJobs();
+}
 
 function resolveJohnSlackId() {
   for (const m of loadMemory()) {
@@ -6382,8 +6412,8 @@ function safelyCompleteToolExecution(executionId, status, resultOrError) {
 async function enqueueDeferredJob({ connectionId, toolName, args, origin, label }) {
   const id = `job-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
   const job = { id, kind: (origin && origin.kind) || 'slack', connection_id: connectionId, tool_name: toolName, label: label || toolName, args: args || {}, origin: origin || {} };
-  if (_dbReady) { try { await db.enqueueJob(job); } catch (e) { console.warn('enqueueJob failed, using memory:', e.message); _memJobs.push({ ...job, status: 'queued' }); } }
-  else _memJobs.push({ ...job, status: 'queued' });
+  if (_dbReady) { try { await db.enqueueJob(job); } catch (e) { console.warn('enqueueJob failed, using bounded memory fallback:', e.message); enqueueMemoryJob(job); } }
+  else enqueueMemoryJob(job);
   console.log(`🧵 Deferred job ${id} queued: ${toolName} (origin ${job.kind})`);
   return { id };
 }
@@ -6505,7 +6535,7 @@ async function processNextJob() {
   let job = null;
   if (_dbReady) {
     if (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed()) return;
-    try { job = await db.claimNextQueuedJob(); } catch (e) { console.warn('claimNextQueuedJob:', e.message); return; }
+    job = await db.claimNextQueuedJob();
   }
   else { const idx = _memJobs.findIndex(j => j.status === 'queued'); if (idx >= 0) { job = _memJobs[idx]; job.status = 'running'; } }
   if (!job) return;
@@ -6513,24 +6543,51 @@ async function processNextJob() {
     kind: 'deferred_tool_job', label: 'Running a deferred connector task',
     detail: 'Executing work that was intentionally moved out of a live Slack or meeting response.',
     source: 'job-worker', meta: { step: job.tool_name || 'connector_tool', surface: job.kind || 'background' } });
+  let result;
   try {
-    const result = await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
-    if (_dbReady) await db.finishJob(job.id, { status: 'done', result }); else job.status = 'done';
-    safelyCompleteToolExecution(job.origin?.action_execution_id, 'succeeded', result);
-    await deliverJobResult(job, { ok: true, result });
-    runtimeActivity.finish(jobActivity.id, { status: 'completed',
-      detail: 'The deferred connector task completed and its result was routed back.',
-      outcome: 'Delivery attempted on the originating surface.' });
-    console.log(`✅ Deferred job ${job.id} done: ${job.tool_name}`);
+    result = await mcpManager.callTool(job.connection_id, job.tool_name, job.args || {}, { timeout: DEFERRED_JOB_TIMEOUT_MS });
   } catch (e) {
     const error = e.response?.data?.message || e.message || 'tool failed';
-    if (_dbReady) await db.finishJob(job.id, { status: 'failed', error }); else job.status = 'failed';
+    if (_dbReady) {
+      try { await db.finishJob(job.id, { status: 'failed', error }); }
+      catch (finishError) {
+        _pendingJobFinalizations.set(job.id, { status: 'failed', error });
+        console.warn(`Deferred job ${job.id} failure outcome is pending persistence: ${finishError.message}`);
+      }
+    } else { job.status = 'failed'; pruneMemoryJobs(); }
     safelyCompleteToolExecution(job.origin?.action_execution_id, 'failed', error);
-    await deliverJobResult(job, { ok: false, error }).catch(() => {});
+    await deliverJobResult(job, { ok: false, error }).catch(deliveryError =>
+      console.warn(`Deferred job ${job.id} failure notice could not be delivered: ${deliveryError.message}`));
     runtimeActivity.finish(jobActivity.id, { status: 'failed',
       detail: 'The deferred connector task failed without blocking the live response path.',
       outcome: 'Failure notice routed to the originating surface.' });
+    _deferredJobHealth.jobFailed();
     console.warn(`❌ Deferred job ${job.id} failed: ${error}`);
+    return;
+  }
+
+  if (_dbReady) {
+    try { await db.finishJob(job.id, { status: 'done', result }); }
+    catch (error) {
+      _pendingJobFinalizations.set(job.id, { status: 'done', result });
+      console.warn(`Deferred job ${job.id} completion is pending persistence: ${error.message}`);
+    }
+  } else { job.status = 'done'; pruneMemoryJobs(); }
+  safelyCompleteToolExecution(job.origin?.action_execution_id, 'succeeded', result);
+  await deliverJobResult(job, { ok: true, result }).catch(error =>
+    console.warn(`Deferred job ${job.id} result could not be delivered: ${error.message}`));
+  runtimeActivity.finish(jobActivity.id, { status: 'completed',
+    detail: 'The deferred connector task completed and its result was routed back.',
+    outcome: 'Delivery attempted on the originating surface.' });
+  _deferredJobHealth.jobCompleted();
+  console.log(`✅ Deferred job ${job.id} done: ${job.tool_name}`);
+}
+
+async function flushPendingJobFinalizations() {
+  if (!_dbReady || !_pendingJobFinalizations.size) return;
+  for (const [jobId, outcome] of _pendingJobFinalizations) {
+    await db.finishJob(jobId, outcome);
+    _pendingJobFinalizations.delete(jobId);
   }
 }
 
@@ -6538,13 +6595,29 @@ let _jobWorkerBusy = false;
 async function jobWorkerTick() {
   if (_jobWorkerBusy) return; // serial: one job at a time, no overlap
   _jobWorkerBusy = true;
-  try { await processNextJob(); } finally { _jobWorkerBusy = false; }
+  _deferredJobHealth.pollStarted();
+  try {
+    await flushPendingJobFinalizations();
+    await processNextJob();
+    _deferredJobHealth.workerSucceeded();
+  } catch (error) {
+    _deferredJobHealth.workerFailed(error);
+    throw error;
+  } finally { _jobWorkerBusy = false; }
 }
 async function startJobWorker() {
   if (_dbReady) { try { const n = await db.requeueRunningJobs(); if (n) console.log(`🧵 Requeued ${n} orphaned job(s) after restart`); } catch (e) { console.warn('requeueRunningJobs:', e.message); } }
-  const iv = setInterval(() => { jobWorkerTick().catch(() => {}); }, 3000);
-  iv.unref?.();
-  _runtimeIntervals.push(iv);
+  let timer = null;
+  const schedule = () => {
+    timer = setTimeout(async () => {
+      try { await jobWorkerTick(); }
+      catch (error) { console.warn(`Deferred job worker paused for bounded backoff: ${error.message}`); }
+      schedule();
+    }, _deferredJobHealth.schedule());
+    timer.unref?.();
+  };
+  schedule();
+  _runtimeIntervals.push({ close: () => { if (timer) clearTimeout(timer); } });
 }
 
 // Run a Claude request that may use client-side tools, executing them and looping until the
@@ -14255,7 +14328,10 @@ async function start(options = {}) {
 async function stop() {
   setServiceReadiness('draining');
   _somaNerves.runtimeReady = false;
-  for (const timer of _runtimeIntervals.splice(0)) clearInterval(timer);
+  for (const timer of _runtimeIntervals.splice(0)) {
+    if (typeof timer?.close === 'function') timer.close();
+    else clearInterval(timer);
+  }
   if (_embedTimer) { clearInterval(_embedTimer); _embedTimer = null; }
   const closeServer = server.listening
     ? new Promise(resolve => server.close(resolve)) : Promise.resolve();

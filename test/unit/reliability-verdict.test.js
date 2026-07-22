@@ -18,6 +18,8 @@ function healthySnapshot() {
     interactive_priority: { background_budget_cancellations: 0 },
     background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
+    deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
+      memory_queue: { queued: 0 } },
     realtime_transport: { recent_stale: [] },
   };
 }
@@ -91,4 +93,18 @@ test('reliability escalates repeated half-open meeting sockets', () => {
   const verdict = assessRuntimeReliability(snapshot, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'repeated_realtime_transport_stalls');
+});
+
+test('deferred job persistence failures require action while one transient failure degrades', () => {
+  const transient = healthySnapshot();
+  transient.deferred_jobs.consecutive_worker_failures = 1;
+  const recovering = assessRuntimeReliability(transient, { now });
+  assert.equal(recovering.status, 'degraded');
+  assert.equal(recovering.degraded[0].code, 'deferred_job_worker_recovering');
+
+  const stuck = healthySnapshot();
+  stuck.deferred_jobs.pending_finalizations = 1;
+  const failed = assessRuntimeReliability(stuck, { now });
+  assert.equal(failed.status, 'action_required');
+  assert.equal(failed.action_required[0].code, 'deferred_job_worker_failure');
 });
