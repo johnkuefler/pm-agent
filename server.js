@@ -112,6 +112,8 @@ const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runti
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
   require('./src/runtime/slack-thread-delta');
+const { captureInteractionPersistence, diffInteractionPersistence } =
+  require('./src/runtime/interaction-delta');
 const { planTranscriptEpisodeBatch } = require('./src/runtime/transcript-episode-batch');
 const app = express();
 const server = http.createServer(app);
@@ -325,6 +327,7 @@ let _dbReady = false;
 const _cache = {};   // entity → in-memory copy backing sync reads
 let _persistedTaskState = new Map();
 let _persistedSlackThreadState = new Map();
+let _persistedInteractionState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
@@ -1636,6 +1639,7 @@ async function initPersistence() {
     _cache.projects = await db.loadAllProjects();
     _cache.markers = await db.loadAllMarkers();
     _cache.interactions = await db.loadAllInteractions();
+    _persistedInteractionState = captureInteractionPersistence(_cache.interactions);
     _cache.dreams = await db.loadAllDreams();
     _cache.mcp = await db.loadAllMcp();
     _cache.calendar = await db.getState('calendar');
@@ -10084,7 +10088,15 @@ function loadInteractions() {
   catch { return []; }
 }
 function saveInteractions(items) {
-  if (_dbReady) { _cache.interactions = items; _writeThrough('interactions', () => db.replaceAllInteractions(items)); return; }
+  if (_dbReady) {
+    _cache.interactions = items;
+    const snapshot = JSON.parse(JSON.stringify(items));
+    return _writeThrough('interactions', async () => {
+      const delta = diffInteractionPersistence(_persistedInteractionState, snapshot);
+      await db.applyInteractionChanges(delta);
+      _persistedInteractionState = captureInteractionPersistence(snapshot);
+    });
+  }
   try { fs.writeFileSync(getInteractionsPath(), JSON.stringify(items, null, 2)); }
   catch (err) { console.error('Failed to persist interactions:', err.message); }
 }
@@ -10093,8 +10105,12 @@ function persistInteractionAppend(items, interaction, deletedIds = []) {
   if (_dbReady) {
     _cache.interactions = items;
     const snapshot = JSON.parse(JSON.stringify(interaction));
+    const ledgerSnapshot = JSON.parse(JSON.stringify(items));
     const removals = deletedIds.slice();
-    _writeThrough('interactions', () => db.appendInteraction(snapshot, removals));
+    _writeThrough('interactions', async () => {
+      await db.appendInteraction(snapshot, removals);
+      _persistedInteractionState = captureInteractionPersistence(ledgerSnapshot);
+    });
     return;
   }
   saveInteractions(items);

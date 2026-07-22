@@ -704,6 +704,38 @@ async function appendInteraction(item, deletedIds = []) {
   }
 }
 
+async function applyInteractionChanges({ upserts = [], deleted_ids: deletedIds = [] } = {}) {
+  if (!upserts.length && !deletedIds.length) return { upserted: 0, deleted: 0 };
+  const client = await getPool().connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL search_path TO ${DB_SCHEMA}, public`);
+    for (const interaction of upserts) {
+      if (!interaction?.id) continue;
+      const createdMs = new Date(interaction.created).getTime();
+      const ord = Number.isFinite(createdMs) ? createdMs : Date.now();
+      await client.query(
+        `INSERT INTO ${DB_SCHEMA}.interactions (id, data, created, reviewed, ord)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (id) DO UPDATE SET data=EXCLUDED.data, created=EXCLUDED.created,
+           reviewed=EXCLUDED.reviewed`,
+        [interaction.id, interaction, interaction.created || null, !!interaction.reviewed, ord]
+      );
+    }
+    if (deletedIds.length) {
+      await client.query(`DELETE FROM ${DB_SCHEMA}.interactions WHERE id = ANY($1::text[])`,
+        [deletedIds]);
+    }
+    await client.query('COMMIT');
+    return { upserted: upserts.length, deleted: deletedIds.length };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function upsertProject(project) {
   if (!project?.name) throw new Error('project upsert requires a name');
   const snapshot = JSON.parse(JSON.stringify(project));
@@ -972,7 +1004,7 @@ module.exports = {
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
   loadAllTasks, replaceAllTasks, applyTaskChanges,
   loadAllProjects, replaceAllProjects, upsertProject,
-  loadAllInteractions, replaceAllInteractions, appendInteraction,
+  loadAllInteractions, replaceAllInteractions, appendInteraction, applyInteractionChanges,
   loadAllDreams, replaceAllDreams,
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers, applyMarkerChanges,

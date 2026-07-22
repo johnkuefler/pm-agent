@@ -582,6 +582,17 @@ test('Slack interaction logging appends one durable row instead of rewriting the
   assert.match(server, /db\.appendInteraction\(snapshot, removals\)/);
 });
 
+test('interaction reviews update only changed durable rows', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('function saveInteractions(items)');
+  const end = server.indexOf('\nfunction persistInteractionAppend', start);
+  assert.ok(start >= 0 && end > start);
+  const implementation = server.slice(start, end);
+  assert.match(implementation, /diffInteractionPersistence\(_persistedInteractionState, snapshot\)/);
+  assert.match(implementation, /db\.applyInteractionChanges\(delta\)/);
+  assert.doesNotMatch(implementation, /replaceAllInteractions/);
+});
+
 test('project-scoped memory activity upserts one project instead of rewriting the project ledger', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const start = server.indexOf('function bumpProjectActivity(name)');
