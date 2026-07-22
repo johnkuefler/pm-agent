@@ -4981,6 +4981,26 @@ async function settleWithinAbortable(operation, timeoutMs, fallback, label = 'op
   }
 }
 
+async function rejectWithinAbortable(operation, timeoutMs, label = 'operation') {
+  const controller = new AbortController();
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${label} exceeded ${timeoutMs}ms deadline`);
+      error.code = 'interactive_deadline_exceeded';
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      timeout,
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
 async function readExactSlackEvidence(ref, { get = axios.get,
   resolveUserName = getSlackUserName } = {}) {
   const parsed = slackEvidence.parseCanonicalMessageRef(ref);
@@ -6173,12 +6193,16 @@ async function postSlackMessage(target, text, threadTs) {
   if (!target || !text) return false;
   let channelId = target;
   if (String(target).startsWith('U')) {
-    const dm = await axios.post('https://slack.com/api/conversations.open', { users: target }, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } }).catch(() => null);
+    const dm = await axios.post('https://slack.com/api/conversations.open', { users: target }, {
+      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
+    }).catch(() => null);
     channelId = dm?.data?.channel?.id || target;
   }
   const payload = { channel: channelId, text };
   if (threadTs) payload.thread_ts = threadTs;
-  const r = await axios.post('https://slack.com/api/chat.postMessage', payload, { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` } }).catch(e => ({ data: { ok: false, error: e.message } }));
+  const r = await axios.post('https://slack.com/api/chat.postMessage', payload, {
+    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
+  }).catch(e => ({ data: { ok: false, error: e.message } }));
   return !!(r.data && r.data.ok);
 }
 
@@ -6326,12 +6350,36 @@ async function startJobWorker() {
 async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts = {}) {
   const URL = 'https://api.anthropic.com/v1/messages';
   const post = opts.post || axios.post;
+  const startedAt = Date.now();
+  const deadlineMs = Number.isFinite(Number(opts.deadlineMs))
+    ? Math.max(1, Number(opts.deadlineMs)) : null;
+  const providerTimeoutMs = Math.max(1000, Number(opts.providerTimeoutMs) || 30000);
+  const remaining = () => deadlineMs == null ? Infinity : deadlineMs - (Date.now() - startedAt);
+  const withinDeadline = async (label, maximumMs, operation) => {
+    const left = remaining();
+    if (left <= 0) {
+      const error = new Error(`${label} could not start because the interactive deadline elapsed`);
+      error.code = 'interactive_deadline_exceeded';
+      throw error;
+    }
+    const timeoutMs = Math.max(1, Math.min(maximumMs, left));
+    return rejectWithinAbortable(operation, timeoutMs, label);
+  };
+  const callProvider = body => withinDeadline('Claude response', providerTimeoutMs,
+    signal => post(URL, body, { ...headers, signal,
+      timeout: Math.max(1, Math.min(providerTimeoutMs, remaining())) }));
   const providerTrace = [];
   const capture = response => {
     providerTrace.push(providerReasoningRegulation.responseTraceReceipt(response.data || {}));
     return response;
   };
-  let response = capture(await post(URL, reqBody, headers));
+  const deadlineResponse = () => ({ data: { content: [], stop_reason: 'interactive_deadline' } });
+  let response;
+  try { response = capture(await callProvider(reqBody)); }
+  catch (error) {
+    if (error.code !== 'interactive_deadline_exceeded') throw error;
+    response = deadlineResponse();
+  }
   let iters = 0;
   const firedTools = []; // client-side tools that actually executed this turn (for downstream dedup)
   const actionExecutionIds = [];
@@ -6344,7 +6392,11 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     if (sr === 'pause_turn') {
       iters++;
       reqBody.messages.push({ role: 'assistant', content: response.data.content });
-      response = capture(await post(URL, reqBody, headers));
+      try { response = capture(await callProvider(reqBody)); }
+      catch (error) {
+        if (error.code !== 'interactive_deadline_exceeded') throw error;
+        break;
+      }
       continue;
     }
     if (sr !== 'tool_use') break;
@@ -6393,6 +6445,8 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       try {
         const exec = executors[tu.name];
         if (!exec) throw new Error(`unknown tool ${tu.name}`);
+        // Tool writes are allowed to finish under their connector's own timeout. Racing a write
+        // would report failure while an uncancellable side effect might still commit later.
         const result = await exec(tu.input || {});
         safelyCompleteToolExecution(execution?.id, 'succeeded', result);
         content = JSON.stringify(result);
@@ -6410,10 +6464,14 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // an empty turn (which would post a blank Slack/chat message). Results are already provided.
       const wrap = { ...reqBody }; delete wrap.tools; delete wrap.tool_choice;
       wrap.messages = reqBody.messages.concat([{ role: 'user', content: 'Tool time is exhausted. Give a useful final answer now using the results already returned. If an action did not complete, say what failed and what remains; do not return empty and do not ask the user to repeat the request.' }]);
-      try { response = capture(await post(URL, wrap, headers)); } catch { /* keep last response */ }
+      try { response = capture(await callProvider(wrap)); } catch { /* keep last response */ }
       break;
     }
-    response = capture(await post(URL, reqBody, headers));
+    try { response = capture(await callProvider(reqBody)); }
+    catch (error) {
+      if (error.code !== 'interactive_deadline_exceeded') throw error;
+      break;
+    }
   }
   return { response, firedTools, actionExecutionIds, providerTrace };
 }
@@ -7252,6 +7310,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   const latencyStages = { queue_ms: handlerStartedAt - interactionStartedAt };
   let providerStartedAt = null;
   let providerFinishedAt = null;
+  let firstDeliveryRecorded = false;
+  let slackLatencyTrace = null;
+  let earlyStatusTimer = null;
+  let earlyStatusPromise = null;
   let endogenousAssignmentForFailure = null;
   let reasoningRegulationAssignmentForFailure = null;
   let reasoningSelfRegulationAssignmentForFailure = null;
@@ -7410,6 +7472,22 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const isDirect = mode !== 'proactive';
     const financialApproved = isFinancialApproved(user);
     const attachLiveTools = conversationPolicy.attachLiveTools;
+    if (attachLiveTools && isDirect) {
+      const delayMs = Math.max(0, 4500 - (Date.now() - interactionStartedAt));
+      earlyStatusTimer = setTimeout(() => {
+        earlyStatusPromise = (async () => {
+          const started = Date.now();
+          const posted = await postSlackMessage(channel, 'on it — checking the live details now.', threadTs);
+          if (!posted) return;
+          firstDeliveryRecorded = true;
+          latencyStages.delivery_ms = Date.now() - started;
+          slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+            stages: { ...latencyStages, early_progress: Date.now() - interactionStartedAt },
+            promptChars: null, interactionId: turnRef, trigger: text });
+        })().catch(error => console.warn('Slack early progress delivery failed:', error.message));
+      }, delayMs);
+      earlyStatusTimer.unref?.();
+    }
     const affordanceStartedAt = Date.now();
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
@@ -7631,7 +7709,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         const submissions = {};
         for (const binding of prepared.forecast_order) {
           const { prompt_commitment: promptCommitment, ...forecastBody } = prepared.requests[binding];
-          const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages', forecastBody, anthropicHeaders);
+          const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages', forecastBody,
+            { ...anthropicHeaders, timeout: 8000 });
           const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
             .map(block => block.text).join(' ').trim();
           const forecast = reasoningSelfRegulation.parseForecast(forecastText);
@@ -7669,7 +7748,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           task_prompt: text, conversation_snapshot: claudeMessages.slice(-8), tool_definitions: toolDefs,
         });
         const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages',
-          prepared.request, anthropicHeaders);
+          prepared.request, { ...anthropicHeaders, timeout: 8000 });
         const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
           .map(block => block.text).join(' ').trim();
         const forecast = behavioralSelfProfileForecast.parseForecast(forecastText);
@@ -7699,7 +7778,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 4, {
         deferredMeta: mcpBindings.meta,
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
-        origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user }
+        origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
+        deadlineMs: attachLiveTools ? 45000
+          : Math.max(1, 7000 - (Date.now() - interactionStartedAt)),
+        providerTimeoutMs: attachLiveTools ? 20000 : 7000,
       }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
@@ -7721,9 +7803,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         delete reqBody.tools;
         // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
         reqBody.messages = claudeMessages.slice();
-        response = await axios.post('https://api.anthropic.com/v1/messages', reqBody, anthropicHeaders);
+        response = await rejectWithinAbortable(signal => axios.post(
+          'https://api.anthropic.com/v1/messages', reqBody,
+          { ...anthropicHeaders, signal, timeout: 12000 }), 12000, 'Slack no-tools retry');
       } else { throw err; }
     }
+    if (earlyStatusTimer) clearTimeout(earlyStatusTimer);
+    if (earlyStatusPromise) await earlyStatusPromise;
     providerFinishedAt = Date.now();
     latencyStages.provider_ms = providerFinishedAt - providerStartedAt;
 
@@ -7985,7 +8071,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     // Post reply to Slack (first segment anchors the interaction log)
     let postRes = null;
-    let slackLatencyTrace = null;
     let allSegmentsPosted = segments.length > 0;
     const deliveryStartedAt = Date.now();
     try {
@@ -7996,11 +8081,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           text: segments[i],
           thread_ts: threadTs
         }, {
-          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
         });
         if (!postRes) postRes = res;
         allSegmentsPosted = allSegmentsPosted && res?.data?.ok === true;
-        if (i === 0 && res?.data?.ok === true) {
+        if (i === 0 && res?.data?.ok === true && !firstDeliveryRecorded) {
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
           slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
@@ -8159,6 +8244,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       console.log('⏸️ Skipping extraction — Nora is asking clarifying questions');
     }
   } catch (err) {
+    if (earlyStatusTimer) clearTimeout(earlyStatusTimer);
+    if (earlyStatusPromise) await earlyStatusPromise;
     console.error('Slack handler error:', err.response?.data || err.message);
     if (endogenousAssignmentForFailure?.intervention === 'endogenous_attention_selection') {
       try { intelligence.recordEndogenousAttentionResponse(endogenousAssignmentForFailure.assignment_id, {
@@ -8190,7 +8277,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         text: "Sorry, hit an error processing that. Check the logs.",
         thread_ts: threadTs
       }, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
       });
     } catch {}
   }

@@ -63,3 +63,33 @@ test('tool loop caps varied discovery calls by tool name', async () => {
   }, 4, { toolCallLimits: { find: 2 }, post: async () => ({ data: responses.shift() }) });
   assert.equal(calls, 2);
 });
+
+test('tool loop actively bounds a stalled provider and returns a terminal fallback shape', async () => {
+  const started = Date.now();
+  const result = await __test.runClaudeToolLoop({ messages: [] }, {}, {}, 1, {
+    deadlineMs: 15,
+    providerTimeoutMs: 1000,
+    post: async () => new Promise(() => {}),
+  });
+  assert.equal(result.response.data.stop_reason, 'interactive_deadline');
+  assert.deepEqual(result.response.data.content, []);
+  assert.ok(Date.now() - started < 250);
+});
+
+test('tool loop preserves completed tool evidence when a follow-up provider call times out', async () => {
+  let calls = 0;
+  const result = await __test.runClaudeToolLoop({ messages: [], tools: [{ name: 'lookup' }] }, {}, {
+    lookup: async () => ({ found: true }),
+  }, 2, {
+    deadlineMs: 20,
+    providerTimeoutMs: 1000,
+    post: async () => {
+      calls += 1;
+      if (calls === 1) return { data: { stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: 'bounded-tool', name: 'lookup', input: {} }] } };
+      return new Promise(() => {});
+    },
+  });
+  assert.deepEqual(result.firedTools, ['lookup']);
+  assert.equal(result.response.data.stop_reason, 'tool_use');
+});
