@@ -175,6 +175,15 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'realtime'/);
   assert.match(server, /settleWithinAbortable\(\s*signal => retrieveSemanticMemories\(convText, 8, \{ signal \}\), 900/,
     'optional semantic recall must be aborted when it loses to the live reply path');
+  const dbSource = fs.readFileSync(path.join(__dirname, '..', '..', 'db.js'), 'utf8');
+  assert.match(server, /excludeSources: \['opinion', 'learning'\], signal, interactive: true/,
+    'live semantic recall must use its isolated fast-fail database lane');
+  assert.match(dbSource, /connectionTimeoutMillis: DB_INTERACTIVE_TIMEOUT_MS/,
+    'interactive database connection acquisition must have its own short deadline');
+  assert.match(dbSource, /query_timeout: DB_INTERACTIVE_TIMEOUT_MS/,
+    'interactive database queries must have their own short deadline');
+  assert.match(dbSource, /max: 2/,
+    'optional live recall must not consume the background database pool');
   assert.match(server, /Slack thread context'\)/,
     'optional Slack thread context must lose quickly to the live reply path');
   assert.match(server, /Slack linked-page enrichment'\)/,

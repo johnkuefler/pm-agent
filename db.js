@@ -24,11 +24,15 @@ const EMBED_MODEL = 'text-embedding-3-small';
 const EMBED_DIM = 1536;
 
 let pool = null;
+let interactivePool = null;
 let ready = false;
 const DB_QUERY_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.DB_QUERY_TIMEOUT_MS) || 20000));
+const DB_INTERACTIVE_TIMEOUT_MS = Math.max(100, Math.min(3000,
+  Number(process.env.DB_INTERACTIVE_TIMEOUT_MS) || 400));
 const DB_DEGRADED_COOLDOWN_MS = Math.max(10000, Math.min(300000, Number(process.env.DB_DEGRADED_COOLDOWN_MS) || 60000));
 const dbRuntime = { consecutive_connection_failures: 0, degraded_until: 0, last_error: null,
-  last_error_at: null, last_success_at: null };
+  last_error_at: null, last_success_at: null, interactive_queries: 0,
+  interactive_failures: 0, interactive_timeouts: 0, interactive_last_error: null };
 
 function recordConnectionFailure(error) {
   dbRuntime.consecutive_connection_failures += 1;
@@ -73,6 +77,31 @@ function getPool() {
   return pool;
 }
 
+// Optional conversational recall must never queue behind consolidation, dashboard projection,
+// or an hourly transaction. Give it a tiny independent lane with a sub-second connection and
+// query deadline. If this lane is unavailable, callers simply continue without semantic recall.
+function getInteractivePool() {
+  if (interactivePool) return interactivePool;
+  if (!DATABASE_URL) throw new Error('DATABASE_URL not set');
+  interactivePool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 2,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: DB_INTERACTIVE_TIMEOUT_MS,
+    query_timeout: DB_INTERACTIVE_TIMEOUT_MS,
+    statement_timeout: DB_INTERACTIVE_TIMEOUT_MS,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
+    options: `-c search_path=${DB_SCHEMA},public`,
+  });
+  interactivePool.on('error', (err) => {
+    dbRuntime.interactive_last_error = String(err?.message || err).slice(0, 500);
+    console.warn('pg interactive pool error:', err.message);
+  });
+  return interactivePool;
+}
+
 function isConnectionFailure(error) {
   return /(?:connection|timeout|terminated|ECONN|EPIPE|57P0[123]|0800)/i.test(
     `${error?.code || ''} ${error?.message || error || ''}`);
@@ -108,6 +137,15 @@ function diagnostics() {
     last_error_at: dbRuntime.last_error_at,
     last_success_at: dbRuntime.last_success_at,
     pool: pool ? { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount } : null,
+    interactive: {
+      timeout_ms: DB_INTERACTIVE_TIMEOUT_MS,
+      queries: dbRuntime.interactive_queries,
+      failures: dbRuntime.interactive_failures,
+      timeouts: dbRuntime.interactive_timeouts,
+      last_error: dbRuntime.interactive_last_error,
+      pool: interactivePool ? { total: interactivePool.totalCount, idle: interactivePool.idleCount,
+        waiting: interactivePool.waitingCount } : null,
+    },
   };
 }
 
@@ -431,12 +469,27 @@ async function searchMemoryByVector(vec, limit = 12, opts = {}) {
     params.push(opts.excludeSources);
     where += ` AND (source IS NULL OR source <> ALL($${params.length}::text[]))`;
   }
-  const { rows } = await q(
-    `SELECT id, fact, project, source, added, salience, recall_count, metadata, embedding <=> $1::vector AS distance
+  const query = `SELECT id, fact, project, source, added, salience, recall_count, metadata, embedding <=> $1::vector AS distance
      FROM ${DB_SCHEMA}.memory WHERE ${where}
-     ORDER BY embedding <=> $1::vector ASC LIMIT $2`,
-    params
-  );
+     ORDER BY embedding <=> $1::vector ASC LIMIT $2`;
+  let rows;
+  if (opts.interactive) {
+    if (opts.signal?.aborted) return [];
+    dbRuntime.interactive_queries += 1;
+    try {
+      ({ rows } = await getInteractivePool().query({
+        text: query, values: params, query_timeout: DB_INTERACTIVE_TIMEOUT_MS,
+      }));
+      if (opts.signal?.aborted) return [];
+    } catch (error) {
+      dbRuntime.interactive_failures += 1;
+      dbRuntime.interactive_last_error = String(error?.message || error).slice(0, 500);
+      if (/timeout/i.test(dbRuntime.interactive_last_error)) dbRuntime.interactive_timeouts += 1;
+      return [];
+    }
+  } else {
+    ({ rows } = await q(query, params));
+  }
   return rows.map(row => (row.metadata && typeof row.metadata === 'object' ? { ...row, ...row.metadata } : row));
 }
 
@@ -1026,7 +1079,15 @@ async function count(table) {
   return rows[0].n;
 }
 
-async function close() { if (pool) await pool.end().catch(() => {}); pool = null; ready = false; }
+async function close() {
+  await Promise.all([
+    pool ? pool.end().catch(() => {}) : null,
+    interactivePool ? interactivePool.end().catch(() => {}) : null,
+  ]);
+  pool = null;
+  interactivePool = null;
+  ready = false;
+}
 
 module.exports = {
   dbEnabled, isReady, init, close, q, embed, count, backgroundAllowed, diagnostics,

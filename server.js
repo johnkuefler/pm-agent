@@ -3060,7 +3060,9 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
     // salience (how hot the memory encoded) and recall history (retrieval strengthening) tip
     // the order the way a brain's does. A charged, oft-used memory outcompetes a slightly
     // closer piece of trivia.
-    const rows = await db.searchMemoryByVector(vec, (limit * 2) + 6, { excludeSources: ['opinion', 'learning'] });
+    const rows = await db.searchMemoryByVector(vec, (limit * 2) + 6, {
+      excludeSources: ['opinion', 'learning'], signal, interactive: true,
+    });
     const retrieval = currentCognitiveParameters().memory.retrieval;
     const ranked = rows
       .filter(r => !markerKeyForFact(r.fact))
