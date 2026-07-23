@@ -498,6 +498,7 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     shouldDeferResearchStatusRefresh: () => {
       const priority = interactivePerformance.prioritySnapshot();
       return priority.active_interactions > 0 || priority.quiet_remaining_ms > 0
+        || Boolean(activeDurableRunLock())
         || (process.env.NORA_TEST_MODE !== '1'
           && !processResources.backgroundAdmission().allowed);
     },
@@ -9288,6 +9289,30 @@ function loadDurableRunLock() {
   catch (_) { return null; }
 }
 
+function activeDurableRunLock(now = Date.now(), lock = loadDurableRunLock()) {
+  const expiresAt = Number(lock?.expires_at);
+  return lock && Number.isFinite(expiresAt) && expiresAt > Number(now) ? lock : null;
+}
+
+async function drainOptionalWorkForOperationalRun(holder, {
+  cancelBackground = interactivePerformance.cancelBackground,
+  waitForBackgroundIdle = interactivePerformance.waitForBackgroundIdle,
+  preemptResearch = surface =>
+    intelligenceRoutesRuntime.preemptConsciousnessResearchStatus(surface),
+  timeoutMs = 3000,
+} = {}) {
+  const reason = `operational_run:${String(holder || 'unknown').slice(0, 80)}`;
+  preemptResearch(reason);
+  cancelBackground(reason);
+  const drained = await waitForBackgroundIdle({ timeoutMs });
+  if (!drained) {
+    // A non-cooperative optional provider must not become a new gate in front of the hourly run.
+    // Its own runtime deadline still contains it; the durable lock below prevents any successor.
+    console.warn(`Optional provider drain exceeded ${timeoutMs}ms before ${reason}; operational run proceeding`);
+  }
+  return { drained, reason };
+}
+
 async function saveDurableRunLock(value) {
   if (_dbReady) {
     await db.setState('run_lock', value);
@@ -9421,6 +9446,10 @@ registerRunLockRoutes(app, requireAuth, {
   onAcquire: async ({ holder }) => {
     const lifecycleSource = runLockLifecycleSource(holder);
     if (!lifecycleSource) return null;
+    // The operational pass owns the machine before its lifecycle opens. Cancel optional model
+    // work and research projections first so an hourly forecast, inbox scan, or close cannot
+    // queue behind reading/play/research that happened to start between scheduler ticks.
+    await drainOptionalWorkForOperationalRun(holder);
     const fallback = lifecycleSource === 'railway_fallback';
     const cognitiveInput = {
       ...currentCognitiveInputs(),
@@ -15287,7 +15316,19 @@ async function runBackgroundActionWithinBudget(name, action, timeoutMs) {
 }
 
 async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = 'scheduler',
-  budget = backgroundIntelligenceRuntimeBudget(), scheduledSteps: injectedScheduledSteps = null } = {}) {
+  budget = backgroundIntelligenceRuntimeBudget(), scheduledSteps: injectedScheduledSteps = null,
+  operationalLock = activeDurableRunLock() } = {}) {
+  if (operationalLock) {
+    _backgroundIntelligenceCycleLast = {
+      protocol_version: interactivePerformance.PROTOCOL_VERSION,
+      state: 'deferred_operational_run',
+      trigger,
+      holder: String(operationalLock.holder || '').slice(0, 120) || null,
+      retry_after_ms: Math.max(1000, Number(operationalLock.expires_at) - Date.now()),
+      at: new Date().toISOString(),
+    };
+    return _backgroundIntelligenceCycleLast;
+  }
   if (_backgroundIntelligenceCycleInFlight) {
     return { protocol_version: interactivePerformance.PROTOCOL_VERSION, state: 'in_flight',
       trigger, at: new Date().toISOString() };
@@ -15737,6 +15778,8 @@ module.exports = {
     retrieveInteractiveMemories,
     stripSlackLookupNarration,
     slackThreadHasNoraReply,
+    activeDurableRunLock,
+    drainOptionalWorkForOperationalRun,
     hourlyFallbackBudget,
     commitFallbackForecast,
     coverageCollectionCount,

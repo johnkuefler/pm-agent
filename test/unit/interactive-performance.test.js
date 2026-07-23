@@ -160,6 +160,46 @@ test('shutdown cancellation aborts providers and waits for their release boundar
   performance.resetPriorityGateForTest();
 });
 
+test('operational runs preempt optional work and keep the background scheduler parked', async () => {
+  const { __test } = require('../../server');
+  const now = 300000;
+  assert.equal(__test.activeDurableRunLock(now, {
+    holder: 'run-active', acquired_at: now - 1000, expires_at: now + 60000,
+  }).holder, 'run-active');
+  assert.equal(__test.activeDurableRunLock(now, {
+    holder: 'run-expired', acquired_at: now - 2000, expires_at: now,
+  }), null);
+
+  const calls = [];
+  const drain = await __test.drainOptionalWorkForOperationalRun('run-active', {
+    preemptResearch: reason => calls.push(['research', reason]),
+    cancelBackground: reason => calls.push(['provider', reason]),
+    waitForBackgroundIdle: async options => {
+      calls.push(['wait', options.timeoutMs]);
+      return true;
+    },
+    timeoutMs: 25,
+  });
+  assert.equal(drain.drained, true);
+  assert.deepEqual(calls, [
+    ['research', 'operational_run:run-active'],
+    ['provider', 'operational_run:run-active'],
+    ['wait', 25],
+  ]);
+
+  let optionalStepRan = false;
+  const parked = await __test.runBackgroundIntelligenceRuntime({
+    trigger: 'operational-lock-test',
+    operationalLock: {
+      holder: 'run-active', acquired_at: Date.now() - 1000, expires_at: Date.now() + 60000,
+    },
+    scheduledSteps: [['must-not-run', () => { optionalStepRan = true; }]],
+  });
+  assert.equal(parked.state, 'deferred_operational_run');
+  assert.equal(parked.holder, 'run-active');
+  assert.equal(optionalStepRan, false);
+});
+
 test('post-interaction learning drops a hung item after its bounded budget', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
