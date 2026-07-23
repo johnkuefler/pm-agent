@@ -32,7 +32,7 @@ function healthySnapshot() {
     research_projections: {},
     process_resources: { memory: { heap_utilization: 0.1, constrained_rss_utilization: 0.2 },
       event_loop: { current_window: { p99_ms: 20, max_ms: 30 }, last_complete_window: null } },
-    realtime_transport: { recent_stale: [] },
+    realtime_transport: { recent_stale: [], response_watchdog: { recent_timeouts: [] } },
   };
 }
 
@@ -177,6 +177,23 @@ test('reliability escalates repeated half-open meeting sockets', () => {
   const verdict = assessRuntimeReliability(snapshot, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'repeated_realtime_transport_stalls');
+});
+
+test('reliability surfaces recovered and repeated stuck meeting responses', () => {
+  const snapshot = healthySnapshot();
+  snapshot.realtime_transport.response_watchdog.recent_timeouts = [{
+    label: 'meeting response (bot-1)', at: '2026-07-22T18:59:00.000Z',
+  }];
+  let verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'realtime_response_recovered');
+
+  snapshot.realtime_transport.response_watchdog.recent_timeouts.push(
+    { label: 'meeting response (bot-2)', at: '2026-07-22T18:58:00.000Z' },
+    { label: 'meeting response (bot-3)', at: '2026-07-22T18:57:00.000Z' });
+  verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'repeated_realtime_response_stalls');
 });
 
 test('deferred job persistence failures require action while one transient failure degrades', () => {

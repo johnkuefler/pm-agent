@@ -111,6 +111,7 @@ const goodyGifting = require('./src/gifting/goody');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
 const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-liveness');
+const { createResponseWatchdogMonitor } = require('./src/runtime/response-watchdog');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { hourlyLifecycleHealth } = require('./src/runtime/hourly-lifecycle-health');
 const { hourlyFallbackDecision, fallbackForecast } = require('./src/runtime/hourly-fallback');
@@ -140,6 +141,7 @@ server.keepAliveTimeout = 65000;
 const runtimeActivity = createRuntimeActivityStream();
 const requestPerformance = createRequestPerformanceMonitor();
 const websocketLiveness = createWebSocketLivenessMonitor();
+const voiceResponseWatchdog = createResponseWatchdogMonitor();
 const processResources = createProcessResourceMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
@@ -560,7 +562,10 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     process_resources: processResources.snapshot(),
     background_admission: processResources.backgroundAdmission(),
     entity_writes: _writeThroughQueue.snapshot(),
-    realtime_transport: websocketLiveness.snapshot(),
+    realtime_transport: {
+      ...websocketLiveness.snapshot(),
+      response_watchdog: voiceResponseWatchdog.snapshot(),
+    },
   };
   res.json({ reliability: assessRuntimeReliability(snapshot), ...snapshot });
 });
@@ -6254,6 +6259,53 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled,
 function voiceTimingParameters() {
   return currentCognitiveParameters().voice;
 }
+
+function releaseVoiceResponse(openaiWs, session, outcome = 'completed') {
+  if (!session || (session.openaiWs && session.openaiWs !== openaiWs)) return false;
+  voiceResponseWatchdog.finish(openaiWs, outcome);
+  session.voiceResponseActive = false;
+  session.voiceCancelRequested = false;
+  return true;
+}
+
+function markVoiceResponseActive(openaiWs, session) {
+  if (!session) return;
+  const now = Date.now();
+  session.voiceResponseActive = true;
+  session.voiceResponseAt = now;
+  voiceResponseWatchdog.arm(openaiWs, {
+    timeoutMs: voiceTimingParameters().response_stale_ms,
+    label: `meeting response (${session.trialUnitKey || 'unknown'})`,
+    isCurrent: () => (!session.openaiWs || session.openaiWs === openaiWs)
+      && session.voiceResponseActive === true,
+    onTimeout: timeout => {
+      if (session.openaiWs && session.openaiWs !== openaiWs) return;
+      try {
+        if (openaiWs.readyState === WebSocket.OPEN) {
+          openaiWs.send(JSON.stringify({ type: 'response.cancel' }));
+        }
+      } catch {}
+      session.voiceResponseActive = false;
+      session.voiceCancelRequested = false;
+      if (session.runtimeVoiceActivityId) runtimeActivity.finish(session.runtimeVoiceActivityId, {
+        status: 'failed',
+        detail: 'The realtime provider did not close the response before its bounded deadline.',
+        outcome: 'The stuck voice gate was cancelled and released automatically.',
+      });
+      session.runtimeVoiceActivityId = null;
+      console.warn(`Realtime voice response watchdog recovered a stuck turn after ${timeout.timeout_ms}ms`);
+      if (session.pendingVoiceTurn) {
+        const timer = setTimeout(() => {
+          if ((!session.openaiWs || session.openaiWs === openaiWs)
+            && openaiWs.readyState === WebSocket.OPEN) {
+            resumePendingVoiceTurn(openaiWs, session);
+          }
+        }, 250);
+        timer.unref?.();
+      }
+    },
+  });
+}
 // Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
 // name)? Statements / cross-talk that aren't questions never trip lean-in.
 function looksLikeQuestion(t) {
@@ -6368,7 +6420,7 @@ function maybeVolunteerProbe(openaiWs, session, userText) {
         instructions: basePrompt + '\n\n[SILENT VOLUNTEER CHECK. Nobody asked you anything. The last thing said was not directed at you, but it touched your territory. Decide whether you are holding ONE concrete, checkable fact that directly bears on what was just said: a real date, deadline, task status, capacity number, or commitment you know from your memory or from earlier in this meeting. If yes, write that flag as one short spoken-style sentence, the way a teammate briefly cuts in. It must be a fact, not an opinion, agreement, or summary. If you are not sure or have nothing concrete, reply with exactly: PASS]'
       }
     }));
-    session.voiceResponseActive = true; session.voiceResponseAt = now;
+    markVoiceResponseActive(openaiWs, session);
     const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_volunteer_check',
       label: 'Considering whether to speak in a meeting',
       detail: 'Checking for one concrete, useful fact without interrupting the room.',
@@ -6413,6 +6465,14 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       }
     }
     return;
+  }
+  if (session.voiceResponseActive) {
+    try {
+      if (openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(JSON.stringify({ type: 'response.cancel' }));
+      }
+    } catch {}
+    releaseVoiceResponse(openaiWs, session, 'cancelled');
   }
   // AUTO 1:1 — if only one other person has been heard on the call, treat it like a 1:1 and respond
   // freely (no name needed), without anyone toggling a mode. Group gating only kicks in at 2+ people.
@@ -6465,8 +6525,7 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       const request = { type: 'response.create' };
       if (addressed) request.response = { instructions: 'You were just called by name. Start speaking promptly. If this is only a check-in, answer with a quick natural acknowledgement. If it is a question, lead with the answer or one brief spoken acknowledgement before any live lookup. Do not narrate your thinking.' };
       openaiWs.send(JSON.stringify(request));
-      session.voiceResponseActive = true;
-      session.voiceResponseAt = Date.now();
+      markVoiceResponseActive(openaiWs, session);
       session.voiceTriggerAt = session.voiceResponseAt;
       session.voiceTurnStartedAt = session.voiceSpeechStoppedAt || session.voiceResponseAt;
       session.voiceTurnTranscribedAt = session.voiceTranscriptCompletedAt || session.voiceResponseAt;
@@ -13090,6 +13149,7 @@ wss.on('connection', async (ws, req) => {
   for (const previous of [session?.clientWs, session?.openaiWs]) {
     if (previous && (previous.readyState === WebSocket.OPEN
       || previous.readyState === WebSocket.CONNECTING)) {
+      voiceResponseWatchdog.finish(previous, 'cancelled');
       try { previous.terminate(); } catch {}
     }
   }
@@ -13308,6 +13368,9 @@ wss.on('connection', async (ws, req) => {
     try {
       const str = data.toString();
       const msg = JSON.parse(str);
+      if (String(msg.type || '').startsWith('response.')) {
+        voiceResponseWatchdog.touch(openaiWs);
+      }
       const benignDeleteMiss = isBenignRealtimeDeleteMissingItemError(msg);
       if (!benignDeleteMiss && ws.readyState === WebSocket.OPEN) {
         ws.send(str);
@@ -13340,13 +13403,14 @@ wss.on('connection', async (ws, req) => {
       if (msg.type === 'error' && !benignDeleteMiss) {
         console.error('❌ OpenAI error:', JSON.stringify(msg.error));
         const s = sessions[botId];
-        if (s) {
+        if (s && (!s.openaiWs || s.openaiWs === openaiWs)) {
           if (s.runtimeVoiceActivityId) runtimeActivity.finish(s.runtimeVoiceActivityId, { status: 'failed',
             detail: 'The realtime meeting response ended with a provider error.',
             outcome: 'The voice gate was released for the next human turn.' });
           s.runtimeVoiceActivityId = null;
-          s.voiceResponseActive = false;
-          resumePendingVoiceTurn(openaiWs, s);
+          if (releaseVoiceResponse(openaiWs, s, 'cancelled')) {
+            resumePendingVoiceTurn(openaiWs, s);
+          }
         }
       }
 
@@ -13429,21 +13493,21 @@ wss.on('connection', async (ws, req) => {
 
       // Mark a response in flight so the turn-gate doesn't stack a second one on top.
       if (msg.type === 'response.created') {
-        const s = sessions[botId]; if (s) { s.voiceResponseActive = true; s.voiceResponseAt = Date.now(); }
+        const s = sessions[botId];
+        if (s && (!s.openaiWs || s.openaiWs === openaiWs)) markVoiceResponseActive(openaiWs, s);
       }
 
       // Track response completions
       if (msg.type === 'response.done' && msg.response) {
         const s = sessions[botId];
+        if (s && s.openaiWs && s.openaiWs !== openaiWs) return;
         if (s) {
           if (s.runtimeVoiceActivityId) runtimeActivity.finish(s.runtimeVoiceActivityId, {
             status: 'completed', detail: 'The realtime meeting turn reached a terminal response event.',
             outcome: 'Voice turn-taking released for the room.',
           });
           s.runtimeVoiceActivityId = null;
-          s.voiceResponseActive = false; // free the gate
-          s.voiceCancelRequested = false;
-          resumePendingVoiceTurn(openaiWs, s);
+          if (releaseVoiceResponse(openaiWs, s)) resumePendingVoiceTurn(openaiWs, s);
         }
 
         // Volunteer-probe verdict. The probe silently asked her (text-only) whether she holds a
@@ -13471,7 +13535,7 @@ wss.on('connection', async (ws, req) => {
                   instructions: buildSystemPrompt('realtime', s.transcript) + '\n\n[You just decided this flag is worth briefly interjecting into the meeting: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now in one or two short sentences, casually, like a teammate cutting in with a quick fact. Do not apologize for interrupting and do not add anything beyond the flag itself.]'
                 }
               }));
-              s.voiceResponseActive = true; s.voiceResponseAt = Date.now();
+              markVoiceResponseActive(openaiWs, s);
               const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_voice_response',
                 label: 'Interjecting with a concrete meeting fact',
                 detail: 'Delivering the bounded fact that passed the silent volunteer check.',
@@ -13648,6 +13712,7 @@ wss.on('connection', async (ws, req) => {
     if (promptRefreshTimer) clearTimeout(promptRefreshTimer);
     promptRefreshTimer = null;
     promptRefreshController?.abort(new Error('meeting connection closed'));
+    voiceResponseWatchdog.finish(openaiWs, 'cancelled');
     if (sessions[botId]) {
       if (sessions[botId].requestRealtimePromptRefresh === schedulePromptRefresh) {
         sessions[botId].requestRealtimePromptRefresh = null;
@@ -13662,6 +13727,7 @@ wss.on('connection', async (ws, req) => {
 
   openaiWs.on('close', () => {
     clearTimeout(openaiHandshakeTimer);
+    voiceResponseWatchdog.finish(openaiWs, 'cancelled');
     promptRefreshClosed = true;
     if (promptRefreshTimer) clearTimeout(promptRefreshTimer);
     promptRefreshTimer = null;
