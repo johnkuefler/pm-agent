@@ -42,4 +42,37 @@ test('hourly coverage connector reads propagate cancellation and remaining budge
   assert.match(source, /\{ signal, timeoutMs: identityBudgetMs \}/);
   assert.match(source, /signal => tasksTool\.execute/);
   assert.match(source, /\{ signal, timeoutMs: taskBudgetMs \}/);
+  assert.match(source, /Promise\.all\(\[teamworkLane\(\), slackLane\(\), gmailLane\(\)\]\)/,
+    'independent connector scans must run concurrently');
+  assert.match(source, /Fallback Slack missed-mention sweep/);
+  assert.match(source, /Fallback Gmail unread sweep/);
+  assert.match(source, /signal => binding\.execute\(args, \{ signal, timeoutMs: gmailBudgetMs \}\)/);
+});
+
+test('coverage result counting handles MCP envelopes without retaining message content', () => {
+  assert.equal(__test.coverageCollectionCount([{ id: 1 }, { id: 2 }]), 2);
+  assert.equal(__test.coverageCollectionCount({ messages: [{ id: 1 }] }), 1);
+  assert.equal(__test.coverageCollectionCount({
+    content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 1 }, { id: 2 }] }) }],
+  }), 2);
+  assert.equal(__test.coverageCollectionCount({ total: 4 }), 4);
+  assert.equal(__test.coverageCollectionCount('opaque connector response'), null);
+});
+
+test('Gmail coverage adapts to the connected tool schema and fails closed on unknown requirements', () => {
+  assert.deepEqual(__test.gmailCoverageSearchArgs({
+    properties: {
+      user_google_email: { type: 'string' },
+      query: { type: 'string' },
+      page_size: { type: 'integer' },
+    },
+    required: ['user_google_email', 'query'],
+  }, 'is:unread', 'nora@example.com'), {
+    query: 'is:unread', page_size: 25, user_google_email: 'nora@example.com',
+  });
+  assert.throws(() => __test.gmailCoverageSearchArgs({
+    properties: { account_id: { type: 'string' } },
+    required: ['account_id'],
+  }, 'is:unread', 'nora@example.com'), error =>
+    error.code === 'gmail_coverage_schema_unresolved');
 });

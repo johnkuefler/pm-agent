@@ -9472,6 +9472,57 @@ function centralDateYmd(date = new Date()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
+function mcpResultValue(result) {
+  if (!result || typeof result !== 'object' || !Array.isArray(result.content)) return result;
+  const text = result.content.filter(item => item?.type === 'text' && typeof item.text === 'string')
+    .map(item => item.text).join('\n').trim();
+  if (!text) return result;
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+function coverageCollectionCount(result) {
+  const value = mcpResultValue(result);
+  if (Array.isArray(value)) return value.length;
+  if (!value || typeof value !== 'object') return null;
+  for (const key of ['messages', 'results', 'items', 'data']) {
+    if (Array.isArray(value[key])) return value[key].length;
+  }
+  for (const key of ['count', 'total', 'result_count']) {
+    const count = Number(value[key]);
+    if (Number.isFinite(count) && count >= 0) return count;
+  }
+  return null;
+}
+
+function gmailCoverageBinding() {
+  const bindings = mcpManager.bindings({ financialApproved: false, allowWrites: false });
+  const item = bindings.inventory.find(candidate =>
+    /google workspace/i.test(candidate.connection || '')
+    && candidate.tool === 'search_gmail_messages');
+  if (!item || typeof bindings.executors[item.name] !== 'function') return null;
+  const definition = bindings.claudeTools.find(tool => tool.name === item.name);
+  return { execute: bindings.executors[item.name], schema: definition?.input_schema || {} };
+}
+
+function gmailCoverageSearchArgs(schema = {}, query, googleEmail = '') {
+  const properties = schema.properties || {};
+  const args = {};
+  const queryKey = ['query', 'q', 'search_query'].find(key => properties[key])
+    || (schema.required || []).find(key => /query|search/i.test(key));
+  if (queryKey) args[queryKey] = query;
+  const limitKey = ['max_results', 'page_size', 'limit'].find(key => properties[key]);
+  if (limitKey) args[limitKey] = 25;
+  const emailKey = ['user_google_email', 'user_email', 'email'].find(key => properties[key]);
+  if (emailKey && googleEmail) args[emailKey] = googleEmail;
+  const missing = (schema.required || []).filter(key => args[key] == null);
+  if (missing.length) {
+    const error = new Error(`Gmail coverage cannot satisfy required connector fields: ${missing.join(', ')}`);
+    error.code = 'gmail_coverage_schema_unresolved';
+    throw error;
+  }
+  return args;
+}
+
 async function fallbackOperationalSweep({
   deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
 } = {}) {
@@ -9482,41 +9533,97 @@ async function fallbackOperationalSweep({
     mode: 'read_only',
     internal_queue: { due_count: internalDue.length },
     teamwork: { status: teamworkEnabled() ? 'not_checked' : 'not_configured', due_count: null },
+    slack: { status: process.env.SLACK_BOT_TOKEN ? 'not_checked' : 'not_configured',
+      unhandled_count: null },
+    gmail: { status: 'not_checked', unread_count: null },
   };
-  if (!teamworkEnabled()) return result;
-  const peopleTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_people');
-  const tasksTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_tasks');
-  try {
-    const identityBudgetMs = hourlyFallbackBudget(
-      deadlineAt, 8000, 'Fallback Teamwork identity lookup', 8000);
-    const people = await rejectWithinAbortable(
-      signal => peopleTool.execute({ query: 'Nora' },
-        { signal, timeoutMs: identityBudgetMs }),
-      identityBudgetMs, 'Fallback Teamwork identity lookup');
-    const nora = (people || []).find(person => /\bnora\b/i.test(person.name || '')) || null;
-    if (!nora?.id) {
-      result.teamwork = { status: 'identity_unresolved', due_count: null };
-      return result;
+  const teamworkLane = async () => {
+    if (!teamworkEnabled()) return;
+    const peopleTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_people');
+    const tasksTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_tasks');
+    try {
+      const identityBudgetMs = hourlyFallbackBudget(
+        deadlineAt, 8000, 'Fallback Teamwork identity lookup', 8000);
+      const people = await rejectWithinAbortable(
+        signal => peopleTool.execute({ query: 'Nora' },
+          { signal, timeoutMs: identityBudgetMs }),
+        identityBudgetMs, 'Fallback Teamwork identity lookup');
+      const nora = (people || []).find(person => /\bnora\b/i.test(person.name || '')) || null;
+      if (!nora?.id) {
+        result.teamwork = { status: 'identity_unresolved', due_count: null };
+        return;
+      }
+      const tomorrow = centralDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+      const taskBudgetMs = hourlyFallbackBudget(
+        deadlineAt, 12000, 'Fallback Teamwork due-task sweep', 5000);
+      const tasks = await rejectWithinAbortable(signal => tasksTool.execute({
+        assigned_to_user_ids: String(nora.id), due_before: tomorrow, include_completed: false,
+      }, { signal, timeoutMs: taskBudgetMs }), taskBudgetMs, 'Fallback Teamwork due-task sweep');
+      result.teamwork = {
+        status: 'checked',
+        due_through: tomorrow,
+        due_count: Array.isArray(tasks) ? tasks.length : 0,
+        overdue_count: Array.isArray(tasks)
+          ? tasks.filter(task => task.due
+            && twYmd(task.due) < twYmd(centralDateYmd(now))).length : 0,
+      };
+    } catch (error) {
+      result.teamwork = {
+        status: 'degraded', due_count: null,
+        error: String(error.message || error).slice(0, 240),
+      };
     }
-    const tomorrow = centralDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
-    const taskBudgetMs = hourlyFallbackBudget(
-      deadlineAt, 12000, 'Fallback Teamwork due-task sweep', 5000);
-    const tasks = await rejectWithinAbortable(signal => tasksTool.execute({
-      assigned_to_user_ids: String(nora.id), due_before: tomorrow, include_completed: false,
-    }, { signal, timeoutMs: taskBudgetMs }), taskBudgetMs, 'Fallback Teamwork due-task sweep');
-    result.teamwork = {
-      status: 'checked',
-      due_through: tomorrow,
-      due_count: Array.isArray(tasks) ? tasks.length : 0,
-      overdue_count: Array.isArray(tasks)
-        ? tasks.filter(task => task.dueDate && twYmd(task.dueDate) < twYmd(centralDateYmd(now))).length : 0,
-    };
-  } catch (error) {
-    result.teamwork = {
-      status: 'degraded', due_count: null,
-      error: String(error.message || error).slice(0, 240),
-    };
-  }
+  };
+  const slackLane = async () => {
+    if (!process.env.SLACK_BOT_TOKEN) return;
+    try {
+      const slackBudgetMs = hourlyFallbackBudget(
+        deadlineAt, 16000, 'Fallback Slack missed-mention sweep', 5000);
+      const slack = await localRuntimeApi('get',
+        '/slack/unhandled-mentions?minutes=120', undefined, slackBudgetMs);
+      result.slack = {
+        status: slack.scope_warnings?.length || slack.scan_errors
+          ? 'partial' : 'checked',
+        unhandled_count: Number(slack.unhandled_count) || 0,
+        channels_scanned: Number(slack.channels_scanned) || 0,
+        channels_total: Number(slack.channels_total) || 0,
+        scope_warning_count: slack.scope_warnings?.length || 0,
+        scan_errors: Number(slack.scan_errors) || 0,
+      };
+    } catch (error) {
+      result.slack = {
+        status: 'degraded', unhandled_count: null,
+        error: String(error.message || error).slice(0, 240),
+      };
+    }
+  };
+  const gmailLane = async () => {
+    const binding = gmailCoverageBinding();
+    if (!binding) {
+      result.gmail = { status: 'not_configured', unread_count: null };
+      return;
+    }
+    try {
+      const gmailBudgetMs = hourlyFallbackBudget(
+        deadlineAt, 12000, 'Fallback Gmail unread sweep', 5000);
+      const args = gmailCoverageSearchArgs(binding.schema,
+        'is:unread -category:promotions -category:social -category:updates',
+        loadCalendarState()?.google_email || '');
+      const unread = await rejectWithinAbortable(
+        signal => binding.execute(args, { signal, timeoutMs: gmailBudgetMs }),
+        gmailBudgetMs, 'Fallback Gmail unread sweep');
+      result.gmail = {
+        status: 'checked',
+        unread_count: coverageCollectionCount(unread),
+      };
+    } catch (error) {
+      result.gmail = {
+        status: 'degraded', unread_count: null,
+        error: String(error.message || error).slice(0, 240),
+      };
+    }
+  };
+  await Promise.all([teamworkLane(), slackLane(), gmailLane()]);
   return result;
 }
 
@@ -9578,7 +9685,15 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
       fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }),
       { deadlineAt });
     const sweep = await fallbackOperationalSweep({ deadlineAt });
-    const summary = `Railway completed a read-only coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s); Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count) ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}.`;
+    const summary = [
+      `Railway completed a read-only coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s)`,
+      `Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count)
+        ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}`,
+      `Slack ${sweep.slack.status}${Number.isFinite(sweep.slack.unhandled_count)
+        ? ` with ${sweep.slack.unhandled_count} unhandled mention(s)` : ''}`,
+      `Gmail ${sweep.gmail.status}${Number.isFinite(sweep.gmail.unread_count)
+        ? ` with ${sweep.gmail.unread_count} relevant unread result(s)` : ''}`,
+    ].join('; ') + '.';
     const completionBudgetMs = hourlyFallbackBudget(
       deadlineAt, 20000, 'Fallback lifecycle completion', 5000);
     const completed = await localRuntimeApi('patch',
@@ -15038,6 +15153,8 @@ module.exports = {
     stripSlackLookupNarration,
     hourlyFallbackBudget,
     commitFallbackForecast,
+    coverageCollectionCount,
+    gmailCoverageSearchArgs,
     fallbackOperationalSweep,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,
