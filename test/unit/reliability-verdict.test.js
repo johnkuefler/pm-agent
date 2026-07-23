@@ -17,7 +17,8 @@ function healthySnapshot() {
       realtime: { gate: 'collecting', prompt_gate: 'collecting' },
     } },
     interactive_priority: { background_budget_cancellations: 0 },
-    background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 },
+    background_work: { post_interaction: { queued: 0 },
+      transcript_checkpoints: { pending: 0, retrying: 0, maximum_retry_attempt: 0 },
       recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
       api_opportunity_operations: { pending: 0, last_error: null },
       slack_webhook_events: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
@@ -132,6 +133,21 @@ test('reliability exposes a slow or repeatedly failing recent-meetings refresh',
   verdict = assessRuntimeReliability(slow, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'recent_meetings_cache_stuck');
+});
+
+test('reliability escalates repeated transcript checkpoint persistence failure', () => {
+  const retrying = healthySnapshot();
+  retrying.background_work.transcript_checkpoints = {
+    pending: 1, retrying: 1, maximum_retry_attempt: 1,
+  };
+  let verdict = assessRuntimeReliability(retrying, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'transcript_checkpoint_retry');
+
+  retrying.background_work.transcript_checkpoints.maximum_retry_attempt = 3;
+  verdict = assessRuntimeReliability(retrying, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'transcript_checkpoint_repeated_failure');
 });
 
 test('reliability surfaces active and completed request deadline pressure', () => {

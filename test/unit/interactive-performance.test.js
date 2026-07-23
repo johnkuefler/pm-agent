@@ -465,6 +465,23 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'optional screen-share description calls must be abortable');
   assert.match(server, /function scheduleTranscriptCheckpoint\(botId, transcript\)/,
     'growing live transcripts must use coalesced checkpoints instead of one full write per utterance');
+  assert.match(server, /const _transcriptCheckpointInFlight = new Map\(\)/,
+    'started transcript writes must remain explicitly owned');
+  assert.match(server,
+    /function armTranscriptCheckpoint[\s\S]*?_transcriptCheckpointsClosing[\s\S]*?_transcriptCheckpointInFlight\.has\(botId\)/,
+    'checkpoint timers must not start during shutdown or overlap an active write');
+  assert.match(server,
+    /async function drainTranscriptCheckpoints\(\)[\s\S]*?_transcriptCheckpointsClosing = true[\s\S]*?Promise\.allSettled\(active\)[\s\S]*?_transcriptCheckpointPending\.size === 0\) break/,
+    'shutdown must repeatedly drain writes and any retry work created while those writes settle');
+  assert.match(server, /if \(_transcriptCheckpointPending\.has\(botId\) && !_transcriptCheckpointsClosing\)/,
+    'a settling checkpoint must never schedule a retry behind the shutdown barrier');
+  const transcriptCheckpointOwner = server.slice(server.indexOf('function armTranscriptCheckpoint'),
+    server.indexOf('function queueTranscriptCheckpoint'));
+  assert.doesNotMatch(transcriptCheckpointOwner,
+    /\.then\(async \(\) =>[\s\S]*?await refreshRecentMeetingsCache/,
+    'nonessential cache freshness must not extend the critical transcript checkpoint');
+  assert.match(server, /_transcriptCheckpointsClosing = false[\s\S]*?const background = options\.background/,
+    'a clean in-process restart must reopen transcript checkpoint admission');
   assert.match(server,
     /await ensureMeetingTranscriptHydrated\(bot_id, session\)[\s\S]{0,3000}session\.transcript\.push/,
     'the first post-restart meeting utterance must restore its durable prefix before append');
@@ -484,6 +501,9 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
     'runtime telemetry must expose background queues that could threaten interactive latency');
+  assert.match(server,
+    /retrying: _transcriptCheckpointAttempts\.size[\s\S]*?maximum_retry_attempt: Math\.max/,
+    'runtime telemetry must expose repeated transcript checkpoint failures');
   assert.match(server, /recurring_jobs: _recurringJobs\.snapshot\(\)/,
     'runtime telemetry must expose every completion-aware recurring job');
   assert.match(server, /startup_tasks: startupBackgroundTaskSnapshot\(\)/,
@@ -507,6 +527,11 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'shutdown must flush raw transcript and deferred episode checkpoints before closing the database');
   assert.match(server, /const transcriptDrain = await drainTranscriptCheckpoints\(\)[\s\S]*intelligence\.persistStrict\(\)/,
     'graceful shutdown must order transcript durability before the final intelligence snapshot');
+  const stopSource = server.slice(server.indexOf('async function stop()'),
+    server.indexOf('const _processRecovery'));
+  assert.ok(stopSource.indexOf('drainAcknowledgedMeetingWork({ timeoutMs: 20000 })')
+    < stopSource.indexOf('const transcriptDrain = await drainTranscriptCheckpoints()'),
+  'shutdown must let acknowledged meeting callbacks enqueue their final transcript before draining it');
   assert.match(server,
     /await _writeThroughQueue\.drain\(\{ timeoutMs: 10000 \}\)[\s\S]*await db\.close/,
     'graceful shutdown must drain all serialized database writes before closing Postgres');

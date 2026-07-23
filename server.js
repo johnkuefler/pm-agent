@@ -11429,6 +11429,7 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 // upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
 const _transcriptCheckpointTimers = new Map();
 const _transcriptCheckpointPending = new Map();
+const _transcriptCheckpointInFlight = new Map();
 const _transcriptCheckpointAttempts = new Map();
 const _transcriptPersistedCounts = new Map();
 const TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000;
@@ -11436,6 +11437,7 @@ const _transcriptEpisodeTimers = new Map();
 const _transcriptEpisodePending = new Map();
 const _transcriptEpisodeRecordedCounts = new Map();
 const _transcriptEpisodeInFlight = new Map();
+let _transcriptCheckpointsClosing = false;
 function transcriptEpisodeInputs(botId, entries) {
   return entries.map(item => ({
     correlation: `meeting:${botId}`, title: 'Meeting', channel: 'meeting', kind: 'utterance',
@@ -11469,20 +11471,24 @@ async function flushTranscriptEpisodeCheckpoint(botId, transcript = null) {
 }
 function scheduleTranscriptEpisodeCheckpoint(botId, transcript) {
   _transcriptEpisodePending.set(botId, transcript);
-  if (_transcriptEpisodeTimers.has(botId)) return;
+  if (_transcriptCheckpointsClosing || _transcriptEpisodeTimers.has(botId)) return;
   const timer = setTimeout(() => {
     _transcriptEpisodeTimers.delete(botId);
     const foregroundGate = beginOptionalBackground(`transcript-episodes:${botId}`);
     if (!foregroundGate.allowed) {
       const pending = _transcriptEpisodePending.get(botId);
-      if (pending) scheduleTranscriptEpisodeCheckpoint(botId, pending);
+      if (pending && !_transcriptCheckpointsClosing) {
+        scheduleTranscriptEpisodeCheckpoint(botId, pending);
+      }
       return;
     }
     flushTranscriptEpisodeCheckpoint(botId)
       .catch(error => {
         console.error('Transcript episode checkpoint failed:', error.message);
         const pending = _transcriptEpisodePending.get(botId);
-        if (pending) scheduleTranscriptEpisodeCheckpoint(botId, pending);
+        if (pending && !_transcriptCheckpointsClosing) {
+          scheduleTranscriptEpisodeCheckpoint(botId, pending);
+        }
       })
       .finally(() => foregroundGate.release());
   }, TRANSCRIPT_EPISODE_CHECKPOINT_MS);
@@ -11557,24 +11563,29 @@ async function appendLiveTranscript(botId, session, transcript, ended) {
   return result;
 }
 
-function queueTranscriptCheckpoint(botId, transcript, { ended = null, delayMs = 1000 } = {}) {
-  const prior = _transcriptCheckpointPending.get(botId);
-  _transcriptCheckpointPending.set(botId, {
-    transcript,
-    ended: ended || prior?.ended || null,
-  });
-  if (_transcriptCheckpointTimers.has(botId)) return;
+function armTranscriptCheckpoint(botId, delayMs = 1000) {
+  if (_transcriptCheckpointsClosing || _transcriptCheckpointTimers.has(botId)
+    || _transcriptCheckpointInFlight.has(botId) || !_transcriptCheckpointPending.has(botId)) return;
   const timer = setTimeout(() => {
     _transcriptCheckpointTimers.delete(botId);
+    if (_transcriptCheckpointInFlight.has(botId)) return;
     const pending = _transcriptCheckpointPending.get(botId);
     _transcriptCheckpointPending.delete(botId);
     if (!pending) return;
-    saveTranscriptDoc(botId, pending.transcript, pending.ended, {
+    const operation = saveTranscriptDoc(botId, pending.transcript, pending.ended, {
       recordEpisode: false, incremental: true,
     }).then(() => {
       _transcriptCheckpointAttempts.delete(botId);
-      if (pending.ended) refreshRecentMeetingsCache().catch(() => {});
-      if (pending.ended && sessions[botId]?.cleanupAfterTranscriptSave) {
+      if (pending.ended) {
+        // Cache freshness is separately owned and bounded during shutdown. It must never extend
+        // the critical transcript-durability checkpoint.
+        refreshRecentMeetingsCache().catch(() => {});
+      }
+      const newer = _transcriptCheckpointPending.get(botId);
+      if (pending.ended && newer && !newer.ended) {
+        _transcriptCheckpointPending.set(botId, { ...newer, ended: pending.ended });
+      }
+      if (pending.ended && !newer && sessions[botId]?.cleanupAfterTranscriptSave) {
         delete sessions[botId];
         _transcriptPersistedCounts.delete(botId);
       }
@@ -11582,14 +11593,37 @@ function queueTranscriptCheckpoint(botId, transcript, { ended = null, delayMs = 
       const attempt = (_transcriptCheckpointAttempts.get(botId) || 0) + 1;
       _transcriptCheckpointAttempts.set(botId, attempt);
       console.error(`Transcript checkpoint failed (retry ${attempt}):`, error.message);
-      queueTranscriptCheckpoint(botId, sessions[botId]?.transcript || pending.transcript, {
-        ended: pending.ended,
-        delayMs: Math.min(30000, 1000 * (2 ** Math.min(attempt, 5))),
+      const newer = _transcriptCheckpointPending.get(botId);
+      _transcriptCheckpointPending.set(botId, {
+        transcript: sessions[botId]?.transcript || newer?.transcript || pending.transcript,
+        ended: newer?.ended || pending.ended || null,
       });
+      throw error;
+    }).finally(() => {
+      if (_transcriptCheckpointInFlight.get(botId) === operation) {
+        _transcriptCheckpointInFlight.delete(botId);
+      }
+      if (_transcriptCheckpointPending.has(botId) && !_transcriptCheckpointsClosing) {
+        const attempt = _transcriptCheckpointAttempts.get(botId) || 0;
+        armTranscriptCheckpoint(botId,
+          attempt ? Math.min(30000, 1000 * (2 ** Math.min(attempt, 5))) : 1000);
+      }
     });
-  }, delayMs);
+    _transcriptCheckpointInFlight.set(botId, operation);
+    // The in-flight map owns this rejection for retry/drain purposes.
+    operation.catch(() => {});
+  }, Math.max(1, Number(delayMs) || 1000));
   timer.unref?.();
   _transcriptCheckpointTimers.set(botId, timer);
+}
+
+function queueTranscriptCheckpoint(botId, transcript, { ended = null, delayMs = 1000 } = {}) {
+  const prior = _transcriptCheckpointPending.get(botId);
+  _transcriptCheckpointPending.set(botId, {
+    transcript,
+    ended: ended || prior?.ended || null,
+  });
+  armTranscriptCheckpoint(botId, delayMs);
 }
 
 function scheduleTranscriptCheckpoint(botId, transcript) {
@@ -11626,14 +11660,21 @@ async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = tru
 }
 
 async function drainTranscriptCheckpoints() {
-  for (const timer of _transcriptCheckpointTimers.values()) clearTimeout(timer);
-  _transcriptCheckpointTimers.clear();
-  const rawPending = [..._transcriptCheckpointPending.entries()];
-  _transcriptCheckpointPending.clear();
-  for (const [botId, pending] of rawPending) {
-    await saveTranscriptDoc(botId, pending.transcript, pending.ended, {
-      recordEpisode: false, incremental: true,
-    });
+  _transcriptCheckpointsClosing = true;
+  while (true) {
+    for (const timer of _transcriptCheckpointTimers.values()) clearTimeout(timer);
+    _transcriptCheckpointTimers.clear();
+    const active = [..._transcriptCheckpointInFlight.values()];
+    if (active.length) await Promise.allSettled(active);
+    const rawPending = [..._transcriptCheckpointPending.entries()];
+    _transcriptCheckpointPending.clear();
+    for (const [botId, pending] of rawPending) {
+      await saveTranscriptDoc(botId, pending.transcript, pending.ended, {
+        recordEpisode: false, incremental: true,
+      });
+    }
+    if (_transcriptCheckpointInFlight.size === 0
+      && _transcriptCheckpointPending.size === 0) break;
   }
   for (const timer of _transcriptEpisodeTimers.values()) clearTimeout(timer);
   _transcriptEpisodeTimers.clear();
@@ -13769,11 +13810,15 @@ function backgroundWorkSnapshot() {
     },
     transcript_checkpoints: {
       pending: _transcriptCheckpointPending.size + _transcriptEpisodePending.size
-        + _transcriptEpisodeInFlight.size,
+        + _transcriptCheckpointInFlight.size + _transcriptEpisodeInFlight.size,
       scheduled: _transcriptCheckpointTimers.size + _transcriptEpisodeTimers.size,
       transcript_pending: _transcriptCheckpointPending.size,
+      transcript_in_flight: _transcriptCheckpointInFlight.size,
+      retrying: _transcriptCheckpointAttempts.size,
+      maximum_retry_attempt: Math.max(0, ..._transcriptCheckpointAttempts.values()),
       episode_pending: _transcriptEpisodePending.size,
       episode_in_flight: _transcriptEpisodeInFlight.size,
+      closing: _transcriptCheckpointsClosing,
     },
     screen_share: { ..._screenshareHealth,
       descriptions_in_flight: Object.keys(screenshareDescriptionInFlight).length,
@@ -16420,6 +16465,7 @@ async function completePostListenStartup(background) {
 
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
+  _transcriptCheckpointsClosing = false;
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
   const port = options.port !== undefined ? options.port : (process.env.PORT || 3000);
   _startPromise = (async () => {
@@ -16499,15 +16545,14 @@ async function stop() {
     forceTimer.unref?.();
     closeServer.then(() => { clearTimeout(forceTimer); resolve(); });
   });
-  const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
-  const [persistenceDrain, , , slackWebhookDrain, meetingWebhookDrain,
-    recentMeetingsDrain] = await Promise.allSettled([
-    intelligence.persistStrict(),
-    intelligenceRoutesRuntime.close(),
+  // First stop ingress and let every already-acknowledged Slack/meeting callback reach its
+  // terminal state. Those callbacks are allowed to enqueue a final transcript checkpoint.
+  // Draining transcripts before them created a race where a callback could add work behind the
+  // completed drain and lose its final lines during the restart.
+  const [, slackWebhookDrain, meetingWebhookDrain] = await Promise.allSettled([
     boundedServerClose,
     drainSlackWebhookEvents({ timeoutMs: 20000 }),
     drainAcknowledgedMeetingWork({ timeoutMs: 20000 }),
-    drainRecentMeetingsRefresh({ timeoutMs: 10000 }),
   ]);
   if (slackWebhookDrain.status === 'rejected' || slackWebhookDrain.value !== true) {
     console.warn('Slack webhook event drain exceeded 20000ms; continuing bounded shutdown');
@@ -16515,6 +16560,12 @@ async function stop() {
   if (meetingWebhookDrain.status === 'rejected' || meetingWebhookDrain.value !== true) {
     console.warn('Acknowledged meeting work drain exceeded 20000ms; continuing bounded shutdown');
   }
+  const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
+  const [persistenceDrain, , recentMeetingsDrain] = await Promise.allSettled([
+    intelligence.persistStrict(),
+    intelligenceRoutesRuntime.close(),
+    drainRecentMeetingsRefresh({ timeoutMs: 10000 }),
+  ]);
   if (recentMeetingsDrain.status === 'rejected' || recentMeetingsDrain.value !== true) {
     console.warn('Recent-meetings cache refresh drain exceeded 10000ms; continuing bounded shutdown');
   }

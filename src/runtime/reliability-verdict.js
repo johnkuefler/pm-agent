@@ -197,10 +197,22 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       message: 'State persistence has a meaningful foreground backlog.' });
   }
   const backgroundQueued = Number(background.post_interaction?.queued) || 0;
-  const checkpointPending = Number(background.transcript_checkpoints?.pending) || 0;
+  const transcriptCheckpoints = background.transcript_checkpoints || {};
+  const checkpointPending = Number(transcriptCheckpoints.pending) || 0;
   if (backgroundQueued + checkpointPending > 5) {
     degraded.push({ code: 'background_backlog', count: backgroundQueued + checkpointPending,
       message: 'Deferred background work is accumulating.' });
+  }
+  if (Number(transcriptCheckpoints.maximum_retry_attempt) >= 3) {
+    actionRequired.push({ code: 'transcript_checkpoint_repeated_failure',
+      count: Number(transcriptCheckpoints.retrying) || undefined,
+      attempts: Number(transcriptCheckpoints.maximum_retry_attempt),
+      message: 'At least one meeting transcript is repeatedly failing its durable checkpoint.' });
+  } else if (Number(transcriptCheckpoints.retrying) > 0) {
+    degraded.push({ code: 'transcript_checkpoint_retry',
+      count: Number(transcriptCheckpoints.retrying),
+      attempts: Number(transcriptCheckpoints.maximum_retry_attempt) || undefined,
+      message: 'A meeting transcript checkpoint is retrying after a persistence failure.' });
   }
   if (Number(apiOpportunityOperations.pending) > 5) {
     degraded.push({ code: 'api_opportunity_operation_backlog',
