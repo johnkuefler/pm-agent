@@ -89,6 +89,35 @@ test('durable cycle open and idempotent resume each commit one state revision', 
   assert.ok(diagnostics.cycle_open.last_total_ms >= diagnostics.cycle_open.last_refresh_ms);
 });
 
+test('cycle completion is durable before success and byte-identical retries re-prove persistence', async () => {
+  const { store, writes } = optimizedFixture();
+  await store.init();
+  const started = await store.openOrResumeCycle({ id: 'durable-close-cycle',
+    holder: 'nora-cowork', resume_active: true });
+  const completion = {
+    status: 'failed',
+    summary: 'The bounded operational pass stopped before external work.',
+    actions: [],
+    substrate_at_close: { stress: 0.2 },
+  };
+
+  const closed = await store.completeCycleDurable(started.cycle.id, completion);
+  assert.equal(closed.status, 'failed');
+  assert.equal(writes.length, 2, 'close success waits for its own durable revision');
+
+  const retry = await store.completeCycleDurable(started.cycle.id, {
+    ...completion, substrate_at_close: { stress: 0.8 },
+  });
+  assert.equal(retry.completion_request_commitment, closed.completion_request_commitment);
+  assert.equal(writes.length, 3,
+    'an identical retry re-proves durable storage instead of trusting only in-memory state');
+  await assert.rejects(
+    store.completeCycleDurable(started.cycle.id, { ...completion, summary: 'Different bytes.' }),
+    /already closed/,
+  );
+  assert.equal(writes.length, 3);
+});
+
 test('durable cycle batches cannot wait indefinitely on a stalled persistence transport', async () => {
   const db = { setStateSerialized: async () => new Promise(() => {}) };
   const store = createIntelligenceStore({ filePath: 'unused', db,

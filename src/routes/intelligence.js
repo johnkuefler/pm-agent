@@ -747,6 +747,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     try {
       const validationPayload = { ...(req.body || {}) };
       delete validationPayload.validation_commitment;
+      delete validationPayload._completion_request_commitment;
       const validationCommitment = expectationForecast.commitment({
         operation: 'resolve_expectation', id: req.params.id, payload: validationPayload,
       });
@@ -764,7 +765,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, forecast });
     } catch (error) { res.status(forecast ? 503 : 400).json({ error: error.message }); }
   });
-  app.patch('/intelligence/cycles/:id/complete', requireAuth, (req, res) => {
+  app.patch('/intelligence/cycles/:id/complete', requireAuth, async (req, res) => {
     const startedAt = performance.now();
     try {
       const validationPayload = { ...(req.body || {}) };
@@ -789,7 +790,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         return res.status(400).json({ error: 'cycle completion validation_commitment does not match this exact payload' });
       }
       const authoritativeInputs = getCognitiveInputs();
-      const cycle = store.completeCycle(req.params.id, {
+      const cycle = await store.completeCycleDurable(req.params.id, {
         ...validationPayload, substrate_at_close: authoritativeInputs.soma || null,
       });
       const completionMs = performance.now() - startedAt;
@@ -806,7 +807,14 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.set('Server-Timing', `cycle-completion;dur=${completionMs.toFixed(1)}`);
       if (store.interventionActive('integrated_self_binding')) return res.json({ ok: true, cycle: { id: cycle.id, status: cycle.status, experimental_access_sealed: true } });
       res.json({ ok: true, cycle });
-    } catch (error) { res.set('Server-Timing', `cycle-completion-failed;dur=${(performance.now() - startedAt).toFixed(1)}`); res.status(400).json({ error: error.message,
+    } catch (error) {
+      const persistenceFailure = ['INTELLIGENCE_PERSISTENCE_FAILED',
+        'INTELLIGENCE_PERSISTENCE_TIMEOUT'].includes(error.code);
+      if (persistenceFailure) res.set('Retry-After', '5');
+      res.set('Server-Timing', `cycle-completion-failed;dur=${(performance.now() - startedAt).toFixed(1)}`);
+      res.status(persistenceFailure ? 503 : 400).json({ error: error.message,
+      ...(persistenceFailure ? { retryable: true,
+        retry_contract: 'retry after Retry-After with the byte-identical completion payload' } : {}),
       ...(error.code ? { code: error.code } : {}),
       ...(error.due_action_ids ? { due_action_ids: error.due_action_ids } : {}) }); }
   });

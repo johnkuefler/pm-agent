@@ -10638,12 +10638,11 @@ async function forceCloseFallbackLifecycle(cycleId, reason) {
   if (!cycleId) return null;
   const cycle = intelligence.list('cycles').find(item => item.id === cycleId);
   if (!cycle || cycle.status !== 'running') return cycle || null;
-  const closed = intelligence.completeCycle(cycleId, {
+  const closed = await intelligence.completeCycleDurable(cycleId, {
     status: 'failed',
     summary: `Railway fallback stopped safely: ${String(reason || 'bounded recovery failure').slice(0, 500)}`,
     actions: [], substrate_at_close: currentCognitiveInputs().soma || null,
   });
-  await intelligence.persistStrict();
   return closed;
 }
 

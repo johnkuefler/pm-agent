@@ -27634,6 +27634,20 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function completeCycle(id, input = {}) {
     const totalStartedAt = performance.now();
     const stages = {};
+    const commitmentInput = { ...input };
+    delete commitmentInput._completion_request_commitment;
+    // Substrate is sampled authoritatively by the server at request time. It may legitimately
+    // change before an otherwise byte-identical retry, so it cannot define caller idempotency.
+    delete commitmentInput.substrate_at_close;
+    const completionRequestCommitment = crypto.createHash('sha256')
+      .update(canonicalJson(commitmentInput)).digest('hex');
+    const existingCycle = state.cycles.find(item => item.id === id);
+    if (existingCycle && existingCycle.status !== 'running') {
+      if (existingCycle.completion_request_commitment === completionRequestCommitment) {
+        return JSON.parse(JSON.stringify(existingCycle));
+      }
+      throw new Error('intelligence cycle already closed');
+    }
     const measured = (name, fn) => {
       const startedAt = performance.now();
       try { return fn(); }
@@ -27654,6 +27668,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       cycle.finished = finishedAt.toISOString();
       cycle.summary = input.summary ? String(input.summary).slice(0, 2000) : '';
       cycle.actions = Array.isArray(input.actions) ? input.actions.slice(0, 100) : [];
+      cycle.completion_request_commitment = completionRequestCommitment;
       const moment = current.cognition.experience_stream.find(item => item.cycle_id === cycle.id);
       const lifecycleAuditCache = new Map(closedExperienceAuditCache);
       if (moment && moment.status === 'open') {
@@ -27720,6 +27735,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         lifecyclePerformanceRuntime.max_stages_ms[name] || 0, duration);
     }
     if (totalMs >= 1000) console.warn(`Slow intelligence cycle completion ${id}: ${totalMs}ms ${JSON.stringify(stages)}`);
+    return result;
+  }
+
+  async function completeCycleDurable(id, input = {}) {
+    const wasRunning = state.cycles.some(item => item.id === id && item.status === 'running');
+    const result = await durableMutationBatch(() => completeCycle(id, input));
+    // A byte-identical retry can arrive after the first request mutated memory but its durable
+    // flush failed or timed out. Re-prove persistence before acknowledging that retry; merely
+    // recognizing the commitment in memory is not durable success.
+    if (!wasRunning && result) await persistStrict();
     return result;
   }
 
@@ -28406,7 +28431,8 @@ ${episodes.map(item => {
     playroomAppraisalQueue, commitPlayroomAppraisal, playroomSnapshot, playroomSessionAudit,
     initiativeStatus, spendInitiative,
     setInitiativeBudget, orient, startCycle, openOrResumeCycle,
-    cycleLifecycleRuntimeProjection, reenterCycle, reenterCycleDurable, completeCycle, validateCycleCompletion,
+    cycleLifecycleRuntimeProjection, reenterCycle, reenterCycleDurable, completeCycle,
+    completeCycleDurable, validateCycleCompletion,
     createExpectationForecast, resolveExpectationForecast, validateExpectationForecastResolution,
     expectationForecastSnapshot, expectationForecastRuntimeSnapshot,
     expectationForecastProjectionContext,
