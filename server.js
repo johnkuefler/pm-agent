@@ -16,6 +16,11 @@ const GOOGLE_UPLOAD_TIMEOUT_MS = 30000;
 const SLACK_CONTROL_TIMEOUT_MS = 6000;
 const SLACK_FILE_TIMEOUT_MS = 15000;
 const SLACK_FILE_MAX_BYTES = 25 * 1024 * 1024;
+// Eight seconds remains the measured first-delivery objective. A conversational provider
+// response gets a little longer before cancellation so a modest latency outlier yields the
+// complete answer instead of an avoidable fallback or a generic progress message.
+const SLACK_CONVERSATIONAL_TERMINAL_MS = 15000;
+const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 12000;
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -8173,7 +8178,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   const boundedTerminalAt = defaultTerminalAt => Number.isFinite(Number(terminalAtOverride))
     ? Math.min(defaultTerminalAt, Number(terminalAtOverride)) : defaultTerminalAt;
   let slackTerminalAt = boundedTerminalAt(
-    interactionStartedAt + (conversationPolicy.attachLiveTools ? 45000 : 8000));
+    interactionStartedAt + (conversationPolicy.attachLiveTools
+      ? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS));
   try {
     const key = sessionKey;
     // Session keys intentionally span a conversation, but research receipts and action attestations
@@ -8329,7 +8335,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Absolute end-to-end deadline. Context enrichment above already spent part of this budget;
     // preflights, tool calls, fallback retries, and delivery must share what remains.
     slackTerminalAt = boundedTerminalAt(
-      interactionStartedAt + (attachLiveTools ? 45000 : 8000));
+      interactionStartedAt + (attachLiveTools ? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS));
     const slackDeliveryReserveMs = attachLiveTools ? 2500 : 1000;
     const slackRemainingMs = (reserveMs = slackDeliveryReserveMs) =>
       Math.max(0, slackTerminalAt - Date.now() - reserveMs);
@@ -8634,7 +8640,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
         deadlineMs: Math.max(1, slackRemainingMs()),
-        providerTimeoutMs: Math.max(1, Math.min(attachLiveTools ? 20000 : 7000,
+        providerTimeoutMs: Math.max(1, Math.min(attachLiveTools
+          ? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS,
           slackRemainingMs())),
       }));
     } catch (err) {

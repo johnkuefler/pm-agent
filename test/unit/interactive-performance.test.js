@@ -1157,8 +1157,15 @@ test('Slack preflights, main tool loop, and retries share one absolute interacti
   const end = server.indexOf('// Slack thread admin', start);
   const handler = server.slice(start, end);
   assert.match(handler,
-    /slackTerminalAt = boundedTerminalAt\(\s*interactionStartedAt \+ \(attachLiveTools \? 45000 : 8000\)\)/,
+    /slackTerminalAt = boundedTerminalAt\(\s*interactionStartedAt \+ \(attachLiveTools \? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS\)\)/,
     'ordinary and recovery Slack turns must share the earlier absolute terminal deadline');
+  assert.match(server, /const SLACK_CONVERSATIONAL_TERMINAL_MS = 15000/);
+  assert.match(server, /const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 12000/);
+  assert.match(handler,
+    /providerTimeoutMs: Math\.max\(1, Math\.min\(attachLiveTools\s*\? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS,/,
+    'ordinary model generation may use the reliability margin without receiving a fresh deadline');
+  assert.equal(performance.BUDGET_MS.slack, 8000,
+    'the reliability margin must not weaken the measured Slack latency objective');
   assert.match(handler, /slackRemainingMs\(12000\)/,
     'experimental preflight calls must preserve a main-answer reserve');
   assert.match(handler, /deadlineMs: Math\.max\(1, slackRemainingMs\(\)\)/,
