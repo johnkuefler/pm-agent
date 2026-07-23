@@ -1160,7 +1160,11 @@ test('Slack preflights, main tool loop, and retries share one absolute interacti
     /slackTerminalAt = boundedTerminalAt\(\s*interactionStartedAt \+ \(attachLiveTools \? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS\)\)/,
     'ordinary and recovery Slack turns must share the earlier absolute terminal deadline');
   assert.match(server, /const SLACK_CONVERSATIONAL_TERMINAL_MS = 15000/);
-  assert.match(server, /const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 12000/);
+  assert.match(server, /const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 9000/);
+  assert.match(server, /const SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS = 3500/);
+  assert.match(handler,
+    /const slackDeliveryReserveMs = attachLiveTools \? 2500 : SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS/,
+    'bounded conversation must preserve a dedicated Slack delivery window');
   assert.match(handler,
     /providerTimeoutMs: Math\.max\(1, Math\.min\(attachLiveTools\s*\? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS,/,
     'ordinary model generation may use the reliability margin without receiving a fresh deadline');

@@ -18,9 +18,11 @@ const SLACK_FILE_TIMEOUT_MS = 15000;
 const SLACK_FILE_MAX_BYTES = 25 * 1024 * 1024;
 // Eight seconds remains the measured first-delivery objective. A conversational provider
 // response gets a little longer before cancellation so a modest latency outlier yields the
-// complete answer instead of an avoidable fallback or a generic progress message.
+// complete answer instead of an avoidable fallback or a generic progress message. Keep a
+// separate delivery reserve: provider latency must never consume Slack's chance to post.
 const SLACK_CONVERSATIONAL_TERMINAL_MS = 15000;
-const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 12000;
+const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 9000;
+const SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS = 3500;
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -3203,9 +3205,33 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
 function isLightweightSocialSlackMessage(text) {
   const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (!normalized || normalized.length > 120 || /https?:\/\//.test(normalized)) return false;
-  return /^(thanks|thank you|ty|appreciate it|good night|goodnight|have a good (night|evening|weekend)|nice work|great work|good work)(?:\s+for\s+[^?]{1,80})?[!.]*$/.test(normalized)
+  return /^(?:(?:good\s+)?(?:morning|afternoon|evening)|hello|hi|hey)(?:[,\s]+(?:there|nora|everyone|everybody|all|team))?[!,. ]*$/.test(normalized)
+    || /^(thanks|thank you|ty|appreciate it|good night|goodnight|have a good (night|evening|weekend)|nice work|great work|good work)(?:\s+for\s+[^?]{1,80})?[!.]*$/.test(normalized)
     || /^(?:whew|oof|ugh|man|wow)[,!.' ]*(?:(?:what|such) a )?(?:long|rough|busy|wild|crazy|weird|hard|good|great) day[!.]*$/.test(normalized)
     || /^(?:it'?s|its|today was|that was)(?: been)? (?:a )?(?:long|rough|busy|wild|crazy|weird|hard|good|great) day[!.]*$/.test(normalized);
+}
+
+function slackEmptyReplyFallback(text, conversationPolicy, {
+  sentSlack = false, queuedSelf = false, wroteLive = false,
+} = {}) {
+  if (sentSlack) return 'Sent.';
+  if (queuedSelf) return 'Queued for myself.';
+  if (wroteLive) return "Done, that's updated in Teamwork.";
+
+  const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (conversationPolicy?.lightweightSocial) {
+    if (/^(?:good\s+)?morning\b/.test(normalized)) return 'good morning';
+    if (/^(?:good\s+)?afternoon\b/.test(normalized)) return 'good afternoon';
+    if (/^(?:good\s+)?evening\b/.test(normalized)) return 'good evening';
+    if (/^(?:hello|hi|hey)\b/.test(normalized)) return 'hey';
+    if (/^(?:thanks|thank you|ty|appreciate it)\b/.test(normalized)) return 'of course';
+    if (/^(?:good night|goodnight|have a good night)\b/.test(normalized)) return 'good night';
+    if (/\bday\b/.test(normalized)) return 'yeah, it has been a day';
+  }
+  if (conversationPolicy?.boundedConversation) {
+    return 'I lost my response on that one—try me again.';
+  }
+  return "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it—I'll need to retry the action.";
 }
 
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
@@ -8399,7 +8425,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // preflights, tool calls, fallback retries, and delivery must share what remains.
     slackTerminalAt = boundedTerminalAt(
       interactionStartedAt + (attachLiveTools ? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS));
-    const slackDeliveryReserveMs = attachLiveTools ? 2500 : 1000;
+    const slackDeliveryReserveMs = attachLiveTools ? 2500 : SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS;
     const slackRemainingMs = (reserveMs = slackDeliveryReserveMs) =>
       Math.max(0, slackTerminalAt - Date.now() - reserveMs);
     const affordanceStartedAt = Date.now();
@@ -8850,10 +8876,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Direct path must NEVER post a blank message. A tool-only turn or a cut-off chain can
     // come back empty; give an honest fallback rather than an empty Slack bubble.
     if (!reply) {
-      reply = sentSlack ? "Sent."
-        : queuedSelf ? "Queued for myself."
-        : wroteLive ? "Done, that's updated in Teamwork."
-        : "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it—I'll need to retry the action.";
+      reply = slackEmptyReplyFallback(text, conversationPolicy, { sentSlack, queuedSelf, wroteLive });
       console.warn('Slack direct: empty model reply, sent fallback (wroteLive=' + wroteLive + ', sentSlack=' + sentSlack + ')');
     }
 
@@ -8996,10 +9019,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     reply = stripSlackLookupNarration(reply);
     if (!reply) {
       reply = stripSlackLookupNarration(candidateForMonitor)
-        || (wroteLive ? "Done, that's updated in Teamwork."
-          : sentSlack ? 'Sent.'
-            : queuedSelf ? 'Queued for myself.'
-              : "I couldn't complete that cleanly just now. I'll need to retry the action.");
+        || slackEmptyReplyFallback(text, conversationPolicy, { sentSlack, queuedSelf, wroteLive });
       console.warn(`Slack egress removed a status-only reply (length=${String(preEgressReply || '').length})`);
     }
 
@@ -16755,6 +16775,7 @@ module.exports = {
     isLightweightSocialSlackMessage,
     isRelationalSelfReflectionMessage,
     slackConversationPolicy,
+    slackEmptyReplyFallback,
     slackResponseModel,
     rankLexicalMemories,
     retrieveInteractiveMemories,

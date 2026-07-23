@@ -166,8 +166,29 @@ test('lightweight Slack thanks skip semantic recall without suppressing substant
   assert.equal(helpers.isLightweightSocialSlackMessage('Thanks for your work today'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('good night!'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('Whew, long day'), true);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Good morning'), true);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Morning, Nora!'), true);
+  assert.equal(helpers.isLightweightSocialSlackMessage('hey there'), true);
   assert.equal(helpers.isLightweightSocialSlackMessage('Thanks. What is due tomorrow?'), false);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Good morning, can you check Teamwork?'), false);
+  assert.equal(helpers.isLightweightSocialSlackMessage('Hey, move the launch task to Friday'), false);
   assert.equal(helpers.isLightweightSocialSlackMessage('Can you summarize the project evidence?'), false);
+});
+
+test('Slack greetings use bounded conversation and a social empty-response fallback', () => {
+  const policy = helpers.slackConversationPolicy('Good morning');
+  assert.deepEqual(policy, {
+    lightweightSocial: true,
+    relationalSelfReflection: false,
+    boundedConversation: true,
+    attachLiveTools: false,
+    contextTrialsEnabled: false,
+    pmLearningEnabled: false,
+  });
+  assert.equal(helpers.slackEmptyReplyFallback('Good morning', policy), 'good morning');
+  assert.equal(helpers.slackEmptyReplyFallback('Hey there', helpers.slackConversationPolicy('Hey there')), 'hey');
+  assert.equal(helpers.slackEmptyReplyFallback('Good morning', policy, { sentSlack: true }), 'Sent.');
+  assert.doesNotMatch(helpers.slackEmptyReplyFallback('Good morning', policy), /action|retry|rephrase/i);
 });
 
 test('Slack relational self-reflection is isolated from PM tools and task-performance trials', () => {
