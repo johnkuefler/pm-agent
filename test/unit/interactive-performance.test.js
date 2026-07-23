@@ -181,6 +181,25 @@ test('operational runs preempt optional work and keep the background scheduler p
   assert.equal(deniedLease.reason, 'operational_run_active');
   assert.equal(deniedLease.retry_after_ms, 60000);
   assert.equal(optionalLeaseStarted, false);
+  assert.deepEqual(__test.deferredJobWorkerAdmission({
+    operationalLock: {
+      holder: 'run-active', acquired_at: now - 1000, expires_at: now + 60000,
+    },
+    resourceAdmission: { allowed: true },
+    now,
+  }), {
+    allowed: false, reason: 'operational_run_active', retry_after_ms: 60000,
+  }, 'a durable deferred job must remain queued until the operational lock releases');
+  assert.deepEqual(__test.deferredJobWorkerAdmission({
+    operationalLock: null,
+    resourceAdmission: { allowed: false, reason: 'event_loop_pressure', retry_after_ms: 9000 },
+    now,
+  }), {
+    allowed: false, reason: 'event_loop_pressure', retry_after_ms: 9000,
+  });
+  assert.equal(__test.deferredJobWorkerAdmission({
+    operationalLock: null, resourceAdmission: { allowed: true }, now,
+  }).allowed, true);
 
   const calls = [];
   const drain = await __test.drainOptionalWorkForOperationalRun('run-active', {

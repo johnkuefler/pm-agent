@@ -6681,14 +6681,45 @@ async function flushPendingJobFinalizations() {
 }
 
 let _jobWorkerBusy = false;
+function deferredJobWorkerAdmission({
+  operationalLock = activeDurableRunLock(),
+  resourceAdmission = processResources.backgroundAdmission(),
+  now = Date.now(),
+} = {}) {
+  if (operationalLock) {
+    return {
+      allowed: false,
+      reason: 'operational_run_active',
+      retry_after_ms: Math.max(1000, Number(operationalLock.expires_at) - Number(now)),
+    };
+  }
+  if (resourceAdmission?.allowed === false) {
+    return {
+      allowed: false,
+      reason: resourceAdmission.reason || 'resource_pressure',
+      retry_after_ms: Math.max(1000, Number(resourceAdmission.retry_after_ms) || 5000),
+    };
+  }
+  return { allowed: true, reason: null, retry_after_ms: 0 };
+}
+
 async function jobWorkerTick() {
   if (_jobWorkerBusy) return; // serial: one job at a time, no overlap
   _jobWorkerBusy = true;
   _deferredJobHealth.pollStarted();
   try {
+    const admission = deferredJobWorkerAdmission();
+    if (!admission.allowed) {
+      // Do not claim the durable row until it is safe to start. A claimed MCP write cannot be
+      // blindly aborted and retried because the remote provider may have committed the side
+      // effect before the transport learned the outcome.
+      _deferredJobHealth.workerSucceeded();
+      return { state: 'deferred', ...admission };
+    }
     await flushPendingJobFinalizations();
     await processNextJob();
     _deferredJobHealth.workerSucceeded();
+    return { state: 'completed' };
   } catch (error) {
     _deferredJobHealth.workerFailed(error);
     throw error;
@@ -15854,6 +15885,7 @@ module.exports = {
     commitFallbackForecast,
     coverageCollectionCount,
     coverageResultShape,
+    deferredJobWorkerAdmission,
     gmailCoverageSearchArgs,
     boundedNativeTask,
     nativeTaskAttemptKey,
