@@ -4125,10 +4125,18 @@ function loadSessionTokens() {
   try { return JSON.parse(fs.readFileSync(getTokensPath(), 'utf8')); }
   catch { return {}; }
 }
-function persistSessionTokens() {
-  if (_dbReady) { return _writeThrough('tokens', () => db.setState('session_tokens', sessionTokens)); }
-  try { fs.writeFileSync(getTokensPath(), JSON.stringify(sessionTokens, null, 2)); }
-  catch (err) { console.error('Failed to persist session tokens:', err.message); }
+function persistSessionTokens({ strict = false } = {}) {
+  if (_dbReady) {
+    return _writeThrough('tokens', () => db.setState('session_tokens', sessionTokens), { strict });
+  }
+  try {
+    fs.writeFileSync(getTokensPath(), JSON.stringify(sessionTokens, null, 2));
+    return true;
+  } catch (err) {
+    console.error('Failed to persist session tokens:', err.message);
+    if (strict) throw err;
+    return false;
+  }
 }
 const sessionTokens = loadSessionTokens();
 console.log(`🔑 Loaded ${Object.keys(sessionTokens).length} persisted session tokens`);
@@ -4220,7 +4228,9 @@ async function startMeetingJoin({ meeting_url, project, sender, mandate, meeting
   const botId = botRes.data.id;
   activeBotId = botId;
   sessionTokens[sessionToken] = botId;
-  persistSessionTokens();
+  // Recall may start the output-media page immediately, and a deploy can happen at any point
+  // after this response. Do not report a successful join until the relay credential is durable.
+  await persistSessionTokens({ strict: true });
   if (!sessions[botId]) sessions[botId] = newSession(projectHint, { meetingDiagnostics: diagnostics });
   else if (projectHint) sessions[botId].project_hint = projectHint;
   sessions[botId].meetingDiagnostics = diagnostics;
@@ -4308,7 +4318,7 @@ app.post('/dummy/join', requireAuth, async (req, res) => {
     const botId = botRes.data.id;
     activeBotId = botId;
     sessionTokens[sessionToken] = botId;
-    persistSessionTokens();
+    await persistSessionTokens({ strict: true });
 
     // Build the dummy session: unmuted, flagged so the WS relay uses the custom prompt and
     // the response/transcript handlers skip persistence + extraction.
@@ -4670,7 +4680,7 @@ app.post('/webhook/recall-calendar', async (req, res) => {
                    || rd.bot_id || rd.id || rd.bot?.id || null;
         if (botId) {
           sessionTokens[sessionToken] = botId;
-          persistSessionTokens();
+          await persistSessionTokens({ strict: true });
           if (!sessions[botId]) sessions[botId] = newSession();
           sessions[botId].trialUnitKey = botId;
           // Capture attendee names + emails so the prompt's [Who you're talking to right
@@ -4732,14 +4742,19 @@ const sessions = {};
 let activeBotId = null;
 
 // Register bot ID when Nora joins a meeting
-app.post('/register-bot', requireAuth, (req, res) => {
-  activeBotId = req.body.bot_id;
-  if (req.body.session_token && req.body.bot_id) {
-    sessionTokens[req.body.session_token] = req.body.bot_id;
-    persistSessionTokens();
+app.post('/register-bot', requireAuth, async (req, res) => {
+  try {
+    activeBotId = req.body.bot_id;
+    if (req.body.session_token && req.body.bot_id) {
+      sessionTokens[req.body.session_token] = req.body.bot_id;
+      await persistSessionTokens({ strict: true });
+    }
+    console.log('🤖 Registered bot:', activeBotId);
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Bot registration credential persistence failed:', error.message);
+    res.status(503).json({ error: 'bot relay credential persistence failed', retryable: true });
   }
-  console.log('🤖 Registered bot:', activeBotId);
-  res.json({ ok: true });
 });
 
 // Recall.ai sends speaker-identified transcript chunks here (primary transcript path)
@@ -7963,7 +7978,9 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
     const link = extractMeetingUrl(slackMessageAllText(event));
     if (link) {
       console.log(`🎯 Meeting link posted by a bot in a DM (app_id=${event.app_id || '?'}, bot_id=${event.bot_id || '?'}): ${link}`);
-      handleSlackAutoJoin(event, link).catch(e => console.warn('auto-join failed:', e.message));
+      // The Slack request has already been acknowledged, but the event owner must remain alive
+      // through Recall bot creation and credential persistence so shutdown can drain it safely.
+      await handleSlackAutoJoin(event, link);
     } else if (/zoom|meet|teams|meeting|join/i.test(slackMessageAllText(event))) {
       // Looks meeting-ish but no link parsed — log the shape once so we can tune the extractor.
       console.log('🎯 Bot DM looked meeting-related but no link parsed. Shape:', JSON.stringify({ text: (event.text || '').slice(0, 200), attachments: (event.attachments || []).length, blocks: (event.blocks || []).length }));

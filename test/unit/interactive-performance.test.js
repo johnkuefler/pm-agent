@@ -527,6 +527,26 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'legacy connector requests must inherit a finite service-wide HTTP deadline');
   assert.match(server, /RECALL_JOIN_TIMEOUT_MS = 12000/,
     'meeting joins must fail cleanly inside a bounded provider deadline');
+  assert.match(server, /async function startMeetingJoin[\s\S]*?await persistSessionTokens\(\{ strict: true \}\)[\s\S]*?return \{ bot_id: botId/,
+    'a meeting join must durably commit its relay credential before reporting success');
+  const dummyJoin = server.slice(server.indexOf("app.post('/dummy/join'"),
+    server.indexOf('// Flatten a Slack message', server.indexOf("app.post('/dummy/join'")));
+  assert.match(dummyJoin, /await persistSessionTokens\(\{ strict: true \}\)/,
+    'a test meeting join must durably commit its relay credential before reporting success');
+  const calendarWebhook = server.slice(server.indexOf("app.post('/webhook/recall-calendar'"),
+    server.indexOf('// One session per bot', server.indexOf("app.post('/webhook/recall-calendar'")));
+  assert.match(calendarWebhook, /await persistSessionTokens\(\{ strict: true \}\)/,
+    'a scheduled meeting bot must durably commit its relay credential inside the owned webhook');
+  const registerBot = server.slice(server.indexOf("app.post('/register-bot'"),
+    server.indexOf('// Recall.ai sends', server.indexOf("app.post('/register-bot'")));
+  assert.match(registerBot, /async \(req, res\)[\s\S]*?await persistSessionTokens\(\{ strict: true \}\)/,
+    'voice-page bot registration must wait for durable relay credentials');
+  const slackWebhookProcessor = server.slice(server.indexOf('async function processSlackWebhookEvent'),
+    server.indexOf('// Slack thread admin', server.indexOf('async function processSlackWebhookEvent')));
+  assert.match(slackWebhookProcessor, /await handleSlackAutoJoin\(event, link\)/,
+    'Slack auto-join must remain inside the acknowledged event lifecycle until it settles');
+  assert.doesNotMatch(slackWebhookProcessor, /handleSlackAutoJoin\(event, link\)\.catch/,
+    'Slack auto-join must not detach from shutdown ownership');
   assert.match(server, /send_chat_message[\s\S]*?timeout: RECALL_CONTROL_TIMEOUT_MS/,
     'meeting chat delivery must not occupy a live session for the global timeout');
   assert.match(server, /cancelRecallBot[\s\S]*?timeout: RECALL_CONTROL_TIMEOUT_MS/,
