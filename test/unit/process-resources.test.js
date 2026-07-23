@@ -47,9 +47,38 @@ test('process resource monitor rotates bounded event-loop windows and closes cle
   snapshot = monitor.snapshot();
   assert.equal(snapshot.event_loop.last_complete_window.p99_ms, 60);
   assert.equal(snapshot.event_loop.last_complete_window.event_loop_utilization, 0.25);
+  assert.equal(monitor.backgroundAdmission().allowed, true);
   assert.equal(resets, 1);
   monitor.close();
   assert.equal(cleared, true);
   assert.equal(disabled, 1);
   assert.equal(monitor.snapshot().ready, false);
+});
+
+test('process resource monitor sheds background work while loop or memory pressure is elevated', () => {
+  let max = 700e6;
+  let p99 = 120e6;
+  let heapUsed = 100 * 1024 ** 2;
+  const histogram = {
+    mean: 20e6, get max() { return max; },
+    percentile: percentile => percentile === 99 ? p99 : 20e6,
+    enable() {}, disable() {}, reset() {},
+  };
+  const monitor = createProcessResourceMonitor({ monitorFactory: () => histogram,
+    performanceImpl: { eventLoopUtilization: () => ({ utilization: 0.1 }) },
+    memoryUsage: () => ({ rss: heapUsed, heapUsed, heapTotal: heapUsed, external: 0, arrayBuffers: 0 }),
+    heapStatistics: () => ({ heap_size_limit: 400 * 1024 ** 2 }),
+    constrainedMemory: () => 400 * 1024 ** 2, resourceUsage: () => ({}), uptime: () => 2,
+    setIntervalFn: () => ({ unref() {} }), clearIntervalFn() {},
+    now: (() => { let calls = 0; return () => 1000 + (++calls * 1000); })(),
+  });
+  monitor.start();
+  assert.deepEqual(monitor.backgroundAdmission().reason, 'event_loop_pressure');
+
+  max = 30e6; p99 = 25e6; heapUsed = 320 * 1024 ** 2;
+  assert.deepEqual(monitor.backgroundAdmission().reason, 'memory_pressure');
+
+  heapUsed = 100 * 1024 ** 2;
+  assert.equal(monitor.backgroundAdmission().allowed, true);
+  monitor.close();
 });

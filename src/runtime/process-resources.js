@@ -103,6 +103,36 @@ function createProcessResourceMonitor({ intervalMs = 60000, resolutionMs = 20,
     };
   }
 
+  function backgroundAdmission() {
+    const sample = snapshot();
+    if (!sample.ready) return { allowed: true, reason: null, retry_after_ms: 0 };
+    const memory = sample.memory || {};
+    const memoryPressure = Math.max(finite(memory.heap_utilization),
+      finite(memory.constrained_rss_utilization));
+    const current = sample.event_loop?.current_window || {};
+    const previous = sample.event_loop?.last_complete_window || {};
+    const currentMature = finite(current.duration_ms) >= 1000;
+    const loopP99 = Math.max(currentMature ? finite(current.p99_ms) : 0,
+      finite(previous.p99_ms));
+    const loopMax = Math.max(currentMature ? finite(current.max_ms) : 0,
+      finite(previous.max_ms));
+    const loopUtilization = finite(sample.cpu?.event_loop_utilization);
+    let reason = null;
+    if (memoryPressure >= 0.75) reason = 'memory_pressure';
+    else if (loopP99 >= 100 || loopMax >= 500 || loopUtilization >= 0.9) {
+      reason = 'event_loop_pressure';
+    }
+    return {
+      allowed: reason == null,
+      reason,
+      retry_after_ms: reason ? Math.min(windowMs, 30000) : 0,
+      memory_utilization: Math.round(memoryPressure * 10000) / 10000,
+      event_loop_p99_ms: loopP99,
+      event_loop_max_ms: loopMax,
+      event_loop_utilization: loopUtilization,
+    };
+  }
+
   function close() {
     if (timer) clearIntervalFn(timer);
     timer = null;
@@ -111,7 +141,7 @@ function createProcessResourceMonitor({ intervalMs = 60000, resolutionMs = 20,
     previousElu = null;
   }
 
-  return { start, rotate, snapshot, close };
+  return { start, rotate, snapshot, backgroundAdmission, close };
 }
 
 module.exports = { createProcessResourceMonitor, bytesToMb, nsToMs };

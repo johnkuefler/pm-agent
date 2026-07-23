@@ -495,7 +495,9 @@ const intelligenceRoutesRuntime = registerIntelligenceRoutes(app, {
     getResearchAutopilotStatus: options => researchAutopilotProgramStatus(options),
     shouldDeferResearchStatusRefresh: () => {
       const priority = interactivePerformance.prioritySnapshot();
-      return priority.active_interactions > 0 || priority.quiet_remaining_ms > 0;
+      return priority.active_interactions > 0 || priority.quiet_remaining_ms > 0
+        || (process.env.NORA_TEST_MODE !== '1'
+          && !processResources.backgroundAdmission().allowed);
     },
     loadResearchProjection: projection => db.isReady()
       ? db.getState(`research_projection_${projection}_v1`) : null,
@@ -14014,6 +14016,21 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
     return { protocol_version: interactivePerformance.PROTOCOL_VERSION, state: 'in_flight',
       trigger, at: new Date().toISOString() };
   }
+  const initialAdmission = processResources.backgroundAdmission();
+  if (!initialAdmission.allowed) {
+    _backgroundIntelligenceCycleLast = {
+      protocol_version: interactivePerformance.PROTOCOL_VERSION,
+      state: 'deferred_resource_pressure', trigger, reason: initialAdmission.reason,
+      retry_after_ms: initialAdmission.retry_after_ms, resource_admission: initialAdmission,
+      at: new Date().toISOString(),
+    };
+    runtimeActivity.record({ lane: 'background', kind: 'intelligence_cycle',
+      label: 'Background intelligence yielded to process pressure',
+      detail: 'Nonessential work is paused until event-loop and memory headroom recover.',
+      status: 'deferred', source: 'background-scheduler',
+      meta: { reason: initialAdmission.reason } });
+    return _backgroundIntelligenceCycleLast;
+  }
   const lease = interactivePerformance.beginBackground('scheduled-intelligence');
   if (!lease.allowed) {
     _backgroundIntelligenceCycleLast = backgroundPriorityDeferred('scheduled-intelligence', lease);
@@ -14062,6 +14079,13 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
   };
   const runStep = async (name, action) => {
     if (lease.wasStopped()) return false;
+    const resourceAdmission = processResources.backgroundAdmission();
+    if (!resourceAdmission.allowed) {
+      steps[name] = { state: 'deferred_resource_pressure', reason: resourceAdmission.reason,
+        retry_after_ms: resourceAdmission.retry_after_ms };
+      lease.cancel(`resource_pressure:${resourceAdmission.reason}:${name}`);
+      return false;
+    }
     const cycleRemainingMs = budget.cycle_timeout_ms - (Date.now() - cycleStartedAt);
     if (cycleRemainingMs <= 0) {
       steps[name] = { state: 'deferred_runtime_budget', reason: 'background_cycle_timeout' };
@@ -14208,6 +14232,9 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
 }
 
 function tickEndogenousRuntimeWithDiagnostics(trigger) {
+  const admission = processResources.backgroundAdmission();
+  if (!admission.allowed) return { state: 'deferred_resource_pressure', trigger,
+    reason: admission.reason, retry_after_ms: admission.retry_after_ms };
   const startedAt = Date.now();
   try { return tickEndogenousRuntime(); }
   finally {
@@ -14216,8 +14243,17 @@ function tickEndogenousRuntimeWithDiagnostics(trigger) {
   }
 }
 
-function scheduleStartupBackgroundTask(label, delayMs, fn) {
+function scheduleStartupBackgroundTask(label, delayMs, fn, deferrals = 0) {
   const timer = setTimeout(() => {
+    const timerIndex = _runtimeIntervals.indexOf(timer);
+    if (timerIndex >= 0) _runtimeIntervals.splice(timerIndex, 1);
+    if (_serviceReadiness.phase === 'draining') return;
+    const admission = processResources.backgroundAdmission();
+    if (!admission.allowed) {
+      if (deferrals === 0) console.warn(`${label} deferred for ${admission.reason}`);
+      scheduleStartupBackgroundTask(label, admission.retry_after_ms || 30000, fn, deferrals + 1);
+      return;
+    }
     Promise.resolve()
       .then(fn)
       .catch(error => console.error(`${label} failed:`, error.message));
@@ -14452,6 +14488,7 @@ module.exports = {
     runBackgroundIntelligenceRuntime,
     backgroundIntelligenceRuntimeBudget,
     runBackgroundActionWithinBudget,
+    processResources,
     runBehavioralFingerprintSubjectRuntime,
     runBehavioralFingerprintSchedulingRuntime,
     behavioralFingerprintEvaluatorRuntimeConfig,

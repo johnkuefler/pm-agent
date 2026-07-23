@@ -226,6 +226,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the first dashboard visitor after a restart must not pay the cold projection cost');
   assert.match(server, /startup expectation calibration warmup[\s\S]*warmExpectationSummary/,
     'the first hourly preflight after a restart must not pay the cold replay cost');
+  assert.match(server, /scheduleStartupBackgroundTask[\s\S]*_runtimeIntervals\.splice\(timerIndex, 1\)/,
+    'resource-pressure deferrals must not retain every elapsed startup timer forever');
   assert.match(server, /app\.get\('\/health'[\s\S]*readiness\.ready \? 200 : 503/,
     'Railway must not route traffic until persistence and startup reconciliation are ready');
   assert.match(server, /server\.headersTimeout = 15000;[\s\S]*server\.requestTimeout = 130000;/,
@@ -706,6 +708,26 @@ test('scheduled intelligence defers without touching providers while a person ha
   assert.equal(providerCalls, 0);
   foreground.release();
   performance.resetPriorityGateForTest();
+});
+
+test('scheduled intelligence defers without touching providers during process pressure', async () => {
+  performance.resetPriorityGateForTest();
+  const { __test } = require('../../server');
+  const originalAdmission = __test.processResources.backgroundAdmission;
+  __test.processResources.backgroundAdmission = () => ({ allowed: false,
+    reason: 'event_loop_pressure', retry_after_ms: 30000 });
+  let providerCalls = 0;
+  try {
+    const result = await __test.runBackgroundIntelligenceRuntime({
+      trigger: 'resource-pressure-test',
+      post: async () => { providerCalls += 1; throw new Error('must not run'); },
+    });
+    assert.equal(result.state, 'deferred_resource_pressure');
+    assert.equal(result.reason, 'event_loop_pressure');
+    assert.equal(providerCalls, 0);
+  } finally {
+    __test.processResources.backgroundAdmission = originalAdmission;
+  }
 });
 
 test('realtime telemetry is batched until the voice foreground and cooldown have ended', () => {
