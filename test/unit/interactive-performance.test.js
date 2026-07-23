@@ -231,6 +231,19 @@ test('operational runs preempt optional work and keep the background scheduler p
   assert.equal(optionalStepRan, false);
 });
 
+test('active run-lock projections defer full historical handoff replay until closure', () => {
+  const storeSource = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'intelligence', 'store.js'), 'utf8');
+  const projection = storeSource.slice(
+    storeSource.indexOf('function cycleLifecycleRuntimeProjection'),
+    storeSource.indexOf('function reenterCycle', storeSource.indexOf('function cycleLifecycleRuntimeProjection')),
+  );
+  assert.match(projection,
+    /handoffAuditRequired = Boolean\(moment && cycle\?\.status !== 'running'/);
+  assert.match(projection,
+    /momentAudit = handoffAuditRequired \? experienceMomentAudit\(moment\) : null/);
+});
+
 test('post-interaction learning drops a hung item after its bounded budget', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');

@@ -27457,7 +27457,16 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const cycle = state.cycles.find(item => item.id === cycleId) || null;
     const moment = state.cognition.experience_stream.find(item => item.id === momentId
       && item.cycle_id === cycleId) || null;
-    const momentAudit = moment ? experienceMomentAudit(moment) : null;
+    const closureHandoffCommitted = Boolean(moment?.closure?.handoff_hash);
+    const handoffCommitted = state.cognition.continuity_handoffs.some(item =>
+      item.cycle_id === cycleId);
+    // Opening, refreshing, and reading a run lock only need constant-time lifecycle state while
+    // the cycle is active. Replaying the complete historical experience chain here made lock
+    // acquisition grow with Nora's ledger even though handoff eligibility cannot matter until
+    // a closed cycle has a handoff to commit.
+    const handoffAuditRequired = Boolean(moment && cycle?.status !== 'running'
+      && closureHandoffCommitted && !handoffCommitted);
+    const momentAudit = handoffAuditRequired ? experienceMomentAudit(moment) : null;
     return {
       integrity_verified: Boolean(cycle && moment
         && cycle.experience_moment_id === moment.id && moment.cycle_id === cycle.id),
@@ -27469,9 +27478,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       forecast_correction_committed: Boolean(moment?.self_forecast?.self_correction?.revision),
       forecast_correction_required: Boolean(moment?.self_forecast?.self_correction
         && !moment.self_forecast.self_correction.revision),
-      closure_handoff_committed: Boolean(moment?.closure?.handoff_hash),
-      handoff_committed: state.cognition.continuity_handoffs.some(item => item.cycle_id === cycleId),
-      handoff_eligible: Boolean(momentAudit?.evidence_eligible),
+      closure_handoff_committed: closureHandoffCommitted,
+      handoff_committed: handoffCommitted,
+      handoff_eligible: handoffAuditRequired && momentAudit?.evidence_eligible === true,
+      handoff_audit_deferred: Boolean(moment && cycle?.status === 'running'),
     };
   }
 

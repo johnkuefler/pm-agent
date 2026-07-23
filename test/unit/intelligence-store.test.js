@@ -2633,6 +2633,8 @@ test('cycle self-forecasts commit before action and score automatically against 
   assert.equal(activeLifecycle.forecast_committed, true);
   assert.equal(activeLifecycle.forecast_protocol_version, 3);
   assert.equal(activeLifecycle.forecast_protocol_resolution_required, false);
+  assert.equal(activeLifecycle.handoff_eligible, false);
+  assert.equal(activeLifecycle.handoff_audit_deferred, true);
   const retry = store.preregisterCycleSelfForecast(started.cycle.id, forecast.forecast);
   assert.equal(retry.forecast_commitment, forecast.forecast_commitment);
   assert.throws(() => store.preregisterCycleSelfForecast(started.cycle.id, {
