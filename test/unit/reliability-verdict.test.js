@@ -114,6 +114,11 @@ test('deferred job persistence failures require action while one transient failu
   const failed = assessRuntimeReliability(stuck, { now });
   assert.equal(failed.status, 'action_required');
   assert.equal(failed.action_required[0].code, 'deferred_job_worker_failure');
+
+  const bootstrap = healthySnapshot();
+  bootstrap.deferred_jobs.loop = { consecutive_failures: 1 };
+  assert.equal(assessRuntimeReliability(bootstrap, { now }).status, 'degraded',
+    'worker bootstrap failures must be visible before polling begins');
 });
 
 test('fatal process recovery is visible as action required during its drain window', () => {

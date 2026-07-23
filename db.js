@@ -360,10 +360,19 @@ async function finishJob(id, { status, result, error }) {
     [id, status, result !== undefined && result !== null ? JSON.stringify(result) : null, error || null]
   );
 }
-// On boot, any 'running' job was orphaned by a restart mid-run — put it back in the queue.
-async function requeueRunningJobs() {
-  const { rows } = await q(`UPDATE ${DB_SCHEMA}.jobs SET status='queued' WHERE status='running' RETURNING id`);
-  return rows.length;
+// A running connector job may have committed its remote side effect before a restart severed
+// the response. Replaying it is unsafe without provider-level idempotency, so preserve the
+// ambiguity explicitly and require a human-visible check before any retry.
+async function interruptRunningJobs() {
+  const error = 'Service restarted while the connector action was in progress. Its remote outcome is unknown, so it was not retried automatically.';
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status='interrupted', error=$1, finished_at=now()
+      WHERE status='running'
+      RETURNING *`,
+    [error]
+  );
+  return rows;
 }
 async function recentJobs(limit = 25) {
   const { rows } = await q(
@@ -1059,5 +1068,5 @@ module.exports = {
   loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,
   upsertTranscript, appendTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
-  enqueueJob, claimNextQueuedJob, finishJob, requeueRunningJobs, recentJobs,
+  enqueueJob, claimNextQueuedJob, finishJob, interruptRunningJobs, recentJobs,
 };

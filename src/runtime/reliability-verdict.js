@@ -48,13 +48,15 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
     actionRequired.push({ code: 'entity_persistence_failure',
       message: 'At least one durable entity write lane has an unresolved failure.' });
   }
-  if (Number(deferredJobs.consecutive_worker_failures) >= 3 || Number(deferredJobs.pending_finalizations) > 0) {
+  const deferredWorkerFailures = Math.max(Number(deferredJobs.consecutive_worker_failures) || 0,
+    Number(deferredJobs.loop?.consecutive_failures) || 0);
+  if (deferredWorkerFailures >= 3 || Number(deferredJobs.pending_finalizations) > 0) {
     actionRequired.push({ code: 'deferred_job_worker_failure',
-      count: Number(deferredJobs.consecutive_worker_failures) || Number(deferredJobs.pending_finalizations),
+      count: deferredWorkerFailures || Number(deferredJobs.pending_finalizations),
       message: 'The deferred connector worker cannot durably advance its queue.' });
-  } else if (Number(deferredJobs.consecutive_worker_failures) > 0) {
+  } else if (deferredWorkerFailures > 0) {
     degraded.push({ code: 'deferred_job_worker_recovering',
-      count: Number(deferredJobs.consecutive_worker_failures),
+      count: deferredWorkerFailures,
       message: 'The deferred connector worker is backing off after a transient failure.' });
   }
   if (Number(deferredJobs.memory_queue?.queued) > 10) {

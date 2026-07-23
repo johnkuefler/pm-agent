@@ -115,6 +115,7 @@ const { createProcessResourceMonitor } = require('./src/runtime/process-resource
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { createRecurringJobRegistry } = require('./src/runtime/recurring-jobs');
+const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
@@ -528,8 +529,11 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     interactive_responsiveness: intelligence.interactivePerformanceSnapshot(),
     interactive_priority: interactivePerformance.prioritySnapshot(),
     background_work: backgroundWorkSnapshot(),
-    deferred_jobs: _deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
-      pendingFinalizations: _pendingJobFinalizations.size }),
+    deferred_jobs: {
+      ..._deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
+        pendingFinalizations: _pendingJobFinalizations.size }),
+      loop: _jobWorkerLoop?.snapshot() || null,
+    },
     process_health: _processRecovery.snapshot(),
     hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
     hourly_fallback: {
@@ -6613,12 +6617,8 @@ function renderJobResult(result, label) {
   return `done with ${label || 'that'}.` + (text && text.length < 500 ? ` ${text}` : '');
 }
 
-async function deliverJobResult(job, { ok, result, error }) {
+async function deliverJobMessage(job, text) {
   const origin = job.origin || {};
-  const label = job.label || job.tool_name;
-  const text = ok
-    ? renderJobResult(result, label)
-    : `couldn't finish ${label || 'that'}. ${String(error || 'it failed').slice(0, 200)}. want me to retry?`;
   if (origin.kind === 'slack' && origin.channel) {
     const posted = await postSlackMessage(origin.channel, text, origin.thread_ts);
     if (!posted) { const j = resolveJohnSlackId(); if (j) await postSlackMessage(j, `(couldn't reach the original thread) ${text}`); }
@@ -6636,6 +6636,31 @@ async function deliverJobResult(job, { ok, result, error }) {
   const johnId = resolveJohnSlackId();
   if (johnId) await postSlackMessage(johnId, `${text}${origin.requester ? `\n(you asked for this on a call earlier)` : ''}`);
   else console.warn(`job ${job.id}: no delivery target (origin ${origin.kind}, no John ID in memory)`);
+}
+
+async function deliverJobResult(job, { ok, result, error }) {
+  const label = job.label || job.tool_name;
+  const text = ok
+    ? renderJobResult(result, label)
+    : `couldn't finish ${label || 'that'}. ${String(error || 'it failed').slice(0, 200)}. want me to retry?`;
+  return deliverJobMessage(job, text);
+}
+
+async function recoverInterruptedDeferredJobs() {
+  if (!_dbReady) return [];
+  const interrupted = await db.interruptRunningJobs();
+  for (const job of interrupted) {
+    const label = job.label || job.tool_name || 'that connector action';
+    const message = `the service restarted while ${label} was still in progress. I can't verify whether the provider completed it, so I did not retry it and risk doing it twice. please check the destination before asking me to retry.`;
+    safelyCompleteToolExecution(job.origin?.action_execution_id, 'failed',
+      'Service restart left the external action outcome unknown; automatic retry was suppressed.');
+    await deliverJobMessage(job, message).catch(error =>
+      console.warn(`Interrupted deferred job ${job.id} notice could not be delivered: ${error.message}`));
+  }
+  if (interrupted.length) {
+    console.warn(`Marked ${interrupted.length} interrupted deferred connector job(s) outcome-unknown without replay`);
+  }
+  return interrupted;
 }
 
 async function processNextJob() {
@@ -6699,6 +6724,7 @@ async function flushPendingJobFinalizations() {
 }
 
 let _jobWorkerBusy = false;
+let _jobWorkerLoop = null;
 function deferredJobWorkerAdmission({
   operationalLock = activeDurableRunLock(),
   resourceAdmission = processResources.backgroundAdmission(),
@@ -6744,18 +6770,17 @@ async function jobWorkerTick() {
   } finally { _jobWorkerBusy = false; }
 }
 async function startJobWorker() {
-  if (_dbReady) { try { const n = await db.requeueRunningJobs(); if (n) console.log(`🧵 Requeued ${n} orphaned job(s) after restart`); } catch (e) { console.warn('requeueRunningJobs:', e.message); } }
-  let timer = null;
-  const schedule = () => {
-    timer = setTimeout(async () => {
-      try { await jobWorkerTick(); }
-      catch (error) { console.warn(`Deferred job worker paused for bounded backoff: ${error.message}`); }
-      schedule();
-    }, _deferredJobHealth.schedule());
-    timer.unref?.();
-  };
-  schedule();
-  _runtimeIntervals.push({ close: () => { if (timer) clearTimeout(timer); } });
+  if (_jobWorkerLoop && !_jobWorkerLoop.snapshot().closed) return;
+  _jobWorkerLoop = createAdaptiveWorkerLoop({
+    name: 'deferred-connector-worker',
+    bootstrap: recoverInterruptedDeferredJobs,
+    tick: jobWorkerTick,
+    nextDelayMs: () => _deferredJobHealth.schedule(),
+    onError: error =>
+      console.warn(`Deferred job worker paused for bounded backoff: ${error.message}`),
+  });
+  _runtimeIntervals.push(_jobWorkerLoop);
+  await _jobWorkerLoop.start();
 }
 
 // Run a Claude request that may use client-side tools, executing them and looping until the
@@ -15965,6 +15990,12 @@ async function stop() {
   if (!recurringJobsDrained) {
     console.warn('Recurring runtime job drain exceeded 10000ms; continuing bounded shutdown');
   }
+  const deferredWorkerDrained = _jobWorkerLoop
+    ? await _jobWorkerLoop.drain({ timeoutMs: 10000 }) : true;
+  if (!deferredWorkerDrained) {
+    console.warn('Deferred connector worker drain exceeded 10000ms; its restart outcome will be marked uncertain');
+  }
+  _jobWorkerLoop = null;
   const closeServer = server.listening
     ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
   server.closeIdleConnections?.();
