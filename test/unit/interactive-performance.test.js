@@ -739,6 +739,7 @@ test('Slack enrichment deadlines abort their losing network requests', () => {
 });
 
 test('Slack waits for one coherent reply instead of posting a generic progress message', () => {
+  const { __test } = require('../../server');
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const start = server.indexOf('async function handleSlackImpl');
   const end = server.indexOf('// Slack thread admin', start);
@@ -746,8 +747,18 @@ test('Slack waits for one coherent reply instead of posting a generic progress m
   assert.ok(start >= 0 && end > start);
   assert.doesNotMatch(slackHandler, /on it\s*[—-]+\s*checking the live details/i);
   assert.doesNotMatch(slackHandler, /earlyStatus(?:Timer|Promise)/);
-  assert.match(slackHandler, /reply = reply\.replace\(\/\^\\s\*on it/,
-    'Slack must strip the historical generic progress preamble if the model reproduces it');
+  assert.match(slackHandler, /reply = stripSlackLookupNarration\(reply\)/,
+    'Slack must strip historical lookup narration if the model reproduces it');
+  assert.equal(__test.stripSlackLookupNarration(
+    'on it — checking the live details now.\n\nyeah, Wednesday in July hits different'),
+  'yeah, Wednesday in July hits different');
+  assert.equal(__test.stripSlackLookupNarration(
+    'One sec, pulling that up now. The task is due Friday.'), 'The task is due Friday.');
+  assert.equal(__test.stripSlackLookupNarration('On it — checking the live details now.'),
+    '', 'a status-only provider result must continue into the ordinary empty-response recovery');
+  assert.equal(__test.stripSlackLookupNarration('On it. I moved the task to Friday.'),
+    'On it. I moved the task to Friday.',
+  'a real completion acknowledgement is not lookup narration');
 });
 
 test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {

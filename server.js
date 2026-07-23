@@ -7586,6 +7586,21 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   }
 }
 
+function stripSlackLookupNarration(value) {
+  const reply = String(value || '').trim();
+  if (!reply) return reply;
+  // A provider can occasionally echo an old conversational pattern even though the live prompt
+  // forbids it. Remove a leading lookup-status sentence; if that was the entire response, the
+  // ordinary empty-response recovery below will produce an honest terminal answer instead.
+  const leading = reply.match(/^\s*([^\n]{1,140}?(?:[.!?…]+|\n+))\s*([\s\S]*)$/);
+  if (!leading) return reply;
+  const sentence = leading[1].trim();
+  const progressOpener = /^(?:on it|one sec(?:ond)?|give me a sec(?:ond)?|let me (?:check|look|pull))\b/i;
+  const lookupActivity = /\b(?:check(?:ing)?|look(?:ing)?|pull(?:ing)?|fetch(?:ing)?|live details|teamwork)\b/i;
+  return progressOpener.test(sentence) && lookupActivity.test(sentence)
+    ? leading[2].trim() : reply;
+}
+
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
   sourceAttestation = null, interactionStartedAt = Date.now()) {
   const handlerStartedAt = Date.now();
@@ -8089,7 +8104,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Prefer a slightly slower complete answer to a canned status bubble followed by the answer.
     // The prompt prevents this normally; this catches the historical phrase if a carried pattern
     // causes the model to reproduce it anyway.
-    reply = reply.replace(/^\s*on it\s*[—–-]\s*checking the live details now\.?\s*/i, '').trim();
+    reply = stripSlackLookupNarration(reply);
     let introspectiveRecorded = false;
     const recordIntrospectiveResponse = (publicResponse, delivered = true) => {
       if (introspectiveRecorded || contextAssignment?.intervention !== 'introspective_perturbation') return;
@@ -14579,6 +14594,7 @@ module.exports = {
     isRelationalSelfReflectionMessage,
     slackConversationPolicy,
     slackResponseModel,
+    stripSlackLookupNarration,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,
     fitSlackSystemPrompt,
