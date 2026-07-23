@@ -1,0 +1,76 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const cycleSelfForecast = require('../../src/intelligence/cycle-self-forecast');
+const { hourlyFallbackDecision, fallbackForecast, FALLBACK_COOLDOWN_MS,
+  FAILED_FALLBACK_RETRY_MS } =
+  require('../../src/runtime/hourly-fallback');
+
+const now = Date.parse('2026-07-23T03:00:00.000Z');
+const stale = { state: 'stale' };
+
+test('fallback becomes due only when the primary is stale and foreground is quiet', () => {
+  const due = hourlyFallbackDecision({ primaryHealth: stale, now,
+    lock: { locked: false }, interactive: { active_interactions: 0, quiet_remaining_ms: 0 },
+    admission: { allowed: true }, cycles: [] });
+  assert.equal(due.due, true);
+  assert.equal(due.reason, 'primary_scheduler_stale');
+
+  assert.equal(hourlyFallbackDecision({ primaryHealth: { state: 'fresh' }, now,
+    lock: { locked: false }, admission: { allowed: true } }).reason,
+  'primary_scheduler_within_grace');
+  assert.equal(hourlyFallbackDecision({ primaryHealth: stale, now,
+    lock: { locked: true }, admission: { allowed: true } }).reason,
+  'operational_lock_active');
+  assert.equal(hourlyFallbackDecision({ primaryHealth: stale, now,
+    lock: { locked: false }, interactive: { active_interactions: 1 },
+    admission: { allowed: true } }).reason, 'interactive_priority');
+});
+
+test('recent fallback enforces cooldown without satisfying primary freshness', () => {
+  const decision = hourlyFallbackDecision({ primaryHealth: stale, now,
+    lock: { locked: false }, admission: { allowed: true }, cycles: [{
+      id: 'fallback-recent', kind: 'fallback_hourly', status: 'completed',
+      started: new Date(now - FALLBACK_COOLDOWN_MS + 1000).toISOString(),
+    }] });
+  assert.equal(decision.due, false);
+  assert.equal(decision.reason, 'fallback_cooldown');
+  assert.equal(decision.latest_fallback.id, 'fallback-recent');
+});
+
+test('failed fallback retries on a shorter bounded backoff', () => {
+  const recentFailure = hourlyFallbackDecision({ primaryHealth: stale, now,
+    lock: { locked: false }, admission: { allowed: true }, cycles: [{
+      id: 'fallback-failed', kind: 'fallback_hourly', status: 'failed',
+      started: new Date(now - FAILED_FALLBACK_RETRY_MS + 1000).toISOString(),
+    }] });
+  assert.equal(recentFailure.due, false);
+  assert.equal(recentFailure.cooldown_ms, FAILED_FALLBACK_RETRY_MS);
+  const retry = hourlyFallbackDecision({ primaryHealth: stale, now,
+    lock: { locked: false }, admission: { allowed: true }, cycles: [{
+      id: 'fallback-failed', kind: 'fallback_hourly', status: 'failed',
+      started: new Date(now - FAILED_FALLBACK_RETRY_MS - 1).toISOString(),
+    }] });
+  assert.equal(retry.due, true);
+});
+
+test('fallback forecast is a valid v4 payload without a mature prior', () => {
+  const input = fallbackForecast({ cycleId: 'fallback-cycle', soma: { vitals: {
+    errors10: 0, warns10: 0, onBackup: false, embedBacklog: 0,
+  } } });
+  const normalized = cycleSelfForecast.normalizeForecast(input, 4);
+  assert.equal(input.protocol_version, 4);
+  assert.deepEqual(normalized.predicted_action_types, ['fallback_observation']);
+});
+
+test('fallback forecast binds but does not overclaim use of a mature behavioral prior', () => {
+  const commitment = 'a'.repeat(64);
+  const input = fallbackForecast({ cycleId: 'fallback-v7', priorSnapshot: {
+    available: true, prior: { id: 'prior-1', content_commitment: commitment },
+  } });
+  const normalized = cycleSelfForecast.normalizeForecast(input, 7);
+  assert.equal(input.protocol_version, 7);
+  assert.equal(normalized.behavioral_self_prior_commitment, commitment);
+  assert.equal(normalized.behavioral_self_prior_use.disposition, 'not_relevant');
+});

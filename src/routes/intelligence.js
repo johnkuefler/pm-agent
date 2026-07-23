@@ -73,6 +73,12 @@ function compactSelfModelForDashboard(model = {}) {
 function validateDueConsequenceReviews({ cycleId, store, ledger, now = new Date() }) {
   const cycle = store.list('cycles').find(item => item.id === cycleId);
   if (!cycle?.run_lock_holder) return { required: false, valid: true, due_action_ids: [] };
+  // The Railway safety-net pass is deliberately read-only and never satisfies or reschedules
+  // human-facing consequence reviews. Those remain mandatory for the rich Cowork hourly cycle;
+  // requiring them here would wedge the recovery lease on work this constrained runner cannot do.
+  if (cycle.kind === 'fallback_hourly') {
+    return { required: false, valid: true, due_action_ids: [], reason: 'read_only_fallback' };
+  }
   const due = consequenceReview.dueActions(ledger, { now, status: 'open', limit: 200 });
   if (due.length) {
     const ids = due.map(item => item.id);

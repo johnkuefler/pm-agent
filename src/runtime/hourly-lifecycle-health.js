@@ -12,6 +12,25 @@ function timestamp(value) {
 
 function hourlyLifecycleHealth(cycles = [], { now = Date.now() } = {}) {
   const assessedAt = Number(now) || Date.now();
+  const fallback = (Array.isArray(cycles) ? cycles : [])
+    .filter(cycle => cycle?.kind === 'fallback_hourly' && timestamp(cycle.started))
+    .sort((left, right) => timestamp(right.started) - timestamp(left.started));
+  const latestFallback = fallback[0] || null;
+  const fallbackAgeMs = latestFallback
+    ? Math.max(0, assessedAt - timestamp(latestFallback.started)) : null;
+  const fallbackFresh = fallbackAgeMs != null && fallbackAgeMs <= LATE_AFTER_MS
+    && latestFallback.status !== 'failed';
+  const fallbackProjection = {
+    active: fallbackFresh,
+    latest: latestFallback ? {
+      id: latestFallback.id || null,
+      status: latestFallback.status || null,
+      started: latestFallback.started,
+      finished: latestFallback.finished || null,
+      failure_reason: latestFallback.recovery?.reason || latestFallback.failure_reason || null,
+    } : null,
+    age_ms: fallbackAgeMs,
+  };
   const hourly = (Array.isArray(cycles) ? cycles : [])
     .filter(cycle => cycle?.kind === 'hourly' && timestamp(cycle.started))
     .sort((left, right) => timestamp(right.started) - timestamp(left.started));
@@ -28,6 +47,8 @@ function hourlyLifecycleHealth(cycles = [], { now = Date.now() } = {}) {
       stale_after_ms: STALE_AFTER_MS,
       assessed_at: new Date(assessedAt).toISOString(),
       latest: null,
+      fallback: fallbackProjection,
+      operational_coverage: fallbackFresh ? 'fallback_covered' : 'uncovered',
       age_ms: null,
       estimated_missed_runs: null,
       message: 'No durable hourly lifecycle has been observed.',
@@ -62,6 +83,9 @@ function hourlyLifecycleHealth(cycles = [], { now = Date.now() } = {}) {
       finished: latest.finished || null,
       failure_reason: latest.recovery?.reason || latest.failure_reason || null,
     },
+    fallback: fallbackProjection,
+    operational_coverage: state === 'fresh' && !latestFailed
+      ? 'primary' : fallbackFresh ? 'fallback_covered' : 'uncovered',
     age_ms: ageMs,
     estimated_missed_runs: estimatedMissedRuns,
     recent_window_hours: RECENT_WINDOW_MS / 3600000,

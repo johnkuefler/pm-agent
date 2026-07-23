@@ -155,6 +155,8 @@ test('missing realtime cleanup items are treated as harmless meeting UI noise', 
 
 test('run-bound cycle detection covers durable and pre-durability holder forms', () => {
   assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'nora-cowork', run_lock_holder: 'run-123' }), true);
+  assert.equal(helpers.isRunBoundCycle({ kind: 'fallback_hourly', holder: 'nora-railway-fallback',
+    run_lock_holder: 'fallback-run-123' }), true);
   assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'nora-cowork' }), true);
   assert.equal(helpers.isRunBoundCycle({ kind: 'hourly', holder: 'manual-review' }), false);
   assert.equal(helpers.isRunBoundCycle({ kind: 'nightly', holder: 'nora-cowork' }), false);

@@ -55,6 +55,20 @@ test('missing lifecycle history fails visibly instead of reporting healthy', () 
   assert.equal(snapshot.latest, null);
 });
 
+test('fallback coverage stays distinct from primary scheduler freshness', () => {
+  const snapshot = hourlyLifecycleHealth([
+    cycle('2026-07-22T21:05:00.000Z'),
+    { id: 'fallback-1', kind: 'fallback_hourly', started: '2026-07-23T01:05:00.000Z',
+      finished: '2026-07-23T01:06:00.000Z', status: 'completed' },
+  ], { now });
+  assert.equal(snapshot.state, 'stale');
+  assert.equal(snapshot.healthy, false);
+  assert.equal(snapshot.fallback.active, true);
+  assert.equal(snapshot.operational_coverage, 'fallback_covered');
+  assert.equal(snapshot.latest.id.startsWith('cycle-'), true);
+  assert.equal(snapshot.fallback.latest.id, 'fallback-1');
+});
+
 test('runtime health and the live dashboard both expose hourly cadence', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const dashboard = fs.readFileSync(

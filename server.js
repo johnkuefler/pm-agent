@@ -108,6 +108,7 @@ const { createRequestPerformanceMonitor } = require('./src/runtime/request-perfo
 const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-liveness');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
 const { hourlyLifecycleHealth } = require('./src/runtime/hourly-lifecycle-health');
+const { hourlyFallbackDecision, fallbackForecast } = require('./src/runtime/hourly-fallback');
 const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health');
 const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
@@ -529,6 +530,21 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
       pendingFinalizations: _pendingJobFinalizations.size }),
     process_health: _processRecovery.snapshot(),
     hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
+    hourly_fallback: {
+      in_flight: _hourlyFallbackInFlight,
+      last: _hourlyFallbackLast,
+      decision: hourlyFallbackDecision({
+        cycles: intelligence.list('cycles'),
+        primaryHealth: hourlyLifecycleHealth(intelligence.list('cycles')),
+        lock: (() => { const lock = loadDurableRunLock(); return {
+          locked: Boolean(lock && Number(lock.expires_at) > Date.now()),
+          holder: lock?.holder || null,
+        }; })(),
+        interactive: interactivePerformance.prioritySnapshot(),
+        admission: processResources.backgroundAdmission(),
+        inFlight: _hourlyFallbackInFlight,
+      }),
+    },
     research_projections: intelligenceRoutesRuntime.consciousnessResearchStatusCache(),
     process_resources: processResources.snapshot(),
     background_admission: processResources.backgroundAdmission(),
@@ -9060,8 +9076,15 @@ async function saveDurableRunLock(value) {
   _cache.runLock = value;
 }
 
+function runLockLifecycleSource(holder) {
+  const value = String(holder || '');
+  if (/^fallback-run-/.test(value)) return 'railway_fallback';
+  if (/^run-/.test(value)) return 'external_cowork';
+  return null;
+}
+
 function isRunBoundCycle(cycle) {
-  return Boolean(cycle && (/^run-/.test(String(cycle.run_lock_holder || ''))
+  return Boolean(cycle && (/^(?:run|fallback-run)-/.test(String(cycle.run_lock_holder || ''))
     || (cycle.kind === 'hourly' && cycle.holder === 'nora-cowork')));
 }
 
@@ -9166,13 +9189,16 @@ registerRunLockRoutes(app, requireAuth, {
     };
   },
   onAcquire: async ({ holder }) => {
-    if (!/^run-/.test(holder)) return null;
+    const lifecycleSource = runLockLifecycleSource(holder);
+    if (!lifecycleSource) return null;
+    const fallback = lifecycleSource === 'railway_fallback';
     const cognitiveInput = {
       ...currentCognitiveInputs(),
       predictions: _cache.predictions?.items || [],
-      kind: 'hourly',
-      holder: 'nora-cowork',
+      kind: fallback ? 'fallback_hourly' : 'hourly',
+      holder: fallback ? 'nora-railway-fallback' : 'nora-cowork',
       run_lock_holder: holder,
+      trigger_source: lifecycleSource,
       resume_active: true,
     };
     let started;
@@ -9256,6 +9282,185 @@ registerTaskRoutes(app, {
   },
 });
 
+let _hourlyFallbackInFlight = false;
+let _hourlyFallbackLast = null;
+
+function localRuntimeApiUrl(route) {
+  const address = server.address();
+  if (!address || typeof address !== 'object' || !address.port) {
+    throw new Error('local runtime API is not listening');
+  }
+  return `http://127.0.0.1:${address.port}${route}`;
+}
+
+async function localRuntimeApi(method, route, body = undefined, timeout = 15000) {
+  const response = await axios({
+    method,
+    url: localRuntimeApiUrl(route),
+    ...(body === undefined ? {} : { data: body }),
+    headers: { Authorization: `Bearer ${process.env.NORA_API_KEY || ''}` },
+    timeout,
+    validateStatus: () => true,
+  });
+  if (response.status >= 400) {
+    const error = new Error(response.data?.error || `local runtime API returned ${response.status}`);
+    error.status = response.status;
+    error.code = response.data?.code || response.data?.reason || null;
+    error.response_body = response.data;
+    throw error;
+  }
+  return response.data;
+}
+
+function centralDateYmd(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: SCHEDULE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
+}
+
+async function fallbackOperationalSweep() {
+  const now = new Date();
+  const internalDue = loadTasks().filter(task => isTaskEligibleNow(task, now));
+  const result = {
+    checked_at: now.toISOString(),
+    mode: 'read_only',
+    internal_queue: { due_count: internalDue.length },
+    teamwork: { status: teamworkEnabled() ? 'not_checked' : 'not_configured', due_count: null },
+  };
+  if (!teamworkEnabled()) return result;
+  const peopleTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_people');
+  const tasksTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_tasks');
+  try {
+    const people = await rejectWithinAbortable(
+      () => peopleTool.execute({ query: 'Nora' }), 8000, 'Fallback Teamwork identity lookup');
+    const nora = (people || []).find(person => /\bnora\b/i.test(person.name || '')) || null;
+    if (!nora?.id) {
+      result.teamwork = { status: 'identity_unresolved', due_count: null };
+      return result;
+    }
+    const tomorrow = centralDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+    const tasks = await rejectWithinAbortable(() => tasksTool.execute({
+      assigned_to_user_ids: String(nora.id), due_before: tomorrow, include_completed: false,
+    }), 12000, 'Fallback Teamwork due-task sweep');
+    result.teamwork = {
+      status: 'checked',
+      due_through: tomorrow,
+      due_count: Array.isArray(tasks) ? tasks.length : 0,
+      overdue_count: Array.isArray(tasks)
+        ? tasks.filter(task => task.dueDate && twYmd(task.dueDate) < twYmd(centralDateYmd(now))).length : 0,
+    };
+  } catch (error) {
+    result.teamwork = {
+      status: 'degraded', due_count: null,
+      error: String(error.message || error).slice(0, 240),
+    };
+  }
+  return result;
+}
+
+async function forceCloseFallbackLifecycle(cycleId, reason) {
+  if (!cycleId) return null;
+  const cycle = intelligence.list('cycles').find(item => item.id === cycleId);
+  if (!cycle || cycle.status !== 'running') return cycle || null;
+  const closed = intelligence.completeCycle(cycleId, {
+    status: 'failed',
+    summary: `Railway fallback stopped safely: ${String(reason || 'bounded recovery failure').slice(0, 500)}`,
+    actions: [], substrate_at_close: currentCognitiveInputs().soma || null,
+  });
+  await intelligence.persistStrict();
+  return closed;
+}
+
+async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
+  const primaryHealth = hourlyLifecycleHealth(intelligence.list('cycles'));
+  const durableLock = loadDurableRunLock();
+  const decision = hourlyFallbackDecision({
+    cycles: intelligence.list('cycles'), primaryHealth,
+    lock: durableLock && Number(durableLock.expires_at) > Date.now()
+      ? { locked: true, holder: durableLock.holder } : { locked: false },
+    interactive: interactivePerformance.prioritySnapshot(),
+    admission: processResources.backgroundAdmission(),
+    inFlight: _hourlyFallbackInFlight,
+  });
+  if (!decision.due) return decision;
+  if (!process.env.NORA_API_KEY) return { ...decision, due: false, reason: 'api_key_unavailable' };
+  _hourlyFallbackInFlight = true;
+  const holder = `fallback-run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
+  let cycleId = null;
+  let lockAcquired = false;
+  const activity = runtimeActivity.begin({
+    lane: 'work', kind: 'fallback_hourly_coverage',
+    label: 'Covering a missed hourly pass',
+    detail: 'The primary scheduler is stale; Railway is starting one bounded read-only sweep.',
+    source: 'railway-fallback', meta: { trigger, primary_state: primaryHealth.state },
+  });
+  const startedAt = Date.now();
+  try {
+    const acquired = await localRuntimeApi('post', '/run-lock', {
+      holder, ttl_seconds: 300,
+    });
+    if (!acquired.acquired) {
+      runtimeActivity.finish(activity.id, { status: 'deferred',
+        detail: 'Another operational run acquired the ledger first.',
+        outcome: 'No duplicate fallback work was started.' });
+      return { ...decision, due: false, reason: acquired.reason || 'lock_not_acquired' };
+    }
+    lockAcquired = true;
+    cycleId = acquired.lifecycle?.cycle_id || null;
+    if (!cycleId) throw new Error('fallback lock did not bind an intelligence lifecycle');
+    const prior = intelligence.behavioralSelfForecastPriorRuntimeSnapshot();
+    await localRuntimeApi('post', `/intelligence/cycles/${encodeURIComponent(cycleId)}/self-forecast`,
+      fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }), 20000);
+    const sweep = await fallbackOperationalSweep();
+    const summary = `Railway completed a read-only coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s); Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count) ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}.`;
+    const completed = await localRuntimeApi('patch',
+      `/intelligence/cycles/${encodeURIComponent(cycleId)}/complete`, {
+        status: 'completed', summary,
+        actions: [{ type: 'fallback_observation', id: activity.id,
+          mode: 'read_only', checked_at: sweep.checked_at }],
+      }, 20000);
+    await intelligence.persistStrict();
+    await localRuntimeApi('delete', `/run-lock?holder=${encodeURIComponent(holder)}`, undefined, 10000);
+    lockAcquired = false;
+    _hourlyFallbackLast = {
+      status: 'completed', trigger, holder, cycle_id: cycleId,
+      started_at: new Date(startedAt).toISOString(), finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - startedAt, sweep,
+    };
+    runtimeActivity.finish(activity.id, { status: 'completed',
+      detail: summary,
+      outcome: 'Operational awareness stayed current without external writes.',
+      meta: { cycle_id: completed.cycle?.id || cycleId, mode: 'read_only' } });
+    return { ...decision, ran: true, ..._hourlyFallbackLast };
+  } catch (error) {
+    console.error(`Railway hourly fallback failed: ${error.message}`);
+    try { await forceCloseFallbackLifecycle(cycleId, error.message); }
+    catch (closeError) { console.error(`Railway fallback lifecycle cleanup failed: ${closeError.message}`); }
+    if (lockAcquired) {
+      try {
+        await localRuntimeApi('delete', `/run-lock?holder=${encodeURIComponent(holder)}`, undefined, 10000);
+        lockAcquired = false;
+      } catch (releaseError) {
+        console.error(`Railway fallback lock cleanup failed: ${releaseError.message}`);
+      }
+    }
+    _hourlyFallbackLast = {
+      status: 'failed', trigger, holder, cycle_id: cycleId,
+      started_at: new Date(startedAt).toISOString(), finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - startedAt,
+      error: String(error.message || error).slice(0, 500),
+    };
+    runtimeActivity.finish(activity.id, { status: 'failed',
+      detail: 'The bounded fallback stopped without performing external writes.',
+      outcome: 'Failure recorded; the shared lock was released or left to expire safely.' });
+    return { ...decision, ran: true, ..._hourlyFallbackLast };
+  } finally {
+    _hourlyFallbackInFlight = false;
+  }
+}
+
 registerGiftRoutes(app, {
   requireAuth,
   requireOperatorAuth,
@@ -9313,6 +9518,7 @@ registerRuntimeActivityRoutes(app, {
   getContextSnapshot: () => ({
     ...intelligence.liveActivityContextSnapshot(),
     hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
+    hourly_fallback: { in_flight: _hourlyFallbackInFlight, last: _hourlyFallbackLast },
   }),
 });
 
@@ -14540,11 +14746,15 @@ async function completePostListenStartup(background) {
       .catch(error => console.warn('soma interval failed:', error.message)), 60 * 1000));
     scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
     scheduleStartupBackgroundTask('startup background intelligence cycle', 30000, () => runBackgroundIntelligenceRuntime({ trigger: 'startup' }));
+    scheduleStartupBackgroundTask('startup hourly fallback check', 60000,
+      () => runHourlyFallbackRuntime({ trigger: 'startup' }));
     _runtimeIntervals.push(setInterval(() => {
       try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
       catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
       runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
-        .catch(error => console.error('Background intelligence cycle failed:', error.message));
+        .catch(error => console.error('Background intelligence cycle failed:', error.message))
+        .finally(() => runHourlyFallbackRuntime({ trigger: 'five-minute-scheduler' })
+          .catch(error => console.error('Hourly fallback check failed:', error.message)));
     }, 5 * 60 * 1000));
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
