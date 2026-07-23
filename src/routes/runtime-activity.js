@@ -68,19 +68,61 @@ function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth,
       'X-Accel-Buffering': 'no',
     });
     res.flushHeaders?.();
-    const send = (event, payload, id = null) => {
-      if (id != null) res.write(`id: ${id}\n`);
-      res.write(`event: ${event}\n`);
-      res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    let closed = false;
+    let backpressured = false;
+    let backpressureTimer = null;
+    let heartbeat = null;
+    let unsubscribe = () => {};
+    const clearBackpressure = () => {
+      backpressured = false;
+      if (backpressureTimer) clearTimeout(backpressureTimer);
+      backpressureTimer = null;
+      res.off?.('drain', onDrain);
     };
-    send('snapshot', stream.snapshot());
-    const unsubscribe = stream.subscribe(activity => send('activity', activity, activity.sequence));
-    const heartbeat = setInterval(() => res.write(`: heartbeat ${Date.now()}\n\n`), 15000);
-    heartbeat.unref?.();
     const close = () => {
-      clearInterval(heartbeat);
+      if (closed) return;
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
+      clearBackpressure();
       unsubscribe();
     };
+    const terminateBackpressuredClient = () => {
+      if (closed) return;
+      close();
+      if (!res.writableEnded && !res.destroyed) res.end?.();
+    };
+    const write = frame => {
+      if (closed || backpressured || res.writableEnded || res.destroyed) return false;
+      let accepted = false;
+      try { accepted = res.write(frame); }
+      catch {
+        terminateBackpressuredClient();
+        return false;
+      }
+      if (accepted === false) {
+        backpressured = true;
+        res.once?.('drain', onDrain);
+        backpressureTimer = setTimeout(terminateBackpressuredClient, 5000);
+        backpressureTimer.unref?.();
+      }
+      return accepted;
+    };
+    const send = (event, payload, id = null) => {
+      const frame = `${id != null ? `id: ${id}\n` : ''}event: ${event}\n`
+        + `data: ${JSON.stringify(payload)}\n\n`;
+      return write(frame);
+    };
+    function onDrain() {
+      if (closed) return;
+      clearBackpressure();
+      // Events that arrived while the socket was saturated were deliberately not buffered.
+      // A fresh bounded snapshot restores exact visible state before incremental delivery resumes.
+      send('snapshot', stream.snapshot());
+    };
+    unsubscribe = stream.subscribe(activity => send('activity', activity, activity.sequence));
+    send('snapshot', stream.snapshot());
+    heartbeat = setInterval(() => write(`: heartbeat ${Date.now()}\n\n`), 15000);
+    heartbeat.unref?.();
     req.once('close', close);
     req.once('aborted', close);
   });

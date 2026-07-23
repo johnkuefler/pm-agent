@@ -71,6 +71,7 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
   });
   const response = () => ({
     statusCode: 200, body: null, headers: {}, writes: [],
+    writableEnded: false, destroyed: false, responseListeners: {},
     status(code) { this.statusCode = code; return this; },
     set(name, value) {
       if (typeof name === 'object') Object.assign(this.headers, name);
@@ -79,6 +80,12 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
     },
     json(value) { this.body = value; return this; },
     write(value) { this.writes.push(value); return true; },
+    once(event, listener) { this.responseListeners[event] = listener; return this; },
+    off(event, listener) {
+      if (this.responseListeners[event] === listener) delete this.responseListeners[event];
+      return this;
+    },
+    end() { this.writableEnded = true; },
     flushHeaders() {},
   });
 
@@ -107,4 +114,48 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
   assert.match(streamRes.writes.join(''), /event: snapshot/);
   assert.doesNotMatch(streamRes.writes.join(''), /private_thoughts/);
   listeners.close();
+});
+
+test('runtime activity stream bounds slow-client backpressure and resynchronizes on drain', () => {
+  const routes = new Map();
+  const app = {
+    get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
+    post(path, ...handlers) { routes.set(`POST ${path}`, handlers.at(-1)); },
+  };
+  const stream = createRuntimeActivityStream();
+  registerRuntimeActivityRoutes(app, {
+    requireAuth: (_req, _res, next) => next(),
+    requireDashboardAuth: (_req, _res, next) => next(),
+    stream,
+  });
+  const requestListeners = {};
+  const responseListeners = {};
+  const writes = [];
+  let acceptWrites = false;
+  let ended = false;
+  const res = {
+    writableEnded: false, destroyed: false,
+    status() { return this; }, set() { return this; }, flushHeaders() {},
+    write(value) { writes.push(value); return acceptWrites; },
+    once(event, listener) { responseListeners[event] = listener; return this; },
+    off(event, listener) {
+      if (responseListeners[event] === listener) delete responseListeners[event];
+      return this;
+    },
+    end() { ended = true; this.writableEnded = true; },
+  };
+  routes.get('GET /runtime-activity/events')({
+    once(event, listener) { requestListeners[event] = listener; },
+  }, res);
+  assert.equal(typeof responseListeners.drain, 'function');
+  const writesBeforeDrop = writes.length;
+  stream.record({ lane: 'work', kind: 'test', label: 'Dropped while saturated' });
+  assert.equal(writes.length, writesBeforeDrop,
+    'incremental events must not accumulate behind a saturated client');
+  acceptWrites = true;
+  responseListeners.drain();
+  assert.match(writes.at(-1), /event: snapshot/,
+    'the first writable frame after backpressure must restore a complete snapshot');
+  requestListeners.close();
+  assert.equal(ended, false);
 });
