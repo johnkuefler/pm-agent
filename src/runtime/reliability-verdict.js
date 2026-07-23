@@ -80,7 +80,9 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   }
   for (const [projection, runtime] of Object.entries(researchProjections)) {
     const failures = Number(runtime?.consecutive_failures) || 0;
-    const startedAt = new Date(runtime?.last_refresh_started_at || 0).getTime();
+    const workerStartKnown = Object.prototype.hasOwnProperty.call(runtime || {}, 'worker_started_at');
+    const startedAt = new Date(workerStartKnown
+      ? runtime.worker_started_at || 0 : runtime?.last_refresh_started_at || 0).getTime();
     const inFlightAgeMs = runtime?.in_flight && Number.isFinite(startedAt) && startedAt > 0
       ? Math.max(0, (Number(now) || Date.now()) - startedAt) : 0;
     if (failures >= 3 || inFlightAgeMs >= PROJECTION_STUCK_REFRESH_MS) {

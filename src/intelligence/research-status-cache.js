@@ -139,6 +139,7 @@ function createSerializedResearchWorkerFactory({
         entry.proxy.research_priority = child.research_priority;
         entry.proxy.research_cpu_budget = child.research_cpu_budget || null;
         entry.proxy.research_release_cpu_budget = () => child.research_release_cpu_budget?.();
+        entry.proxy.emit('started');
         child.once('message', message => settle('message', message));
         child.once('error', error => settle('error', error));
         child.once('exit', code => settle('exit', code));
@@ -450,6 +451,7 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
   let lastRefreshStartedAt = 0;
   let lastRefreshSucceededAt = 0;
   let lastRefreshFailedAt = 0;
+  let lastWorkerStartedAt = 0;
   let nextRefreshEligibleAt = 0;
   let consecutiveFailures = 0;
   let lastRefreshError = null;
@@ -546,22 +548,30 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
       const worker = createWorker({ workerData });
       activeWorker = worker;
       let settled = false;
-      const timeout = setTimeout(() => {
-        const error = new Error(`${projection} worker exceeded ${refreshTimeoutMs}ms refresh timeout`);
-        error.code = 'projection_refresh_timeout';
-        worker.terminate?.().catch?.(() => {});
-        finish(error);
-      }, Math.max(100, Number(refreshTimeoutMs) || DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS));
-      timeout.unref?.();
+      let timeout = null;
+      const armTimeout = () => {
+        if (timeout || settled) return;
+        lastWorkerStartedAt = Date.now();
+        timeout = setTimeout(() => {
+          const error = new Error(`${projection} worker exceeded ${refreshTimeoutMs}ms refresh timeout`);
+          error.code = 'projection_refresh_timeout';
+          worker.terminate?.().catch?.(() => {});
+          finish(error);
+        }, Math.max(100, Number(refreshTimeoutMs) || DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS));
+        timeout.unref?.();
+      };
       const finish = (error, value) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timeout);
+        if (timeout) clearTimeout(timeout);
         worker.research_release_cpu_budget?.();
         worker.removeAllListeners();
         if (activeWorker === worker) activeWorker = null;
         if (error) reject(error); else resolve(value);
       };
+      if (worker.research_isolation === 'serialized_projection_queue') {
+        worker.once('started', armTimeout);
+      } else armTimeout();
       worker.once('message', message => {
         if (message?.error) return finish(new Error(message.error));
         if (message?.projection !== projection || !message?.[serializedField]
@@ -722,6 +732,8 @@ function createResearchProjectionCache({ projection, store, getDreams = () => []
         ? new Date(lastRefreshSucceededAt).toISOString() : null,
       last_refresh_failed_at: lastRefreshFailedAt
         ? new Date(lastRefreshFailedAt).toISOString() : null,
+      worker_started_at: lastWorkerStartedAt
+        ? new Date(lastWorkerStartedAt).toISOString() : null,
       next_refresh_eligible_at: nextRefreshEligibleAt
         ? new Date(nextRefreshEligibleAt).toISOString() : null,
       consecutive_failures: consecutiveFailures,

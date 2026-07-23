@@ -143,6 +143,19 @@ test('slow and repeatedly failing research projections escalate without taxing l
   assert.equal(assessRuntimeReliability(failed, { now }).status, 'action_required');
 });
 
+test('queued research projections are not called stuck before their worker starts', () => {
+  const queued = healthySnapshot();
+  queued.research_projections.research_status = {
+    in_flight: true,
+    last_refresh_started_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+    worker_started_at: null,
+    consecutive_failures: 0,
+  };
+  const verdict = assessRuntimeReliability(queued);
+  assert.equal(verdict.degraded.some(item => item.code === 'research_projection_recovering'), false);
+  assert.equal(verdict.action_required.some(item => item.code === 'research_projection_stuck'), false);
+});
+
 test('process memory and event-loop pressure escalate before requests time out', () => {
   const delayed = healthySnapshot();
   delayed.process_resources.event_loop.current_window = { p99_ms: 300, max_ms: 800 };

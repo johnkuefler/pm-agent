@@ -468,6 +468,29 @@ test('a wedged projection worker times out and exposes bounded retry diagnostics
   assert.equal(cache.status().refresh_error.code, 'projection_refresh_timeout');
 });
 
+test('a serialized projection timeout starts when its worker starts, not while queued', async t => {
+  const store = await createStore(t);
+  let proxy = null;
+  const cache = createResearchProjectionCache({
+    projection: 'research_status', store, refreshTimeoutMs: 100,
+    createWorker: () => {
+      proxy = new EventEmitter();
+      proxy.research_isolation = 'serialized_projection_queue';
+      proxy.research_release_cpu_budget = () => {};
+      proxy.terminate = async () => { setImmediate(() => proxy.emit('exit', 1)); return 1; };
+      return proxy;
+    },
+  });
+  t.after(() => cache.close());
+  const pending = cache.refresh();
+  await new Promise(resolve => setTimeout(resolve, 125));
+  assert.equal(cache.status().in_flight, true);
+  assert.equal(cache.status().worker_started_at, null);
+  proxy.emit('started');
+  await assert.rejects(pending, error => error.code === 'projection_refresh_timeout');
+  assert.notEqual(cache.status().worker_started_at, null);
+});
+
 test('repeated projection failures back off exponentially and cannot be forced into a hot loop', async t => {
   const store = await createStore(t);
   let attempts = 0;
