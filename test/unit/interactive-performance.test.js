@@ -1151,38 +1151,57 @@ test('typed meeting chat never promises an unqueued Slack follow-up', () => {
   assert.match(server, /I couldn't get a complete answer before this meeting turn closed/);
 });
 
-test('Slack preflights, main tool loop, and retries share one absolute interaction deadline', () => {
+// The deadline bounds how long Nora may take to decide what to say. It must never bound whether
+// she says it. Sharing one absolute clock across thinking AND delivery is what silenced her in
+// Slack: enrichment ate the budget, the model window collapsed to a millisecond, the tool loop
+// returned an empty response, and the fallback text was then blocked by the same expired clock.
+test('Slack thinking is bounded but answering and delivering are guaranteed', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const start = server.indexOf('async function handleSlackImpl');
   const end = server.indexOf('// Slack thread admin', start);
   const handler = server.slice(start, end);
   assert.match(handler,
-    /slackTerminalAt = boundedTerminalAt\(\s*interactionStartedAt \+ \(attachLiveTools \? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS\)\)/,
+    /slackTerminalAt = boundedTerminalAt\(\s*interactionStartedAt \+ \(attachLiveTools \? SLACK_TOOL_TURN_TERMINAL_MS : SLACK_CONVERSATIONAL_TERMINAL_MS\)\)/,
     'ordinary and recovery Slack turns must share the earlier absolute terminal deadline');
-  assert.match(server, /const SLACK_CONVERSATIONAL_TERMINAL_MS = 15000/);
-  assert.match(server, /const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 9000/);
+  assert.match(server, /const SLACK_CONVERSATIONAL_TERMINAL_MS = 25000/);
+  assert.match(server, /const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 12000/);
   assert.match(server, /const SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS = 3500/);
   assert.match(handler,
     /const slackDeliveryReserveMs = attachLiveTools \? 2500 : SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS/,
     'bounded conversation must preserve a dedicated Slack delivery window');
   assert.match(handler,
-    /providerTimeoutMs: Math\.max\(1, Math\.min\(attachLiveTools\s*\? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS,/,
-    'ordinary model generation may use the reliability margin without receiving a fresh deadline');
+    /providerTimeoutMs: Math\.min\(attachLiveTools\s*\? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS, modelBudgetMs\)/,
+    'model generation stays bounded by the smaller of its ceiling and the guaranteed window');
   assert.equal(performance.BUDGET_MS.slack, 8000,
     'the reliability margin must not weaken the measured Slack latency objective');
   assert.match(handler, /slackRemainingMs\(12000\)/,
     'experimental preflight calls must preserve a main-answer reserve');
-  assert.match(handler, /deadlineMs: Math\.max\(1, slackRemainingMs\(\)\)/,
-    'the main model/tool loop must receive only the remaining wall-clock budget');
-  assert.match(handler, /const retryBudgetMs = Math\.min\(12000, slackRemainingMs\(\)\)/,
-    'the no-tools recovery must not receive a fresh 12-second budget');
-  assert.match(handler, /const deliveryBudgetMs = Math\.min\(5000, slackTerminalAt - Date\.now\(\)\)/,
-    'Slack delivery must spend only the interaction budget that remains');
+  assert.match(handler, /const modelBudgetMs = Math\.max\(SLACK_MIN_MODEL_MS, budgetLeftBeforeModel\)/,
+    'a turn whose enrichment ran long must still get a usable window to answer in');
+  assert.match(handler, /deadlineMs: modelBudgetMs/,
+    'the main model/tool loop receives the guaranteed window, never a collapsed remainder');
+  assert.match(handler,
+    /const retryBudgetMs = Math\.max\(SLACK_MIN_MODEL_MS, Math\.min\(12000, slackRemainingMs\(\)\)\)/,
+    'the no-tools recovery is floored but still capped at 12 seconds');
+  assert.match(handler,
+    /const deliveryBudgetMs = Math\.max\(SLACK_DELIVERY_FLOOR_MS,\s*Math\.min\(8000, slackTerminalAt - Date\.now\(\)\)\)/,
+    'delivery keeps a floor so an expired thinking deadline can never silence a written reply');
   assert.match(handler, /timeout: deliveryBudgetMs/);
-  assert.match(handler, /const errorDeliveryBudgetMs = Math\.min\(5000, slackTerminalAt - Date\.now\(\)\)/,
-    'the error notice must not extend an already-expired interaction');
+  assert.match(handler, /timeout: SLACK_DELIVERY_FLOOR_MS/,
+    'the error notice is the last chance to say anything and never inherits the expired clock');
   assert.doesNotMatch(handler, /deadlineMs: attachLiveTools \? 45000/);
   assert.doesNotMatch(handler, /timeout: 12000 \}\), 12000, 'Slack no-tools retry'/);
+});
+
+// The thinking deadline must still be honored where it belongs, or the bound is meaningless.
+test('Slack extensions never exceed a budget the caller imposed', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('async function handleSlackImpl');
+  const end = server.indexOf('// Slack thread admin', start);
+  const handler = server.slice(start, end);
+  const extensions = handler.match(/slackTerminalAt = Math\.max\(slackTerminalAt,\s*\n?\s*boundedTerminalAt\(/g) || [];
+  assert.equal(extensions.length, 2,
+    'both the model-window and the no-tools-retry extensions must clamp to the caller ceiling');
 });
 
 test('typed meeting delivery shares the same trigger-to-message deadline', () => {

@@ -20,9 +20,18 @@ const SLACK_FILE_MAX_BYTES = 25 * 1024 * 1024;
 // response gets a little longer before cancellation so a modest latency outlier yields the
 // complete answer instead of an avoidable fallback or a generic progress message. Keep a
 // separate delivery reserve: provider latency must never consume Slack's chance to post.
-const SLACK_CONVERSATIONAL_TERMINAL_MS = 15000;
-const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 9000;
+const SLACK_CONVERSATIONAL_TERMINAL_MS = 25000;
+const SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS = 12000;
 const SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS = 3500;
+// Context enrichment (identity, thread read, linked pages, prompt build) shares the same
+// end-to-end budget as the answer itself. When enrichment ran long, the model window collapsed
+// to a millisecond, the tool loop swallowed the resulting deadline into an empty response, and
+// the fallback text was then blocked by the very same expired clock, so nothing reached Slack.
+// A guaranteed model window and a delivery budget independent of the thinking deadline are what
+// make a reply arrive even on a slow turn.
+const SLACK_MIN_MODEL_MS = 8000;
+const SLACK_TOOL_TURN_TERMINAL_MS = 60000;
+const SLACK_DELIVERY_FLOOR_MS = 5000;
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
@@ -2086,6 +2095,11 @@ function runtimeSituationalCapabilities({ surface, direct, financialApproved, mc
   const teamwork = teamworkEnabled();
   const unavailableForTurn = toolsAttached ? [] : ['live tools omitted for this bounded social turn'];
   const capabilities = [
+    // Present on every turn including a bounded social one, and factually true: she is answering
+    // from stored memory and the conversation in front of her. Without it a bounded turn produced
+    // a frame whose every entry was unavailable, which the receipt validator correctly rejects for
+    // failing to represent any present capability, so the frame silently never reached the prompt.
+    { key: 'conversational_reply', family: 'conversation', label: 'Reply from stored memory and the current conversation', access_mode: 'read', availability: 'available', authority_scope: 'this conversation and Nora\'s own stored memory', constraints: ['memory may be stale or incomplete and is not a live system of record'] },
     { key: 'web_search', family: 'web', label: 'Live web search', access_mode: 'read', availability: toolsAttached && direct ? 'available' : 'unavailable', authority_scope: 'public information retrieval only', constraints: toolsAttached ? (direct ? [] : ['disabled for unsolicited proactive turns']) : unavailableForTurn },
     { key: 'teamwork_read', family: 'project_management', label: 'Teamwork project and task lookup', access_mode: 'read', availability: toolsAttached && teamwork ? 'available' : 'unavailable', authority_scope: 'connected Teamwork workspace', constraints: !toolsAttached ? unavailableForTurn : teamwork ? [] : ['Teamwork is not configured'] },
     { key: 'teamwork_write', family: 'project_management', label: 'Teamwork task changes', access_mode: 'write', availability: toolsAttached && teamwork && direct ? 'conditional' : 'unavailable', requires_explicit_request: true, authority_scope: 'only explicit unambiguous changes within delegated authority', constraints: !toolsAttached ? unavailableForTurn : teamwork && direct ? ['cannot delete tasks'] : ['disabled on this interaction context'] },
@@ -3229,9 +3243,9 @@ function slackEmptyReplyFallback(text, conversationPolicy, {
     if (/\bday\b/.test(normalized)) return 'yeah, it has been a day';
   }
   if (conversationPolicy?.boundedConversation) {
-    return 'I lost my response on that one—try me again.';
+    return 'I lost my response on that one, try me again.';
   }
-  return "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it—I'll need to retry the action.";
+  return "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it, I'll need to retry the action.";
 }
 
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
@@ -7135,6 +7149,9 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
   try { response = capture(await callProvider(reqBody)); }
   catch (error) {
     if (error.code !== 'interactive_deadline_exceeded') throw error;
+    // Swallowing this silently made a budget exhaustion look identical to a model that chose to
+    // say nothing, which is exactly the ambiguity that hid the Slack delivery regression.
+    console.warn(`Claude tool loop yielded an empty response: the interactive deadline elapsed before the provider replied (budget ${deadlineMs ?? 'none'}ms)`);
     response = deadlineResponse();
   }
   let iters = 0;
@@ -8268,7 +8285,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     ? Math.min(defaultTerminalAt, Number(terminalAtOverride)) : defaultTerminalAt;
   let slackTerminalAt = boundedTerminalAt(
     interactionStartedAt + (conversationPolicy.attachLiveTools
-      ? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS));
+      ? SLACK_TOOL_TURN_TERMINAL_MS : SLACK_CONVERSATIONAL_TERMINAL_MS));
   try {
     const key = sessionKey;
     // Session keys intentionally span a conversation, but research receipts and action attestations
@@ -8323,6 +8340,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       threadMsgs = await settleWithinAbortable(
         signal => fetchSlackThread(channel, threadTs, { signal }),
         1800, null, 'Slack thread context');
+    } else if (isDM && firstContact) {
+      // A DM has no threads, so continuity came entirely from the in-memory session. Every deploy
+      // and restart wipes that, and she then answered the morning's first DM with no idea what was
+      // already said. Bootstrap the recent DM the same way a channel gets bootstrapped.
+      threadMsgs = await settleWithinAbortable(
+        signal => fetchSlackChannelHistory(channel, threadTs, 12, { signal }),
+        1800, null, 'Slack direct message context');
     } else if (!isDM && firstContact) {
       // Top-level channel message, first turn of this session: bootstrap with recent channel context
       // so she isn't blind to what was just said before she was looped in. On CONTINUATION we do NOT
@@ -8368,7 +8392,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // after one answer. Seed from claudeMessages (post-guard, so it ends with the trigger) and not for
     // real threads (re-fetched each turn) or proactive (one-off). The assistant reply pushed below
     // then lands right after the trigger.
-    if (!isDM && firstContact && mode !== 'proactive' && !isRealThread && claudeMessages !== history) {
+    if (firstContact && mode !== 'proactive' && !isRealThread && claudeMessages !== history) {
       const seed = claudeMessages.slice(-15);
       history.length = 0;
       for (const t of seed) history.push(t);
@@ -8424,7 +8448,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // Absolute end-to-end deadline. Context enrichment above already spent part of this budget;
     // preflights, tool calls, fallback retries, and delivery must share what remains.
     slackTerminalAt = boundedTerminalAt(
-      interactionStartedAt + (attachLiveTools ? 45000 : SLACK_CONVERSATIONAL_TERMINAL_MS));
+      interactionStartedAt + (attachLiveTools ? SLACK_TOOL_TURN_TERMINAL_MS : SLACK_CONVERSATIONAL_TERMINAL_MS));
     const slackDeliveryReserveMs = attachLiveTools ? 2500 : SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS;
     const slackRemainingMs = (reserveMs = slackDeliveryReserveMs) =>
       Math.max(0, slackTerminalAt - Date.now() - reserveMs);
@@ -8721,6 +8745,21 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     let firedTools = [];
     let actionExecutionIds = [];
     let providerTrace = [];
+    // Enrichment shares the end-to-end budget with the answer, so a slow identity lookup, thread
+    // read, or prompt build could leave the model a single millisecond. The tool loop turns that
+    // into an empty response with no error, which reads downstream as "the model said nothing."
+    // Guarantee a real window instead, and move the terminal out to match so delivery math below
+    // still describes the same turn.
+    const budgetLeftBeforeModel = slackRemainingMs();
+    const modelBudgetMs = Math.max(SLACK_MIN_MODEL_MS, budgetLeftBeforeModel);
+    if (modelBudgetMs > budgetLeftBeforeModel) {
+      console.warn(`Slack ${isDirect ? 'direct' : 'proactive'}: context enrichment left ${budgetLeftBeforeModel}ms, extending to a ${modelBudgetMs}ms model window`);
+      // A caller that imposed its own ceiling (the hourly recovery sweep) still keeps it. The
+      // model window above is guaranteed regardless, and delivery has its own floor, so the reply
+      // lands either way.
+      slackTerminalAt = Math.max(slackTerminalAt,
+        boundedTerminalAt(Date.now() + modelBudgetMs + slackDeliveryReserveMs));
+    }
     try {
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
       ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 4, {
@@ -8728,10 +8767,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         writeToolNames: [...TW_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
-        deadlineMs: Math.max(1, slackRemainingMs()),
-        providerTimeoutMs: Math.max(1, Math.min(attachLiveTools
-          ? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS,
-          slackRemainingMs())),
+        deadlineMs: modelBudgetMs,
+        providerTimeoutMs: Math.min(attachLiveTools
+          ? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS, modelBudgetMs),
       }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
@@ -8753,7 +8791,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         delete reqBody.tools;
         // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
         reqBody.messages = claudeMessages.slice();
-        const retryBudgetMs = Math.min(12000, slackRemainingMs());
+        // The connector failure already cost most of the budget. Guarantee the tool-free retry a
+        // real window rather than letting it inherit an exhausted clock and return nothing.
+        const retryBudgetMs = Math.max(SLACK_MIN_MODEL_MS, Math.min(12000, slackRemainingMs()));
+        slackTerminalAt = Math.max(slackTerminalAt,
+          boundedTerminalAt(Date.now() + retryBudgetMs + slackDeliveryReserveMs));
         response = retryBudgetMs >= 1000
           ? await rejectWithinAbortable(signal => axios.post(
             'https://api.anthropic.com/v1/messages', reqBody,
@@ -9043,13 +9085,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     try {
       for (let i = 0; i < segments.length; i++) {
         if (i > 0) {
+          // The between-segment pause is cosmetic. Past the deadline, drop the pause and keep
+          // posting instead of abandoning the rest of an answer she already finished writing.
           const pauseBudgetMs = slackTerminalAt - Date.now() - 250;
-          if (pauseBudgetMs <= 0) { allSegmentsPosted = false; break; }
-          await new Promise(r => setTimeout(r,
-            Math.min(pauseBudgetMs, 900 + Math.floor(Math.random() * 900))));
+          if (pauseBudgetMs > 0) {
+            await new Promise(r => setTimeout(r,
+              Math.min(pauseBudgetMs, 900 + Math.floor(Math.random() * 900))));
+          }
         }
-        const deliveryBudgetMs = Math.min(5000, slackTerminalAt - Date.now());
-        if (deliveryBudgetMs < 250) { allSegmentsPosted = false; break; }
+        // Delivery is deliberately NOT gated on the thinking deadline. That deadline bounds how
+        // long she may take to decide what to say; once there is text, posting it is the entire
+        // point of the turn. Gating the post on the same expired clock is what turned a slow turn
+        // into total silence: the fallback was written and logged, then never sent.
+        const deliveryBudgetMs = Math.max(SLACK_DELIVERY_FLOOR_MS,
+          Math.min(8000, slackTerminalAt - Date.now()));
         const res = await axios.post('https://slack.com/api/chat.postMessage', {
           channel,
           text: segments[i],
@@ -9067,7 +9116,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           firstDeliveryRecorded = true;
         }
       }
-      if (!postRes?.data?.ok) throw new Error('Slack delivery missed the end-to-end interaction deadline');
+      // Report what Slack actually said. This previously blamed the deadline for every delivery
+      // failure, which sent every diagnosis down the wrong path.
+      if (!postRes?.data?.ok) {
+        throw new Error(`Slack rejected the reply: ${postRes?.data?.error || 'no response from chat.postMessage'}`);
+      }
     } catch (error) {
       if (reasoningRegulationActive) {
         try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
@@ -9252,16 +9305,15 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     // Try to post error message back
     try {
-      const errorDeliveryBudgetMs = Math.min(5000, slackTerminalAt - Date.now());
-      if (errorDeliveryBudgetMs >= 250) {
-        await axios.post('https://slack.com/api/chat.postMessage', {
-          channel,
-          text: "Sorry, hit an error processing that. Check the logs.",
-          thread_ts: threadTs
-        }, {
-          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: errorDeliveryBudgetMs,
-        });
-      }
+      // Same rule as the success path: the failure notice is the last chance to say anything at
+      // all, so it never inherits the deadline that just expired.
+      await axios.post('https://slack.com/api/chat.postMessage', {
+        channel,
+        text: "Sorry, hit an error processing that. Check the logs.",
+        thread_ts: threadTs
+      }, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: SLACK_DELIVERY_FLOOR_MS,
+      });
     } catch {}
   }
 }
@@ -16772,6 +16824,10 @@ module.exports = {
     memoryPromptLine,
     containsFinancialContent,
     runtimeSituationalCapabilities,
+    SLACK_CONVERSATIONAL_TERMINAL_MS,
+    SLACK_CONVERSATIONAL_DELIVERY_RESERVE_MS,
+    SLACK_MIN_MODEL_MS,
+    SLACK_DELIVERY_FLOOR_MS,
     isLightweightSocialSlackMessage,
     isRelationalSelfReflectionMessage,
     slackConversationPolicy,
