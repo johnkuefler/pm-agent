@@ -2854,6 +2854,8 @@ test('natural self-correction reveals prior error only after the initial forecas
   assert.equal(initial.audit.self_correction_offer_verified, true);
   assert.equal(initial.audit.self_correction_revision_committed, false);
   assert.equal(initial.self_correction.feedback.source_moment_id, source.moment.id);
+  const fullCorrectionFeedback = JSON.parse(JSON.stringify(
+    initial.self_correction.feedback));
   const feedbackCommitment = initial.self_correction.feedback_commitment;
   const revisionInput = forecastInput(target.cycle.id, 2);
   revisionInput.predicted_action_types = ['notify', 'review'];
@@ -2895,6 +2897,26 @@ test('natural self-correction reveals prior error only after the initial forecas
     event.kind === 'experience_self_forecast_feedback_revealed').length, 1);
   assert.equal(store.researchLedgerSnapshot().events.filter(event =>
     event.kind === 'experience_self_forecast_corrected').length, 1);
+
+  const legacyFullFeedbackState = store.snapshot();
+  const legacyTargetMoment = legacyFullFeedbackState.cognition.experience_stream
+    .find(item => item.id === target.moment.id);
+  legacyTargetMoment.self_forecast.self_correction.feedback = fullCorrectionFeedback;
+  delete legacyTargetMoment.self_forecast.self_correction.feedback_storage;
+  const migrated = createIntelligenceStore({ filePath: path.join(dir, 'migrated-state.json'),
+    db: {}, isDbReady: () => false, initialState: legacyFullFeedbackState,
+    clock: () => new Date(now) });
+  await migrated.init();
+  const migratedClosed = migrated.experienceStreamSnapshot().moments
+    .find(item => item.id === target.moment.id);
+  assert.equal(migratedClosed.self_forecast.self_correction.feedback_storage,
+    'replay_reference_v1');
+  assert.equal(migratedClosed.audit.self_forecast.self_correction_complete_chain_verified,
+    true);
+  assert.deepEqual(migrated.persistenceDiagnostics().hydration_compaction, {
+    correction_feedback_compacted: 1,
+    correction_feedback_failures: 0,
+  });
 
   await store.persist();
   const tampered = JSON.parse(fs.readFileSync(filePath, 'utf8'));

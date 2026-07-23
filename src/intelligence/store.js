@@ -256,6 +256,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     last_compression_ratio: null, last_compression_ms: null, last_committed_at: null,
     last_error: null,
   };
+  let hydrationCompactionRuntime = {
+    correction_feedback_compacted: 0,
+    correction_feedback_failures: 0,
+  };
   const strictPersistenceTimeoutMs = strictPersistenceTimeoutOverride == null
     ? Math.max(5000, Math.min(60000,
       Number(process.env.INTELLIGENCE_STRICT_PERSIST_TIMEOUT_MS) || 25000))
@@ -552,6 +556,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
+    hydrationCompactionRuntime = {
+      correction_feedback_compacted: 0,
+      correction_feedback_failures: 0,
+    };
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
     cognitiveParameterStudyLiveAuditCache = null;
@@ -879,6 +887,18 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       if (moment.operational_environment === undefined) moment.operational_environment = null;
       if (moment.operational_environment_commitment === undefined) moment.operational_environment_commitment = null;
       compactExperienceMomentSnapshots(moment);
+      if (moment.status !== 'open' && moment.self_forecast?.self_correction) {
+        try {
+          if (cycleSelfForecast.compactCorrectionOfferFeedback(
+            moment.self_forecast.self_correction)) {
+            hydrationCompactionRuntime.correction_feedback_compacted += 1;
+          }
+        } catch {
+          // Preserve an invalid historical record byte-for-byte so replay continues to expose
+          // the integrity failure; compaction must never launder or hide malformed evidence.
+          hydrationCompactionRuntime.correction_feedback_failures += 1;
+        }
+      }
     }
     state.cognition.experience_stream = state.cognition.experience_stream.slice(-500);
     if (!Array.isArray(state.cognition.continuity_handoffs)) state.cognition.continuity_handoffs = [];
@@ -1348,6 +1368,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       strict_timeout_ms: strictPersistenceTimeoutMs,
       serializer: asyncSerializer.diagnostics(),
       cycle_open: { ...cycleOpenRuntime },
+      hydration_compaction: { ...hydrationCompactionRuntime },
       background_projection: { ...backgroundProjectionRuntime,
         worker: asyncProjection.diagnostics() },
       database: typeof db?.diagnostics === 'function' ? db.diagnostics() : null,
