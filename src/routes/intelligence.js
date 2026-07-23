@@ -4,7 +4,8 @@ const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const expectationForecast = require('../intelligence/expectation-forecast');
 const consequenceReview = require('../intelligence/consequence-review');
 const cycleSelfForecast = require('../intelligence/cycle-self-forecast');
-const { createResearchProjectionCache } = require('../intelligence/research-status-cache');
+const { createResearchProjectionCache, createSerializedResearchWorkerFactory } =
+  require('../intelligence/research-status-cache');
 
 function shouldRefreshWorkerSnapshot(cached, now, minimumIntervalMs) {
   return !cached?.refresh_started_at_ms
@@ -93,8 +94,10 @@ function validateDueConsequenceReviews({ cycleId, store, ledger, now = new Date(
 function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getInteractions = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getConsequenceReviews = () => consequenceReview.emptyLedger(), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
   const snapshotCache = new Map();
   const workerSnapshotCache = new Map();
+  const projectionWorkerFactory = createSerializedResearchWorkerFactory();
   const projectionCacheOptions = { store, getDreams, getWants, getPredictions,
-    shouldDeferRefresh: shouldDeferResearchStatusRefresh };
+    shouldDeferRefresh: shouldDeferResearchStatusRefresh,
+    createWorker: projectionWorkerFactory };
   const researchStatusCache = createResearchProjectionCache({ ...projectionCacheOptions,
     projection: 'research_status',
     loadPersisted: () => loadResearchProjection('research_status'),
@@ -233,6 +236,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       research_status: researchStatusCache.status(),
       self_model: selfModelCache.status(),
       cognition: cognitionCache.status(),
+      coordinator: projectionWorkerFactory.status(),
     });
   });
 
@@ -1778,6 +1782,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       }, 15000),
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
     warmCognition: () => cognitionCache.refresh({ force: true }),
+    hydratePersistedResearchProjections: () => Promise.all([
+      researchStatusCache.hydrate(), selfModelCache.hydrate(), cognitionCache.hydrate(),
+    ]),
     preemptConsciousnessResearchStatus: surface => {
       const report = researchStatusCache.preempt(surface);
       const selfModel = selfModelCache.preempt(surface);
@@ -1787,6 +1794,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     consciousnessResearchStatusCache: () => ({
       research_status: researchStatusCache.status(), self_model: selfModelCache.status(),
       cognition: cognitionCache.status(),
+      coordinator: projectionWorkerFactory.status(),
     }),
     close: async () => { await Promise.all([researchStatusCache.close(), selfModelCache.close(),
       cognitionCache.close()]); },

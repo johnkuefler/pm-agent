@@ -14724,6 +14724,10 @@ async function completePostListenStartup(background) {
   await backfillMemoryIds();
   console.log('Startup phase: intelligence store init');
   await intelligence.init();
+  // Hydration is three bounded database reads, not projection compute. Keeping verified snapshots
+  // resident lets the intelligence UI render immediately after a deploy while one serialized
+  // low-priority worker refreshes stale build data in the background.
+  await intelligenceRoutesRuntime.hydratePersistedResearchProjections();
   const unleasedRunRecovery = recoverRunBoundLifecycleWithoutLease();
   const staleCycleRecovery = unleasedRunRecovery.recovered
     ? unleasedRunRecovery : intelligence.recoverStaleCycles({ reason: 'startup_recovery' });

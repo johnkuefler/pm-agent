@@ -4,6 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { fork } = require('node:child_process');
+const { EventEmitter } = require('node:events');
 
 const DEFAULT_MAX_AGE_MS = 5 * 60 * 1000;
 const DEFAULT_MIN_REFRESH_INTERVAL_MS = 30 * 1000;
@@ -100,6 +101,85 @@ function createLowPriorityResearchProcess(workerPath, workerData, { cpuDutyCycle
     if (error) child.emit('error', error);
   });
   return child;
+}
+
+function createSerializedResearchWorkerFactory({
+  maximumConcurrent = 1,
+  workerPath = path.join(__dirname, 'research-status-worker.js'),
+  createWorker = options => createLowPriorityResearchProcess(workerPath, options.workerData,
+    { cpuDutyCycle: true }),
+} = {}) {
+  const maximum = Math.max(1, Math.min(2, Number(maximumConcurrent) || 1));
+  const queue = [];
+  let active = 0;
+  let started = 0;
+  let completed = 0;
+  let cancelledBeforeStart = 0;
+
+  function pump() {
+    while (active < maximum && queue.length) {
+      const entry = queue.shift();
+      if (entry.cancelled) continue;
+      active += 1;
+      started += 1;
+      let child;
+      let settled = false;
+      const settle = (event, value) => {
+        if (settled) return;
+        settled = true;
+        active = Math.max(0, active - 1);
+        completed += 1;
+        entry.proxy.emit(event, value);
+        setImmediate(pump);
+      };
+      try {
+        child = createWorker(entry.options);
+        entry.child = child;
+        entry.proxy.research_isolation = child.research_isolation || 'serialized_projection_worker';
+        entry.proxy.research_priority = child.research_priority;
+        entry.proxy.research_cpu_budget = child.research_cpu_budget || null;
+        entry.proxy.research_release_cpu_budget = () => child.research_release_cpu_budget?.();
+        child.once('message', message => settle('message', message));
+        child.once('error', error => settle('error', error));
+        child.once('exit', code => settle('exit', code));
+      } catch (error) {
+        settle('error', error);
+      }
+    }
+  }
+
+  function factory(options) {
+    const proxy = new EventEmitter();
+    const entry = { options, proxy, child: null, cancelled: false };
+    proxy.research_isolation = 'serialized_projection_queue';
+    proxy.research_priority = null;
+    proxy.research_cpu_budget = { mode: 'serialized_low_priority_queue' };
+    proxy.research_release_cpu_budget = () => entry.child?.research_release_cpu_budget?.();
+    proxy.terminate = async () => {
+      if (entry.child) return entry.child.terminate?.();
+      if (!entry.cancelled) {
+        entry.cancelled = true;
+        cancelledBeforeStart += 1;
+        const index = queue.indexOf(entry);
+        if (index >= 0) queue.splice(index, 1);
+        setImmediate(() => proxy.emit('exit', 1));
+      }
+      return 1;
+    };
+    queue.push(entry);
+    setImmediate(pump);
+    return proxy;
+  }
+  factory.status = () => ({
+    protocol_version: 1,
+    maximum_concurrent: maximum,
+    active,
+    queued: queue.filter(entry => !entry.cancelled).length,
+    started,
+    completed,
+    cancelled_before_start: cancelledBeforeStart,
+  });
+  return factory;
 }
 
 function createResearchStatusCache({ store, getDreams = () => [], getWants = () => [],
@@ -683,6 +763,7 @@ module.exports = {
   PERSISTED_PROJECTION_PROTOCOL_VERSION,
   projectionBuildIdentity,
   createLowPriorityResearchProcess,
+  createSerializedResearchWorkerFactory,
   createResearchStatusCache,
   createResearchProjectionCache,
   createPersistedProjectionEnvelope,

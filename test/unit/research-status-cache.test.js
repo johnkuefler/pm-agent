@@ -8,6 +8,7 @@ const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const { createResearchStatusCache, createResearchProjectionCache,
+  createSerializedResearchWorkerFactory,
   createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope,
   PERSISTED_PROJECTION_PROTOCOL_VERSION, projectionBuildIdentity } =
   require('../../src/intelligence/research-status-cache');
@@ -22,6 +23,46 @@ test('production projection retry and timeout defaults are bounded and distinct'
   assert.equal(DEFAULT_PROJECTION_MAX_FAILURE_RETRY_MS, 30 * 60 * 1000);
   assert.equal(DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS, 3 * 60 * 1000);
   assert.ok(DEFAULT_PROJECTION_FAILURE_RETRY_MS < DEFAULT_PROJECTION_REFRESH_TIMEOUT_MS);
+});
+
+test('heavy research projection workers share one serialized CPU lane', async () => {
+  const children = [];
+  const factory = createSerializedResearchWorkerFactory({
+    maximumConcurrent: 1,
+    createWorker: options => {
+      const child = new EventEmitter();
+      child.options = options;
+      child.research_isolation = 'fixture_child';
+      child.research_priority = 19;
+      child.research_cpu_budget = { mode: 'fixture' };
+      child.research_release_cpu_budget = () => {};
+      child.terminate = async () => { setImmediate(() => child.emit('exit', 1)); return 1; };
+      children.push(child);
+      return child;
+    },
+  });
+  const proxies = [factory({ workerData: { projection: 'one' } }),
+    factory({ workerData: { projection: 'two' } }),
+    factory({ workerData: { projection: 'three' } })];
+  for (const proxy of proxies) proxy.once('message', () => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(children.length, 1);
+  assert.deepEqual(factory.status(), {
+    protocol_version: 1, maximum_concurrent: 1, active: 1, queued: 2,
+    started: 1, completed: 0, cancelled_before_start: 0,
+  });
+  children[0].emit('message', { projection: 'one' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(children.length, 2);
+  assert.equal(factory.status().active, 1);
+  assert.equal(factory.status().queued, 1);
+  children[1].emit('message', { projection: 'two' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(children.length, 3);
+  children[2].emit('message', { projection: 'three' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(factory.status().active, 0);
+  assert.equal(factory.status().completed, 3);
 });
 
 async function createStore(t) {
@@ -480,10 +521,15 @@ test('HTTP projections expose the low-priority isolation receipt for production 
   assert.match(routes, /projection: 'research_status'/);
   assert.match(routes, /projection: 'self_model'/);
   assert.match(routes, /projection: 'cognition'/);
+  assert.match(routes, /createSerializedResearchWorkerFactory\(\)/);
+  assert.match(routes, /hydratePersistedResearchProjections/);
+  assert.match(routes, /coordinator: projectionWorkerFactory\.status\(\)/);
   assert.match(routes, /requireCurrentExperimentalAccess: true/);
   assert.match(routes, /waitForCold: false/);
   assert.match(routes, /waitForRequiredRefresh: process\.env\.NORA_TEST_MODE === '1'/);
   assert.match(routes, /required_projection_refreshing/);
   assert.match(routes, /Retry-After/);
   assert.match(routes, /research-projection-runtime/);
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  assert.match(server, /await intelligenceRoutesRuntime\.hydratePersistedResearchProjections\(\)/);
 });
