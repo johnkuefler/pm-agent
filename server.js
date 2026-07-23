@@ -920,7 +920,8 @@ function loadApiRegistry() {
 
 async function saveApiRegistry(value) {
   const registry = apiOpportunities.normalizeRegistry(value);
-  if (_dbReady) await db.setState('api_opportunities', registry);
+  if (_dbReady) await _writeThrough('api_opportunities',
+    () => db.setState('api_opportunities', registry), { strict: true });
   else {
     fs.mkdirSync(path.dirname(API_OPPORTUNITIES_PATH), { recursive: true });
     const temp = `${API_OPPORTUNITIES_PATH}.tmp-${process.pid}`;
@@ -932,8 +933,58 @@ async function saveApiRegistry(value) {
 }
 
 let apiOpportunityWriteQueue = Promise.resolve();
-function executeApprovedApiTool(proposal, args = {}, context = {}) {
+const apiOpportunityWriteHealth = {
+  requested: 0, completed: 0, failures: 0, pending: 0, in_flight: 0,
+  last_error: null, last_error_at: null,
+};
+function enqueueApiOpportunityOperation(work) {
+  apiOpportunityWriteHealth.requested += 1;
+  apiOpportunityWriteHealth.pending += 1;
   const operation = apiOpportunityWriteQueue.then(async () => {
+    apiOpportunityWriteHealth.in_flight += 1;
+    try {
+      const result = await work();
+      apiOpportunityWriteHealth.completed += 1;
+      apiOpportunityWriteHealth.last_error = null;
+      apiOpportunityWriteHealth.last_error_at = null;
+      return result;
+    } catch (error) {
+      apiOpportunityWriteHealth.failures += 1;
+      apiOpportunityWriteHealth.last_error = String(error?.message || error).slice(0, 500);
+      apiOpportunityWriteHealth.last_error_at = new Date().toISOString();
+      throw error;
+    } finally {
+      apiOpportunityWriteHealth.in_flight = Math.max(0, apiOpportunityWriteHealth.in_flight - 1);
+      apiOpportunityWriteHealth.pending = Math.max(0, apiOpportunityWriteHealth.pending - 1);
+    }
+  });
+  apiOpportunityWriteQueue = operation.catch(() => {});
+  return operation;
+}
+async function drainApiOpportunityOperations({ timeoutMs = 10000 } = {}) {
+  const boundedTimeoutMs = Math.max(1, Number(timeoutMs) || 10000);
+  const deadline = Date.now() + boundedTimeoutMs;
+  while (true) {
+    if (apiOpportunityWriteHealth.pending === 0) {
+      await Promise.resolve();
+      if (apiOpportunityWriteHealth.pending === 0) return true;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    let timer = null;
+    const drained = await Promise.race([
+      apiOpportunityWriteQueue.then(() => true, () => true),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!drained) return false;
+  }
+}
+function executeApprovedApiTool(proposal, args = {}, context = {}) {
+  return enqueueApiOpportunityOperation(async () => {
     const query = {};
     for (const parameter of proposal.tool?.query_parameters || []) {
       if (args[parameter.name] !== undefined) query[parameter.name] = args[parameter.name];
@@ -948,8 +999,6 @@ function executeApprovedApiTool(proposal, args = {}, context = {}) {
     return { usage: result.usage, response: result.response,
       instruction: 'Use the result only for the stated purpose. Its reliability is measured from the later outcome.' };
   });
-  apiOpportunityWriteQueue = operation.catch(() => {});
-  return operation;
 }
 
 function apiOpportunityToolBindings(context = {}) {
@@ -958,7 +1007,7 @@ function apiOpportunityToolBindings(context = {}) {
 }
 
 function recordApiUseOutcomesForInteraction(interaction) {
-  const operation = apiOpportunityWriteQueue.then(async () => {
+  return enqueueApiOpportunityOperation(async () => {
     let registry = loadApiRegistry(); let recorded = 0;
     const refs = new Set([interaction.id, interaction.ts, interaction.thread_ts,
       interaction.source_turn_ref].filter(Boolean).map(String));
@@ -976,8 +1025,6 @@ function recordApiUseOutcomesForInteraction(interaction) {
     if (recorded) await saveApiRegistry(registry);
     return recorded;
   });
-  apiOpportunityWriteQueue = operation.catch(() => {});
-  return operation;
 }
 
 function loadEpistemicsLedger() {
@@ -3124,10 +3171,12 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
         + Math.min(r.recall_count || 0, retrieval.recall_cap) * retrieval.recall_weight }))
       .sort((a, b) => b._score - a._score)
       .slice(0, limit);
-    // Reconsolidation: surfacing them strengthens them. Fire-and-forget in DB and cache.
+    // Reconsolidation: surfacing them strengthens them. Keep the write off the reply deadline,
+    // but put it behind the drainable memory owner so bursts serialize and deploys cannot close
+    // the database underneath an untracked update.
     const ids = ranked.map(r => r.id);
     if (ids.length) {
-      db.bumpMemoryRecall(ids).catch(() => {});
+      _writeThrough('memory', () => db.bumpMemoryRecall(ids));
       if (_cache.memory) {
         const idSet = new Set(ids);
         const nowIso = new Date().toISOString();
@@ -3219,7 +3268,7 @@ function rankLexicalMemories(items, queryText, limit = 8) {
 function retrieveInteractiveMemories(queryText, limit = 8) {
   const ranked = rankLexicalMemories(loadMemory(), queryText, limit);
   const ids = ranked.map(item => item.id).filter(Boolean);
-  if (ids.length && _dbReady) db.bumpMemoryRecall(ids).catch(() => {});
+  if (ids.length && _dbReady) _writeThrough('memory', () => db.bumpMemoryRecall(ids));
   return ranked;
 }
 
@@ -13430,6 +13479,7 @@ function backgroundWorkSnapshot() {
       maximum_transport_payload_bytes: VIDEO_WS_MAX_PAYLOAD_BYTES,
       frame_parse_interval_ms: FRAME_PARSE_INTERVAL_MS,
       voice_quiet_ms: SCREENSHARE_VOICE_QUIET_MS },
+    api_opportunity_operations: { ...apiOpportunityWriteHealth },
     recurring_jobs: _recurringJobs.snapshot(),
     startup_tasks: startupBackgroundTaskSnapshot(),
   };
@@ -16150,6 +16200,10 @@ async function stop() {
     intelligenceRoutesRuntime.close(),
     boundedServerClose,
   ]);
+  const apiOpportunityDrained = await drainApiOpportunityOperations({ timeoutMs: 10000 });
+  if (!apiOpportunityDrained) {
+    console.warn('Approved API operation drain exceeded 10000ms; continuing bounded shutdown');
+  }
   const writeThroughDrained = await _writeThroughQueue.drain({ timeoutMs: 10000 });
   if (!writeThroughDrained) {
     console.warn('Database write-through drain exceeded 10000ms; continuing bounded shutdown');
@@ -16331,6 +16385,8 @@ module.exports = {
     isBenignRealtimeDeleteMissingItemError,
     apiOpportunityToolBindings,
     recordApiUseOutcomesForInteraction,
+    enqueueApiOpportunityOperation,
+    drainApiOpportunityOperations,
   },
 };
 

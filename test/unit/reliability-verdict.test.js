@@ -18,7 +18,8 @@ function healthySnapshot() {
     } },
     interactive_priority: { background_budget_cancellations: 0 },
     background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 },
-      recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] } },
+      recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
+      api_opportunity_operations: { pending: 0, last_error: null } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
@@ -71,6 +72,18 @@ test('reliability exposes unresolved entity writes and meaningful queue accumula
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'entity_persistence_failure');
   assert.equal(verdict.degraded[0].code, 'entity_write_backlog');
+});
+
+test('reliability exposes approved API operation backlog and failures', () => {
+  const snapshot = healthySnapshot();
+  snapshot.background_work.api_opportunity_operations = {
+    pending: 7, in_flight: 1, last_error: 'connector failed',
+  };
+  const verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.deepEqual(verdict.degraded.map(item => item.code), [
+    'api_opportunity_operation_backlog', 'api_opportunity_operation_failure',
+  ]);
 });
 
 test('reliability surfaces active and completed request deadline pressure', () => {

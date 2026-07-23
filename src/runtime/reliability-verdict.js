@@ -29,6 +29,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const background = snapshot.background_work || {};
   const recurringJobs = background.recurring_jobs || {};
   const startupTasks = background.startup_tasks || {};
+  const apiOpportunityOperations = background.api_opportunity_operations || {};
   const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
@@ -197,6 +198,15 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (backgroundQueued + checkpointPending > 5) {
     degraded.push({ code: 'background_backlog', count: backgroundQueued + checkpointPending,
       message: 'Deferred background work is accumulating.' });
+  }
+  if (Number(apiOpportunityOperations.pending) > 5) {
+    degraded.push({ code: 'api_opportunity_operation_backlog',
+      count: Number(apiOpportunityOperations.pending),
+      message: 'Approved third-party API operations or their outcome receipts are accumulating.' });
+  }
+  if (apiOpportunityOperations.last_error) {
+    degraded.push({ code: 'api_opportunity_operation_failure',
+      message: 'An approved third-party API operation or outcome receipt recently failed.' });
   }
   const postInteraction = background.post_interaction || {};
   const recentPostInteractionFailures = (postInteraction.recent_failures || []).filter(item => {

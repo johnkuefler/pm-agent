@@ -274,6 +274,27 @@ test('started startup warmups remain owned until the shutdown drain settles', as
   assert.equal(__test.startupBackgroundTaskSnapshot().active_count, 0);
 });
 
+test('approved API operations remain serialized and drainable across shutdown', async () => {
+  const { __test } = require('../../server');
+  const order = [];
+  let releaseFirst;
+  const first = __test.enqueueApiOpportunityOperation(async () => {
+    order.push('first-start');
+    await new Promise(resolve => { releaseFirst = resolve; });
+    order.push('first-end');
+  });
+  const second = __test.enqueueApiOpportunityOperation(async () => {
+    order.push('second');
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ['first-start']);
+  assert.equal(await __test.drainApiOpportunityOperations({ timeoutMs: 5 }), false);
+  releaseFirst();
+  await Promise.all([first, second]);
+  assert.equal(await __test.drainApiOpportunityOperations({ timeoutMs: 50 }), true);
+  assert.deepEqual(order, ['first-start', 'first-end', 'second']);
+});
+
 test('post-interaction overflow never evicts the item currently executing', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
@@ -512,6 +533,10 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'periodic voice prompt refreshes must revalidate silence after optional recall');
   assert.match(server, /promptRefreshController\?\.abort\(new Error\('meeting connection closed'\)\)/,
     'closing a meeting must abort optional prompt recall');
+  assert.doesNotMatch(server, /db\.bumpMemoryRecall\(ids\)\.catch/,
+    'memory reconsolidation writes must not escape shutdown ownership');
+  assert.match(server, /_writeThrough\('memory', \(\) => db\.bumpMemoryRecall\(ids\)\)/,
+    'memory reconsolidation writes must share the drainable memory lane');
   assert.match(server, /if \(messageQueue\.length >= 500\) messageQueue\.shift\(\);/,
     'a half-open realtime connection must not grow its audio queue without bound');
   assert.match(server, /rejectWithinAbortable\(\(\) => execute\(args\), 10000, `Realtime voice tool/,
