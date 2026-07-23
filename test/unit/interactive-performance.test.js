@@ -755,6 +755,11 @@ test('Slack waits for one coherent reply instead of posting a generic progress m
   assert.doesNotMatch(slackHandler, /earlyStatus(?:Timer|Promise)/);
   assert.match(slackHandler, /reply = stripSlackLookupNarration\(reply\)/,
     'Slack must strip historical lookup narration if the model reproduces it');
+  const finalGuard = slackHandler.indexOf('reply = finalActionClaimGuard.response;');
+  const delivery = slackHandler.indexOf('// Burst delivery:', finalGuard);
+  const egressScrub = slackHandler.indexOf('reply = stripSlackLookupNarration(reply);', finalGuard);
+  assert.ok(finalGuard >= 0 && egressScrub > finalGuard && delivery > egressScrub,
+    'Slack must scrub lookup narration again after every response-rewriting safety pass');
   assert.equal(__test.stripSlackLookupNarration(
     'on it — checking the live details now.\n\nyeah, Wednesday in July hits different'),
   'yeah, Wednesday in July hits different');

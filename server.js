@@ -8413,6 +8413,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       console.warn(`action completion claim attestation failed: ${error.message}`);
     }
 
+    // The prospective monitor and action-claim guard run after the provider's original reply and
+    // are allowed to rewrite it. Keep the no-progress-narration rule at the actual egress boundary
+    // too, otherwise a downstream rewrite can reintroduce the exact filler we removed above.
+    const preEgressReply = reply;
+    reply = stripSlackLookupNarration(reply);
+    if (!reply) {
+      reply = stripSlackLookupNarration(candidateForMonitor)
+        || (wroteLive ? "Done, that's updated in Teamwork."
+          : sentSlack ? 'Sent.'
+            : queuedSelf ? 'Queued for myself.'
+              : "I couldn't complete that cleanly just now. I'll need to retry the action.");
+      console.warn(`Slack egress removed a status-only reply (length=${String(preEgressReply || '').length})`);
+    }
+
     // Burst delivery: a casual multi-beat reply can arrive as 2-3 short messages (the model
     // puts <split> on its own line between beats), like a person double-texting, instead of
     // one structured wall. Strip empties, cap at 3, small human-ish pause between sends.
