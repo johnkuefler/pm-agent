@@ -6810,7 +6810,11 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // to this thread later by the worker.
       const dm = opts.deferredMeta && opts.deferredMeta[tu.name];
       const writeCapable = writeToolNames.has(tu.name) || dm?.accessMode === 'write';
-      const execution = safelyBeginToolExecution({ toolUseId: tu.id, toolName: tu.name, args: tu.input || {}, meta: dm, origin: opts.origin || {}, deferred: Boolean(dm?.deferred) });
+      const executionMeta = writeCapable
+        ? { ...(dm || {}), accessMode: 'write' } : dm;
+      const execution = safelyBeginToolExecution({ toolUseId: tu.id, toolName: tu.name,
+        args: tu.input || {}, meta: executionMeta, origin: opts.origin || {},
+        deferred: Boolean(dm?.deferred) });
       if (execution) actionExecutionIds.push(execution.id);
       if (writeCapable && durableWriteReceipts) {
         if (!execution) {

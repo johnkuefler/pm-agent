@@ -136,13 +136,13 @@ test('durable background writes flush their selection receipt before the connect
 test('a timed-out durable write remains uncertain so a restart cannot repeat it', async () => {
   const responses = [
     { stop_reason: 'tool_use', content: [
-      { type: 'tool_use', id: 'uncertain-write-1', name: 'write_update', input: {} },
+      { type: 'tool_use', id: 'uncertain-write-1', name: 'deliver_result', input: {} },
     ] },
     { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Could not verify the update.' }] },
   ];
   await __test.runClaudeToolLoop(
-    { messages: [], tools: [{ name: 'write_update' }] }, {}, {
-      write_update: async () => {
+    { messages: [], tools: [{ name: 'deliver_result' }] }, {}, {
+      deliver_result: async () => {
         const error = new Error('connector timed out after dispatch');
         error.code = 'ETIMEDOUT';
         throw error;
@@ -152,7 +152,7 @@ test('a timed-out durable write remains uncertain so a restart cannot repeat it'
       providerTimeoutMs: 1000,
       toolTimeoutMs: 1000,
       writeStartMinimumMs: 1000,
-      writeToolNames: ['write_update'],
+      writeToolNames: ['deliver_result'],
       durableWriteReceipts: true,
       persistActionReceipt: async () => {},
       origin: { kind: 'railway_hourly', interaction_ref: 'task-uncertain-write' },
