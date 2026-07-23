@@ -21,7 +21,8 @@ function healthySnapshot() {
       recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
       api_opportunity_operations: { pending: 0, last_error: null },
       slack_webhook_events: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
-      acknowledged_meeting_work: { active_count: 0, oldest_active_ms: 0, recent_failures: [] } },
+      acknowledged_meeting_work: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
+      recent_meetings_cache: { in_flight: false, active_ms: 0, consecutive_failures: 0 } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
@@ -116,6 +117,21 @@ test('reliability escalates acknowledged meeting work that cannot reach a termin
   verdict = assessRuntimeReliability(slow, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'meeting_webhook_work_stuck');
+});
+
+test('reliability exposes a slow or repeatedly failing recent-meetings refresh', () => {
+  const slow = healthySnapshot();
+  slow.background_work.recent_meetings_cache = {
+    in_flight: true, active_ms: 12000, consecutive_failures: 0,
+  };
+  let verdict = assessRuntimeReliability(slow, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'recent_meetings_cache_pressure');
+
+  slow.background_work.recent_meetings_cache.active_ms = 31000;
+  verdict = assessRuntimeReliability(slow, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'recent_meetings_cache_stuck');
 });
 
 test('reliability surfaces active and completed request deadline pressure', () => {

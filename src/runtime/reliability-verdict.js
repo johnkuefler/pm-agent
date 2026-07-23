@@ -32,6 +32,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const apiOpportunityOperations = background.api_opportunity_operations || {};
   const slackWebhookEvents = background.slack_webhook_events || {};
   const acknowledgedMeetingWork = background.acknowledged_meeting_work || {};
+  const recentMeetingsCache = background.recent_meetings_cache || {};
   const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
@@ -245,6 +246,19 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
         || Number(acknowledgedMeetingWork.active_count) || undefined,
       age_ms: Number(acknowledgedMeetingWork.oldest_active_ms) || undefined,
       message: 'Acknowledged meeting work is slow, failing, or accumulating.' });
+  }
+  if (Number(recentMeetingsCache.consecutive_failures) >= 3
+    || Number(recentMeetingsCache.active_ms) >= 30000) {
+    actionRequired.push({ code: 'recent_meetings_cache_stuck',
+      count: Number(recentMeetingsCache.consecutive_failures) || undefined,
+      age_ms: Number(recentMeetingsCache.active_ms) || undefined,
+      message: 'The recent-meetings cache is repeatedly failing or has exceeded its terminal window.' });
+  } else if (Number(recentMeetingsCache.consecutive_failures) > 0
+    || Number(recentMeetingsCache.active_ms) >= 10000) {
+    degraded.push({ code: 'recent_meetings_cache_pressure',
+      count: Number(recentMeetingsCache.consecutive_failures) || undefined,
+      age_ms: Number(recentMeetingsCache.active_ms) || undefined,
+      message: 'The recent-meetings cache is slow or has a current refresh failure.' });
   }
   const postInteraction = background.post_interaction || {};
   const recentPostInteractionFailures = (postInteraction.recent_failures || []).filter(item => {

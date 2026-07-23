@@ -320,6 +320,35 @@ test('acknowledged meeting work remains owned until persistence and delivery set
   assert.equal(__test.acknowledgedMeetingWorkSnapshot().active_count, 0);
 });
 
+test('bounded concurrency preserves order without flooding transcript reads', async () => {
+  const { __test } = require('../../server');
+  let active = 0;
+  let maximumActive = 0;
+  const values = await __test.mapWithBoundedConcurrency([0, 1, 2, 3, 4, 5, 6], 3,
+    async value => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise(resolve => setTimeout(resolve, 3 + (value % 2)));
+      active -= 1;
+      return value * 2;
+    });
+  assert.deepEqual(values, [0, 2, 4, 6, 8, 10, 12]);
+  assert.equal(maximumActive, 3);
+
+  let siblingSettled = false;
+  await assert.rejects(__test.mapWithBoundedConcurrency([0, 1], 2, async value => {
+    if (value === 0) {
+      await new Promise(resolve => setTimeout(resolve, 2));
+      throw new Error('transcript read failed');
+    }
+    await new Promise(resolve => setTimeout(resolve, 10));
+    siblingSettled = true;
+    return value;
+  }), /transcript read failed/);
+  assert.equal(siblingSettled, true,
+    'a failed bounded batch must not release ownership while a sibling read is still running');
+});
+
 test('post-interaction overflow never evicts the item currently executing', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
@@ -584,6 +613,16 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'shutdown must drain acknowledged Slack work before closing persistence');
   assert.match(server, /drainAcknowledgedMeetingWork\(\{ timeoutMs: 20000 \}\)/,
     'shutdown must drain acknowledged meeting callbacks before closing persistence');
+  assert.match(server, /drainRecentMeetingsRefresh\(\{ timeoutMs: 10000 \}\)/,
+    'shutdown must wait a bounded interval for an active meeting-cache refresh');
+  assert.match(server, /if \(_recentMeetingsRefreshInFlight\)[\s\S]*?return _recentMeetingsRefreshInFlight/,
+    'overlapping meeting-cache callers must join the active refresh');
+  assert.match(server, /mapWithBoundedConcurrency\(list, RECENT_MEETINGS_READ_CONCURRENCY/,
+    'meeting-cache transcript reads must use a bounded concurrent pool');
+  const meetingStatus = server.slice(server.indexOf("app.post('/webhook/status'"),
+    server.indexOf('// Slack webhook', server.indexOf("app.post('/webhook/status'")));
+  assert.match(meetingStatus, /await refreshRecentMeetingsCache\(\)/,
+    'meeting completion must remain owned until its immediate cache refresh settles');
   for (const [route, label] of [
     ['/voice-agent/response', 'voice-response'],
     ['/webhook/recall-calendar', 'calendar-sync'],

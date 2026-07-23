@@ -5369,7 +5369,11 @@ app.post('/webhook/status', async (req, res) => {
         extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta, { post }));
       enqueuePostInteractionExtraction('meeting-debrief', post =>
         runMeetingDebrief(bot_id, transcriptData, session.meetingMeta, { post }));
-      refreshRecentMeetingsCache().catch(() => {});
+      try {
+        await refreshRecentMeetingsCache();
+      } catch (error) {
+        console.warn('post-meeting recent-meetings refresh failed:', error.message);
+      }
     }
     if (!retainSessionForTranscriptRetry) {
       delete sessions[bot_id];
@@ -11699,19 +11703,47 @@ async function deleteTranscriptDoc(botId) {
 // there, when, whether it was filed) for injection into every prompt, refreshed on boot, on a
 // timer, and when a meeting ends. buildSystemPrompt is sync, hence a cache and not a query.
 let _recentMeetingsCache = [];
-let _recentMeetingsRefreshInFlight = false;
-async function refreshRecentMeetingsCache() {
-  if (_recentMeetingsRefreshInFlight) return;
-  if (_dbReady && typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed()) return;
-  _recentMeetingsRefreshInFlight = true;
-  try {
+let _recentMeetingsRefreshInFlight = null;
+const RECENT_MEETINGS_READ_CONCURRENCY = 3;
+const _recentMeetingsRefreshHealth = {
+  requested: 0, coalesced: 0, completed: 0, failures: 0, consecutive_failures: 0,
+  last_started_at: null, last_completed_at: null, last_error: null, last_error_at: null,
+};
+async function mapWithBoundedConcurrency(items, concurrency, mapper) {
+  const values = Array.isArray(items) ? items : [];
+  const results = new Array(values.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(values.length,
+    Math.max(1, Number(concurrency) || 1)) }, async () => {
+    while (nextIndex < values.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await mapper(values[index], index);
+    }
+  });
+  const settled = await Promise.allSettled(workers);
+  const failure = settled.find(item => item.status === 'rejected');
+  if (failure) throw failure.reason;
+  return results;
+}
+function refreshRecentMeetingsCache() {
+  _recentMeetingsRefreshHealth.requested += 1;
+  if (_recentMeetingsRefreshInFlight) {
+    _recentMeetingsRefreshHealth.coalesced += 1;
+    return _recentMeetingsRefreshInFlight;
+  }
+  if (_dbReady && typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed()) {
+    return Promise.resolve(false);
+  }
+  const startedAt = Date.now();
+  _recentMeetingsRefreshHealth.last_started_at = new Date(startedAt).toISOString();
+  const operation = (async () => {
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const list = (await listTranscriptDocs())
       .filter(t => t.ended && new Date(t.ended).getTime() >= cutoff)
       .slice(0, 12);
     const markers = loadMarkers();
-    const out = [];
-    for (const r of list) {
+    const out = await mapWithBoundedConcurrency(list, RECENT_MEETINGS_READ_CONCURRENCY, async r => {
       let speakers = [];
       try {
         const doc = await getTranscriptDoc(r.bot_id);
@@ -11723,18 +11755,59 @@ async function refreshRecentMeetingsCache() {
       } catch { /* speakers stay empty; the row still counts */ }
       const filed = (markers[`filed-transcript:${r.bot_id}`]) || null;
       const skipped = (markers[`skipped-transcript:${r.bot_id}`]) || null;
-      out.push({
+      return {
         bot_id: r.bot_id,
         ended: r.ended,
         utterances: r.utterance_count,
         speakers,
         client: filed && filed.client ? filed.client : null,
         skipped: skipped ? (skipped.reason || 'skipped') : null
-      });
-    }
+      };
+    });
     _recentMeetingsCache = out;
-  } catch (e) { console.warn('recent-meetings cache refresh failed:', e.message); }
-  finally { _recentMeetingsRefreshInFlight = false; }
+    _recentMeetingsRefreshHealth.completed += 1;
+    _recentMeetingsRefreshHealth.consecutive_failures = 0;
+    _recentMeetingsRefreshHealth.last_completed_at = new Date().toISOString();
+    _recentMeetingsRefreshHealth.last_error = null;
+    _recentMeetingsRefreshHealth.last_error_at = null;
+    return true;
+  })().catch(error => {
+    _recentMeetingsRefreshHealth.failures += 1;
+    _recentMeetingsRefreshHealth.consecutive_failures += 1;
+    _recentMeetingsRefreshHealth.last_error = String(error?.message || error).slice(0, 500);
+    _recentMeetingsRefreshHealth.last_error_at = new Date().toISOString();
+    console.warn('recent-meetings cache refresh failed:', error.message);
+    throw error;
+  }).finally(() => {
+    if (_recentMeetingsRefreshInFlight === operation) _recentMeetingsRefreshInFlight = null;
+  });
+  _recentMeetingsRefreshInFlight = operation;
+  return operation;
+}
+function recentMeetingsRefreshSnapshot(now = Date.now()) {
+  const startedAt = _recentMeetingsRefreshInFlight
+    ? new Date(_recentMeetingsRefreshHealth.last_started_at || 0).getTime() : 0;
+  return {
+    ..._recentMeetingsRefreshHealth,
+    in_flight: Boolean(_recentMeetingsRefreshInFlight),
+    active_ms: startedAt > 0 ? Math.max(0, Number(now) - startedAt) : 0,
+    transcript_read_concurrency: RECENT_MEETINGS_READ_CONCURRENCY,
+    cached_meetings: _recentMeetingsCache.length,
+  };
+}
+async function drainRecentMeetingsRefresh({ timeoutMs = 10000 } = {}) {
+  const active = _recentMeetingsRefreshInFlight;
+  if (!active) return true;
+  let timer = null;
+  const settled = await Promise.race([
+    Promise.resolve(active).then(() => true, () => true),
+    new Promise(resolve => {
+      timer = setTimeout(() => resolve(false), Math.max(1, Number(timeoutMs) || 10000));
+      timer.unref?.();
+    }),
+  ]);
+  if (timer) clearTimeout(timer);
+  return settled;
 }
 
 // Live tools so she can consult her own meeting record mid-conversation (Slack + Zoom chat).
@@ -13711,6 +13784,7 @@ function backgroundWorkSnapshot() {
     api_opportunity_operations: { ...apiOpportunityWriteHealth },
     slack_webhook_events: slackWebhookSnapshot(),
     acknowledged_meeting_work: acknowledgedMeetingWorkSnapshot(),
+    recent_meetings_cache: recentMeetingsRefreshSnapshot(),
     recurring_jobs: _recurringJobs.snapshot(),
     startup_tasks: startupBackgroundTaskSnapshot(),
   };
@@ -16426,18 +16500,23 @@ async function stop() {
     closeServer.then(() => { clearTimeout(forceTimer); resolve(); });
   });
   const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
-  const [persistenceDrain, , , slackWebhookDrain, meetingWebhookDrain] = await Promise.allSettled([
+  const [persistenceDrain, , , slackWebhookDrain, meetingWebhookDrain,
+    recentMeetingsDrain] = await Promise.allSettled([
     intelligence.persistStrict(),
     intelligenceRoutesRuntime.close(),
     boundedServerClose,
     drainSlackWebhookEvents({ timeoutMs: 20000 }),
     drainAcknowledgedMeetingWork({ timeoutMs: 20000 }),
+    drainRecentMeetingsRefresh({ timeoutMs: 10000 }),
   ]);
   if (slackWebhookDrain.status === 'rejected' || slackWebhookDrain.value !== true) {
     console.warn('Slack webhook event drain exceeded 20000ms; continuing bounded shutdown');
   }
   if (meetingWebhookDrain.status === 'rejected' || meetingWebhookDrain.value !== true) {
     console.warn('Acknowledged meeting work drain exceeded 20000ms; continuing bounded shutdown');
+  }
+  if (recentMeetingsDrain.status === 'rejected' || recentMeetingsDrain.value !== true) {
+    console.warn('Recent-meetings cache refresh drain exceeded 10000ms; continuing bounded shutdown');
   }
   const apiOpportunityDrained = await drainApiOpportunityOperations({ timeoutMs: 10000 });
   if (!apiOpportunityDrained) {
@@ -16632,6 +16711,9 @@ module.exports = {
     beginAcknowledgedMeetingWork,
     acknowledgedMeetingWorkSnapshot,
     drainAcknowledgedMeetingWork,
+    mapWithBoundedConcurrency,
+    recentMeetingsRefreshSnapshot,
+    drainRecentMeetingsRefresh,
   },
 };
 
