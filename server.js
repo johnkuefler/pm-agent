@@ -9373,6 +9373,18 @@ registerTaskRoutes(app, {
 
 let _hourlyFallbackInFlight = false;
 let _hourlyFallbackLast = null;
+const HOURLY_FALLBACK_RUNTIME_BUDGET_MS = 60000;
+
+function hourlyFallbackBudget(deadlineAt, capMs, label, reserveMs = 0) {
+  const remainingMs = Number(deadlineAt) - Date.now() - Math.max(0, Number(reserveMs) || 0);
+  const budgetMs = Math.min(Math.max(1, Number(capMs) || 1), remainingMs);
+  if (!Number.isFinite(budgetMs) || budgetMs < 250) {
+    const error = new Error(`${label} did not have enough time before the hourly coverage deadline`);
+    error.code = 'hourly_fallback_deadline_exceeded';
+    throw error;
+  }
+  return Math.floor(budgetMs);
+}
 
 function localRuntimeApiUrl(route) {
   const address = server.address();
@@ -9403,6 +9415,7 @@ async function localRuntimeApi(method, route, body = undefined, timeout = 15000)
 
 async function commitFallbackForecast(cycleId, payload, {
   attempts = 4, retryDelayMs = 1000, request = localRuntimeApi,
+  deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
   wait = milliseconds => new Promise(resolve => {
     const timer = setTimeout(resolve, milliseconds);
     timer.unref?.();
@@ -9411,14 +9424,18 @@ async function commitFallbackForecast(cycleId, payload, {
   let lastError = null;
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
+      const requestBudgetMs = hourlyFallbackBudget(
+        deadlineAt, 20000, 'Fallback self-forecast', 12000);
       return await request('post',
-        `/intelligence/cycles/${encodeURIComponent(cycleId)}/self-forecast`, payload, 20000);
+        `/intelligence/cycles/${encodeURIComponent(cycleId)}/self-forecast`, payload, requestBudgetMs);
     } catch (error) {
       lastError = error;
       const retryable = error.code === 'SELF_FORECAST_PREPARATION_PENDING'
         || (error.status === 503 && error.response_body?.retryable === true);
       if (!retryable || attempt >= attempts) throw error;
-      await wait(retryDelayMs);
+      const delayBudgetMs = hourlyFallbackBudget(
+        deadlineAt, retryDelayMs, 'Fallback self-forecast retry delay', 12000);
+      await wait(delayBudgetMs);
     }
   }
   throw lastError || new Error('fallback forecast did not reach a terminal state');
@@ -9432,7 +9449,9 @@ function centralDateYmd(date = new Date()) {
   return `${value.year}-${value.month}-${value.day}`;
 }
 
-async function fallbackOperationalSweep() {
+async function fallbackOperationalSweep({
+  deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
+} = {}) {
   const now = new Date();
   const internalDue = loadTasks().filter(task => isTaskEligibleNow(task, now));
   const result = {
@@ -9445,17 +9464,23 @@ async function fallbackOperationalSweep() {
   const peopleTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_people');
   const tasksTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_tasks');
   try {
+    const identityBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 8000, 'Fallback Teamwork identity lookup', 8000);
     const people = await rejectWithinAbortable(
-      () => peopleTool.execute({ query: 'Nora' }), 8000, 'Fallback Teamwork identity lookup');
+      signal => peopleTool.execute({ query: 'Nora' },
+        { signal, timeoutMs: identityBudgetMs }),
+      identityBudgetMs, 'Fallback Teamwork identity lookup');
     const nora = (people || []).find(person => /\bnora\b/i.test(person.name || '')) || null;
     if (!nora?.id) {
       result.teamwork = { status: 'identity_unresolved', due_count: null };
       return result;
     }
     const tomorrow = centralDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
-    const tasks = await rejectWithinAbortable(() => tasksTool.execute({
+    const taskBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 12000, 'Fallback Teamwork due-task sweep', 5000);
+    const tasks = await rejectWithinAbortable(signal => tasksTool.execute({
       assigned_to_user_ids: String(nora.id), due_before: tomorrow, include_completed: false,
-    }), 12000, 'Fallback Teamwork due-task sweep');
+    }, { signal, timeoutMs: taskBudgetMs }), taskBudgetMs, 'Fallback Teamwork due-task sweep');
     result.teamwork = {
       status: 'checked',
       due_through: tomorrow,
@@ -9502,6 +9527,7 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
   const holder = `fallback-run-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`;
   let cycleId = null;
   let lockAcquired = false;
+  const deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS;
   const activity = runtimeActivity.begin({
     lane: 'work', kind: 'fallback_hourly_coverage',
     label: 'Covering a missed hourly pass',
@@ -9510,9 +9536,11 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
   });
   const startedAt = Date.now();
   try {
+    const acquireBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 10000, 'Fallback run-lock acquisition', 45000);
     const acquired = await localRuntimeApi('post', '/run-lock', {
       holder, ttl_seconds: 300,
-    });
+    }, acquireBudgetMs);
     if (!acquired.acquired) {
       runtimeActivity.finish(activity.id, { status: 'deferred',
         detail: 'Another operational run acquired the ledger first.',
@@ -9524,17 +9552,23 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
     if (!cycleId) throw new Error('fallback lock did not bind an intelligence lifecycle');
     const prior = intelligence.behavioralSelfForecastPriorRuntimeSnapshot();
     await commitFallbackForecast(cycleId,
-      fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }));
-    const sweep = await fallbackOperationalSweep();
+      fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }),
+      { deadlineAt });
+    const sweep = await fallbackOperationalSweep({ deadlineAt });
     const summary = `Railway completed a read-only coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s); Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count) ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}.`;
+    const completionBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 20000, 'Fallback lifecycle completion', 5000);
     const completed = await localRuntimeApi('patch',
       `/intelligence/cycles/${encodeURIComponent(cycleId)}/complete`, {
         status: 'completed', summary,
         actions: [{ type: 'fallback_observation', id: activity.id,
           mode: 'read_only', checked_at: sweep.checked_at }],
-      }, 20000);
+      }, completionBudgetMs);
     await intelligence.persistStrict();
-    await localRuntimeApi('delete', `/run-lock?holder=${encodeURIComponent(holder)}`, undefined, 10000);
+    const releaseBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 10000, 'Fallback run-lock release');
+    await localRuntimeApi('delete', `/run-lock?holder=${encodeURIComponent(holder)}`,
+      undefined, releaseBudgetMs);
     lockAcquired = false;
     _hourlyFallbackLast = {
       status: 'completed', trigger, holder, cycle_id: cycleId,
@@ -14979,7 +15013,9 @@ module.exports = {
     rankLexicalMemories,
     retrieveInteractiveMemories,
     stripSlackLookupNarration,
+    hourlyFallbackBudget,
     commitFallbackForecast,
+    fallbackOperationalSweep,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,
     fitSlackSystemPrompt,
