@@ -6724,8 +6724,21 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     Math.max(1, Math.floor(deadlineMs * 0.25)));
   const writeStartMinimumMs = Math.max(1000, Number(opts.writeStartMinimumMs) || 15000);
   const writeToolNames = new Set(opts.writeToolNames || []);
+  const durableWriteReceipts = opts.durableWriteReceipts === true;
+  const writeReceiptTimeoutMs = Math.max(1000,
+    Number(opts.writeReceiptTimeoutMs) || 8000);
+  const persistActionReceipt = opts.persistActionReceipt
+    || (() => intelligence.persistStrict());
   const remaining = () => deadlineMs == null ? Infinity : deadlineMs - (Date.now() - startedAt);
+  const operationSignal = signal => opts.signal
+    ? AbortSignal.any([signal, opts.signal]) : signal;
   const withinDeadline = async (label, maximumMs, operation) => {
+    if (opts.signal?.aborted) {
+      const error = opts.signal.reason instanceof Error
+        ? opts.signal.reason : new Error(`${label} cancelled by foreground priority`);
+      error.code ||= 'background_preempted';
+      throw error;
+    }
     const left = remaining();
     if (left <= 0) {
       const error = new Error(`${label} could not start because the interactive deadline elapsed`);
@@ -6736,7 +6749,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     return rejectWithinAbortable(operation, timeoutMs, label);
   };
   const callProvider = body => withinDeadline('Claude response', providerTimeoutMs,
-    signal => post(URL, body, { ...headers, signal,
+    signal => post(URL, body, { ...headers, signal: operationSignal(signal),
       timeout: Math.max(1, Math.min(providerTimeoutMs, remaining())) }));
   const providerTrace = [];
   const capture = response => {
@@ -6796,8 +6809,33 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       // tell the model it's been kicked off, so the live turn ends now and the result is delivered
       // to this thread later by the worker.
       const dm = opts.deferredMeta && opts.deferredMeta[tu.name];
+      const writeCapable = writeToolNames.has(tu.name) || dm?.accessMode === 'write';
       const execution = safelyBeginToolExecution({ toolUseId: tu.id, toolName: tu.name, args: tu.input || {}, meta: dm, origin: opts.origin || {}, deferred: Boolean(dm?.deferred) });
       if (execution) actionExecutionIds.push(execution.id);
+      if (writeCapable && durableWriteReceipts) {
+        if (!execution) {
+          content = JSON.stringify({
+            error: 'write refused because its durable selection receipt could not be created',
+          });
+          results.push({ type: 'tool_result', tool_use_id: tu.id, content });
+          continue;
+        }
+        try {
+          await withinDeadline(`${tu.name} write-ahead receipt`,
+            writeReceiptTimeoutMs, () => persistActionReceipt());
+        } catch (error) {
+          safelyCompleteToolExecution(execution.id, 'failed', error);
+          // The connector has not started, so retrying is safe. Close the receipt for operator
+          // visibility when persistence recovers, but never let this cleanup start the write.
+          await withinDeadline(`${tu.name} refused-write receipt`,
+            writeReceiptTimeoutMs, () => persistActionReceipt()).catch(() => {});
+          content = JSON.stringify({
+            error: 'write not started because its selection receipt was not durable',
+          });
+          results.push({ type: 'tool_result', tool_use_id: tu.id, content });
+          continue;
+        }
+      }
       if (dm && dm.deferred) {
         try {
           const origin = { ...(opts.origin || { kind: 'slack' }), ...(execution ? { action_execution_id: execution.id } : {}) };
@@ -6815,9 +6853,10 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       try {
         const exec = executors[tu.name];
         if (!exec) throw new Error(`unknown tool ${tu.name}`);
-        const writeCapable = writeToolNames.has(tu.name) || dm?.accessMode === 'write';
+        const toolWriteStartMinimumMs = Math.max(1000,
+          Number(opts.writeStartMinimumByTool?.[tu.name]) || writeStartMinimumMs);
         const availableForTool = remaining() - finalizationReserveMs;
-        if (availableForTool <= 0 || (writeCapable && availableForTool < writeStartMinimumMs)) {
+        if (availableForTool <= 0 || (writeCapable && availableForTool < toolWriteStartMinimumMs)) {
           const error = new Error(writeCapable
             ? `not started: ${tu.name} did not have a safe completion window before the interactive deadline`
             : `not started: ${tu.name} would consume the final-answer reserve`);
@@ -6830,15 +6869,33 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
         const result = writeCapable
           ? await exec(tu.input || {}, { timeoutMs: Math.min(toolTimeoutMs, availableForTool) })
           : await rejectWithinAbortable(signal => exec(tu.input || {}, {
-            signal, timeoutMs: Math.min(toolTimeoutMs, availableForTool),
+            signal: operationSignal(signal), timeoutMs: Math.min(toolTimeoutMs, availableForTool),
           }), Math.min(toolTimeoutMs, availableForTool), `${tu.name} tool`);
         const succeeded = !(result && typeof result === 'object' && result.error);
-        safelyCompleteToolExecution(execution?.id, succeeded ? 'succeeded' : 'failed',
-          succeeded ? result : result.error);
+        const uncertainWriteFailure = writeCapable && durableWriteReceipts && !succeeded
+          && /abort|timeout|timed out|network|socket|connection reset|hang up/i
+            .test(String(result?.error || ''));
+        if (!uncertainWriteFailure) {
+          safelyCompleteToolExecution(execution?.id, succeeded ? 'succeeded' : 'failed',
+            succeeded ? result : result.error);
+        }
+        if (writeCapable && durableWriteReceipts) {
+          await withinDeadline(`${tu.name} outcome receipt`,
+            writeReceiptTimeoutMs, () => persistActionReceipt());
+        }
         if (succeeded) firedTools.push(tu.name);
         content = JSON.stringify(result);
       } catch (e) {
-        safelyCompleteToolExecution(execution?.id, 'failed', e);
+        const uncertainWriteFailure = writeCapable && durableWriteReceipts
+          && /abort|timeout|timed out|network|socket|connection reset|hang up|ECONNRESET|ECONNABORTED|ETIMEDOUT/i
+            .test(`${e?.code || ''} ${e?.message || e || ''}`);
+        if (!uncertainWriteFailure) safelyCompleteToolExecution(execution?.id, 'failed', e);
+        if (writeCapable && durableWriteReceipts) {
+          // Once a remote write starts, a timeout cannot prove that it did not commit. Persist the
+          // open selection as an uncertainty barrier so a restart will not repeat the side effect.
+          await withinDeadline(`${tu.name} failure receipt`,
+            writeReceiptTimeoutMs, () => persistActionReceipt()).catch(() => {});
+        }
         if (['interactive_deadline_exceeded', 'interactive_tool_not_started'].includes(e.code)) {
           console.warn(`Live tool ${tu.name} contained by the interaction deadline: ${e.message}`);
         }
@@ -9457,8 +9514,9 @@ async function commitFallbackForecast(cycleId, payload, {
         || (error.status === 503 && error.response_body?.retryable === true);
       if (!retryable || attempt >= attempts) throw error;
       const delayBudgetMs = hourlyFallbackBudget(
-        deadlineAt, retryDelayMs, 'Fallback self-forecast retry delay', 12000);
-      await wait(delayBudgetMs);
+        deadlineAt, Math.max(250, retryDelayMs),
+        'Fallback self-forecast retry delay', 12000);
+      await wait(Math.min(retryDelayMs, delayBudgetMs));
     }
   }
   throw lastError || new Error('fallback forecast did not reach a terminal state');
@@ -9523,11 +9581,335 @@ function gmailCoverageSearchArgs(schema = {}, query, googleEmail = '') {
   return args;
 }
 
+const NATIVE_HOURLY_GOOGLE_TOOLS = new Set([
+  'search_gmail_messages',
+  'get_gmail_message_content',
+  'get_gmail_thread_content',
+  'draft_gmail_message',
+  'modify_gmail_message_labels',
+  'search_drive_files',
+  'get_drive_file_content',
+  'get_drive_file_download_url',
+  'list_drive_items',
+  'get_drive_shareable_link',
+]);
+const NATIVE_TASK_RETRY_BASE_MS = 60 * 60 * 1000;
+const NATIVE_TASK_RETRY_MAX_MS = 24 * 60 * 60 * 1000;
+
+function nativeTaskAttemptKey(taskId) {
+  return `native-hourly-task-attempt:${String(taskId || '').slice(0, 200)}`;
+}
+
+function nativeTaskExecutionHistory(taskId, snapshot = intelligence.agencySnapshot()) {
+  if (snapshot?.experimental_access_sealed) {
+    return { available: false, succeeded_writes: [], uncertain_writes: [] };
+  }
+  const executions = (snapshot?.executions || []).filter(item =>
+    item.surface === 'railway_hourly' && item.interaction_ref === String(taskId || '')
+    && ['write', 'mixed'].includes(item.access_mode));
+  return {
+    available: true,
+    succeeded_writes: executions.filter(item => item.status === 'succeeded'
+      && item.audit?.complete_chain_verified === true).map(item => ({
+        execution_id: item.id, tool_name: item.tool_name, completed: item.completed,
+      })),
+    uncertain_writes: executions.filter(item =>
+      ['selected', 'queued'].includes(item.status)).map(item => ({
+        execution_id: item.id, tool_name: item.tool_name, status: item.status,
+        selected: item.selected,
+      })),
+  };
+}
+
+function nativeTaskReady(task, markers = loadMarkers(), now = Date.now()) {
+  if (!task || !isTaskEligibleNow(task, new Date(now))
+    || (task.assignee && !/\bnora\b/i.test(task.assignee))) return false;
+  const attempt = markers[nativeTaskAttemptKey(task.id)];
+  const retryAt = new Date(attempt?.next_retry_at || 0).getTime();
+  return !Number.isFinite(retryAt) || retryAt <= Number(now);
+}
+
+async function recordNativeTaskAttempt(task, outcome, now = Date.now()) {
+  if (!task?.id || !outcome) return null;
+  const key = nativeTaskAttemptKey(task.id);
+  const at = new Date(now).toISOString();
+  return (await mutateMarkers(markers => {
+    const previous = markers[key] || {};
+    const attempts = outcome.completed ? 0 : Math.max(0, Number(previous.attempts) || 0) + 1;
+    const retryMs = outcome.completed ? 0
+      : outcome.status === 'deferred' && /^preempted_by_|interactive_/.test(outcome.reason || '')
+        ? 15 * 60 * 1000
+        : Math.min(NATIVE_TASK_RETRY_MAX_MS,
+          NATIVE_TASK_RETRY_BASE_MS * (2 ** Math.min(5, Math.max(0, attempts - 1))));
+    markers[key] = {
+      set_at: at,
+      task_id: task.id,
+      status: outcome.status,
+      completed: outcome.completed === true,
+      attempts,
+      reason: outcome.reason || null,
+      tools_executed: Array.isArray(outcome.tools_executed)
+        ? outcome.tools_executed.slice(0, 20) : [],
+      next_retry_at: retryMs ? new Date(Number(now) + retryMs).toISOString() : null,
+    };
+    return markers[key];
+  })).result;
+}
+
+function nativeHourlyMcpBindings() {
+  const bindings = mcpManager.bindings({ financialApproved: false, allowWrites: true });
+  const selectedNames = new Set(bindings.inventory
+    .filter(item => /google workspace/i.test(item.connection || '')
+      && NATIVE_HOURLY_GOOGLE_TOOLS.has(item.tool))
+    .map(item => item.name));
+  return {
+    claudeTools: bindings.claudeTools.filter(tool => selectedNames.has(tool.name)),
+    executors: Object.fromEntries(Object.entries(bindings.executors)
+      .filter(([name]) => selectedNames.has(name))),
+    meta: Object.fromEntries(Object.entries(bindings.meta)
+      .filter(([name]) => selectedNames.has(name))),
+  };
+}
+
+function boundedNativeTask(task) {
+  if (!task) return null;
+  const text = (value, maximum) => String(value || '').slice(0, maximum);
+  const metadata = task.metadata && typeof task.metadata === 'object'
+    ? Object.fromEntries(Object.entries(task.metadata).slice(0, 20).map(([key, value]) => [
+      text(key, 120),
+      value == null || ['string', 'number', 'boolean'].includes(typeof value)
+        ? (typeof value === 'string' ? text(value, 1000) : value)
+        : text(JSON.stringify(value), 1000),
+    ])) : null;
+  return {
+    id: text(task.id, 160),
+    action: text(task.action, 1200),
+    detail: text(task.detail, 4000),
+    context: text(task.context, 3000),
+    due: text(task.due, 80),
+    scheduled_for: text(task.scheduled_for, 80),
+    recurrence: text(task.recurrence, 120),
+    source_channel: text(task.source_channel, 160),
+    source_user: text(task.source_user, 160),
+    source_thread_ts: text(task.source_thread_ts, 160),
+    source_bot_id: text(task.source_bot_id, 200),
+    source_external_id: text(task.source_external_id, 200),
+    metadata,
+  };
+}
+
+function nativeHourlyTaskToolset(task, successfulActions) {
+  const tools = [];
+  const executors = {};
+  const writeToolNames = new Set();
+  const add = (definition, execute, { write = false } = {}) => {
+    tools.push(definition);
+    executors[definition.name] = async (args, options = {}) => {
+      const result = await execute(args, options);
+      if (write && !(result && typeof result === 'object' && result.error)) {
+        successfulActions.add(definition.name);
+      }
+      return result;
+    };
+    if (write) writeToolNames.add(definition.name);
+  };
+  if (teamworkEnabled()) {
+    for (const tool of TEAMWORK_TOOLS) add(tool.definition, tool.execute, {
+      write: TW_WRITE_NAMES.has(tool.definition.name),
+    });
+  }
+  const fixedDeliveryChannel = String(task.metadata?.destination_channel || '').trim();
+  if (fixedDeliveryChannel) {
+    add({
+      name: 'nora_deliver_task_result',
+      description: `Deliver the finished result to the task's fixed Slack destination (${fixedDeliveryChannel}). The destination cannot be changed by the model.`,
+      input_schema: { type: 'object', properties: {
+        text: { type: 'string', description: 'the finished, truthful result to deliver' },
+      }, required: ['text'] },
+    }, async ({ text }) => {
+      const ok = await postSlackMessage(fixedDeliveryChannel, String(text || '').trim(), null);
+      return ok ? { ok: true, channel: fixedDeliveryChannel }
+        : { error: 'Slack did not confirm delivery to the task destination.' };
+    }, { write: true });
+  }
+  add({
+    name: 'nora_reply_to_task_origin',
+    description: 'Reply to the exact Slack channel/thread where this queued task originated. Use after completing the requested work when the task has a Slack source. The destination is fixed by the task; provide only the truthful result text.',
+    input_schema: { type: 'object', properties: {
+      text: { type: 'string', description: 'concise, specific completion or blocker message' },
+    }, required: ['text'] },
+  }, async ({ text }) => {
+    const channel = String(task.source_channel || '').replace(/^slack:/, '');
+    if (!channel || !String(task.source_channel || '').startsWith('slack:')) {
+      return { error: 'This task does not have a Slack origin.' };
+    }
+    const ok = await postSlackMessage(channel, String(text || '').trim(), task.source_thread_ts || null);
+    return ok ? { ok: true, channel, thread_ts: task.source_thread_ts || null }
+      : { error: 'Slack did not confirm delivery to the task origin.' };
+  }, { write: true });
+
+  const mcp = nativeHourlyMcpBindings();
+  for (const definition of mcp.claudeTools) {
+    const write = mcp.meta[definition.name]?.accessMode === 'write';
+    add(definition, mcp.executors[definition.name], { write });
+  }
+  const completeDefinition = {
+    name: 'nora_complete_local_task',
+    description: 'Mark this exact local Nora task complete only after at least one preceding tool has successfully produced or delivered the requested outcome. Never use for a blocker, an incomplete lookup, or a plan.',
+    input_schema: { type: 'object', properties: {
+      summary: { type: 'string', description: 'what verifiably completed' },
+      deliverables: { type: 'array', items: { type: 'object', properties: {
+        title: { type: 'string' }, url: { type: 'string' }, type: { type: 'string' },
+      } } },
+      open_items: { type: 'array', items: { type: 'string' } },
+    }, required: ['summary'] },
+  };
+  tools.push(completeDefinition);
+  writeToolNames.add(completeDefinition.name);
+  executors[completeDefinition.name] = async ({ summary, deliverables, open_items }, options = {}) => {
+    if (!successfulActions.size) {
+      return { error: 'Completion refused: no successful external or delivery action is recorded in this run.' };
+    }
+    const current = loadTasks().find(item => item.id === task.id);
+    if (!current || current.status !== 'pending') {
+      return current?.status === 'done'
+        ? { ok: true, already: true }
+        : { error: 'Task is no longer pending and cannot be completed by this run.' };
+    }
+    return localRuntimeApi('patch', `/tasks/${encodeURIComponent(task.id)}/complete`, {
+      result: {
+        status: 'completed',
+        summary: String(summary || '').slice(0, 4000),
+        deliverables: Array.isArray(deliverables) ? deliverables.slice(0, 10) : [],
+        open_items: Array.isArray(open_items) ? open_items.slice(0, 20) : [],
+        completed_by: 'Nora Railway hourly runner',
+      },
+    }, Math.min(10000, Math.max(1000, Number(options.timeoutMs) || 10000)));
+  };
+  return { tools, executors, writeToolNames: [...writeToolNames], meta: mcp.meta };
+}
+
+async function runNativeHourlyTask(task, {
+  deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
+  post = axios.post,
+  toolsetFactory = nativeHourlyTaskToolset,
+  beginBackground = label => interactivePerformance.beginBackground(label),
+} = {}) {
+  if (!task) return { status: 'not_due', task_id: null };
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return { status: 'deferred', task_id: task.id, reason: 'anthropic_api_key_unavailable' };
+  }
+  let executionHistory;
+  try {
+    executionHistory = nativeTaskExecutionHistory(task.id);
+  } catch (error) {
+    return {
+      status: 'deferred',
+      task_id: task.id,
+      reason: 'execution_history_unavailable',
+      detail: String(error?.message || error).slice(0, 240),
+    };
+  }
+  if (!executionHistory.available) {
+    return { status: 'deferred', task_id: task.id, reason: 'execution_history_sealed' };
+  }
+  if (executionHistory.uncertain_writes.length) {
+    return {
+      status: 'deferred',
+      task_id: task.id,
+      reason: 'prior_write_outcome_uncertain',
+      uncertain_writes: executionHistory.uncertain_writes,
+    };
+  }
+  let taskBudgetMs;
+  try {
+    taskBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 35000, 'Native hourly task execution', 10000);
+  } catch (error) {
+    return { status: 'deferred', task_id: task.id, reason: error.code || 'insufficient_runtime_budget' };
+  }
+  const lease = beginBackground('railway-hourly-task');
+  if (!lease.allowed) {
+    return { status: 'deferred', task_id: task.id, reason: lease.reason,
+      retry_after_ms: lease.retry_after_ms };
+  }
+  const successfulActions = new Set(executionHistory.succeeded_writes
+    .map(item => item.tool_name));
+  const toolset = toolsetFactory(task, successfulActions);
+  const taskPacket = {
+    ...boundedNativeTask(task),
+    prior_verified_write_receipts: executionHistory.succeeded_writes,
+  };
+  const reqBody = {
+    model: 'claude-opus-4-8',
+    max_tokens: 1400,
+    system: [
+      'You are Nora executing exactly one explicitly queued operational task in an unattended Railway run.',
+      'Do the requested work now with the supplied tools. Do not perform unrelated cleanup, proactive reminders, gifts, research experiments, or self-modification.',
+      'This run may draft Gmail but may never send Gmail. Never send an external email. Slack and Teamwork writes are allowed only when the queued task explicitly requests them.',
+      'Use nora_reply_to_task_origin when the requester needs the result in the original Slack thread.',
+      'Call nora_complete_local_task only after a preceding tool verifiably produced or delivered the requested outcome. If access, context, or time is insufficient, leave the task pending and explain the blocker in your final audit note.',
+      'The task packet may include prior_verified_write_receipts from an earlier interrupted run. Treat those as completed side effects: never repeat them. If they already satisfy the task, call nora_complete_local_task directly.',
+      'Never claim an action completed from intent, a plan, or an error response. Work on no other task.',
+    ].join('\n'),
+    messages: [{ role: 'user', content:
+      `Execute this queued task and nothing else:\n${JSON.stringify(taskPacket)}` }],
+    tools: toolset.tools,
+  };
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': process.env.ANTHROPIC_API_KEY,
+    'anthropic-version': '2023-06-01',
+  };
+  try {
+    const { response, firedTools } = await runClaudeToolLoop(
+      reqBody, headers, toolset.executors, 4, {
+        post,
+        deadlineMs: taskBudgetMs,
+        providerTimeoutMs: Math.min(15000, taskBudgetMs),
+        toolTimeoutMs: 10000,
+        writeStartMinimumMs: 15000,
+        writeStartMinimumByTool: { nora_complete_local_task: 5000 },
+        writeToolNames: toolset.writeToolNames,
+        durableWriteReceipts: true,
+        writeReceiptTimeoutMs: 6000,
+        deferredMeta: toolset.meta,
+        origin: { kind: 'railway_hourly', requester: task.source_user || null,
+          channel: task.source_channel || null, thread_ts: task.source_thread_ts || null,
+          interaction_ref: task.id },
+        signal: lease.signal,
+      });
+    const completed = firedTools.includes('nora_complete_local_task');
+    const finalText = (response.data?.content || []).filter(block => block.type === 'text')
+      .map(block => block.text).join(' ').trim();
+    return {
+      status: completed ? 'completed' : lease.wasPreempted() ? 'deferred' : 'pending',
+      task_id: task.id,
+      completed,
+      tools_executed: firedTools,
+      note: finalText.slice(0, 500) || null,
+      reason: lease.wasPreempted() ? `preempted_by_${lease.preemptedBy()}` : null,
+    };
+  } catch (error) {
+    return {
+      status: lease.wasPreempted() ? 'deferred' : 'degraded',
+      task_id: task.id,
+      completed: false,
+      tools_executed: [...successfulActions],
+      reason: lease.wasPreempted()
+        ? `preempted_by_${lease.preemptedBy()}` : String(error.message || error).slice(0, 240),
+    };
+  } finally {
+    lease.release();
+  }
+}
+
 async function fallbackOperationalSweep({
   deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
 } = {}) {
   const now = new Date();
-  const internalDue = loadTasks().filter(task => isTaskEligibleNow(task, now));
+  const internalDue = loadTasks().filter(task => isTaskEligibleNow(task, now)
+    && (!task.assignee || /\bnora\b/i.test(task.assignee)));
   const result = {
     checked_at: now.toISOString(),
     mode: 'read_only',
@@ -9661,7 +10043,7 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
   const activity = runtimeActivity.begin({
     lane: 'work', kind: 'fallback_hourly_coverage',
     label: 'Covering a missed hourly pass',
-    detail: 'The primary scheduler is stale; Railway is starting one bounded read-only sweep.',
+    detail: 'The primary scheduler is late; Railway is scanning each inbox and may execute one explicit queued task.',
     source: 'railway-fallback', meta: { trigger, primary_state: primaryHealth.state },
   });
   const startedAt = Date.now();
@@ -9685,22 +10067,39 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
       fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }),
       { deadlineAt });
     const sweep = await fallbackOperationalSweep({ deadlineAt });
+    const attemptMarkers = loadMarkers();
+    const eligibleTask = loadTasks().find(task =>
+      nativeTaskReady(task, attemptMarkers, Date.now())) || null;
+    sweep.task_execution = await runNativeHourlyTask(eligibleTask, { deadlineAt });
+    if (eligibleTask) {
+      sweep.task_execution.retry = await recordNativeTaskAttempt(
+        eligibleTask, sweep.task_execution);
+    }
     const summary = [
-      `Railway completed a read-only coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s)`,
+      `Railway completed an operational coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s)`,
       `Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count)
         ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}`,
       `Slack ${sweep.slack.status}${Number.isFinite(sweep.slack.unhandled_count)
         ? ` with ${sweep.slack.unhandled_count} unhandled mention(s)` : ''}`,
       `Gmail ${sweep.gmail.status}${Number.isFinite(sweep.gmail.unread_count)
         ? ` with ${sweep.gmail.unread_count} relevant unread result(s)` : ''}`,
+      `local task execution ${sweep.task_execution.status}${sweep.task_execution.task_id
+        ? ` (${sweep.task_execution.task_id})` : ''}`,
     ].join('; ') + '.';
     const completionBudgetMs = hourlyFallbackBudget(
       deadlineAt, 20000, 'Fallback lifecycle completion', 5000);
     const completed = await localRuntimeApi('patch',
       `/intelligence/cycles/${encodeURIComponent(cycleId)}/complete`, {
         status: 'completed', summary,
-        actions: [{ type: 'fallback_observation', id: activity.id,
-          mode: 'read_only', checked_at: sweep.checked_at }],
+        actions: [
+          { type: 'fallback_observation', id: activity.id,
+            mode: 'read_only', checked_at: sweep.checked_at },
+          ...(sweep.task_execution.completed ? [{
+            type: 'local_task_execution',
+            id: sweep.task_execution.task_id,
+            tools: sweep.task_execution.tools_executed,
+          }] : []),
+        ],
       }, completionBudgetMs);
     await intelligence.persistStrict();
     const releaseBudgetMs = hourlyFallbackBudget(
@@ -15155,6 +15554,13 @@ module.exports = {
     commitFallbackForecast,
     coverageCollectionCount,
     gmailCoverageSearchArgs,
+    boundedNativeTask,
+    nativeTaskAttemptKey,
+    nativeTaskExecutionHistory,
+    nativeTaskReady,
+    recordNativeTaskAttempt,
+    nativeHourlyTaskToolset,
+    runNativeHourlyTask,
     fallbackOperationalSweep,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,

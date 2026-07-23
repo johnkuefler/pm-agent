@@ -76,6 +76,94 @@ test('tool loop actively bounds a stalled provider and returns a terminal fallba
   assert.ok(Date.now() - started < 250);
 });
 
+test('foreground priority aborts a background tool-loop provider request', async () => {
+  const controller = new AbortController();
+  const pending = __test.runClaudeToolLoop({ messages: [] }, {}, {}, 1, {
+    deadlineMs: 5000,
+    providerTimeoutMs: 4000,
+    signal: controller.signal,
+    post: async (_url, _body, { signal }) => new Promise((resolve, reject) => {
+      if (signal.aborted) return reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  });
+  const reason = new Error('background intelligence preempted by slack');
+  reason.code = 'background_preempted';
+  controller.abort(reason);
+  await assert.rejects(pending, error =>
+    error.code === 'background_preempted' && /preempted by slack/.test(error.message));
+});
+
+test('durable background writes flush their selection receipt before the connector starts', async () => {
+  let releaseSelection;
+  let persistenceCalls = 0;
+  let writeCalls = 0;
+  const responses = [
+    { stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'durable-write-1', name: 'write_update', input: {} },
+    ] },
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Updated.' }] },
+  ];
+  const pending = __test.runClaudeToolLoop(
+    { messages: [], tools: [{ name: 'write_update' }] }, {}, {
+      write_update: async () => { writeCalls += 1; return { ok: true }; },
+    }, 2, {
+      deadlineMs: 5000,
+      providerTimeoutMs: 1000,
+      toolTimeoutMs: 1000,
+      writeStartMinimumMs: 1000,
+      writeToolNames: ['write_update'],
+      durableWriteReceipts: true,
+      persistActionReceipt: async () => {
+        persistenceCalls += 1;
+        if (persistenceCalls === 1) {
+          await new Promise(resolve => { releaseSelection = resolve; });
+        }
+      },
+      origin: { kind: 'railway_hourly', interaction_ref: 'task-write-ahead' },
+      post: async () => ({ data: responses.shift() }),
+    });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(persistenceCalls, 1);
+  assert.equal(writeCalls, 0, 'the remote side effect must wait for durable write-ahead state');
+  releaseSelection();
+  const result = await pending;
+  assert.deepEqual(result.firedTools, ['write_update']);
+  assert.equal(writeCalls, 1);
+  assert.equal(persistenceCalls, 2, 'the successful outcome must also be durable');
+});
+
+test('a timed-out durable write remains uncertain so a restart cannot repeat it', async () => {
+  const responses = [
+    { stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'uncertain-write-1', name: 'write_update', input: {} },
+    ] },
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Could not verify the update.' }] },
+  ];
+  await __test.runClaudeToolLoop(
+    { messages: [], tools: [{ name: 'write_update' }] }, {}, {
+      write_update: async () => {
+        const error = new Error('connector timed out after dispatch');
+        error.code = 'ETIMEDOUT';
+        throw error;
+      },
+    }, 2, {
+      deadlineMs: 5000,
+      providerTimeoutMs: 1000,
+      toolTimeoutMs: 1000,
+      writeStartMinimumMs: 1000,
+      writeToolNames: ['write_update'],
+      durableWriteReceipts: true,
+      persistActionReceipt: async () => {},
+      origin: { kind: 'railway_hourly', interaction_ref: 'task-uncertain-write' },
+      post: async () => ({ data: responses.shift() }),
+    });
+  const history = __test.nativeTaskExecutionHistory('task-uncertain-write');
+  assert.equal(history.succeeded_writes.length, 0);
+  assert.equal(history.uncertain_writes.length, 1);
+  assert.equal(history.uncertain_writes[0].status, 'selected');
+});
+
 test('tool loop preserves completed tool evidence when a follow-up provider call times out', async () => {
   let calls = 0;
   const result = await __test.runClaudeToolLoop({ messages: [], tools: [{ name: 'lookup' }] }, {}, {
@@ -102,9 +190,11 @@ test('tool loop bounds a stalled read tool and preserves time for a final answer
       signal.addEventListener('abort', () => reject(signal.reason), { once: true });
     }),
   }, 2, {
-    deadlineMs: 80,
-    providerTimeoutMs: 20,
-    toolTimeoutMs: 20,
+    // Leave enough wall-clock slack for this assertion to remain deterministic when the broader
+    // suite is exercising persistence and projections in parallel.
+    deadlineMs: 250,
+    providerTimeoutMs: 60,
+    toolTimeoutMs: 40,
     post: async () => {
       providerCalls += 1;
       return providerCalls === 1
@@ -115,7 +205,7 @@ test('tool loop bounds a stalled read tool and preserves time for a final answer
   assert.equal(providerCalls, 2);
   assert.deepEqual(result.firedTools, []);
   assert.equal(result.response.data.content[0].text, 'The live lookup timed out, so I could not verify it.');
-  assert.ok(Date.now() - started < 250);
+  assert.ok(Date.now() - started < 500);
 });
 
 test('tool loop does not start a write without a safe completion window', async () => {

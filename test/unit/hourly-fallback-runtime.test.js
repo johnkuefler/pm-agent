@@ -2,9 +2,17 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-hourly-fallback-'));
 process.env.NORA_TEST_MODE = '1';
+process.env.NORA_DATA_DIR = dataDir;
+delete process.env.DATABASE_URL;
+delete process.env.DATABASE_PUBLIC_URL;
 const { __test } = require('../../server');
+test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
 test('fallback forecast retries spend one shared runtime deadline', async () => {
   const requestTimeouts = [];
@@ -75,4 +83,123 @@ test('Gmail coverage adapts to the connected tool schema and fails closed on unk
     required: ['account_id'],
   }, 'is:unread', 'nora@example.com'), error =>
     error.code === 'gmail_coverage_schema_unresolved');
+});
+
+test('native hourly tools cannot complete a task without a successful preceding action', async () => {
+  const successful = new Set();
+  const task = { id: 'task-safe', status: 'pending', action: 'Draft the update',
+    source_channel: '', metadata: { destination_channel: 'C123' } };
+  const toolset = __test.nativeHourlyTaskToolset(task, successful);
+  assert.equal(toolset.tools.some(tool => tool.name === 'slack_send_message'), false,
+    'the unattended runner must not receive an unconstrained Slack destination tool');
+  assert.equal(toolset.tools.some(tool => tool.name === 'nora_deliver_task_result'), true);
+  const result = await toolset.executors.nora_complete_local_task({ summary: 'done' });
+  assert.match(result.error, /no successful external or delivery action/i);
+});
+
+test('native hourly task execution finishes one bounded task through an auditable tool chain', async () => {
+  const previousKey = process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY = 'test-key';
+  const controller = new AbortController();
+  const responses = [
+    { stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'work-1', name: 'perform_explicit_work', input: {} },
+    ] },
+    { stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'complete-1', name: 'nora_complete_local_task',
+        input: { summary: 'Delivered the requested result.' } },
+    ] },
+    { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Task completed with receipts.' }] },
+  ];
+  try {
+    const result = await __test.runNativeHourlyTask({
+      id: 'task-bounded', action: 'Perform the explicit work', status: 'pending',
+    }, {
+      deadlineAt: Date.now() + 60000,
+      beginBackground: () => ({
+        allowed: true, signal: controller.signal,
+        wasPreempted: () => false, preemptedBy: () => null, release() {},
+      }),
+      toolsetFactory: (_task, successful) => ({
+        tools: [{ name: 'perform_explicit_work' }, { name: 'nora_complete_local_task' }],
+        executors: {
+          perform_explicit_work: async () => {
+            successful.add('perform_explicit_work');
+            return { ok: true, receipt: 'work-receipt' };
+          },
+          nora_complete_local_task: async () => successful.size
+            ? { ok: true } : { error: 'missing evidence' },
+        },
+        writeToolNames: ['perform_explicit_work', 'nora_complete_local_task'],
+        meta: {},
+      }),
+      post: async () => ({ data: responses.shift() }),
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(result.completed, true);
+    assert.deepEqual(result.tools_executed,
+      ['perform_explicit_work', 'nora_complete_local_task']);
+  } finally {
+    if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = previousKey;
+  }
+});
+
+test('native task checkpoints back off one blocked item without starving the queue forever', async () => {
+  const now = Date.parse('2026-07-23T04:00:00.000Z');
+  const task = { id: 'task-retry', action: 'Use an unavailable connector',
+    status: 'pending', assignee: 'Nora' };
+  const first = await __test.recordNativeTaskAttempt(task, {
+    status: 'degraded', completed: false, reason: 'connector unavailable',
+    tools_executed: [],
+  }, now);
+  assert.equal(first.attempts, 1);
+  assert.equal(first.next_retry_at, '2026-07-23T05:00:00.000Z');
+  assert.equal(__test.nativeTaskReady(task, {
+    [__test.nativeTaskAttemptKey(task.id)]: first,
+  }, now + 30 * 60 * 1000), false);
+  assert.equal(__test.nativeTaskReady(task, {
+    [__test.nativeTaskAttemptKey(task.id)]: first,
+  }, now + 60 * 60 * 1000), true);
+
+  const completed = await __test.recordNativeTaskAttempt(task, {
+    status: 'completed', completed: true, tools_executed: ['receipt'],
+  }, now + 60 * 60 * 1000);
+  assert.equal(completed.attempts, 0);
+  assert.equal(completed.next_retry_at, null);
+});
+
+test('native task history separates verified outcomes from writes with unknown outcomes', () => {
+  const history = __test.nativeTaskExecutionHistory('task-history', {
+    experimental_access_sealed: false,
+    executions: [
+      {
+        id: 'verified-write', surface: 'railway_hourly', interaction_ref: 'task-history',
+        access_mode: 'write', status: 'succeeded', tool_name: 'draft_gmail_message',
+        completed: '2026-07-23T04:00:00.000Z',
+        audit: { complete_chain_verified: true },
+      },
+      {
+        id: 'uncertain-write', surface: 'railway_hourly', interaction_ref: 'task-history',
+        access_mode: 'write', status: 'selected', tool_name: 'nora_reply_to_task_origin',
+        selected: '2026-07-23T04:01:00.000Z',
+        audit: { complete_chain_verified: false },
+      },
+      {
+        id: 'other-task', surface: 'railway_hourly', interaction_ref: 'task-other',
+        access_mode: 'write', status: 'selected', tool_name: 'irrelevant',
+      },
+    ],
+  });
+  assert.deepEqual(history.succeeded_writes, [{
+    execution_id: 'verified-write', tool_name: 'draft_gmail_message',
+    completed: '2026-07-23T04:00:00.000Z',
+  }]);
+  assert.deepEqual(history.uncertain_writes, [{
+    execution_id: 'uncertain-write', tool_name: 'nora_reply_to_task_origin',
+    status: 'selected', selected: '2026-07-23T04:01:00.000Z',
+  }]);
+  assert.equal(__test.nativeTaskExecutionHistory('task-history', {
+    experimental_access_sealed: true,
+  }).available, false);
 });

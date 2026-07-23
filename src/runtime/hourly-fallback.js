@@ -75,7 +75,7 @@ function fallbackForecast({ cycleId, priorSnapshot = null, soma = null } = {}) {
   const protocolVersion = prior ? 7 : 4;
   return {
     protocol_version: protocolVersion,
-    predicted_action_types: ['fallback_observation'],
+    predicted_action_types: ['fallback_observation', 'local_task_execution'],
     surprise_probability: 0.2,
     control_at_close: control,
     confidence,
@@ -102,10 +102,10 @@ function fallbackForecast({ cycleId, priorSnapshot = null, soma = null } = {}) {
       behavioral_self_prior_commitment: prior.content_commitment,
       behavioral_self_prior_use: {
         disposition: 'not_relevant', estimate_refs: [],
-        rationale: 'This constrained read-only recovery pass is selected by scheduler health, not by the historical action prior.',
+        rationale: 'This constrained recovery pass is selected by scheduler health, not by the historical action prior.',
       },
     } : {}),
-    rationale: 'The primary hourly scheduler is stale, so Railway will perform one bounded read-only coverage pass and preserve its provenance.',
+    rationale: 'The primary hourly scheduler is late or stale, so Railway will perform one bounded coverage pass and may execute at most one explicitly queued task.',
     evidence: [
       { type: 'intelligence_cycle', id: String(cycleId) },
       ...(prior ? [{ type: 'behavioral_self_prior', id: prior.content_commitment }] : []),

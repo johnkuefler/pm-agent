@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1",
+    "test": "node --test --test-concurrency=1 \"test/contract/*.test.js\" \"test/integration/*.test.js\" \"test/unit/*.test.js\"",
     "test:unit": "node --test --test-concurrency=1 \"test/unit/*.test.js\"",
     "deploy:check": "node scripts/check-deploy-readiness.js",
     "reading:seed:first": "node scripts/seed-first-reading-source.js",
