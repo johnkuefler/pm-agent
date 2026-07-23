@@ -4795,6 +4795,8 @@ app.post('/webhook/chat', async (req, res) => {
   const query = finalText.replace(/@?nora/gi, '').trim();
   if (!query) return;
   const interactionStartedAt = Date.now();
+  const zoomConversationPolicy = slackConversationPolicy(query);
+  let zoomTerminalAt = interactionStartedAt + (zoomConversationPolicy.attachLiveTools ? 45000 : 6000);
   const interactivePriorityLease = interactivePerformance.beginInteractive('zoom-chat');
   const chatActivity = runtimeActivity.begin({ lane: 'conversation', kind: 'zoom_chat_response',
     label: 'Replying in meeting chat',
@@ -4815,13 +4817,16 @@ app.post('/webhook/chat', async (req, res) => {
     // Reuse the slack-style framing (markdown ok, concise) and pass the chat sender as the
     // requester. Pass the recent chat as conversationText so memory loads what's relevant.
     const zoomConv = history.slice(-6).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
-    const zoomConversationPolicy = slackConversationPolicy(query);
     const zoomLightweightSocial = zoomConversationPolicy.lightweightSocial;
     const zoomRecallStartedAt = Date.now();
     const zoomSemanticMemories = zoomLightweightSocial ? []
       : retrieveInteractiveMemories(zoomConv, 8);
     const zoomRecallFinishedAt = Date.now();
     const zoomAttachLiveTools = zoomConversationPolicy.attachLiveTools;
+    // One wall-clock budget owns prompt preparation, providers, tools, retries, and delivery.
+    // No downstream stage receives a fresh timeout after an earlier stage consumed time.
+    zoomTerminalAt = interactionStartedAt + (zoomAttachLiveTools ? 45000 : 6000);
+    const zoomDeliveryReserveMs = 1500;
     const zoomMcp = zoomAttachLiveTools
       ? mcpManager.bindings({ financialApproved: false, allowWrites: true })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
@@ -4880,15 +4885,20 @@ app.post('/webhook/chat', async (req, res) => {
       ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors, 6, {
         deferredMeta: zoomMcp.meta, origin: { kind: 'zoom_chat', bot_id, requester: speaker },
         writeToolNames: [...TW_WRITE_Z],
-        deadlineMs: zoomAttachLiveTools ? 45000 : Math.max(1000, 5000 - (Date.now() - interactionStartedAt)),
-        providerTimeoutMs: zoomAttachLiveTools ? 20000 : Math.max(1000, 5000 - (Date.now() - interactionStartedAt))
+        deadlineMs: Math.max(1, zoomTerminalAt - Date.now() - zoomDeliveryReserveMs),
+        providerTimeoutMs: Math.max(1, Math.min(zoomAttachLiveTools ? 20000 : 5000,
+          zoomTerminalAt - Date.now() - zoomDeliveryReserveMs))
       }));
     } catch (err) {
       console.warn('Zoom chat reply with tools failed; retrying without:', err.response?.data?.error?.message || err.message);
       delete zoomReq.tools; zoomReq.messages = history.slice();
-      response = await rejectWithinAbortable(signal => axios.post('https://api.anthropic.com/v1/messages',
-        zoomReq, { ...zoomHeaders, signal }), zoomAttachLiveTools ? 12000 : 2500,
-      'Zoom-chat provider retry');
+      const retryBudgetMs = Math.min(zoomAttachLiveTools ? 12000 : 2500,
+        zoomTerminalAt - Date.now() - zoomDeliveryReserveMs);
+      response = retryBudgetMs >= 1000
+        ? await rejectWithinAbortable(signal => axios.post('https://api.anthropic.com/v1/messages',
+          zoomReq, { ...zoomHeaders, signal, timeout: retryBudgetMs }), retryBudgetMs,
+        'Zoom-chat provider retry')
+        : { data: { content: [], stop_reason: 'interactive_deadline' } };
     }
     const providerFinishedAt = Date.now();
     const wroteLiveZ = zoomFired.some(n => TW_WRITE_Z.has(n));
@@ -4912,10 +4922,12 @@ app.post('/webhook/chat', async (req, res) => {
 
     // Send reply back to Zoom chat via Recall.ai
     const deliveryStartedAt = Date.now();
+    const zoomDeliveryBudgetMs = Math.min(5000, zoomTerminalAt - Date.now());
+    if (zoomDeliveryBudgetMs < 250) throw new Error('Zoom-chat delivery missed the end-to-end interaction deadline');
     await axios.post(
       `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
       { message: reply },
-      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
+      { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: zoomDeliveryBudgetMs }
     );
     if (!zoomFirstDeliveryAt) recordInteractiveResponseLatency({ surface: 'zoom-chat', startedAt: interactionStartedAt,
       promptChars: zoomPromptChars,
@@ -4966,11 +4978,14 @@ app.post('/webhook/chat', async (req, res) => {
     console.error('Chat response error:', err.response?.data || err.message);
     // Try to send error message back to chat
     try {
-      await axios.post(
-        `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
-        { message: "Sorry, I hit an error processing that." },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
-      );
+      const errorDeliveryBudgetMs = Math.min(5000, zoomTerminalAt - Date.now());
+      if (errorDeliveryBudgetMs >= 250) {
+        await axios.post(
+          `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
+          { message: "Sorry, I hit an error processing that." },
+          { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: errorDeliveryBudgetMs }
+        );
+      }
     } catch {}
   } finally {
     if (!chatActivityFailed) runtimeActivity.finish(chatActivity.id, { status: 'completed',
@@ -7716,6 +7731,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let selfModelTrustAssignmentForFailure = null;
   let behavioralSelfProfileAssignmentForFailure = null;
   let cognitiveParameterAssignmentForFailure = null;
+  const conversationPolicy = slackConversationPolicy(text, mode);
+  let slackTerminalAt = interactionStartedAt + (conversationPolicy.attachLiveTools ? 45000 : 8000);
   try {
     const key = sessionKey;
     // Session keys intentionally span a conversation, but research receipts and action attestations
@@ -7857,7 +7874,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const convText = claudeMessages.slice(-12).map(m => typeof m.content === 'string' ? m.content : '').join(' ');
     // Lightweight acknowledgments do not benefit from a vector lookup. Skipping it keeps a slow
     // embeddings endpoint from adding a timeout warning to simple social turns such as "thanks."
-    const conversationPolicy = slackConversationPolicy(text, mode);
     const lightweightSocial = conversationPolicy.lightweightSocial;
     if (conversationPolicy.relationalSelfReflection) {
       console.log('Slack relational self-reflection route: PM tools and task-performance trials omitted');
@@ -7869,6 +7885,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const isDirect = mode !== 'proactive';
     const financialApproved = isFinancialApproved(user);
     const attachLiveTools = conversationPolicy.attachLiveTools;
+    // Absolute end-to-end deadline. Context enrichment above already spent part of this budget;
+    // preflights, tool calls, fallback retries, and delivery must share what remains.
+    slackTerminalAt = interactionStartedAt + (attachLiveTools ? 45000 : 8000);
+    const slackDeliveryReserveMs = attachLiveTools ? 2500 : 1000;
+    const slackRemainingMs = (reserveMs = slackDeliveryReserveMs) =>
+      Math.max(0, slackTerminalAt - Date.now() - reserveMs);
     const affordanceStartedAt = Date.now();
     const mcpBindings = attachLiveTools
       ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
@@ -8090,8 +8112,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         const submissions = {};
         for (const binding of prepared.forecast_order) {
           const { prompt_commitment: promptCommitment, ...forecastBody } = prepared.requests[binding];
-          const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages', forecastBody,
-            { ...anthropicHeaders, timeout: 8000 });
+          const preflightBudgetMs = Math.min(8000, slackRemainingMs(12000));
+          if (preflightBudgetMs < 1000) throw new Error('reasoning preflight yielded to the end-to-end Slack deadline');
+          const forecastResponse = await rejectWithinAbortable(signal => axios.post(
+            'https://api.anthropic.com/v1/messages', forecastBody,
+            { ...anthropicHeaders, timeout: preflightBudgetMs, signal }), preflightBudgetMs,
+          'Slack reasoning preflight');
           const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
             .map(block => block.text).join(' ').trim();
           const forecast = reasoningSelfRegulation.parseForecast(forecastText);
@@ -8128,8 +8154,12 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         const prepared = intelligence.beginBehavioralSelfProfileForecast(contextAssignment.assignment_id, {
           task_prompt: text, conversation_snapshot: claudeMessages.slice(-8), tool_definitions: toolDefs,
         });
-        const forecastResponse = await axios.post('https://api.anthropic.com/v1/messages',
-          prepared.request, { ...anthropicHeaders, timeout: 8000 });
+        const preflightBudgetMs = Math.min(8000, slackRemainingMs(12000));
+        if (preflightBudgetMs < 1000) throw new Error('self-model preflight yielded to the end-to-end Slack deadline');
+        const forecastResponse = await rejectWithinAbortable(signal => axios.post(
+          'https://api.anthropic.com/v1/messages', prepared.request,
+          { ...anthropicHeaders, timeout: preflightBudgetMs, signal }), preflightBudgetMs,
+        'Slack self-model preflight');
         const forecastText = (forecastResponse.data?.content || []).filter(block => block.type === 'text')
           .map(block => block.text).join(' ').trim();
         const forecast = behavioralSelfProfileForecast.parseForecast(forecastText);
@@ -8161,9 +8191,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         writeToolNames: [...TW_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
-        deadlineMs: attachLiveTools ? 45000
-          : Math.max(1, 7000 - (Date.now() - interactionStartedAt)),
-        providerTimeoutMs: attachLiveTools ? 20000 : 7000,
+        deadlineMs: Math.max(1, slackRemainingMs()),
+        providerTimeoutMs: Math.max(1, Math.min(attachLiveTools ? 20000 : 7000,
+          slackRemainingMs())),
       }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
@@ -8185,9 +8215,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         delete reqBody.tools;
         // Drop any partial tool turns the loop appended so the retry is a clean (copied) slate.
         reqBody.messages = claudeMessages.slice();
-        response = await rejectWithinAbortable(signal => axios.post(
-          'https://api.anthropic.com/v1/messages', reqBody,
-          { ...anthropicHeaders, signal, timeout: 12000 }), 12000, 'Slack no-tools retry');
+        const retryBudgetMs = Math.min(12000, slackRemainingMs());
+        response = retryBudgetMs >= 1000
+          ? await rejectWithinAbortable(signal => axios.post(
+            'https://api.anthropic.com/v1/messages', reqBody,
+            { ...anthropicHeaders, signal, timeout: retryBudgetMs }), retryBudgetMs,
+          'Slack no-tools retry')
+          : { data: { content: [], stop_reason: 'interactive_deadline' } };
       } else { throw err; }
     }
     providerFinishedAt = Date.now();
@@ -8476,13 +8510,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const deliveryStartedAt = Date.now();
     try {
       for (let i = 0; i < segments.length; i++) {
-        if (i > 0) await new Promise(r => setTimeout(r, 900 + Math.floor(Math.random() * 900)));
+        if (i > 0) {
+          const pauseBudgetMs = slackTerminalAt - Date.now() - 250;
+          if (pauseBudgetMs <= 0) { allSegmentsPosted = false; break; }
+          await new Promise(r => setTimeout(r,
+            Math.min(pauseBudgetMs, 900 + Math.floor(Math.random() * 900))));
+        }
+        const deliveryBudgetMs = Math.min(5000, slackTerminalAt - Date.now());
+        if (deliveryBudgetMs < 250) { allSegmentsPosted = false; break; }
         const res = await axios.post('https://slack.com/api/chat.postMessage', {
           channel,
           text: segments[i],
           thread_ts: threadTs
         }, {
-          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
+          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: deliveryBudgetMs,
         });
         if (!postRes) postRes = res;
         allSegmentsPosted = allSegmentsPosted && res?.data?.ok === true;
@@ -8494,6 +8535,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           firstDeliveryRecorded = true;
         }
       }
+      if (!postRes?.data?.ok) throw new Error('Slack delivery missed the end-to-end interaction deadline');
     } catch (error) {
       if (reasoningRegulationActive) {
         try { intelligence.excludeProviderReasoningRegulationAssignment(contextAssignment.assignment_id, 'slack_delivery_failure'); } catch {}
@@ -8584,8 +8626,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // exactly this message's thread. Non-fatal — never let logging affect the reply.
     logInteraction({
       channel,
-      thread_ts: threadTs || (postRes.data && postRes.data.ts) || null,
-      ts: (postRes.data && postRes.data.ts) || null,
+      thread_ts: threadTs || postRes?.data?.ts || null,
+      ts: postRes?.data?.ts || null,
       channel_type: channelType,
       kind: mode === 'proactive' ? 'proactive' : ((channelType === 'im' || channelType === 'mpim') ? 'dm_reply' : 'reply'),
       conversation_lane: conversationPolicy.relationalSelfReflection ? 'relational_self_reflection'
@@ -8609,15 +8651,15 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
 
     // Mark this thread as one Nora has joined so follow-ups don't require re-mention.
     // DMs aren't tracked (every DM message is responded to via channel_type check).
-    if (channelType !== 'im' && channelType !== 'mpim') {
+    if (postRes?.data?.ok && channelType !== 'im' && channelType !== 'mpim') {
       markThreadJoined(channel, threadTs);
     }
 
     // Proactive cooldown: after a successful unsolicited post, suppress further proactive
     // posts in this channel for PROACTIVE_COOLDOWN_MS so Nora doesn't chatter.
-    if (mode === 'proactive') {
+    if (mode === 'proactive' && postRes?.data?.ok) {
       markProactivePost(channel);
-      intelligence.spendInitiative(`slack:${channel}`, { ts: postRes.data && postRes.data.ts, kind: 'proactive' });
+      intelligence.spendInitiative(`slack:${channel}`, { ts: postRes.data.ts, kind: 'proactive' });
     }
 
     // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
@@ -8678,13 +8720,16 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     // Try to post error message back
     try {
-      await axios.post('https://slack.com/api/chat.postMessage', {
-        channel,
-        text: "Sorry, hit an error processing that. Check the logs.",
-        thread_ts: threadTs
-      }, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
-      });
+      const errorDeliveryBudgetMs = Math.min(5000, slackTerminalAt - Date.now());
+      if (errorDeliveryBudgetMs >= 250) {
+        await axios.post('https://slack.com/api/chat.postMessage', {
+          channel,
+          text: "Sorry, hit an error processing that. Check the logs.",
+          thread_ts: threadTs
+        }, {
+          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: errorDeliveryBudgetMs,
+        });
+      }
     } catch {}
   }
 }

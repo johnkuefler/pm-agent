@@ -327,8 +327,10 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Teamwork workflow topology must be cached across repeated task moves');
   assert.match(server, /Promise\.all\(workflows\.map/,
     'Teamwork workflow stage metadata must load concurrently on a cache miss');
-  assert.match(server, /deadlineMs: zoomAttachLiveTools \? 45000/,
-    'typed meeting chat must bound the full model and tool loop');
+  assert.match(server, /zoomTerminalAt = interactionStartedAt \+ \(zoomAttachLiveTools \? 45000 : 6000\)/,
+    'typed meeting chat must establish one absolute wall-clock deadline');
+  assert.match(server, /deadlineMs: Math\.max\(1, zoomTerminalAt - Date\.now\(\) - zoomDeliveryReserveMs\)/,
+    'typed meeting chat must pass only its remaining end-to-end budget to the tool loop');
   assert.doesNotMatch(server, /On it — checking the live details now\./,
     'interactive chat must wait for a coherent answer instead of posting a generic progress message');
   assert.match(server, /OpenAI Realtime handshake exceeded 8000ms/,
@@ -776,6 +778,35 @@ test('typed meeting chat never promises an unqueued Slack follow-up', () => {
   const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.doesNotMatch(server, /Give me a sec, I'll follow up in Slack/);
   assert.match(server, /I couldn't get a complete answer before this meeting turn closed/);
+});
+
+test('Slack preflights, main tool loop, and retries share one absolute interaction deadline', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf('async function handleSlackImpl');
+  const end = server.indexOf('// Slack thread admin', start);
+  const handler = server.slice(start, end);
+  assert.match(handler,
+    /slackTerminalAt = interactionStartedAt \+ \(attachLiveTools \? 45000 : 8000\)/);
+  assert.match(handler, /slackRemainingMs\(12000\)/,
+    'experimental preflight calls must preserve a main-answer reserve');
+  assert.match(handler, /deadlineMs: Math\.max\(1, slackRemainingMs\(\)\)/,
+    'the main model/tool loop must receive only the remaining wall-clock budget');
+  assert.match(handler, /const retryBudgetMs = Math\.min\(12000, slackRemainingMs\(\)\)/,
+    'the no-tools recovery must not receive a fresh 12-second budget');
+  assert.match(handler, /const deliveryBudgetMs = Math\.min\(5000, slackTerminalAt - Date\.now\(\)\)/,
+    'Slack delivery must spend only the interaction budget that remains');
+  assert.match(handler, /timeout: deliveryBudgetMs/);
+  assert.match(handler, /const errorDeliveryBudgetMs = Math\.min\(5000, slackTerminalAt - Date\.now\(\)\)/,
+    'the error notice must not extend an already-expired interaction');
+  assert.doesNotMatch(handler, /deadlineMs: attachLiveTools \? 45000/);
+  assert.doesNotMatch(handler, /timeout: 12000 \}\), 12000, 'Slack no-tools retry'/);
+});
+
+test('typed meeting delivery shares the same trigger-to-message deadline', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  assert.match(server, /const zoomDeliveryBudgetMs = Math\.min\(5000, zoomTerminalAt - Date\.now\(\)\)/);
+  assert.match(server, /timeout: zoomDeliveryBudgetMs/);
+  assert.match(server, /const errorDeliveryBudgetMs = Math\.min\(5000, zoomTerminalAt - Date\.now\(\)\)/);
 });
 
 test('interactive memory recall is local, bounded, and relevance preserving', () => {
