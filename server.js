@@ -3246,7 +3246,28 @@ function voiceMeetingContextPacket(session, { systemPrompt = '', voiceTools = []
 // uncached tail. Used only at conversation-driven refresh points (a new speaker, the 5-min
 // refresh) — not at connection (no transcript yet) or on the latency-critical probe/interject
 // paths. Degrades to the plain prompt when the DB is off / embed times out (retrieve returns []).
-async function realtimePromptWithRecall(session) {
+const REALTIME_PROMPT_SPEECH_QUIET_MS = 15000;
+
+function realtimePromptRefreshGate(session, now = Date.now()) {
+  const speechStartedAt = Number(session?.voiceHumanSpeechStartedAt) || 0;
+  const speechStoppedAt = Number(session?.voiceSpeechStoppedAt) || 0;
+  const humanSpeaking = speechStartedAt > 0
+    && (!speechStoppedAt || speechStoppedAt < speechStartedAt);
+  const recallSpeechRecent = Number(session?.lastRecallLineAt) > 0
+    && now - Number(session.lastRecallLineAt) < REALTIME_PROMPT_SPEECH_QUIET_MS;
+  const reason = session?.voiceResponseActive ? 'nora_speaking'
+    : humanSpeaking ? 'human_speaking'
+      : recallSpeechRecent ? 'recent_transcript' : null;
+  return {
+    allowed: !reason,
+    reason,
+    retry_after_ms: recallSpeechRecent
+      ? Math.max(0, REALTIME_PROMPT_SPEECH_QUIET_MS - (now - Number(session.lastRecallLineAt)))
+      : reason ? 1000 : 0,
+  };
+}
+
+async function realtimePromptWithRecall(session, { signal: callerSignal = null } = {}) {
   if (session && session.dummy) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
@@ -3254,12 +3275,14 @@ async function realtimePromptWithRecall(session) {
   // transcript line typically lands immediately before the realtime model needs to answer, so
   // refresh names and local context synchronously, then wait for a quiet interval before making
   // the optional remote embedding request.
-  const recentSpeech = session?.lastRecallLineAt
-    && (Date.now() - session.lastRecallLineAt) < 15000;
-  if (session?.voiceResponseActive || recentSpeech) return realtimePromptForSession(session);
+  if (!realtimePromptRefreshGate(session).allowed || callerSignal?.aborted) {
+    return realtimePromptForSession(session);
+  }
   const q = (session?.transcript || []).slice(-14).map(t => t.text || '').join(' ');
   const semanticMemories = await settleWithinAbortable(
-    signal => retrieveSemanticMemories(q, 8, { signal }), 1200, [],
+    signal => retrieveSemanticMemories(q, 8, {
+      signal: callerSignal ? AbortSignal.any([signal, callerSignal]) : signal,
+    }), 1200, [],
     'realtime semantic recall');
   return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { semanticMemories, trialUnitKey: session?.trialUnitKey });
 }
@@ -4625,19 +4648,9 @@ app.post('/webhook/transcript', async (req, res) => {
     if (!session.knownSpeakers) session.knownSpeakers = new Set();
     if (!session.knownSpeakers.has(speaker)) {
       session.knownSpeakers.add(speaker);
-      if (session.openaiWs && session.openaiWs.readyState === WebSocket.OPEN) {
-        try {
-          const updatedPrompt = await realtimePromptWithRecall(session);
-          session.realtimePromptChars = updatedPrompt.length;
-          session.openaiWs.send(JSON.stringify({
-            type: 'session.update',
-            session: { type: 'realtime', instructions: updatedPrompt }
-          }));
-          console.log(`🔄 Prompt refreshed — new speaker "${speaker}" registered in session ${bot_id}`);
-        } catch (err) {
-          console.warn('Speaker-triggered prompt refresh failed:', err.message);
-        }
-      }
+      // The realtime socket owns prompt refresh. Request it now; its speech gate will wait until
+      // this utterance is quiet, then preserve the new speaker without racing an active turn.
+      session.requestRealtimePromptRefresh?.(0);
     }
   }
 
@@ -13143,18 +13156,64 @@ wss.on('connection', async (ws, req) => {
     }
   });
 
-  // Periodically refresh Nora's instructions with latest memory. Serialize refreshes and contain
-  // failures: an async interval must never overlap itself or create an unhandled rejection.
-  let promptRefreshInFlight = false;
-  const refreshInterval = setInterval(async () => {
-    if (openaiWs.readyState !== WebSocket.OPEN || promptRefreshInFlight) return;
-    promptRefreshInFlight = true;
+  // Refresh after a full quiet interval. A chained timeout cannot overlap or bunch up after a
+  // slow provider call, and the controller releases optional recall when the meeting closes.
+  const REALTIME_PROMPT_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+  let promptRefreshTimer = null;
+  let promptRefreshDueAt = 0;
+  let promptRefreshController = null;
+  let promptRefreshRequestedDelayMs = null;
+  let promptRefreshClosed = false;
+  const schedulePromptRefresh = (delayMs = REALTIME_PROMPT_REFRESH_INTERVAL_MS) => {
+    if (promptRefreshClosed) return;
+    const boundedDelayMs = Math.max(0, Number(delayMs) || 0);
+    if (promptRefreshController) {
+      promptRefreshRequestedDelayMs = promptRefreshRequestedDelayMs == null
+        ? boundedDelayMs : Math.min(promptRefreshRequestedDelayMs, boundedDelayMs);
+      return;
+    }
+    const dueAt = Date.now() + boundedDelayMs;
+    if (promptRefreshTimer && promptRefreshDueAt <= dueAt) return;
+    if (promptRefreshTimer) clearTimeout(promptRefreshTimer);
+    promptRefreshDueAt = dueAt;
+    promptRefreshTimer = setTimeout(runPromptRefresh, Math.max(0, dueAt - Date.now()));
+  };
+  const runPromptRefresh = async () => {
+    promptRefreshTimer = null;
+    promptRefreshDueAt = 0;
+    if (promptRefreshClosed || openaiWs.readyState !== WebSocket.OPEN) return;
+    const s = sessions[botId];
+    const gate = realtimePromptRefreshGate(s);
+    if (!gate.allowed) {
+      if (s) {
+        s.realtimePromptRefreshDeferred = (s.realtimePromptRefreshDeferred || 0) + 1;
+        s.realtimePromptRefreshLastDeferredReason = gate.reason;
+      }
+      schedulePromptRefresh(Math.max(1000, gate.retry_after_ms));
+      return;
+    }
+    promptRefreshController = new AbortController();
     try {
-      const s = sessions[botId];
       const isMuted = s?.muted;
-      const updatedPrompt = await realtimePromptWithRecall(s);
-      if (openaiWs.readyState !== WebSocket.OPEN) return;
-      if (s) s.realtimePromptChars = updatedPrompt.length;
+      const updatedPrompt = await realtimePromptWithRecall(s, {
+        signal: promptRefreshController.signal,
+      });
+      // Silence is a lease, not a one-time observation. Revalidate after recall so an update
+      // cannot land after a person or Nora began speaking while memory was loading.
+      const sendGate = realtimePromptRefreshGate(s);
+      if (promptRefreshClosed || promptRefreshController.signal.aborted
+        || openaiWs.readyState !== WebSocket.OPEN || !sendGate.allowed) {
+        if (s && !sendGate.allowed) {
+          s.realtimePromptRefreshDeferred = (s.realtimePromptRefreshDeferred || 0) + 1;
+          s.realtimePromptRefreshLastDeferredReason = sendGate.reason;
+        }
+        return;
+      }
+      if (s) {
+        s.realtimePromptChars = updatedPrompt.length;
+        s.realtimePromptRefreshCompleted = (s.realtimePromptRefreshCompleted || 0) + 1;
+        s.realtimePromptRefreshLastCompletedAt = new Date().toISOString();
+      }
       openaiWs.send(JSON.stringify({
         type: 'session.update',
         session: {
@@ -13170,15 +13229,32 @@ wss.on('connection', async (ws, req) => {
       }));
     console.log('🔄 Refreshed Nora instructions with latest memory');
     } catch (error) {
-      console.warn('Periodic realtime prompt refresh failed:', error.message);
-    } finally { promptRefreshInFlight = false; }
-  }, 5 * 60 * 1000); // every 5 minutes
+      if (!promptRefreshController?.signal.aborted) {
+        if (s) s.realtimePromptRefreshFailures = (s.realtimePromptRefreshFailures || 0) + 1;
+        console.warn('Periodic realtime prompt refresh failed:', error.message);
+      }
+    } finally {
+      promptRefreshController = null;
+      const requestedDelayMs = promptRefreshRequestedDelayMs;
+      promptRefreshRequestedDelayMs = null;
+      schedulePromptRefresh(requestedDelayMs == null
+        ? REALTIME_PROMPT_REFRESH_INTERVAL_MS : requestedDelayMs);
+    }
+  };
+  if (session) session.requestRealtimePromptRefresh = schedulePromptRefresh;
+  schedulePromptRefresh();
 
   // Cleanup
   ws.on('close', () => {
     console.log(`🔌 Voice agent WebSocket closed for bot: ${botId}`);
-    clearInterval(refreshInterval);
+    promptRefreshClosed = true;
+    if (promptRefreshTimer) clearTimeout(promptRefreshTimer);
+    promptRefreshTimer = null;
+    promptRefreshController?.abort(new Error('meeting connection closed'));
     if (sessions[botId]) {
+      if (sessions[botId].requestRealtimePromptRefresh === schedulePromptRefresh) {
+        sessions[botId].requestRealtimePromptRefresh = null;
+      }
       if (sessions[botId].openaiWs === openaiWs) sessions[botId].openaiWs = null;
       if (sessions[botId].clientWs === ws) sessions[botId].clientWs = null;
     }
@@ -13189,6 +13265,10 @@ wss.on('connection', async (ws, req) => {
 
   openaiWs.on('close', () => {
     clearTimeout(openaiHandshakeTimer);
+    promptRefreshClosed = true;
+    if (promptRefreshTimer) clearTimeout(promptRefreshTimer);
+    promptRefreshTimer = null;
+    promptRefreshController?.abort(new Error('realtime provider connection closed'));
     console.log('🧠 OpenAI Realtime connection closed');
     if (ws.readyState === WebSocket.OPEN) {
       ws.close();
@@ -16202,6 +16282,7 @@ module.exports = {
     startupBackgroundTaskSnapshot,
     drainStartupBackgroundTasks,
     resetPostInteractionExtractionForTest,
+    realtimePromptRefreshGate,
     screenShareVoiceGate,
     processResources,
     runBehavioralFingerprintSubjectRuntime,

@@ -339,7 +339,7 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'typed Zoom memory relevance must stay local on the live reply path');
   assert.doesNotMatch(server, /retrieveSemanticMemories\(convText, 8/,
     'Slack must not wait on remote query embedding');
-  assert.match(server, /retrieveSemanticMemories\(q, 8, \{ signal \}\), 1200/,
+  assert.match(server, /retrieveSemanticMemories\(q, 8, \{[\s\S]*?AbortSignal\.any\(\[signal, callerSignal\]\)[\s\S]*?\}\), 1200/,
     'quiet realtime prompt refresh may retain abortable semantic recall');
   const dbSource = fs.readFileSync(path.join(__dirname, '..', '..', 'db.js'), 'utf8');
   assert.match(server, /excludeSources: \['opinion', 'learning'\], signal, interactive: true/,
@@ -504,8 +504,14 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.doesNotMatch(server.slice(server.indexOf('async function handleSlackFiles'),
     server.indexOf('// Inbox endpoints')), /api\.anthropic\.com/,
   'Slack file intake must not require a language-model call to acknowledge completion');
-  assert.match(server, /promptRefreshInFlight\) return;/,
-    'periodic voice prompt refreshes must never overlap');
+  assert.match(server, /promptRefreshTimer = setTimeout\(runPromptRefresh, Math\.max\(0, dueAt - Date\.now\(\)\)\)/,
+    'periodic voice prompt refreshes must use a completion-aware scheduler');
+  assert.match(server, /if \(promptRefreshController\) \{[\s\S]*?promptRefreshRequestedDelayMs/,
+    'new speaker refresh requests must coalesce behind an active refresh');
+  assert.match(server, /const sendGate = realtimePromptRefreshGate\(s\);[\s\S]*?!sendGate\.allowed/,
+    'periodic voice prompt refreshes must revalidate silence after optional recall');
+  assert.match(server, /promptRefreshController\?\.abort\(new Error\('meeting connection closed'\)\)/,
+    'closing a meeting must abort optional prompt recall');
   assert.match(server, /if \(messageQueue\.length >= 500\) messageQueue\.shift\(\);/,
     'a half-open realtime connection must not grow its audio queue without bound');
   assert.match(server, /rejectWithinAbortable\(\(\) => execute\(args\), 10000, `Realtime voice tool/,
@@ -587,7 +593,7 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'typed Zoom chat must share the bounded fast-turn model policy');
   assert.match(server, /beginOptionalBackground\('memory-embedding-backfill'\)/,
     'memory enrichment must share the preemptible operational-aware provider lane');
-  assert.match(server, /session\?\.voiceResponseActive \|\| recentSpeech/,
+  assert.match(server, /if \(!realtimePromptRefreshGate\(session\)\.allowed \|\| callerSignal\?\.aborted\)/,
     'remote prompt enrichment must stay off an active or just-finished spoken turn');
   assert.match(server, /capabilityBoundaryContext\(\s*trialConversationText, opts\.situationalAffordanceFrame \|\| null\)/,
     'task-specific capability learning must remain a deterministic prompt input');
@@ -1068,6 +1074,32 @@ test('screen-share work yields through human speech, Nora speech, and the quiet 
   assert.equal(__test.screenShareVoiceGate({
     voiceHumanSpeechStartedAt: 8000, voiceSpeechStoppedAt: 9500,
   }, 11000).allowed, true);
+});
+
+test('realtime prompt refresh treats quiet as a revocable meeting lease', () => {
+  const { __test } = require('../../server');
+  assert.deepEqual(__test.realtimePromptRefreshGate({}, 20000), {
+    allowed: true, reason: null, retry_after_ms: 0,
+  });
+  assert.equal(__test.realtimePromptRefreshGate({
+    voiceResponseActive: true,
+  }, 20000).reason, 'nora_speaking');
+  assert.equal(__test.realtimePromptRefreshGate({
+    voiceHumanSpeechStartedAt: 19000,
+  }, 20000).reason, 'human_speaking');
+  assert.equal(__test.realtimePromptRefreshGate({
+    voiceHumanSpeechStartedAt: 18000,
+    voiceSpeechStoppedAt: 19500,
+    lastRecallLineAt: 19000,
+  }, 20000).reason, 'recent_transcript');
+  assert.equal(__test.realtimePromptRefreshGate({
+    lastRecallLineAt: 19000,
+  }, 20000).retry_after_ms, 14000);
+  assert.equal(__test.realtimePromptRefreshGate({
+    voiceHumanSpeechStartedAt: 1000,
+    voiceSpeechStoppedAt: 2000,
+    lastRecallLineAt: 3000,
+  }, 20000).allowed, true);
 });
 
 test('realtime telemetry is batched until the voice foreground and cooldown have ended', () => {
