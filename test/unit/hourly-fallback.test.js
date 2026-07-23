@@ -56,6 +56,21 @@ test('recent fallback enforces cooldown without satisfying primary freshness', (
   assert.equal(decision.latest_fallback.id, 'fallback-recent');
 });
 
+test('native health remains effective while scheduling still watches the external source', () => {
+  const primaryHealth = {
+    state: 'fresh',
+    trigger_source: 'railway_native_scheduler',
+    external_primary: { state: 'stale', latest: { status: 'completed' } },
+  };
+  const decision = hourlyFallbackDecision({ primaryHealth, now,
+    lock: { locked: false }, admission: { allowed: true }, cycles: [{
+      id: 'native-recent', kind: 'fallback_hourly', status: 'completed',
+      started: new Date(now - FALLBACK_COOLDOWN_MS + 1000).toISOString(),
+    }] });
+  assert.equal(decision.reason, 'fallback_cooldown');
+  assert.equal(decision.primary_state, 'stale');
+});
+
 test('failed fallback retries on a shorter bounded backoff', () => {
   const recentFailure = hourlyFallbackDecision({ primaryHealth: stale, now,
     lock: { locked: false }, admission: { allowed: true }, cycles: [{

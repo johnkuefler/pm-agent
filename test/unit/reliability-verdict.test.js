@@ -212,4 +212,14 @@ test('reliability distinguishes a stopped hourly trigger from one failed but fre
   const recovered = healthySnapshot();
   recovered.hourly_lifecycle = { state: 'fresh', latest: { status: 'completed' } };
   assert.equal(assessRuntimeReliability(recovered, { now }).status, 'healthy');
+
+  const native = healthySnapshot();
+  native.hourly_lifecycle = {
+    state: 'fresh', healthy: true, operational_coverage: 'native_primary',
+    trigger_source: 'railway_native_scheduler',
+    latest: { kind: 'fallback_hourly', status: 'completed' },
+    external_primary: { state: 'stale', latest: { status: 'failed' } },
+  };
+  assert.equal(assessRuntimeReliability(native, { now }).status, 'healthy',
+    'a stale replaced scheduler must not degrade current native operational coverage');
 });

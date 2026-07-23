@@ -21,10 +21,14 @@ function hourlyFallbackDecision({ cycles = [], primaryHealth = null, lock = null
   const ageMs = latest ? Math.max(0, assessedAt - timestamp(latest.started)) : null;
   const cooldownMs = latest?.status === 'failed'
     ? FAILED_FALLBACK_RETRY_MS : FALLBACK_COOLDOWN_MS;
+  // Top-level lifecycle health describes whichever operational scheduler most recently covered
+  // the hour. Native scheduling must still inspect the legacy external source independently,
+  // otherwise its own successful run would suppress every future native run.
+  const externalPrimary = primaryHealth?.external_primary || primaryHealth || {};
   const base = {
     protocol_version: 1,
     assessed_at: new Date(assessedAt).toISOString(),
-    primary_state: primaryHealth?.state || 'unobserved',
+    primary_state: externalPrimary.state || 'unobserved',
     latest_fallback: latest ? {
       id: latest.id || null, status: latest.status || null, started: latest.started,
       finished: latest.finished || null,
@@ -32,11 +36,11 @@ function hourlyFallbackDecision({ cycles = [], primaryHealth = null, lock = null
     latest_fallback_age_ms: ageMs,
     cooldown_ms: cooldownMs,
   };
-  const primaryFailed = primaryHealth?.latest?.status === 'failed';
-  if (primaryHealth?.state === 'fresh' && !primaryFailed) {
+  const primaryFailed = externalPrimary.latest?.status === 'failed';
+  if (externalPrimary.state === 'fresh' && !primaryFailed) {
     return { ...base, due: false, reason: 'primary_scheduler_within_grace' };
   }
-  if (!['late', 'stale', 'unobserved'].includes(primaryHealth?.state) && !primaryFailed) {
+  if (!['late', 'stale', 'unobserved'].includes(externalPrimary.state) && !primaryFailed) {
     return { ...base, due: false, reason: 'primary_scheduler_state_not_actionable' };
   }
   if (inFlight) return { ...base, due: false, reason: 'fallback_in_flight' };
@@ -51,7 +55,7 @@ function hourlyFallbackDecision({ cycles = [], primaryHealth = null, lock = null
     return { ...base, due: false, reason: 'fallback_cooldown' };
   }
   return { ...base, due: true, reason: primaryFailed
-    ? 'primary_run_failed' : primaryHealth?.state === 'late'
+    ? 'primary_run_failed' : externalPrimary.state === 'late'
       ? 'primary_scheduler_late' : 'primary_scheduler_stale' };
 }
 

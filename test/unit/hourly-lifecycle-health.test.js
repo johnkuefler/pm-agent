@@ -68,17 +68,23 @@ test('missing lifecycle history fails visibly instead of reporting healthy', () 
   assert.equal(snapshot.latest, null);
 });
 
-test('fallback coverage stays distinct from primary scheduler freshness', () => {
+test('native Railway coverage becomes the effective healthy hourly runner', () => {
   const snapshot = hourlyLifecycleHealth([
     cycle('2026-07-22T21:05:00.000Z'),
     { id: 'fallback-1', kind: 'fallback_hourly', started: '2026-07-23T01:05:00.000Z',
       finished: '2026-07-23T01:06:00.000Z', status: 'completed' },
   ], { now });
-  assert.equal(snapshot.state, 'stale');
-  assert.equal(snapshot.healthy, false);
+  assert.equal(snapshot.protocol_version, 2);
+  assert.equal(snapshot.state, 'fresh');
+  assert.equal(snapshot.healthy, true);
+  assert.equal(snapshot.requires_external_attention, false);
+  assert.equal(snapshot.trigger_source, 'railway_native_scheduler');
   assert.equal(snapshot.fallback.active, true);
-  assert.equal(snapshot.operational_coverage, 'fallback_covered');
-  assert.equal(snapshot.latest.id.startsWith('cycle-'), true);
+  assert.equal(snapshot.operational_coverage, 'native_primary');
+  assert.equal(snapshot.latest.id, 'fallback-1');
+  assert.equal(snapshot.latest.kind, 'fallback_hourly');
+  assert.equal(snapshot.external_primary.state, 'stale');
+  assert.equal(snapshot.external_primary.latest.id.startsWith('cycle-'), true);
   assert.equal(snapshot.fallback.latest.id, 'fallback-1');
 });
 

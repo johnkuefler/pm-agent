@@ -106,13 +106,13 @@ function renderRuntimeActivityGlobal() {
     label.textContent = primary.label;
     detail.textContent = primary.detail || `${runtimeActivityLaneLabels[primary.lane] || 'Runtime'} activity is in progress.`;
   } else if (runtimeActivityConnection === 'connected') {
-    const fallbackCovered = hourly?.operational_coverage === 'fallback_covered';
-    label.textContent = fallbackCovered ? 'Railway is covering the hourly gap'
-      : hourly?.state === 'stale' || hourly?.state === 'unobserved'
-        ? 'Hourly runner needs attention' : 'Nora is standing by';
-    detail.textContent = fallbackCovered
-      ? 'The primary Cowork schedule is stale, but a bounded read-only fallback pass is current.'
-      : hourly?.state === 'stale' || hourly?.state === 'unobserved'
+      const nativeCovered = hourly?.operational_coverage === 'native_primary';
+      label.textContent = nativeCovered ? 'Native hourly coverage is current'
+        : hourly?.state === 'stale' || hourly?.state === 'unobserved'
+          ? 'Hourly runner needs attention' : 'Nora is standing by';
+      detail.textContent = nativeCovered
+        ? 'Railway is the active hourly runner for inbox coverage and explicitly queued work.'
+        : hourly?.state === 'stale' || hourly?.state === 'unobserved'
         ? hourly.message : 'No hourly, conversational, or background operation is active right now.';
   } else {
     label.textContent = 'Reconnecting to Nora';
@@ -160,25 +160,27 @@ function renderRuntimeRegions(current, recent) {
     if (link) link.dataset.status = status;
   });
   const hourly = runtimeActivityContext?.hourly_lifecycle || null;
-  if (hourly && ['late', 'stale', 'unobserved'].includes(hourly.state)) {
-    const fallbackCovered = hourly.operational_coverage === 'fallback_covered';
-    const node = document.querySelector('[data-live-region="continuity"]');
-    if (node) {
-      node.dataset.status = hourly.state === 'late' || fallbackCovered ? 'deferred' : 'failed';
+    if (hourly && (hourly.operational_coverage === 'native_primary'
+      || ['late', 'stale', 'unobserved'].includes(hourly.state))) {
+      const nativeCovered = hourly.operational_coverage === 'native_primary';
+      const node = document.querySelector('[data-live-region="continuity"]');
+      if (node) {
+        node.dataset.status = nativeCovered ? 'completed'
+          : hourly.state === 'late' ? 'deferred' : 'failed';
       const state = node.querySelector('.live-region-state');
       const title = node.querySelector('.live-region-title');
       const detail = node.querySelector('.live-region-detail');
       const time = node.querySelector('.live-region-time');
-      if (state) state.textContent = fallbackCovered ? 'Fallback covering'
-        : hourly.state === 'late' ? 'Running late' : 'Needs attention';
-      if (title) title.textContent = fallbackCovered
-        ? 'Primary schedule stale; Railway coverage active' : 'Hourly lifecycle cadence';
-      if (detail) detail.textContent = fallbackCovered
-        ? 'Read-only continuity coverage is current while the Cowork scheduler remains visibly stale.'
-        : hourly.message;
-      if (time) time.textContent = fallbackCovered && hourly.fallback?.latest?.started
-        ? `Fallback opened ${activityTime(hourly.fallback.latest.started)}`
-        : hourly.latest?.started ? `Last opened ${activityTime(hourly.latest.started)}`
+        if (state) state.textContent = nativeCovered ? 'Native coverage current'
+          : hourly.state === 'late' ? 'Running late' : 'Needs attention';
+        if (title) title.textContent = nativeCovered
+          ? 'Railway hourly runner' : 'Hourly lifecycle cadence';
+        if (detail) detail.textContent = nativeCovered
+          ? 'Inbox coverage and explicitly queued work are running on the native Railway cadence.'
+          : hourly.message;
+        if (time) time.textContent = nativeCovered && hourly.latest?.started
+          ? `Last opened ${activityTime(hourly.latest.started)}`
+          : hourly.latest?.started ? `Last opened ${activityTime(hourly.latest.started)}`
           : 'No durable hourly run observed';
       const link = document.querySelector('[data-live-link="continuity"]');
       if (link) link.dataset.status = node.dataset.status;

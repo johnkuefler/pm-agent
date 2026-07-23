@@ -68,11 +68,11 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
     degraded.push({ code: 'hourly_runner_stale', state: hourlyLifecycle.state,
       age_ms: hourlyLifecycle.age_ms ?? undefined,
       estimated_missed_runs: hourlyLifecycle.estimated_missed_runs ?? undefined,
-      trigger_source: hourlyLifecycle.trigger_source || 'external_cowork_scheduler',
-      message: 'The external hourly runner is not opening durable lifecycles on schedule.' });
+      trigger_source: hourlyLifecycle.trigger_source || 'operational_scheduler',
+      message: 'No operational hourly runner is opening durable lifecycles on schedule.' });
   } else if (hourlyLifecycle.state === 'late') {
     degraded.push({ code: 'hourly_runner_late', age_ms: hourlyLifecycle.age_ms,
-      message: 'The external hourly runner is outside its normal cadence grace window.' });
+      message: 'The operational hourly runner is outside its normal cadence grace window.' });
   } else if (hourlyLifecycle.latest?.status === 'failed') {
     degraded.push({ code: 'latest_hourly_run_failed',
       failure_reason: hourlyLifecycle.latest.failure_reason || null,
