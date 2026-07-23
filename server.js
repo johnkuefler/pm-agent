@@ -4587,6 +4587,13 @@ app.post('/webhook/transcript', async (req, res) => {
 
   if (!sessions[bot_id]) sessions[bot_id] = newSession();
   const session = sessions[bot_id];
+  try {
+    await ensureMeetingTranscriptHydrated(bot_id, session);
+  } catch (error) {
+    // Recall has already received its 200. Keep this utterance in memory and let the coalesced
+    // checkpoint retry hydration; it must never replace a durable pre-restart transcript.
+    console.error(`Transcript resume failed for ${bot_id}; persistence will retry:`, error.message);
+  }
   session.trialUnitKey = bot_id;
 
   session.lastRecallLineAt = Date.now(); // Recall transcript stream is alive; Whisper buffer fallback stands down
@@ -5133,31 +5140,44 @@ app.post('/webhook/status', async (req, res) => {
     // Persist transcript before cleaning up — but never for dummy test agents, which are
     // stateless rehearsals and should leave no transcript file behind.
     const session = sessions[bot_id];
+    let retainSessionForTranscriptRetry = false;
     if (session && !session.dummy && session.transcript && session.transcript.length > 0) {
+      const transcriptData = {
+        bot_id,
+        ended: new Date().toISOString(),
+        transcript: session.transcript.map(item => ({ ...item })),
+      };
       try {
-        const transcriptData = {
-          bot_id,
-          ended: new Date().toISOString(),
-          transcript: session.transcript
-        };
         // Await the final write so the ended-finalized transcript is durable before the
         // session is torn down (the response was already sent above; this doesn't delay it).
-        await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended);
+        await saveTranscriptDoc(bot_id, transcriptData.transcript, transcriptData.ended, {
+          incremental: true,
+        });
         console.log(`📝 Transcript saved for ${bot_id} (${session.transcript.length} utterances)`);
-        // Close the meeting's continuity loop while the transcript is fresh: summarize the
-        // episode, preserve unresolved questions, and ledger only explicit promises.
-        enqueuePostInteractionExtraction('meeting-intelligence', post =>
-          extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta, { post }));
-        // Post-meeting debrief to John (fire-and-forget; captures its inputs before cleanup).
-        enqueuePostInteractionExtraction('meeting-debrief', post =>
-          runMeetingDebrief(bot_id, transcriptData, session.meetingMeta, { post }));
-        // The meeting that just ended shows up in her self-awareness immediately.
-        refreshRecentMeetingsCache().catch(() => {});
       } catch (err) {
         console.error('Transcript save error:', err.message);
+        // Preserve the hydrated in-memory session until a bounded, coalesced checkpoint succeeds.
+        // Deleting it here would make a transient database outage lose the meeting's final lines.
+        session.cleanupAfterTranscriptSave = true;
+        retainSessionForTranscriptRetry = true;
+        queueTranscriptCheckpoint(bot_id, session.transcript, {
+          ended: new Date().toISOString(), delayMs: 2000,
+        });
       }
+      // These jobs own immutable meeting inputs and can proceed even when the final database
+      // checkpoint is retrying. A transient persistence incident must not also erase the debrief
+      // or the meeting's continuity extraction.
+      enqueuePostInteractionExtraction('meeting-intelligence', post =>
+        extractMeetingIntelligence(bot_id, transcriptData, session.meetingMeta, { post }));
+      enqueuePostInteractionExtraction('meeting-debrief', post =>
+        runMeetingDebrief(bot_id, transcriptData, session.meetingMeta, { post }));
+      refreshRecentMeetingsCache().catch(() => {});
     }
-    delete sessions[bot_id];
+    if (!retainSessionForTranscriptRetry) {
+      delete sessions[bot_id];
+      _transcriptPersistedCounts.delete(bot_id);
+      _transcriptCheckpointAttempts.delete(bot_id);
+    }
     delete chatSessions[bot_id];
     if (activeBotId === bot_id) activeBotId = null;
   }
@@ -11091,6 +11111,8 @@ app.get('/teamwork/tasks/:taskId/stage', requireAuth, async (req, res) => {
 // upsert of the transcript jsonb. Reads/edits go through these helpers so both modes work.
 const _transcriptCheckpointTimers = new Map();
 const _transcriptCheckpointPending = new Map();
+const _transcriptCheckpointAttempts = new Map();
+const _transcriptPersistedCounts = new Map();
 const TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000;
 const _transcriptEpisodeTimers = new Map();
 const _transcriptEpisodePending = new Map();
@@ -11149,22 +11171,115 @@ function scheduleTranscriptEpisodeCheckpoint(botId, transcript) {
   timer.unref?.();
   _transcriptEpisodeTimers.set(botId, timer);
 }
-function scheduleTranscriptCheckpoint(botId, transcript) {
-  scheduleTranscriptEpisodeCheckpoint(botId, transcript);
-  _transcriptCheckpointPending.set(botId, transcript);
+
+function transcriptStartsWith(transcript, prefix) {
+  if (!Array.isArray(transcript) || !Array.isArray(prefix) || prefix.length > transcript.length) return false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    if (JSON.stringify(transcript[index]) !== JSON.stringify(prefix[index])) return false;
+  }
+  return true;
+}
+
+async function ensureMeetingTranscriptHydrated(botId, session) {
+  if (!session || session.dummy || session.transcriptHydrated === true) return session;
+  if (session.transcriptHydrationPromise) return session.transcriptHydrationPromise;
+  const hydration = (async () => {
+    const durable = await getTranscriptDoc(botId);
+    const retained = Array.isArray(durable?.transcript) ? durable.transcript : [];
+    const current = Array.isArray(session.transcript) ? session.transcript : [];
+    if (retained.length && !transcriptStartsWith(current, retained)) {
+      session.transcript = [...retained, ...current];
+    }
+    _transcriptPersistedCounts.set(botId, retained.length);
+    _transcriptEpisodeRecordedCounts.set(botId, retained.length);
+    if (_transcriptEpisodePending.has(botId)) {
+      _transcriptEpisodePending.set(botId, session.transcript);
+    }
+    const recent = session.transcript.slice(-20);
+    session.buffer = recent.map(item => `${item.speaker || 'Participant'}: ${item.text || ''}`);
+    const retainedSpeakers = recent.map(item => item.speaker)
+      .filter(speaker => speaker && !/^(Nora|Nora \(muted\)|Nora \(chat\)|Screen share|Participant)$/i.test(speaker));
+    session.speakersHeard = new Set(retainedSpeakers);
+    session.knownSpeakers = new Set(retainedSpeakers);
+    session.transcriptHydrated = true;
+    return session;
+  })();
+  session.transcriptHydrationPromise = hydration;
+  try {
+    return await hydration;
+  } finally {
+    if (session.transcriptHydrationPromise === hydration) session.transcriptHydrationPromise = null;
+  }
+}
+
+async function appendLiveTranscript(botId, session, transcript, ended) {
+  await ensureMeetingTranscriptHydrated(botId, session);
+  let snapshot = [...(session?.transcript || transcript || [])];
+  let expected = _transcriptPersistedCounts.get(botId) || 0;
+  if (expected > snapshot.length) {
+    throw new Error(`transcript checkpoint count ${expected} exceeds in-memory length ${snapshot.length}`);
+  }
+  let result = await db.appendTranscript(botId, ended || null, snapshot.slice(expected), expected);
+  if (!result.applied) {
+    const durable = await db.getTranscript(botId);
+    const retained = Array.isArray(durable?.transcript) ? durable.transcript : [];
+    if (transcriptStartsWith(snapshot, retained)) {
+      expected = retained.length;
+    } else if (transcriptStartsWith(retained, snapshot)) {
+      snapshot = retained;
+      if (session) session.transcript = retained;
+      expected = retained.length;
+    } else {
+      throw new Error('transcript checkpoint diverged from its durable prefix; refusing destructive overwrite');
+    }
+    result = await db.appendTranscript(botId, ended || null, snapshot.slice(expected), expected);
+    if (!result.applied) throw new Error('transcript checkpoint expected-count conflict persisted after reload');
+  }
+  _transcriptPersistedCounts.set(botId, result.utterance_count);
+  return result;
+}
+
+function queueTranscriptCheckpoint(botId, transcript, { ended = null, delayMs = 1000 } = {}) {
+  const prior = _transcriptCheckpointPending.get(botId);
+  _transcriptCheckpointPending.set(botId, {
+    transcript,
+    ended: ended || prior?.ended || null,
+  });
   if (_transcriptCheckpointTimers.has(botId)) return;
   const timer = setTimeout(() => {
     _transcriptCheckpointTimers.delete(botId);
     const pending = _transcriptCheckpointPending.get(botId);
     _transcriptCheckpointPending.delete(botId);
     if (!pending) return;
-    saveTranscriptDoc(botId, pending, null, { recordEpisode: false })
-      .catch(error => console.error('Transcript checkpoint failed:', error.message));
-  }, 1000);
+    saveTranscriptDoc(botId, pending.transcript, pending.ended, {
+      recordEpisode: false, incremental: true,
+    }).then(() => {
+      _transcriptCheckpointAttempts.delete(botId);
+      if (pending.ended) refreshRecentMeetingsCache().catch(() => {});
+      if (pending.ended && sessions[botId]?.cleanupAfterTranscriptSave) {
+        delete sessions[botId];
+        _transcriptPersistedCounts.delete(botId);
+      }
+    }).catch(error => {
+      const attempt = (_transcriptCheckpointAttempts.get(botId) || 0) + 1;
+      _transcriptCheckpointAttempts.set(botId, attempt);
+      console.error(`Transcript checkpoint failed (retry ${attempt}):`, error.message);
+      queueTranscriptCheckpoint(botId, sessions[botId]?.transcript || pending.transcript, {
+        ended: pending.ended,
+        delayMs: Math.min(30000, 1000 * (2 ** Math.min(attempt, 5))),
+      });
+    });
+  }, delayMs);
   timer.unref?.();
   _transcriptCheckpointTimers.set(botId, timer);
 }
-async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = true } = {}) {
+
+function scheduleTranscriptCheckpoint(botId, transcript) {
+  scheduleTranscriptEpisodeCheckpoint(botId, transcript);
+  queueTranscriptCheckpoint(botId, transcript);
+}
+async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = true,
+  incremental = false } = {}) {
   if (ended) {
     const timer = _transcriptCheckpointTimers.get(botId);
     if (timer) clearTimeout(timer);
@@ -11179,9 +11294,16 @@ async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = tru
     _transcriptEpisodePending.delete(botId);
     _transcriptEpisodeRecordedCounts.delete(botId);
   }
-  if (_dbReady) return _writeThrough('transcript:' + botId, () => db.upsertTranscript(botId, ended || null, transcript || []));
+  const session = sessions[botId] || { transcript: Array.isArray(transcript) ? transcript : [] };
+  if (incremental) await ensureMeetingTranscriptHydrated(botId, session);
+  if (_dbReady) {
+    return _writeThrough('transcript:' + botId, () => incremental
+      ? appendLiveTranscript(botId, session, transcript, ended)
+      : db.upsertTranscript(botId, ended || null, transcript || []), { strict: true });
+  }
+  const durableTranscript = incremental ? session.transcript : (transcript || []);
   const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : LOCAL_DATA_DIR;
-  try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: transcript || [] }, null, 2)); }
+  try { fs.writeFileSync(path.join(dir, `transcript-${botId}.json`), JSON.stringify({ bot_id: botId, ended: ended || null, transcript: durableTranscript }, null, 2)); }
   catch (e) { console.warn('transcript write failed:', e.message); }
 }
 
@@ -11190,8 +11312,10 @@ async function drainTranscriptCheckpoints() {
   _transcriptCheckpointTimers.clear();
   const rawPending = [..._transcriptCheckpointPending.entries()];
   _transcriptCheckpointPending.clear();
-  for (const [botId, transcript] of rawPending) {
-    await saveTranscriptDoc(botId, transcript, null, { recordEpisode: false });
+  for (const [botId, pending] of rawPending) {
+    await saveTranscriptDoc(botId, pending.transcript, pending.ended, {
+      recordEpisode: false, incremental: true,
+    });
   }
   for (const timer of _transcriptEpisodeTimers.values()) clearTimeout(timer);
   _transcriptEpisodeTimers.clear();
@@ -15848,6 +15972,10 @@ async function stop() {
     intelligenceRoutesRuntime.close(),
     boundedServerClose,
   ]);
+  const writeThroughDrained = await _writeThroughQueue.drain({ timeoutMs: 10000 });
+  if (!writeThroughDrained) {
+    console.warn('Database write-through drain exceeded 10000ms; continuing bounded shutdown');
+  }
   await db.close().catch(() => {});
   _startPromise = null;
   if (transcriptDrain) throw transcriptDrain;
@@ -15885,6 +16013,7 @@ module.exports = {
     rankLexicalMemories,
     retrieveInteractiveMemories,
     stripSlackLookupNarration,
+    transcriptStartsWith,
     slackThreadHasNoraReply,
     activeDurableRunLock,
     beginOptionalBackground,

@@ -976,6 +976,26 @@ async function setState(key, value) {
     [key, JSON.stringify(value)]
   );
 }
+async function appendTranscript(botId, ended, utterances, expectedCount) {
+  const delta = Array.isArray(utterances) ? utterances : [];
+  const expected = Math.max(0, Number(expectedCount) || 0);
+  const { rows } = await q(
+    `INSERT INTO ${DB_SCHEMA}.transcripts AS current
+       (bot_id, ended, transcript, utterance_count, updated_at)
+     SELECT $1,$2,$3::jsonb,$4,now() WHERE $5=0
+     ON CONFLICT (bot_id) DO UPDATE SET
+       ended=COALESCE(EXCLUDED.ended, current.ended),
+       transcript=current.transcript || EXCLUDED.transcript,
+       utterance_count=current.utterance_count + EXCLUDED.utterance_count,
+       updated_at=now()
+     WHERE current.utterance_count=$5
+     RETURNING utterance_count`,
+    [botId, ended || null, JSON.stringify(delta), delta.length, expected]
+  );
+  return rows.length
+    ? { applied: true, utterance_count: Number(rows[0].utterance_count) || 0 }
+    : { applied: false, utterance_count: null };
+}
 async function setStateSerialized(key, serializedValue) {
   if (typeof serializedValue !== 'string') throw new TypeError('serialized app state must be a JSON string');
   await q(
@@ -1037,7 +1057,7 @@ module.exports = {
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers, applyMarkerChanges,
   loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,
-  upsertTranscript, listTranscripts, getTranscript, deleteTranscript,
+  upsertTranscript, appendTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
   enqueueJob, claimNextQueuedJob, finishJob, requeueRunningJobs, recentJobs,
 };

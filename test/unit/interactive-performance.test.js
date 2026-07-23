@@ -376,6 +376,15 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'optional screen-share description calls must be abortable');
   assert.match(server, /function scheduleTranscriptCheckpoint\(botId, transcript\)/,
     'growing live transcripts must use coalesced checkpoints instead of one full write per utterance');
+  assert.match(server,
+    /await ensureMeetingTranscriptHydrated\(bot_id, session\)[\s\S]{0,3000}session\.transcript\.push/,
+    'the first post-restart meeting utterance must restore its durable prefix before append');
+  assert.match(server,
+    /db\.appendTranscript\(botId, ended \|\| null, snapshot\.slice\(expected\), expected\)/,
+    'live checkpoints must append only the new suffix with an expected-count guard');
+  assert.match(server,
+    /transcript checkpoint diverged from its durable prefix; refusing destructive overwrite/,
+    'a divergent meeting transcript must fail closed instead of replacing durable history');
   assert.match(server, /TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000/,
     'live utterance episodes must batch full intelligence persistence away from the realtime cadence');
   assert.match(server, /intelligence\.recordEpisodeEvents\(transcriptEpisodeInputs\(botId, entries\)\)/,
@@ -405,6 +414,9 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'shutdown must flush raw transcript and deferred episode checkpoints before closing the database');
   assert.match(server, /const transcriptDrain = await drainTranscriptCheckpoints\(\)[\s\S]*intelligence\.persistStrict\(\)/,
     'graceful shutdown must order transcript durability before the final intelligence snapshot');
+  assert.match(server,
+    /await _writeThroughQueue\.drain\(\{ timeoutMs: 10000 \}\)[\s\S]*await db\.close/,
+    'graceful shutdown must drain all serialized database writes before closing Postgres');
   assert.match(server, /_processRecovery\.install\(process\)/,
     'production must route SIGTERM and fatal async errors through the bounded shutdown coordinator');
   assert.match(intelligenceRoutesSource, /warmDashboardSummary: \(\) => refreshWorkerSnapshot\('dashboard-summary'/,
@@ -889,6 +901,15 @@ test('Slack waits for one coherent reply instead of posting a generic progress m
   assert.equal(__test.stripSlackLookupNarration('On it. I moved the task to Friday.'),
     'On it. I moved the task to Friday.',
   'a real completion acknowledgement is not lookup narration');
+});
+
+test('meeting transcript prefix comparison detects safe restart continuation and divergence', () => {
+  const { __test } = require('../../server');
+  const first = { speaker: 'Ari', text: 'first', timestamp: '2026-07-23T10:00:00.000Z' };
+  const second = { speaker: 'Nora', text: 'second', timestamp: '2026-07-23T10:00:01.000Z' };
+  assert.equal(__test.transcriptStartsWith([first, second], [first]), true);
+  assert.equal(__test.transcriptStartsWith([second], [first]), false);
+  assert.equal(__test.transcriptStartsWith([first], [first, second]), false);
 });
 
 test('typed meeting chat never promises an unqueued Slack follow-up', () => {

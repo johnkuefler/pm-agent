@@ -42,3 +42,30 @@ test('strict writes reject their caller but do not poison later queued work', as
   assert.equal(queue.snapshot().entities.dreams.completed, 1);
   assert.equal(queue.snapshot().current_errors, 0);
 });
+
+test('drain waits for queued writes and work enqueued by a settling operation', async () => {
+  const queue = createWriteThroughQueue();
+  const order = [];
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  queue.enqueue('transcript:one', async () => {
+    order.push('first-start');
+    await held;
+    order.push('first-end');
+    queue.enqueue('transcript:two', async () => { order.push('follow-up'); });
+  });
+  const draining = queue.drain({ timeoutMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(order, ['first-start']);
+  release();
+  assert.equal(await draining, true);
+  assert.deepEqual(order, ['first-start', 'first-end', 'follow-up']);
+  assert.equal(queue.snapshot().pending, 0);
+});
+
+test('drain is bounded when a write does not settle', async () => {
+  const queue = createWriteThroughQueue();
+  queue.enqueue('hung', () => new Promise(() => {}));
+  assert.equal(await queue.drain({ timeoutMs: 20 }), false);
+  assert.equal(queue.snapshot().pending, 1);
+});

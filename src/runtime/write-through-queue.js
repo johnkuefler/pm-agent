@@ -62,7 +62,35 @@ function createWriteThroughQueue({ clock = () => new Date(), onError = () => {} 
     };
   }
 
-  return { enqueue, snapshot };
+  async function drain({ timeoutMs = 10000 } = {}) {
+    const boundedTimeout = Math.max(1, Number(timeoutMs) || 10000);
+    const deadline = Date.now() + boundedTimeout;
+    while (true) {
+      const pending = [...queues.entries()]
+        .filter(([key]) => (states.get(key)?.pending || 0) > 0)
+        .map(([, promise]) => promise);
+      if (!pending.length) {
+        // Give an enqueue scheduled by a just-settled operation one microtask to become visible.
+        await Promise.resolve();
+        if (![...states.values()].some(state => state.pending > 0)) return true;
+        continue;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      let timer;
+      const completed = await Promise.race([
+        Promise.allSettled(pending).then(() => true),
+        new Promise(resolve => {
+          timer = setTimeout(() => resolve(false), remaining);
+          timer.unref?.();
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (!completed) return false;
+    }
+  }
+
+  return { enqueue, snapshot, drain };
 }
 
 module.exports = { createWriteThroughQueue };
