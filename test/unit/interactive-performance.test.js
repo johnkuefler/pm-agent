@@ -260,6 +260,41 @@ test('post-interaction learning drops a hung item after its bounded budget', asy
   performance.resetPriorityGateForTest();
 });
 
+test('post-interaction shutdown closes admission and drops unstarted optional work visibly', async () => {
+  const { __test } = require('../../server');
+  __test.resetPostInteractionExtractionForTest();
+  assert.equal(__test.enqueuePostInteractionExtraction('queued-one', async () => {}), true);
+  assert.equal(__test.enqueuePostInteractionExtraction('queued-two', async () => {}), true);
+  assert.equal(await __test.closePostInteractionExtraction({ timeoutMs: 20 }), true);
+  let snapshot = __test.backgroundWorkSnapshot().post_interaction;
+  assert.equal(snapshot.closing, true);
+  assert.equal(snapshot.queued, 0);
+  assert.equal(snapshot.shutdown_dropped, 2);
+  assert.equal(__test.enqueuePostInteractionExtraction('too-late', async () => {}), false);
+  snapshot = __test.backgroundWorkSnapshot().post_interaction;
+  assert.equal(snapshot.shutdown_dropped, 3);
+  __test.resetPostInteractionExtractionForTest();
+});
+
+test('post-interaction shutdown has a terminal wait for noncooperative active work', async () => {
+  performance.resetPriorityGateForTest();
+  const { __test } = require('../../server');
+  __test.resetPostInteractionExtractionForTest();
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  __test.enqueuePostInteractionExtraction('held-at-shutdown', () => held);
+  const running = __test.drainPostInteractionExtractionQueue({ timeoutMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(await __test.closePostInteractionExtraction({ timeoutMs: 5 }), false);
+  const snapshot = __test.backgroundWorkSnapshot().post_interaction;
+  assert.equal(snapshot.shutdown_drain_timeouts, 1);
+  assert.equal(snapshot.queued, 0);
+  release();
+  await running;
+  __test.resetPostInteractionExtractionForTest();
+  performance.resetPriorityGateForTest();
+});
+
 test('started startup warmups remain owned until the shutdown drain settles', async () => {
   const { __test } = require('../../server');
   let release;
@@ -523,6 +558,9 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(server,
     /async function stop\(\)[\s\S]*cancelBackground\('service_shutdown'\)[\s\S]*await interactivePerformance\.waitForBackgroundIdle\(\{ timeoutMs: 10000 \}\)[\s\S]*intelligence\.persistStrict\(\)/,
     'shutdown must cancel and drain optional providers before the final durable flush');
+  assert.match(server,
+    /drainAcknowledgedMeetingWork\(\{ timeoutMs: 20000 \}\)[\s\S]*closePostInteractionExtraction\(\{ timeoutMs: 10000 \}\)[\s\S]*intelligence\.persistStrict\(\)/,
+    'shutdown must close late learning admission after acknowledged callbacks and before persistence');
   assert.match(server, /async function drainTranscriptCheckpoints\(\)[\s\S]*flushTranscriptEpisodeCheckpoint/,
     'shutdown must flush raw transcript and deferred episode checkpoints before closing the database');
   assert.match(server, /const transcriptDrain = await drainTranscriptCheckpoints\(\)[\s\S]*intelligence\.persistStrict\(\)/,

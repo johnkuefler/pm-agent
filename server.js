@@ -13780,8 +13780,12 @@ function backgroundPostWithPriority(post, lease) {
 const _postInteractionExtractionQueue = [];
 let _postInteractionExtractionBusy = false;
 let _postInteractionExtractionTimer = null;
+let _postInteractionExtractionInFlight = null;
+let _postInteractionExtractionActiveLease = null;
+let _postInteractionExtractionClosing = false;
 const _postInteractionExtractionHealth = {
   completed: 0, failed: 0, timed_out: 0, preempted: 0, overflow_dropped: 0,
+  shutdown_dropped: 0, shutdown_drain_timeouts: 0,
   last_failure: null, recent_failures: [],
 };
 function recordPostInteractionExtractionFailure(failure) {
@@ -13801,6 +13805,8 @@ function backgroundWorkSnapshot() {
     post_interaction: {
       queued: _postInteractionExtractionQueue.length,
       busy: _postInteractionExtractionBusy,
+      in_flight: Boolean(_postInteractionExtractionInFlight),
+      closing: _postInteractionExtractionClosing,
       next: _postInteractionExtractionQueue[0]?.label || null,
       active_ms: active ? Math.max(0, Date.now() - Number(active.started_at || Date.now())) : 0,
       oldest_queued_age_ms: _postInteractionExtractionQueue.length
@@ -13835,7 +13841,7 @@ function backgroundWorkSnapshot() {
   };
 }
 function schedulePostInteractionExtractionDrain(delayMs = 1200) {
-  if (_postInteractionExtractionTimer) return;
+  if (_postInteractionExtractionClosing || _postInteractionExtractionTimer) return;
   _postInteractionExtractionTimer = setTimeout(() => {
     _postInteractionExtractionTimer = null;
     drainPostInteractionExtractionQueue().catch(error =>
@@ -13844,7 +13850,11 @@ function schedulePostInteractionExtractionDrain(delayMs = 1200) {
   _postInteractionExtractionTimer.unref?.();
 }
 function enqueuePostInteractionExtraction(label, run) {
-  if (typeof run !== 'function') return;
+  if (typeof run !== 'function') return false;
+  if (_postInteractionExtractionClosing) {
+    _postInteractionExtractionHealth.shutdown_dropped += 1;
+    return false;
+  }
   if (_postInteractionExtractionQueue.length >= 60) {
     // Never evict index zero while it is executing. Doing that used to make the current
     // completion shift a second, unrelated item and could silently lose two learning jobs.
@@ -13855,52 +13865,95 @@ function enqueuePostInteractionExtraction(label, run) {
   _postInteractionExtractionQueue.push({ label: String(label || 'interaction').slice(0, 100),
     run, enqueued_at: Date.now(), started_at: null });
   schedulePostInteractionExtractionDrain();
+  return true;
 }
-async function drainPostInteractionExtractionQueue({ timeoutMs = postInteractionExtractionTimeoutMs() } = {}) {
-  if (_postInteractionExtractionBusy || !_postInteractionExtractionQueue.length) return;
+function drainPostInteractionExtractionQueue({ timeoutMs = postInteractionExtractionTimeoutMs() } = {}) {
+  if (_postInteractionExtractionInFlight) return _postInteractionExtractionInFlight;
+  if (_postInteractionExtractionClosing || !_postInteractionExtractionQueue.length) {
+    return Promise.resolve();
+  }
   const item = _postInteractionExtractionQueue[0];
   const lease = beginOptionalBackground(`post-interaction:${item.label}`);
   if (!lease.allowed) {
     schedulePostInteractionExtractionDrain(lease.retry_after_ms || 1500);
-    return;
+    return Promise.resolve();
   }
   _postInteractionExtractionBusy = true;
+  _postInteractionExtractionActiveLease = lease;
   item.started_at = Date.now();
-  let completed = false;
-  try {
-    await runBackgroundActionWithinBudget(`post-interaction:${item.label}`,
-      () => item.run(backgroundPostWithPriority(axios.post, lease)), timeoutMs);
-    completed = true;
-    _postInteractionExtractionHealth.completed += 1;
-  } catch (error) {
-    if (error.code === 'background_step_timeout') {
-      lease.cancel(`post_interaction_timeout:${item.label}`);
+  const execution = (async () => {
+    let completed = false;
+    try {
+      await runBackgroundActionWithinBudget(`post-interaction:${item.label}`,
+        () => item.run(backgroundPostWithPriority(axios.post, lease)), timeoutMs);
       completed = true;
-      _postInteractionExtractionHealth.timed_out += 1;
-      recordPostInteractionExtractionFailure({
-        label: item.label, code: error.code, message: String(error.message || error).slice(0, 240),
-        at: new Date().toISOString(),
-      });
-      console.warn(`Post-interaction extraction ${item.label} timed out and was dropped:`, error.message);
-    } else if (lease.wasPreempted()) {
-      _postInteractionExtractionHealth.preempted += 1;
-      item.started_at = null;
-    } else {
-      completed = true;
-      _postInteractionExtractionHealth.failed += 1;
-      recordPostInteractionExtractionFailure({
-        label: item.label, code: error.code || null,
-        message: String(error.message || error).slice(0, 240), at: new Date().toISOString(),
-      });
-      console.warn(`Post-interaction extraction ${item.label} failed:`, error.message);
+      _postInteractionExtractionHealth.completed += 1;
+    } catch (error) {
+      if (error.code === 'background_step_timeout') {
+        lease.cancel(`post_interaction_timeout:${item.label}`);
+        completed = true;
+        _postInteractionExtractionHealth.timed_out += 1;
+        recordPostInteractionExtractionFailure({
+          label: item.label, code: error.code, message: String(error.message || error).slice(0, 240),
+          at: new Date().toISOString(),
+        });
+        console.warn(`Post-interaction extraction ${item.label} timed out and was dropped:`, error.message);
+      } else if (lease.wasPreempted()) {
+        _postInteractionExtractionHealth.preempted += 1;
+        item.started_at = null;
+      } else {
+        completed = true;
+        _postInteractionExtractionHealth.failed += 1;
+        recordPostInteractionExtractionFailure({
+          label: item.label, code: error.code || null,
+          message: String(error.message || error).slice(0, 240), at: new Date().toISOString(),
+        });
+        console.warn(`Post-interaction extraction ${item.label} failed:`, error.message);
+      }
+    } finally {
+      lease.release();
+      _postInteractionExtractionActiveLease = null;
+      _postInteractionExtractionBusy = false;
+      if (completed) _postInteractionExtractionQueue.shift();
+      if (_postInteractionExtractionQueue.length && !_postInteractionExtractionClosing) {
+        schedulePostInteractionExtractionDrain(completed ? 250 : 1500);
+      }
     }
-  } finally {
-    lease.release();
-    _postInteractionExtractionBusy = false;
-    if (completed) _postInteractionExtractionQueue.shift();
-    if (_postInteractionExtractionQueue.length) schedulePostInteractionExtractionDrain(
-      completed ? 250 : 1500);
+  })();
+  const owned = execution.finally(() => {
+    if (_postInteractionExtractionInFlight === owned) {
+      _postInteractionExtractionInFlight = null;
+    }
+  });
+  _postInteractionExtractionInFlight = owned;
+  return owned;
+}
+
+async function closePostInteractionExtraction({ timeoutMs = 10000 } = {}) {
+  _postInteractionExtractionClosing = true;
+  if (_postInteractionExtractionTimer) clearTimeout(_postInteractionExtractionTimer);
+  _postInteractionExtractionTimer = null;
+  _postInteractionExtractionActiveLease?.cancel('service_shutdown');
+  const active = _postInteractionExtractionInFlight;
+  let settled = true;
+  if (active) {
+    let timer = null;
+    settled = await Promise.race([
+      Promise.resolve(active).then(() => true, () => true),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), Math.max(1, Number(timeoutMs) || 10000));
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!settled) _postInteractionExtractionHealth.shutdown_drain_timeouts += 1;
   }
+  const dropped = _postInteractionExtractionQueue.length;
+  if (dropped) {
+    _postInteractionExtractionHealth.shutdown_dropped += dropped;
+    _postInteractionExtractionQueue.splice(0);
+  }
+  return settled;
 }
 
 function resetPostInteractionExtractionForTest() {
@@ -13908,8 +13961,12 @@ function resetPostInteractionExtractionForTest() {
   _postInteractionExtractionTimer = null;
   _postInteractionExtractionQueue.splice(0);
   _postInteractionExtractionBusy = false;
+  _postInteractionExtractionInFlight = null;
+  _postInteractionExtractionActiveLease = null;
+  _postInteractionExtractionClosing = false;
   Object.assign(_postInteractionExtractionHealth, {
     completed: 0, failed: 0, timed_out: 0, preempted: 0, overflow_dropped: 0,
+    shutdown_dropped: 0, shutdown_drain_timeouts: 0,
     last_failure: null, recent_failures: [],
   });
 }
@@ -16466,6 +16523,7 @@ async function completePostListenStartup(background) {
 async function start(options = {}) {
   if (_startPromise) return _startPromise;
   _transcriptCheckpointsClosing = false;
+  _postInteractionExtractionClosing = false;
   const background = options.background !== undefined ? options.background : process.env.NORA_TEST_MODE !== '1';
   const port = options.port !== undefined ? options.port : (process.env.PORT || 3000);
   _startPromise = (async () => {
@@ -16559,6 +16617,10 @@ async function stop() {
   }
   if (meetingWebhookDrain.status === 'rejected' || meetingWebhookDrain.value !== true) {
     console.warn('Acknowledged meeting work drain exceeded 20000ms; continuing bounded shutdown');
+  }
+  const postInteractionDrained = await closePostInteractionExtraction({ timeoutMs: 10000 });
+  if (!postInteractionDrained) {
+    console.warn('Post-interaction learning drain exceeded 10000ms; optional learning was dropped');
   }
   const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
   const [persistenceDrain, , recentMeetingsDrain] = await Promise.allSettled([
@@ -16762,6 +16824,7 @@ module.exports = {
     beginAcknowledgedMeetingWork,
     acknowledgedMeetingWorkSnapshot,
     drainAcknowledgedMeetingWork,
+    closePostInteractionExtraction,
     mapWithBoundedConcurrency,
     recentMeetingsRefreshSnapshot,
     drainRecentMeetingsRefresh,
