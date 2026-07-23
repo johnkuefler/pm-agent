@@ -249,8 +249,20 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'memory extraction must use the abortable priority transport');
   assert.match(server, /now - lastScreenshareDescriptionAt\[botId\] < 5 \* 60 \* 1000/,
     'screen-share persistence must not invoke vision more than once every five minutes');
-  assert.match(server, /finally \{\s*delete screenshareDescriptionInFlight\[botId\];\s*\}/,
+  assert.match(server, /finally \{\s*delete screenshareDescriptionInFlight\[botId\];/,
     'screen-share vision must release its single-flight guard after success or failure');
+  assert.match(server, /base64Png\.length > MAX_SCREENSHARE_BASE64_CHARS/,
+    'screen-share ingestion must reject unbounded image payloads');
+  assert.match(server, /videoWss = new WebSocketServer\(\{ noServer: true,\s*maxPayload: VIDEO_WS_MAX_PAYLOAD_BYTES \}\)/,
+    'screen-share transport must reject oversized messages before JSON parsing');
+  assert.match(server, /ingressVoiceGate[\s\S]{0,400}let msg;/,
+    'screen-share voice gating must occur before JSON parsing');
+  assert.match(server, /receivedAt - lastFrameInspectedAt\[botId\] < FRAME_PARSE_INTERVAL_MS/,
+    'unthrottled video ingress must not parse every Recall frame');
+  assert.match(server, /screenShareVoiceGate\(session, now\)/,
+    'screen-share serialization must yield while a spoken turn owns the meeting');
+  assert.match(server, /signal: controller\.signal/,
+    'optional screen-share description calls must be abortable');
   assert.match(server, /function scheduleTranscriptCheckpoint\(botId, transcript\)/,
     'growing live transcripts must use coalesced checkpoints instead of one full write per utterance');
   assert.match(server, /TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000/,
@@ -771,6 +783,23 @@ test('scheduled intelligence defers without touching providers during process pr
   } finally {
     __test.processResources.backgroundAdmission = originalAdmission;
   }
+});
+
+test('screen-share work yields through human speech, Nora speech, and the quiet window', () => {
+  const { __test } = require('../../server');
+  assert.deepEqual(__test.screenShareVoiceGate({}, 10000), {
+    allowed: true, reason: null, retry_after_ms: 0,
+  });
+  assert.equal(__test.screenShareVoiceGate({ voiceResponseActive: true }, 10000).reason,
+    'nora_speaking');
+  assert.equal(__test.screenShareVoiceGate({ voiceHumanSpeechStartedAt: 9000 }, 10000).reason,
+    'human_speaking');
+  assert.deepEqual(__test.screenShareVoiceGate({
+    voiceHumanSpeechStartedAt: 8000, voiceSpeechStoppedAt: 9500,
+  }, 10000), { allowed: false, reason: 'speech_cooldown', retry_after_ms: 1000 });
+  assert.equal(__test.screenShareVoiceGate({
+    voiceHumanSpeechStartedAt: 8000, voiceSpeechStoppedAt: 9500,
+  }, 11000).allowed, true);
 });
 
 test('realtime telemetry is batched until the voice foreground and cooldown have ended', () => {

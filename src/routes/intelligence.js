@@ -11,6 +11,10 @@ function shouldRefreshWorkerSnapshot(cached, now, minimumIntervalMs) {
     || now - cached.refresh_started_at_ms >= minimumIntervalMs;
 }
 
+function responseEnded(res) {
+  return Boolean(res.headersSent || res.writableEnded || res.destroyed || res.closed);
+}
+
 function compactSelfModelForDashboard(model = {}) {
   const summarizeStudy = item => ({
     title: item.title, study_phase: item.study_phase, status: item.status,
@@ -142,6 +146,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     const now = Date.now();
     let cached = workerSnapshotCache.get(key);
     if (cached?.serialized && cached.revision === revision && cached.expires_at > now) {
+      if (responseEnded(res)) return null;
       res.set('X-Nora-Snapshot-Cache', 'hit');
       res.set('X-Nora-Compute-Isolation', 'worker_thread');
       res.set('Cache-Control', 'private, no-store');
@@ -153,6 +158,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       if (refreshDue) {
         refresh().catch(error => console.error(`Background projection ${key} failed:`, error.message));
       }
+      if (responseEnded(res)) return null;
       res.set('X-Nora-Snapshot-Cache', refreshDue
         ? 'worker-stale-refreshing' : 'worker-stale-coalesced');
       res.set('X-Nora-Compute-Isolation', 'worker_thread');
@@ -160,6 +166,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       return res.type('application/json').send(cached.serialized);
     }
     const entry = await refresh();
+    if (responseEnded(res)) return null;
     res.set('X-Nora-Snapshot-Cache', 'miss');
     res.set('X-Nora-Compute-Isolation', 'worker_thread');
     res.set('Server-Timing', `projection-worker;dur=${Number(entry.compute_ms || 0).toFixed(1)}, dispatch;dur=${Number(entry.dispatch_ms || 0).toFixed(1)}`);
@@ -796,9 +803,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         requireCurrentRevision: req.query.require_current === '1',
         waitForCold: false,
       });
+      if (responseEnded(res)) return;
       projectionHeaders(res, snapshot);
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
+      if (responseEnded(res)) return;
       if (error.code === 'cold_projection_refreshing') res.set('Retry-After', '5');
       return res.status(503).json({ error: 'cognition snapshot unavailable', detail: error.message });
     }
@@ -987,9 +996,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     if (process.env.NORA_TEST_MODE === '1') return res.json(store.consciousnessResearchStatus());
     try {
       const snapshot = await researchStatusCache.get({ waitForCold: false });
+      if (responseEnded(res)) return;
       projectionHeaders(res, snapshot);
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
+      if (responseEnded(res)) return;
       if (error.code === 'cold_projection_refreshing') res.set('Retry-After', '5');
       else if (Number(error.retry_after_ms) > 0) {
         res.set('Retry-After', String(Math.max(1, Math.ceil(Number(error.retry_after_ms) / 1000))));
@@ -1244,6 +1255,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
         waitForCold: process.env.NORA_TEST_MODE === '1',
         waitForRequiredRefresh: process.env.NORA_TEST_MODE === '1',
       });
+      if (responseEnded(res)) return;
       projectionHeaders(res, snapshot);
       if (req.query.view === 'dashboard') {
         if (!dashboardSelfModelCache || dashboardSelfModelCache.revision !== snapshot.revision
@@ -1259,6 +1271,7 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       }
       return res.type('application/json').send(snapshot.serialized);
     } catch (error) {
+      if (responseEnded(res)) return;
       if (['cold_projection_refreshing', 'required_projection_refreshing'].includes(error.code)) {
         res.set('Retry-After', '5');
       } else if (Number(error.retry_after_ms) > 0) {

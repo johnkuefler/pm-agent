@@ -10565,6 +10565,20 @@ function isAskingClarification(reply) {
 const lastScreenshareDescription = {};
 const lastScreenshareDescriptionAt = {};
 const screenshareDescriptionInFlight = {};
+const screenshareDescriptionControllers = {};
+const _screenshareHealth = {
+  forwarded: 0, deferred_for_voice: 0, oversized_dropped: 0,
+  descriptions_completed: 0, descriptions_aborted: 0, descriptions_aborted_for_voice: 0,
+};
+
+function abortScreenshareDescriptionForVoice(botId) {
+  const controller = screenshareDescriptionControllers[botId];
+  if (!controller || controller.signal.aborted) return false;
+  const error = new Error('screen-share description yielded to live human speech');
+  error.code = 'SCREENSHARE_VOICE_PREEMPTED';
+  controller.abort(error);
+  return true;
+}
 
 // Generates a brief text description of a screen-share frame using Claude Haiku vision
 // and appends it to the meeting transcript so future readers (the cowork loop, Drive
@@ -10580,6 +10594,8 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     || (lastScreenshareDescriptionAt[botId]
       && now - lastScreenshareDescriptionAt[botId] < 5 * 60 * 1000)) return;
   screenshareDescriptionInFlight[botId] = true;
+  const controller = new AbortController();
+  screenshareDescriptionControllers[botId] = controller;
   lastScreenshareDescriptionAt[botId] = now;
   try {
     const res = await axios.post(
@@ -10603,7 +10619,8 @@ async function describeScreenshareForTranscript(base64Png, botId) {
           'x-api-key': process.env.ANTHROPIC_API_KEY,
           'anthropic-version': '2023-06-01'
         },
-        timeout: 15000
+        timeout: 15000,
+        signal: controller.signal,
       }
     );
     const description = res.data?.content?.filter(b => b.type === 'text').map(b => b.text).join('').trim();
@@ -10622,6 +10639,7 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     const session = sessions[botId];
     if (!session) return;
     session.transcript.push({ speaker: 'Screen share', text: description, timestamp: new Date().toISOString() });
+    _screenshareHealth.descriptions_completed += 1;
     try {
       const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
       scheduleTranscriptCheckpoint(botId, session.transcript);
@@ -10631,9 +10649,21 @@ async function describeScreenshareForTranscript(base64Png, botId) {
     console.log(`📹 Screen-share described: "${description.slice(0, 120)}${description.length > 120 ? '...' : ''}"`);
   } catch (err) {
     // Non-fatal — description failures shouldn't disturb the live session.
-    console.warn('Screen-share description failed:', err.response?.data?.error?.message || err.message);
+    if (controller.signal.aborted) {
+      _screenshareHealth.descriptions_aborted += 1;
+      if (controller.signal.reason?.code === 'SCREENSHARE_VOICE_PREEMPTED') {
+        _screenshareHealth.descriptions_aborted_for_voice += 1;
+        // Speech preemption is not a completed description attempt. Let the next quiet frame
+        // retry instead of imposing the normal five-minute duplicate-description cooldown.
+        delete lastScreenshareDescriptionAt[botId];
+      }
+    }
+    else console.warn('Screen-share description failed:', err.response?.data?.error?.message || err.message);
   } finally {
     delete screenshareDescriptionInFlight[botId];
+    if (screenshareDescriptionControllers[botId] === controller) {
+      delete screenshareDescriptionControllers[botId];
+    }
   }
 }
 
@@ -11023,7 +11053,9 @@ function backfillTranscriptDates() {
 
 // ---- WebSocket relay: proxies between voice agent webpage and OpenAI Realtime API ----
 const wss = new WebSocketServer({ noServer: true });
-const videoWss = new WebSocketServer({ noServer: true });
+const VIDEO_WS_MAX_PAYLOAD_BYTES = 14 * 1024 * 1024;
+const videoWss = new WebSocketServer({ noServer: true,
+  maxPayload: VIDEO_WS_MAX_PAYLOAD_BYTES });
 
 server.on('upgrade', (request, socket, head) => {
   const url = new URL(request.url, `https://${request.headers.host}`);
@@ -11052,7 +11084,27 @@ server.on('upgrade', (request, socket, head) => {
 // frames (pixel-count threshold), and forward at FRAME_FORWARD_INTERVAL_MS cadence
 // as image conversation items in the bot's existing OpenAI Realtime session.
 const FRAME_FORWARD_INTERVAL_MS = 30 * 1000;
+const FRAME_PARSE_INTERVAL_MS = 1000;
+const MAX_SCREENSHARE_BASE64_CHARS = 12 * 1024 * 1024;
+const SCREENSHARE_VOICE_QUIET_MS = 1500;
+
+function screenShareVoiceGate(session, now = Date.now()) {
+  const speechStartedAt = Number(session?.voiceHumanSpeechStartedAt) || 0;
+  const speechStoppedAt = Number(session?.voiceSpeechStoppedAt) || 0;
+  const humanSpeaking = speechStartedAt > 0
+    && (!speechStoppedAt || speechStoppedAt < speechStartedAt);
+  const recentSpeech = speechStoppedAt > 0
+    && now - speechStoppedAt < SCREENSHARE_VOICE_QUIET_MS;
+  const reason = session?.voiceResponseActive ? 'nora_speaking'
+    : humanSpeaking ? 'human_speaking' : recentSpeech ? 'speech_cooldown' : null;
+  return {
+    allowed: !reason, reason,
+    retry_after_ms: recentSpeech
+      ? Math.max(0, SCREENSHARE_VOICE_QUIET_MS - (now - speechStoppedAt)) : 0,
+  };
+}
 const lastFrameSentAt = {}; // botId → ms timestamp
+const lastFrameInspectedAt = {}; // botId → ms timestamp
 
 // Parse PNG IHDR to get width/height. PNG signature is 8 bytes; first chunk after is
 // IHDR (4B length + 4B 'IHDR' type + 4B width + 4B height + ...). So width is at
@@ -11086,6 +11138,23 @@ videoWss.on('connection', (ws, req) => {
       return;
     }
 
+    // Gate before data.toString/JSON.parse: parsing a multi-megabyte base64 frame is itself
+    // event-loop work. During speech, while Realtime is unavailable, or during the 30-second
+    // visual throttle, no frame content is worth materializing. Otherwise sample at 1fps.
+    const receivedAt = Date.now();
+    const liveSession = sessions[botId];
+    const ingressVoiceGate = screenShareVoiceGate(liveSession, receivedAt);
+    if (!liveSession?.openaiWs || liveSession.openaiWs.readyState !== WebSocket.OPEN) return;
+    if (!ingressVoiceGate.allowed) {
+      _screenshareHealth.deferred_for_voice += 1;
+      return;
+    }
+    if (lastFrameSentAt[botId]
+      && receivedAt - lastFrameSentAt[botId] < FRAME_FORWARD_INTERVAL_MS) return;
+    if (lastFrameInspectedAt[botId]
+      && receivedAt - lastFrameInspectedAt[botId] < FRAME_PARSE_INTERVAL_MS) return;
+    lastFrameInspectedAt[botId] = receivedAt;
+
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
 
@@ -11105,6 +11174,10 @@ videoWss.on('connection', (ws, req) => {
     const frameData = msg.data?.data;
     const base64Png = frameData?.buffer;
     if (!base64Png) return;
+    if (base64Png.length > MAX_SCREENSHARE_BASE64_CHARS) {
+      _screenshareHealth.oversized_dropped += 1;
+      return;
+    }
 
     // Decode just enough of the base64 to read the PNG IHDR (first 24 bytes of the PNG).
     const headerBytes = Buffer.from(base64Png.slice(0, 40), 'base64');
@@ -11133,6 +11206,14 @@ videoWss.on('connection', (ws, req) => {
     const session = sessions[botId];
     if (!session?.openaiWs || session.openaiWs.readyState !== WebSocket.OPEN) return;
 
+    // Recall keeps sending fresh frames at 2fps, so yielding here buffers nothing: the first
+    // quiet frame naturally wins without multi-megabyte serialization competing with speech.
+    const voiceGate = screenShareVoiceGate(session, now);
+    if (!voiceGate.allowed) {
+      _screenshareHealth.deferred_for_voice += 1;
+      return;
+    }
+
     const dataUrl = `data:image/png;base64,${base64Png}`;
     try {
       session.openaiWs.send(JSON.stringify({
@@ -11144,6 +11225,7 @@ videoWss.on('connection', (ws, req) => {
         }
       }));
       lastFrameSentAt[botId] = now;
+      _screenshareHealth.forwarded += 1;
       console.log(`📹 Forwarded screen-share frame → OpenAI (bot ${botId}, ${dims.width}x${dims.height})`);
     } catch (err) {
       console.warn('Frame forward failed:', err.message);
@@ -11158,9 +11240,12 @@ videoWss.on('connection', (ws, req) => {
   ws.on('close', () => {
     console.log(`📹 Recall video WS closed for bot: ${botId}`);
     delete lastFrameSentAt[botId];
+    delete lastFrameInspectedAt[botId];
     delete lastScreenshareDescription[botId];
     delete lastScreenshareDescriptionAt[botId];
     delete screenshareDescriptionInFlight[botId];
+    screenshareDescriptionControllers[botId]?.abort(new Error('meeting video transport closed'));
+    delete screenshareDescriptionControllers[botId];
   });
 
   ws.on('error', (err) => {
@@ -11456,6 +11541,7 @@ wss.on('connection', async (ws, req) => {
           s.voiceSpeechStoppedAt = null;
           s.voiceTranscriptCompletedAt = null;
         }
+        abortScreenshareDescriptionForVoice(botId);
         if (s?.voiceResponseActive) queueRealtimeTrace({ channel: 'meeting', action: 'barge_in',
           decision: 'yield', confidence: 1, at: new Date().toISOString(),
           interaction_id: botId,
@@ -11814,6 +11900,12 @@ function backgroundWorkSnapshot() {
       episode_pending: _transcriptEpisodePending.size,
       episode_in_flight: _transcriptEpisodeInFlight.size,
     },
+    screen_share: { ..._screenshareHealth,
+      descriptions_in_flight: Object.keys(screenshareDescriptionInFlight).length,
+      maximum_base64_chars: MAX_SCREENSHARE_BASE64_CHARS,
+      maximum_transport_payload_bytes: VIDEO_WS_MAX_PAYLOAD_BYTES,
+      frame_parse_interval_ms: FRAME_PARSE_INTERVAL_MS,
+      voice_quiet_ms: SCREENSHARE_VOICE_QUIET_MS },
   };
 }
 function schedulePostInteractionExtractionDrain(delayMs = 1200) {
@@ -14555,6 +14647,7 @@ module.exports = {
     drainPostInteractionExtractionQueue,
     backgroundWorkSnapshot,
     resetPostInteractionExtractionForTest,
+    screenShareVoiceGate,
     processResources,
     runBehavioralFingerprintSubjectRuntime,
     runBehavioralFingerprintSchedulingRuntime,

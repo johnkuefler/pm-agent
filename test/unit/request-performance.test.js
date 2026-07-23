@@ -82,6 +82,20 @@ test('event streams are explicitly excluded from terminal request deadlines', ()
   res.emit('close');
 });
 
+test('isolated heavy projection reads receive the long non-interactive deadline', () => {
+  const monitor = createRequestPerformanceMonitor({ deadlineMs: 10, longDeadlineMs: 120 });
+  for (const path of ['/self-model', '/cognition', '/consciousness-research/status']) {
+    const req = new EventEmitter();
+    req.method = 'GET';
+    req.path = path;
+    const res = new EventEmitter();
+    res.statusCode = 200;
+    monitor.middleware(req, res, () => {});
+    assert.equal(monitor.snapshot().active.at(-1).deadline_ms, 120);
+    res.emit('finish');
+  }
+});
+
 test('a genuinely hung Express handler returns a retryable 504', async () => {
   const monitor = createRequestPerformanceMonitor({ deadlineMs: 15 });
   const app = express();
