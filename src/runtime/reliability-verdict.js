@@ -31,6 +31,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const startupTasks = background.startup_tasks || {};
   const apiOpportunityOperations = background.api_opportunity_operations || {};
   const slackWebhookEvents = background.slack_webhook_events || {};
+  const acknowledgedMeetingWork = background.acknowledged_meeting_work || {};
   const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
@@ -224,6 +225,26 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       count: recentSlackWebhookFailures.length || Number(slackWebhookEvents.active_count) || undefined,
       age_ms: Number(slackWebhookEvents.oldest_active_ms) || undefined,
       message: 'Acknowledged Slack event work is slow, failing, or accumulating.' });
+  }
+  const recentMeetingWorkFailures = (acknowledgedMeetingWork.recent_failures || []).filter(item => {
+    const at = new Date(item?.at || 0).getTime();
+    return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
+  });
+  if (recentMeetingWorkFailures.length >= 3
+    || Number(acknowledgedMeetingWork.oldest_active_ms) >= 45000) {
+    actionRequired.push({ code: 'meeting_webhook_work_stuck',
+      count: recentMeetingWorkFailures.length
+        || Number(acknowledgedMeetingWork.active_count) || undefined,
+      age_ms: Number(acknowledgedMeetingWork.oldest_active_ms) || undefined,
+      message: 'Acknowledged meeting work is repeatedly failing or has exceeded its terminal window.' });
+  } else if (recentMeetingWorkFailures.length
+    || Number(acknowledgedMeetingWork.oldest_active_ms) >= 20000
+    || Number(acknowledgedMeetingWork.active_count) > 10) {
+    degraded.push({ code: 'meeting_webhook_work_pressure',
+      count: recentMeetingWorkFailures.length
+        || Number(acknowledgedMeetingWork.active_count) || undefined,
+      age_ms: Number(acknowledgedMeetingWork.oldest_active_ms) || undefined,
+      message: 'Acknowledged meeting work is slow, failing, or accumulating.' });
   }
   const postInteraction = background.post_interaction || {};
   const recentPostInteractionFailures = (postInteraction.recent_failures || []).filter(item => {

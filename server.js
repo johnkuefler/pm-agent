@@ -4051,6 +4051,9 @@ app.post('/voice-agent/response', async (req, res) => {
   }
 
   res.json({ ok: true });
+  const ownership = beginAcknowledgedMeetingWork('voice-response');
+  let ownershipError = null;
+  try {
 
   // Add Nora's response to transcript
   const session = sessions[bot_id];
@@ -4073,12 +4076,16 @@ app.post('/voice-agent/response', async (req, res) => {
     // muted), so reaching here means she was actually addressed — no more per-turn "standing by"
     // spam. Failure is non-fatal; extraction still runs below.
     if (isMuted) {
-      axios.post(
-        `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
-        { message: text },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
-      ).then(() => console.log('💬 Posted muted reply to meeting chat:', text.slice(0, 120)))
-       .catch(err => console.warn('Muted-reply chat post failed:', err.response?.data || err.message));
+      try {
+        await axios.post(
+          `${RECALL_BASE}/bot/${bot_id}/send_chat_message/`,
+          { message: text },
+          { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 }
+        );
+        console.log('💬 Posted muted reply to meeting chat:', text.slice(0, 120));
+      } catch (err) {
+        console.warn('Muted-reply chat post failed:', err.response?.data || err.message);
+      }
     }
 
     // Build context from recent buffer
@@ -4093,6 +4100,12 @@ app.post('/voice-agent/response', async (req, res) => {
         await extractResearchNeeds(meetingContext, triggerText, text, { channel: 'zoom', bot_id }, { post });
       });
     }
+  }
+  } catch (error) {
+    ownershipError = error;
+    throw error;
+  } finally {
+    ownership.finish(ownershipError);
   }
 });
 
@@ -4473,12 +4486,94 @@ app.delete('/calendar', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+const _acknowledgedMeetingWork = new Map();
+let _acknowledgedMeetingWorkSequence = 0;
+const _acknowledgedMeetingWorkHealth = {
+  accepted: 0, completed: 0, failures: 0, shutdown_drain_timeouts: 0,
+  last_failure: null, recent_failures: [],
+};
+function beginAcknowledgedMeetingWork(label) {
+  const id = `meeting-event-${++_acknowledgedMeetingWorkSequence}`;
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  const entry = {
+    id, label: String(label || 'meeting event').slice(0, 120),
+    started_at: Date.now(), promise, finished: false,
+  };
+  _acknowledgedMeetingWork.set(id, entry);
+  _acknowledgedMeetingWorkHealth.accepted += 1;
+  return {
+    finish(error = null) {
+      if (entry.finished) return;
+      entry.finished = true;
+      if (error) {
+        const failure = {
+          at: new Date().toISOString(), label: entry.label,
+          error: String(error?.message || error).slice(0, 500),
+        };
+        _acknowledgedMeetingWorkHealth.failures += 1;
+        _acknowledgedMeetingWorkHealth.last_failure = failure;
+        _acknowledgedMeetingWorkHealth.recent_failures.push(failure);
+        while (_acknowledgedMeetingWorkHealth.recent_failures.length > 20) {
+          _acknowledgedMeetingWorkHealth.recent_failures.shift();
+        }
+      }
+      _acknowledgedMeetingWorkHealth.completed += 1;
+      _acknowledgedMeetingWork.delete(id);
+      resolve();
+    },
+  };
+}
+function acknowledgedMeetingWorkSnapshot(now = Date.now()) {
+  const active = [..._acknowledgedMeetingWork.values()].map(entry => ({
+    id: entry.id, label: entry.label,
+    age_ms: Math.max(0, Number(now) - entry.started_at),
+  }));
+  return {
+    ..._acknowledgedMeetingWorkHealth,
+    active_count: active.length,
+    oldest_active_ms: Math.max(0, ...active.map(entry => entry.age_ms)),
+    active,
+  };
+}
+async function drainAcknowledgedMeetingWork({ timeoutMs = 20000 } = {}) {
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 20000);
+  while (true) {
+    const pending = [..._acknowledgedMeetingWork.values()].map(entry => entry.promise);
+    if (!pending.length) {
+      await Promise.resolve();
+      if (_acknowledgedMeetingWork.size === 0) return true;
+      continue;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      _acknowledgedMeetingWorkHealth.shutdown_drain_timeouts += 1;
+      return false;
+    }
+    let timer = null;
+    const drained = await Promise.race([
+      Promise.allSettled(pending).then(() => true),
+      new Promise(resolveTimeout => {
+        timer = setTimeout(() => resolveTimeout(false), remainingMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!drained) {
+      _acknowledgedMeetingWorkHealth.shutdown_drain_timeouts += 1;
+      return false;
+    }
+  }
+}
+
 // POST /webhook/recall-calendar — fires on calendar.update / calendar.sync_events.
 // For sync_events: re-list events updated since last_sync, find ones Nora is invited
 // to that have a meeting URL, schedule a bot for each (deduped by event id).
 app.post('/webhook/recall-calendar', async (req, res) => {
   // Always 200 quickly so Recall doesn't retry; do the work async.
   res.json({ ok: true });
+  const ownership = beginAcknowledgedMeetingWork('calendar-sync');
+  try {
 
   const { event, data } = req.body || {};
   if (!event || !data) return;
@@ -4627,6 +4722,9 @@ app.post('/webhook/recall-calendar', async (req, res) => {
   } catch (err) {
     console.error('Calendar webhook processing error:', err.response?.data || err.message);
   }
+  } finally {
+    ownership.finish();
+  }
 });
 
 // One session per bot
@@ -4647,6 +4745,9 @@ app.post('/register-bot', requireAuth, (req, res) => {
 // Recall.ai sends speaker-identified transcript chunks here (primary transcript path)
 app.post('/webhook/transcript', async (req, res) => {
   res.sendStatus(200);
+  const ownership = beginAcknowledgedMeetingWork('transcript');
+  let ownershipError = null;
+  try {
 
   const event = req.body;
   if (event.event !== 'transcript.data') return;
@@ -4713,6 +4814,12 @@ app.post('/webhook/transcript', async (req, res) => {
     scheduleTranscriptCheckpoint(bot_id, session.transcript);
   } catch (err) {
     console.error('Transcript save error:', err.message);
+  }
+  } catch (error) {
+    ownershipError = error;
+    throw error;
+  } finally {
+    ownership.finish(ownershipError);
   }
 });
 
@@ -4787,6 +4894,9 @@ function parseNoraModeCommand(text) {
 
 app.post('/webhook/chat', async (req, res) => {
   res.sendStatus(200);
+  const ownership = beginAcknowledgedMeetingWork('meeting-chat');
+  let ownershipError = null;
+  try {
 
   // Recall.ai participant_events.chat_message payload
   const eventType = req.body?.event;
@@ -5065,6 +5175,12 @@ app.post('/webhook/chat', async (req, res) => {
       outcome: 'Interactive priority released.' });
     interactivePriorityLease.release();
   }
+  } catch (error) {
+    ownershipError = error;
+    throw error;
+  } finally {
+    ownership.finish(ownershipError);
+  }
 });
 
 // Proactive mode toggle — enable/disable Nora interjecting without wake word
@@ -5193,6 +5309,9 @@ app.post('/webhook/participant', (req, res) => {
 // Meeting status updates — track bot_id and clean up
 app.post('/webhook/status', async (req, res) => {
   res.sendStatus(200);
+  const ownership = beginAcknowledgedMeetingWork('meeting-status');
+  let ownershipError = null;
+  try {
   console.log('📡 Status webhook:', JSON.stringify(req.body).slice(0, 300));
   const { bot_id, data } = req.body;
   if (bot_id) {
@@ -5244,6 +5363,12 @@ app.post('/webhook/status', async (req, res) => {
     }
     delete chatSessions[bot_id];
     if (activeBotId === bot_id) activeBotId = null;
+  }
+  } catch (error) {
+    ownershipError = error;
+    throw error;
+  } finally {
+    ownership.finish(ownershipError);
   }
 });
 
@@ -13568,6 +13693,7 @@ function backgroundWorkSnapshot() {
       voice_quiet_ms: SCREENSHARE_VOICE_QUIET_MS },
     api_opportunity_operations: { ...apiOpportunityWriteHealth },
     slack_webhook_events: slackWebhookSnapshot(),
+    acknowledged_meeting_work: acknowledgedMeetingWorkSnapshot(),
     recurring_jobs: _recurringJobs.snapshot(),
     startup_tasks: startupBackgroundTaskSnapshot(),
   };
@@ -16283,14 +16409,18 @@ async function stop() {
     closeServer.then(() => { clearTimeout(forceTimer); resolve(); });
   });
   const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
-  const [persistenceDrain, , , slackWebhookDrain] = await Promise.allSettled([
+  const [persistenceDrain, , , slackWebhookDrain, meetingWebhookDrain] = await Promise.allSettled([
     intelligence.persistStrict(),
     intelligenceRoutesRuntime.close(),
     boundedServerClose,
     drainSlackWebhookEvents({ timeoutMs: 20000 }),
+    drainAcknowledgedMeetingWork({ timeoutMs: 20000 }),
   ]);
   if (slackWebhookDrain.status === 'rejected' || slackWebhookDrain.value !== true) {
     console.warn('Slack webhook event drain exceeded 20000ms; continuing bounded shutdown');
+  }
+  if (meetingWebhookDrain.status === 'rejected' || meetingWebhookDrain.value !== true) {
+    console.warn('Acknowledged meeting work drain exceeded 20000ms; continuing bounded shutdown');
   }
   const apiOpportunityDrained = await drainApiOpportunityOperations({ timeoutMs: 10000 });
   if (!apiOpportunityDrained) {
@@ -16482,6 +16612,9 @@ module.exports = {
     trackSlackWebhookEvent,
     slackWebhookSnapshot,
     drainSlackWebhookEvents,
+    beginAcknowledgedMeetingWork,
+    acknowledgedMeetingWorkSnapshot,
+    drainAcknowledgedMeetingWork,
   },
 };
 

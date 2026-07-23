@@ -310,6 +310,16 @@ test('acknowledged Slack webhook work remains owned until its terminal state', a
   assert.equal(__test.slackWebhookSnapshot().active_count, 0);
 });
 
+test('acknowledged meeting work remains owned until persistence and delivery settle', async () => {
+  const { __test } = require('../../server');
+  const ownership = __test.beginAcknowledgedMeetingWork('test-transcript');
+  assert.equal(__test.acknowledgedMeetingWorkSnapshot().active_count, 1);
+  assert.equal(await __test.drainAcknowledgedMeetingWork({ timeoutMs: 5 }), false);
+  ownership.finish();
+  assert.equal(await __test.drainAcknowledgedMeetingWork({ timeoutMs: 50 }), true);
+  assert.equal(__test.acknowledgedMeetingWorkSnapshot().active_count, 0);
+});
+
 test('post-interaction overflow never evicts the item currently executing', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
@@ -552,6 +562,20 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Slack event work must become explicitly owned immediately after acknowledgement');
   assert.match(server, /drainSlackWebhookEvents\(\{ timeoutMs: 20000 \}\)/,
     'shutdown must drain acknowledged Slack work before closing persistence');
+  assert.match(server, /drainAcknowledgedMeetingWork\(\{ timeoutMs: 20000 \}\)/,
+    'shutdown must drain acknowledged meeting callbacks before closing persistence');
+  for (const [route, label] of [
+    ['/voice-agent/response', 'voice-response'],
+    ['/webhook/recall-calendar', 'calendar-sync'],
+    ['/webhook/transcript', 'transcript'],
+    ['/webhook/chat', 'meeting-chat'],
+    ['/webhook/status', 'meeting-status'],
+  ]) {
+    const start = server.indexOf(`app.post('${route}'`);
+    const end = server.indexOf('\n});', start);
+    assert.match(server.slice(start, end), new RegExp(`beginAcknowledgedMeetingWork\\('${label}'\\)`),
+      `${route} must own work that continues after acknowledgement`);
+  }
   assert.doesNotMatch(server, /db\.bumpMemoryRecall\(ids\)\.catch/,
     'memory reconsolidation writes must not escape shutdown ownership');
   assert.match(server, /_writeThrough\('memory', \(\) => db\.bumpMemoryRecall\(ids\)\)/,
