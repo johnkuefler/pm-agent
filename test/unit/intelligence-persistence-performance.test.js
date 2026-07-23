@@ -225,6 +225,11 @@ test('persistence footprint diagnostics measure section growth in the projection
   assert.ok(projection.value.total_bytes > 1_000);
   assert.equal(projection.value.cognition_sections[0].key, 'development');
   assert.equal(projection.value.cognition_sections[0].items, 25);
+  assert.ok(projection.value.cognition_sections[0].array_footprint.mean_item_bytes > 0);
+  assert.ok(projection.value.cognition_sections[0].array_footprint.max_item_bytes
+    >= projection.value.cognition_sections[0].array_footprint.p95_item_bytes);
+  assert.equal(projection.value.cognition_sections[0].array_footprint.largest_fields[0].key,
+    'note');
   assert.ok(projection.compute_ms >= 0);
 });
 

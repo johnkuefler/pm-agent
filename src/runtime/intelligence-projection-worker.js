@@ -20,6 +20,31 @@ function jsonBytes(value) {
   return Buffer.byteLength(JSON.stringify(value));
 }
 
+function arrayFootprint(value) {
+  if (!Array.isArray(value)) return null;
+  const itemBytes = value.map(jsonBytes).sort((left, right) => left - right);
+  const percentile = fraction => itemBytes.length
+    ? itemBytes[Math.min(itemBytes.length - 1, Math.floor((itemBytes.length - 1) * fraction))] : 0;
+  const fields = new Map();
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    for (const [key, fieldValue] of Object.entries(item)) {
+      const prior = fields.get(key) || { key, bytes: 0, populated: 0 };
+      prior.bytes += jsonBytes(fieldValue);
+      if (fieldValue != null) prior.populated += 1;
+      fields.set(key, prior);
+    }
+  }
+  return {
+    mean_item_bytes: itemBytes.length
+      ? Math.round(itemBytes.reduce((sum, bytes) => sum + bytes, 0) / itemBytes.length) : 0,
+    p50_item_bytes: percentile(0.5),
+    p95_item_bytes: percentile(0.95),
+    max_item_bytes: itemBytes.at(-1) || 0,
+    largest_fields: [...fields.values()].sort((left, right) => right.bytes - left.bytes).slice(0, 12),
+  };
+}
+
 function stateFootprintSnapshot(state) {
   const cognition = state?.cognition || {};
   const cognitionSections = Object.entries(cognition).map(([key, value]) => ({
@@ -29,10 +54,12 @@ function stateFootprintSnapshot(state) {
       : value && typeof value === 'object'
         ? Object.values(value).filter(Array.isArray).reduce((sum, list) => sum + list.length, 0)
         : null,
+    ...(Array.isArray(value) ? { array_footprint: arrayFootprint(value) } : {}),
   })).sort((left, right) => right.bytes - left.bytes);
   const rootSections = Object.entries(state || {}).filter(([key]) => key !== 'cognition')
     .map(([key, value]) => ({ key, bytes: jsonBytes(value),
-      items: Array.isArray(value) ? value.length : null }))
+      items: Array.isArray(value) ? value.length : null,
+      ...(Array.isArray(value) ? { array_footprint: arrayFootprint(value) } : {}) }))
     .sort((left, right) => right.bytes - left.bytes);
   return { total_bytes: jsonBytes(state), cognition_sections: cognitionSections,
     root_sections: rootSections };
