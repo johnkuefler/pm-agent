@@ -261,6 +261,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     correction_feedback_failures: 0,
     cycle_orientation_trace_manifests_compacted: 0,
     ordinary_broadcast_payloads_compacted: 0,
+    autonomous_play_events_compacted: 0,
   };
   const strictPersistenceTimeoutMs = strictPersistenceTimeoutOverride == null
     ? Math.max(5000, Math.min(60000,
@@ -624,6 +625,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       correction_feedback_failures: 0,
       cycle_orientation_trace_manifests_compacted: 0,
       ordinary_broadcast_payloads_compacted: 0,
+      autonomous_play_events_compacted: 0,
     };
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
@@ -1054,6 +1056,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.autonomous_play = { sessions: [], ...(state.cognition.autonomous_play || {}) };
     if (!Array.isArray(state.cognition.autonomous_play.sessions)) state.cognition.autonomous_play.sessions = [];
     state.cognition.autonomous_play.sessions = state.cognition.autonomous_play.sessions.slice(-120);
+    for (const session of state.cognition.autonomous_play.sessions) {
+      hydrationCompactionRuntime.autonomous_play_events_compacted +=
+        autonomousPlay.compactTerminalSessionEvents(session);
+    }
     state.cognition.self_boundary = { challenges: [], ...(state.cognition.self_boundary || {}) };
     if (!Array.isArray(state.cognition.self_boundary.challenges)) state.cognition.self_boundary.challenges = [];
     state.cognition.self_boundary.challenges = state.cognition.self_boundary.challenges.slice(-300);
@@ -24984,6 +24990,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       researchLedgerAppend(current, { kind: 'autonomous_play_session_completed',
         subject_type: 'autonomous_play_session', subject_id: session.id,
         payload: playroomLedgerPayload('autonomous_play_session_completed', session) });
+      autonomousPlay.compactTerminalSessionEvents(session);
       return { appraisal: JSON.parse(JSON.stringify(appraisal)), session: autonomousPlay.publicSession(session),
         audit: playroomSessionAudit(session, current.cognition) };
     });
@@ -25331,6 +25338,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       researchLedgerAppend(current, { kind: 'autonomous_play_session_excluded',
         subject_type: 'autonomous_play_session', subject_id: session.id,
         payload: playroomLedgerPayload('autonomous_play_session_excluded', session) });
+      autonomousPlay.compactTerminalSessionEvents(session);
       return { reconciled: true, state: 'excluded_for_agent_build_change',
         session_id: session.id, exclusion_commitment: exclusion.exclusion_commitment };
     });

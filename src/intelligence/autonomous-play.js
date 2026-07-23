@@ -10,6 +10,7 @@ const CONDITIONS = Object.freeze(['autonomous_choice', 'assigned_play', 'quiet_c
 const ACTIVITIES = Object.freeze(['merge_grid', 'quiet']);
 const DIRECTIONS = Object.freeze(['up', 'right', 'down', 'left']);
 const SHA256 = /^[a-f0-9]{64}$/;
+const EVENT_STORAGE_PROTOCOL_VERSION = 1;
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
@@ -458,7 +459,7 @@ function outcomeManifest(session) {
 }
 
 function auditGame(game, hiddenSeed) {
-  if (!game) return { manifest_verified: true, replay_verified: true };
+  if (!game) return { manifest_verified: true, storage_verified: true, replay_verified: true };
   const manifestVerified = game.seed === hiddenSeed && game.seed_commitment === commitment(hiddenSeed)
     && game.game_manifest_commitment === commitment(gameManifest(game));
   const replay = createGame(hiddenSeed);
@@ -466,11 +467,62 @@ function auditGame(game, hiddenSeed) {
   for (const recorded of game.events || []) {
     if (!replayVerified) break;
     const observed = applyMove(replay, recorded.direction, recorded.recorded_at);
-    replayVerified = observed.event_commitment === recorded.event_commitment;
+    const compacted = recorded.board === undefined
+      && recorded.board_commitment === undefined
+      && recorded.prior_board_commitment === undefined;
+    replayVerified = observed.event_commitment === recorded.event_commitment
+      && (compacted
+        ? recorded.index === observed.index
+          && recorded.accepted === observed.accepted
+          && recorded.score_delta === observed.score_delta
+          && canonicalJson(recorded.spawned) === canonicalJson(observed.spawned)
+          && recorded.recorded_at === observed.recorded_at
+        : canonicalJson(recorded) === canonicalJson(observed));
   }
+  const compactedEvents = (game.events || []).filter(event => event.board === undefined
+    && event.board_commitment === undefined && event.prior_board_commitment === undefined);
+  const storage = game.event_storage;
+  const storageVerified = storage
+    ? storage.protocol_version === EVENT_STORAGE_PROTOCOL_VERSION
+      && storage.mode === 'deterministic_replay_v1'
+      && storage.compacted_event_count === compactedEvents.length
+      && storage.event_commitments_commitment
+        === commitment((game.events || []).map(event => event.event_commitment))
+    : compactedEvents.length === 0;
   replayVerified = replayVerified && commitment(replay.board) === commitment(game.board)
-    && replay.score === game.score && replay.move_count === game.move_count;
-  return { manifest_verified: manifestVerified, replay_verified: replayVerified };
+    && replay.score === game.score && replay.move_count === game.move_count && storageVerified;
+  return { manifest_verified: manifestVerified, storage_verified: storageVerified,
+    replay_verified: replayVerified };
+}
+
+function compactTerminalSessionEvents(session) {
+  if (!session || !['completed', 'excluded'].includes(session.status)
+    || !session.game || !Array.isArray(session.game.events)
+    || !auditSession(session).complete_chain_verified) {
+    return 0;
+  }
+  let compacted = 0;
+  for (const event of session.game.events) {
+    const hasRedundantReplayState = event.board !== undefined
+      || event.board_commitment !== undefined || event.prior_board_commitment !== undefined;
+    if (!hasRedundantReplayState) continue;
+    delete event.board;
+    delete event.board_commitment;
+    delete event.prior_board_commitment;
+    compacted += 1;
+  }
+  if (compacted || session.game.event_storage) {
+    const compactedEventCount = session.game.events.filter(event => event.board === undefined
+      && event.board_commitment === undefined && event.prior_board_commitment === undefined).length;
+    session.game.event_storage = {
+      protocol_version: EVENT_STORAGE_PROTOCOL_VERSION,
+      mode: 'deterministic_replay_v1',
+      compacted_event_count: compactedEventCount,
+      event_commitments_commitment: commitment(
+        session.game.events.map(event => event.event_commitment)),
+    };
+  }
+  return compacted;
 }
 
 function auditSession(session) {
@@ -507,7 +559,8 @@ function auditSession(session) {
     && session.exclusion.exclusion_commitment
       === commitment({ ...session.exclusion, exclusion_commitment: null }));
   return { manifest_verified: manifestVerified, selection_verified: selectionVerified,
-    game_manifest_verified: game.manifest_verified, game_replay_verified: game.replay_verified,
+    game_manifest_verified: game.manifest_verified, game_storage_verified: game.storage_verified,
+    game_replay_verified: game.replay_verified,
     turns_verified: turnsVerified, provider_receipts_verified: providerReceiptsVerified,
     appraisal_verified: appraisalVerified, completion_verified: completionVerified,
     exclusion_verified: exclusionVerified,
@@ -607,5 +660,6 @@ module.exports = {
   canonicalJson, commitment, emptyBoard, normalizeBoard, spawn, initialBoard, mergeLine,
   moveBoard, availableMoves, normalizeDirections, createGame, applyMove, createSession, selectionRequest,
   commitSelection, turnRequest, commitTurn, appraisalRequest, commitAppraisal, excludeSession,
-  outcomeManifest, auditGame, auditSession, publicSession, balancedCondition, snapshot,
+  outcomeManifest, auditGame, auditSession, compactTerminalSessionEvents,
+  publicSession, balancedCondition, snapshot,
 };

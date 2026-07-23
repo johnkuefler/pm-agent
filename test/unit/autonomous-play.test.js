@@ -6,7 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const play = require('../../src/intelligence/autonomous-play');
-const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { createIntelligenceStore, emptyState } = require('../../src/intelligence/store');
 
 const MODEL = { provider: 'anthropic', model: 'claude-opus-4-8', agent_build_commitment: 'a'.repeat(64) };
 const PRE = { stimulation_deficit: 0.72, novelty_deficit: 0.61, idle_minutes: 90,
@@ -130,6 +130,63 @@ test('an autonomous choice becomes real play and completes with a bounded functi
   assert.match(session.functional_aftereffect.epistemic_status, /not proof/);
 });
 
+test('terminal games drop redundant boards while preserving deterministic replay and tamper detection', async () => {
+  const session = play.createSession({ id: 'play-event-compaction', condition: 'assigned_play',
+    hidden_seed: 'compaction-seed-0123456789abcdef', model_control: MODEL,
+    state_commitment: 'b'.repeat(64), pre_state: PRE, acquisition_context: ACQUISITION },
+  new Date('2026-07-18T23:00:00Z'));
+  const activeRequest = play.turnRequest(session);
+  play.commitTurn(session, { output: { directions: ['left', 'up', 'right'],
+    continue_playing: false, intention: 'Preserve options.', predicted_score_gain: 12 },
+  provider_receipt: receipt(activeRequest, 'play-compaction-turn') },
+  new Date('2026-07-18T23:01:00Z'));
+  assert.equal(play.compactTerminalSessionEvents(session), 0);
+  assert.ok(session.game.events.every(event => Array.isArray(event.board)),
+    'an unfinished session retains the full live board state');
+
+  const appraisal = play.appraisalRequest(session, new Date('2026-07-18T23:02:00Z'));
+  play.commitAppraisal(session, { output: { engagement: 0.7, satisfaction: 0.65,
+    frustration: 0.15, surprise: 0.25, competence: 0.5, play_again: true,
+    reflection: 'The compact run preserved several options.',
+    possible_insight: null, work_transfer_hypothesis: null },
+  provider_receipt: receipt(appraisal, 'play-compaction-appraisal') },
+  new Date('2026-07-18T23:02:00Z'));
+  const originalBytes = Buffer.byteLength(JSON.stringify(session));
+  const legacyCompletedSession = structuredClone(session);
+  const originalCommitments = session.game.events.map(event => event.event_commitment);
+  const compacted = play.compactTerminalSessionEvents(session);
+
+  assert.equal(compacted, session.game.events.length);
+  assert.ok(session.game.events.every(event => event.board === undefined
+    && event.board_commitment === undefined && event.prior_board_commitment === undefined));
+  assert.deepEqual(session.game.events.map(event => event.event_commitment), originalCommitments);
+  assert.ok(Buffer.byteLength(JSON.stringify(session)) < originalBytes);
+  assert.deepEqual(session.game.event_storage, {
+    protocol_version: 1,
+    mode: 'deterministic_replay_v1',
+    compacted_event_count: session.game.events.length,
+    event_commitments_commitment: play.commitment(originalCommitments),
+  });
+  assert.equal(play.auditSession(session).complete_chain_verified, true);
+  assert.equal(play.compactTerminalSessionEvents(session), 0,
+    'restart migration is idempotent');
+
+  session.game.events[0].accepted = !session.game.events[0].accepted;
+  assert.equal(play.auditSession(session).complete_chain_verified, false,
+    'retained move metadata remains checked against deterministic replay');
+
+  const state = emptyState();
+  state.cognition.autonomous_play.sessions = [legacyCompletedSession];
+  const migrated = createIntelligenceStore({ filePath: path.join(os.tmpdir(),
+    `nora-play-compaction-${Date.now()}.json`), initialState: state, isDbReady: () => false });
+  await migrated.init();
+  const migratedSession = migrated.snapshot().cognition.autonomous_play.sessions[0];
+  assert.ok(migratedSession.game.events.every(event => event.board === undefined));
+  assert.equal(play.auditSession(migratedSession).complete_chain_verified, true);
+  assert.equal(migrated.persistenceDiagnostics()
+    .hydration_compaction.autonomous_play_events_compacted, migratedSession.game.events.length);
+});
+
 test('balanced assignment and quiet control preserve causal separation', () => {
   const base = { hidden_seed: 'quiet-seed-0123456789abcdef', model_control: MODEL,
     state_commitment: 'c'.repeat(64), pre_state: PRE, acquisition_context: ACQUISITION };
@@ -190,6 +247,10 @@ test('the intelligence store ledger-binds an autonomous play lifecycle and seals
   assert.equal(status.report.completed, 1);
   assert.equal(status.report.invalid, 0);
   assert.equal(status.recent[0].audit.complete_chain_verified, true);
+  const storedCompleted = store.snapshot().cognition.autonomous_play.sessions
+    .find(item => item.id === opened.session.id);
+  assert.ok(storedCompleted.game.events.every(event => event.board === undefined));
+  assert.equal(storedCompleted.game.event_storage.mode, 'deterministic_replay_v1');
   assert.equal(status.causal_gate.influence_enabled, false);
   const liveContext = store.liveActivityContextSnapshot();
   assert.equal(liveContext.play.status, 'completed');
