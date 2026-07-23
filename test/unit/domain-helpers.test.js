@@ -234,9 +234,18 @@ test('bounded social turns expose a truthful no-tools affordance frame', () => {
     mcp: { inventory: [{ name: 'tool_1', connection: 'fixture', tool: 'lookup' }],
       meta: { tool_1: { accessMode: 'read' } } },
   });
-  assert.equal(capabilities.length, 7);
+  assert.equal(capabilities.length, 8);
   assert.equal(capabilities.some(item => item.key.startsWith('mcp:')), false);
-  for (const item of capabilities.filter(value => value.key !== 'financial_disclosure')) {
+  // Every live tool is genuinely withheld on this turn. What is NOT withheld is the thing she is
+  // actually doing: replying from memory and the conversation. Omitting it produced a frame with
+  // no present capability at all, which the receipt validator rejects, so the frame was dropped on
+  // every greeting instead of reaching the prompt.
+  const reply = capabilities.find(item => item.key === 'conversational_reply');
+  assert.equal(reply.availability, 'available');
+  const withheld = capabilities.filter(value =>
+    !['financial_disclosure', 'conversational_reply'].includes(value.key));
+  assert.equal(withheld.length, 6);
+  for (const item of withheld) {
     assert.equal(item.availability, 'unavailable');
     assert.match(item.constraints.join(' '), /bounded social turn/);
   }
