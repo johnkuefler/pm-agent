@@ -1,8 +1,10 @@
 'use strict';
 
 const EXPECTED_INTERVAL_MS = 60 * 60 * 1000;
-const LATE_AFTER_MS = 90 * 60 * 1000;
-const STALE_AFTER_MS = 150 * 60 * 1000;
+// The Railway scheduler checks every five minutes. A fifteen-minute grace period absorbs normal
+// trigger jitter while still covering one missed external run well before a second hour is lost.
+const LATE_AFTER_MS = 75 * 60 * 1000;
+const STALE_AFTER_MS = 130 * 60 * 1000;
 const RECENT_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 function timestamp(value) {

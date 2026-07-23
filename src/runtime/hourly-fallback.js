@@ -32,8 +32,12 @@ function hourlyFallbackDecision({ cycles = [], primaryHealth = null, lock = null
     latest_fallback_age_ms: ageMs,
     cooldown_ms: cooldownMs,
   };
-  if (!['stale', 'unobserved'].includes(primaryHealth?.state)) {
+  const primaryFailed = primaryHealth?.latest?.status === 'failed';
+  if (primaryHealth?.state === 'fresh' && !primaryFailed) {
     return { ...base, due: false, reason: 'primary_scheduler_within_grace' };
+  }
+  if (!['late', 'stale', 'unobserved'].includes(primaryHealth?.state) && !primaryFailed) {
+    return { ...base, due: false, reason: 'primary_scheduler_state_not_actionable' };
   }
   if (inFlight) return { ...base, due: false, reason: 'fallback_in_flight' };
   if (lock?.locked) return { ...base, due: false, reason: 'operational_lock_active' };
@@ -46,7 +50,9 @@ function hourlyFallbackDecision({ cycles = [], primaryHealth = null, lock = null
   if (ageMs != null && ageMs < cooldownMs) {
     return { ...base, due: false, reason: 'fallback_cooldown' };
   }
-  return { ...base, due: true, reason: 'primary_scheduler_stale' };
+  return { ...base, due: true, reason: primaryFailed
+    ? 'primary_run_failed' : primaryHealth?.state === 'late'
+      ? 'primary_scheduler_late' : 'primary_scheduler_stale' };
 }
 
 function probability(value, fallback = 0.1) {

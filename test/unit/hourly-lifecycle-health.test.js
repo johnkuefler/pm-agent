@@ -37,6 +37,19 @@ test('hourly lifecycle distinguishes a late trigger from a stale external schedu
   assert.equal(stale.latest.failure_reason, 'run_lock_expired_before_cycle_close');
 });
 
+test('cadence grace admits Railway hot standby before a second hour is missed', () => {
+  const withinGrace = hourlyLifecycleHealth([
+    cycle('2026-07-23T00:06:00.000Z'),
+  ], { now });
+  assert.equal(withinGrace.state, 'fresh');
+
+  const standbyDue = hourlyLifecycleHealth([
+    cycle('2026-07-23T00:04:00.000Z'),
+  ], { now });
+  assert.equal(standbyDue.state, 'late');
+  assert.equal(standbyDue.estimated_missed_runs, 1);
+});
+
 test('a newly failed run is visible without falsely claiming the scheduler stopped', () => {
   const snapshot = hourlyLifecycleHealth([
     cycle('2026-07-23T01:05:00.000Z', 'failed'),

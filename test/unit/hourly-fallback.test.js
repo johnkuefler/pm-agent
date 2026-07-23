@@ -28,6 +28,23 @@ test('fallback becomes due only when the primary is stale and foreground is quie
     admission: { allowed: true } }).reason, 'interactive_priority');
 });
 
+test('hot standby covers a late or failed primary before another hour is lost', () => {
+  const quiet = { now, lock: { locked: false },
+    interactive: { active_interactions: 0, quiet_remaining_ms: 0 },
+    admission: { allowed: true }, cycles: [] };
+  const late = hourlyFallbackDecision({ ...quiet, primaryHealth: {
+    state: 'late', latest: { status: 'completed' },
+  } });
+  assert.equal(late.due, true);
+  assert.equal(late.reason, 'primary_scheduler_late');
+
+  const failed = hourlyFallbackDecision({ ...quiet, primaryHealth: {
+    state: 'fresh', latest: { status: 'failed' },
+  } });
+  assert.equal(failed.due, true);
+  assert.equal(failed.reason, 'primary_run_failed');
+});
+
 test('recent fallback enforces cooldown without satisfying primary freshness', () => {
   const decision = hourlyFallbackDecision({ primaryHealth: stale, now,
     lock: { locked: false }, admission: { allowed: true }, cycles: [{
