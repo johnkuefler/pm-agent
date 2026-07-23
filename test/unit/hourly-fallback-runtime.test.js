@@ -57,6 +57,22 @@ test('hourly coverage connector reads propagate cancellation and remaining budge
   assert.match(source, /signal => binding\.execute\(args, \{ signal, timeoutMs: gmailBudgetMs \}\)/);
 });
 
+test('operational recovery is scheduled before optional background intelligence', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const scheduler = source.slice(
+    source.indexOf('// Operational recovery always gets the first bounded window.'),
+    source.indexOf('}, 5 * 60 * 1000));',
+      source.indexOf('// Operational recovery always gets the first bounded window.')));
+  assert.ok(scheduler.indexOf("runHourlyFallbackRuntime({ trigger: 'five-minute-scheduler' })")
+    < scheduler.indexOf("runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })"));
+  const startup = source.slice(
+    source.indexOf("scheduleStartupBackgroundTask('startup operational recovery then intelligence'"),
+    source.indexOf('_runtimeIntervals.push(setInterval', source.indexOf(
+      "scheduleStartupBackgroundTask('startup operational recovery then intelligence'")));
+  assert.ok(startup.indexOf("runHourlyFallbackRuntime({ trigger: 'startup' })")
+    < startup.indexOf("runBackgroundIntelligenceRuntime({ trigger: 'startup' })"));
+});
+
 test('coverage result counting handles MCP envelopes without retaining message content', () => {
   assert.equal(__test.coverageCollectionCount([{ id: 1 }, { id: 2 }]), 2);
   assert.equal(__test.coverageCollectionCount({ messages: [{ id: 1 }] }), 1);

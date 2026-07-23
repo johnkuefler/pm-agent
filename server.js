@@ -15436,16 +15436,23 @@ async function completePostListenStartup(background) {
     _runtimeIntervals.push(setInterval(() => computeSoma()
       .catch(error => console.warn('soma interval failed:', error.message)), 60 * 1000));
     scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
-    scheduleStartupBackgroundTask('startup background intelligence cycle', 30000, () => runBackgroundIntelligenceRuntime({ trigger: 'startup' }));
-    scheduleStartupBackgroundTask('startup hourly fallback check', 60000,
-      () => runHourlyFallbackRuntime({ trigger: 'startup' }));
+    scheduleStartupBackgroundTask('startup operational recovery then intelligence', 20000,
+      async () => {
+        await runHourlyFallbackRuntime({ trigger: 'startup' });
+        return runBackgroundIntelligenceRuntime({ trigger: 'startup' });
+      });
     _runtimeIntervals.push(setInterval(() => {
-      try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
-      catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
-      runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
-        .catch(error => console.error('Background intelligence cycle failed:', error.message))
-        .finally(() => runHourlyFallbackRuntime({ trigger: 'five-minute-scheduler' })
-          .catch(error => console.error('Hourly fallback check failed:', error.message)));
+      // Operational recovery always gets the first bounded window. Optional reading, play,
+      // reflection, and research can follow; they must never make the hourly check wait behind
+      // a long background provider cycle.
+      runHourlyFallbackRuntime({ trigger: 'five-minute-scheduler' })
+        .catch(error => console.error('Hourly fallback check failed:', error.message))
+        .finally(() => {
+          try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
+          catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
+          return runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
+            .catch(error => console.error('Background intelligence cycle failed:', error.message));
+        });
     }, 5 * 60 * 1000));
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
