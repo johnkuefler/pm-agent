@@ -1250,8 +1250,7 @@ async function recordLifecycleWorkspaceOutcome({ cycle, input = {} } = {}) {
   const ledger = loadConsciousWorkspace();
   const focus = ledger.focus_commitments.find(item => item.cycle_id === cycle?.id);
   if (!focus) return null;
-  const moment = (intelligence.experienceStreamSnapshot({ limit: 500 }).moments || [])
-    .find(item => item.cycle_id === cycle.id);
+  const moment = intelligence.experienceMomentForCycle(cycle.id);
   const result = consciousWorkspace.resolveFocus(input.workspace_focus_outcome || {}, ledger, {
     cycle, moment, now: cycle.finished ? new Date(cycle.finished) : new Date(),
   });

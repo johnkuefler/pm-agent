@@ -27967,6 +27967,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     };
   }
 
+  function experienceMomentForCycle(cycleId) {
+    const moment = state.cognition.experience_stream.find(item => item.cycle_id === cycleId);
+    if (!moment) return null;
+    // Cycle closure already populates this immutable audit cache while committing the lifecycle.
+    // Reuse that exact proof instead of replaying every retained moment merely to resolve one
+    // post-close workspace outcome. Hydration clears the cache, so restarted state is re-audited.
+    const audit = closedExperienceAuditCache.get(moment.id)
+      || experienceMomentAudit(moment, state.cognition, state.cycles, closedExperienceAuditCache);
+    return { ...JSON.parse(JSON.stringify(moment)), audit: JSON.parse(JSON.stringify(audit)) };
+  }
+
   function relevantEpisodes({ person, project, query, channel, limit = 3 } = {}) {
     const stop = new Set(['the', 'and', 'you', 'your', 'are', 'can', 'could', 'would', 'should', 'that', 'this', 'with', 'from', 'have', 'has', 'had', 'what', 'when', 'where', 'who', 'why', 'how', 'for', 'not', 'but', 'was', 'were', 'will', 'just', 'about']);
     const terms = (String(query || '').toLowerCase().match(/[a-z0-9]{3,}/g) || []).filter(term => !stop.has(term));
@@ -28453,7 +28464,8 @@ ${episodes.map(item => {
     behavioralFingerprintRunsRuntimeSnapshot,
     gradeBehavioralFingerprintVoice, abortBehavioralFingerprintRun,
     behavioralFingerprintSnapshot, behavioralFingerprintAudit,
-    experienceMomentAudit, experienceStreamSnapshot, experienceForecastOutcomesRuntimeSnapshot,
+    experienceMomentAudit, experienceMomentForCycle, experienceStreamSnapshot,
+    experienceForecastOutcomesRuntimeSnapshot,
     recordContinuityHandoff, continuityHandoffSnapshot, continuityHandoffRuntimeSnapshot,
     continuityHandoffAudit, continuityProjectionAudit,
     continuityProjectionAuditPerformance,

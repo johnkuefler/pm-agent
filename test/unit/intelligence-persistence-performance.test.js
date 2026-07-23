@@ -104,6 +104,10 @@ test('cycle completion is durable before success and byte-identical retries re-p
   const closed = await store.completeCycleDurable(started.cycle.id, completion);
   assert.equal(closed.status, 'failed');
   assert.equal(writes.length, 2, 'close success waits for its own durable revision');
+  const exactMoment = store.experienceMomentForCycle(started.cycle.id);
+  assert.equal(exactMoment.cycle_id, started.cycle.id);
+  assert.equal(exactMoment.audit.complete_lifecycle_verified, true);
+  assert.equal(exactMoment.audit.evidence_eligible, true);
 
   const retry = await store.completeCycleDurable(started.cycle.id, {
     ...completion, substrate_at_close: { stress: 0.8 },
