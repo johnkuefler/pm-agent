@@ -70,7 +70,7 @@ test('deployment readiness reports active lifecycle, recovery, and meeting block
     ['run_lock', 'run_recovery_pending', 'active_meeting']);
 });
 
-test('deployment readiness protects live replies, their quiet window, and background provider receipts', () => {
+test('deployment readiness protects live replies and their quiet window without waiting on preemptible research', () => {
   const result = assessDeployReadiness({
     lock: { locked: false }, activeBots: { count: 0, bots: [] }, routine: validRoutine,
     researchAutopilot: { interactive_priority: {
@@ -81,8 +81,27 @@ test('deployment readiness protects live replies, their quiet window, and backgr
   });
   assert.equal(result.ready, false);
   assert.deepEqual(result.blockers.map(item => item.kind), [
-    'interactive_work_in_flight', 'interactive_quiet_window', 'background_provider_in_flight',
+    'interactive_work_in_flight', 'interactive_quiet_window',
   ]);
+});
+
+test('preemptible scheduled intelligence does not stall an otherwise safe deployment', () => {
+  const result = assessDeployReadiness({
+    lock: { locked: false }, activeBots: { count: 0, bots: [] }, routine: validRoutine,
+    researchAutopilot: { interactive_priority: {
+      active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0,
+      background_provider_in_flight: 1, background_labels: ['scheduled-intelligence'],
+    } },
+    runtimePerformance: {
+      background_work: { post_interaction: { queued: 0, busy: false },
+        transcript_checkpoints: { pending: 0, scheduled: 0 } },
+      persistence: { pending_revisions: 0, strict_waiters: 0, flush_running: false,
+        cycle_open: { in_flight: false } },
+      entity_writes: { pending: 0, in_flight: 0 },
+    },
+  });
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.blockers, []);
 });
 
 test('deployment readiness preserves the build bound to an active behavioral fingerprint', () => {

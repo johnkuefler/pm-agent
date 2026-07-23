@@ -51,12 +51,10 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
       blockers.push({ kind: 'interactive_quiet_window', quiet_remaining_ms: quietRemainingMs,
         last_interactive_surface: priority.last_interactive_surface || null });
     }
-    const backgroundProviderInFlight = Math.max(0,
-      Number(priority.background_provider_in_flight) || 0);
-    if (backgroundProviderInFlight > 0) {
-      blockers.push({ kind: 'background_provider_in_flight', count: backgroundProviderInFlight,
-        labels: Array.isArray(priority.background_labels) ? priority.background_labels : [] });
-    }
+    // Scheduled intelligence is explicitly preemptible, has no committed effect until its
+    // terminal receipt is stored, and retries on the next scheduler pass. Blocking a release on
+    // this lane made deployability depend on catching a tiny idle gap between recurring background
+    // cycles. Human interactions, run lifecycles, meetings, and durable writes remain blockers.
   }
   if (behavioralFingerprints) {
     const activeRuns = Array.isArray(behavioralFingerprints.runs)
