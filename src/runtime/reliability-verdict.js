@@ -27,6 +27,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const database = persistence.database || {};
   const priority = snapshot.interactive_priority || {};
   const background = snapshot.background_work || {};
+  const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
   const realtimeTransport = snapshot.realtime_transport || {};
@@ -140,6 +141,26 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (backgroundQueued + checkpointPending > 5) {
     degraded.push({ code: 'background_backlog', count: backgroundQueued + checkpointPending,
       message: 'Deferred background work is accumulating.' });
+  }
+  const postInteraction = background.post_interaction || {};
+  const recentPostInteractionFailures = (postInteraction.recent_failures || []).filter(item => {
+    const at = new Date(item?.at || 0).getTime();
+    return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
+  });
+  if (recentPostInteractionFailures.length) {
+    degraded.push({ code: 'post_interaction_learning_failure',
+      count: recentPostInteractionFailures.length,
+      message: 'Optional post-response learning recently timed out or failed; live replies remained available.' });
+  }
+  if (postInteraction.busy && Number(postInteraction.timeout_ms) > 0
+    && Number(postInteraction.active_ms) >= Number(postInteraction.timeout_ms) * 0.8) {
+    degraded.push({ code: 'post_interaction_learning_near_timeout',
+      age_ms: Number(postInteraction.active_ms),
+      message: 'A post-response learning job is nearing its cancellation budget.' });
+  }
+  if (backgroundAdmission.allowed === false) {
+    observations.push({ code: 'background_resource_shedding', reason: backgroundAdmission.reason,
+      message: 'Optional background work is paused to preserve foreground responsiveness.' });
   }
   if (Number(entityWrites.pending) > 5) {
     degraded.push({ code: 'entity_write_backlog', count: Number(entityWrites.pending),

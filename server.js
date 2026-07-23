@@ -529,6 +529,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     process_health: _processRecovery.snapshot(),
     research_projections: intelligenceRoutesRuntime.consciousnessResearchStatusCache(),
     process_resources: processResources.snapshot(),
+    background_admission: processResources.backgroundAdmission(),
     entity_writes: _writeThroughQueue.snapshot(),
     realtime_transport: websocketLiveness.snapshot(),
   };
@@ -11777,12 +11778,33 @@ function backgroundPostWithPriority(post, lease) {
 const _postInteractionExtractionQueue = [];
 let _postInteractionExtractionBusy = false;
 let _postInteractionExtractionTimer = null;
+const _postInteractionExtractionHealth = {
+  completed: 0, failed: 0, timed_out: 0, preempted: 0, overflow_dropped: 0,
+  last_failure: null, recent_failures: [],
+};
+function recordPostInteractionExtractionFailure(failure) {
+  _postInteractionExtractionHealth.last_failure = failure;
+  _postInteractionExtractionHealth.recent_failures.push(failure);
+  while (_postInteractionExtractionHealth.recent_failures.length > 20) {
+    _postInteractionExtractionHealth.recent_failures.shift();
+  }
+}
+function postInteractionExtractionTimeoutMs(env = process.env) {
+  const configured = Number(env.NORA_POST_INTERACTION_TIMEOUT_MS);
+  return Number.isFinite(configured) ? Math.max(5000, Math.min(60000, Math.round(configured))) : 30000;
+}
 function backgroundWorkSnapshot() {
+  const active = _postInteractionExtractionBusy ? _postInteractionExtractionQueue[0] : null;
   return {
     post_interaction: {
       queued: _postInteractionExtractionQueue.length,
       busy: _postInteractionExtractionBusy,
       next: _postInteractionExtractionQueue[0]?.label || null,
+      active_ms: active ? Math.max(0, Date.now() - Number(active.started_at || Date.now())) : 0,
+      oldest_queued_age_ms: _postInteractionExtractionQueue.length
+        ? Math.max(0, Date.now() - Number(_postInteractionExtractionQueue[0].enqueued_at || Date.now())) : 0,
+      timeout_ms: postInteractionExtractionTimeoutMs(),
+      ..._postInteractionExtractionHealth,
     },
     transcript_checkpoints: {
       pending: _transcriptCheckpointPending.size + _transcriptEpisodePending.size
@@ -11806,13 +11828,17 @@ function schedulePostInteractionExtractionDrain(delayMs = 1200) {
 function enqueuePostInteractionExtraction(label, run) {
   if (typeof run !== 'function') return;
   if (_postInteractionExtractionQueue.length >= 60) {
-    _postInteractionExtractionQueue.shift();
+    // Never evict index zero while it is executing. Doing that used to make the current
+    // completion shift a second, unrelated item and could silently lose two learning jobs.
+    _postInteractionExtractionQueue.splice(_postInteractionExtractionBusy ? 1 : 0, 1);
+    _postInteractionExtractionHealth.overflow_dropped += 1;
     console.warn('Post-interaction extraction queue capped; dropped oldest pending item');
   }
-  _postInteractionExtractionQueue.push({ label: String(label || 'interaction').slice(0, 100), run });
+  _postInteractionExtractionQueue.push({ label: String(label || 'interaction').slice(0, 100),
+    run, enqueued_at: Date.now(), started_at: null });
   schedulePostInteractionExtractionDrain();
 }
-async function drainPostInteractionExtractionQueue() {
+async function drainPostInteractionExtractionQueue({ timeoutMs = postInteractionExtractionTimeoutMs() } = {}) {
   if (_postInteractionExtractionBusy || !_postInteractionExtractionQueue.length) return;
   const item = _postInteractionExtractionQueue[0];
   const lease = interactivePerformance.beginBackground(`post-interaction:${item.label}`);
@@ -11821,13 +11847,33 @@ async function drainPostInteractionExtractionQueue() {
     return;
   }
   _postInteractionExtractionBusy = true;
+  item.started_at = Date.now();
   let completed = false;
   try {
-    await item.run(backgroundPostWithPriority(axios.post, lease));
+    await runBackgroundActionWithinBudget(`post-interaction:${item.label}`,
+      () => item.run(backgroundPostWithPriority(axios.post, lease)), timeoutMs);
     completed = true;
+    _postInteractionExtractionHealth.completed += 1;
   } catch (error) {
-    if (!lease.signal.aborted) {
+    if (error.code === 'background_step_timeout') {
+      lease.cancel(`post_interaction_timeout:${item.label}`);
       completed = true;
+      _postInteractionExtractionHealth.timed_out += 1;
+      recordPostInteractionExtractionFailure({
+        label: item.label, code: error.code, message: String(error.message || error).slice(0, 240),
+        at: new Date().toISOString(),
+      });
+      console.warn(`Post-interaction extraction ${item.label} timed out and was dropped:`, error.message);
+    } else if (lease.wasPreempted()) {
+      _postInteractionExtractionHealth.preempted += 1;
+      item.started_at = null;
+    } else {
+      completed = true;
+      _postInteractionExtractionHealth.failed += 1;
+      recordPostInteractionExtractionFailure({
+        label: item.label, code: error.code || null,
+        message: String(error.message || error).slice(0, 240), at: new Date().toISOString(),
+      });
       console.warn(`Post-interaction extraction ${item.label} failed:`, error.message);
     }
   } finally {
@@ -11837,6 +11883,17 @@ async function drainPostInteractionExtractionQueue() {
     if (_postInteractionExtractionQueue.length) schedulePostInteractionExtractionDrain(
       completed ? 250 : 1500);
   }
+}
+
+function resetPostInteractionExtractionForTest() {
+  if (_postInteractionExtractionTimer) clearTimeout(_postInteractionExtractionTimer);
+  _postInteractionExtractionTimer = null;
+  _postInteractionExtractionQueue.splice(0);
+  _postInteractionExtractionBusy = false;
+  Object.assign(_postInteractionExtractionHealth, {
+    completed: 0, failed: 0, timed_out: 0, preempted: 0, overflow_dropped: 0,
+    last_failure: null, recent_failures: [],
+  });
 }
 
 function backgroundPriorityDeferred(label, lease) {
@@ -14493,6 +14550,11 @@ module.exports = {
     runBackgroundIntelligenceRuntime,
     backgroundIntelligenceRuntimeBudget,
     runBackgroundActionWithinBudget,
+    postInteractionExtractionTimeoutMs,
+    enqueuePostInteractionExtraction,
+    drainPostInteractionExtractionQueue,
+    backgroundWorkSnapshot,
+    resetPostInteractionExtractionForTest,
     processResources,
     runBehavioralFingerprintSubjectRuntime,
     runBehavioralFingerprintSchedulingRuntime,

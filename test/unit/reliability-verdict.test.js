@@ -160,3 +160,20 @@ test('process memory and event-loop pressure escalate before requests time out',
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'critical_process_memory_pressure');
 });
+
+test('post-interaction timeouts and resource shedding remain visible without failing live service', () => {
+  const snapshot = healthySnapshot();
+  snapshot.background_work.post_interaction = {
+    queued: 1, busy: true, active_ms: 9000, timeout_ms: 10000,
+    recent_failures: [{ code: 'background_step_timeout', at: '2026-07-22T19:59:00.000Z' }],
+  };
+  snapshot.background_admission = { allowed: false, reason: 'event_loop_pressure' };
+  const verdict = assessRuntimeReliability(snapshot, {
+    now: new Date('2026-07-22T20:00:00.000Z').getTime(),
+  });
+  assert.equal(verdict.status, 'degraded');
+  assert.deepEqual(verdict.degraded.map(item => item.code), [
+    'post_interaction_learning_failure', 'post_interaction_learning_near_timeout',
+  ]);
+  assert.ok(verdict.observations.some(item => item.code === 'background_resource_shedding'));
+});

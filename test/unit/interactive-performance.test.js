@@ -139,6 +139,47 @@ test('background runtime budgets actively cancel their provider lane', async () 
   performance.resetPriorityGateForTest();
 });
 
+test('post-interaction learning drops a hung item after its bounded budget', async () => {
+  performance.resetPriorityGateForTest();
+  const { __test } = require('../../server');
+  __test.resetPostInteractionExtractionForTest();
+  __test.enqueuePostInteractionExtraction('hung-learning', () => new Promise(() => {}));
+  await __test.drainPostInteractionExtractionQueue({ timeoutMs: 10 });
+  const snapshot = __test.backgroundWorkSnapshot().post_interaction;
+  assert.equal(snapshot.queued, 0);
+  assert.equal(snapshot.busy, false);
+  assert.equal(snapshot.timed_out, 1);
+  assert.equal(snapshot.last_failure.code, 'background_step_timeout');
+  assert.equal(performance.prioritySnapshot().background_provider_in_flight, 0);
+  __test.resetPostInteractionExtractionForTest();
+  performance.resetPriorityGateForTest();
+});
+
+test('post-interaction overflow never evicts the item currently executing', async () => {
+  performance.resetPriorityGateForTest();
+  const { __test } = require('../../server');
+  __test.resetPostInteractionExtractionForTest();
+  let releaseActive;
+  const held = new Promise(resolve => { releaseActive = resolve; });
+  __test.enqueuePostInteractionExtraction('active-item', () => held);
+  const draining = __test.drainPostInteractionExtractionQueue({ timeoutMs: 1000 });
+  await new Promise(resolve => setImmediate(resolve));
+  for (let index = 0; index < 60; index += 1) {
+    __test.enqueuePostInteractionExtraction(`pending-${index}`, async () => {});
+  }
+  const during = __test.backgroundWorkSnapshot().post_interaction;
+  assert.equal(during.next, 'active-item');
+  assert.equal(during.queued, 60);
+  assert.equal(during.overflow_dropped, 1);
+  releaseActive();
+  await draining;
+  const after = __test.backgroundWorkSnapshot().post_interaction;
+  assert.equal(after.queued, 59);
+  assert.equal(after.completed, 1);
+  __test.resetPostInteractionExtractionForTest();
+  performance.resetPriorityGateForTest();
+});
+
 test('one event-loop stall cancels the remaining background cycle', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
