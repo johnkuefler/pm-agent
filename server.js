@@ -1630,7 +1630,7 @@ async function migrateTranscriptsIfNeeded() {
 let _embedTimer = null;
 function startEmbeddingBackfiller() {
   if (_embedTimer) return;
-  const tick = async () => {
+  const tick = async ({ signal } = {}) => {
     if (!_dbReady || (typeof db.backgroundAllowed === 'function' && !db.backgroundAllowed())) return;
     // Embedding new memories is useful, but it is never more important than a human waiting on
     // Slack or talking to Nora in a meeting. Share the same single background-provider lane as
@@ -1639,12 +1639,15 @@ function startEmbeddingBackfiller() {
     const priorityLease = beginOptionalBackground('memory-embedding-backfill');
     if (!priorityLease.allowed) return;
     try {
+      const combinedSignal = signal
+        ? AbortSignal.any([priorityLease.signal, signal]) : priorityLease.signal;
+      if (combinedSignal.aborted) return;
       const need = await db.memoryNeedingEmbedding(16);
       let filled = 0;
       for (const row of need) {
-        if (priorityLease.signal.aborted) break;
-        const vec = await db.embed(row.fact, { signal: priorityLease.signal });
-        if (priorityLease.signal.aborted) break;
+        if (combinedSignal.aborted) break;
+        const vec = await db.embed(row.fact, { signal: combinedSignal });
+        if (combinedSignal.aborted) break;
         if (vec) { await db.setMemoryEmbedding(row.id, vec); filled++; }
       }
       if (filled) console.log(`🧠 Embedded ${filled} memory rows for semantic recall`);
@@ -1653,6 +1656,7 @@ function startEmbeddingBackfiller() {
   };
   _embedTimer = scheduleRecurringRuntimeJob('memory-embedding-backfill', 20000, tick, {
     initialDelayMs: 4000,
+    timeoutMs: 15000,
   });
 }
 
@@ -1817,8 +1821,8 @@ async function initPersistence() {
     // Re-vectorize on model change: once now, then daily (EMBED_MODEL only changes on deploy, so
     // the boot check is the load-bearing one; the daily timer is a cheap safety net).
     await reembedIfModelChanged();
-    scheduleRecurringRuntimeJob('embedding-model-check', 24 * 60 * 60 * 1000,
-      reembedIfModelChanged);
+  scheduleRecurringRuntimeJob('embedding-model-check', 24 * 60 * 60 * 1000,
+      reembedIfModelChanged, { timeoutMs: 60000 });
   } catch (e) {
     console.error('❌ Postgres init failed. Error:', e.message);
     _dbReady = false;
@@ -13760,6 +13764,10 @@ let _startupBackgroundTaskSequence = 0;
 const _recurringJobs = createRecurringJobRegistry({
   onError: (name, error) =>
     console.warn(`Recurring runtime job ${name} failed:`, error.message),
+  onNonCooperativeTimeout: (name, error) => {
+    console.error(`Recurring runtime job ${name} remained stuck after cancellation; restarting cleanly`);
+    _processRecovery.requestShutdown(`recurring_job_stuck:${name}`, { fatal: true, error });
+  },
 });
 function scheduleRecurringRuntimeJob(name, intervalMs, work, options = {}) {
   const handle = _recurringJobs.register(name, intervalMs, work, options);
@@ -16555,8 +16563,10 @@ async function completePostListenStartup(background) {
     // connector recovery are quiet, replace them one at a time with current-build projections.
     // The worker is serialized, low-priority, resource-gated, and preempted by Slack/meetings.
     scheduleRecurringRuntimeJob('recent-meetings-refresh', 10 * 60 * 1000,
-      refreshRecentMeetingsCache, { initialDelayMs: 12000 });
-    scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma);
+      refreshRecentMeetingsCache, { initialDelayMs: 12000, timeoutMs: 30000 });
+    scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, {
+      timeoutMs: 15000,
+    });
     scheduleRecurringRuntimeJob('operational-and-intelligence-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {
       // Operational recovery always gets the first bounded window. Optional reading, play,
@@ -16582,9 +16592,11 @@ async function completePostListenStartup(background) {
       if (failures.length) {
         throw new AggregateError(failures, `${failures.length} recurring runtime lane(s) failed`);
       }
-    }, { initialDelayMs: 20000 });
+    }, { initialDelayMs: 20000, timeoutMs: 120000 });
     scheduleRecurringRuntimeJob('stale-research-projection-refresh', 5 * 60 * 1000,
-      () => intelligenceRoutesRuntime.warmNextStaleResearchProjection(), { initialDelayMs: 90000 });
+      () => intelligenceRoutesRuntime.warmNextStaleResearchProjection(), {
+        initialDelayMs: 90000, timeoutMs: 120000,
+      });
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
   setServiceReadiness('ready', { ready: true });

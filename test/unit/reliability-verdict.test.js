@@ -268,6 +268,29 @@ test('recurring job health clears after a successful fast cycle', () => {
   assert.equal(assessRuntimeReliability(recovered, { now }).status, 'healthy');
 });
 
+test('recurring job timeout quarantine is degraded before becoming stuck', () => {
+  const snapshot = healthySnapshot();
+  snapshot.background_work.recurring_jobs.jobs.push({
+    name: 'stale-research-projection-refresh',
+    interval_ms: 300000,
+    running: false,
+    blocked_by_timed_out_execution: true,
+    consecutive_failures: 1,
+    consecutive_timeouts: 1,
+    consecutive_slow_runs: 0,
+    last_timed_out_at: new Date(now - 1000).toISOString(),
+  });
+  let verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'recurring_job_recovering');
+
+  snapshot.background_work.recurring_jobs.jobs[0].last_timed_out_at =
+    new Date(now - 300001).toISOString();
+  verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'recurring_job_stuck');
+});
+
 test('startup task stalls and failures remain visible until recovery settles', () => {
   const slow = healthySnapshot();
   slow.background_work.startup_tasks.active.push({ label: 'transcript backfill', age_ms: 60001 });

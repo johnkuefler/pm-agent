@@ -157,3 +157,127 @@ test('drain reaches a bounded false result when active work is wedged', async ()
   (drainTimer || timeout).fn();
   assert.equal(await draining, false);
 });
+
+test('a recurring job runtime budget aborts cooperative work and records the timeout', async () => {
+  let time = 1000;
+  const timers = [];
+  const registry = createRecurringJobRegistry({
+    now: () => time,
+    setTimer: (fn, delay) => {
+      const timer = { fn, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; },
+  });
+  let aborted = false;
+  const handle = registry.register('bounded provider job', 500, ({ signal, deadline_at: deadlineAt }) => {
+    assert.equal(deadlineAt, new Date(1100).toISOString());
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => {
+        aborted = true;
+        reject(signal.reason);
+      }, { once: true });
+    });
+  }, { initialDelayMs: 0, timeoutMs: 50 });
+
+  const running = timers.shift().fn();
+  await Promise.resolve();
+  const terminalTimer = timers.find(timer => timer.delay === 100);
+  // Runtime budgets are clamped to a safe 100ms minimum.
+  assert.ok(terminalTimer);
+  time = 1100;
+  terminalTimer.fn();
+  await running;
+  const snapshot = handle.snapshot();
+  assert.equal(aborted, true);
+  assert.equal(snapshot.timed_out, 1);
+  assert.equal(snapshot.consecutive_timeouts, 1);
+  assert.equal(snapshot.blocked_by_timed_out_execution, false);
+  assert.match(snapshot.last_error, /exceeded 100ms runtime budget/);
+});
+
+test('timed-out work that ignores cancellation is quarantined from overlapping retries', async () => {
+  let time = 1000;
+  const timers = [];
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const registry = createRecurringJobRegistry({
+    now: () => time,
+    setTimer: (fn, delay) => {
+      const timer = { fn, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; },
+  });
+  let starts = 0;
+  const handle = registry.register('noncooperative job', 500, async () => {
+    starts += 1;
+    await held;
+  }, { initialDelayMs: 0, timeoutMs: 100 });
+
+  const running = timers.shift().fn();
+  await Promise.resolve();
+  time = 1100;
+  timers.find(timer => timer.delay === 100).fn();
+  await running;
+  assert.equal(handle.snapshot().blocked_by_timed_out_execution, true);
+  const retryTimer = timers.find(timer => timer.delay === 500 && !timer.cleared);
+  time = 1600;
+  await retryTimer.fn();
+  assert.equal(starts, 1, 'the unresolved timed-out execution must never overlap a retry');
+  assert.equal(handle.snapshot().skipped_ticks, 1);
+  release();
+  await held;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(handle.snapshot().blocked_by_timed_out_execution, false);
+});
+
+test('noncooperative timeout escalates only after grace and is cancelled by late settlement', async () => {
+  const timers = [];
+  const escalations = [];
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const registry = createRecurringJobRegistry({
+    setTimer: (fn, delay) => {
+      const timer = { fn, delay, unref() {} };
+      timers.push(timer);
+      return timer;
+    },
+    clearTimer: timer => { timer.cleared = true; },
+    nonCooperativeGraceMs: 250,
+    onNonCooperativeTimeout: (name, error) => escalations.push([name, error.code]),
+  });
+  const handle = registry.register('restart-worthy job', 1000, () => held,
+    { initialDelayMs: 0, timeoutMs: 100 });
+  const running = timers.shift().fn();
+  await Promise.resolve();
+  timers.find(timer => timer.delay === 100).fn();
+  await running;
+  const graceTimer = timers.find(timer => timer.delay === 250);
+  assert.ok(graceTimer);
+  graceTimer.fn();
+  assert.deepEqual(escalations, [
+    ['restart-worthy job', 'recurring_job_noncooperative_timeout'],
+  ]);
+  assert.equal(handle.snapshot().noncooperative_escalations, 1);
+
+  let releaseSecond;
+  const secondHeld = new Promise(resolve => { releaseSecond = resolve; });
+  const second = registry.register('late cooperative job', 1000, () => secondHeld,
+    { initialDelayMs: 0, timeoutMs: 100 });
+  const initial = timers.find(timer => timer.delay === 0 && !timer.cleared);
+  const secondRun = initial.fn();
+  await Promise.resolve();
+  const secondTimeout = timers.filter(timer => timer.delay === 100 && !timer.cleared).at(-1);
+  secondTimeout.fn();
+  await secondRun;
+  const secondGrace = timers.filter(timer => timer.delay === 250 && !timer.cleared).at(-1);
+  releaseSecond();
+  await secondHeld;
+  await new Promise(resolve => setImmediate(resolve));
+  secondGrace.fn();
+  assert.equal(second.snapshot().noncooperative_escalations, 0);
+  assert.equal(escalations.length, 1);
+});

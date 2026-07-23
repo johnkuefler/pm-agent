@@ -74,6 +74,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   }
   for (const job of recurringJobs.jobs || []) {
     const failures = Number(job?.consecutive_failures) || 0;
+    const timeouts = Number(job?.consecutive_timeouts) || 0;
     const slowRuns = Number(job?.consecutive_slow_runs) || 0;
     const intervalMs = Math.max(100, Number(job?.interval_ms) || 0);
     const startedAt = new Date(job?.last_started_at || 0).getTime();
@@ -82,13 +83,21 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
     const skippedAt = new Date(job?.last_skipped_at || 0).getTime();
     const skippedRecently = Number.isFinite(skippedAt) && skippedAt > 0
       && (Number(now) || Date.now()) - skippedAt <= RECENT_SLOW_WINDOW_MS;
-    if (failures >= 3 || runningAgeMs >= intervalMs * 2) {
+    const timedOutAt = new Date(job?.last_timed_out_at || 0).getTime();
+    const timeoutBlockedAgeMs = job?.blocked_by_timed_out_execution
+      && Number.isFinite(timedOutAt) && timedOutAt > 0
+      ? Math.max(0, (Number(now) || Date.now()) - timedOutAt) : 0;
+    if (failures >= 3 || timeouts >= 3 || runningAgeMs >= intervalMs * 2
+      || timeoutBlockedAgeMs >= intervalMs) {
       actionRequired.push({ code: 'recurring_job_stuck', job: job.name,
-        count: failures || undefined, age_ms: runningAgeMs || undefined,
+        count: failures || timeouts || undefined,
+        age_ms: runningAgeMs || timeoutBlockedAgeMs || undefined,
         message: `${job.name} cannot complete its non-overlapping runtime cycle.` });
-    } else if (failures > 0 || runningAgeMs >= intervalMs || slowRuns > 0 || skippedRecently) {
+    } else if (failures > 0 || timeouts > 0 || job?.blocked_by_timed_out_execution
+      || runningAgeMs >= intervalMs || slowRuns > 0 || skippedRecently) {
       degraded.push({ code: 'recurring_job_recovering', job: job.name,
-        count: failures || slowRuns || undefined, age_ms: runningAgeMs || undefined,
+        count: failures || timeouts || slowRuns || undefined,
+        age_ms: runningAgeMs || timeoutBlockedAgeMs || undefined,
         skipped_recently: skippedRecently || undefined,
         message: `${job.name} is slow or recovering; overlapping executions remain suppressed.` });
     }

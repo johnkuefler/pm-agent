@@ -9,25 +9,34 @@ function createRecurringJobRegistry({
   setTimer = (fn, delay) => setTimeout(fn, delay),
   clearTimer = timer => clearTimeout(timer),
   onError = () => {},
+  onNonCooperativeTimeout = () => {},
+  nonCooperativeGraceMs = 5000,
 } = {}) {
   const jobs = new Map();
   const activeRuns = new Set();
   let closed = false;
 
-  function register(name, intervalMs, work, { initialDelayMs = intervalMs } = {}) {
+  function register(name, intervalMs, work, {
+    initialDelayMs = intervalMs,
+    timeoutMs = 0,
+  } = {}) {
     const key = String(name || '').trim();
     if (!key) throw new Error('recurring job name is required');
     if (jobs.has(key)) throw new Error(`recurring job ${key} is already registered`);
     if (typeof work !== 'function') throw new Error('recurring job work must be a function');
     const interval = Math.max(100, Number(intervalMs) || 100);
     const initialDelay = Math.max(0, Number(initialDelayMs) || 0);
+    const timeout = Number(timeoutMs) > 0 ? Math.max(100, Number(timeoutMs)) : 0;
     const state = {
-      name: key, interval_ms: interval, running: false, closed: false, timer: null,
+      name: key, interval_ms: interval, timeout_ms: timeout, running: false, closed: false,
+      timer: null, timeout_timer: null, quarantine_timer: null, controller: null,
       runs: 0, successes: 0, failures: 0, skipped_ticks: 0, slow_runs: 0,
+      timed_out: 0, consecutive_timeouts: 0, blocked_by_timed_out_execution: false,
+      noncooperative_escalations: 0,
       consecutive_failures: 0, consecutive_slow_runs: 0,
       next_due_at: now() + initialDelay, last_started_at: null, last_completed_at: null,
       last_duration_ms: null, maximum_duration_ms: 0, last_error: null,
-      last_error_at: null, last_skipped_at: null,
+      last_error_at: null, last_skipped_at: null, last_timed_out_at: null,
     };
 
     const schedule = () => {
@@ -40,9 +49,10 @@ function createRecurringJobRegistry({
     const run = async () => {
       state.timer = null;
       if (closed || state.closed) return;
-      if (state.running) {
+      if (state.running || state.blocked_by_timed_out_execution) {
         state.skipped_ticks += 1;
-        state.next_due_at += interval;
+        state.last_skipped_at = new Date(now()).toISOString();
+        state.next_due_at = now() + interval;
         schedule();
         return;
       }
@@ -51,26 +61,80 @@ function createRecurringJobRegistry({
       state.running = true;
       state.runs += 1;
       state.last_started_at = new Date(startedAt).toISOString();
+      const controller = new AbortController();
+      state.controller = controller;
+      let executionSettled = false;
       const execution = Promise.resolve().then(() => work({
         name: key,
         run_number: state.runs,
         scheduled_at: new Date(scheduledAt).toISOString(),
+        signal: controller.signal,
+        deadline_at: timeout ? new Date(startedAt + timeout).toISOString() : null,
       }));
       activeRuns.add(execution);
+      execution.then(
+        () => {
+          executionSettled = true;
+          state.blocked_by_timed_out_execution = false;
+          if (state.quarantine_timer) clearTimer(state.quarantine_timer);
+          state.quarantine_timer = null;
+          activeRuns.delete(execution);
+        },
+        () => {
+          executionSettled = true;
+          state.blocked_by_timed_out_execution = false;
+          if (state.quarantine_timer) clearTimer(state.quarantine_timer);
+          state.quarantine_timer = null;
+          activeRuns.delete(execution);
+        });
+      const terminal = timeout ? Promise.race([
+        execution,
+        new Promise((_, reject) => {
+          state.timeout_timer = setTimer(() => {
+            const error = new Error(`recurring job ${key} exceeded ${timeout}ms runtime budget`);
+            error.code = 'recurring_job_timeout';
+            reject(error);
+            controller.abort(error);
+          }, timeout);
+          state.timeout_timer?.unref?.();
+        }),
+      ]) : execution;
       try {
-        await execution;
+        await terminal;
         state.successes += 1;
         state.consecutive_failures = 0;
+        state.consecutive_timeouts = 0;
         state.last_error = null;
         state.last_error_at = null;
       } catch (error) {
         state.failures += 1;
         state.consecutive_failures += 1;
+        if (error?.code === 'recurring_job_timeout') {
+          state.timed_out += 1;
+          state.consecutive_timeouts += 1;
+          state.last_timed_out_at = new Date(now()).toISOString();
+        }
         state.last_error = cleanError(error);
         state.last_error_at = new Date(now()).toISOString();
         try { onError(key, error); } catch {}
       } finally {
-        activeRuns.delete(execution);
+        if (state.timeout_timer) clearTimer(state.timeout_timer);
+        state.timeout_timer = null;
+        state.controller = null;
+        if (!executionSettled) {
+          state.blocked_by_timed_out_execution = true;
+          const graceMs = Math.max(100, Number(nonCooperativeGraceMs) || 5000);
+          state.quarantine_timer = setTimer(() => {
+            state.quarantine_timer = null;
+            if (closed || state.closed || !state.blocked_by_timed_out_execution) return;
+            state.noncooperative_escalations += 1;
+            const error = new Error(
+              `recurring job ${key} ignored cancellation for ${graceMs}ms after timeout`);
+            error.code = 'recurring_job_noncooperative_timeout';
+            try { onNonCooperativeTimeout(key, error); } catch {}
+          }, graceMs);
+          state.quarantine_timer?.unref?.();
+        }
         const completedAt = now();
         const duration = Math.max(0, completedAt - startedAt);
         state.running = false;
@@ -98,12 +162,17 @@ function createRecurringJobRegistry({
         if (state.closed) return;
         state.closed = true;
         if (state.timer) clearTimer(state.timer);
+        if (state.timeout_timer) clearTimer(state.timeout_timer);
+        if (state.quarantine_timer) clearTimer(state.quarantine_timer);
+        state.controller?.abort(new Error(`recurring job ${key} closed`));
         state.timer = null;
+        state.timeout_timer = null;
+        state.quarantine_timer = null;
         jobs.delete(key);
       },
       runNow: run,
       snapshot: () => {
-        const { timer, ...visible } = state;
+        const { timer, timeout_timer, quarantine_timer, controller, ...visible } = state;
         return { ...visible, next_due_at: new Date(state.next_due_at).toISOString() };
       },
     };
@@ -119,6 +188,11 @@ function createRecurringJobRegistry({
       registered: values.length,
       running: values.filter(job => job.running).length,
       failures: values.reduce((sum, job) => sum + job.failures, 0),
+      timed_out: values.reduce((sum, job) => sum + job.timed_out, 0),
+      blocked_by_timed_out_execution: values.filter(job =>
+        job.blocked_by_timed_out_execution).length,
+      noncooperative_escalations: values.reduce((sum, job) =>
+        sum + job.noncooperative_escalations, 0),
       jobs_with_unresolved_failures: values.filter(job => job.consecutive_failures > 0).length,
       skipped_ticks: values.reduce((sum, job) => sum + job.skipped_ticks, 0),
       slow_runs: values.reduce((sum, job) => sum + job.slow_runs, 0),
