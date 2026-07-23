@@ -1575,7 +1575,7 @@ function startEmbeddingBackfiller() {
     // Slack or talking to Nora in a meeting. Share the same single background-provider lane as
     // reflection/research, and pass its abort signal to fetch so live work can stop an in-flight
     // embedding instead of merely waiting for its private timeout.
-    const priorityLease = interactivePerformance.beginBackground('memory-embedding-backfill');
+    const priorityLease = beginOptionalBackground('memory-embedding-backfill');
     if (!priorityLease.allowed) return;
     try {
       const need = await db.memoryNeedingEmbedding(16);
@@ -9294,6 +9294,22 @@ function activeDurableRunLock(now = Date.now(), lock = loadDurableRunLock()) {
   return lock && Number.isFinite(expiresAt) && expiresAt > Number(now) ? lock : null;
 }
 
+function beginOptionalBackground(label, {
+  operationalLock = activeDurableRunLock(),
+  beginBackground = interactivePerformance.beginBackground,
+  now = Date.now(),
+} = {}) {
+  if (operationalLock) {
+    return {
+      allowed: false,
+      label: String(label || 'background'),
+      reason: 'operational_run_active',
+      retry_after_ms: Math.max(1000, Number(operationalLock.expires_at) - Number(now)),
+    };
+  }
+  return beginBackground(label, { now });
+}
+
 async function drainOptionalWorkForOperationalRun(holder, {
   cancelBackground = interactivePerformance.cancelBackground,
   waitForBackgroundIdle = interactivePerformance.waitForBackgroundIdle,
@@ -11024,7 +11040,7 @@ function scheduleTranscriptEpisodeCheckpoint(botId, transcript) {
   if (_transcriptEpisodeTimers.has(botId)) return;
   const timer = setTimeout(() => {
     _transcriptEpisodeTimers.delete(botId);
-    const foregroundGate = interactivePerformance.beginBackground(`transcript-episodes:${botId}`);
+    const foregroundGate = beginOptionalBackground(`transcript-episodes:${botId}`);
     if (!foregroundGate.allowed) {
       const pending = _transcriptEpisodePending.get(botId);
       if (pending) scheduleTranscriptEpisodeCheckpoint(botId, pending);
@@ -13084,7 +13100,7 @@ function enqueuePostInteractionExtraction(label, run) {
 async function drainPostInteractionExtractionQueue({ timeoutMs = postInteractionExtractionTimeoutMs() } = {}) {
   if (_postInteractionExtractionBusy || !_postInteractionExtractionQueue.length) return;
   const item = _postInteractionExtractionQueue[0];
-  const lease = interactivePerformance.beginBackground(`post-interaction:${item.label}`);
+  const lease = beginOptionalBackground(`post-interaction:${item.label}`);
   if (!lease.allowed) {
     schedulePostInteractionExtractionDrain(lease.retry_after_ms || 1500);
     return;
@@ -14778,7 +14794,7 @@ async function runPostDeliverySelfEvaluationRuntime({ post = axios.post } = {}) 
 }
 
 async function runProfessionalViewpointLifecycleWithPriorityRuntime({ post = axios.post } = {}) {
-  const lease = interactivePerformance.beginBackground('professional-viewpoint-lifecycle');
+  const lease = beginOptionalBackground('professional-viewpoint-lifecycle');
   if (!lease.allowed) return backgroundPriorityDeferred('professional-viewpoint-lifecycle', lease);
   try {
     return await runProfessionalViewpointLifecycleAutopilotRuntime({
@@ -14790,7 +14806,7 @@ async function runProfessionalViewpointLifecycleWithPriorityRuntime({ post = axi
 }
 
 async function runDreamReflectionLifecycleWithPriorityRuntime({ post = axios.post } = {}) {
-  const lease = interactivePerformance.beginBackground('dream-reflection-lifecycle');
+  const lease = beginOptionalBackground('dream-reflection-lifecycle');
   if (!lease.allowed) return backgroundPriorityDeferred('dream-reflection-lifecycle', lease);
   const priorityPost = backgroundPostWithPriority(post, lease);
   try {
@@ -15348,7 +15364,7 @@ async function runBackgroundIntelligenceRuntime({ post = axios.post, trigger = '
       meta: { reason: initialAdmission.reason } });
     return _backgroundIntelligenceCycleLast;
   }
-  const lease = interactivePerformance.beginBackground('scheduled-intelligence');
+  const lease = beginOptionalBackground('scheduled-intelligence');
   if (!lease.allowed) {
     _backgroundIntelligenceCycleLast = backgroundPriorityDeferred('scheduled-intelligence', lease);
     runtimeActivity.record({ lane: 'background', kind: 'intelligence_cycle',
@@ -15779,6 +15795,7 @@ module.exports = {
     stripSlackLookupNarration,
     slackThreadHasNoraReply,
     activeDurableRunLock,
+    beginOptionalBackground,
     drainOptionalWorkForOperationalRun,
     hourlyFallbackBudget,
     commitFallbackForecast,

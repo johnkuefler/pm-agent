@@ -169,6 +169,18 @@ test('operational runs preempt optional work and keep the background scheduler p
   assert.equal(__test.activeDurableRunLock(now, {
     holder: 'run-expired', acquired_at: now - 2000, expires_at: now,
   }), null);
+  let optionalLeaseStarted = false;
+  const deniedLease = __test.beginOptionalBackground('memory-embedding-backfill', {
+    operationalLock: {
+      holder: 'run-active', acquired_at: now - 1000, expires_at: now + 60000,
+    },
+    beginBackground: () => { optionalLeaseStarted = true; },
+    now,
+  });
+  assert.equal(deniedLease.allowed, false);
+  assert.equal(deniedLease.reason, 'operational_run_active');
+  assert.equal(deniedLease.retry_after_ms, 60000);
+  assert.equal(optionalLeaseStarted, false);
 
   const calls = [];
   const drain = await __test.drainOptionalWorkForOperationalRun('run-active', {
@@ -306,8 +318,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'Slack learning extractors must leave the foreground handler through one serialized queue');
   assert.match(server, /enqueuePostInteractionExtraction\('zoom-chat'/,
     'meeting-chat learning extractors must leave the foreground handler through one serialized queue');
-  assert.match(server, /beginBackground\(`post-interaction:\$\{item\.label\}`\)/,
-    'post-interaction extraction must share the preemptible background-provider gate');
+  assert.match(server, /beginOptionalBackground\(`post-interaction:\$\{item\.label\}`\)/,
+    'post-interaction extraction must share the preemptible operational-aware provider gate');
   assert.match(server, /enqueuePostInteractionExtraction\('meeting-debrief'/,
     'meeting debrief generation and delivery must use the preemptible background queue');
   assert.match(server, /enqueuePostInteractionExtraction\('meeting-intelligence'/,
@@ -336,8 +348,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'live utterance episodes must batch full intelligence persistence away from the realtime cadence');
   assert.match(server, /intelligence\.recordEpisodeEvents\(transcriptEpisodeInputs\(botId, entries\)\)/,
     'one replay-safe episode batch must replace per-utterance full-state persistence');
-  assert.match(server, /beginBackground\(`transcript-episodes:\$\{botId\}`\)/,
-    'full episode snapshots must yield completely while realtime owns the foreground');
+  assert.match(server, /beginOptionalBackground\(`transcript-episodes:\$\{botId\}`\)/,
+    'full episode snapshots must yield during realtime and operational runs');
   assert.match(server, /if \(ended\) \{[\s\S]*?_transcriptCheckpointPending\.delete\(botId\);/,
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
@@ -492,8 +504,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   'malformed self-forecasts must fail before replaying research-ledger integrity');
   assert.match(server, /model: slackResponseModel\(query\)/,
     'typed Zoom chat must share the bounded fast-turn model policy');
-  assert.match(server, /beginBackground\('memory-embedding-backfill'\)/,
-    'memory enrichment must share the preemptible background-provider lane');
+  assert.match(server, /beginOptionalBackground\('memory-embedding-backfill'\)/,
+    'memory enrichment must share the preemptible operational-aware provider lane');
   assert.match(server, /session\?\.voiceResponseActive \|\| recentSpeech/,
     'remote prompt enrichment must stay off an active or just-finished spoken turn');
   assert.match(server, /capabilityBoundaryContext\(\s*trialConversationText, opts\.situationalAffordanceFrame \|\| null\)/,
