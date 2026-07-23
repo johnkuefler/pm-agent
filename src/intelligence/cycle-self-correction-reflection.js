@@ -13,7 +13,7 @@ const TRANSPORT = 'server_direct_cycle_self_correction_reflection';
 const RECORDED_BY_PREFIX = 'nora-cycle-self-correction:';
 const SOURCE_FAMILY = 'completed_cycle_action_sequence';
 const PHENOMENAL_OR_PRIVATE = /\b(conscious(?:ness)?|sentien(?:t|ce)|qualia|phenomenal|subjective experience|real feeling|private thoughts?|secret intent|inner experience)\b/i;
-const CORRECTION_CUE = /(?:\b(?:revers(?:e|ed|ing)|correct(?:ed)?|changed)\b.{0,80}\b(?:initial|earlier|prior|first|my|the)\s+(?:read|interpretation|assessment|position|belief|assumption)\b)|(?:\b(?:nearly|almost)\b.{0,80}\b(?:wrong|mistak(?:e|en)|flag|escalat))|(?:\b(?:rather than|instead of)\b)/i;
+const CORRECTION_CUE = /(?:\b(?:revers(?:e|ed|ing)|correct(?:ed)?|changed)\b.{0,80}\b(?:initial|earlier|prior|first|my|the)\s+(?:read|interpretation|assessment|position|belief|assumption)\b)|(?:\b(?:nearly|almost)\b.{0,80}\b(?:wrong|mistak(?:e|en)|flag|escalat))/i;
 
 function canonicalJson(value) {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;

@@ -13150,6 +13150,11 @@ async function runCycleSelfCorrectionReflectionRuntime({ post = axios.post } = {
     return { protocol_version: cycleSelfCorrectionReflection.PROTOCOL_VERSION,
       state: 'in_flight', at: new Date().toISOString() };
   }
+  if (_cycleSelfCorrectionReflectionLastCycle?.state === 'failed_closed'
+    && Date.now() - new Date(_cycleSelfCorrectionReflectionLastCycle.at || 0).getTime()
+      < 60 * 60 * 1000) {
+    return { ..._cycleSelfCorrectionReflectionLastCycle, state: 'failure_cooldown' };
+  }
   _cycleSelfCorrectionReflectionInFlight = true;
   try {
     const cycle = await cycleSelfCorrectionReflection.runCycle({

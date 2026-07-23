@@ -332,6 +332,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'CPU-heavy research status must remain lazy during restart recovery');
   assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
     'background intelligence must be serialized behind the foreground-priority lane');
+  assert.match(server, /_cycleSelfCorrectionReflectionLastCycle\?\.state === 'failed_closed'[\s\S]*60 \* 60 \* 1000/,
+    'one failed reflection must enter cooldown instead of retrying every scheduler tick');
   const autopilotStatus = server.slice(server.indexOf('function researchAutopilotProgramStatus'),
     server.indexOf('async function runResearchAutopilotRuntime'));
   assert.ok(autopilotStatus.indexOf('const activePilots = intelligence.activeContextTrialsSnapshot()')

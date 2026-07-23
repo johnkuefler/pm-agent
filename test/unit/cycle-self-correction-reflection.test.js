@@ -170,6 +170,15 @@ test('deterministic eligibility admits explicit correction cues without treating
     /not evidence/);
 });
 
+test('generic contrast language does not spend a reflection call', () => {
+  const quiet = completedCycle('cycle-generic-contrast');
+  quiet.actions[1].decision = 'Kept the existing flag rather than posting a duplicate reminder.';
+  quiet.actions[1].result = 'No new evidence landed and no position changed.';
+  quiet.summary = 'The run stayed quiet instead of manufacturing work.';
+  assert.equal(reflection.correctionCueCount(reflection.cycleSnapshot(quiet)), 0);
+  assert.equal(reflection.selectSourceCycle([quiet], [], NOW), null);
+});
+
 test('receipt replay detects output and packet tampering', () => {
   const cycle = completedCycle();
   const packet = reflection.packetFor(reflection.cycleSnapshot(cycle));

@@ -4436,12 +4436,17 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const sourceCycleId = String(input.source_cycle_id || '').trim().slice(0, 500);
       const output = input.output;
       const receipt = input.generation_receipt;
+      const receiptAudit = receipt
+        ? cycleSelfCorrectionReflection.auditReceipt(receipt) : null;
       if (!sourceCycleId || !receipt
-        || !cycleSelfCorrectionReflection.auditReceipt(receipt).complete_chain_verified
+        || !receiptAudit?.complete_chain_verified
         || cycleSelfCorrectionReflection.canonicalJson(output)
           !== cycleSelfCorrectionReflection.canonicalJson(receipt.output)
         || receipt.source_packet?.source_cycle?.id !== sourceCycleId) {
-        throw new Error('cycle self-correction reflection requires a replay-valid receipt bound to its source cycle and output');
+        const failedChecks = receiptAudit ? Object.entries(receiptAudit)
+          .filter(([key, value]) => key !== 'complete_chain_verified' && value === false)
+          .map(([key]) => key).join(',') : 'missing_receipt';
+        throw new Error(`cycle self-correction reflection requires a replay-valid receipt bound to its source cycle and output (failed: ${failedChecks || 'source_or_output_binding'})`);
       }
       const sourceCycle = current.cycles.find(item => item.id === sourceCycleId);
       const currentSnapshot = cycleSelfCorrectionReflection.cycleSnapshot(sourceCycle);
