@@ -154,4 +154,10 @@ async function joinMeeting() {
     // poll every 20s so calendar-auto-joined meetings surface the mute control
     // without requiring a manual page refresh.
     checkMuteState();
-    setInterval(checkMuteState, 20000);
+    const meetingStatusPoller = createCompletionAwarePoller({
+      intervalMs: 20000,
+      shouldRun: () => document.visibilityState === 'visible'
+        && document.getElementById('page-meeting')?.classList.contains('active'),
+      work: () => checkMuteState(),
+    });
+    meetingStatusPoller.start();

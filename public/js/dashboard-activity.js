@@ -1,7 +1,8 @@
 let runtimeActivitySource = null;
 let runtimeActivitySnapshot = null;
 let runtimeActivityContext = null;
-let runtimeActivityFallbackTimer = null;
+let runtimeActivityFallbackPoller = null;
+let runtimeActivitySnapshotPromise = null;
 let runtimeActivityContextTimer = null;
 let runtimeActivityContextRequest = null;
 let runtimeActivityContextLoadedAt = 0;
@@ -304,10 +305,14 @@ function applyRuntimeActivityEvent(item) {
   renderRuntimeActivity();
 }
 
-async function fetchRuntimeActivitySnapshot() {
-  const response = await api('/runtime-activity', { cache: 'no-store' });
-  if (!response.ok) throw new Error(`activity snapshot returned ${response.status}`);
-  applyRuntimeActivitySnapshot(await response.json());
+function fetchRuntimeActivitySnapshot(signal) {
+  if (runtimeActivitySnapshotPromise) return runtimeActivitySnapshotPromise;
+  runtimeActivitySnapshotPromise = (async () => {
+    const response = await api('/runtime-activity', { cache: 'no-store', signal, timeoutMs: 10000 });
+    if (!response.ok) throw new Error(`activity snapshot returned ${response.status}`);
+    applyRuntimeActivitySnapshot(await response.json());
+  })().finally(() => { runtimeActivitySnapshotPromise = null; });
+  return runtimeActivitySnapshotPromise;
 }
 
 async function fetchRuntimeActivityContext() {
@@ -333,17 +338,20 @@ function scheduleRuntimeActivityContext(delay = 0) {
 }
 
 function startRuntimeActivityFallback() {
-  if (runtimeActivityFallbackTimer) return;
-  runtimeActivityFallbackTimer = setInterval(() => {
-    if (document.visibilityState !== 'visible' || runtimeActivityConnection === 'connected') return;
-    fetchRuntimeActivitySnapshot().catch(() => {});
-  }, 5000);
+  if (!runtimeActivityFallbackPoller) {
+    runtimeActivityFallbackPoller = createCompletionAwarePoller({
+      intervalMs: 5000,
+      initialDelayMs: 0,
+      shouldRun: () => document.visibilityState === 'visible'
+        && runtimeActivityConnection !== 'connected',
+      work: signal => fetchRuntimeActivitySnapshot(signal),
+    });
+  }
+  runtimeActivityFallbackPoller.start();
 }
 
 function stopRuntimeActivityFallback() {
-  if (!runtimeActivityFallbackTimer) return;
-  clearInterval(runtimeActivityFallbackTimer);
-  runtimeActivityFallbackTimer = null;
+  runtimeActivityFallbackPoller?.stop();
 }
 
 function connectRuntimeActivityStream() {

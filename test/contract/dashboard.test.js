@@ -50,9 +50,9 @@ test('dashboard presentation and behavior live in focused external assets', () =
   const adminJs = fs.readFileSync(path.join(root, 'public/js/dashboard-admin.js'), 'utf8');
   assert.match(coreJs, /Dashboard request timed out/,
     'every dashboard request must inherit a finite browser deadline');
-  assert.match(intelligenceJs, /if \(playroomPollInFlight\) return;/,
+  assert.match(intelligenceJs, /playroomPoller = createCompletionAwarePoller/,
     'playroom polling must remain single-flight');
-  assert.match(intelligenceJs, /if \(readingRoomPollInFlight\) return;/,
+  assert.match(intelligenceJs, /readingRoomPoller = createCompletionAwarePoller/,
     'reading polling must remain single-flight');
   assert.match(meetingJs, /if \(meetingStatusRefreshInFlight\) return;/,
     'meeting status polling must remain single-flight');
@@ -216,6 +216,12 @@ test('dashboard exposes one central live activity surface across every room', ()
     'the chronological audit should be secondary and collapsed by default');
   assert.match(activityJs, /new EventSource\('\/runtime-activity\/events'\)/);
   assert.match(activityJs, /fetchRuntimeActivitySnapshot/);
+  assert.match(activityJs, /runtimeActivitySnapshotPromise/,
+    'live snapshot fallbacks must coalesce concurrent reconnect and visibility requests');
+  assert.match(activityJs, /createCompletionAwarePoller\(\{/,
+    'live fallback polling must wait a full interval after each completed request');
+  assert.doesNotMatch(activityJs, /setInterval\(/,
+    'live reconnect fallback must not accumulate overlapping snapshot requests');
   assert.match(activityJs, /function runtimeActivityRegion\(item = \{\}\)/);
   assert.match(activityJs, /\/runtime-activity\/context/);
   assert.match(activityCss, /\.live-cortex\{[^}]*contain:layout paint/);
@@ -223,6 +229,62 @@ test('dashboard exposes one central live activity surface across every room', ()
   assert.match(html, /message text, prompts, tool arguments, or tool results/i);
   assert.match(html, /not literal neural imaging or evidence of phenomenal consciousness/i);
   assert.doesNotThrow(() => new vm.Script(activityJs, { filename: 'dashboard-activity.js' }));
+});
+
+test('dashboard polling is completion-aware, cancelable, and visibility scoped', () => {
+  const coreJs = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
+  const meetingJs = fs.readFileSync(path.join(root, 'public/js/dashboard-meeting.js'), 'utf8');
+  const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  assert.match(coreJs, /function createCompletionAwarePoller\(options\)/);
+  assert.match(coreJs, /await options\.work\(controller\.signal\)/,
+    'one poll must settle before the next interval is scheduled');
+  assert.match(coreJs, /controller\?\.abort\(new DOMException\('Dashboard poll stopped'/,
+    'stopping a view must cancel its active request');
+  assert.doesNotMatch(meetingJs, /setInterval\(/);
+  assert.match(meetingJs, /document\.visibilityState === 'visible'[\s\S]*?page-meeting/);
+  assert.doesNotMatch(intelligenceJs, /setInterval\(/);
+  assert.match(intelligenceJs, /readingRoomPoller = createCompletionAwarePoller/);
+  assert.match(intelligenceJs, /playroomPoller = createCompletionAwarePoller/);
+});
+
+test('dashboard poll owner never overlaps work and aborts the active request on stop', async () => {
+  const coreJs = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
+  const helperSource = coreJs.slice(coreJs.indexOf('function createCompletionAwarePoller'),
+    coreJs.indexOf('const pageMeta'));
+  const context = { AbortController, DOMException, setTimeout, clearTimeout };
+  vm.createContext(context);
+  vm.runInContext(helperSource, context);
+  let runs = 0;
+  let active = 0;
+  let maximumActive = 0;
+  let release = null;
+  let activeSignal = null;
+  const poller = context.createCompletionAwarePoller({
+    intervalMs: 250,
+    initialDelayMs: 0,
+    work: signal => new Promise((resolve, reject) => {
+      runs += 1;
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      activeSignal = signal;
+      release = () => { active -= 1; resolve(); };
+      signal.addEventListener('abort', () => {
+        active -= 1;
+        reject(signal.reason);
+      }, { once: true });
+    }),
+  });
+  poller.start();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(runs, 1);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(runs, 1, 'a slow request must not be overlapped by an interval tick');
+  release();
+  await new Promise(resolve => setTimeout(resolve, 280));
+  assert.equal(runs, 2, 'the next interval begins only after the prior request settles');
+  poller.stop();
+  assert.equal(activeSignal.aborted, true);
+  assert.equal(maximumActive, 1);
 });
 
 test('intelligence detail is divided into bounded human-readable views', () => {

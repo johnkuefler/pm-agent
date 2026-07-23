@@ -29,6 +29,60 @@
       return api(path, Object.assign({}, opts, { headers: headers }));
     }
 
+    // Browser polling must have the same ownership guarantees as Nora's server schedulers:
+    // one active run, a full quiet interval after completion, and cancellation on stop.
+    function createCompletionAwarePoller(options) {
+      const intervalMs = Math.max(250, Number(options.intervalMs) || 1000);
+      const initialDelayMs = options.initialDelayMs == null
+        ? intervalMs : Math.max(0, Number(options.initialDelayMs) || 0);
+      const shouldRun = options.shouldRun || (() => true);
+      const onError = options.onError || (() => {});
+      let timer = null;
+      let controller = null;
+      let stopped = true;
+
+      const schedule = delayMs => {
+        if (stopped || timer || controller) return;
+        timer = setTimeout(run, Math.max(0, Number(delayMs) || 0));
+      };
+      const run = async () => {
+        timer = null;
+        if (stopped) return;
+        if (!shouldRun()) {
+          schedule(intervalMs);
+          return;
+        }
+        controller = new AbortController();
+        try {
+          await options.work(controller.signal);
+        } catch (error) {
+          if (error?.name !== 'AbortError') onError(error);
+        } finally {
+          controller = null;
+          schedule(intervalMs);
+        }
+      };
+      return {
+        start() {
+          if (!stopped) return;
+          stopped = false;
+          schedule(initialDelayMs);
+        },
+        stop() {
+          stopped = true;
+          if (timer) clearTimeout(timer);
+          timer = null;
+          controller?.abort(new DOMException('Dashboard poll stopped', 'AbortError'));
+        },
+        trigger() {
+          if (stopped) return;
+          if (timer) clearTimeout(timer);
+          timer = null;
+          schedule(0);
+        },
+      };
+    }
+
     const pageMeta = {
       live: ['Live', 'See Nora\'s hourly work, conversations, and background processes as they happen.'],
       meeting: ['Meeting', 'Send Nora into a call with the right context, mandate, and participation mode.'],
@@ -62,6 +116,7 @@
       history.replaceState(null, '', location.pathname + location.search + '#' + name);
       closeMobileNav();
       closeCommandPalette();
+      if (name === 'meeting' && typeof checkMuteState === 'function') checkMuteState();
       if (name === 'memory') loadMemory();
       if (name === 'live') loadRuntimeActivity();
       if (name === 'tasks') loadTasks();
