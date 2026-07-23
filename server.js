@@ -9657,12 +9657,29 @@ function coverageCollectionCountValue(value, depth = 0) {
     if (!text) return null;
     try { return coverageCollectionCountValue(JSON.parse(text), depth + 1); }
     catch {
-      return /^(?:no (?:gmail )?messages?(?: were)? found|no results|0 results?)(?:[.!]|\s|$)/i.test(text)
-        ? 0 : null;
+      if (/^(?:no (?:gmail )?messages?(?: were)? found|no results|0 results?)(?:[.!]|\s|$)/i.test(text)) {
+        return 0;
+      }
+      // Managed Gmail connectors also render bounded search summaries as prose or Markdown.
+      // Accept only phrases that explicitly bind a number to the result cardinality; never
+      // infer a count from dates, thread ids, or arbitrary numbers in message previews.
+      const explicitCount = text.match(/\b(?:found|returned|showing)\s+(\d{1,6})\s+(?:gmail\s+)?messages?\b/i)
+        || text.match(/\b(\d{1,6})\s+(?:gmail\s+)?messages?\s+(?:found|returned)\b/i)
+        || text.match(/\btotal(?:\s+(?:gmail\s+)?messages?)?\s*:\s*(\d{1,6})\b/i);
+      return explicitCount ? Number(explicitCount[1]) : null;
     }
   }
   if (!value || typeof value !== 'object' || depth > 4) return null;
-  for (const key of ['messages', 'results', 'items', 'data']) {
+  if (Array.isArray(value.content)) {
+    const text = value.content
+      .filter(item => item?.type === 'text' && typeof item.text === 'string')
+      .map(item => item.text).join('\n').trim();
+    if (text) {
+      const nested = coverageCollectionCountValue(text, depth + 1);
+      if (nested != null) return nested;
+    }
+  }
+  for (const key of ['messages', 'emails', 'threads', 'results', 'items', 'data']) {
     if (Array.isArray(value[key])) return value[key].length;
   }
   for (const key of ['count', 'total', 'result_count']) {
@@ -9679,6 +9696,39 @@ function coverageCollectionCountValue(value, depth = 0) {
 
 function coverageCollectionCount(result) {
   return coverageCollectionCountValue(mcpResultValue(result));
+}
+
+function coverageResultShape(value, depth = 0) {
+  if (depth > 4) return { type: 'depth_limit' };
+  if (Array.isArray(value)) return {
+    type: 'array',
+    length: value.length,
+    first: value.length ? coverageResultShape(value[0], depth + 1) : null,
+  };
+  if (value === null) return { type: 'null' };
+  if (typeof value === 'string') {
+    let jsonParseable = false;
+    try { JSON.parse(value); jsonParseable = true; } catch { /* metadata only */ }
+    return {
+      type: 'string',
+      length: value.length,
+      line_count: value.split(/\r?\n/).length,
+      json_parseable: jsonParseable,
+      has_code_fence: /```/.test(value),
+      has_explicit_message_count: /\b(?:(?:found|returned|showing)\s+\d+\s+(?:gmail\s+)?messages?|\d+\s+(?:gmail\s+)?messages?\s+(?:found|returned)|total(?:\s+(?:gmail\s+)?messages?)?\s*:\s*\d+)\b/i.test(value),
+    };
+  }
+  if (!value || typeof value !== 'object') return { type: typeof value };
+  const keys = Object.keys(value).slice(0, 30);
+  const wrapperKeys = ['content', 'structuredContent', 'result', 'response', 'payload', 'output',
+    'messages', 'emails', 'threads', 'results', 'items', 'data']
+    .filter(key => Object.hasOwn(value, key));
+  return {
+    type: 'object',
+    keys,
+    wrappers: Object.fromEntries(wrapperKeys.map(key =>
+      [key, coverageResultShape(value[key], depth + 1)])),
+  };
 }
 
 function gmailCoverageBinding() {
@@ -10191,7 +10241,10 @@ async function fallbackOperationalSweep({
         status: Number.isFinite(unreadCount) ? 'checked' : 'partial',
         unread_count: unreadCount,
         ...(Number.isFinite(unreadCount) ? {}
-          : { reason: 'connector_result_shape_unrecognized' }),
+          : {
+            reason: 'connector_result_shape_unrecognized',
+            response_shape: coverageResultShape(unread),
+          }),
       };
     } catch (error) {
       result.gmail = {
@@ -15800,6 +15853,7 @@ module.exports = {
     hourlyFallbackBudget,
     commitFallbackForecast,
     coverageCollectionCount,
+    coverageResultShape,
     gmailCoverageSearchArgs,
     boundedNativeTask,
     nativeTaskAttemptKey,

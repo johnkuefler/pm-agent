@@ -87,10 +87,27 @@ test('coverage result counting handles MCP envelopes without retaining message c
     structuredContent: { response: { result: { messages: [{ id: 1 }] } } },
   }), 1, 'managed connector wrapper objects must remain countable');
   assert.equal(__test.coverageCollectionCount({
+    structuredContent: {
+      content: [{ type: 'text', text: 'Found 7 Gmail messages matching the search.' }],
+    },
+  }), 7, 'structured content blocks may carry an explicit prose cardinality');
+  assert.equal(__test.coverageCollectionCount(
+    '**Gmail search**\n\nTotal messages: 12\n\nResults omitted from this fixture.'), 12);
+  assert.equal(__test.coverageCollectionCount(
+    'Message dated 2026-07-23 with thread id 184992 was returned.'), null,
+  'arbitrary numbers in message metadata must never become a result count');
+  assert.equal(__test.coverageCollectionCount({
     content: [{ type: 'text', text: 'No messages found.' }],
   }), 0, 'an explicit zero-result connector response is verified coverage, not an unknown count');
   assert.equal(__test.coverageCollectionCount({ total: 4 }), 4);
   assert.equal(__test.coverageCollectionCount('opaque connector response'), null);
+  const safeShape = __test.coverageResultShape({
+    structuredContent: { content: [{ type: 'text', text: 'private-subject-value' }] },
+  });
+  assert.deepEqual(safeShape.keys, ['structuredContent']);
+  assert.equal(safeShape.wrappers.structuredContent.wrappers.content.length, 1);
+  assert.doesNotMatch(JSON.stringify(safeShape), /private-subject-value/,
+    'coverage diagnostics must expose structure only, never connector content');
 });
 
 test('Gmail coverage never labels an unrecognized connector result as fully checked', () => {
@@ -98,6 +115,7 @@ test('Gmail coverage never labels an unrecognized connector result as fully chec
   assert.match(source, /const unreadCount = coverageCollectionCount\(unread\)/);
   assert.match(source, /status: Number\.isFinite\(unreadCount\) \? 'checked' : 'partial'/);
   assert.match(source, /connector_result_shape_unrecognized/);
+  assert.match(source, /response_shape: coverageResultShape\(unread\)/);
 });
 
 test('Slack provider readback repairs a lost local thread marker without duplicating a reply', () => {
