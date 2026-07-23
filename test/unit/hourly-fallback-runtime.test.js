@@ -83,6 +83,72 @@ test('coverage result counting handles MCP envelopes without retaining message c
   assert.equal(__test.coverageCollectionCount('opaque connector response'), null);
 });
 
+test('Slack provider readback repairs a lost local thread marker without duplicating a reply', () => {
+  const parent = {
+    ts: '1784781000.000100',
+    reply_users: ['UOTHER', 'UNORA'],
+  };
+  assert.equal(__test.slackThreadHasNoraReply(parent, [], 'UNORA'), true);
+  assert.equal(__test.slackThreadHasNoraReply({ ts: parent.ts }, [
+    { ts: parent.ts, user: 'UREQUESTER' },
+    { ts: '1784781001.000200', user: 'UNORA' },
+  ], 'UNORA'), true);
+  assert.equal(__test.slackThreadHasNoraReply({
+    ts: '1784781005.000100', thread_ts: parent.ts, reply_users: ['UNORA'],
+  }, [
+    { ts: '1784781001.000200', user: 'UNORA' },
+  ], 'UNORA'), false, 'an older Nora reply must not suppress a later mention in the thread');
+  assert.equal(__test.slackThreadHasNoraReply({
+    ts: '1784781005.000100', thread_ts: parent.ts, reply_users: ['UNORA'],
+  }, [
+    { ts: '1784781006.000200', user: 'UNORA' },
+  ], 'UNORA'), true);
+  assert.equal(__test.slackThreadHasNoraReply({ ts: parent.ts }, [
+    { ts: '1784781001.000200', user: 'UOTHER' },
+  ], 'UNORA'), false);
+});
+
+test('hourly recovery answers one verified missed Slack mention on a bounded guarded path', async () => {
+  let captured;
+  const result = await __test.recoverUnhandledSlackMention({
+    channel: 'C-MISSED',
+    is_private: false,
+    ts: '1784781000.000100',
+    thread_ts: null,
+    user: 'U-REQUESTER',
+    text: '<@UNORA> can you check the launch date?',
+  }, {
+    deadlineAt: Date.now() + 60000,
+    prioritySnapshot: () => ({ active_interactions: 0, quiet_remaining_ms: 0 }),
+    handle: async (...args) => {
+      captured = args;
+      return { status: 'replied' };
+    },
+  });
+  assert.equal(result.status, 'replied');
+  assert.equal(captured[0], 'C-MISSED');
+  assert.equal(captured[2], 'can you check the launch date?');
+  assert.equal(captured[3], '1784781000.000100');
+  assert.equal(captured[5], 'normal');
+  assert.equal(captured[9].recoveryGuard, true);
+  assert.ok(captured[9].terminalAt <= Date.now() + 30000);
+});
+
+test('hourly missed-mention recovery yields to a current live interaction', async () => {
+  let handled = false;
+  const result = await __test.recoverUnhandledSlackMention({
+    channel: 'C-BUSY', ts: '1784781002.000100', user: 'U-REQUESTER',
+    text: '<@UNORA> check this',
+  }, {
+    deadlineAt: Date.now() + 60000,
+    prioritySnapshot: () => ({ active_interactions: 1, quiet_remaining_ms: 0 }),
+    handle: async () => { handled = true; },
+  });
+  assert.equal(result.status, 'deferred');
+  assert.equal(result.reason, 'interactive_priority');
+  assert.equal(handled, false);
+});
+
 test('Gmail coverage adapts to the connected tool schema and fails closed on unknown requirements', () => {
   assert.deepEqual(__test.gmailCoverageSearchArgs({
     properties: {

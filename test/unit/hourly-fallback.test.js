@@ -79,7 +79,7 @@ test('fallback forecast is a valid v4 payload without a mature prior', () => {
   const normalized = cycleSelfForecast.normalizeForecast(input, 4);
   assert.equal(input.protocol_version, 4);
   assert.deepEqual(normalized.predicted_action_types,
-    ['fallback_observation', 'local_task_execution']);
+    ['fallback_observation', 'local_task_execution', 'slack_recovery']);
 });
 
 test('fallback forecast binds but does not overclaim use of a mature behavioral prior', () => {

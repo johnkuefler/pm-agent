@@ -7728,7 +7728,7 @@ app.post('/webhook/slack', async (req, res) => {
 // The key is computed here (per channel/thread/user) and passed in so the lock and the body agree on
 // exactly one array. Unrelated conversations still run concurrently.
 async function handleSlack(channel, user, text, threadTs, channelType, mode = 'normal', rootThreadTs = undefined,
-  triggerTs = undefined, sourceAttestation = null) {
+  triggerTs = undefined, sourceAttestation = null, options = {}) {
   // KEY BY THE RAW thread_ts (undefined for a top-level message) + user. A top-level channel message
   // has no thread_ts, so all of ONE person's sequential top-level messages share the
   // `channel:<id>:<user>` key and her replies ACCUMULATE there — instead of each message spinning up
@@ -7745,9 +7745,17 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   intelligenceRoutesRuntime.preemptConsciousnessResearchStatus('slack');
   let failed = false;
   try {
-    return await withSlackSessionLock(sessionKey, () =>
-      handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
-        sourceAttestation, interactionStartedAt));
+    return await withSlackSessionLock(sessionKey, async () => {
+      if (options.recoveryGuard === true && threadTs && isThreadJoined(channel, threadTs)) {
+        return { status: 'already_handled', channel, thread_ts: threadTs };
+      }
+      await handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs,
+        sessionKey, triggerTs, sourceAttestation, interactionStartedAt, options.terminalAt);
+      return {
+        status: threadTs && isThreadJoined(channel, threadTs) ? 'replied' : 'processed',
+        channel, thread_ts: threadTs || null,
+      };
+    });
   } catch (error) {
     failed = true;
     runtimeActivity.finish(activity.id, { status: 'failed',
@@ -7778,7 +7786,7 @@ function stripSlackLookupNarration(value) {
 }
 
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
-  sourceAttestation = null, interactionStartedAt = Date.now()) {
+  sourceAttestation = null, interactionStartedAt = Date.now(), terminalAtOverride = null) {
   const handlerStartedAt = Date.now();
   const latencyStages = { queue_ms: handlerStartedAt - interactionStartedAt };
   let providerStartedAt = null;
@@ -7793,7 +7801,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let behavioralSelfProfileAssignmentForFailure = null;
   let cognitiveParameterAssignmentForFailure = null;
   const conversationPolicy = slackConversationPolicy(text, mode);
-  let slackTerminalAt = interactionStartedAt + (conversationPolicy.attachLiveTools ? 45000 : 8000);
+  const boundedTerminalAt = defaultTerminalAt => Number.isFinite(Number(terminalAtOverride))
+    ? Math.min(defaultTerminalAt, Number(terminalAtOverride)) : defaultTerminalAt;
+  let slackTerminalAt = boundedTerminalAt(
+    interactionStartedAt + (conversationPolicy.attachLiveTools ? 45000 : 8000));
   try {
     const key = sessionKey;
     // Session keys intentionally span a conversation, but research receipts and action attestations
@@ -7948,7 +7959,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const attachLiveTools = conversationPolicy.attachLiveTools;
     // Absolute end-to-end deadline. Context enrichment above already spent part of this budget;
     // preflights, tool calls, fallback retries, and delivery must share what remains.
-    slackTerminalAt = interactionStartedAt + (attachLiveTools ? 45000 : 8000);
+    slackTerminalAt = boundedTerminalAt(
+      interactionStartedAt + (attachLiveTools ? 45000 : 8000));
     const slackDeliveryReserveMs = attachLiveTools ? 2500 : 1000;
     const slackRemainingMs = (reserveMs = slackDeliveryReserveMs) =>
       Math.max(0, slackTerminalAt - Date.now() - reserveMs);
@@ -8977,6 +8989,21 @@ async function resolveChannelNames(channelIds) {
   return Object.fromEntries(entries);
 }
 
+function slackThreadHasNoraReply(parent, replies, botUserId) {
+  const nora = String(botUserId || '');
+  if (!nora) return false;
+  // For a top-level mention, every thread reply necessarily follows the mention. For a later
+  // thread-broadcast mention, reply_users may include Nora because of an older reply; require an
+  // actual Nora reply timestamp after this specific mention instead.
+  if (!parent?.thread_ts
+    && (parent?.reply_users || []).some(user => String(user) === nora)) return true;
+  const mentionTs = Number.parseFloat(String(parent?.ts || '0')) || 0;
+  return (Array.isArray(replies) ? replies : []).some(reply =>
+    String(reply?.ts || '') !== String(parent?.ts || '')
+    && String(reply?.user || '') === nora
+    && (Number.parseFloat(String(reply?.ts || '0')) || 0) > mentionTs);
+}
+
 // Find @mentions of the bot in channels Nora's app is a member of that haven't been
 // responded to. This uses the BOT'S point of view (via SLACK_BOT_TOKEN), not the user
 // account's, which is the right perspective for "what did the live handler miss?" —
@@ -9040,6 +9067,7 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
     const unhandled = [];
     let scanned = 0;
     let scanErrors = 0;
+    let providerRecoveredThreads = 0;
     let historyScopeFailures = { public: 0, private: 0 };
 
     let nextChannelIndex = 0;
@@ -9071,6 +9099,34 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
           // The thread the bot would have joined when responding
           const effectiveThreadTs = msg.thread_ts || msg.ts;
           if (isThreadJoined(channel.id, effectiveThreadTs)) continue;
+          let providerAlreadyAnswered = slackThreadHasNoraReply(msg, [], botUserId);
+          if (!providerAlreadyAnswered && (Number(msg.reply_count) > 0 || msg.thread_ts)) {
+            try {
+              const repliesRes = await axios.get(
+                `https://slack.com/api/conversations.replies?channel=${channel.id}&ts=${effectiveThreadTs}&limit=100`,
+                { headers, timeout: 6000, signal: scanController.signal }
+              );
+              if (!repliesRes.data.ok) {
+                if (repliesRes.data.error === 'missing_scope') {
+                  if (channel.is_private) historyScopeFailures.private++;
+                  else historyScopeFailures.public++;
+                } else scanErrors++;
+              } else {
+                providerAlreadyAnswered = slackThreadHasNoraReply(
+                  msg, repliesRes.data.messages, botUserId);
+              }
+            } catch (error) {
+              if (scanController.signal.aborted) throw error;
+              scanErrors++;
+            }
+          }
+          if (providerAlreadyAnswered) {
+            // Slack is authoritative for delivery. Repair the local optimization marker so a
+            // restart between chat.postMessage and marker persistence cannot cause a duplicate.
+            markThreadJoined(channel.id, effectiveThreadTs);
+            providerRecoveredThreads++;
+            continue;
+          }
 
           unhandled.push({
             channel: channel.id,
@@ -9115,6 +9171,7 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
       channels_scanned: scanned,
       channels_total: channels.length,
       scan_errors: scanErrors,
+      provider_recovered_threads: providerRecoveredThreads,
       scope_warnings: scopeWarnings,
       unhandled_count: unhandled.length,
       unhandled
@@ -9908,8 +9965,58 @@ async function runNativeHourlyTask(task, {
   }
 }
 
+async function recoverUnhandledSlackMention(candidate, {
+  deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
+  handle = handleSlack,
+  prioritySnapshot = () => interactivePerformance.prioritySnapshot(),
+} = {}) {
+  if (!candidate) return { status: 'not_due', message_ts: null };
+  const channel = String(candidate.channel || '');
+  const messageTs = String(candidate.ts || '');
+  const threadTs = String(candidate.thread_ts || messageTs);
+  const user = String(candidate.user || '');
+  const text = String(candidate.text || '').replace(/<@[A-Z0-9]+>/g, '').trim().slice(0, 4000);
+  if (!channel || !messageTs || !threadTs || !user || !text) {
+    return { status: 'invalid', message_ts: messageTs || null,
+      reason: 'recovery_candidate_incomplete' };
+  }
+  if (isThreadJoined(channel, threadTs)) {
+    return { status: 'already_handled', message_ts: messageTs, thread_ts: threadTs };
+  }
+  const priority = prioritySnapshot();
+  if (Number(priority?.active_interactions) > 0 || Number(priority?.quiet_remaining_ms) > 0) {
+    return { status: 'deferred', message_ts: messageTs, thread_ts: threadTs,
+      reason: 'interactive_priority' };
+  }
+  let recoveryBudgetMs;
+  try {
+    recoveryBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 30000, 'Fallback Slack mention recovery', 10000);
+  } catch (error) {
+    return { status: 'deferred', message_ts: messageTs, thread_ts: threadTs,
+      reason: error.code || 'insufficient_runtime_budget' };
+  }
+  try {
+    const result = await handle(channel, user, text, threadTs,
+      candidate.is_private ? 'group' : 'channel', 'normal',
+      candidate.thread_ts || undefined, messageTs, null, {
+        recoveryGuard: true,
+        terminalAt: Date.now() + recoveryBudgetMs,
+      });
+    return {
+      status: result?.status || (isThreadJoined(channel, threadTs) ? 'replied' : 'processed'),
+      message_ts: messageTs,
+      thread_ts: threadTs,
+    };
+  } catch (error) {
+    return { status: 'degraded', message_ts: messageTs, thread_ts: threadTs,
+      reason: String(error?.message || error).slice(0, 240) };
+  }
+}
+
 async function fallbackOperationalSweep({
   deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
+  privateResult = null,
 } = {}) {
   const now = new Date();
   const internalDue = loadTasks().filter(task => isTaskEligibleNow(task, now)
@@ -9967,14 +10074,27 @@ async function fallbackOperationalSweep({
         deadlineAt, 16000, 'Fallback Slack missed-mention sweep', 5000);
       const slack = await localRuntimeApi('get',
         '/slack/unhandled-mentions?minutes=120', undefined, slackBudgetMs);
+      if (privateResult && typeof privateResult === 'object' && slack.unhandled?.length) {
+        const candidate = slack.unhandled[0];
+        privateResult.slack_candidate = {
+          channel: String(candidate.channel || '').slice(0, 160),
+          is_private: candidate.is_private === true,
+          ts: String(candidate.ts || '').slice(0, 80),
+          thread_ts: candidate.thread_ts
+            ? String(candidate.thread_ts).slice(0, 80) : null,
+          user: String(candidate.user || '').slice(0, 160),
+          text: String(candidate.text || '').slice(0, 4000),
+        };
+      }
       result.slack = {
         status: slack.scope_warnings?.length || slack.scan_errors
           ? 'partial' : 'checked',
         unhandled_count: Number(slack.unhandled_count) || 0,
         channels_scanned: Number(slack.channels_scanned) || 0,
         channels_total: Number(slack.channels_total) || 0,
+        provider_recovered_threads: Number(slack.provider_recovered_threads) || 0,
         scope_warning_count: slack.scope_warnings?.length || 0,
-        scan_errors: Number(slack.scan_errors) || 0,
+      scan_errors: Number(slack.scan_errors) || 0,
       };
     } catch (error) {
       result.slack = {
@@ -10070,10 +10190,16 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
     await commitFallbackForecast(cycleId,
       fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }),
       { deadlineAt });
-    const sweep = await fallbackOperationalSweep({ deadlineAt });
+    const privateSweep = {};
+    const sweep = await fallbackOperationalSweep({ deadlineAt, privateResult: privateSweep });
+    sweep.slack_recovery = await recoverUnhandledSlackMention(
+      privateSweep.slack_candidate, { deadlineAt });
     const attemptMarkers = loadMarkers();
-    const eligibleTask = loadTasks().find(task =>
-      nativeTaskReady(task, attemptMarkers, Date.now())) || null;
+    const taskLaneAvailable = ['not_due', 'already_handled', 'invalid']
+      .includes(sweep.slack_recovery.status);
+    const eligibleTask = taskLaneAvailable
+      ? loadTasks().find(task => nativeTaskReady(task, attemptMarkers, Date.now())) || null
+      : null;
     sweep.task_execution = await runNativeHourlyTask(eligibleTask, { deadlineAt });
     if (eligibleTask) {
       sweep.task_execution.retry = await recordNativeTaskAttempt(
@@ -10085,6 +10211,7 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
         ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}`,
       `Slack ${sweep.slack.status}${Number.isFinite(sweep.slack.unhandled_count)
         ? ` with ${sweep.slack.unhandled_count} unhandled mention(s)` : ''}`,
+      `Slack recovery ${sweep.slack_recovery.status}`,
       `Gmail ${sweep.gmail.status}${Number.isFinite(sweep.gmail.unread_count)
         ? ` with ${sweep.gmail.unread_count} relevant unread result(s)` : ''}`,
       `local task execution ${sweep.task_execution.status}${sweep.task_execution.task_id
@@ -10098,6 +10225,11 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
         actions: [
           { type: 'fallback_observation', id: activity.id,
             mode: 'read_only', checked_at: sweep.checked_at },
+          ...(sweep.slack_recovery.status === 'replied' ? [{
+            type: 'slack_recovery',
+            id: sweep.slack_recovery.message_ts,
+            thread_ts: sweep.slack_recovery.thread_ts,
+          }] : []),
           ...(sweep.task_execution.completed ? [{
             type: 'local_task_execution',
             id: sweep.task_execution.task_id,
@@ -15561,6 +15693,7 @@ module.exports = {
     rankLexicalMemories,
     retrieveInteractiveMemories,
     stripSlackLookupNarration,
+    slackThreadHasNoraReply,
     hourlyFallbackBudget,
     commitFallbackForecast,
     coverageCollectionCount,
@@ -15572,6 +15705,7 @@ module.exports = {
     recordNativeTaskAttempt,
     nativeHourlyTaskToolset,
     runNativeHourlyTask,
+    recoverUnhandledSlackMention,
     fallbackOperationalSweep,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,

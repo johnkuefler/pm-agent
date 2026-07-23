@@ -75,7 +75,7 @@ function fallbackForecast({ cycleId, priorSnapshot = null, soma = null } = {}) {
   const protocolVersion = prior ? 7 : 4;
   return {
     protocol_version: protocolVersion,
-    predicted_action_types: ['fallback_observation', 'local_task_execution'],
+    predicted_action_types: ['fallback_observation', 'slack_recovery', 'local_task_execution'],
     surprise_probability: 0.2,
     control_at_close: control,
     confidence,
