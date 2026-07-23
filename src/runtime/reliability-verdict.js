@@ -28,6 +28,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const priority = snapshot.interactive_priority || {};
   const background = snapshot.background_work || {};
   const recurringJobs = background.recurring_jobs || {};
+  const startupTasks = background.startup_tasks || {};
   const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
@@ -87,6 +88,20 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
         skipped_recently: skippedRecently || undefined,
         message: `${job.name} is slow or recovering; overlapping executions remain suppressed.` });
     }
+  }
+  const oldestStartupTaskMs = Math.max(0,
+    ...(startupTasks.active || []).map(task => Number(task?.age_ms) || 0));
+  if (oldestStartupTaskMs >= 3 * 60 * 1000) {
+    actionRequired.push({ code: 'startup_background_task_stuck', age_ms: oldestStartupTaskMs,
+      message: 'A startup warmup has remained active long enough to threaten clean recovery.' });
+  } else if (oldestStartupTaskMs >= 60 * 1000) {
+    degraded.push({ code: 'startup_background_task_slow', age_ms: oldestStartupTaskMs,
+      message: 'A startup warmup is taking longer than its normal isolated window.' });
+  }
+  if ((startupTasks.recent_failures || []).length) {
+    degraded.push({ code: 'startup_background_task_failure',
+      count: startupTasks.recent_failures.length,
+      message: 'An optional startup warmup recently failed; core service remains available.' });
   }
   if (hourlyLifecycle.state === 'stale' || hourlyLifecycle.state === 'unobserved') {
     degraded.push({ code: 'hourly_runner_stale', state: hourlyLifecycle.state,

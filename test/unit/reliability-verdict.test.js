@@ -18,7 +18,7 @@ function healthySnapshot() {
     } },
     interactive_priority: { background_budget_cancellations: 0 },
     background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 },
-      recurring_jobs: { jobs: [] } },
+      recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
@@ -172,6 +172,25 @@ test('recurring job health clears after a successful fast cycle', () => {
     last_skipped_at: new Date(now - RECENT_SLOW_WINDOW_MS - 1).toISOString(),
   });
   assert.equal(assessRuntimeReliability(recovered, { now }).status, 'healthy');
+});
+
+test('startup task stalls and failures remain visible until recovery settles', () => {
+  const slow = healthySnapshot();
+  slow.background_work.startup_tasks.active.push({ label: 'transcript backfill', age_ms: 60001 });
+  let verdict = assessRuntimeReliability(slow, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'startup_background_task_slow');
+
+  slow.background_work.startup_tasks.active[0].age_ms = 180001;
+  verdict = assessRuntimeReliability(slow, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'startup_background_task_stuck');
+
+  const failed = healthySnapshot();
+  failed.background_work.startup_tasks.recent_failures.push({
+    label: 'dashboard warmup', at: new Date(now).toISOString(), error: 'worker unavailable',
+  });
+  assert.equal(assessRuntimeReliability(failed, { now }).status, 'degraded');
 });
 
 test('slow and repeatedly failing research projections escalate without taxing live requests', () => {

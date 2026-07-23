@@ -260,6 +260,20 @@ test('post-interaction learning drops a hung item after its bounded budget', asy
   performance.resetPriorityGateForTest();
 });
 
+test('started startup warmups remain owned until the shutdown drain settles', async () => {
+  const { __test } = require('../../server');
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  __test.scheduleStartupBackgroundTask('test held startup warmup', 0, () => held);
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(__test.startupBackgroundTaskSnapshot().active_count, 1);
+  const draining = __test.drainStartupBackgroundTasks({ timeoutMs: 1000 });
+  release();
+  assert.equal(await draining, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(__test.startupBackgroundTaskSnapshot().active_count, 0);
+});
+
 test('post-interaction overflow never evicts the item currently executing', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
@@ -397,6 +411,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'runtime telemetry must expose background queues that could threaten interactive latency');
   assert.match(server, /recurring_jobs: _recurringJobs\.snapshot\(\)/,
     'runtime telemetry must expose every completion-aware recurring job');
+  assert.match(server, /startup_tasks: startupBackgroundTaskSnapshot\(\)/,
+    'runtime telemetry must expose one-time startup work after it begins');
   assert.match(server, /startup dashboard projection warmup[\s\S]*warmDashboardSummary/,
     'the first dashboard visitor after a restart must not pay the cold projection cost');
   assert.match(server, /startup expectation calibration warmup[\s\S]*warmExpectationSummary/,
@@ -532,11 +548,17 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*?await runHourlyFallbackRuntime\(\{ trigger \}\)[\s\S]*?await runBackgroundIntelligenceRuntime\(\{ trigger \}\)/,
     'the operational and intelligence chain must remain owned until all async work settles');
   assert.match(server,
-    /async function stop\(\)[\s\S]*for \(const timer of _runtimeIntervals\.splice\(0\)\)[\s\S]*timer\.close\(\)/,
+    /function closeRuntimeIntervals\(\)[\s\S]*for \(const timer of _runtimeIntervals\.splice\(0\)\)[\s\S]*timer\.close\(\)/,
     'graceful shutdown must close completion-aware recurring jobs');
   assert.match(server,
     /await _recurringJobs\.drain\(\{ timeoutMs: 10000 \}\)[\s\S]*intelligence\.persistStrict\(\)/,
     'graceful shutdown must drain active recurring work before the final persistence flush');
+  assert.match(server,
+    /await drainStartupBackgroundTasks\(\{ timeoutMs: 10000 \}\)[\s\S]*intelligence\.persistStrict\(\)/,
+    'graceful shutdown must drain already-started warmups before closing persistence');
+  assert.match(server,
+    /async function stop\(\)[\s\S]*closeRuntimeIntervals\(\)[\s\S]*drainStartupBackgroundTasks[\s\S]*closeRuntimeIntervals\(\)/,
+    'shutdown must sweep timers again after a settling startup owner crosses the first close boundary');
   assert.match(server, /_cycleSelfCorrectionReflectionLastCycle\?\.state === 'failed_closed'[\s\S]*60 \* 60 \* 1000/,
     'one failed reflection must enter cooldown instead of retrying every scheduler tick');
   const autopilotStatus = server.slice(server.indexOf('function researchAutopilotProgramStatus'),

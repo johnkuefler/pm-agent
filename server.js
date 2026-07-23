@@ -13211,6 +13211,9 @@ wss.on('connection', async (ws, req) => {
 // shutdown without changing production defaults.
 let _startPromise = null;
 const _runtimeIntervals = [];
+const _startupBackgroundTasks = new Map();
+const _startupBackgroundTaskFailures = [];
+let _startupBackgroundTaskSequence = 0;
 const _recurringJobs = createRecurringJobRegistry({
   onError: (name, error) =>
     console.warn(`Recurring runtime job ${name} failed:`, error.message),
@@ -13219,6 +13222,32 @@ function scheduleRecurringRuntimeJob(name, intervalMs, work, options = {}) {
   const handle = _recurringJobs.register(name, intervalMs, work, options);
   _runtimeIntervals.push(handle);
   return handle;
+}
+function startupBackgroundTaskSnapshot(now = Date.now()) {
+  const active = [..._startupBackgroundTasks.values()].map(task => ({
+    label: task.label,
+    started_at: new Date(task.started_at).toISOString(),
+    age_ms: Math.max(0, Number(now) - task.started_at),
+  }));
+  return {
+    active_count: active.length,
+    active,
+    recent_failures: _startupBackgroundTaskFailures.filter(item =>
+      Number(now) - new Date(item.at).getTime() <= 15 * 60 * 1000),
+  };
+}
+async function drainStartupBackgroundTasks({ timeoutMs = 10000 } = {}) {
+  const pending = [..._startupBackgroundTasks.values()].map(task => task.promise);
+  if (!pending.length) return true;
+  let timer = null;
+  const timeout = new Promise(resolve => {
+    timer = setTimeout(() => resolve(false), Math.max(1, Number(timeoutMs) || 10000));
+    timer.unref?.();
+  });
+  const settled = Promise.allSettled(pending).then(() => true);
+  const drained = await Promise.race([settled, timeout]);
+  if (timer) clearTimeout(timer);
+  return drained;
 }
 let _cognitivePulseInFlight = false;
 const _selfInquirySelectionInFlight = new Set();
@@ -13322,6 +13351,7 @@ function backgroundWorkSnapshot() {
       frame_parse_interval_ms: FRAME_PARSE_INTERVAL_MS,
       voice_quiet_ms: SCREENSHARE_VOICE_QUIET_MS },
     recurring_jobs: _recurringJobs.snapshot(),
+    startup_tasks: startupBackgroundTaskSnapshot(),
   };
 }
 function schedulePostInteractionExtractionDrain(delayMs = 1200) {
@@ -15826,6 +15856,7 @@ function tickEndogenousRuntimeWithDiagnostics(trigger) {
 }
 
 function scheduleStartupBackgroundTask(label, delayMs, fn, deferrals = 0) {
+  if (_serviceReadiness.phase === 'draining') return;
   const timer = setTimeout(() => {
     const timerIndex = _runtimeIntervals.indexOf(timer);
     if (timerIndex >= 0) _runtimeIntervals.splice(timerIndex, 1);
@@ -15836,12 +15867,30 @@ function scheduleStartupBackgroundTask(label, delayMs, fn, deferrals = 0) {
       scheduleStartupBackgroundTask(label, admission.retry_after_ms || 30000, fn, deferrals + 1);
       return;
     }
-    Promise.resolve()
-      .then(fn)
-      .catch(error => console.error(`${label} failed:`, error.message));
+    const id = `startup-${++_startupBackgroundTaskSequence}`;
+    const startedAt = Date.now();
+    const execution = Promise.resolve().then(fn);
+    _startupBackgroundTasks.set(id, { label, started_at: startedAt, promise: execution });
+    execution
+      .catch(error => {
+        _startupBackgroundTaskFailures.push({
+          label, at: new Date().toISOString(),
+          error: String(error?.message || error || 'startup task failed').slice(0, 300),
+        });
+        if (_startupBackgroundTaskFailures.length > 12) _startupBackgroundTaskFailures.shift();
+        console.error(`${label} failed:`, error.message);
+      })
+      .finally(() => _startupBackgroundTasks.delete(id));
   }, delayMs);
   timer.unref?.();
   _runtimeIntervals.push(timer);
+}
+
+function closeRuntimeIntervals() {
+  for (const timer of _runtimeIntervals.splice(0)) {
+    if (typeof timer?.close === 'function') timer.close();
+    else clearInterval(timer);
+  }
 }
 
 async function completePostListenStartup(background) {
@@ -15981,10 +16030,7 @@ async function stop() {
   }
   processResources.close();
   if (_somaLoopTimer) { clearInterval(_somaLoopTimer); _somaLoopTimer = null; }
-  for (const timer of _runtimeIntervals.splice(0)) {
-    if (typeof timer?.close === 'function') timer.close();
-    else clearInterval(timer);
-  }
+  closeRuntimeIntervals();
   if (_embedTimer) { _embedTimer.close?.(); _embedTimer = null; }
   const recurringJobsDrained = await _recurringJobs.drain({ timeoutMs: 10000 });
   if (!recurringJobsDrained) {
@@ -15996,6 +16042,14 @@ async function stop() {
     console.warn('Deferred connector worker drain exceeded 10000ms; its restart outcome will be marked uncertain');
   }
   _jobWorkerLoop = null;
+  const startupTasksDrained = await drainStartupBackgroundTasks({ timeoutMs: 10000 });
+  if (!startupTasksDrained) {
+    console.warn('Startup background task drain exceeded 10000ms; continuing bounded shutdown');
+  }
+  // A startup owner that was already settling when shutdown began may have attempted to register
+  // a follow-up timer. The draining guard prevents new registrations; this second sweep closes any
+  // handle that crossed the first sweep's boundary before that guard was observed.
+  closeRuntimeIntervals();
   const closeServer = server.listening
     ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
   server.closeIdleConnections?.();
@@ -16144,6 +16198,9 @@ module.exports = {
     enqueuePostInteractionExtraction,
     drainPostInteractionExtractionQueue,
     backgroundWorkSnapshot,
+    scheduleStartupBackgroundTask,
+    startupBackgroundTaskSnapshot,
+    drainStartupBackgroundTasks,
     resetPostInteractionExtractionForTest,
     screenShareVoiceGate,
     processResources,
