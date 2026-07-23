@@ -70,6 +70,7 @@ function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth,
     res.flushHeaders?.();
     let closed = false;
     let backpressured = false;
+    let resyncNeeded = false;
     let backpressureTimer = null;
     let heartbeat = null;
     let unsubscribe = () => {};
@@ -91,8 +92,12 @@ function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth,
       close();
       if (!res.writableEnded && !res.destroyed) res.end?.();
     };
-    const write = frame => {
-      if (closed || backpressured || res.writableEnded || res.destroyed) return false;
+    const write = (frame, { resyncOnSkip = false } = {}) => {
+      if (closed || res.writableEnded || res.destroyed) return false;
+      if (backpressured) {
+        if (resyncOnSkip) resyncNeeded = true;
+        return false;
+      }
       let accepted = false;
       try { accepted = res.write(frame); }
       catch {
@@ -110,14 +115,16 @@ function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth,
     const send = (event, payload, id = null) => {
       const frame = `${id != null ? `id: ${id}\n` : ''}event: ${event}\n`
         + `data: ${JSON.stringify(payload)}\n\n`;
-      return write(frame);
+      return write(frame, { resyncOnSkip: event === 'activity' });
     };
     function onDrain() {
       if (closed) return;
+      const shouldResync = resyncNeeded;
+      resyncNeeded = false;
       clearBackpressure();
       // Events that arrived while the socket was saturated were deliberately not buffered.
       // A fresh bounded snapshot restores exact visible state before incremental delivery resumes.
-      send('snapshot', stream.snapshot());
+      if (shouldResync) send('snapshot', stream.snapshot());
     };
     unsubscribe = stream.subscribe(activity => send('activity', activity, activity.sequence));
     send('snapshot', stream.snapshot());

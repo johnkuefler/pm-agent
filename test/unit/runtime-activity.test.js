@@ -116,7 +116,7 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
   listeners.close();
 });
 
-test('runtime activity stream bounds slow-client backpressure and resynchronizes on drain', () => {
+test('runtime activity stream bounds slow-client backpressure and resynchronizes on drain', async () => {
   const routes = new Map();
   const app = {
     get(path, ...handlers) { routes.set(`GET ${path}`, handlers.at(-1)); },
@@ -148,9 +148,19 @@ test('runtime activity stream bounds slow-client backpressure and resynchronizes
     once(event, listener) { requestListeners[event] = listener; },
   }, res);
   assert.equal(typeof responseListeners.drain, 'function');
-  const writesBeforeDrop = writes.length;
+  const initialWrites = writes.length;
+  acceptWrites = true;
+  responseListeners.drain();
+  assert.equal(writes.length, initialWrites,
+    'draining the large initial snapshot must not enqueue the same snapshot again');
+
+  acceptWrites = false;
+  stream.record({ lane: 'work', kind: 'test', label: 'Buffered saturation edge' });
+  await new Promise(resolve => setImmediate(resolve));
+  const writesAtBackpressure = writes.length;
   stream.record({ lane: 'work', kind: 'test', label: 'Dropped while saturated' });
-  assert.equal(writes.length, writesBeforeDrop,
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(writes.length, writesAtBackpressure,
     'incremental events must not accumulate behind a saturated client');
   acceptWrites = true;
   responseListeners.drain();
