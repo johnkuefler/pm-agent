@@ -9592,17 +9592,31 @@ function centralDateYmd(date = new Date()) {
 }
 
 function mcpResultValue(result) {
-  if (!result || typeof result !== 'object' || !Array.isArray(result.content)) return result;
+  if (!result || typeof result !== 'object') return result;
+  // MCP 2025-06-18 added structuredContent alongside the older content blocks. Prefer the
+  // machine-readable value when present; many managed connectors keep their text block purely
+  // presentational, which previously made a successful Gmail scan look count-less.
+  if (result.structuredContent && typeof result.structuredContent === 'object'
+    && Object.keys(result.structuredContent).length) return result.structuredContent;
+  if (!Array.isArray(result.content)) return result;
   const text = result.content.filter(item => item?.type === 'text' && typeof item.text === 'string')
     .map(item => item.text).join('\n').trim();
   if (!text) return result;
   try { return JSON.parse(text); } catch { return text; }
 }
 
-function coverageCollectionCount(result) {
-  const value = mcpResultValue(result);
+function coverageCollectionCountValue(value, depth = 0) {
   if (Array.isArray(value)) return value.length;
-  if (!value || typeof value !== 'object') return null;
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return null;
+    try { return coverageCollectionCountValue(JSON.parse(text), depth + 1); }
+    catch {
+      return /^(?:no (?:gmail )?messages?(?: were)? found|no results|0 results?)(?:[.!]|\s|$)/i.test(text)
+        ? 0 : null;
+    }
+  }
+  if (!value || typeof value !== 'object' || depth > 4) return null;
   for (const key of ['messages', 'results', 'items', 'data']) {
     if (Array.isArray(value[key])) return value[key].length;
   }
@@ -9610,7 +9624,16 @@ function coverageCollectionCount(result) {
     const count = Number(value[key]);
     if (Number.isFinite(count) && count >= 0) return count;
   }
+  for (const key of ['result', 'response', 'payload', 'output', 'structuredContent']) {
+    if (value[key] == null) continue;
+    const nested = coverageCollectionCountValue(value[key], depth + 1);
+    if (nested != null) return nested;
+  }
   return null;
+}
+
+function coverageCollectionCount(result) {
+  return coverageCollectionCountValue(mcpResultValue(result));
 }
 
 function gmailCoverageBinding() {
@@ -10118,9 +10141,12 @@ async function fallbackOperationalSweep({
       const unread = await rejectWithinAbortable(
         signal => binding.execute(args, { signal, timeoutMs: gmailBudgetMs }),
         gmailBudgetMs, 'Fallback Gmail unread sweep');
+      const unreadCount = coverageCollectionCount(unread);
       result.gmail = {
-        status: 'checked',
-        unread_count: coverageCollectionCount(unread),
+        status: Number.isFinite(unreadCount) ? 'checked' : 'partial',
+        unread_count: unreadCount,
+        ...(Number.isFinite(unreadCount) ? {}
+          : { reason: 'connector_result_shape_unrecognized' }),
       };
     } catch (error) {
       result.gmail = {

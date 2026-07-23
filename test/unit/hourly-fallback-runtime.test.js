@@ -79,8 +79,25 @@ test('coverage result counting handles MCP envelopes without retaining message c
   assert.equal(__test.coverageCollectionCount({
     content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 1 }, { id: 2 }] }) }],
   }), 2);
+  assert.equal(__test.coverageCollectionCount({
+    structuredContent: { messages: [{ id: 1 }, { id: 2 }, { id: 3 }] },
+    content: [{ type: 'text', text: 'Three matching messages.' }],
+  }), 3, 'modern MCP structured content must outrank presentational text');
+  assert.equal(__test.coverageCollectionCount({
+    structuredContent: { response: { result: { messages: [{ id: 1 }] } } },
+  }), 1, 'managed connector wrapper objects must remain countable');
+  assert.equal(__test.coverageCollectionCount({
+    content: [{ type: 'text', text: 'No messages found.' }],
+  }), 0, 'an explicit zero-result connector response is verified coverage, not an unknown count');
   assert.equal(__test.coverageCollectionCount({ total: 4 }), 4);
   assert.equal(__test.coverageCollectionCount('opaque connector response'), null);
+});
+
+test('Gmail coverage never labels an unrecognized connector result as fully checked', () => {
+  const source = __test.fallbackOperationalSweep.toString();
+  assert.match(source, /const unreadCount = coverageCollectionCount\(unread\)/);
+  assert.match(source, /status: Number\.isFinite\(unreadCount\) \? 'checked' : 'partial'/);
+  assert.match(source, /connector_result_shape_unrecognized/);
 });
 
 test('Slack provider readback repairs a lost local thread marker without duplicating a reply', () => {
