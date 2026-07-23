@@ -395,6 +395,8 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'the final transcript write must cancel any stale incremental checkpoint');
   assert.match(server, /background_work: backgroundWorkSnapshot\(\)/,
     'runtime telemetry must expose background queues that could threaten interactive latency');
+  assert.match(server, /recurring_jobs: _recurringJobs\.snapshot\(\)/,
+    'runtime telemetry must expose every completion-aware recurring job');
   assert.match(server, /startup dashboard projection warmup[\s\S]*warmDashboardSummary/,
     'the first dashboard visitor after a restart must not pay the cold projection cost');
   assert.match(server, /startup expectation calibration warmup[\s\S]*warmExpectationSummary/,
@@ -512,7 +514,7 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.doesNotMatch(startup, /warmConsciousnessResearchStatus/,
     'CPU-heavy research status must remain lazy during restart recovery');
   assert.match(server,
-    /startup stale research projection refresh', 90000,[\s\S]*warmNextStaleResearchProjection/,
+    /scheduleRecurringRuntimeJob\('stale-research-projection-refresh', 5 \* 60 \* 1000,[\s\S]{0,300}initialDelayMs: 90000/,
     'current-build projection refresh must begin only after the startup and connector quiet period');
   assert.match(intelligenceRoutesSource,
     /warmNextStaleResearchProjection:[\s\S]*\['self_model', selfModelCache\],[\s\S]*\['cognition', cognitionCache\],[\s\S]*\['research_status', researchStatusCache\]/,
@@ -520,8 +522,21 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(intelligenceRoutesSource,
     /if \(shouldDeferResearchStatusRefresh\(\)\)[\s\S]*interactive_or_resource_priority/,
     'post-deploy projection refresh must yield before starting under interactive or resource pressure');
-  assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
+  assert.match(server, /await runBackgroundIntelligenceRuntime\(\{ trigger \}\)/,
     'background intelligence must be serialized behind the foreground-priority lane');
+  const recurringStartup = server.slice(server.indexOf('async function completePostListenStartup'),
+    server.indexOf('async function start('));
+  assert.doesNotMatch(recurringStartup, /setInterval\(/,
+    'production recurring background work must not use overlap-prone raw intervals');
+  assert.match(recurringStartup,
+    /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*?await runHourlyFallbackRuntime\(\{ trigger \}\)[\s\S]*?await runBackgroundIntelligenceRuntime\(\{ trigger \}\)/,
+    'the operational and intelligence chain must remain owned until all async work settles');
+  assert.match(server,
+    /async function stop\(\)[\s\S]*for \(const timer of _runtimeIntervals\.splice\(0\)\)[\s\S]*timer\.close\(\)/,
+    'graceful shutdown must close completion-aware recurring jobs');
+  assert.match(server,
+    /await _recurringJobs\.drain\(\{ timeoutMs: 10000 \}\)[\s\S]*intelligence\.persistStrict\(\)/,
+    'graceful shutdown must drain active recurring work before the final persistence flush');
   assert.match(server, /_cycleSelfCorrectionReflectionLastCycle\?\.state === 'failed_closed'[\s\S]*60 \* 60 \* 1000/,
     'one failed reflection must enter cooldown instead of retrying every scheduler tick');
   const autopilotStatus = server.slice(server.indexOf('function researchAutopilotProgramStatus'),

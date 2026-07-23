@@ -27,6 +27,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const database = persistence.database || {};
   const priority = snapshot.interactive_priority || {};
   const background = snapshot.background_work || {};
+  const recurringJobs = background.recurring_jobs || {};
   const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
@@ -63,6 +64,27 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (processHealth.fatal === true && processHealth.state !== 'running') {
     actionRequired.push({ code: 'fatal_process_recovery',
       message: 'The process is draining after a fatal asynchronous error and will restart.' });
+  }
+  for (const job of recurringJobs.jobs || []) {
+    const failures = Number(job?.consecutive_failures) || 0;
+    const slowRuns = Number(job?.consecutive_slow_runs) || 0;
+    const intervalMs = Math.max(100, Number(job?.interval_ms) || 0);
+    const startedAt = new Date(job?.last_started_at || 0).getTime();
+    const runningAgeMs = job?.running && Number.isFinite(startedAt) && startedAt > 0
+      ? Math.max(0, (Number(now) || Date.now()) - startedAt) : 0;
+    const skippedAt = new Date(job?.last_skipped_at || 0).getTime();
+    const skippedRecently = Number.isFinite(skippedAt) && skippedAt > 0
+      && (Number(now) || Date.now()) - skippedAt <= RECENT_SLOW_WINDOW_MS;
+    if (failures >= 3 || runningAgeMs >= intervalMs * 2) {
+      actionRequired.push({ code: 'recurring_job_stuck', job: job.name,
+        count: failures || undefined, age_ms: runningAgeMs || undefined,
+        message: `${job.name} cannot complete its non-overlapping runtime cycle.` });
+    } else if (failures > 0 || runningAgeMs >= intervalMs || slowRuns > 0 || skippedRecently) {
+      degraded.push({ code: 'recurring_job_recovering', job: job.name,
+        count: failures || slowRuns || undefined, age_ms: runningAgeMs || undefined,
+        skipped_recently: skippedRecently || undefined,
+        message: `${job.name} is slow or recovering; overlapping executions remain suppressed.` });
+    }
   }
   if (hourlyLifecycle.state === 'stale' || hourlyLifecycle.state === 'unobserved') {
     degraded.push({ code: 'hourly_runner_stale', state: hourlyLifecycle.state,

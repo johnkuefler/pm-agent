@@ -2,7 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { assessRuntimeReliability } = require('../../src/runtime/reliability-verdict');
+const { assessRuntimeReliability, RECENT_SLOW_WINDOW_MS } =
+  require('../../src/runtime/reliability-verdict');
 
 const now = Date.parse('2026-07-22T19:00:00.000Z');
 
@@ -16,7 +17,8 @@ function healthySnapshot() {
       realtime: { gate: 'collecting', prompt_gate: 'collecting' },
     } },
     interactive_priority: { background_budget_cancellations: 0 },
-    background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 } },
+    background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 },
+      recurring_jobs: { jobs: [] } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
@@ -120,6 +122,51 @@ test('fatal process recovery is visible as action required during its drain wind
   const verdict = assessRuntimeReliability(snapshot, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'fatal_process_recovery');
+});
+
+test('recurring jobs surface transient pressure and escalate repeated failure or a stuck run', () => {
+  const transient = healthySnapshot();
+  transient.background_work.recurring_jobs.jobs.push({
+    name: 'operational-and-intelligence-cycle',
+    interval_ms: 300000,
+    running: false,
+    consecutive_failures: 1,
+    consecutive_slow_runs: 0,
+  });
+  let verdict = assessRuntimeReliability(transient, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'recurring_job_recovering');
+
+  transient.background_work.recurring_jobs.jobs[0].consecutive_failures = 3;
+  verdict = assessRuntimeReliability(transient, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'recurring_job_stuck');
+
+  const stuck = healthySnapshot();
+  stuck.background_work.recurring_jobs.jobs.push({
+    name: 'soma-refresh',
+    interval_ms: 60000,
+    running: true,
+    last_started_at: new Date(now - 120001).toISOString(),
+    consecutive_failures: 0,
+    consecutive_slow_runs: 0,
+  });
+  verdict = assessRuntimeReliability(stuck, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].job, 'soma-refresh');
+});
+
+test('recurring job health clears after a successful fast cycle', () => {
+  const recovered = healthySnapshot();
+  recovered.background_work.recurring_jobs.jobs.push({
+    name: 'recent-meetings-refresh',
+    interval_ms: 600000,
+    running: false,
+    consecutive_failures: 0,
+    consecutive_slow_runs: 0,
+    last_skipped_at: new Date(now - RECENT_SLOW_WINDOW_MS - 1).toISOString(),
+  });
+  assert.equal(assessRuntimeReliability(recovered, { now }).status, 'healthy');
 });
 
 test('slow and repeatedly failing research projections escalate without taxing live requests', () => {

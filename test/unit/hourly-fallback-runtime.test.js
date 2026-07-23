@@ -60,17 +60,14 @@ test('hourly coverage connector reads propagate cancellation and remaining budge
 test('operational recovery is scheduled before optional background intelligence', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   const scheduler = source.slice(
-    source.indexOf('// Operational recovery always gets the first bounded window.'),
-    source.indexOf('}, 5 * 60 * 1000));',
-      source.indexOf('// Operational recovery always gets the first bounded window.')));
-  assert.ok(scheduler.indexOf("runHourlyFallbackRuntime({ trigger: 'five-minute-scheduler' })")
-    < scheduler.indexOf("runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })"));
-  const startup = source.slice(
-    source.indexOf("scheduleStartupBackgroundTask('startup operational recovery then intelligence'"),
-    source.indexOf('_runtimeIntervals.push(setInterval', source.indexOf(
-      "scheduleStartupBackgroundTask('startup operational recovery then intelligence'")));
-  assert.ok(startup.indexOf("runHourlyFallbackRuntime({ trigger: 'startup' })")
-    < startup.indexOf("runBackgroundIntelligenceRuntime({ trigger: 'startup' })"));
+    source.indexOf("scheduleRecurringRuntimeJob('operational-and-intelligence-cycle'"),
+    source.indexOf("scheduleRecurringRuntimeJob('stale-research-projection-refresh'"));
+  assert.match(scheduler, /const trigger = runNumber === 1 \? 'startup' : 'five-minute-scheduler'/);
+  assert.ok(scheduler.indexOf('await runHourlyFallbackRuntime({ trigger })')
+    < scheduler.indexOf('await runBackgroundIntelligenceRuntime({ trigger })'));
+  assert.match(scheduler,
+    /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*initialDelayMs: 20000/,
+    'startup and periodic recovery must share one non-overlapping scheduler owner');
 });
 
 test('self-forecast commit briefly joins its existing replay preparation instead of forcing a retry', () => {

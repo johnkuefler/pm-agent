@@ -114,6 +114,7 @@ const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
+const { createRecurringJobRegistry } = require('./src/runtime/recurring-jobs');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
@@ -1590,10 +1591,9 @@ function startEmbeddingBackfiller() {
     } catch (e) { console.warn('embed backfill:', e.message); }
     finally { priorityLease.release(); }
   };
-  _embedTimer = setInterval(tick, 20000);
-  const firstTick = setTimeout(tick, 4000); // first pass shortly after boot
-  firstTick.unref?.();
-  _runtimeIntervals.push(firstTick);
+  _embedTimer = scheduleRecurringRuntimeJob('memory-embedding-backfill', 20000, tick, {
+    initialDelayMs: 4000,
+  });
 }
 
 // Scheduled re-vectorization. Embeddings never drift on their own (the backfiller re-embeds
@@ -1757,10 +1757,8 @@ async function initPersistence() {
     // Re-vectorize on model change: once now, then daily (EMBED_MODEL only changes on deploy, so
     // the boot check is the load-bearing one; the daily timer is a cheap safety net).
     await reembedIfModelChanged();
-    const reembedTimer = setInterval(() => reembedIfModelChanged()
-      .catch(error => console.warn('embedding model interval failed:', error.message)), 24 * 60 * 60 * 1000);
-    reembedTimer.unref?.();
-    _runtimeIntervals.push(reembedTimer);
+    scheduleRecurringRuntimeJob('embedding-model-check', 24 * 60 * 60 * 1000,
+      reembedIfModelChanged);
   } catch (e) {
     console.error('❌ Postgres init failed. Error:', e.message);
     _dbReady = false;
@@ -13188,6 +13186,15 @@ wss.on('connection', async (ws, req) => {
 // shutdown without changing production defaults.
 let _startPromise = null;
 const _runtimeIntervals = [];
+const _recurringJobs = createRecurringJobRegistry({
+  onError: (name, error) =>
+    console.warn(`Recurring runtime job ${name} failed:`, error.message),
+});
+function scheduleRecurringRuntimeJob(name, intervalMs, work, options = {}) {
+  const handle = _recurringJobs.register(name, intervalMs, work, options);
+  _runtimeIntervals.push(handle);
+  return handle;
+}
 let _cognitivePulseInFlight = false;
 const _selfInquirySelectionInFlight = new Set();
 const _selfInductionInFlight = new Set();
@@ -13289,6 +13296,7 @@ function backgroundWorkSnapshot() {
       maximum_transport_payload_bytes: VIDEO_WS_MAX_PAYLOAD_BYTES,
       frame_parse_interval_ms: FRAME_PARSE_INTERVAL_MS,
       voice_quiet_ms: SCREENSHARE_VOICE_QUIET_MS },
+    recurring_jobs: _recurringJobs.snapshot(),
   };
 }
 function schedulePostInteractionExtractionDrain(delayMs = 1200) {
@@ -15864,36 +15872,37 @@ async function completePostListenStartup(background) {
     // Hydration makes verified prior-build projections immediately readable. Once startup and
     // connector recovery are quiet, replace them one at a time with current-build projections.
     // The worker is serialized, low-priority, resource-gated, and preempted by Slack/meetings.
-    scheduleStartupBackgroundTask('startup stale research projection refresh', 90000,
-      () => intelligenceRoutesRuntime.warmNextStaleResearchProjection());
-    scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
-    _runtimeIntervals.push(setInterval(() => refreshRecentMeetingsCache()
-      .catch(error => console.warn('recent-meetings interval failed:', error.message)), 10 * 60 * 1000));
-    _runtimeIntervals.push(setInterval(() => computeSoma()
-      .catch(error => console.warn('soma interval failed:', error.message)), 60 * 1000));
-    scheduleStartupBackgroundTask('startup endogenous dynamics tick', 18000, () => tickEndogenousRuntimeWithDiagnostics('startup'));
-    scheduleStartupBackgroundTask('startup operational recovery then intelligence', 20000,
-      async () => {
-        await runHourlyFallbackRuntime({ trigger: 'startup' });
-        return runBackgroundIntelligenceRuntime({ trigger: 'startup' });
-      });
-    _runtimeIntervals.push(setInterval(() => {
+    scheduleRecurringRuntimeJob('recent-meetings-refresh', 10 * 60 * 1000,
+      refreshRecentMeetingsCache, { initialDelayMs: 12000 });
+    scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma);
+    scheduleRecurringRuntimeJob('operational-and-intelligence-cycle', 5 * 60 * 1000,
+      async ({ run_number: runNumber }) => {
       // Operational recovery always gets the first bounded window. Optional reading, play,
       // reflection, and research can follow; they must never make the hourly check wait behind
       // a long background provider cycle.
-      runHourlyFallbackRuntime({ trigger: 'five-minute-scheduler' })
-        .catch(error => console.error('Hourly fallback check failed:', error.message))
-        .finally(() => {
-          try { tickEndogenousRuntimeWithDiagnostics('five-minute-scheduler'); }
-          catch (error) { console.error('Endogenous dynamics tick failed:', error.message); }
-          return runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
-            .catch(error => console.error('Background intelligence cycle failed:', error.message));
-        });
-    }, 5 * 60 * 1000));
-    _runtimeIntervals.push(setInterval(() => {
-      intelligenceRoutesRuntime.warmNextStaleResearchProjection()
-        .catch(error => console.warn('Stale research projection refresh failed:', error.message));
-    }, 5 * 60 * 1000));
+      const trigger = runNumber === 1 ? 'startup' : 'five-minute-scheduler';
+      const failures = [];
+      try { await runHourlyFallbackRuntime({ trigger }); }
+      catch (error) {
+        failures.push(error);
+        console.error('Hourly fallback check failed:', error.message);
+      }
+      try { tickEndogenousRuntimeWithDiagnostics(trigger); }
+      catch (error) {
+        failures.push(error);
+        console.error('Endogenous dynamics tick failed:', error.message);
+      }
+      try { await runBackgroundIntelligenceRuntime({ trigger }); }
+      catch (error) {
+        failures.push(error);
+        console.error('Background intelligence cycle failed:', error.message);
+      }
+      if (failures.length) {
+        throw new AggregateError(failures, `${failures.length} recurring runtime lane(s) failed`);
+      }
+    }, { initialDelayMs: 20000 });
+    scheduleRecurringRuntimeJob('stale-research-projection-refresh', 5 * 60 * 1000,
+      () => intelligenceRoutesRuntime.warmNextStaleResearchProjection(), { initialDelayMs: 90000 });
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
   setServiceReadiness('ready', { ready: true });
@@ -15951,7 +15960,11 @@ async function stop() {
     if (typeof timer?.close === 'function') timer.close();
     else clearInterval(timer);
   }
-  if (_embedTimer) { clearInterval(_embedTimer); _embedTimer = null; }
+  if (_embedTimer) { _embedTimer.close?.(); _embedTimer = null; }
+  const recurringJobsDrained = await _recurringJobs.drain({ timeoutMs: 10000 });
+  if (!recurringJobsDrained) {
+    console.warn('Recurring runtime job drain exceeded 10000ms; continuing bounded shutdown');
+  }
   const closeServer = server.listening
     ? new Promise(resolve => server.close(resolve)) : Promise.resolve();
   server.closeIdleConnections?.();
