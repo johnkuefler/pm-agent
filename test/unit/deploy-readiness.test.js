@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { REQUIRED_ROUTINE_MARKERS, assessRoutineContract,
   assessDeployReadiness, checkDeployReadiness } = require('../../scripts/check-deploy-readiness');
 
@@ -155,4 +157,12 @@ test('deployment readiness fails closed when either authoritative probe fails', 
       ? response({}, 503) : response({ count: 0, bots: [] }) }), /failed with HTTP 503/);
   await assert.rejects(checkDeployReadiness({ apiKey: '', fetchImpl: async () => response({}) }),
     /NORA_API_KEY is required/);
+});
+
+test('the Railway pre-deploy process exits after its terminal readiness result', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'scripts',
+    'check-deploy-readiness.js'), 'utf8');
+  assert.match(source,
+    /main\(\)\.then\(\(\) => process\.exit\(process\.exitCode \|\| 0\)\)/,
+    'HTTP keep-alive handles must not leave a completed pre-deploy gate running forever');
 });

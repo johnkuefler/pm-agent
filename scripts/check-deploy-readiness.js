@@ -157,7 +157,13 @@ async function main() {
   }
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  // Railway runs this as a one-shot pre-deploy container. Node's fetch implementation may retain
+  // pooled keep-alive handles after every probe has completed, so setting exitCode alone can leave
+  // the deployment in BUILDING indefinitely. All output is synchronously written above; exit only
+  // after main has reached its explicit ready/not-ready terminal state.
+  main().then(() => process.exit(process.exitCode || 0));
+}
 
 module.exports = { DEFAULT_BASE_URL, REQUIRED_ROUTINE_MARKERS, assessRoutineContract,
   assessDeployReadiness, checkDeployReadiness };
