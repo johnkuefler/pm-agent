@@ -93,3 +93,68 @@ test('tool loop preserves completed tool evidence when a follow-up provider call
   assert.deepEqual(result.firedTools, ['lookup']);
   assert.equal(result.response.data.stop_reason, 'tool_use');
 });
+
+test('tool loop bounds a stalled read tool and preserves time for a final answer', async () => {
+  let providerCalls = 0;
+  const started = Date.now();
+  const result = await __test.runClaudeToolLoop({ messages: [], tools: [{ name: 'slow_read' }] }, {}, {
+    slow_read: async (_args, { signal }) => new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    }),
+  }, 2, {
+    deadlineMs: 80,
+    providerTimeoutMs: 20,
+    toolTimeoutMs: 20,
+    post: async () => {
+      providerCalls += 1;
+      return providerCalls === 1
+        ? { data: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'slow', name: 'slow_read', input: {} }] } }
+        : { data: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'The live lookup timed out, so I could not verify it.' }] } };
+    },
+  });
+  assert.equal(providerCalls, 2);
+  assert.deepEqual(result.firedTools, []);
+  assert.equal(result.response.data.content[0].text, 'The live lookup timed out, so I could not verify it.');
+  assert.ok(Date.now() - started < 250);
+});
+
+test('tool loop does not start a write without a safe completion window', async () => {
+  let writes = 0;
+  let providerCalls = 0;
+  const result = await __test.runClaudeToolLoop({ messages: [], tools: [{ name: 'write_task' }] }, {}, {
+    write_task: async () => { writes += 1; return { ok: true }; },
+  }, 2, {
+    deadlineMs: 40,
+    providerTimeoutMs: 20,
+    writeStartMinimumMs: 1000,
+    writeToolNames: ['write_task'],
+    post: async () => {
+      providerCalls += 1;
+      return providerCalls === 1
+        ? { data: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'write', name: 'write_task', input: {} }] } }
+        : { data: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'I did not start that change because the live window closed.' }] } };
+    },
+  });
+  assert.equal(writes, 0);
+  assert.deepEqual(result.firedTools, []);
+  assert.equal(result.response.data.content[0].text, 'I did not start that change because the live window closed.');
+});
+
+test('tool loop does not report an executor error result as a completed tool', async () => {
+  let providerCalls = 0;
+  const result = await __test.runClaudeToolLoop({ messages: [], tools: [{ name: 'write_task' }] }, {}, {
+    write_task: async () => ({ error: 'connector refused the write' }),
+  }, 2, {
+    deadlineMs: 5000,
+    providerTimeoutMs: 1000,
+    writeStartMinimumMs: 1000,
+    writeToolNames: ['write_task'],
+    post: async () => {
+      providerCalls += 1;
+      return providerCalls === 1
+        ? { data: { stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 'failed-write', name: 'write_task', input: {} }] } }
+        : { data: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'The connector refused the change.' }] } };
+    },
+  });
+  assert.deepEqual(result.firedTools, []);
+});

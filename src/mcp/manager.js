@@ -389,13 +389,19 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
 
   // timeout is the OUTER cap. Live turns use the default (~16s, so a live reply never stalls);
   // the background job worker passes a generous timeout for deferred tools like ImageGen.
-  async function callTool(connectionId, toolName, args, { timeout = 16000 } = {}) {
+  async function callTool(connectionId, toolName, args, { timeout = 16000, signal } = {}) {
     const connection = findRaw(connectionId); if (!connection || connection.enabled === false) throw new Error('MCP connection is unavailable');
     const catalogTool = (connection.tools || []).find(tool => tool.name === toolName);
     if (!catalogTool || !toolIsAllowed(connection, catalogTool)) throw new Error('MCP tool is not allowed for this connection');
     let entry;
-    const inner = Math.max(1000, timeout - 1000);
-    try { entry = await getClient(connection); return await withTimeout(entry.client.callTool({ name: toolName, arguments: args || {} }, undefined, { timeout: inner }), timeout, 'MCP tool call'); }
+    const startedAt = Date.now();
+    const operation = (async () => {
+      entry = await getClient(connection);
+      const remaining = Math.max(1, timeout - (Date.now() - startedAt));
+      return entry.client.callTool({ name: toolName, arguments: args || {} }, undefined,
+        { timeout: remaining, maxTotalTimeout: remaining, signal });
+    })();
+    try { return await withTimeout(operation, timeout, 'MCP tool call'); }
     catch (error) { await invalidateClient(connectionId); throw error; }
   }
 
@@ -412,7 +418,8 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
         const schema = tool.inputSchema || { type: 'object', properties: {} };
         claudeTools.push({ name, description, input_schema: schema });
         openaiTools.push({ type: 'function', name, description, parameters: schema });
-        executors[name] = args => callTool(connection.id, tool.name, args);
+        executors[name] = (args, options = {}) => callTool(connection.id, tool.name, args,
+          { timeout: options.timeoutMs || 16000, signal: options.signal });
         // meta lets a live turn recognize a deferred tool and enqueue it (by connection + real
         // tool name) instead of running it inline; the background worker runs it via callTool.
         meta[name] = { connectionId: connection.id, toolName: tool.name, connectionName: connection.name, deferred: toolIsDeferred(connection, tool), accessMode: writeCapable ? 'write' : 'read' };

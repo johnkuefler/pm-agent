@@ -772,6 +772,12 @@ test('Slack waits for one coherent reply instead of posting a generic progress m
   'a real completion acknowledgement is not lookup narration');
 });
 
+test('typed meeting chat never promises an unqueued Slack follow-up', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  assert.doesNotMatch(server, /Give me a sec, I'll follow up in Slack/);
+  assert.match(server, /I couldn't get a complete answer before this meeting turn closed/);
+});
+
 test('interactive memory recall is local, bounded, and relevance preserving', () => {
   const { __test } = require('../../server');
   const memories = [

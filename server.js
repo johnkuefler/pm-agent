@@ -4879,6 +4879,7 @@ app.post('/webhook/chat', async (req, res) => {
     try {
       ({ response, firedTools: zoomFired } = await runClaudeToolLoop(zoomReq, zoomHeaders, zoomExecutors, 6, {
         deferredMeta: zoomMcp.meta, origin: { kind: 'zoom_chat', bot_id, requester: speaker },
+        writeToolNames: [...TW_WRITE_Z],
         deadlineMs: zoomAttachLiveTools ? 45000 : Math.max(1000, 5000 - (Date.now() - interactionStartedAt)),
         providerTimeoutMs: zoomAttachLiveTools ? 20000 : Math.max(1000, 5000 - (Date.now() - interactionStartedAt))
       }));
@@ -4899,7 +4900,9 @@ app.post('/webhook/chat', async (req, res) => {
     // Empty-reply guard: a tool-only turn (or a cut-off chain) can come back with no text.
     // Never send a blank message into the meeting chat — give a short honest fallback instead.
     if (!reply) {
-      reply = "Give me a sec, I'll follow up in Slack with that.";
+      reply = wroteLiveZ
+        ? "Done, that's updated in Teamwork."
+        : "I couldn't get a complete answer before this meeting turn closed.";
       console.warn('Zoom chat: empty model reply, sent fallback');
     }
 
@@ -5531,11 +5534,12 @@ const mcpManager = createMcpManager({
 // using the key the app already holds (no MCP, no OAuth), then feed the result back. All
 // READ-ONLY by construction — there are no create/update/delete tools here.
 function teamworkEnabled() { return !!(process.env.TEAMWORK_API_KEY && process.env.TEAMWORK_BASE_URL); }
-async function twApiGet(pathAndQuery) {
+async function twApiGet(pathAndQuery, { signal, timeoutMs = 12000 } = {}) {
   const twKey = process.env.TEAMWORK_API_KEY, twBase = process.env.TEAMWORK_BASE_URL;
   const auth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
   const r = await axios.get(`${twBase}${pathAndQuery}`, {
-    headers: { Authorization: auth, 'Content-Type': 'application/json' }, timeout: 12000
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    timeout: Math.max(1, Math.min(12000, Number(timeoutMs) || 12000)), signal,
   });
   return r.data;
 }
@@ -5583,11 +5587,11 @@ function slimTwTask(t, inc = {}) {
 // teamwork_team_capacity tool AND the /teamwork/team-capacity endpoint (used by the cowork loop's
 // weekly proactive sweep). Returns the over-allocated list, the tracked members who still have free
 // hours (the real "who has room" answer), and a separate count of people with no tracked workload.
-async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user_ids }) {
+async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user_ids }, request = {}) {
   const r1 = (n) => Math.round(n * 10) / 10;
   const minFree = (min_free_hours != null && min_free_hours !== '') ? Number(min_free_hours) : null;
   const scope = user_ids ? `&userIds=${encodeURIComponent(String(user_ids).split(',').map(s => s.trim()).filter(Boolean).join(','))}` : '';
-  const d = await twApiGet(`/projects/api/v3/workload.json?startDate=${encodeURIComponent(start_date)}&endDate=${encodeURIComponent(end_date)}&include=users&pageSize=200${scope}`);
+  const d = await twApiGet(`/projects/api/v3/workload.json?startDate=${encodeURIComponent(start_date)}&endDate=${encodeURIComponent(end_date)}&include=users&pageSize=200${scope}`, request);
   const inc = d?.included?.users || {};
   const rows = [];
   for (const u of (d?.workload?.users || [])) {
@@ -5633,9 +5637,9 @@ const TEAMWORK_TOOLS = [
       description: 'Find active Teamwork projects by name, or list active projects if no query. Use this first to resolve a project name to its id. Returns id, name, company, status.',
       input_schema: { type: 'object', properties: { query: { type: 'string', description: 'optional name search; omit to list active projects' } } }
     },
-    execute: async ({ query }) => {
+    execute: async ({ query }, request = {}) => {
       const q = query ? `&searchTerm=${encodeURIComponent(query)}` : '';
-      const d = await twApiGet(`/projects/api/v3/projects.json?status=ACTIVE&pageSize=50&include=companies${q}`);
+      const d = await twApiGet(`/projects/api/v3/projects.json?status=ACTIVE&pageSize=50&include=companies${q}`, request);
       const companies = d?.included?.companies || {};
       return (d?.projects || []).slice(0, 50).map(p => ({
         id: p.id, name: p.name, status: p.status,
@@ -5647,8 +5651,8 @@ const TEAMWORK_TOOLS = [
       description: 'Get a single Teamwork project\'s details by id: name, company, status, description, dates.',
       input_schema: { type: 'object', properties: { project_id: { type: 'string' } }, required: ['project_id'] }
     },
-    execute: async ({ project_id }) => {
-      const d = await twApiGet(`/projects/api/v3/projects/${encodeURIComponent(project_id)}.json?include=companies`);
+    execute: async ({ project_id }, request = {}) => {
+      const d = await twApiGet(`/projects/api/v3/projects/${encodeURIComponent(project_id)}.json?include=companies`, request);
       const p = d?.project || {};
       const companies = d?.included?.companies || {};
       return { id: p.id, name: p.name, status: p.status, description: p.description,
@@ -5667,7 +5671,7 @@ const TEAMWORK_TOOLS = [
         include_completed: { type: 'boolean', description: 'default false' }
       } }
     },
-    execute: async ({ project_id, assigned_to_user_ids, due_on, due_after, due_before, include_completed }) => {
+    execute: async ({ project_id, assigned_to_user_ids, due_on, due_after, due_before, include_completed }, request = {}) => {
       const after = due_on || due_after, before = due_on || due_before;
       const assigneeSet = assigned_to_user_ids
         ? new Set(String(assigned_to_user_ids).split(',').map(s => s.trim()).filter(Boolean))
@@ -5699,9 +5703,9 @@ const TEAMWORK_TOOLS = [
       while (page <= MAX_PAGES) {
         let d;
         try {
-          d = await twApiGet(`/projects/api/v3/tasks.json?${queryParts.join('&')}&page=${page}`);
+          d = await twApiGet(`/projects/api/v3/tasks.json?${queryParts.join('&')}&page=${page}`, request);
         } catch (e) {
-          if (queryParts.length > common.length) { queryParts = common.slice(); d = await twApiGet(`/projects/api/v3/tasks.json?${queryParts.join('&')}&page=${page}`); }
+          if (queryParts.length > common.length) { queryParts = common.slice(); d = await twApiGet(`/projects/api/v3/tasks.json?${queryParts.join('&')}&page=${page}`, request); }
           else throw e;
         }
         const tasks = d?.tasks || [];
@@ -5735,8 +5739,8 @@ const TEAMWORK_TOOLS = [
       description: 'Get one task\'s full detail by id: description, assignees, due date, progress, status, tasklist, project.',
       input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
     },
-    execute: async ({ task_id }) => {
-      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists,projects`);
+    execute: async ({ task_id }, request = {}) => {
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}.json?include=users,tasklists,projects`, request);
       const t = d?.task || {};
       return { ...slimTwTask(t, d?.included || {}), description: (t.description || '').slice(0, 1500) || undefined };
     } },
@@ -5745,9 +5749,9 @@ const TEAMWORK_TOOLS = [
       description: 'List milestones (deadlines), optionally scoped to a project. Returns name, deadline, status, project. Use for "what\'s due / what\'s the deadline" questions.',
       input_schema: { type: 'object', properties: { project_id: { type: 'string' } } }
     },
-    execute: async ({ project_id }) => {
+    execute: async ({ project_id }, request = {}) => {
       const q = project_id ? `&projectIds=${encodeURIComponent(project_id)}` : '';
-      const d = await twApiGet(`/projects/api/v3/milestones.json?pageSize=75&include=projects${q}`);
+      const d = await twApiGet(`/projects/api/v3/milestones.json?pageSize=75&include=projects${q}`, request);
       const projects = d?.included?.projects || {};
       return (d?.milestones || []).slice(0, 75).map(m => ({
         id: m.id, name: m.name, deadline: m.deadline, status: m.status, completed: m.completed,
@@ -5759,8 +5763,8 @@ const TEAMWORK_TOOLS = [
       description: 'List a project\'s tasklists (how its work is grouped). Returns id and name. Needs a project_id.',
       input_schema: { type: 'object', properties: { project_id: { type: 'string' } }, required: ['project_id'] }
     },
-    execute: async ({ project_id }) => {
-      const d = await twApiGet(`/projects/api/v3/tasklists.json?projectIds=${encodeURIComponent(project_id)}&pageSize=100`);
+    execute: async ({ project_id }, request = {}) => {
+      const d = await twApiGet(`/projects/api/v3/tasklists.json?projectIds=${encodeURIComponent(project_id)}&pageSize=100`, request);
       return (d?.tasklists || []).slice(0, 100).map(l => ({ id: l.id, name: l.name }));
     } },
   { definition: {
@@ -5768,9 +5772,9 @@ const TEAMWORK_TOOLS = [
       description: 'List Teamwork people (team members). Returns id, name, company, title. Use to resolve who someone is or who\'s on the team.',
       input_schema: { type: 'object', properties: { query: { type: 'string', description: 'optional name search' } } }
     },
-    execute: async ({ query }) => {
+    execute: async ({ query }, request = {}) => {
       const q = query ? `&searchTerm=${encodeURIComponent(query)}` : '';
-      const d = await twApiGet(`/projects/api/v3/people.json?pageSize=200&include=companies${q}`);
+      const d = await twApiGet(`/projects/api/v3/people.json?pageSize=200&include=companies${q}`, request);
       const companies = d?.included?.companies || {};
       return (d?.people || []).slice(0, 200).map(p => ({
         id: p.id, name: [p.firstName, p.lastName].filter(Boolean).join(' '),
@@ -5782,8 +5786,8 @@ const TEAMWORK_TOOLS = [
       description: 'Get recent comments / activity on a task by id. Use for "what\'s the latest on this task" questions.',
       input_schema: { type: 'object', properties: { task_id: { type: 'string' } }, required: ['task_id'] }
     },
-    execute: async ({ task_id }) => {
-      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}/comments.json?include=users&pageSize=20`);
+    execute: async ({ task_id }, request = {}) => {
+      const d = await twApiGet(`/projects/api/v3/tasks/${encodeURIComponent(task_id)}/comments.json?include=users&pageSize=20`, request);
       const users = d?.included?.users || {};
       return (d?.comments || []).slice(-20).map(c => {
         const uid = c.userId || (c.author && c.author.id);
@@ -5804,11 +5808,11 @@ const TEAMWORK_TOOLS = [
         end_date: { type: 'string', description: 'required: window end, YYYY-MM-DD' }
       }, required: ['user_ids', 'start_date', 'end_date'] }
     },
-    execute: async ({ user_ids, start_date, end_date }) => {
+    execute: async ({ user_ids, start_date, end_date }, request = {}) => {
       const ids = String(user_ids).split(',').map(s => s.trim()).filter(Boolean).join(',');
       // Teamwork's Workload Planner endpoint. userIds scopes it (assignedToUserIds/responsiblePartyIds
       // do NOT filter here, verified live). include=users resolves names + each person's day length.
-      const d = await twApiGet(`/projects/api/v3/workload.json?startDate=${encodeURIComponent(start_date)}&endDate=${encodeURIComponent(end_date)}&userIds=${encodeURIComponent(ids)}&include=users`);
+      const d = await twApiGet(`/projects/api/v3/workload.json?startDate=${encodeURIComponent(start_date)}&endDate=${encodeURIComponent(end_date)}&userIds=${encodeURIComponent(ids)}&include=users`, request);
       const incUsers = d?.included?.users || {};
       const wd = (s) => { try { return new Date(s + 'T00:00:00Z').toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }); } catch { return ''; } };
       const r1 = (n) => Math.round(n * 10) / 10;
@@ -5848,7 +5852,7 @@ const TEAMWORK_TOOLS = [
         user_ids: { type: 'string', description: 'optional: comma-separated user ids to limit the sweep to specific people' }
       }, required: ['start_date', 'end_date'] }
     },
-    execute: async (args) => teamworkTeamCapacity(args) },
+    execute: async (args, request = {}) => teamworkTeamCapacity(args, request) },
 
   // ── WRITE tools — Nora can create/update tasks, mark them done, and comment. Use ONLY when
   //    explicitly asked to create or change something. No delete tool exists (by design).
@@ -6700,6 +6704,11 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
   const deadlineMs = Number.isFinite(Number(opts.deadlineMs))
     ? Math.max(1, Number(opts.deadlineMs)) : null;
   const providerTimeoutMs = Math.max(1000, Number(opts.providerTimeoutMs) || 30000);
+  const toolTimeoutMs = Math.max(1000, Number(opts.toolTimeoutMs) || 12000);
+  const finalizationReserveMs = deadlineMs == null ? 0 : Math.min(8000, providerTimeoutMs,
+    Math.max(1, Math.floor(deadlineMs * 0.25)));
+  const writeStartMinimumMs = Math.max(1000, Number(opts.writeStartMinimumMs) || 15000);
+  const writeToolNames = new Set(opts.writeToolNames || []);
   const remaining = () => deadlineMs == null ? Infinity : deadlineMs - (Date.now() - startedAt);
   const withinDeadline = async (label, maximumMs, operation) => {
     const left = remaining();
@@ -6751,7 +6760,6 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
     if (!toolUses.length) break;
     const results = [];
     for (const tu of toolUses) {
-      firedTools.push(tu.name);
       let content;
       const normalizedInput = tu.input && typeof tu.input === 'object'
         ? Object.fromEntries(Object.entries(tu.input).sort(([a], [b]) => a.localeCompare(b))) : (tu.input || {});
@@ -6780,6 +6788,7 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
           const origin = { ...(opts.origin || { kind: 'slack' }), ...(execution ? { action_execution_id: execution.id } : {}) };
           const { id } = await enqueueDeferredJob({ connectionId: dm.connectionId, toolName: dm.toolName, args: tu.input || {}, origin, label: dm.connectionName });
           safelyQueueToolExecution(execution, id);
+          firedTools.push(tu.name);
           content = JSON.stringify({ deferred: true, job_id: id, status: 'queued', message: `Started this as a background job (it runs for a few minutes). The result will be posted to this thread automatically when it finishes. Tell the user you've kicked it off and will follow up here shortly. Do NOT wait, and do NOT call this tool again for the same request.` });
         } catch (e) {
           safelyCompleteToolExecution(execution?.id, 'failed', e);
@@ -6791,13 +6800,33 @@ async function runClaudeToolLoop(reqBody, headers, executors, maxIters = 6, opts
       try {
         const exec = executors[tu.name];
         if (!exec) throw new Error(`unknown tool ${tu.name}`);
-        // Tool writes are allowed to finish under their connector's own timeout. Racing a write
-        // would report failure while an uncancellable side effect might still commit later.
-        const result = await exec(tu.input || {});
-        safelyCompleteToolExecution(execution?.id, 'succeeded', result);
+        const writeCapable = writeToolNames.has(tu.name) || dm?.accessMode === 'write';
+        const availableForTool = remaining() - finalizationReserveMs;
+        if (availableForTool <= 0 || (writeCapable && availableForTool < writeStartMinimumMs)) {
+          const error = new Error(writeCapable
+            ? `not started: ${tu.name} did not have a safe completion window before the interactive deadline`
+            : `not started: ${tu.name} would consume the final-answer reserve`);
+          error.code = 'interactive_tool_not_started';
+          throw error;
+        }
+        // Never race an already-started write: its connector timeout is the only truthful way to
+        // know whether the side effect committed. Reads are safe to cancel and must leave enough
+        // of the turn for Claude to synthesize a useful final answer.
+        const result = writeCapable
+          ? await exec(tu.input || {}, { timeoutMs: Math.min(toolTimeoutMs, availableForTool) })
+          : await rejectWithinAbortable(signal => exec(tu.input || {}, {
+            signal, timeoutMs: Math.min(toolTimeoutMs, availableForTool),
+          }), Math.min(toolTimeoutMs, availableForTool), `${tu.name} tool`);
+        const succeeded = !(result && typeof result === 'object' && result.error);
+        safelyCompleteToolExecution(execution?.id, succeeded ? 'succeeded' : 'failed',
+          succeeded ? result : result.error);
+        if (succeeded) firedTools.push(tu.name);
         content = JSON.stringify(result);
       } catch (e) {
         safelyCompleteToolExecution(execution?.id, 'failed', e);
+        if (['interactive_deadline_exceeded', 'interactive_tool_not_started'].includes(e.code)) {
+          console.warn(`Live tool ${tu.name} contained by the interaction deadline: ${e.message}`);
+        }
         content = JSON.stringify({ error: (e.response?.data?.message || e.message || 'tool failed') });
       }
       exactToolResults.set(fingerprint, content);
@@ -8129,6 +8158,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
       ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 4, {
         deferredMeta: mcpBindings.meta,
+        writeToolNames: [...TW_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
         deadlineMs: attachLiveTools ? 45000
