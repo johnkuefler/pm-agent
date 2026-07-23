@@ -809,6 +809,21 @@ test('typed meeting delivery shares the same trigger-to-message deadline', () =>
   assert.match(server, /const errorDeliveryBudgetMs = Math\.min\(5000, zoomTerminalAt - Date\.now\(\)\)/);
 });
 
+test('Slack missed-mention recovery aborts the full workspace scan at one deadline', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const start = server.indexOf("app.get('/slack/unhandled-mentions'");
+  const end = server.indexOf('// Notify endpoint', start);
+  const handler = server.slice(start, end);
+  assert.match(handler, /const scanController = new AbortController\(\)/);
+  assert.match(handler, /Slack unhandled mention scan exceeded its 15-second deadline/);
+  assert.match(handler, /getNoraBotUserId\(\{ signal: scanController\.signal \}\)/);
+  assert.ok((handler.match(/signal: scanController\.signal/g) || []).length >= 3,
+    'membership and channel-history transports must all receive cancellation');
+  assert.match(handler, /if \(scanController\.signal\.aborted\) return/);
+  assert.match(handler, /res\.status\(timedOut \? 504 : 500\)/);
+  assert.match(handler, /clearTimeout\(scanDeadline\)/);
+});
+
 test('interactive memory recall is local, bounded, and relevance preserving', () => {
   const { __test } = require('../../server');
   const memories = [

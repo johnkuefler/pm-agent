@@ -8867,11 +8867,12 @@ app.delete('/slack/financial-approved/:userId', requireAuth, (req, res) => {
 
 // Resolve Nora's bot user ID, falling back to auth.test if it hasn't been
 // captured from a webhook payload yet (e.g., fresh boot with no incoming events).
-async function getNoraBotUserId() {
+async function getNoraBotUserId({ signal, post = axios.post } = {}) {
   if (noraBotUserId) return noraBotUserId;
-  const r = await axios.post('https://slack.com/api/auth.test', null, {
+  const r = await post('https://slack.com/api/auth.test', null, {
     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
     timeout: SLACK_CONTROL_TIMEOUT_MS,
+    signal,
   });
   if (!r.data.ok) throw new Error(`auth.test failed: ${r.data.error}`);
   noraBotUserId = r.data.user_id;
@@ -8932,9 +8933,16 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
   const sinceUnix = Math.floor((Date.now() - minutes * 60 * 1000) / 1000);
   const botToken = process.env.SLACK_BOT_TOKEN;
   if (!botToken) return res.status(500).json({ error: 'SLACK_BOT_TOKEN not set' });
+  const scanController = new AbortController();
+  const scanDeadline = setTimeout(() => {
+    const error = new Error('Slack unhandled mention scan exceeded its 15-second deadline');
+    error.code = 'slack_scan_deadline_exceeded';
+    scanController.abort(error);
+  }, 15000);
+  scanDeadline.unref?.();
 
   try {
-    const botUserId = await getNoraBotUserId();
+    const botUserId = await getNoraBotUserId({ signal: scanController.signal });
     const headers = { Authorization: `Bearer ${botToken}` };
     const mentionToken = `<@${botUserId}>`;
     const scopeWarnings = [];
@@ -8946,7 +8954,9 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
       let cursor = '';
       do {
         const url = `https://slack.com/api/users.conversations?types=${type}&limit=200${cursor ? `&cursor=${cursor}` : ''}`;
-        const r = await axios.get(url, { headers, timeout: SLACK_CONTROL_TIMEOUT_MS });
+        const r = await axios.get(url, {
+          headers, timeout: SLACK_CONTROL_TIMEOUT_MS, signal: scanController.signal,
+        });
         if (!r.data.ok) {
           if (r.data.error === 'missing_scope') {
             const need = type === 'public_channel' ? 'channels:read' : 'groups:read';
@@ -8973,13 +8983,14 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
 
     let nextChannelIndex = 0;
     async function scanNextChannel() {
+      if (scanController.signal.aborted) return;
       const channelIndex = nextChannelIndex++;
       if (channelIndex >= channels.length) return;
       const channel = channels[channelIndex];
       try {
         const histRes = await axios.get(
           `https://slack.com/api/conversations.history?channel=${channel.id}&oldest=${sinceUnix}&limit=100`,
-          { headers, timeout: 6000 }
+          { headers, timeout: 6000, signal: scanController.signal }
         );
         if (!histRes.data.ok) {
           scanErrors++;
@@ -9012,6 +9023,7 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
           });
         }
       } catch (err) {
+        if (scanController.signal.aborted) return;
         scanErrors++;
         console.error(`history fetch failed for ${channel.id}:`, err.message);
       }
@@ -9020,6 +9032,9 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
     // Slack has no batch history endpoint. A small bounded pool removes the old one-channel-at-a-
     // time latency without creating an unbounded fan-out or overwhelming Slack's rate limits.
     await Promise.all(Array.from({ length: Math.min(6, channels.length) }, () => scanNextChannel()));
+    if (scanController.signal.aborted) {
+      throw scanController.signal.reason || new Error('Slack unhandled mention scan aborted');
+    }
 
     // Newest first — most actionable mentions surface at the top
     unhandled.sort((a, b) => parseFloat(b.ts) - parseFloat(a.ts));
@@ -9045,7 +9060,15 @@ app.get('/slack/unhandled-mentions', requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('unhandled-mentions error:', err.message);
-    res.status(500).json({ error: err.message });
+    const timedOut = scanController.signal.aborted
+      || err.code === 'slack_scan_deadline_exceeded';
+    res.status(timedOut ? 504 : 500).json({
+      error: err.message,
+      code: timedOut ? 'slack_scan_deadline_exceeded' : 'slack_scan_failed',
+      retryable: true,
+    });
+  } finally {
+    clearTimeout(scanDeadline);
   }
 });
 
