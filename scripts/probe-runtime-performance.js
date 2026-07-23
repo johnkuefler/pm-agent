@@ -30,6 +30,7 @@ async function probePath(baseUrl, path, { apiKey, fetchImpl = globalThis.fetch,
         background_work: runtime.background_work,
         research_projections: runtime.research_projections,
         process_resources: runtime.process_resources,
+        hourly_lifecycle: runtime.hourly_lifecycle,
         reliability: runtime.reliability,
         persistence: runtime.persistence ? {
           pending_revisions: runtime.persistence.pending_revisions,

@@ -107,6 +107,7 @@ const { createRuntimeActivityStream } = require('./src/runtime/activity-stream')
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
 const { createWebSocketLivenessMonitor } = require('./src/runtime/websocket-liveness');
 const { assessRuntimeReliability } = require('./src/runtime/reliability-verdict');
+const { hourlyLifecycleHealth } = require('./src/runtime/hourly-lifecycle-health');
 const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health');
 const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
@@ -527,6 +528,7 @@ app.get('/runtime/performance', requireAuth, (req, res) => {
     deferred_jobs: _deferredJobHealth.snapshot({ busy: _jobWorkerBusy, memoryJobs: _memJobs,
       pendingFinalizations: _pendingJobFinalizations.size }),
     process_health: _processRecovery.snapshot(),
+    hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
     research_projections: intelligenceRoutesRuntime.consciousnessResearchStatusCache(),
     process_resources: processResources.snapshot(),
     background_admission: processResources.backgroundAdmission(),
@@ -9257,7 +9259,10 @@ registerRuntimeActivityRoutes(app, {
   requireDashboardAuth,
   stream: runtimeActivity,
   getRunLock: loadDurableRunLock,
-  getContextSnapshot: () => intelligence.liveActivityContextSnapshot(),
+  getContextSnapshot: () => ({
+    ...intelligence.liveActivityContextSnapshot(),
+    hourly_lifecycle: hourlyLifecycleHealth(intelligence.list('cycles')),
+  }),
 });
 
 // POST /admin/drive/upload-artifact

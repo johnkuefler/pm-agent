@@ -98,6 +98,7 @@ function runtimeActivityPrimary() {
 
 function renderRuntimeActivityGlobal() {
   const primary = runtimeActivityPrimary();
+  const hourly = runtimeActivityContext?.hourly_lifecycle || null;
   const label = document.getElementById('global-activity-label');
   const detail = document.getElementById('global-activity-detail');
   if (!label || !detail) return;
@@ -105,8 +106,10 @@ function renderRuntimeActivityGlobal() {
     label.textContent = primary.label;
     detail.textContent = primary.detail || `${runtimeActivityLaneLabels[primary.lane] || 'Runtime'} activity is in progress.`;
   } else if (runtimeActivityConnection === 'connected') {
-    label.textContent = 'Nora is standing by';
-    detail.textContent = 'No hourly, conversational, or background operation is active right now.';
+    label.textContent = hourly?.state === 'stale' || hourly?.state === 'unobserved'
+      ? 'Hourly runner needs attention' : 'Nora is standing by';
+    detail.textContent = hourly?.state === 'stale' || hourly?.state === 'unobserved'
+      ? hourly.message : 'No hourly, conversational, or background operation is active right now.';
   } else {
     label.textContent = 'Reconnecting to Nora';
     detail.textContent = 'The live view will resync from a fresh bounded snapshot.';
@@ -152,6 +155,24 @@ function renderRuntimeRegions(current, recent) {
     const link = document.querySelector(`[data-live-link="${region}"]`);
     if (link) link.dataset.status = status;
   });
+  const hourly = runtimeActivityContext?.hourly_lifecycle || null;
+  if (hourly && ['late', 'stale', 'unobserved'].includes(hourly.state)) {
+    const node = document.querySelector('[data-live-region="continuity"]');
+    if (node) {
+      node.dataset.status = hourly.state === 'late' ? 'deferred' : 'failed';
+      const state = node.querySelector('.live-region-state');
+      const title = node.querySelector('.live-region-title');
+      const detail = node.querySelector('.live-region-detail');
+      const time = node.querySelector('.live-region-time');
+      if (state) state.textContent = hourly.state === 'late' ? 'Running late' : 'Needs attention';
+      if (title) title.textContent = 'Hourly lifecycle cadence';
+      if (detail) detail.textContent = hourly.message;
+      if (time) time.textContent = hourly.latest?.started
+        ? `Last opened ${activityTime(hourly.latest.started)}` : 'No durable hourly run observed';
+      const link = document.querySelector('[data-live-link="continuity"]');
+      if (link) link.dataset.status = node.dataset.status;
+    }
+  }
 }
 
 function renderActivityHistory(items) {
@@ -194,6 +215,10 @@ function renderRuntimeActivityContext() {
   const playTarget = document.getElementById('live-play-snapshot');
   const reading = runtimeActivityContext?.reading || null;
   const play = runtimeActivityContext?.play || null;
+  renderRuntimeActivityGlobal();
+  if (runtimeActivitySnapshot) {
+    renderRuntimeRegions(runtimeActivitySnapshot.current || [], runtimeActivitySnapshot.recent || []);
+  }
   if (readingTarget) {
     const progress = reading?.total_chunks
       ? `${reading.completed_chunks}/${reading.total_chunks} chunks`

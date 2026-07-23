@@ -1,0 +1,65 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { hourlyLifecycleHealth, EXPECTED_INTERVAL_MS } =
+  require('../../src/runtime/hourly-lifecycle-health');
+
+const now = Date.parse('2026-07-23T01:20:00.000Z');
+const cycle = (started, status = 'completed', extra = {}) => ({
+  id: `cycle-${started}`, kind: 'hourly', started, status, ...extra,
+});
+
+test('hourly lifecycle is fresh when a successful run opened within cadence', () => {
+  const snapshot = hourlyLifecycleHealth([
+    cycle('2026-07-23T00:20:00.000Z'),
+    { kind: 'nightly', started: '2026-07-22T23:00:00.000Z', status: 'completed' },
+  ], { now });
+  assert.equal(snapshot.state, 'fresh');
+  assert.equal(snapshot.healthy, true);
+  assert.equal(snapshot.age_ms, EXPECTED_INTERVAL_MS);
+  assert.equal(snapshot.estimated_missed_runs, 1);
+});
+
+test('hourly lifecycle distinguishes a late trigger from a stale external scheduler', () => {
+  const late = hourlyLifecycleHealth([cycle('2026-07-22T23:40:00.000Z')], { now });
+  assert.equal(late.state, 'late');
+  assert.equal(late.requires_external_attention, false);
+
+  const stale = hourlyLifecycleHealth([cycle('2026-07-22T21:05:00.000Z', 'failed', {
+    recovery: { reason: 'run_lock_expired_before_cycle_close' },
+  })], { now });
+  assert.equal(stale.state, 'stale');
+  assert.equal(stale.requires_external_attention, true);
+  assert.equal(stale.estimated_missed_runs, 4);
+  assert.equal(stale.latest.failure_reason, 'run_lock_expired_before_cycle_close');
+});
+
+test('a newly failed run is visible without falsely claiming the scheduler stopped', () => {
+  const snapshot = hourlyLifecycleHealth([
+    cycle('2026-07-23T01:05:00.000Z', 'failed'),
+    cycle('2026-07-23T00:05:00.000Z', 'completed'),
+  ], { now });
+  assert.equal(snapshot.state, 'fresh');
+  assert.equal(snapshot.healthy, false);
+  assert.equal(snapshot.requires_external_attention, false);
+  assert.equal(snapshot.consecutive_failures, 1);
+});
+
+test('missing lifecycle history fails visibly instead of reporting healthy', () => {
+  const snapshot = hourlyLifecycleHealth([], { now });
+  assert.equal(snapshot.state, 'unobserved');
+  assert.equal(snapshot.requires_external_attention, true);
+  assert.equal(snapshot.latest, null);
+});
+
+test('runtime health and the live dashboard both expose hourly cadence', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const dashboard = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'public', 'js', 'dashboard-activity.js'), 'utf8');
+  assert.match(server, /hourly_lifecycle: hourlyLifecycleHealth\(intelligence\.list\('cycles'\)\)/);
+  assert.match(dashboard, /Hourly runner needs attention/);
+  assert.match(dashboard, /Last opened \$\{activityTime\(hourly\.latest\.started\)\}/);
+});

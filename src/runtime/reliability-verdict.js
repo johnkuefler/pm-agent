@@ -35,6 +35,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const processHealth = snapshot.process_health || {};
   const researchProjections = snapshot.research_projections || {};
   const processResources = snapshot.process_resources || {};
+  const hourlyLifecycle = snapshot.hourly_lifecycle || {};
 
   if (database.background_degraded) {
     actionRequired.push({ code: 'database_degraded', message: 'Database persistence is degraded.' });
@@ -62,6 +63,20 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   if (processHealth.fatal === true && processHealth.state !== 'running') {
     actionRequired.push({ code: 'fatal_process_recovery',
       message: 'The process is draining after a fatal asynchronous error and will restart.' });
+  }
+  if (hourlyLifecycle.state === 'stale' || hourlyLifecycle.state === 'unobserved') {
+    degraded.push({ code: 'hourly_runner_stale', state: hourlyLifecycle.state,
+      age_ms: hourlyLifecycle.age_ms ?? undefined,
+      estimated_missed_runs: hourlyLifecycle.estimated_missed_runs ?? undefined,
+      trigger_source: hourlyLifecycle.trigger_source || 'external_cowork_scheduler',
+      message: 'The external hourly runner is not opening durable lifecycles on schedule.' });
+  } else if (hourlyLifecycle.state === 'late') {
+    degraded.push({ code: 'hourly_runner_late', age_ms: hourlyLifecycle.age_ms,
+      message: 'The external hourly runner is outside its normal cadence grace window.' });
+  } else if (hourlyLifecycle.latest?.status === 'failed') {
+    degraded.push({ code: 'latest_hourly_run_failed',
+      failure_reason: hourlyLifecycle.latest.failure_reason || null,
+      message: 'The latest hourly lifecycle failed; cadence remains observable.' });
   }
   for (const [projection, runtime] of Object.entries(researchProjections)) {
     const failures = Number(runtime?.consecutive_failures) || 0;

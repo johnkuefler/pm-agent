@@ -21,6 +21,7 @@ function healthySnapshot() {
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
     process_health: { state: 'running', fatal: false },
+    hourly_lifecycle: { state: 'fresh', latest: { status: 'completed' } },
     research_projections: {},
     process_resources: { memory: { heap_utilization: 0.1, constrained_rss_utilization: 0.2 },
       event_loop: { current_window: { p99_ms: 20, max_ms: 30 }, last_complete_window: null } },
@@ -176,4 +177,26 @@ test('post-interaction timeouts and resource shedding remain visible without fai
     'post_interaction_learning_failure', 'post_interaction_learning_near_timeout',
   ]);
   assert.ok(verdict.observations.some(item => item.code === 'background_resource_shedding'));
+});
+
+test('reliability distinguishes a stopped hourly trigger from one failed but fresh run', () => {
+  const stale = healthySnapshot();
+  stale.hourly_lifecycle = { state: 'stale', age_ms: 4 * 3600000,
+    estimated_missed_runs: 4, trigger_source: 'external_cowork_scheduler',
+    latest: { status: 'failed', failure_reason: 'run_lock_expired_before_cycle_close' } };
+  let verdict = assessRuntimeReliability(stale, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'hourly_runner_stale');
+  assert.equal(verdict.degraded[0].estimated_missed_runs, 4);
+
+  const failed = healthySnapshot();
+  failed.hourly_lifecycle = { state: 'fresh', age_ms: 15 * 60000,
+    latest: { status: 'failed', failure_reason: 'cycle_close_failed' } };
+  verdict = assessRuntimeReliability(failed, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'latest_hourly_run_failed');
+
+  const recovered = healthySnapshot();
+  recovered.hourly_lifecycle = { state: 'fresh', latest: { status: 'completed' } };
+  assert.equal(assessRuntimeReliability(recovered, { now }).status, 'healthy');
 });
