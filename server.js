@@ -15562,6 +15562,11 @@ async function completePostListenStartup(background) {
       () => intelligenceRoutesRuntime.warmDashboardSummary());
     scheduleStartupBackgroundTask('startup expectation calibration warmup', 4000,
       () => intelligenceRoutesRuntime.warmExpectationSummary());
+    // Hydration makes verified prior-build projections immediately readable. Once startup and
+    // connector recovery are quiet, replace them one at a time with current-build projections.
+    // The worker is serialized, low-priority, resource-gated, and preempted by Slack/meetings.
+    scheduleStartupBackgroundTask('startup stale research projection refresh', 90000,
+      () => intelligenceRoutesRuntime.warmNextStaleResearchProjection());
     scheduleStartupBackgroundTask('startup recent meetings refresh', 12000, () => refreshRecentMeetingsCache());
     _runtimeIntervals.push(setInterval(() => refreshRecentMeetingsCache()
       .catch(error => console.warn('recent-meetings interval failed:', error.message)), 10 * 60 * 1000));
@@ -15585,6 +15590,10 @@ async function completePostListenStartup(background) {
           return runBackgroundIntelligenceRuntime({ trigger: 'five-minute-scheduler' })
             .catch(error => console.error('Background intelligence cycle failed:', error.message));
         });
+    }, 5 * 60 * 1000));
+    _runtimeIntervals.push(setInterval(() => {
+      intelligenceRoutesRuntime.warmNextStaleResearchProjection()
+        .catch(error => console.warn('Stale research projection refresh failed:', error.message));
     }, 5 * 60 * 1000));
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }

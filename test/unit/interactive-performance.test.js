@@ -391,6 +391,15 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     server.indexOf('async function stop('));
   assert.doesNotMatch(startup, /warmConsciousnessResearchStatus/,
     'CPU-heavy research status must remain lazy during restart recovery');
+  assert.match(server,
+    /startup stale research projection refresh', 90000,[\s\S]*warmNextStaleResearchProjection/,
+    'current-build projection refresh must begin only after the startup and connector quiet period');
+  assert.match(intelligenceRoutesSource,
+    /warmNextStaleResearchProjection:[\s\S]*\['self_model', selfModelCache\],[\s\S]*\['cognition', cognitionCache\],[\s\S]*\['research_status', researchStatusCache\]/,
+    'stale projections must refresh one at a time with the operational self-model first');
+  assert.match(intelligenceRoutesSource,
+    /if \(shouldDeferResearchStatusRefresh\(\)\)[\s\S]*interactive_or_resource_priority/,
+    'post-deploy projection refresh must yield before starting under interactive or resource pressure');
   assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'five-minute-scheduler' \}\)/,
     'background intelligence must be serialized behind the foreground-priority lane');
   assert.match(server, /_cycleSelfCorrectionReflectionLastCycle\?\.state === 'failed_closed'[\s\S]*60 \* 60 \* 1000/,

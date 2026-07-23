@@ -1782,6 +1782,26 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       }, 15000),
     warmConsciousnessResearchStatus: () => researchStatusCache.refresh({ force: true }),
     warmCognition: () => cognitionCache.refresh({ force: true }),
+    warmNextStaleResearchProjection: async () => {
+      if (shouldDeferResearchStatusRefresh()) {
+        return { state: 'deferred', reason: 'interactive_or_resource_priority' };
+      }
+      // Refresh one projection at a time. Persisted, access-safe snapshots remain available
+      // throughout, while the serialized low-priority worker replaces prior-build state without
+      // creating a post-deploy CPU burst or making the first dashboard request commission it.
+      const candidates = [
+        ['self_model', selfModelCache],
+        ['cognition', cognitionCache],
+        ['research_status', researchStatusCache],
+      ];
+      for (const [name, cache] of candidates) {
+        const before = cache.status();
+        if (before.ready && !before.build_stale) continue;
+        await cache.refresh({ force: true });
+        return { state: 'refreshed', projection: name };
+      }
+      return { state: 'current' };
+    },
     hydratePersistedResearchProjections: () => Promise.all([
       researchStatusCache.hydrate(), selfModelCache.hydrate(), cognitionCache.hydrate(),
     ]),
