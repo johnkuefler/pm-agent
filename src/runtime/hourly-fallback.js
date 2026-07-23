@@ -1,7 +1,7 @@
 'use strict';
 
 const FALLBACK_COOLDOWN_MS = 55 * 60 * 1000;
-const FAILED_FALLBACK_RETRY_MS = 10 * 60 * 1000;
+const FAILED_FALLBACK_RETRY_MS = 2 * 60 * 1000;
 
 function timestamp(value) {
   const parsed = new Date(value || 0).getTime();

@@ -9312,6 +9312,29 @@ async function localRuntimeApi(method, route, body = undefined, timeout = 15000)
   return response.data;
 }
 
+async function commitFallbackForecast(cycleId, payload, {
+  attempts = 4, retryDelayMs = 1000, request = localRuntimeApi,
+  wait = milliseconds => new Promise(resolve => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref?.();
+  }),
+} = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await request('post',
+        `/intelligence/cycles/${encodeURIComponent(cycleId)}/self-forecast`, payload, 20000);
+    } catch (error) {
+      lastError = error;
+      const retryable = error.code === 'SELF_FORECAST_PREPARATION_PENDING'
+        || (error.status === 503 && error.response_body?.retryable === true);
+      if (!retryable || attempt >= attempts) throw error;
+      await wait(retryDelayMs);
+    }
+  }
+  throw lastError || new Error('fallback forecast did not reach a terminal state');
+}
+
 function centralDateYmd(date = new Date()) {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: SCHEDULE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
@@ -9411,8 +9434,8 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
     cycleId = acquired.lifecycle?.cycle_id || null;
     if (!cycleId) throw new Error('fallback lock did not bind an intelligence lifecycle');
     const prior = intelligence.behavioralSelfForecastPriorRuntimeSnapshot();
-    await localRuntimeApi('post', `/intelligence/cycles/${encodeURIComponent(cycleId)}/self-forecast`,
-      fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }), 20000);
+    await commitFallbackForecast(cycleId,
+      fallbackForecast({ cycleId, priorSnapshot: prior, soma: currentCognitiveInputs().soma }));
     const sweep = await fallbackOperationalSweep();
     const summary = `Railway completed a read-only coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s); Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count) ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}.`;
     const completed = await localRuntimeApi('patch',
@@ -14863,6 +14886,7 @@ module.exports = {
     rankLexicalMemories,
     retrieveInteractiveMemories,
     stripSlackLookupNarration,
+    commitFallbackForecast,
     compactInteractiveIntelligenceContext,
     compileInteractivePersona,
     fitSlackSystemPrompt,

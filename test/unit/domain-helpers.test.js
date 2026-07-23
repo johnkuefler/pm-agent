@@ -261,3 +261,29 @@ test('Slack post-response extraction uses parameters carried through the handler
   assert.doesNotMatch(handler, /\bevent\.ts\b|\bslackVerification\b/);
 });
 
+test('fallback forecast honors the retryable preparation contract byte-for-byte', async () => {
+  const payload = { protocol_version: 4, evidence: [{ type: 'intelligence_cycle', id: 'cycle-retry' }] };
+  const calls = [];
+  const waits = [];
+  const result = await helpers.commitFallbackForecast('cycle-retry', payload, {
+    attempts: 3,
+    retryDelayMs: 25,
+    request: async (method, route, body) => {
+      calls.push({ method, route, body });
+      if (calls.length < 3) {
+        const error = new Error('preparation pending');
+        error.status = 503;
+        error.code = 'SELF_FORECAST_PREPARATION_PENDING';
+        error.response_body = { retryable: true };
+        throw error;
+      }
+      return { ok: true };
+    },
+    wait: async milliseconds => { waits.push(milliseconds); },
+  });
+  assert.deepEqual(result, { ok: true });
+  assert.deepEqual(waits, [25, 25]);
+  assert.equal(calls.length, 3);
+  assert.equal(calls.every(call => call.body === payload), true);
+});
+
