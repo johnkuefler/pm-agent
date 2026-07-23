@@ -73,6 +73,19 @@ test('operational recovery is scheduled before optional background intelligence'
     < startup.indexOf("runBackgroundIntelligenceRuntime({ trigger: 'startup' })"));
 });
 
+test('self-forecast commit briefly joins its existing replay preparation instead of forcing a retry', () => {
+  const routeSource = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
+  const forecastRoute = routeSource.slice(
+    routeSource.indexOf("app.post('/intelligence/cycles/:id/self-forecast'"),
+    routeSource.indexOf("app.post('/intelligence/cycles/:id/self-forecast/revision'"));
+  assert.match(forecastRoute,
+    /await store\.waitForCycleSelfForecastRuntimePreparation\(\{ timeoutMs: 2500 \}\)/);
+  assert.ok(forecastRoute.indexOf('waitForCycleSelfForecastRuntimePreparation')
+    < forecastRoute.indexOf('store.preregisterCycleSelfForecast'),
+  'the worker join must happen before the mutation attempts to consume the prepared replay');
+});
+
 test('coverage result counting handles MCP envelopes without retaining message content', () => {
   assert.equal(__test.coverageCollectionCount([{ id: 1 }, { id: 2 }]), 2);
   assert.equal(__test.coverageCollectionCount({ messages: [{ id: 1 }] }), 1);

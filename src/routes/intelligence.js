@@ -640,6 +640,13 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
           commit_endpoint: `/intelligence/cycles/${req.params.id}/self-forecast`,
         } });
       }
+      // Cycle-open invalidates the previous moment-bound replay cache. Let the worker preparation
+      // already started by /self-model/forecast-prior finish inside one short bounded wait, so an
+      // operational caller does not have to receive a noisy 503 and resubmit identical bytes.
+      if (process.env.NORA_TEST_MODE !== '1'
+        && typeof store.waitForCycleSelfForecastRuntimePreparation === 'function') {
+        await store.waitForCycleSelfForecastRuntimePreparation({ timeoutMs: 2500 });
+      }
       forecast = store.preregisterCycleSelfForecast(req.params.id,
         { ...(req.body || {}), _latency_safe_prior: process.env.NORA_TEST_MODE !== '1' });
       mutationMs = performance.now() - startedAt;

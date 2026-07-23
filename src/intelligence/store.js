@@ -26131,7 +26131,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function warmBehavioralSelfPriorRuntime(key) {
-    if (behavioralSelfPriorWarmup?.key === key) return;
+    if (behavioralSelfPriorWarmup?.key === key) return behavioralSelfPriorWarmup.promise;
     const promise = computeBackgroundProjection('cycleSelfForecastRuntimePreparationSnapshot')
       .then(result => {
         if (behavioralSelfPriorRuntimeKey() === key) {
@@ -26155,6 +26155,24 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         if (behavioralSelfPriorWarmup?.promise === promise) behavioralSelfPriorWarmup = null;
       });
     behavioralSelfPriorWarmup = { key, promise };
+    return promise;
+  }
+
+  async function waitForCycleSelfForecastRuntimePreparation({ timeoutMs = 2500 } = {}) {
+    const key = behavioralSelfPriorRuntimeKey();
+    if (behavioralSelfPriorRuntimeCache?.key === key) return true;
+    const warmup = warmBehavioralSelfPriorRuntime(key);
+    const boundedTimeout = Math.max(1, Math.min(5000, Number(timeoutMs) || 2500));
+    let timer = null;
+    await Promise.race([
+      warmup,
+      new Promise(resolve => {
+        timer = setTimeout(resolve, boundedTimeout);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    return behavioralSelfPriorRuntimeCache?.key === key;
   }
 
   function behavioralSelfForecastPriorRuntimeSnapshot() {
@@ -28402,6 +28420,7 @@ ${episodes.map(item => {
     behavioralSelfModelRevisionAudit, behavioralSelfModelSnapshot, behavioralSelfCalibrationSnapshot,
     behavioralSelfForecastPriorAudit, behavioralSelfForecastPriorSnapshot,
     behavioralSelfForecastPriorRuntimeSnapshot, cycleSelfForecastRuntimePreparationSnapshot,
+    waitForCycleSelfForecastRuntimePreparation,
     createBehavioralFingerprintRun, behavioralFingerprintSubjectQueue,
     behavioralFingerprintAutomationPlan,
     submitBehavioralFingerprintResponse, behavioralFingerprintEvaluatorQueue,
