@@ -9688,7 +9688,7 @@ function coverageCollectionCountValue(value, depth = 0) {
     if (!text) return null;
     try { return coverageCollectionCountValue(JSON.parse(text), depth + 1); }
     catch {
-      if (/^(?:no (?:gmail )?messages?(?: were)? found|no results|0 results?)(?:[.!]|\s|$)/i.test(text)) {
+      if (/^(?:no (?:gmail )?(?:messages?|emails?)(?: were)? found|no results|0 results?)(?:[.!]|\s|$)/i.test(text)) {
         return 0;
       }
       // Managed Gmail connectors also render bounded search summaries as prose or Markdown.
@@ -9697,7 +9697,15 @@ function coverageCollectionCountValue(value, depth = 0) {
       const explicitCount = text.match(/\b(?:found|returned|showing)\s+(\d{1,6})\s+(?:gmail\s+)?messages?\b/i)
         || text.match(/\b(\d{1,6})\s+(?:gmail\s+)?messages?\s+(?:found|returned)\b/i)
         || text.match(/\btotal(?:\s+(?:gmail\s+)?messages?)?\s*:\s*(\d{1,6})\b/i);
-      return explicitCount ? Number(explicitCount[1]) : null;
+      if (explicitCount) return Number(explicitCount[1]);
+      // LimeLight's Google Workspace connector returns a formatted string rather than JSON.
+      // Its declared contract includes one "Message ID" and one "Thread ID" per result.
+      // Count only unique, explicitly labeled Message IDs so dates, thread ids, subjects, and
+      // body text can never be mistaken for result cardinality.
+      const messageIds = [...text.matchAll(
+        /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?message[\s_-]*id(?:\*\*)?\s*:\s*`?([A-Za-z0-9_-]{4,200})`?/gim)]
+        .map(match => match[1]);
+      return messageIds.length ? new Set(messageIds).size : null;
     }
   }
   if (!value || typeof value !== 'object' || depth > 4) return null;

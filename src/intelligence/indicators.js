@@ -436,7 +436,8 @@ function buildIndicatorReport(state = {}, now = new Date(), options = {}) {
     && item.audit?.self_forecast?.self_correction_complete_chain_verified === true);
   const aggregateCalibratedSelfCorrections = replayValidSelfCorrections.filter(item =>
     Number(item.self_forecast?.self_correction?.feedback?.protocol_version) >= 3
-    && item.self_forecast.self_correction.feedback.aggregate_calibration);
+    && (item.self_forecast.self_correction.feedback.aggregate_calibration
+      || item.self_forecast.self_correction.feedback_storage === 'replay_reference_v1'));
   const profileBlindAggregateCorrections = aggregateCalibratedSelfCorrections.filter(item =>
     Number(item.self_forecast?.protocol_version) < 5);
   const laggedPriorAggregateCorrections = aggregateCalibratedSelfCorrections.filter(item =>

@@ -25345,6 +25345,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     let correctionRevisionBeforeEvidenceReentry = correctionRevision == null;
     let correctionRevisionAfterFeedback = correctionRevision == null;
     if (correctionOffer) {
+      const correctionFeedbackCompacted = correctionOffer.feedback_storage === 'replay_reference_v1';
       const sourceMoment = cognition.experience_stream.find(item =>
         item.id === correctionOffer.feedback?.source_moment_id);
       const expectedFeedback = sourceMoment
@@ -25355,16 +25356,27 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const revealAt = new Date(correctionOffer.revealed_at).getTime();
       const offerEventIndex = eventIndex('experience_self_forecast_feedback_revealed', record.id,
         { offer_commitment: correctionOffer.offer_commitment });
+      const expectedFeedbackProjection = expectedFeedback
+        ? cycleSelfForecast.correctionFeedbackReference(expectedFeedback) : null;
+      const storedFeedbackVerified = correctionFeedbackCompacted
+        ? Boolean(expectedFeedbackProjection
+          && experienceCanonicalJson(expectedFeedbackProjection, cache)
+            === experienceCanonicalJson(correctionOffer.feedback, cache))
+        : correctionOffer.feedback_commitment === correctionOffer.feedback?.feedback_commitment;
       correctionOfferVerified = correctionOffer.initial_forecast_commitment === record.forecast_commitment
         && correctionOffer.forecast_id === record.id
-        && correctionOffer.feedback_commitment === correctionOffer.feedback?.feedback_commitment
-        && cycleSelfForecast.commitment(cycleSelfForecast.correctionOfferManifest(correctionOffer))
+        && storedFeedbackVerified
+        && cycleSelfForecast.commitment(cycleSelfForecast.correctionOfferManifest(correctionOffer,
+          correctionFeedbackCompacted ? expectedFeedback : undefined))
           === correctionOffer.offer_commitment;
       correctionFeedbackReplayVerified = Boolean(sourceMoment && expectedFeedback
         && sourceIndex >= 0 && sourceIndex < momentIndex
         && sourceMoment.self_forecast?.outcome_commitment === correctionOffer.feedback?.source_outcome_commitment
-        && experienceCanonicalJson(expectedFeedback, cache)
-          === experienceCanonicalJson(correctionOffer.feedback, cache)
+        && (correctionFeedbackCompacted
+          ? experienceCanonicalJson(expectedFeedbackProjection, cache)
+            === experienceCanonicalJson(correctionOffer.feedback, cache)
+          : experienceCanonicalJson(expectedFeedback, cache)
+            === experienceCanonicalJson(correctionOffer.feedback, cache))
         && experienceMomentAudit(sourceMoment, cognition, cycles, cache, nextVisited).evidence_eligible);
       correctionOfferLedgerBound = offerEventIndex >= 0;
       correctionRevealAfterInitial = Number.isFinite(revealAt) && revealAt >= committedAt
@@ -25474,6 +25486,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       outcome_verified: outcomeVerified, scoring_ledger_bound: scoringBound,
       research_ledger_chain_verified: ledgerVerified,
       self_correction_offered: correctionOffer != null,
+      self_correction_feedback_compacted: correctionOffer?.feedback_storage === 'replay_reference_v1',
       self_correction_offer_verified: correctionOffer != null && correctionOfferChainVerified,
       self_correction_revision_committed: correctionRevision != null,
       self_correction_revision_verified: correctionRevision != null && correctionRevisionVerified,
@@ -27641,6 +27654,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         };
         if (Number(moment.lifecycle_protocol_version) === 2 && moment.start_commitment) {
           measured('forecast_scoring', () => scoreCycleSelfForecast(current, cycle, moment));
+          measured('forecast_feedback_compaction', () =>
+            cycleSelfForecast.compactCorrectionOfferFeedback(moment.self_forecast?.self_correction));
           measured('experience_closure', () => commitExperienceMomentClosure(current, cycle, moment));
           measured('integrated_self_frame', () => createIntegratedSelfFrame(current, cycle, moment, lifecycleAuditCache));
           measured('behavioral_self_revision', () => reviseBehavioralSelfModel(current, moment, lifecycleAuditCache));

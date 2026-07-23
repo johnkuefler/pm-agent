@@ -99,6 +99,21 @@ test('coverage result counting handles MCP envelopes without retaining message c
   assert.equal(__test.coverageCollectionCount({
     content: [{ type: 'text', text: 'No messages found.' }],
   }), 0, 'an explicit zero-result connector response is verified coverage, not an unknown count');
+  assert.equal(__test.coverageCollectionCount({
+    content: [{ type: 'text', text: [
+      'Message ID: `18ff-private-a`',
+      'Thread ID: `18ff-thread-a`',
+      'Subject: Private subject with the number 2026',
+      '',
+      '**Message_ID**: 18ff-private-b',
+      'Thread_ID: 18ff-thread-b',
+      '',
+      'Message ID: `18ff-private-a`',
+    ].join('\n') }],
+  }), 2, 'formatted Gmail results count unique labeled message ids, never arbitrary metadata');
+  assert.equal(__test.coverageCollectionCount({
+    content: [{ type: 'text', text: 'No Gmail emails were found for that query.' }],
+  }), 0);
   assert.equal(__test.coverageCollectionCount({ total: 4 }), 4);
   assert.equal(__test.coverageCollectionCount('opaque connector response'), null);
   const safeShape = __test.coverageResultShape({

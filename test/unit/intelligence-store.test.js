@@ -2880,6 +2880,11 @@ test('natural self-correction reveals prior error only after the initial forecas
   const stream = store.experienceStreamSnapshot();
   const closed = stream.moments.find(item => item.id === target.moment.id);
   assert.equal(closed.audit.self_forecast.self_correction_complete_chain_verified, true);
+  assert.equal(closed.audit.self_forecast.self_correction_feedback_compacted, true);
+  assert.equal(closed.self_forecast.self_correction.feedback_storage, 'replay_reference_v1');
+  assert.equal(closed.self_forecast.self_correction.feedback.kind,
+    'replay_derived_feedback_reference');
+  assert.equal(closed.self_forecast.self_correction.feedback.aggregate_calibration, undefined);
   assert.ok(closed.self_forecast.outcome.self_correction);
   assert.ok(Number.isFinite(closed.self_forecast.outcome.self_correction.integrated_self_state_score.revised));
   assert.equal(stream.prospective_self_forecast.self_correction_offers, 1);
@@ -2893,7 +2898,7 @@ test('natural self-correction reveals prior error only after the initial forecas
 
   await store.persist();
   const tampered = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  tampered.cognition.experience_stream[1].self_forecast.self_correction.feedback.action_count.observed = 99;
+  tampered.cognition.experience_stream[1].self_forecast.self_correction.feedback.source_moment_id = 'tampered';
   fs.writeFileSync(filePath, JSON.stringify(tampered));
   const reloaded = createIntelligenceStore({ filePath, db: {}, isDbReady: () => false,
     clock: () => new Date(now) });

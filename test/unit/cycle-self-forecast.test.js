@@ -749,4 +749,16 @@ test('self-correction feedback commits replay-derived aggregate calibration afte
     record: moments.at(-1).self_forecast, feedback: tampered,
     revealedAt: '2026-07-14T06:00:00.000Z',
   }), /feedback commitment is invalid/);
+  const offer = cycleSelfForecast.createCorrectionOffer({
+    record: moments.at(-1).self_forecast, feedback,
+    revealedAt: '2026-07-14T06:00:00.000Z',
+  });
+  const fullBytes = Buffer.byteLength(JSON.stringify(offer.feedback));
+  assert.equal(cycleSelfForecast.compactCorrectionOfferFeedback(offer), true);
+  assert.equal(offer.feedback_storage, 'replay_reference_v1');
+  assert.ok(Buffer.byteLength(JSON.stringify(offer.feedback)) < fullBytes / 2);
+  assert.deepEqual(offer.feedback, cycleSelfForecast.correctionFeedbackReference(feedback));
+  assert.equal(cycleSelfForecast.commitment(
+    cycleSelfForecast.correctionOfferManifest(offer, feedback)), offer.offer_commitment);
+  assert.equal(cycleSelfForecast.compactCorrectionOfferFeedback(offer), false);
 });

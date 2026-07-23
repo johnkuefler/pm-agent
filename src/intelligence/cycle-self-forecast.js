@@ -674,13 +674,13 @@ function errorFeedbackFromMoment(moment, historicalMoments = []) {
   return { ...error, feedback_commitment: commitment(error) };
 }
 
-function correctionOfferManifest(offer) {
+function correctionOfferManifest(offer, feedbackOverride = undefined) {
   return {
     protocol_version: offer.protocol_version,
     id: offer.id,
     forecast_id: offer.forecast_id,
     initial_forecast_commitment: offer.initial_forecast_commitment,
-    feedback: offer.feedback,
+    feedback: feedbackOverride === undefined ? offer.feedback : feedbackOverride,
     feedback_commitment: offer.feedback_commitment,
     revealed_at: offer.revealed_at,
   };
@@ -704,6 +704,33 @@ function createCorrectionOffer({ record, feedback, revealedAt }) {
   };
   offer.offer_commitment = commitment(correctionOfferManifest(offer));
   return offer;
+}
+
+function correctionFeedbackReference(feedback) {
+  if (!feedback || typeof feedback !== 'object') return null;
+  return {
+    storage_protocol_version: 1,
+    kind: 'replay_derived_feedback_reference',
+    protocol_version: feedback.protocol_version,
+    source_forecast_protocol_version: feedback.source_forecast_protocol_version,
+    forecast_id: feedback.forecast_id,
+    source_moment_id: feedback.source_moment_id,
+    source_outcome_commitment: feedback.source_outcome_commitment,
+    scored_at: feedback.scored_at,
+    feedback_commitment: feedback.feedback_commitment,
+  };
+}
+
+function compactCorrectionOfferFeedback(offer) {
+  if (!offer?.feedback || offer.feedback_storage === 'replay_reference_v1') return false;
+  const { feedback_commitment: feedbackCommitment, ...feedbackPayload } = offer.feedback;
+  if (!feedbackCommitment || feedbackCommitment !== offer.feedback_commitment
+    || commitment(feedbackPayload) !== feedbackCommitment) {
+    throw new Error('self-correction feedback cannot be compacted without a valid commitment');
+  }
+  offer.feedback = correctionFeedbackReference(offer.feedback);
+  offer.feedback_storage = 'replay_reference_v1';
+  return true;
 }
 
 function predictionPayload(forecast = {}) {
@@ -1226,6 +1253,7 @@ module.exports = {
   activeActionTypes, adjudicateMetacognitivePrediction, behavioralSelfPriorUseVerified,
   canonicalJson,
   changedPredictionDomains, commitment, correctionOfferManifest, correctionRevisionManifest,
+  compactCorrectionOfferFeedback, correctionFeedbackReference,
   createCorrectionOffer, createCorrectionRevision, createRecord, errorFeedbackFromMoment,
   forecastManifest, metacognitiveAdjudicationManifest, normalizeForecast, outcomeManifest,
   submissionContract,
