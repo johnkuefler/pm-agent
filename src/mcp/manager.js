@@ -96,10 +96,33 @@ function safeToolName(connection, toolName) {
   return `${(prefix + suffix).slice(0, 57)}_${hash}`;
 }
 
-function withTimeout(promise, ms, label) {
+function withAbortableTimeout(operation, ms, label, parentSignal) {
+  const controller = new AbortController();
   let timer;
-  const timeout = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms); timer.unref?.(); });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  let rejectAbort;
+  const aborted = new Promise((_, reject) => { rejectAbort = reject; });
+  const relayAbort = () => {
+    const reason = parentSignal?.reason || new Error(`${label} aborted`);
+    controller.abort(reason);
+    rejectAbort(reason);
+  };
+  if (parentSignal?.aborted) relayAbort();
+  else parentSignal?.addEventListener('abort', relayAbort, { once: true });
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${ms}ms`);
+      controller.abort(error);
+      reject(error);
+    }, ms);
+    timer.unref?.();
+  });
+  const work = controller.signal.aborted
+    ? Promise.reject(controller.signal.reason)
+    : Promise.resolve().then(() => operation(controller.signal));
+  return Promise.race([work, timeout, aborted]).finally(() => {
+    clearTimeout(timer);
+    parentSignal?.removeEventListener('abort', relayAbort);
+  });
 }
 
 function toolIsAllowed(connection, tool) {
@@ -341,7 +364,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     return { headers, authProvider };
   }
 
-  async function defaultConnect(connection, callbackUrl) {
+  async function defaultConnect(connection, callbackUrl, { signal, timeout = 12000 } = {}) {
     const url = new URL(secretsFor(connection).url);
     const { headers, authProvider } = requestOptions(connection, callbackUrl);
     const attempts = [
@@ -349,21 +372,33 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
       () => new SSEClientTransport(url, { requestInit: { headers }, eventSourceInit: { fetch: (input, init = {}) => fetch(input, { ...init, headers: { ...headers, ...(init.headers || {}) } }) }, authProvider }),
     ];
     let lastError;
-    for (const makeTransport of attempts) {
+    const startedAt = Date.now();
+    for (let index = 0; index < attempts.length; index++) {
+      const makeTransport = attempts[index];
+      const remaining = timeout - (Date.now() - startedAt);
+      if (remaining <= 0) break;
+      const attemptBudget = Math.max(1, Math.floor(remaining / (attempts.length - index)));
       const client = new Client({ name: 'nora-pm-agent', version: '1.0.0' }, { capabilities: {} });
       const transport = makeTransport();
-      try { await withTimeout(client.connect(transport), 12000, 'MCP connection'); return { client, transport }; }
+      try {
+        await withAbortableTimeout(connectSignal => client.connect(transport, {
+          signal: connectSignal, timeout: attemptBudget, maxTotalTimeout: attemptBudget,
+        }), attemptBudget, 'MCP connection', signal);
+        return { client, transport };
+      }
       catch (error) { lastError = error; try { await client.close(); } catch {} if (error instanceof UnauthorizedError) throw error; }
     }
     throw lastError || new Error('Unable to connect to MCP server');
   }
 
-  async function getClient(connection) {
+  async function getClient(connection, { signal, timeout = 12000 } = {}) {
     const cached = clients.get(connection.id);
     if (cached && cached.expires > Date.now()) return cached;
     if (cached) await invalidateClient(connection.id);
     if (!connectFactory) await validateMcpUrl(secretsFor(connection).url, { resolveDns });
-    const connected = await (connectFactory ? connectFactory(connection, secretsFor(connection)) : defaultConnect(connection));
+    const connected = await (connectFactory
+      ? connectFactory(connection, secretsFor(connection), { signal, timeout })
+      : defaultConnect(connection, undefined, { signal, timeout }));
     const entry = { ...connected, expires: Date.now() + 5 * 60 * 1000 }; clients.set(connection.id, entry); return entry;
   }
 
@@ -395,13 +430,14 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     if (!catalogTool || !toolIsAllowed(connection, catalogTool)) throw new Error('MCP tool is not allowed for this connection');
     let entry;
     const startedAt = Date.now();
-    const operation = (async () => {
-      entry = await getClient(connection);
-      const remaining = Math.max(1, timeout - (Date.now() - startedAt));
-      return entry.client.callTool({ name: toolName, arguments: args || {} }, undefined,
-        { timeout: remaining, maxTotalTimeout: remaining, signal });
-    })();
-    try { return await withTimeout(operation, timeout, 'MCP tool call'); }
+    try {
+      return await withAbortableTimeout(async toolSignal => {
+        entry = await getClient(connection, { signal: toolSignal, timeout });
+        const remaining = Math.max(1, timeout - (Date.now() - startedAt));
+        return entry.client.callTool({ name: toolName, arguments: args || {} }, undefined,
+          { timeout: remaining, maxTotalTimeout: remaining, signal: toolSignal });
+      }, timeout, 'MCP tool call', signal);
+    }
     catch (error) { await invalidateClient(connectionId); throw error; }
   }
 

@@ -19,7 +19,9 @@ function fixture(overrides = {}) {
     loadConnections: () => records,
     saveConnections: next => { records = JSON.parse(JSON.stringify(next)); },
     encryptionSecret: 'test-secret', resolveDns: false,
-    connectFactory: async () => ({ client: fakeClient, transport: {} }),
+    connectFactory: async (...args) => overrides.connectFactory
+      ? overrides.connectFactory(...args, fakeClient)
+      : ({ client: fakeClient, transport: {} }),
     authFn: overrides.authFn,
   });
   return { manager, records: () => records, calls };
@@ -57,6 +59,32 @@ test('MCP manager discovers tools, hard-filters writes, and executes the same bi
   assert.equal(voice.openaiTools[0].name, slack.claudeTools[0].name);
   await slack.executors[slack.claudeTools[0].name]({ q: 'launch' });
   assert.deepEqual(calls[0], { name: 'find_projects', arguments: { q: 'launch' } });
+});
+
+test('MCP live-tool timeout aborts transport connection establishment itself', async () => {
+  let connectionAttempts = 0;
+  let handshakeAborted = false;
+  const { manager } = fixture({
+    connectFactory: async (_connection, _secrets, options, fakeClient) => {
+      connectionAttempts += 1;
+      if (connectionAttempts === 1) return { client: fakeClient, transport: {} };
+      return new Promise((resolve, reject) => {
+        options.signal.addEventListener('abort', () => {
+          handshakeAborted = true;
+          reject(options.signal.reason);
+        }, { once: true });
+      });
+    },
+  });
+  const created = await manager.create({ name: 'Bounded MCP', url: 'https://mcp.example.com/mcp', auth_type: 'none' });
+  await manager.testConnection(created.id);
+  await manager.update(created.id, { name: 'Bounded MCP renamed' }); // invalidate the tested client
+  const binding = manager.bindings();
+  const started = Date.now();
+  await assert.rejects(binding.executors[binding.claudeTools[0].name]({}, { timeoutMs: 30 }),
+    /timed out|aborted/);
+  assert.equal(handshakeAborted, true);
+  assert.ok(Date.now() - started < 250);
 });
 
 test('OAuth PKCE state, discovery, verifier, tokens, and refreshable provider survive separate requests', async () => {
