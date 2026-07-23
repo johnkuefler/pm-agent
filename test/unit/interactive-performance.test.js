@@ -214,17 +214,23 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'slack'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'zoom-chat'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'realtime'/);
-  assert.match(server, /settleWithinAbortable\(\s*signal => retrieveSemanticMemories\(convText, 8, \{ signal \}\), 900/,
-    'optional semantic recall must be aborted when it loses to the live reply path');
+  assert.match(server, /retrieveInteractiveMemories\(convText, 8\)/,
+    'Slack memory relevance must stay local on the live reply path');
+  assert.match(server, /retrieveInteractiveMemories\(zoomConv, 8\)/,
+    'typed Zoom memory relevance must stay local on the live reply path');
+  assert.doesNotMatch(server, /retrieveSemanticMemories\(convText, 8/,
+    'Slack must not wait on remote query embedding');
+  assert.match(server, /retrieveSemanticMemories\(q, 8, \{ signal \}\), 1200/,
+    'quiet realtime prompt refresh may retain abortable semantic recall');
   const dbSource = fs.readFileSync(path.join(__dirname, '..', '..', 'db.js'), 'utf8');
   assert.match(server, /excludeSources: \['opinion', 'learning'\], signal, interactive: true/,
-    'live semantic recall must use its isolated fast-fail database lane');
+    'remaining quiet-time semantic recall must use its isolated fast-fail database lane');
   assert.match(dbSource, /connectionTimeoutMillis: DB_INTERACTIVE_TIMEOUT_MS/,
     'interactive database connection acquisition must have its own short deadline');
   assert.match(dbSource, /query_timeout: DB_INTERACTIVE_TIMEOUT_MS/,
     'interactive database queries must have their own short deadline');
   assert.match(dbSource, /max: 2/,
-    'optional live recall must not consume the background database pool');
+    'optional quiet-time recall must not consume the background database pool');
   assert.match(server, /Slack thread context'\)/,
     'optional Slack thread context must lose quickly to the live reply path');
   assert.match(server, /Slack linked-page enrichment'\)/,
@@ -759,6 +765,24 @@ test('Slack waits for one coherent reply instead of posting a generic progress m
   assert.equal(__test.stripSlackLookupNarration('On it. I moved the task to Friday.'),
     'On it. I moved the task to Friday.',
   'a real completion acknowledgement is not lookup narration');
+});
+
+test('interactive memory recall is local, bounded, and relevance preserving', () => {
+  const { __test } = require('../../server');
+  const memories = [
+    { id: 'kizik', fact: 'The Kizik brief was rebuilt with charts and a flow diagram.',
+      project: 'Kizik', added: '2026-07-22T12:00:00.000Z', salience: 0.8 },
+    { id: 'lct', fact: 'LCT Phase 2 is waiting on Gracie.', project: 'LCT',
+      added: '2026-07-22T13:00:00.000Z', salience: 0.7 },
+    { id: 'marker', fact: 'Filed transcript abc', source: 'marker',
+      added: '2026-07-22T14:00:00.000Z' },
+  ];
+  const ranked = __test.rankLexicalMemories(memories,
+    'What happened with the Kizik brief and its charts?', 2);
+  assert.equal(ranked[0].id, 'kizik');
+  assert.equal(ranked[0]._recall_mode, 'local_lexical');
+  assert.ok(ranked.length <= 2);
+  assert.deepEqual(__test.rankLexicalMemories(memories, 'hello there', 2), []);
 });
 
 test('scheduled intelligence defers without touching providers while a person has the foreground', async () => {
