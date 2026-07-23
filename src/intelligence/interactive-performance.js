@@ -32,6 +32,7 @@ const INTERACTIVE_ACTIVE_RETRY_MS = 30000;
 const BACKGROUND_BUSY_RETRY_MS = 5000;
 const activeInteractiveLeases = new Map();
 const activeBackgroundLeases = new Map();
+const backgroundIdleWaiters = new Set();
 let leaseSequence = 0;
 let lastInteractiveAt = 0;
 let lastInteractiveSurface = null;
@@ -242,8 +243,44 @@ function beginBackground(label, { now = Date.now(), force = false } = {}) {
       if (released) return;
       released = true;
       activeBackgroundLeases.delete(token);
+      if (activeBackgroundLeases.size === 0) {
+        for (const resolve of backgroundIdleWaiters) resolve(true);
+        backgroundIdleWaiters.clear();
+      }
     },
   };
+}
+
+function cancelBackground(reason = 'service_shutdown') {
+  const boundedReason = String(reason || 'service_shutdown').slice(0, 160);
+  let cancelled = 0;
+  for (const lease of activeBackgroundLeases.values()) {
+    if (lease.controller.signal.aborted) continue;
+    lease.stopped_reason = boundedReason;
+    lease.controller.abort(new Error(`background intelligence cancelled: ${boundedReason}`));
+    cancelled += 1;
+  }
+  backgroundBudgetCancellations += cancelled;
+  return cancelled;
+}
+
+function waitForBackgroundIdle({ timeoutMs = 10000 } = {}) {
+  if (activeBackgroundLeases.size === 0) return Promise.resolve(true);
+  const boundedTimeoutMs = Math.max(1, Math.min(30000, Number(timeoutMs) || 10000));
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      backgroundIdleWaiters.delete(finish);
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(false), boundedTimeoutMs);
+    timer.unref?.();
+    backgroundIdleWaiters.add(finish);
+    if (activeBackgroundLeases.size === 0) finish(true);
+  });
 }
 
 function prioritySnapshot(now = Date.now()) {
@@ -298,6 +335,8 @@ module.exports = {
   summarize,
   beginInteractive,
   beginBackground,
+  cancelBackground,
+  waitForBackgroundIdle,
   prioritySnapshot,
   resetPriorityGateForTest,
 };

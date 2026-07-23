@@ -15664,6 +15664,14 @@ async function start(options = {}) {
 async function stop() {
   setServiceReadiness('draining');
   _somaNerves.runtimeReady = false;
+  // Optional inference is safe to preempt, but it must reach its finally/release boundary before
+  // the final persistence flush and database close. Otherwise a provider response can arrive
+  // during shutdown and mutate state after the last durable snapshot.
+  interactivePerformance.cancelBackground('service_shutdown');
+  const backgroundDrained = await interactivePerformance.waitForBackgroundIdle({ timeoutMs: 10000 });
+  if (!backgroundDrained) {
+    console.warn('Background provider drain exceeded 10000ms; continuing bounded shutdown');
+  }
   processResources.close();
   if (_somaLoopTimer) { clearInterval(_somaLoopTimer); _somaLoopTimer = null; }
   for (const timer of _runtimeIntervals.splice(0)) {

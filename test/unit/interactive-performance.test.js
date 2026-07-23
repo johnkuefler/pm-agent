@@ -139,6 +139,27 @@ test('background runtime budgets actively cancel their provider lane', async () 
   performance.resetPriorityGateForTest();
 });
 
+test('shutdown cancellation aborts providers and waits for their release boundary', async () => {
+  performance.resetPriorityGateForTest();
+  const background = performance.beginBackground('scheduled-intelligence', { now: 250000 });
+  assert.equal(background.allowed, true);
+  const drained = performance.waitForBackgroundIdle({ timeoutMs: 1000 });
+  assert.equal(performance.cancelBackground('service_shutdown'), 1);
+  assert.equal(background.signal.aborted, true);
+  assert.equal(background.stopReason(), 'service_shutdown');
+  background.release();
+  assert.equal(await drained, true);
+  assert.equal(performance.prioritySnapshot(250001).background_provider_in_flight, 0);
+
+  const stuck = performance.beginBackground('ignores-abort', { now: 250002 });
+  assert.equal(stuck.allowed, true);
+  performance.cancelBackground('service_shutdown');
+  assert.equal(await performance.waitForBackgroundIdle({ timeoutMs: 5 }), false,
+    'shutdown must remain bounded even if an executor ignores cancellation');
+  stuck.release();
+  performance.resetPriorityGateForTest();
+});
+
 test('post-interaction learning drops a hung item after its bounded budget', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
@@ -293,6 +314,9 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'incomplete inbound requests must have bounded header and body windows');
   assert.match(server, /setServiceReadiness\('draining'\)[\s\S]*intelligence\.persistStrict\(\)/,
     'shutdown must stop readiness and drain durable intelligence state');
+  assert.match(server,
+    /async function stop\(\)[\s\S]*cancelBackground\('service_shutdown'\)[\s\S]*await interactivePerformance\.waitForBackgroundIdle\(\{ timeoutMs: 10000 \}\)[\s\S]*intelligence\.persistStrict\(\)/,
+    'shutdown must cancel and drain optional providers before the final durable flush');
   assert.match(server, /async function drainTranscriptCheckpoints\(\)[\s\S]*flushTranscriptEpisodeCheckpoint/,
     'shutdown must flush raw transcript and deferred episode checkpoints before closing the database');
   assert.match(server, /const transcriptDrain = await drainTranscriptCheckpoints\(\)[\s\S]*intelligence\.persistStrict\(\)/,

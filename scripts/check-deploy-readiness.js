@@ -51,8 +51,8 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
       blockers.push({ kind: 'interactive_quiet_window', quiet_remaining_ms: quietRemainingMs,
         last_interactive_surface: priority.last_interactive_surface || null });
     }
-    // Scheduled intelligence is explicitly preemptible, has no committed effect until its
-    // terminal receipt is stored, and retries on the next scheduler pass. Blocking a release on
+    // Scheduled intelligence is explicitly preemptible, is cancelled and drained by the shutdown
+    // coordinator before final persistence, and retries on the next scheduler pass. Blocking on
     // this lane made deployability depend on catching a tiny idle gap between recurring background
     // cycles. Human interactions, run lifecycles, meetings, and durable writes remain blockers.
   }
