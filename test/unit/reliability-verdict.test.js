@@ -19,7 +19,8 @@ function healthySnapshot() {
     interactive_priority: { background_budget_cancellations: 0 },
     background_work: { post_interaction: { queued: 0 }, transcript_checkpoints: { pending: 0 },
       recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
-      api_opportunity_operations: { pending: 0, last_error: null } },
+      api_opportunity_operations: { pending: 0, last_error: null },
+      slack_webhook_events: { active_count: 0, oldest_active_ms: 0, recent_failures: [] } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
     deferred_jobs: { consecutive_worker_failures: 0, pending_finalizations: 0,
       memory_queue: { queued: 0 } },
@@ -84,6 +85,21 @@ test('reliability exposes approved API operation backlog and failures', () => {
   assert.deepEqual(verdict.degraded.map(item => item.code), [
     'api_opportunity_operation_backlog', 'api_opportunity_operation_failure',
   ]);
+});
+
+test('reliability escalates acknowledged Slack work that cannot reach a terminal state', () => {
+  const slow = healthySnapshot();
+  slow.background_work.slack_webhook_events = {
+    active_count: 2, oldest_active_ms: 25000, recent_failures: [],
+  };
+  let verdict = assessRuntimeReliability(slow, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'slack_webhook_work_pressure');
+
+  slow.background_work.slack_webhook_events.oldest_active_ms = 46000;
+  verdict = assessRuntimeReliability(slow, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'slack_webhook_work_stuck');
 });
 
 test('reliability surfaces active and completed request deadline pressure', () => {

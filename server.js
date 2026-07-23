@@ -7718,6 +7718,84 @@ app.post('/admin/inbox/file/:inboxId/upload-to-drive', requireAuth, async (req, 
   }
 });
 
+const _slackWebhookEvents = new Map();
+let _slackWebhookEventSequence = 0;
+const _slackWebhookHealth = {
+  accepted: 0, completed: 0, failures: 0, shutdown_drain_timeouts: 0,
+  last_failure: null, recent_failures: [],
+};
+function trackSlackWebhookEvent(label, work) {
+  const id = `slack-event-${++_slackWebhookEventSequence}`;
+  const entry = {
+    id, label: String(label || 'Slack event').slice(0, 120),
+    started_at: Date.now(), promise: null,
+  };
+  _slackWebhookHealth.accepted += 1;
+  const execution = Promise.resolve().then(work);
+  const owned = execution.catch(error => {
+    const failure = {
+      at: new Date().toISOString(),
+      label: entry.label,
+      error: String(error?.message || error).slice(0, 500),
+    };
+    _slackWebhookHealth.failures += 1;
+    _slackWebhookHealth.last_failure = failure;
+    _slackWebhookHealth.recent_failures.push(failure);
+    while (_slackWebhookHealth.recent_failures.length > 20) {
+      _slackWebhookHealth.recent_failures.shift();
+    }
+    console.error('Slack handler error:', failure.error);
+  }).finally(() => {
+    _slackWebhookHealth.completed += 1;
+    _slackWebhookEvents.delete(id);
+  });
+  entry.promise = owned;
+  _slackWebhookEvents.set(id, entry);
+  return owned;
+}
+function slackWebhookSnapshot(now = Date.now()) {
+  const active = [..._slackWebhookEvents.values()].map(entry => ({
+    id: entry.id,
+    label: entry.label,
+    age_ms: Math.max(0, Number(now) - entry.started_at),
+  }));
+  return {
+    ..._slackWebhookHealth,
+    active_count: active.length,
+    oldest_active_ms: Math.max(0, ...active.map(entry => entry.age_ms)),
+    active,
+  };
+}
+async function drainSlackWebhookEvents({ timeoutMs = 20000 } = {}) {
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 20000);
+  while (true) {
+    const pending = [..._slackWebhookEvents.values()].map(entry => entry.promise);
+    if (!pending.length) {
+      await Promise.resolve();
+      if (_slackWebhookEvents.size === 0) return true;
+      continue;
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      _slackWebhookHealth.shutdown_drain_timeouts += 1;
+      return false;
+    }
+    let timer = null;
+    const drained = await Promise.race([
+      Promise.allSettled(pending).then(() => true),
+      new Promise(resolve => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!drained) {
+      _slackWebhookHealth.shutdown_drain_timeouts += 1;
+      return false;
+    }
+  }
+}
+
 app.post('/webhook/slack', async (req, res) => {
   const slackVerification = verifySlackRequest(req);
   if (!slackVerification.valid) return res.sendStatus(401);
@@ -7728,15 +7806,24 @@ app.post('/webhook/slack', async (req, res) => {
   }
 
   res.sendStatus(200);
+  const body = req.body;
+  const event = body.event;
+  const label = event
+    ? `${event.type || event.subtype || 'event'}:${event.channel || 'unknown'}`
+    : 'empty-event';
+  trackSlackWebhookEvent(label,
+    () => processSlackWebhookEvent(body, slackVerification.attestation));
+});
 
+async function processSlackWebhookEvent(body, sourceAttestation = null) {
   // Cache Nora's bot user ID from authorizations on first event — needed to detect
   // @mentions in raw `message.channels` events (which arrive as type=message, not app_mention)
-  if (!noraBotUserId && req.body.authorizations && req.body.authorizations[0]) {
-    noraBotUserId = req.body.authorizations[0].user_id;
+  if (!noraBotUserId && body.authorizations && body.authorizations[0]) {
+    noraBotUserId = body.authorizations[0].user_id;
     console.log('🤖 Resolved Nora bot user ID:', noraBotUserId);
   }
 
-  const event = req.body.event;
+  const event = body.event;
   if (!event) return;
 
   // Auto-join catch: when someone runs the Zoom (or Meet/Teams) slash command in their DM with
@@ -7799,7 +7886,7 @@ app.post('/webhook/slack', async (req, res) => {
       console.log(`📎 Ignoring channel file drop (channel_type=${event.channel_type}, channel=${channel}) — file handling is DM-only`);
       return;
     }
-    await handleSlackFiles(event, channel, user, threadTs, query, slackVerification.attestation);
+    await handleSlackFiles(event, channel, user, threadTs, query, sourceAttestation);
     return;
   }
 
@@ -7857,8 +7944,8 @@ app.post('/webhook/slack', async (req, res) => {
   // Pass the RAW thread_ts (undefined for a top-level message) alongside the coalesced threadTs.
   // The raw one keys the in-memory session; the coalesced one is where we post/fetch the thread.
   await handleSlack(channel, user, query, threadTs, event.channel_type, mode, event.thread_ts, event.ts,
-    slackVerification.attestation);
-});
+    sourceAttestation);
+}
 
 // Thin wrapper: resolve the conversation key and SERIALIZE per key so two near-simultaneous messages
 // in the same conversation can't race on the shared in-memory history (read -> await Claude -> push).
@@ -13480,6 +13567,7 @@ function backgroundWorkSnapshot() {
       frame_parse_interval_ms: FRAME_PARSE_INTERVAL_MS,
       voice_quiet_ms: SCREENSHARE_VOICE_QUIET_MS },
     api_opportunity_operations: { ...apiOpportunityWriteHealth },
+    slack_webhook_events: slackWebhookSnapshot(),
     recurring_jobs: _recurringJobs.snapshot(),
     startup_tasks: startupBackgroundTaskSnapshot(),
   };
@@ -16195,11 +16283,15 @@ async function stop() {
     closeServer.then(() => { clearTimeout(forceTimer); resolve(); });
   });
   const transcriptDrain = await drainTranscriptCheckpoints().then(() => null, error => error);
-  const [persistenceDrain] = await Promise.allSettled([
+  const [persistenceDrain, , , slackWebhookDrain] = await Promise.allSettled([
     intelligence.persistStrict(),
     intelligenceRoutesRuntime.close(),
     boundedServerClose,
+    drainSlackWebhookEvents({ timeoutMs: 20000 }),
   ]);
+  if (slackWebhookDrain.status === 'rejected' || slackWebhookDrain.value !== true) {
+    console.warn('Slack webhook event drain exceeded 20000ms; continuing bounded shutdown');
+  }
   const apiOpportunityDrained = await drainApiOpportunityOperations({ timeoutMs: 10000 });
   if (!apiOpportunityDrained) {
     console.warn('Approved API operation drain exceeded 10000ms; continuing bounded shutdown');
@@ -16387,6 +16479,9 @@ module.exports = {
     recordApiUseOutcomesForInteraction,
     enqueueApiOpportunityOperation,
     drainApiOpportunityOperations,
+    trackSlackWebhookEvent,
+    slackWebhookSnapshot,
+    drainSlackWebhookEvents,
   },
 };
 

@@ -295,6 +295,21 @@ test('approved API operations remain serialized and drainable across shutdown', 
   assert.deepEqual(order, ['first-start', 'first-end', 'second']);
 });
 
+test('acknowledged Slack webhook work remains owned until its terminal state', async () => {
+  const { __test } = require('../../server');
+  let release;
+  const owned = __test.trackSlackWebhookEvent('test:DM', async () => {
+    await new Promise(resolve => { release = resolve; });
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(__test.slackWebhookSnapshot().active_count, 1);
+  assert.equal(await __test.drainSlackWebhookEvents({ timeoutMs: 5 }), false);
+  release();
+  await owned;
+  assert.equal(await __test.drainSlackWebhookEvents({ timeoutMs: 50 }), true);
+  assert.equal(__test.slackWebhookSnapshot().active_count, 0);
+});
+
 test('post-interaction overflow never evicts the item currently executing', async () => {
   performance.resetPriorityGateForTest();
   const { __test } = require('../../server');
@@ -533,6 +548,10 @@ test('live server opts eligible Slack work into complete trials but isolates rel
     'periodic voice prompt refreshes must revalidate silence after optional recall');
   assert.match(server, /promptRefreshController\?\.abort\(new Error\('meeting connection closed'\)\)/,
     'closing a meeting must abort optional prompt recall');
+  assert.match(server, /res\.sendStatus\(200\);[\s\S]*?trackSlackWebhookEvent\(label/,
+    'Slack event work must become explicitly owned immediately after acknowledgement');
+  assert.match(server, /drainSlackWebhookEvents\(\{ timeoutMs: 20000 \}\)/,
+    'shutdown must drain acknowledged Slack work before closing persistence');
   assert.doesNotMatch(server, /db\.bumpMemoryRecall\(ids\)\.catch/,
     'memory reconsolidation writes must not escape shutdown ownership');
   assert.match(server, /_writeThrough\('memory', \(\) => db\.bumpMemoryRecall\(ids\)\)/,
