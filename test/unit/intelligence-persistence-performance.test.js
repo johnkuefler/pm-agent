@@ -5,6 +5,13 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { createIntelligenceStore, emptyState } = require('../../src/intelligence/store');
 
+function canonicalJson(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  return `{${Object.keys(value).sort()
+    .map(key => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+}
+
 function optimizedFixture(initialState = emptyState()) {
   const writes = [];
   const db = {
@@ -151,6 +158,82 @@ test('closed cycles retain a committed trace tail without carrying their full ac
     content_commitment: crypto.createHash('sha256')
       .update(JSON.stringify(expectedIds)).digest('hex'),
   });
+});
+
+test('ordinary broadcast history commits old payloads while retaining recent and trial evidence', async () => {
+  const state = emptyState();
+  const broadcastEvent = (index, experimental = false) => ({
+    id: `broadcast-${index}`,
+    at: new Date(Date.UTC(2026, 6, 1, 0, index)).toISOString(),
+    surface: 'slack',
+    trial_id: experimental ? 'broadcast-trial' : null,
+    assignment_id: experimental ? 'broadcast-assignment' : null,
+    delivered: true,
+    delivery_mode: 'ordinary',
+    packet_visible: true,
+    packet: {
+      capacity: 7,
+      slot_keys: [`commitment:commitment-${index}`],
+      slots: [{
+        type: 'commitment',
+        id: `commitment-${index}`,
+        priority: 0.8,
+        text: `Duplicated workspace content ${index} ${'context '.repeat(30)}`,
+      }],
+    },
+    receipts: [
+      { consumer: 'planning', received: true, used: true,
+        output: `Planning output ${index} ${'detail '.repeat(20)}` },
+      { consumer: 'social', received: true, used: false,
+        output: `Social output ${index} ${'detail '.repeat(20)}` },
+    ],
+  });
+  const trialEvent = broadcastEvent(-1, true);
+  const ordinaryEvents = Array.from({ length: 30 }, (_, index) => broadcastEvent(index));
+  const originalPacket = ordinaryEvents[0].packet;
+  const originalReceipts = ordinaryEvents[0].receipts;
+  state.cognition.global_broadcast.events = [trialEvent, ...ordinaryEvents];
+
+  const { store } = optimizedFixture(state);
+  await store.init();
+  const snapshot = store.globalBroadcastSnapshot();
+  const retainedTrial = snapshot.events.find(item => item.id === trialEvent.id);
+  const compacted = snapshot.events.find(item => item.id === ordinaryEvents[0].id);
+  const retainedRecent = snapshot.events.find(item => item.id === ordinaryEvents.at(-1).id);
+
+  assert.ok(Array.isArray(retainedTrial.packet.slots),
+    'blinded trial evidence remains byte-for-byte available for replay');
+  assert.equal(compacted.packet.slots, undefined);
+  assert.equal(compacted.packet.slots_compacted, true);
+  assert.equal(compacted.receipts[0].output, undefined);
+  assert.deepEqual(compacted.payload_compaction, {
+    protocol_version: 1,
+    packet_commitment: crypto.createHash('sha256')
+      .update(canonicalJson(originalPacket)).digest('hex'),
+    receipts_commitment: crypto.createHash('sha256')
+      .update(canonicalJson(originalReceipts)).digest('hex'),
+    original_payload_bytes: Buffer.byteLength(canonicalJson({
+      packet: originalPacket, receipts: originalReceipts,
+    })),
+    slot_count: 1,
+    receipt_count: 2,
+    used_receipt_count: 1,
+  });
+  assert.ok(Array.isArray(retainedRecent.packet.slots));
+  assert.match(retainedRecent.receipts[0].output, /Planning output 29/);
+  assert.equal(snapshot.report.events, 31);
+  assert.equal(snapshot.report.delivered_events, 31);
+  assert.equal(snapshot.report.receipts, 62);
+  assert.equal(snapshot.report.used_receipts, 31);
+  assert.equal(store.persistenceDiagnostics()
+    .hydration_compaction.ordinary_broadcast_payloads_compacted, 5);
+
+  store.runGlobalBroadcast({ surface: 'slack' });
+  const afterNewEvent = store.globalBroadcastSnapshot();
+  assert.equal(afterNewEvent.events.find(item => item.id === ordinaryEvents[5].id)
+    .packet.slots_compacted, true,
+  'the same retention boundary is enforced as new ordinary broadcasts arrive');
+  assert.ok(Array.isArray(afterNewEvent.events.find(item => item.id === trialEvent.id).packet.slots));
 });
 
 test('durable cycle batches cannot wait indefinitely on a stalled persistence transport', async () => {

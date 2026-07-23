@@ -260,6 +260,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     correction_feedback_compacted: 0,
     correction_feedback_failures: 0,
     cycle_orientation_trace_manifests_compacted: 0,
+    ordinary_broadcast_payloads_compacted: 0,
   };
   const strictPersistenceTimeoutMs = strictPersistenceTimeoutOverride == null
     ? Math.max(5000, Math.min(60000,
@@ -572,12 +573,57 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return true;
   }
 
+  function compactOrdinaryBroadcastEvent(event) {
+    if (!event || event.trial_id || event.assignment_id || event.payload_compaction
+      || !event.packet || !Array.isArray(event.packet.slots)
+      || !Array.isArray(event.receipts)) {
+      return false;
+    }
+    const packet = event.packet;
+    const receipts = event.receipts;
+    event.payload_compaction = {
+      protocol_version: 1,
+      packet_commitment: crypto.createHash('sha256')
+        .update(canonicalJson(packet)).digest('hex'),
+      receipts_commitment: crypto.createHash('sha256')
+        .update(canonicalJson(receipts)).digest('hex'),
+      original_payload_bytes: Buffer.byteLength(canonicalJson({ packet, receipts })),
+      slot_count: packet.slots.length,
+      receipt_count: receipts.length,
+      used_receipt_count: receipts.filter(item => item?.used === true).length,
+    };
+    event.packet = {
+      capacity: packet.capacity,
+      slot_keys: Array.isArray(packet.slot_keys) ? packet.slot_keys : [],
+      slots_compacted: true,
+    };
+    event.receipts = receipts.map(receipt => ({
+      consumer: receipt?.consumer || null,
+      received: receipt?.received === true,
+      used: receipt?.used === true,
+      output_compacted: receipt?.output != null,
+    }));
+    return true;
+  }
+
+  function compactOrdinaryBroadcastHistory(events, retainFullEvents = 25) {
+    if (!Array.isArray(events)) return 0;
+    const ordinary = events.filter(event => !event?.trial_id && !event?.assignment_id);
+    const compactThrough = Math.max(0, ordinary.length - retainFullEvents);
+    let compacted = 0;
+    for (let index = 0; index < compactThrough; index++) {
+      if (compactOrdinaryBroadcastEvent(ordinary[index])) compacted += 1;
+    }
+    return compacted;
+  }
+
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     hydrationCompactionRuntime = {
       correction_feedback_compacted: 0,
       correction_feedback_failures: 0,
       cycle_orientation_trace_manifests_compacted: 0,
+      ordinary_broadcast_payloads_compacted: 0,
     };
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
@@ -1116,6 +1162,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.cognition.global_broadcast = { events: [], ...(state.cognition.global_broadcast || {}) };
     if (!Array.isArray(state.cognition.global_broadcast.events)) state.cognition.global_broadcast.events = [];
     state.cognition.global_broadcast.events = state.cognition.global_broadcast.events.slice(-500);
+    hydrationCompactionRuntime.ordinary_broadcast_payloads_compacted =
+      compactOrdinaryBroadcastHistory(state.cognition.global_broadcast.events);
     state.cognition.goal_affect = { current: null, ...(state.cognition.goal_affect || {}) };
     if (state.cognition.goal_affect.current && !goalAffect.verify(state.cognition.goal_affect.current)) state.cognition.goal_affect.current = null;
     state.cognition.affective_regulation = { current: null, transitions: [], applications: [],
@@ -6903,6 +6951,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       };
       current.cognition.global_broadcast.events.push(event);
       current.cognition.global_broadcast.events = current.cognition.global_broadcast.events.slice(-500);
+      compactOrdinaryBroadcastHistory(current.cognition.global_broadcast.events);
       if (protocolV2) {
         const packetCommitment = crypto.createHash('sha256').update(canonicalJson(packet)).digest('hex');
         assignment.intervention_receipt = {

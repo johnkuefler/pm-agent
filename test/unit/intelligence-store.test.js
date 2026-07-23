@@ -2917,6 +2917,7 @@ test('natural self-correction reveals prior error only after the initial forecas
     correction_feedback_compacted: 1,
     correction_feedback_failures: 0,
     cycle_orientation_trace_manifests_compacted: 0,
+    ordinary_broadcast_payloads_compacted: 0,
   });
 
   await store.persist();
