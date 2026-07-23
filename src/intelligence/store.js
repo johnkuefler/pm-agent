@@ -259,6 +259,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   let hydrationCompactionRuntime = {
     correction_feedback_compacted: 0,
     correction_feedback_failures: 0,
+    cycle_orientation_trace_manifests_compacted: 0,
   };
   const strictPersistenceTimeoutMs = strictPersistenceTimeoutOverride == null
     ? Math.max(5000, Math.min(60000,
@@ -554,11 +555,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       epistemic_status: 'Randomized, replay-audited ecological tests of bounded functional parameters. Candidate values are assignment-scoped, reviewers remain condition-blind, and no result automatically mutates Nora, grants authority, establishes feeling or identity, or proves consciousness.' };
   }
 
+  function compactClosedCycleOrientation(cycle) {
+    const traceIds = cycle?.orientation?.unreviewed_traces;
+    if (!cycle || cycle.status === 'running' || !Array.isArray(traceIds)
+      || cycle.orientation.unreviewed_traces_compaction || traceIds.length <= 8) {
+      return false;
+    }
+    cycle.orientation.unreviewed_traces_compaction = {
+      protocol_version: 1,
+      original_count: traceIds.length,
+      retained_tail_count: 8,
+      content_commitment: crypto.createHash('sha256')
+        .update(canonicalJson(traceIds)).digest('hex'),
+    };
+    cycle.orientation.unreviewed_traces = traceIds.slice(-8);
+    return true;
+  }
+
   function hydrate(value) {
     const loadedVersion = Number(value?.version) || 0;
     hydrationCompactionRuntime = {
       correction_feedback_compacted: 0,
       correction_feedback_failures: 0,
+      cycle_orientation_trace_manifests_compacted: 0,
     };
     state = { ...emptyState(), ...(value && typeof value === 'object' ? value : {}) };
     researchLedgerVerificationCache = null;
@@ -576,6 +595,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     state.version = 100;
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
+    }
+    for (const cycle of state.cycles) {
+      if (compactClosedCycleOrientation(cycle)) {
+        hydrationCompactionRuntime.cycle_orientation_trace_manifests_compacted += 1;
+      }
     }
     if (!state.initiative || typeof state.initiative !== 'object') state.initiative = emptyState().initiative;
     if (!state.initiative.scopes) state.initiative.scopes = {};
@@ -27741,6 +27765,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       for (const signal of current.cognition.recurrent_signals.filter(item => item.cycle_id === cycle.id && item.status === 'control_recorded')) {
         signal.status = 'control_complete'; signal.integrated = cycle.finished;
       }
+      compactClosedCycleOrientation(cycle);
       return cycle;
     });
     const totalMs = Math.round(performance.now() - totalStartedAt);

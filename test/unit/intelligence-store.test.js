@@ -2916,6 +2916,7 @@ test('natural self-correction reveals prior error only after the initial forecas
   assert.deepEqual(migrated.persistenceDiagnostics().hydration_compaction, {
     correction_feedback_compacted: 1,
     correction_feedback_failures: 0,
+    cycle_orientation_trace_manifests_compacted: 0,
   });
 
   await store.persist();

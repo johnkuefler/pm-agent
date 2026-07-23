@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const { createIntelligenceStore, emptyState } = require('../../src/intelligence/store');
 
 function optimizedFixture(initialState = emptyState()) {
@@ -120,6 +121,36 @@ test('cycle completion is durable before success and byte-identical retries re-p
     /already closed/,
   );
   assert.equal(writes.length, 3);
+});
+
+test('closed cycles retain a committed trace tail without carrying their full active orientation', async () => {
+  const state = emptyState();
+  const at = new Date().toISOString();
+  state.traces = Array.from({ length: 20 }, (_, index) => ({
+    id: `orientation-trace-${index}`, at, channel: 'test', action: 'observe',
+    decision: 'hold', confidence: 0.8, reasons: [], memory_ids: [], source_refs: [],
+    charter_rule: null, episode_id: null, interaction_id: null, preview: '',
+    outcome: null, signal: null, reviewed_at: null,
+  }));
+  const expectedIds = state.traces.map(item => item.id);
+  const { store } = optimizedFixture(state);
+  await store.init();
+  const started = await store.openOrResumeCycle({ id: 'orientation-compaction-cycle',
+    holder: 'nora-cowork', resume_active: true });
+  assert.deepEqual(started.cycle.orientation.unreviewed_traces, expectedIds);
+
+  await store.completeCycleDurable(started.cycle.id, {
+    status: 'failed', summary: 'The bounded pass closed without external work.', actions: [],
+  });
+  const closed = store.list('cycles').find(item => item.id === started.cycle.id);
+  assert.deepEqual(closed.orientation.unreviewed_traces, expectedIds.slice(-8));
+  assert.deepEqual(closed.orientation.unreviewed_traces_compaction, {
+    protocol_version: 1,
+    original_count: 20,
+    retained_tail_count: 8,
+    content_commitment: crypto.createHash('sha256')
+      .update(JSON.stringify(expectedIds)).digest('hex'),
+  });
 });
 
 test('durable cycle batches cannot wait indefinitely on a stalled persistence transport', async () => {
