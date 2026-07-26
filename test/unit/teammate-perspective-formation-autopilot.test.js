@@ -9,6 +9,7 @@ const interactionReview = require('../../src/intelligence/interaction-outcome-re
 const formation = require('../../src/intelligence/teammate-perspective-formation-autopilot');
 const teammatePerspective = require('../../src/intelligence/teammate-perspective');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 function reviewedInteraction(index, created, outcome = 'corrected') {
   const channel = 'C12345678';
@@ -140,7 +141,7 @@ test('runtime enables formation only in the background provider lane', () => {
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
   assert.equal(__test.teammatePerspectiveFormationRuntimeConfig({ NORA_TEST_MODE: '0' }).enabled, false);
-  const server = fs.readFileSync(path.join(__dirname, '../../server.js'), 'utf8');
+  const server = readServerSource();
   const background = server.slice(server.indexOf('async function runBackgroundIntelligenceRuntime'),
     server.indexOf('function tickEndogenousRuntimeWithDiagnostics'));
   assert.match(background, /interaction_outcome_review[\s\S]*teammate_perspective_formation/);

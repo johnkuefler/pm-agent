@@ -10,6 +10,7 @@ const autopilot = require('../../src/intelligence/reasoning-research-autopilot')
 const reasoning = require('../../src/intelligence/reasoning-self-regulation');
 const provider = require('../../src/intelligence/provider-reasoning-regulation');
 const interactivePerformance = require('../../src/intelligence/interactive-performance');
+const { readServerSource } = require('../helpers/server-source');
 
 async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-research-autopilot-'));
@@ -306,7 +307,7 @@ test('autopilot ledger-aborts a pilot that the foreground latency protocol can n
 
 test('server schedules the bounded autopilot only outside test mode', () => {
   const root = path.join(__dirname, '..', '..');
-  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'startup' \}\)/);
   assert.match(server, /\['research_autopilot', \(\) => runResearchAutopilotRuntime\(\{ post: priorityPost \}\)\]/);
   assert.match(server, /NORA_RESEARCH_AUTOPILOT !== '0'/);

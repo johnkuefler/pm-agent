@@ -8,6 +8,7 @@ const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const formation = require('../../src/intelligence/common-ground-formation');
 const review = require('../../src/intelligence/interaction-outcome-review-autopilot');
+const { readServerSource } = require('../helpers/server-source');
 
 const NOW = new Date('2026-07-20T12:00:00.000Z');
 const THREAD_TS = '1784480000.000001';
@@ -153,7 +154,7 @@ test('generic thanks cannot be normalized into common ground and receipt tamperi
 });
 
 test('formation runs only in the preemptible background intelligence lane', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /\['common_ground_formation', \(\) => runCommonGroundFormationRuntime\(\{ post: priorityPost \}\)\]/);
   const liveHandler = server.slice(server.indexOf('async function handleSlackImpl'),
     server.indexOf("app.get('/slack/threads'"));

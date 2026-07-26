@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readServerSource } = require('../helpers/server-source');
 const { hourlyLifecycleHealth, EXPECTED_INTERVAL_MS } =
   require('../../src/runtime/hourly-lifecycle-health');
 
@@ -89,7 +90,7 @@ test('native Railway coverage becomes the effective healthy hourly runner', () =
 });
 
 test('runtime health and the live dashboard both expose hourly cadence', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const dashboard = fs.readFileSync(
     path.join(__dirname, '..', '..', 'public', 'js', 'dashboard-activity.js'), 'utf8');
   assert.match(server, /hourly_lifecycle: hourlyLifecycleHealth\(intelligence\.list\('cycles'\)\)/);

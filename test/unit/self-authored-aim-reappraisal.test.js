@@ -12,6 +12,7 @@ const consciousWorkspace = require('../../src/intelligence/conscious-workspace')
 const motivationalRevision = require('../../src/intelligence/motivational-revision');
 const { normalizeWantUpdate } = require('../../src/intelligence/wants');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 const NOW = new Date('2026-07-17T18:00:00.000Z');
 
@@ -390,7 +391,7 @@ test('runtime keeps aim reappraisal in the serialized preemptible background lan
   assert.equal(__test.selfAuthoredAimReappraisalRuntimeConfig({
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.match(source, /\['self_authored_aim_lifecycle',[\s\S]*runSelfAuthoredAimLifecycleAutopilotRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
   const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));

@@ -4,8 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readServerSource } = require('../helpers/server-source');
 
-const server = fs.readFileSync(path.resolve(__dirname, '../../server.js'), 'utf8');
+const server = readServerSource();
 
 test('credential-aware MCP bindings are attached to Slack, Zoom chat, and Zoom voice', () => {
   assert.match(server, /const mcpBindings = attachLiveTools\s+\? mcpManager\.bindings\(\{ financialApproved: isDirect \? financialApproved : false, allowWrites: isDirect \}\)\s+: \{ claudeTools: \[\], executors: \{\}, inventory: \[\], meta: \{\} \}/);

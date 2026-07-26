@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 const { createResearchStatusCache, createResearchProjectionCache,
   createSerializedResearchWorkerFactory,
   createPersistedProjectionEnvelope, verifyPersistedProjectionEnvelope,
@@ -553,6 +554,6 @@ test('HTTP projections expose the low-priority isolation receipt for production 
   assert.match(routes, /required_projection_refreshing/);
   assert.match(routes, /Retry-After/);
   assert.match(routes, /research-projection-runtime/);
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /await intelligenceRoutesRuntime\.hydratePersistedResearchProjections\(\)/);
 });

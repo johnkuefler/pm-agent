@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 const now = new Date('2026-07-16T15:00:00.000Z');
 
@@ -41,7 +42,7 @@ function design(ids, overrides = {}) {
 }
 
 test('production prompt construction atomically assigns person-bound relational study packets', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /relationalAffectAvailable: \(\) => intelligence\.relationalAffectAccessAvailable/);
   assert.match(server, /relationalAffectContextForAssignment\(contextAssignment, intelligencePerson\)/);
   assert.match(server, /relationalAffectContext,/);

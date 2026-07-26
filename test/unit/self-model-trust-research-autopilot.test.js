@@ -9,6 +9,7 @@ const { createIntelligenceStore } = require('../../src/intelligence/store');
 const fingerprint = require('../../src/intelligence/behavioral-fingerprint');
 const globalBroadcastAutopilot = require('../../src/intelligence/global-broadcast-research-autopilot');
 const autopilot = require('../../src/intelligence/self-model-trust-research-autopilot');
+const { readServerSource } = require('../helpers/server-source');
 
 const MODEL = Object.freeze({ provider: 'anthropic', model: 'claude-opus-4-8',
   agent_build_commitment: 'a'.repeat(64) });
@@ -321,7 +322,7 @@ test('restart-orphaned trust assignments are terminally excluded after the froze
 });
 
 test('server sequences trust research after broadcast and keeps it background-only', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /require\('\.\/src\/intelligence\/self-model-trust-research-autopilot'\)/);
   assert.match(server, /selfModelTrustResearchAutopilot\.runCycle\(\{/);
   assert.match(server, /self_model_trust: selfModelTrust/);

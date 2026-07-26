@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const reappraisal = require('../../src/intelligence/professional-viewpoint-reappraisal');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 const NOW = new Date('2026-07-16T18:00:00.000Z');
 const DREAM = { id: 'dream-reappraisal-july-16', date: '2026-07-16',
@@ -205,7 +206,7 @@ test('runtime enables reappraisal only in background-capable production mode', (
     NORA_PROFESSIONAL_VIEWPOINT_REAPPRAISAL: '0',
   }).enabled, false);
 
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.equal((source.match(/runDreamReflectionLifecycleWithPriorityRuntime\(\)/g) || []).length, 1,
     'dream capture should enter the foreground-aware background lane exactly once');
   assert.equal((source.match(/runBackgroundIntelligenceRuntime\(\{ trigger \}\)/g) || []).length, 1,

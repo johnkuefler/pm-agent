@@ -8,6 +8,7 @@ const reflection = require('../../src/intelligence/self-authored-aim-reflection'
 const goalAffect = require('../../src/intelligence/goal-affect');
 const aimProgressEvidence = require('../../src/intelligence/aim-progress-evidence');
 const { normalizeWantUpdate } = require('../../src/intelligence/wants');
+const { readServerSource } = require('../helpers/server-source');
 
 function fixtureMemories() {
   return [
@@ -202,7 +203,7 @@ test('production runtime keeps aim reflection off Slack and Zoom foreground hand
   assert.equal(__test.selfAuthoredAimReflectionRuntimeConfig({
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.match(source, /\['self_authored_aim_lifecycle',[\s\S]*runSelfAuthoredAimLifecycleAutopilotRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
   assert.doesNotMatch(slack, /runSelfAuthoredAimReflectionAutopilotRuntime|selfAuthoredAimReflection\.runCycle/);

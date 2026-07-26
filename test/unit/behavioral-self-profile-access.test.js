@@ -6,9 +6,10 @@ const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const forecastProtocol = require('../../src/intelligence/behavioral-self-profile-forecast');
 const providerReasoning = require('../../src/intelligence/provider-reasoning-regulation');
+const { readServerSource } = require('../helpers/server-source');
 
 test('production Slack isolates the profile forecast from the later answer request', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /profileForecastOnly \? null : selfModelContext/);
   assert.match(server, /beginBehavioralSelfProfileForecast/);
   assert.match(server, /submitBehavioralSelfProfileForecast/);

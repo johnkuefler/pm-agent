@@ -8,6 +8,7 @@ const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const reasoningAutopilot = require('../../src/intelligence/reasoning-research-autopilot');
 const autopilot = require('../../src/intelligence/global-broadcast-research-autopilot');
+const { readServerSource } = require('../helpers/server-source');
 
 async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-broadcast-autopilot-'));
@@ -294,7 +295,7 @@ test('restart-orphaned broadcast assignments are counted honestly and excluded a
 });
 
 test('Slack runtime captures only direct delivered broadcast responses and sequences the pilot', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /globalBroadcastAvailable: isDirect/);
   assert.match(server, /intelligence\.recordGlobalBroadcastResponse\(contextAssignment\.assignment_id/);
   assert.match(server, /recordGlobalBroadcastResponse\(reply, allSegmentsPosted\)/);

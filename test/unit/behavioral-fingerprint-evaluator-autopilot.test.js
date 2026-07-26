@@ -8,6 +8,7 @@ const path = require('node:path');
 const fingerprint = require('../../src/intelligence/behavioral-fingerprint');
 const autopilot = require('../../src/intelligence/behavioral-fingerprint-evaluator-autopilot');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 const MODEL = { provider: 'anthropic', model: 'claude-opus-4-8',
   agent_build_commitment: 'a'.repeat(64) };
@@ -117,7 +118,7 @@ test('evaluator fails closed on a provider model mismatch without mutating grade
 });
 
 test('server keeps fingerprint grading in the preemptible background sequence', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /behavioralFingerprintEvaluatorAutopilot\.evaluatorPolicy\(\)/);
   assert.match(server, /runBehavioralFingerprintEvaluatorRuntime\(\{ post: priorityPost \}\)/);
   assert.ok(server.indexOf("['behavioral_fingerprint_subject'")

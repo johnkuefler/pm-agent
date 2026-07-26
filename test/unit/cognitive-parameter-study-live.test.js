@@ -13,6 +13,7 @@ delete process.env.DATABASE_URL;
 delete process.env.DATABASE_PUBLIC_URL;
 
 const { __test } = require('../../server');
+const { readServerSource } = require('../helpers/server-source');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
@@ -65,7 +66,7 @@ test('DIALS study machinery has no foreground provider, embedding, database, or 
     'cognitive-parameter-study.js'), 'utf8');
   assert.doesNotMatch(source,
     /fetch\(|axios|anthropic|openai|pgvector|\bembed(?:ding)?\s*\(|\bdb\./i);
-  const serverSource = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const serverSource = readServerSource();
   assert.match(serverSource, /cognitiveParameterStudiesEnabled: mode === 'normal' && isDirect/);
   assert.match(serverSource, /interactive_latency: slackLatencyTrace\?\.outcome \|\| null/);
   assert.match(serverSource, /resolveCognitiveParameterAssignmentOutcome/);

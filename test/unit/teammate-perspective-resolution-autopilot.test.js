@@ -10,6 +10,7 @@ const formation = require('../../src/intelligence/teammate-perspective-formation
 const resolution = require('../../src/intelligence/teammate-perspective-resolution-autopilot');
 const teammatePerspective = require('../../src/intelligence/teammate-perspective');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 function reviewedInteraction(index, created, { requesterName = 'John Kuefler',
   user = 'UJYKB4788', outcome = 'corrected', humanText = null } = {}) {
@@ -191,7 +192,7 @@ test('runtime is provider-gated and exists only in the preemptible background la
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
   assert.equal(__test.teammatePerspectiveResolutionRuntimeConfig({ NORA_TEST_MODE: '0' }).enabled, false);
-  const server = fs.readFileSync(path.join(__dirname, '../../server.js'), 'utf8');
+  const server = readServerSource();
   const background = server.slice(server.indexOf('async function runBackgroundIntelligenceRuntime'),
     server.indexOf('function tickEndogenousRuntimeWithDiagnostics'));
   assert.match(background, /interaction_outcome_review[\s\S]*teammate_perspective_resolution[\s\S]*teammate_perspective_formation/);

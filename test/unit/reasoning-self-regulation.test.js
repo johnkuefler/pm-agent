@@ -8,6 +8,7 @@ const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const protocol = require('../../src/intelligence/reasoning-self-regulation');
 const provider = require('../../src/intelligence/provider-reasoning-regulation');
+const { readServerSource } = require('../helpers/server-source');
 
 async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reasoning-self-regulation-'));
@@ -52,7 +53,7 @@ function mainData({ id, text, mode, outputTokens, thinkingTokens }) {
 
 test('production runtime commits paired forecasts before the main reasoning-controlled response', () => {
   const root = path.join(__dirname, '..', '..');
-  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const server = readServerSource();
   const begin = server.indexOf('beginReasoningSelfRegulation');
   const pair = server.indexOf('submitReasoningSelfRegulationForecastPair');
   const main = server.indexOf('commitReasoningSelfRegulationMainRequest');

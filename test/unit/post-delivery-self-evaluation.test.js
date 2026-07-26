@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const evaluation = require('../../src/intelligence/post-delivery-self-evaluation');
+const { readServerSource } = require('../helpers/server-source');
 
 async function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-post-delivery-evaluation-'));
@@ -93,7 +94,7 @@ test('runtime is production-only and scheduled inside the serialized priority la
   assert.equal(__test.postDeliverySelfEvaluationRuntimeConfig({
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.match(source, /\['post_delivery_self_evaluation', \(\) => runPostDeliverySelfEvaluationRuntime\(\{ post: priorityPost \}\)\]/);
   assert.match(source, /post_delivery_self_evaluation_eligible: mode === 'normal' && allSegmentsPosted/);
 });
