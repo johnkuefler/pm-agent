@@ -79,7 +79,7 @@ function slackConversationPolicy(text, mode = 'normal') {
   };
 }
 
-// Flatten a Slack message into one searchable string — text plus attachment text/links and any
+// Flatten a Slack message into one searchable string: text plus attachment text/links and any
 // block text or button URLs. The Zoom app puts its join link in a button or attachment as often
 // as in the message text, so a bare event.text scan would miss it.
 function slackMessageAllText(event) {

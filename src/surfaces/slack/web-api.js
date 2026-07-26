@@ -9,7 +9,7 @@ const interactionOutcomeReviewAutopilot = require('../../intelligence/interactio
 
 // Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
 // 24h so repeat lookups within the same hot session don't hammer Slack's API. Returns
-// null on failure — handleSlack falls back to the bare user ID.
+// null on failure, and handleSlack falls back to the bare user ID.
 const slackUserNameCache = {};
 
 const SLACK_USER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -53,7 +53,7 @@ async function cleanSlackText(text, resolveUserName = getSlackUserName) {
   return t.trim();
 }
 
-// Fetch the full Slack thread (conversations.replies) so Nora has the WHOLE conversation —
+// Fetch the full Slack thread (conversations.replies) so Nora has the WHOLE conversation,
 // including messages posted before she was mentioned, which her in-memory history misses.
 // Returns the raw Slack message array (newest-inclusive) or null on failure (e.g. missing
 // channels:history scope), in which case the caller falls back to in-memory history.
@@ -71,7 +71,7 @@ async function fetchSlackThread(channel, threadTs, { signal = undefined } = {}) 
 }
 
 // Pull the recent CHANNEL conversation (conversations.history) so a PROACTIVE interjection sees
-// the surrounding discussion — not just the single top-level message that tripped the gate. A
+// the surrounding discussion, not just the single top-level message that tripped the gate. A
 // non-threaded channel message has no "thread," so fetchSlackThread would return just that one
 // line and Nora would be reacting with zero context. Returns the raw Slack messages in
 // chronological order (oldest→newest, ending with the trigger) or null on failure.
@@ -93,7 +93,7 @@ async function fetchSlackChannelHistory(channel, latestTs, limit = 12,
 }
 
 // Landing reader for the dream's Review movement: given one of Nora's own messages (channel +
-// its ts), fetch what happened AFTER it so she can judge how it landed — the human follow-ups
+// its ts), fetch what happened AFTER it so she can judge how it landed. The human follow-ups
 // that are the real signal. Works uniformly across DMs and channels, which is the whole point:
 // the cowork Slack MCP can read channels but not the John<->Nora DM, so her self-review was
 // blind to her most direct conversation. This uses her own bot token (which carries im:history)
@@ -123,7 +123,7 @@ async function fetchSlackLanding(channel, ts, { channelType, threadTs,
       providerResponse = r.data; apiMethod = 'conversations.history';
       raw = (Array.isArray(r.data.messages) ? r.data.messages : []).slice().reverse(); // →chronological
     }
-    // Keep only what came strictly AFTER her message, and drop her own/bot/system posts —
+    // Keep only what came strictly AFTER her message, and drop her own/bot/system posts.
     // what's left is how the humans reacted.
     const after = raw
       .filter(m => Number(m.ts) > Number(ts))
@@ -290,7 +290,7 @@ function resetSlackReactionCapabilityForTest() {
 // In-memory cache of Slack channel ID → channel name. Channel names rarely change so we
 // cache indefinitely per process; restarts just rebuild the cache on first hit. Returns
 // the cached name on hit, calls Slack conversations.info on miss, and writes either
-// the resolved name (success) or null (failure — bot not in channel, archived, etc.) so
+// the resolved name (success) or null (failure: bot not in channel, archived, etc.) so
 // we don't keep re-asking. Failures will retry on next process restart.
 const slackChannelNameCache = {};
 

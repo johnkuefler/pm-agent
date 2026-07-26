@@ -44,7 +44,7 @@ test('server.js does not grow', () => {
 });
 
 // Em dashes keep arriving through automated changes. The count may fall, never rise.
-const EM_DASH_CEILING = { 'server.js': 238, src: 240 };
+const EM_DASH_CEILING = { 'server.js': 238, src: 233 };
 test('em dash count never increases', () => {
   const serverDashes = (fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').match(/—/g) || []).length;
   assert.ok(serverDashes <= EM_DASH_CEILING['server.js'],
