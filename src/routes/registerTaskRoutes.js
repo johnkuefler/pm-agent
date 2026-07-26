@@ -27,7 +27,8 @@ function cleanTaskResult(value) {
 }
 
 function registerTaskRoutes(app, deps) {
-  const { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun, onTaskCreated, onTaskCompleted } = deps;
+  const { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
+    onTaskCreated, onTaskCompleted, onTaskDeleted } = deps;
 
   // Task queue API
   app.get('/tasks', requireAuth, (req, res) => {
@@ -136,6 +137,7 @@ function registerTaskRoutes(app, deps) {
     if (idx === -1) return res.status(404).json({ error: 'task not found' });
     const removed = tasks.splice(idx, 1);
     saveTasks(tasks);
+    if (onTaskDeleted) onTaskDeleted(removed[0], { deleted_at: new Date().toISOString() });
     console.log('🗑️ Task deleted:', removed[0].id);
     res.json({ ok: true });
   });

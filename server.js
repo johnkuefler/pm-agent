@@ -10053,16 +10053,35 @@ registerTaskRoutes(app, {
   requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
   onTaskCreated: task => {
     if (!task.assignee || /nora/i.test(task.assignee)) {
-      intelligence.addCommitment({ what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for, notes: task.detail, task_id: task.id });
+      const existing = intelligence.list('commitments', item => item.task_id === task.id)[0];
+      if (!existing) {
+        intelligence.addCommitment({ what: task.action, owner: task.assignee || 'Nora', due: task.due || task.scheduled_for, notes: task.detail, task_id: task.id });
+      }
     }
   },
   onTaskCompleted: (task, meta) => {
     if (!meta.recurring) {
-      const commitment = intelligence.list('commitments', item => item.task_id === task.id && item.status === 'open')[0];
-      if (commitment) intelligence.updateCommitment(commitment.id, { status: 'fulfilled', notes: `Task completed ${meta.completed_at}` });
+      const commitments = intelligence.list('commitments',
+        item => item.task_id === task.id && item.status === 'open');
+      for (const commitment of commitments) {
+        intelligence.updateCommitment(commitment.id, {
+          status: 'fulfilled',
+          notes: `Task completed ${meta.completed_at}`,
+        });
+      }
       const correlation = task.source_bot_id ? `meeting:${task.source_bot_id}`
         : task.source_channel ? `slack:${task.source_channel.replace(/^slack:/, '')}:${task.source_thread_ts || 'channel'}` : `task:${task.id}`;
       intelligence.recordEpisodeEvent({ correlation, channel: 'task', kind: 'commitment_fulfilled', actor: 'Nora', text: task.action, at: meta.completed_at });
+    }
+  },
+  onTaskDeleted: (task, meta) => {
+    const commitments = intelligence.list('commitments',
+      item => item.task_id === task.id && item.status === 'open');
+    for (const commitment of commitments) {
+      intelligence.updateCommitment(commitment.id, {
+        status: 'dropped',
+        notes: `Task deleted ${meta.deleted_at}`,
+      });
     }
   },
 });
