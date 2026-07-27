@@ -21,7 +21,7 @@ You are executing an hourly operations loop for Nora, LimeLight Marketing's AI p
 
 ## API Authentication
 
-Nora's API requires authentication. This authenticated harness response receives its credential from the server at request time. Append `?key={{NORA_API_KEY}}` as a query parameter to ALL requests to `pm-agent-production-c49e.up.railway.app` that hit these paths: `/memory`, `/markers`, `/projects`, `/tasks`, `/teamwork`, `/notify`, `/transcripts`, `/dreams`, `/interactions`, `/capability-boundaries`, `/run-lock`, `/runtime-activity`, `/slack`. For endpoints that already have query params (e.g., `?status=pending` or `?stage=...`), append `&key={{NORA_API_KEY}}` instead. The `/prompt` and `/cowork-instructions` endpoints do NOT require auth.
+Nora's API requires authentication. This authenticated harness response receives its credential from the server at request time. Send it as a header on every request to `pm-agent-production-c49e.up.railway.app`: `-H "Authorization: Bearer {{NORA_API_KEY}}"`. Never put the key in a query string. A URL is not a private channel: it lands in server access logs, proxy history, and error reports, so a leaked path leaks the credential with it. Only `/cowork-instructions` is unauthenticated, because it is the bootstrap document read before any credential is in hand. Everything else, including `/prompt`, `/charter`, and `/self`, requires the header.
 
 ## LimeLight Agentic Corpus access
 

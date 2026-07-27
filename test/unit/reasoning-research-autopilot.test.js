@@ -308,7 +308,11 @@ test('autopilot ledger-aborts a pilot that the foreground latency protocol can n
 test('server schedules the bounded autopilot only outside test mode', () => {
   const root = path.join(__dirname, '..', '..');
   const server = readServerSource();
-  assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'startup' \}\)/);
+  // The startup trigger stopped being hard-coded when this moved onto the shared recurring-runtime
+  // lane, which passes its own trigger through. This assertion kept looking for the old literal and
+  // had been failing for a while, dumping the entire server source as its diagnostic every run,
+  // which was large enough to destabilize the test runner's IPC and fail a neighbouring file.
+  assert.match(server, /await runBackgroundIntelligenceRuntime\(\{ trigger \}\)/);
   assert.match(server, /\['research_autopilot', \(\) => runResearchAutopilotRuntime\(\{ post: priorityPost \}\)\]/);
   assert.match(server, /NORA_RESEARCH_AUTOPILOT !== '0'/);
   assert.match(server, /NORA_TEST_MODE !== '1'/);
