@@ -109,6 +109,10 @@ const autonomousPlay = require('./src/intelligence/autonomous-play');
 const { anthropicCompatibleSchema } = require('./src/intelligence/anthropic-structured-output');
 const { createReadingLibrary } = require('./src/intelligence/reading-library');
 const slackEvidence = require('./src/intelligence/slack-evidence');
+const { describeTranscript, filterTranscriptsByStatus,
+  sortTranscriptsNewestFirst } = require('./src/surfaces/meeting/transcript-index');
+const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLiveTranscript, applyUtteranceEditToSession,
+  applyUtteranceDeleteToSession } = require('./src/surfaces/meeting/transcript-checkpoint');
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
 const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSelfReflectionMessage,
@@ -11096,6 +11100,15 @@ const _transcriptCheckpointPending = new Map();
 const _transcriptCheckpointInFlight = new Map();
 const _transcriptCheckpointAttempts = new Map();
 const _transcriptPersistedCounts = new Map();
+// Checkpoints that gave up, kept inspectable instead of living only in a log line.
+const _transcriptCheckpointStalled = new Map();
+// Mirror a durable-side edit into the live session; transcript-checkpoint.js explains why.
+function reconcileTranscriptSessionAfterEdit(botId, durableLength, mutate) {
+  if (sessions[botId]?.transcript) mutate(sessions[botId].transcript);
+  _transcriptPersistedCounts.set(botId, durableLength);
+  _transcriptCheckpointStalled.delete(botId);
+  _transcriptCheckpointAttempts.delete(botId);
+}
 const TRANSCRIPT_EPISODE_CHECKPOINT_MS = 30000;
 const _transcriptEpisodeTimers = new Map();
 const _transcriptEpisodePending = new Map();
@@ -11200,33 +11213,6 @@ async function ensureMeetingTranscriptHydrated(botId, session) {
   }
 }
 
-async function appendLiveTranscript(botId, session, transcript, ended) {
-  await ensureMeetingTranscriptHydrated(botId, session);
-  let snapshot = [...(session?.transcript || transcript || [])];
-  let expected = _transcriptPersistedCounts.get(botId) || 0;
-  if (expected > snapshot.length) {
-    throw new Error(`transcript checkpoint count ${expected} exceeds in-memory length ${snapshot.length}`);
-  }
-  let result = await db.appendTranscript(botId, ended || null, snapshot.slice(expected), expected);
-  if (!result.applied) {
-    const durable = await db.getTranscript(botId);
-    const retained = Array.isArray(durable?.transcript) ? durable.transcript : [];
-    if (transcriptStartsWith(snapshot, retained)) {
-      expected = retained.length;
-    } else if (transcriptStartsWith(retained, snapshot)) {
-      snapshot = retained;
-      if (session) session.transcript = retained;
-      expected = retained.length;
-    } else {
-      throw new Error('transcript checkpoint diverged from its durable prefix; refusing destructive overwrite');
-    }
-    result = await db.appendTranscript(botId, ended || null, snapshot.slice(expected), expected);
-    if (!result.applied) throw new Error('transcript checkpoint expected-count conflict persisted after reload');
-  }
-  _transcriptPersistedCounts.set(botId, result.utterance_count);
-  return result;
-}
-
 function armTranscriptCheckpoint(botId, delayMs = 1000) {
   if (_transcriptCheckpointsClosing || _transcriptCheckpointTimers.has(botId)
     || _transcriptCheckpointInFlight.has(botId) || !_transcriptCheckpointPending.has(botId)) return;
@@ -11256,12 +11242,22 @@ function armTranscriptCheckpoint(botId, delayMs = 1000) {
     }).catch(error => {
       const attempt = (_transcriptCheckpointAttempts.get(botId) || 0) + 1;
       _transcriptCheckpointAttempts.set(botId, attempt);
-      console.error(`Transcript checkpoint failed (retry ${attempt}):`, error.message);
+      const plan = checkpointRetryPlan(attempt, error);
       const newer = _transcriptCheckpointPending.get(botId);
-      _transcriptCheckpointPending.set(botId, {
-        transcript: sessions[botId]?.transcript || newer?.transcript || pending.transcript,
-        ended: newer?.ended || pending.ended || null,
-      });
+      if (plan.retry) {
+        console.error(`Transcript checkpoint failed (retry ${attempt}):`, error.message);
+        _transcriptCheckpointPending.set(botId, {
+          transcript: sessions[botId]?.transcript || newer?.transcript || pending.transcript,
+          ended: newer?.ended || pending.ended || null,
+        });
+      } else {
+        // Stop the loop and say it once: retrying this cannot converge.
+        _transcriptCheckpointPending.delete(botId);
+        const report = abandonedCheckpointReport({ botId, attempt, error, plan,
+          inMemoryUtterances: sessions[botId]?.transcript?.length ?? null });
+        _transcriptCheckpointStalled.set(botId, report.record);
+        console.error(report.message);
+      }
       throw error;
     }).finally(() => {
       if (_transcriptCheckpointInFlight.get(botId) === operation) {
@@ -11269,8 +11265,7 @@ function armTranscriptCheckpoint(botId, delayMs = 1000) {
       }
       if (_transcriptCheckpointPending.has(botId) && !_transcriptCheckpointsClosing) {
         const attempt = _transcriptCheckpointAttempts.get(botId) || 0;
-        armTranscriptCheckpoint(botId,
-          attempt ? Math.min(30000, 1000 * (2 ** Math.min(attempt, 5))) : 1000);
+        armTranscriptCheckpoint(botId, attempt ? retryDelayMs(attempt) : 1000);
       }
     });
     _transcriptCheckpointInFlight.set(botId, operation);
@@ -11314,7 +11309,9 @@ async function saveTranscriptDoc(botId, transcript, ended, { recordEpisode = tru
   if (incremental) await ensureMeetingTranscriptHydrated(botId, session);
   if (_dbReady) {
     return _writeThrough('transcript:' + botId, () => incremental
-      ? appendLiveTranscript(botId, session, transcript, ended)
+      ? appendLiveTranscript({ botId, session, transcript, ended, db,
+        persistedCounts: _transcriptPersistedCounts, transcriptStartsWith,
+        hydrate: ensureMeetingTranscriptHydrated })
       : db.upsertTranscript(botId, ended || null, transcript || []), { strict: true });
   }
   const durableTranscript = incremental ? session.transcript : (transcript || []);
@@ -11370,10 +11367,11 @@ async function getTranscriptDoc(botId) {
   if (!fs.existsSync(fp)) return null;
   try { return JSON.parse(fs.readFileSync(fp, 'utf8')); } catch { return null; }
 }
+// Both storage paths go through describeTranscript so they agree on liveness; see the module.
 async function listTranscriptDocs() {
   if (_dbReady) {
     const rows = await db.listTranscripts();
-    return rows.map(r => ({ bot_id: r.bot_id, ended: r.ended,
+    return rows.map(r => describeTranscript({ bot_id: r.bot_id, ended: r.ended,
       last_utterance_at: r.last_utterance_at || null,
       url: `/transcripts/${r.bot_id}`, utterance_count: r.utterance_count }));
   }
@@ -11383,13 +11381,11 @@ async function listTranscriptDocs() {
   return files.map(f => {
     try {
       const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
-      let ended = d.ended;
-      if (!ended && d.transcript && d.transcript.length > 0) ended = d.transcript[d.transcript.length - 1].timestamp || null;
       const lastUtterance = d.transcript?.at(-1);
-      return { bot_id: d.bot_id, ended, last_utterance_at: lastUtterance?.timestamp
-          || lastUtterance?.time || null,
+      return describeTranscript({ bot_id: d.bot_id, ended: d.ended || null,
+        last_utterance_at: lastUtterance?.timestamp || lastUtterance?.time || null,
         file: f, url: `/transcripts/${d.bot_id}`,
-        utterance_count: d.transcript ? d.transcript.length : 0 };
+        utterance_count: d.transcript ? d.transcript.length : 0 });
     } catch { return null; }
   }).filter(Boolean);
 }
@@ -11445,7 +11441,7 @@ function refreshRecentMeetingsCache() {
   const operation = (async () => {
     const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
     const list = (await listTranscriptDocs())
-      .filter(t => t.ended && new Date(t.ended).getTime() >= cutoff)
+      .filter(t => !t.in_progress && t.ended && new Date(t.ended).getTime() >= cutoff)
       .slice(0, 12);
     const markers = loadMarkers();
     const out = await mapWithBoundedConcurrency(list, RECENT_MEETINGS_READ_CONCURRENCY, async r => {
@@ -11528,7 +11524,7 @@ const MEETING_TOOLS = [
     execute: async (args) => {
       const days = Math.min(Math.max(Number(args && args.days) || 14, 1), 60);
       const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-      const list = (await listTranscriptDocs()).filter(t => t.ended && new Date(t.ended).getTime() >= cutoff).slice(0, 25);
+      const list = (await listTranscriptDocs()).filter(t => !t.in_progress && t.ended && new Date(t.ended).getTime() >= cutoff).slice(0, 25);
       const markers = loadMarkers();
       const rows = [];
       for (const r of list) {
@@ -11568,11 +11564,11 @@ const MEETING_TOOLS = [
 ];
 
 // Transcript API — list and retrieve saved meeting transcripts
+// ?status=ended is what the filing flow must use. Default stays "all" for existing callers.
 app.get('/transcripts', requireAuth, async (req, res) => {
   try {
-    const list = await listTranscriptDocs();
-    list.sort((a, b) => (b.ended ? new Date(b.ended).getTime() : Infinity) - (a.ended ? new Date(a.ended).getTime() : Infinity));
-    res.json(list);
+    const list = filterTranscriptsByStatus(await listTranscriptDocs(), req.query.status);
+    res.json(sortTranscriptsNewestFirst(list));
   } catch { res.json([]); }
 });
 
@@ -11604,6 +11600,8 @@ app.put('/transcripts/:botId/utterances/:index', requireAuth, async (req, res) =
     if (speaker !== undefined) data.transcript[idx].speaker = speaker;
     if (text !== undefined) data.transcript[idx].text = text;
     await saveTranscriptDoc(req.params.botId, data.transcript, data.ended);
+    reconcileTranscriptSessionAfterEdit(req.params.botId, data.transcript.length,
+      session => applyUtteranceEditToSession(session, idx, { speaker, text }));
     console.log('✏️ Transcript utterance updated:', req.params.botId, 'index', idx);
     res.json({ ok: true, utterance: data.transcript[idx] });
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -11617,6 +11615,8 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res
     if (idx < 0 || idx >= data.transcript.length) return res.status(404).json({ error: 'utterance index out of range' });
     const removed = data.transcript.splice(idx, 1);
     await saveTranscriptDoc(req.params.botId, data.transcript, data.ended);
+    reconcileTranscriptSessionAfterEdit(req.params.botId, data.transcript.length,
+      session => applyUtteranceDeleteToSession(session, idx));
     console.log('🗑️ Transcript utterance deleted:', req.params.botId, 'index', idx, removed[0].text.slice(0, 50));
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }

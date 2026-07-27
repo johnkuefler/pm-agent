@@ -1369,11 +1369,13 @@ For each new meeting Nora joined, file the transcript into the client's `Meeting
 
 Use the two-hop pattern from "Writing Files to Client Shared Drives" (above). The staging folder + caching guidance is shared with any other Drive-write task.
 
-1. **List recent transcripts** that haven't been filed yet:
+1. **List recent transcripts** that haven't been filed yet. `?status=ended` is required here, not optional:
 
    ```bash
-   curl -s "${BASE}/transcripts?key=${KEY}" | jq .
+   curl -s "${BASE}/transcripts?status=ended&key=${KEY}" | jq .
    ```
+
+   Without that filter the list includes meetings that are **still happening**. Filing one mid-meeting saves a partial record and marks it filed, so the rest of the conversation never gets filed at all. Every record carries `in_progress`; never file anything where that is `true`. A record with `orphaned: true` is safe to file: it means the meeting ended but the done webhook never arrived, so it has been silent long enough to be treated as finished.
 
    For each transcript, check `GET /markers/filed-transcript:{bot_id}` AND `GET /markers/skipped-transcript:{bot_id}` — if either `exists`, skip (already handled). Otherwise it's a candidate.
 
