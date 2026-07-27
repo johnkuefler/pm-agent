@@ -109,6 +109,8 @@ const autonomousPlay = require('./src/intelligence/autonomous-play');
 const { anthropicCompatibleSchema } = require('./src/intelligence/anthropic-structured-output');
 const { createReadingLibrary } = require('./src/intelligence/reading-library');
 const slackEvidence = require('./src/intelligence/slack-evidence');
+const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneElse,
+  VOLUNTEER_CUE } = require('./src/integrations/meeting-turn-taking');
 const { describeTranscript, filterTranscriptsByStatus,
   sortTranscriptsNewestFirst } = require('./src/surfaces/meeting/transcript-index');
 const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLiveTranscript, applyUtteranceEditToSession,
@@ -2263,7 +2265,6 @@ function compactInteractiveIntelligenceContext(text, maxChars, opts = {}) {
   return `${contract}${selected.length ? `\n\n${selected.map(block => block.text).join('\n\n')}` : ''}${notice}`;
 }
 
-
 async function commitAutobiographyRevision(input = {}) {
   if (!_dbReady) throw new Error('Postgres not active');
   return serializeAutobiographyWrite(async () => {
@@ -3165,7 +3166,6 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
   } catch (e) { console.warn('semantic recall failed:', e.message); return []; }
 }
 
-
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
 // large, stable prefix. `stable` (nora-prompt + memory + activity + tasks, ~8K tokens) is
 // near-identical call-to-call, so caching it cuts repeat input cost ~90% on cache hits
@@ -3597,7 +3597,6 @@ function serializeWantsWrite(work) {
   _wantsWriteTail = run.catch(() => {});
   return run;
 }
-
 
 async function ensureWantsHistoryIntegrity({ currentRecord = null, now = new Date() } = {}) {
   let current = currentRecord || await db.getState('wants');
@@ -4041,7 +4040,6 @@ app.post('/voice-agent/response', async (req, res) => {
   }
 });
 
-
 // Session tokens for voice agent auth — maps token → botId. Persisted to disk
 // because calendar-auto-joined bots are scheduled in advance (sometimes hours
 // before the meeting), and any server redeploy in between would wipe an in-memory
@@ -4188,7 +4186,6 @@ app.post('/join', requireAuth, async (req, res) => {
     res.status(500).json({ error: err.response?.data || err.message });
   }
 });
-
 
 // Dedup window so a redelivered Slack event (or the app posting twice) can't double-join a meeting.
 const _recentAutoJoin = new Map();
@@ -5321,7 +5318,6 @@ const SLACK_SESSION_STALE_MS = 90 * 60 * 1000; // 90 min idle → treat the next
 // Used to detect @mentions in raw `message.channels` events (which arrive as type=message, not app_mention).
 let noraBotUserId = null;
 
-
 async function settleWithin(promise, timeoutMs, fallback, label = 'optional lookup') {
   let timer = null;
   const timeout = new Promise(resolve => {
@@ -5439,7 +5435,6 @@ function decodeHtmlEntities(s) {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; } });
 }
 
-
 // Pull all http(s) URLs out of a Slack message (handles <url>, <url|label>, and plain).
 function extractUrls(text) {
   const urls = new Set();
@@ -5481,7 +5476,6 @@ async function fetchUrlText(url, { signal = undefined } = {}) {
     return out ? out.slice(0, 6000) : null;
   } catch { return null; }
 }
-
 
 // Credential-aware remote MCP connections. Secrets and even credential-bearing URLs are encrypted
 // before persistence. The manager discovers tools once during Test/Connect, then exposes only the
@@ -6030,14 +6024,6 @@ function markVoiceResponseActive(openaiWs, session) {
     },
   });
 }
-// Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
-// name)? Statements / cross-talk that aren't questions never trip lean-in.
-function looksLikeQuestion(t) {
-  const s = (t || '').trim();
-  if (!s) return false;
-  if (/\?\s*$/.test(s)) return true;
-  return /^(what|who|whom|whose|when|where|why|which|how|is|are|am|was|were|do|does|did|can|could|should|would|will|shall|may|might|have|has|had|any|anyone|anybody|could you|can you|do you|did you|is there|are there)\b/i.test(s);
-}
 
 // ── Eagerness follows the mode ──────────────────────────────────────────────────────────────────
 // In a 1:1 she answers every turn, so how fast semantic VAD calls the turn-end IS her perceived
@@ -6067,47 +6053,6 @@ function syncVoiceEagerness(session) {
   } catch (e) { console.warn('eagerness sync failed:', e.message); }
 }
 
-// ── Handoff detection ───────────────────────────────────────────────────────────────────────────
-// "Kinsey, what do you think?" is the single most important signal that an utterance is NOT for
-// Nora, even when it's a question (lean-in) or lands inside her follow-up window. When the room
-// hands the floor to a named person, she lets go: no reply, window closes. Known-name list is the
-// static team roster plus whoever Recall has actually heard on this call (catches clients/guests).
-// Deliberately biased toward false positives: mistakes here make her QUIETER, never chattier.
-const TEAM_FIRST_NAMES = ['brandee', 'john', 'andy', 'kyle', 'caitlin', 'kayla', 'kinsey', 'gracie',
-  'mallory', 'elle', 'dianne', 'chelsea', 'lydia', 'aaron', 'santiago', 'santi', 'lacy'];
-const VOCATIVE_FILLERS = new Set(['hey', 'hi', 'ok', 'okay', 'so', 'alright', 'well', 'um', 'uh', 'yeah', 'and', 'but']);
-function addressesSomeoneElse(t, session) {
-  const raw = (t || '').trim();
-  if (!raw || /\bnora\b/i.test(raw)) return false; // if she's named too, it's (also) for her
-  const s = raw.toLowerCase().replace(/[.!?]+\s*$/, '');
-  const names = new Set(TEAM_FIRST_NAMES);
-  if (session && session.speakersHeard) {
-    for (const sp of session.speakersHeard) {
-      const first = String(sp).trim().split(/\s+/)[0].toLowerCase().replace(/[^a-z'-]/g, '');
-      if (first.length > 2 && first !== 'nora') names.add(first);
-    }
-  }
-  const words = s.split(/\s+/);
-  let wi = 0; // skip leading fillers so "hey kinsey can you..." still reads as a leading vocative
-  while (wi < words.length - 1 && VOCATIVE_FILLERS.has(words[wi].replace(/[,:]+$/, ''))) wi++;
-  const first = (words[wi] || '').replace(/[,:]+$/, '');
-  const last = (words[words.length - 1] || '').replace(/[,:]+$/, '');
-  for (const name of names) {
-    // Leading vocative: "kinsey what do you think" / "kinsey, can you pull that up". Requires a
-    // question-ish or second-person continuation so "John said the deadline is Friday" (talking
-    // ABOUT John) doesn't read as a handoff TO John.
-    if (first === name) {
-      const rest = words.slice(wi + 1).join(' ');
-      if (/^(what|who|whom|when|where|why|which|how|you\b|your\b|thoughts|any\b|(?:do|did|are|were|is|can|could|would|will|should|have|has)\s+you\b)/i.test(rest)) return true;
-    }
-    // Trailing vocative on a question: "what do you think kinsey".
-    if (last === name && looksLikeQuestion(raw)) return true;
-    // Comma-set-off vocative: "so, kinsey, where are we on the build".
-    if (new RegExp(`,\\s*${name}[,?!.]?(?:\\s|$)`).test(s)) return true;
-  }
-  return false;
-}
-
 // ── Volunteer lane ──────────────────────────────────────────────────────────────────────────────
 // A real teammate occasionally interjects UNINVITED, but only when holding concrete data: someone
 // states a wrong deadline, or asks the room something she can answer from Teamwork/memory. This is
@@ -6116,7 +6061,6 @@ function addressesSomeoneElse(t, session) {
 // saying. Only a non-PASS verdict produces speech. "nora step back" (leanIn off) disables it.
 const VOLUNTEER_COOLDOWN_MS = 5 * 60 * 1000;   // at most one uninvited interjection per 5 minutes
 const VOLUNTEER_PROBE_COOLDOWN_MS = 90 * 1000; // and don't even ask the model more often than this
-const VOLUNTEER_CUE = /\b(deadline|due|overdue|timeline|launch|ship(?:ping|s|ped)?|estimate|scope|budget|hours|capacity|booked|bandwidth|overloaded|milestone|sprint|blocked|blocker|task|teamwork)\b/i;
 function isBenignRealtimeDeleteMissingItemError(msg) {
   if (!msg || msg.type !== 'error') return false;
   const error = msg.error || {};
@@ -6127,12 +6071,28 @@ function isBenignRealtimeDeleteMissingItemError(msg) {
     && /\bitem\b/i.test(text)
     && /\bdoes\s+not\s+exist\b/i.test(text);
 }
-function maybeVolunteerProbe(openaiWs, session, userText) {
+// Asking the room a question is not the same as saying something near her territory, so the two
+// get different gates. An uninvited interjection has to clear a PM cue word and a five-minute
+// silence; answering a question someone actually asked only has to clear a short probe cooldown.
+//
+// Without that split, a direct question in a group was unanswerable in practice. It scores 40
+// against a group threshold of 50, so the policy declines it, and it then fell through to the
+// interjection probe, which requires a cue word. Realistic questions do not contain one: "what's
+// the status on the Greenbush build", "has anyone heard back from Seth", "who owns the hosting
+// piece" all miss. She stayed silent on questions she could answer, every time.
+//
+// The probe still decides. She speaks only on a non-PASS verdict, so the failure mode stays
+// silence rather than noise, which is the direction this whole gate is biased.
+const ROOM_QUESTION_PROBE_COOLDOWN_MS = 30 * 1000;
+function maybeVolunteerProbe(openaiWs, session, userText, { answeringQuestion = false } = {}) {
   if (session.leanIn === false) return false;
-  if (!VOLUNTEER_CUE.test(userText || '')) return false;
+  if (!answeringQuestion && !VOLUNTEER_CUE.test(userText || '')) return false;
   const now = Date.now();
-  if (session.lastVolunteerSpokeAt && now - session.lastVolunteerSpokeAt < VOLUNTEER_COOLDOWN_MS) return false;
-  if (session.lastVolunteerProbeAt && now - session.lastVolunteerProbeAt < VOLUNTEER_PROBE_COOLDOWN_MS) return false;
+  if (!answeringQuestion && session.lastVolunteerSpokeAt
+    && now - session.lastVolunteerSpokeAt < VOLUNTEER_COOLDOWN_MS) return false;
+  const probeCooldown = answeringQuestion
+    ? ROOM_QUESTION_PROBE_COOLDOWN_MS : VOLUNTEER_PROBE_COOLDOWN_MS;
+  if (session.lastVolunteerProbeAt && now - session.lastVolunteerProbeAt < probeCooldown) return false;
   session.lastVolunteerProbeAt = now;
   try {
     const basePrompt = buildSystemPrompt('realtime', session.transcript);
@@ -6140,8 +6100,10 @@ function maybeVolunteerProbe(openaiWs, session, userText) {
       type: 'response.create',
       response: {
         output_modalities: ['text'],
-        metadata: { nora_probe: 'volunteer' },
-        instructions: basePrompt + '\n\n[SILENT VOLUNTEER CHECK. Nobody asked you anything. The last thing said was not directed at you, but it touched your territory. Decide whether you are holding ONE concrete, checkable fact that directly bears on what was just said: a real date, deadline, task status, capacity number, or commitment you know from your memory or from earlier in this meeting. If yes, write that flag as one short spoken-style sentence, the way a teammate briefly cuts in. It must be a fact, not an opinion, agreement, or summary. If you are not sure or have nothing concrete, reply with exactly: PASS]'
+        metadata: { nora_probe: answeringQuestion ? 'room_question' : 'volunteer' },
+        instructions: basePrompt + (answeringQuestion
+          ? '\n\n[SILENT ANSWER CHECK. Someone in the room just asked a question without naming you. Decide whether you can answer it from what you actually know: your memory, Teamwork, or earlier in this meeting. If yes, write the answer as one or two short spoken-style sentences, leading with the answer itself. It must be something you know, not a guess, a summary, or an offer to look it up. If the question was not really for you, or you do not know, reply with exactly: PASS]'
+          : '\n\n[SILENT VOLUNTEER CHECK. Nobody asked you anything. The last thing said was not directed at you, but it touched your territory. Decide whether you are holding ONE concrete, checkable fact that directly bears on what was just said: a real date, deadline, task status, capacity number, or commitment you know from your memory or from earlier in this meeting. If yes, write that flag as one short spoken-style sentence, the way a teammate briefly cuts in. It must be a fact, not an opinion, agreement, or summary. If you are not sure or have nothing concrete, reply with exactly: PASS]')
       }
     }));
     markVoiceResponseActive(openaiWs, session);
@@ -6263,6 +6225,13 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
     }
     catch (e) { console.warn('voice trigger failed:', e.message); }
     console.log(`🎙️ Voice: responding (${why})`);
+  } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff
+    && looksLikeQuestion(userText) && session.leanIn !== false
+    && maybeVolunteerProbe(openaiWs, session, userText, { answeringQuestion: true })) {
+    // Someone asked the room a question and did not name her. The score cannot carry this on its
+    // own (40 against a group threshold of 50), and requiring a PM cue word here would drop most
+    // real questions, so the probe decides instead: she answers only if she actually knows.
+    console.log('🎙️ Voice: answer probe (unnamed question, checking whether she knows)');
   } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff && maybeVolunteerProbe(openaiWs, session, userText)) {
     // Not summoned, but a PM-domain cue was heard: silently ask her whether she's holding one
     // concrete fact worth interjecting. She speaks only if the probe comes back non-PASS.
@@ -6352,7 +6321,10 @@ function buildNoraQueueTaskTool({ channel = '', threadTs = '', user = '', now = 
         action: { type: 'string', description: 'Short, concrete action you will perform.' },
         detail: { type: 'string', description: 'Enough context to perform it later, including what content to prepare.' },
         destination_channel: { type: 'string', description: 'Optional Slack destination, preferably the C... channel id supplied by the requester.' },
-        interval_weeks: { type: 'integer', minimum: 1, maximum: 52, description: 'Set to 2 for biweekly. Omit for a one-time task.' },
+        repeat: { type: 'string', enum: ['daily', 'weekdays', 'weekly', 'monthly'], description: 'How often to repeat: daily, weekdays (Mon-Fri), weekly, or monthly. Omit for a one-time task or when using interval_weeks.' },
+        weekday: { type: 'string', enum: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'], description: 'Required with repeat=weekly. Which day it runs.' },
+        day_of_month: { type: 'integer', minimum: 1, maximum: 31, description: 'Required with repeat=monthly. Clamped to the month length, so 31 lands on the last day of a short month.' },
+        interval_weeks: { type: 'integer', minimum: 1, maximum: 52, description: 'Every N weeks, for a cadence the repeat options do not cover. Set to 2 for biweekly.' },
         first_run_at: { type: 'string', description: 'Optional ISO datetime for the first run. If omitted for a recurring task, the first run is one interval from now.' },
         local_time: { type: 'string', description: 'Optional Central time HH:MM for recurring runs; defaults to the current Central time.' }
       }, required: ['action'] }
@@ -6363,13 +6335,33 @@ function buildNoraQueueTaskTool({ channel = '', threadTs = '', user = '', now = 
       const current = now();
       let recurrence = null;
       const intervalWeeks = input?.interval_weeks == null ? null : Number(input.interval_weeks);
-      if (intervalWeeks != null) {
-        if (!Number.isInteger(intervalWeeks) || intervalWeeks < 1 || intervalWeeks > 52) return { error: 'interval_weeks must be an integer from 1 to 52' };
+      const repeat = String(input?.repeat || '').trim().toLowerCase();
+      if (repeat && intervalWeeks != null) return { error: 'use either repeat or interval_weeks, not both' };
+      if (repeat || intervalWeeks != null) {
         const central = new Intl.DateTimeFormat('en-US', { timeZone: SCHEDULE_TZ, hour12: false, hour: '2-digit', minute: '2-digit' })
           .formatToParts(current).reduce((out, part) => ({ ...out, [part.type]: part.value }), {});
         const localTime = String(input.local_time || `${String(Number(central.hour) % 24).padStart(2, '0')}:${central.minute}`);
         if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(localTime)) return { error: 'local_time must be HH:MM in Central time' };
-        recurrence = `every:${intervalWeeks}:weeks:${localTime}`;
+        // The scheduler has always understood daily, weekdays, weekly and monthly; only this tool's
+        // schema was narrower, so "every weekday at nine" was unaskable from Slack even though
+        // nothing underneath was missing.
+        if (repeat === 'daily') recurrence = `daily:${localTime}`;
+        else if (repeat === 'weekdays') recurrence = `weekdays:${localTime}`;
+        else if (repeat === 'weekly') {
+          const weekday = String(input?.weekday || '').trim().toLowerCase();
+          if (!weekday) return { error: 'weekday is required when repeat is weekly' };
+          recurrence = `weekly:${weekday}:${localTime}`;
+        } else if (repeat === 'monthly') {
+          const dom = Number(input?.day_of_month);
+          if (!Number.isInteger(dom) || dom < 1 || dom > 31) return { error: 'day_of_month must be an integer from 1 to 31 when repeat is monthly' };
+          recurrence = `monthly:${dom}:${localTime}`;
+        } else if (repeat) return { error: 'repeat must be daily, weekdays, weekly, or monthly' };
+        else {
+          if (!Number.isInteger(intervalWeeks) || intervalWeeks < 1 || intervalWeeks > 52) return { error: 'interval_weeks must be an integer from 1 to 52' };
+          recurrence = `every:${intervalWeeks}:weeks:${localTime}`;
+        }
+        // Never persist a rule the scheduler cannot advance; that would queue work that never runs.
+        if (!isValidRecurrence(recurrence)) return { error: `could not build a valid schedule from ${recurrence}` };
       }
       let scheduledFor = null;
       if (input?.first_run_at) {
@@ -6476,7 +6468,6 @@ async function enqueueDeferredJob({ connectionId, toolName, args, origin, label 
   return { id };
 }
 
-
 async function deliverGoodyGiftLink(intent) {
   if (!process.env.SLACK_BOT_TOKEN) return { ok: false, error: 'SLACK_BOT_TOKEN is not configured' };
   if (!intent?.recipient_slack_user_id) return { ok: false, error: 'recipient_slack_user_id is required for Slack delivery' };
@@ -6504,7 +6495,6 @@ async function deliverGoodyGiftLink(intent) {
     return { ok: false, error: error.response?.data?.error || error.message || 'Slack delivery failed' };
   }
 }
-
 
 // Turn a raw tool result into a short human message. ImageGen and most media tools return public
 // URLs, which are the payload; otherwise summarize.
@@ -7026,7 +7016,6 @@ function verifySlackRequest(req) {
     timestamp: req.headers['x-slack-request-timestamp'], signature: req.headers['x-slack-signature'],
     signingSecret: process.env.SLACK_SIGNING_SECRET, now: new Date() });
 }
-
 
 // Cheap heuristic to drop obvious non-Nora-directed chatter before spending a Claude call.
 // Returns true if the message is clearly not for Nora (acknowledgments, emoji-only, side chatter).
@@ -7823,7 +7812,6 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   }
 }
 
-
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
   sourceAttestation = null, interactionStartedAt = Date.now(), terminalAtOverride = null) {
   const handlerStartedAt = Date.now();
@@ -8070,7 +8058,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
 
     if (isDirect) {
-      tail += '\n\nYOUR OWN QUEUE: When the requester asks you to queue, schedule, remember, or repeat work for yourself, use nora_queue_recurring_task directly. Your own queue is not a Teamwork project. Never search Teamwork to locate a project for this kind of request. For "every two weeks" set interval_weeks=2, and preserve any supplied Slack destination channel id.';
+      tail += '\n\nYOUR OWN QUEUE: When the requester asks you to queue, schedule, remember, or repeat work for yourself, use nora_queue_recurring_task directly. Your own queue is not a Teamwork project. Never search Teamwork to locate a project for this kind of request. For a cadence set repeat=daily, weekdays, weekly (with weekday) or monthly (with day_of_month); use interval_weeks only for an N-week rhythm such as 2 for biweekly. Pass local_time as Central HH:MM whenever they name a time, and preserve any supplied Slack destination channel id.';
     }
 
     // Assemble her live tools. Read tools (web_search + Teamwork READ) are available on BOTH
@@ -9022,7 +9010,6 @@ async function getNoraBotUserId({ signal, post = axios.post } = {}) {
   console.log('🤖 Resolved Nora bot user ID via auth.test:', noraBotUserId);
   return noraBotUserId;
 }
-
 
 // Find @mentions of the bot in channels Nora's app is a member of that haven't been
 // responded to. This uses the BOT'S point of view (via SLACK_BOT_TOKEN), not the user
@@ -11622,7 +11609,6 @@ app.delete('/transcripts/:botId/utterances/:index', requireAuth, async (req, res
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-
 // ============================================================
 // Interactions — Nora's outbound contributions, for the dream's Review movement
 // ============================================================
@@ -13114,7 +13100,9 @@ wss.on('connection', async (ws, req) => {
         // concrete fact worth interjecting. PASS: delete the deliberation from conversation history
         // and stay quiet. A real flag: speak it via a follow-up audio response. Probe responses skip
         // all the normal handling below (no window grace, no transcript logging).
-        if (msg.response.metadata && msg.response.metadata.nora_probe === 'volunteer') {
+        const probeKind = msg.response.metadata && msg.response.metadata.nora_probe;
+        if (probeKind === 'volunteer' || probeKind === 'room_question') {
+          const answering = probeKind === 'room_question';
           const items = msg.response.output || [];
           const probeText = items.filter(it => it.type === 'message')
             .map(it => (it.content || []).map(c => c.text || '').join(' ')).join(' ').trim();
@@ -13124,15 +13112,20 @@ wss.on('connection', async (ws, req) => {
             for (const it of items) {
               if (it.id) { try { openaiWs.send(JSON.stringify({ type: 'conversation.item.delete', item_id: it.id })); } catch {} }
             }
-            console.log('🎙️ Volunteer: PASS (no concrete fact to add)');
+            console.log(answering ? '🎙️ Answer: PASS (she does not know)' : '🎙️ Volunteer: PASS (no concrete fact to add)');
           } else if (s && !s.muted) {
-            s.lastVolunteerSpokeAt = Date.now();
-            console.log('🎙️ Volunteer: interjecting:', probeText.slice(0, 160));
+            // Only an uninvited interjection arms the five-minute cooldown. Answering a
+            // question someone asked is not an interruption and must not make her go quiet
+            // for the rest of the discussion.
+            if (!answering) s.lastVolunteerSpokeAt = Date.now();
+            console.log(`🎙️ ${answering ? 'Answer' : 'Volunteer'}: speaking:`, probeText.slice(0, 160));
             try {
               openaiWs.send(JSON.stringify({
                 type: 'response.create',
                 response: {
-                  instructions: buildSystemPrompt('realtime', s.transcript) + '\n\n[You just decided this flag is worth briefly interjecting into the meeting: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now in one or two short sentences, casually, like a teammate cutting in with a quick fact. Do not apologize for interrupting and do not add anything beyond the flag itself.]'
+                  instructions: buildSystemPrompt('realtime', s.transcript) + (answering
+                    ? '\n\n[Someone in the room just asked this and you know the answer: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now, leading with the answer, in one or two short sentences. Do not preface it with anything about having been asked, and do not offer to look anything else up.]'
+                    : '\n\n[You just decided this flag is worth briefly interjecting into the meeting: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now in one or two short sentences, casually, like a teammate cutting in with a quick fact. Do not apologize for interrupting and do not add anything beyond the flag itself.]')
                 }
               }));
               markVoiceResponseActive(openaiWs, s);
