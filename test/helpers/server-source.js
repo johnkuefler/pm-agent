@@ -52,6 +52,17 @@ function readServerSource() {
     .join('');
 }
 
+// Prefer this over assert.match(readServerSource(), ...) in new tests.
+//
+// A failing assert.match prints its entire input. That input is roughly a megabyte here, and Node's
+// test runner serializes the diagnostic over IPC: one such failure produced enough output to
+// corrupt the stream and fail an unrelated test file with "Unable to deserialize cloned data". This
+// reports which pattern failed without pasting the whole server into the output.
+function assertSourceMatches(assert, pattern, message, source = readServerSource()) {
+  if (pattern.test(source)) return;
+  assert.fail(`${message || 'server source did not match'}: ${pattern}`);
+}
+
 // Slice the region between two markers. Prefer this over raw indexOf arithmetic: when the end
 // marker is missing (usually because the region moved to its own file and the marker went with
 // a different one), a raw slice silently returns the wrong span. This stops at the end of the
@@ -66,4 +77,4 @@ function sourceRegion(startMarker, endMarker, source = readServerSource()) {
   return source.slice(start, end === -1 || end > boundary ? boundary : end);
 }
 
-module.exports = { readServerSource, sourceRegion, serverSourceSegments, ROOT, SURFACES_DIR };
+module.exports = { readServerSource, assertSourceMatches, sourceRegion, serverSourceSegments, ROOT, SURFACES_DIR };
