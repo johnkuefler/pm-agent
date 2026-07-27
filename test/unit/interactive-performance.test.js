@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const performance = require('../../src/intelligence/interactive-performance');
+const { readServerSource } = require('../helpers/server-source');
 const railwayConfig = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'railway.json'), 'utf8'));
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-interactive-performance-'));
@@ -433,7 +434,7 @@ test('one event-loop stall cancels the remaining background cycle', async () => 
 });
 
 test('live server opts eligible Slack work into complete trials but isolates relational turns', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const storeSource = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence', 'store.js'), 'utf8');
   const intelligenceRoutesSource = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
   assert.match(server, /contextTrialsEnabled: conversationPolicy\.contextTrialsEnabled, latencyCritical: true/);
@@ -855,7 +856,7 @@ test('live server opts eligible Slack work into complete trials but isolates rel
 });
 
 test('the live persona does not seed a canned small-talk answer that can override a literal question', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   const persona = fs.readFileSync(path.join(__dirname, '..', '..', 'nora-prompt.md'), 'utf8');
   assert.equal(source.includes('"not much, you?"'), false);
   assert.equal(persona.includes('"not much, you?"'), false);
@@ -1012,7 +1013,7 @@ test('recent activity is marker-grounded, deduplicated, and cannot absorb dated 
 });
 
 test('Slack interaction logging appends one durable row instead of rewriting the review ledger', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('function logInteraction(entry)');
   const end = server.indexOf('\nfunction handleInteractionOutcome', start);
   assert.ok(start >= 0 && end > start);
@@ -1023,7 +1024,7 @@ test('Slack interaction logging appends one durable row instead of rewriting the
 });
 
 test('interaction reviews update only changed durable rows', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('function saveInteractions(items)');
   const end = server.indexOf('\nfunction persistInteractionAppend', start);
   assert.ok(start >= 0 && end > start);
@@ -1034,7 +1035,7 @@ test('interaction reviews update only changed durable rows', () => {
 });
 
 test('dream reflection updates persist only changed dream rows', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('function saveDreams(dreams)');
   const end = server.indexOf('\nconst MAX_DREAMS_KEPT', start);
   assert.ok(start >= 0 && end > start);
@@ -1046,7 +1047,7 @@ test('dream reflection updates persist only changed dream rows', () => {
 });
 
 test('project-scoped memory activity upserts one project instead of rewriting the project ledger', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('function bumpProjectActivity(name)');
   const end = server.indexOf('\nfunction loadGiftLedger', start);
   assert.ok(start >= 0 && end > start);
@@ -1057,7 +1058,7 @@ test('project-scoped memory activity upserts one project instead of rewriting th
 });
 
 test('Slack thread activity persists only changed thread rows', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('function saveSlackThreads(threads)');
   const end = server.indexOf('\n// In-memory cache of joined threads', start);
   assert.ok(start >= 0 && end > start);
@@ -1089,7 +1090,7 @@ test('Slack uses a fast Claude path only for bounded conversational turns', asyn
 });
 
 test('Slack enrichment deadlines abort their losing network requests', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server,
     /settleWithinAbortable\(\s*signal => getSlackUserName\(user, \{ signal \}\), 1200/);
   assert.match(server,
@@ -1110,7 +1111,7 @@ test('Slack enrichment deadlines abort their losing network requests', () => {
 
 test('Slack waits for one coherent reply instead of posting a generic progress message', () => {
   const { __test } = require('../../server');
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('async function handleSlackImpl');
   const end = server.indexOf('// Slack thread admin', start);
   const slackHandler = server.slice(start, end);
@@ -1146,7 +1147,7 @@ test('meeting transcript prefix comparison detects safe restart continuation and
 });
 
 test('typed meeting chat never promises an unqueued Slack follow-up', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.doesNotMatch(server, /Give me a sec, I'll follow up in Slack/);
   assert.match(server, /I couldn't get a complete answer before this meeting turn closed/);
 });
@@ -1156,7 +1157,7 @@ test('typed meeting chat never promises an unqueued Slack follow-up', () => {
 // Slack: enrichment ate the budget, the model window collapsed to a millisecond, the tool loop
 // returned an empty response, and the fallback text was then blocked by the same expired clock.
 test('Slack thinking is bounded but answering and delivering are guaranteed', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('async function handleSlackImpl');
   const end = server.indexOf('// Slack thread admin', start);
   const handler = server.slice(start, end);
@@ -1195,7 +1196,7 @@ test('Slack thinking is bounded but answering and delivering are guaranteed', ()
 
 // The thinking deadline must still be honored where it belongs, or the bound is meaningless.
 test('Slack extensions never exceed a budget the caller imposed', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf('async function handleSlackImpl');
   const end = server.indexOf('// Slack thread admin', start);
   const handler = server.slice(start, end);
@@ -1205,14 +1206,14 @@ test('Slack extensions never exceed a budget the caller imposed', () => {
 });
 
 test('typed meeting delivery shares the same trigger-to-message deadline', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /const zoomDeliveryBudgetMs = Math\.min\(5000, zoomTerminalAt - Date\.now\(\)\)/);
   assert.match(server, /timeout: zoomDeliveryBudgetMs/);
   assert.match(server, /const errorDeliveryBudgetMs = Math\.min\(5000, zoomTerminalAt - Date\.now\(\)\)/);
 });
 
 test('Slack missed-mention recovery aborts the full workspace scan at one deadline', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   const start = server.indexOf("app.get('/slack/unhandled-mentions'");
   const end = server.indexOf('// Notify endpoint', start);
   const handler = server.slice(start, end);
@@ -1323,7 +1324,7 @@ test('realtime prompt refresh treats quiet as a revocable meeting lease', () => 
 });
 
 test('realtime telemetry is batched until the voice foreground and cooldown have ended', () => {
-  const serverSource = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const serverSource = readServerSource();
   assert.match(serverSource, /const deferredRealtimeTraces = \[\]/);
   assert.match(serverSource, /traceSink: queueRealtimeTrace/);
   assert.match(serverSource, /queueRealtimeTrace\(\{[\s\S]{0,120}action: 'barge_in'/);

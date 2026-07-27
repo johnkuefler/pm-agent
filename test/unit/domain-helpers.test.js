@@ -14,6 +14,7 @@ delete process.env.DATABASE_URL;
 delete process.env.DATABASE_PUBLIC_URL;
 
 const { __test: helpers } = require('../../server');
+const { readServerSource } = require('../helpers/server-source');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
@@ -282,7 +283,7 @@ test('Slack landing fetch binds the successful provider response to a replay-che
 });
 
 test('Slack post-response extraction uses parameters carried through the handler', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   const start = source.indexOf('async function handleSlackImpl');
   const end = source.indexOf('\nasync function ', start + 20);
   const handler = source.slice(start, end < 0 ? source.length : end);

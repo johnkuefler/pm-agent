@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const reflection = require('../../src/intelligence/meeting-professional-reflection');
 const { createIntelligenceStore, emptyState } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 function transcriptInput(botId = 'bot-meeting-1') {
   return { botId, ended: '2026-07-17T16:21:00Z',
@@ -266,7 +267,7 @@ test('live runtime is scheduled only in the preemptible background lane', () => 
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '0' }).enabled, true);
   assert.equal(__test.meetingProfessionalReflectionRuntimeConfig({
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1' }).enabled, false);
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.match(source, /\['meeting_professional_reflection',[\s\S]*runMeetingProfessionalReflectionRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
   const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));

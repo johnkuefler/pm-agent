@@ -9,6 +9,7 @@ const sequencer = require('../../src/intelligence/self-prediction-study-sequence
 const subjectRuntime = require('../../src/intelligence/self-prediction-subject-runtime');
 const modelControl = require('../../src/intelligence/self-prediction-model-control');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 function sourceMoment(index, overrides = {}) {
   return {
@@ -210,7 +211,7 @@ test('terminal self-prediction programs produce an audit-free idle runtime plan'
 });
 
 test('server enrolls before subject and observer inference in each research tick', () => {
-  const server = fs.readFileSync(path.join(__dirname, '../../server.js'), 'utf8');
+  const server = readServerSource();
   const enrollAt = server.indexOf('selfPredictionStudySequencer.ensurePilot({');
   const subjectAt = server.indexOf('selfPredictionSubjectRuntime.runCycle({');
   const observerAt = server.indexOf('naturalCyclePredictionAutopilot.runCycle({');

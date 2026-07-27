@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const review = require('../../src/intelligence/interaction-outcome-review-autopilot');
 const capability = require('../../src/intelligence/capability-boundary');
+const { readServerSource } = require('../helpers/server-source');
 
 const NOW = new Date('2026-07-18T12:00:00.000Z');
 
@@ -181,7 +182,7 @@ test('re-hashed malformed evidence and duplicate provider receipts still fail re
 });
 
 test('server keeps the reviewer background-only and sealed behind active context trials', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /state: 'waiting_for_active_blinded_trial'/);
   assert.match(server, /runInteractionOutcomeReviewAutopilotRuntime\(\{ post: priorityPost,/);
   assert.match(server, /signal: lease\.signal/);

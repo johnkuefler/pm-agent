@@ -2,9 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { readServerSource } = require('../helpers/server-source');
 
 const root = path.resolve(__dirname, '../..');
-const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+const server = readServerSource();
 const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
 const store = fs.readFileSync(path.join(root, 'src/intelligence/store.js'), 'utf8');
 const routes = fs.readFileSync(path.join(root, 'src/routes/intelligence.js'), 'utf8');

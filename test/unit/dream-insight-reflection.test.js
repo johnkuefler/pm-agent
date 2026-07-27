@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const reflection = require('../../src/intelligence/dream-insight-reflection');
 const dreamInsight = require('../../src/intelligence/dream-insight');
+const { readServerSource } = require('../helpers/server-source');
 
 function fixtureDreams() {
   return [
@@ -411,7 +412,7 @@ test('production runtime keeps insight reflection in the preemptible background 
   assert.equal(__test.dreamInsightReflectionRuntimeConfig({
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.match(source, /runDreamInsightReflectionAutopilotRuntime\(\{ post: priorityPost \}\)/);
   assert.match(source, /runDreamReflectionLifecycleWithPriorityRuntime\(\)/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));

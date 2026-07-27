@@ -7,6 +7,7 @@ const path = require('node:path');
 const EventEmitter = require('node:events');
 const { createWebSocketLivenessMonitor } = require('../../src/runtime/websocket-liveness');
 const { createResponseWatchdogMonitor } = require('../../src/runtime/response-watchdog');
+const { readServerSource } = require('../helpers/server-source');
 
 class FakeSocket extends EventEmitter {
   constructor() {
@@ -65,7 +66,7 @@ test('ordinary socket traffic proves liveness even before a pong arrives', () =>
 
 test('meeting page reuses one microphone and reconnects with bounded backoff', () => {
   const html = fs.readFileSync(path.join(__dirname, '..', '..', 'voice-agent.html'), 'utf8');
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(html, /if \(micCaptureReady\) return;[\s\S]*if \(micCapturePromise\) return micCapturePromise;/,
     'a relay reconnect must not create another microphone pipeline');
   assert.match(html, /Relay WebSocket handshake timed out/,
@@ -151,7 +152,7 @@ test('response watchdog follows response progress instead of truncating a long h
 });
 
 test('meeting response watchdog is tied to the current provider socket', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /voiceResponseWatchdog\.arm\(openaiWs,[\s\S]{0,500}session\.openaiWs === openaiWs/,
     'the timeout callback must prove that it still owns the live session');
   assert.match(server, /voiceResponseWatchdog\.finish\(previous, 'cancelled'\)/,

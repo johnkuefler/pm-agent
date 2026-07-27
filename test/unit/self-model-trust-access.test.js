@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 async function makeStore(filePath = null, start = '2026-07-16T12:00:00.000Z') {
   const dir = filePath ? path.dirname(filePath)
@@ -78,7 +79,7 @@ function design(revisionId, overrides = {}) {
 }
 
 test('production prompt construction atomically assigns blinded self-model trust policies', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /selfModelTrustAvailable: \(\) => opts\.selfModelTrustAvailable !== false[\s\S]*?intelligence\.selfModelTrustAccessAvailable\(\)/);
   assert.match(server, /selfModelTrustAvailable: isDirect/);
   assert.match(server, /selfModelTrustContextForAssignment\(contextAssignment\)/);

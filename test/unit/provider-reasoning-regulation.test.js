@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const protocol = require('../../src/intelligence/provider-reasoning-regulation');
+const { readServerSource } = require('../helpers/server-source');
 
 async function setup() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-provider-reasoning-'));
@@ -47,7 +48,7 @@ function providerData({ id, text, condition, outputTokens }) {
 
 test('production runtime applies the current Claude adaptive-thinking API contract', () => {
   const root = path.join(__dirname, '..', '..');
-  const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
+  const server = readServerSource();
   const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
   assert.match(server, /reqBody\.thinking = reasoningConfig\.thinking/);
   assert.match(server, /reqBody\.output_config = reasoningConfig\.output_config/);

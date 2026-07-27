@@ -7,6 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const reflection = require('../../src/intelligence/cycle-self-correction-reflection');
 const { createIntelligenceStore, emptyState } = require('../../src/intelligence/store');
+const { readServerSource } = require('../helpers/server-source');
 
 const NOW = new Date('2026-07-17T18:00:00.000Z');
 
@@ -213,7 +214,7 @@ test('runtime keeps cycle self-correction out of Slack and Zoom foreground handl
   assert.equal(__test.cycleSelfCorrectionReflectionRuntimeConfig({
     ANTHROPIC_API_KEY: 'configured', NORA_TEST_MODE: '1',
   }).enabled, false);
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   assert.match(source, /\['cycle_self_correction_reflection',[\s\S]*runCycleSelfCorrectionReflectionRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
   const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));

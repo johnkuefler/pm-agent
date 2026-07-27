@@ -12,6 +12,7 @@ process.env.NORA_DATA_DIR = dataDir;
 delete process.env.DATABASE_URL;
 delete process.env.DATABASE_PUBLIC_URL;
 const { __test } = require('../../server');
+const { readServerSource } = require('../helpers/server-source');
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
 test('fallback forecast retries spend one shared runtime deadline', async () => {
@@ -58,7 +59,7 @@ test('hourly coverage connector reads propagate cancellation and remaining budge
 });
 
 test('operational recovery is scheduled before optional background intelligence', () => {
-  const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const source = readServerSource();
   const scheduler = source.slice(
     source.indexOf("scheduleRecurringRuntimeJob('operational-and-intelligence-cycle'"),
     source.indexOf("scheduleRecurringRuntimeJob('stale-research-projection-refresh'"));

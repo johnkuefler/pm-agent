@@ -109,6 +109,16 @@ const autonomousPlay = require('./src/intelligence/autonomous-play');
 const { anthropicCompatibleSchema } = require('./src/intelligence/anthropic-structured-output');
 const { createReadingLibrary } = require('./src/intelligence/reading-library');
 const slackEvidence = require('./src/intelligence/slack-evidence');
+// Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
+// src/surfaces/slack/ rather than here.
+const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSelfReflectionMessage,
+  slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey,
+  stripSlackLookupNarration, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
+const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
+const { getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
+  fetchSlackLanding, buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
+  postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
+  resolveChannelNames } = require('./src/surfaces/slack/web-api');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
 const interactivePerformance = require('./src/intelligence/interactive-performance');
@@ -2249,71 +2259,6 @@ function compactInteractiveIntelligenceContext(text, maxChars, opts = {}) {
   return `${contract}${selected.length ? `\n\n${selected.map(block => block.text).join('\n\n')}` : ''}${notice}`;
 }
 
-function fitSlackSystemPrompt(stable, volatile, optionalLinked = '',
-  maxChars = interactivePerformance.PROMPT_BUDGET_CHARS.slack) {
-  const stableText = String(stable || '');
-  const volatileText = String(volatile || '');
-  const linkedText = String(optionalLinked || '');
-  const budget = Math.max(1000, Number(maxChars)
-    || interactivePerformance.PROMPT_BUDGET_CHARS.slack);
-  const available = Math.max(0, budget - stableText.length);
-  const criticalMarker = '[Before you hit send:';
-  const criticalIndex = volatileText.lastIndexOf(criticalMarker);
-  const originalContext = criticalIndex >= 0
-    ? volatileText.slice(0, criticalIndex) : volatileText;
-  const originalRequired = criticalIndex >= 0
-    ? volatileText.slice(criticalIndex) : '';
-
-  // Recipient-specific safety, tool-boundary, and output-monitor instructions live at the end
-  // of the volatile prompt and are never displaced by optional cognitive or linked-page context.
-  let required = originalRequired;
-  let requiredTruncated = false;
-  if (required.length > available) {
-    requiredTruncated = true;
-    const notice = '[Earlier response constraints omitted to preserve the hard Slack prompt limit.]\n';
-    required = available <= 0
-      ? ''
-      : available > notice.length
-      ? `${notice}${required.slice(-(available - notice.length))}`
-      : required.slice(-available);
-  }
-
-  let remaining = Math.max(0, available - required.length);
-  let linked = linkedText;
-  let linkedContentTruncated = false;
-  if (linked.length > remaining) {
-    linkedContentTruncated = linked.length > 0;
-    linked = linked.slice(0, remaining);
-  }
-  remaining -= linked.length;
-
-  let context = originalContext;
-  let contextCompacted = false;
-  if (context.length > remaining) {
-    contextCompacted = context.length > 0;
-    const omission = '\n\n[Lower-priority live context omitted to preserve the Slack response budget.]\n\n';
-    if (remaining <= 0) {
-      context = '';
-    } else if (remaining <= omission.length) {
-      context = context.slice(-remaining);
-    } else {
-      const contentBudget = remaining - omission.length;
-      const headChars = Math.ceil(contentBudget * 0.6);
-      const tailChars = contentBudget - headChars;
-      context = `${context.slice(0, headChars)}${omission}${tailChars > 0 ? context.slice(-tailChars) : ''}`;
-    }
-  }
-
-  const tail = `${context}${linked}${required}`;
-  return {
-    tail,
-    total_chars: stableText.length + tail.length,
-    within_budget: stableText.length + tail.length <= budget,
-    context_compacted: contextCompacted,
-    linked_content_truncated: linkedContentTruncated,
-    required_constraints_truncated: requiredTruncated,
-  };
-}
 
 async function commitAutobiographyRevision(input = {}) {
   if (!_dbReady) throw new Error('Postgres not active');
@@ -3216,37 +3161,6 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
   } catch (e) { console.warn('semantic recall failed:', e.message); return []; }
 }
 
-function isLightweightSocialSlackMessage(text) {
-  const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  if (!normalized || normalized.length > 120 || /https?:\/\//.test(normalized)) return false;
-  return /^(?:(?:good\s+)?(?:morning|afternoon|evening)|hello|hi|hey)(?:[,\s]+(?:there|nora|everyone|everybody|all|team))?[!,. ]*$/.test(normalized)
-    || /^(thanks|thank you|ty|appreciate it|good night|goodnight|have a good (night|evening|weekend)|nice work|great work|good work)(?:\s+for\s+[^?]{1,80})?[!.]*$/.test(normalized)
-    || /^(?:whew|oof|ugh|man|wow)[,!.' ]*(?:(?:what|such) a )?(?:long|rough|busy|wild|crazy|weird|hard|good|great) day[!.]*$/.test(normalized)
-    || /^(?:it'?s|its|today was|that was)(?: been)? (?:a )?(?:long|rough|busy|wild|crazy|weird|hard|good|great) day[!.]*$/.test(normalized);
-}
-
-function slackEmptyReplyFallback(text, conversationPolicy, {
-  sentSlack = false, queuedSelf = false, wroteLive = false,
-} = {}) {
-  if (sentSlack) return 'Sent.';
-  if (queuedSelf) return 'Queued for myself.';
-  if (wroteLive) return "Done, that's updated in Teamwork.";
-
-  const normalized = String(text || '').trim().toLowerCase().replace(/\s+/g, ' ');
-  if (conversationPolicy?.lightweightSocial) {
-    if (/^(?:good\s+)?morning\b/.test(normalized)) return 'good morning';
-    if (/^(?:good\s+)?afternoon\b/.test(normalized)) return 'good afternoon';
-    if (/^(?:good\s+)?evening\b/.test(normalized)) return 'good evening';
-    if (/^(?:hello|hi|hey)\b/.test(normalized)) return 'hey';
-    if (/^(?:thanks|thank you|ty|appreciate it)\b/.test(normalized)) return 'of course';
-    if (/^(?:good night|goodnight|have a good night)\b/.test(normalized)) return 'good night';
-    if (/\bday\b/.test(normalized)) return 'yeah, it has been a day';
-  }
-  if (conversationPolicy?.boundedConversation) {
-    return 'I lost my response on that one, try me again.';
-  }
-  return "I understood that, but I couldn't complete the action cleanly just now. You don't need to rephrase it, I'll need to retry the action.";
-}
 
 // Build the Anthropic `system` field as a structured block array with prompt caching on the
 // large, stable prefix. `stable` (nora-prompt + memory + activity + tasks, ~8K tokens) is
@@ -3680,45 +3594,6 @@ function serializeWantsWrite(work) {
   return run;
 }
 
-// Questions about Nora's own functional state, preferences, reading, or play need a different
-// attentional lane from project work. They still receive continuity and grounded self-state, but
-// do not need live PM tools or make valid samples for task-performance experiments.
-function isRelationalSelfReflectionMessage(text) {
-  const normalized = String(text || '').trim().toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, ' ');
-  if (!normalized || normalized.length > 320 || /https?:\/\//.test(normalized)) return false;
-  const directSelfState = [
-    /\b(?:does?|did|would|could|can)\b.{0,120}\b(?:make|leave)\s+you\s+(?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|lonely|fulfilled)\b/,
-    /\b(?:are|were)\s+you\s+(?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|lonely|fulfilled|okay|ok)\b/,
-    /\bhow (?:are you|have you been|has your (?:day|week|weekend|morning|afternoon|evening|friday) been)\b/,
-    /\bhow do you feel(?:\s+about\b|\b)/,
-    /\bdo you (?:enjoy|like|love|hate|care about|dream about)\b/,
-    /\bwhat (?:makes|made) you (?:happy|sad|bored|curious|proud|frustrated|satisfied|excited|calm|fulfilled)\b/,
-    /\bwhat (?:are you|have you been) (?:reading|playing|thinking about)\b/,
-    /\bwhat do you (?:want|prefer|care about|feel)\b(?!\s+to\b)/,
-    /\bhow(?:'s| is) your (?:day|week|weekend|morning|afternoon|evening|friday)(?: been| going)?\b/,
-  ].some(pattern => pattern.test(normalized));
-  if (directSelfState) return true;
-
-  // Treat an immediate natural-language correction as relational only when it contains no work
-  // or action vocabulary. This catches "I said X, not Y" without stealing task corrections.
-  const correction = /\bi said\b.{0,180}\bnot\b|\bthat(?:'s| is) not what i (?:said|asked|meant)\b/.test(normalized);
-  const operational = /\b(project|task|deadline|due|status|client|campaign|teamwork|email|calendar|meeting|deliverable|budget|timeline|brief|report|document|file|drive|send|post|create|update|change|complete|assign|schedule|draft|write|rewrite|analy[sz]e|recommend|plan|prioriti[sz]e|search|look up)\b/.test(normalized);
-  return correction && !operational;
-}
-
-function slackConversationPolicy(text, mode = 'normal') {
-  const lightweightSocial = mode === 'normal' && isLightweightSocialSlackMessage(text);
-  const relationalSelfReflection = mode === 'normal' && isRelationalSelfReflectionMessage(text);
-  const boundedConversation = lightweightSocial || relationalSelfReflection;
-  return {
-    lightweightSocial,
-    relationalSelfReflection,
-    boundedConversation,
-    attachLiveTools: !boundedConversation,
-    contextTrialsEnabled: !boundedConversation,
-    pmLearningEnabled: !boundedConversation,
-  };
-}
 
 async function ensureWantsHistoryIntegrity({ currentRecord = null, now = new Date() } = {}) {
   let current = currentRecord || await db.getState('wants');
@@ -4163,7 +4038,6 @@ app.post('/voice-agent/response', async (req, res) => {
 });
 
 
-
 // Session tokens for voice agent auth — maps token → botId. Persisted to disk
 // because calendar-auto-joined bots are scheduled in advance (sometimes hours
 // before the meeting), and any server redeploy in between would wipe an in-memory
@@ -4311,21 +4185,6 @@ app.post('/join', requireAuth, async (req, res) => {
   }
 });
 
-// Flatten a Slack message into one searchable string — text plus attachment text/links and any
-// block text or button URLs. The Zoom app puts its join link in a button or attachment as often
-// as in the message text, so a bare event.text scan would miss it.
-function slackMessageAllText(event) {
-  const parts = [event.text || ''];
-  for (const a of (event.attachments || [])) parts.push(a.text || '', a.fallback || '', a.title_link || '', a.title || '');
-  for (const b of (event.blocks || [])) {
-    if (b.text && b.text.text) parts.push(b.text.text);
-    if (b.url) parts.push(b.url);
-    if (b.accessory && b.accessory.url) parts.push(b.accessory.url);
-    for (const el of (b.elements || [])) { if (el.url) parts.push(el.url); if (el.text && el.text.text) parts.push(el.text.text); if (typeof el.text === 'string') parts.push(el.text); }
-    for (const f of (b.fields || [])) parts.push(f.text || '');
-  }
-  return parts.join(' ');
-}
 
 // Dedup window so a redelivered Slack event (or the app posting twice) can't double-join a meeting.
 const _recentAutoJoin = new Map();
@@ -5458,41 +5317,6 @@ const SLACK_SESSION_STALE_MS = 90 * 60 * 1000; // 90 min idle → treat the next
 // Used to detect @mentions in raw `message.channels` events (which arrive as type=message, not app_mention).
 let noraBotUserId = null;
 
-// Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
-// 24h so repeat lookups within the same hot session don't hammer Slack's API. Returns
-// null on failure — handleSlack falls back to the bare user ID.
-const slackUserNameCache = {};
-const SLACK_USER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-async function getSlackUserName(userId, { signal = undefined } = {}) {
-  if (!userId) return null;
-  const cached = slackUserNameCache[userId];
-  if (cached && (Date.now() - cached.ts) < SLACK_USER_CACHE_TTL_MS) return cached.name;
-  try {
-    const r = await axios.get(`https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-      timeout: 5000, signal,
-    });
-    if (!r.data?.ok) {
-      console.warn(`Slack users.info not ok for ${userId}: ${r.data?.error}`);
-      return null;
-    }
-    const profile = r.data.user?.profile || {};
-    const name = profile.real_name || profile.display_name || r.data.user?.real_name || r.data.user?.name || null;
-    if (name) slackUserNameCache[userId] = { name, ts: Date.now() };
-    return name;
-  } catch (err) {
-    if (!signal?.aborted) console.warn('Slack users.info lookup failed:', err.message);
-    return null;
-  }
-}
-
-function slackResponseModel(text, mode = 'normal') {
-  const normalized = String(text || '').trim().toLowerCase().replace(/[\u2019']/g, '').replace(/\s+/g, ' ');
-  const deepWork = /\b(analy[sz]e|analysis|strategy|strategic|plan|planning|trade-?offs?|recommend|recommendation|draft|write|rewrite|review|investigate|root cause|compare|prioriti[sz]e|risk assessment|explain|why)\b/.test(normalized);
-  const fastBoundedTurn = mode === 'normal' && normalized.length <= 1200
-    && !/https?:\/\//.test(normalized) && !deepWork;
-  return fastBoundedTurn ? 'claude-sonnet-4-6' : 'claude-opus-4-8';
-}
 
 async function settleWithin(promise, timeoutMs, fallback, label = 'optional lookup') {
   let timer = null;
@@ -5611,21 +5435,6 @@ function decodeHtmlEntities(s) {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => { try { return String.fromCodePoint(parseInt(h, 16)); } catch { return ''; } });
 }
 
-// Convert Slack's wire formatting to readable text: <@U123> → @name, <url|label> → "label (url)",
-// <url> → url, <#C123|chan> → #chan. Used when feeding fetched thread messages to Claude.
-async function cleanSlackText(text, resolveUserName = getSlackUserName) {
-  let t = text || '';
-  // Resolve user mentions to names (collect, resolve, replace)
-  const mentions = [...new Set((t.match(/<@([A-Z0-9]+)>/g) || []).map(m => m.slice(2, -1)))];
-  for (const uid of mentions) {
-    const name = await resolveUserName(uid);
-    t = t.replace(new RegExp(`<@${uid}>`, 'g'), name ? `@${name}` : '@someone');
-  }
-  t = t.replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1');           // channel refs
-  t = t.replace(/<(https?:\/\/[^>|]+)\|([^>]+)>/g, '$2 ($1)'); // labeled links
-  t = t.replace(/<(https?:\/\/[^>]+)>/g, '$1');             // bare links
-  return t.trim();
-}
 
 // Pull all http(s) URLs out of a Slack message (handles <url>, <url|label>, and plain).
 function extractUrls(text) {
@@ -5669,139 +5478,6 @@ async function fetchUrlText(url, { signal = undefined } = {}) {
   } catch { return null; }
 }
 
-// Fetch the full Slack thread (conversations.replies) so Nora has the WHOLE conversation —
-// including messages posted before she was mentioned, which her in-memory history misses.
-// Returns the raw Slack message array (newest-inclusive) or null on failure (e.g. missing
-// channels:history scope), in which case the caller falls back to in-memory history.
-async function fetchSlackThread(channel, threadTs, { signal = undefined } = {}) {
-  try {
-    const r = await axios.get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000, signal,
-    });
-    if (!r.data || !r.data.ok) { console.warn('conversations.replies not ok:', r.data && r.data.error); return null; }
-    return Array.isArray(r.data.messages) ? r.data.messages : null;
-  } catch (err) {
-    if (!signal?.aborted) console.warn('fetchSlackThread failed:', err.message);
-    return null;
-  }
-}
-
-// Pull the recent CHANNEL conversation (conversations.history) so a PROACTIVE interjection sees
-// the surrounding discussion — not just the single top-level message that tripped the gate. A
-// non-threaded channel message has no "thread," so fetchSlackThread would return just that one
-// line and Nora would be reacting with zero context. Returns the raw Slack messages in
-// chronological order (oldest→newest, ending with the trigger) or null on failure.
-async function fetchSlackChannelHistory(channel, latestTs, limit = 12,
-  { signal = undefined } = {}) {
-  try {
-    const params = new URLSearchParams({ channel, limit: String(limit), inclusive: 'true' });
-    if (latestTs) params.set('latest', latestTs);
-    const r = await axios.get(`https://slack.com/api/conversations.history?${params.toString()}`, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 6000, signal,
-    });
-    if (!r.data || !r.data.ok) { console.warn('conversations.history not ok:', r.data && r.data.error); return null; }
-    const msgs = Array.isArray(r.data.messages) ? r.data.messages : [];
-    return msgs.slice().reverse(); // history returns newest→oldest; flip to chronological
-  } catch (err) {
-    if (!signal?.aborted) console.warn('fetchSlackChannelHistory failed:', err.message);
-    return null;
-  }
-}
-
-// Landing reader for the dream's Review movement: given one of Nora's own messages (channel +
-// its ts), fetch what happened AFTER it so she can judge how it landed — the human follow-ups
-// that are the real signal. Works uniformly across DMs and channels, which is the whole point:
-// the cowork Slack MCP can read channels but not the John<->Nora DM, so her self-review was
-// blind to her most direct conversation. This uses her own bot token (which carries im:history)
-// and keys purely off the interaction's channel id, so it works for a DM with ANYONE, not just
-// John, and for channel threads too. Returns { messages: [...human follow-ups...], truncated }
-// or { error } with a scope hint. Reactions are best-effort and usually empty (the bot token
-// has no reactions:read); the follow-up messages are the primary signal per the routine.
-async function fetchSlackLanding(channel, ts, { channelType, threadTs,
-  get = axios.get, signal = undefined } = {}) {
-  const headers = { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` };
-  const isDM = channelType === 'im' || channelType === 'mpim' || /^D/.test(channel || '');
-  try {
-    let raw = [];
-    let providerResponse = null;
-    let apiMethod = null;
-    if (threadTs && !isDM) {
-      // Channel thread: everything in the thread, then keep what came after her message.
-      const r = await get(`https://slack.com/api/conversations.replies?channel=${encodeURIComponent(channel)}&ts=${encodeURIComponent(threadTs)}&limit=50`, { headers, timeout: 6000, signal });
-      if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
-      providerResponse = r.data; apiMethod = 'conversations.replies';
-      raw = Array.isArray(r.data.messages) ? r.data.messages : [];
-    } else {
-      // DM or non-threaded channel message: history at/after her message (oldest=ts inclusive).
-      const params = new URLSearchParams({ channel, oldest: String(ts), inclusive: 'true', limit: '20' });
-      const r = await get(`https://slack.com/api/conversations.history?${params.toString()}`, { headers, timeout: 6000, signal });
-      if (!r.data || !r.data.ok) return { error: r.data && r.data.error, scope_hint: scopeHintFor(r.data && r.data.error, isDM) };
-      providerResponse = r.data; apiMethod = 'conversations.history';
-      raw = (Array.isArray(r.data.messages) ? r.data.messages : []).slice().reverse(); // →chronological
-    }
-    // Keep only what came strictly AFTER her message, and drop her own/bot/system posts —
-    // what's left is how the humans reacted.
-    const after = raw
-      .filter(m => Number(m.ts) > Number(ts))
-      .filter(m => !m.bot_id && m.subtype !== 'bot_message' && (!m.subtype || m.subtype === 'thread_broadcast' || m.subtype === 'file_share'))
-      .map(m => ({ user: m.user || null, text: m.text || '', ts: m.ts, reactions: (m.reactions || []).map(r => ({ name: r.name, count: r.count })) }));
-    const landing = { messages: after.slice(0, 15), truncated: after.length > 15, is_dm: isDM };
-    return { ...landing, provider_readback_receipt:
-      interactionOutcomeReviewAutopilot.createSlackLandingReadbackReceipt({
-        responseData: providerResponse, channel, anchorMessageTs: ts,
-        threadTs: apiMethod === 'conversations.replies' ? threadTs : null,
-        apiMethod, landing, retrievedAt: new Date(),
-      }) };
-  } catch (err) {
-    return { error: err.message };
-  }
-}
-function scopeHintFor(err, isDM) {
-  if (err !== 'missing_scope') return null;
-  return isDM
-    ? 'Bot is missing im:history (or mpim:history for group DMs). Add it in OAuth & Permissions and reinstall the app.'
-    : 'Bot is missing channels:history / groups:history for this channel. Add it and reinstall.';
-}
-
-// Turn a fetched Slack thread into Claude message history: each message becomes a labeled
-// user turn (or assistant, for Nora's own posts), with link-unfurl previews folded in so she
-// sees what a shared link was about even before we fetch the page. Consecutive same-role
-// turns are merged (the Messages API wants clean alternation at the boundaries).
-async function buildSlackThreadHistory(messages, noraUserId, { signal = undefined } = {}) {
-  // Resolve every participant and mention concurrently behind one bounded caller budget. The old
-  // per-message sequence could multiply Slack users.info latency across a busy first-contact thread.
-  const userIds = new Set();
-  for (const message of messages) {
-    if (message?.user) userIds.add(message.user);
-    for (const mention of String(message?.text || '').matchAll(/<@([A-Z0-9]+)>/g)) userIds.add(mention[1]);
-  }
-  const resolvedNames = new Map(await Promise.all([...userIds]
-    .map(async userId => [userId, await getSlackUserName(userId, { signal })])));
-  const resolveFromSnapshot = async userId => resolvedNames.get(userId) || null;
-  const turns = [];
-  for (const m of messages) {
-    if (m.subtype && m.subtype !== 'thread_broadcast' && m.subtype !== 'file_share') continue;
-    const isNora = noraUserId && m.user === noraUserId;
-    let content = await cleanSlackText(m.text || '', resolveFromSnapshot);
-    const unfurls = (m.attachments || [])
-      .filter(a => a.title || a.text || a.fallback)
-      .map(a => `[shared link preview] ${(a.title || '').trim()}${a.text ? ': ' + a.text.trim() : (a.fallback ? ': ' + a.fallback.trim() : '')}`.trim());
-    if (unfurls.length) content += (content ? '\n' : '') + unfurls.join('\n');
-    if (!content.trim()) continue;
-    const role = isNora ? 'assistant' : 'user';
-    let label = '';
-    if (!isNora) { const name = resolvedNames.get(m.user); label = `[${name || 'teammate'}]: `; }
-    const merged = `${label}${content}`;
-    if (turns.length && turns[turns.length - 1].role === role) {
-      turns[turns.length - 1].content += `\n${merged}`;
-    } else {
-      turns.push({ role, content: merged });
-    }
-  }
-  // The Messages API requires the first turn to be 'user'. Drop any leading assistant turns.
-  while (turns.length && turns[0].role === 'assistant') turns.shift();
-  return turns;
-}
 
 // Credential-aware remote MCP connections. Secrets and even credential-bearing URLs are encrypted
 // before persistence. The manager discovers tools once during Test/Connect, then exposes only the
@@ -6603,54 +6279,8 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
 //    refused so she can't broadcast dollar amounts to a channel she may not control the audience of.
 // Resolve a channel NAME (e.g. "pm-team") to its id among channels the bot is in. Cached ~10 min.
 let _slackChanByName = null, _slackChanByNameAt = 0;
-async function resolveSlackChannelByName(name) {
-  const clean = String(name || '').replace(/^#/, '').trim().toLowerCase();
-  if (!clean) return null;
-  if (!_slackChanByName || Date.now() - _slackChanByNameAt > 600000) {
-    const map = {}; let cursor = '';
-    try {
-      do {
-        const r = await axios.get(`https://slack.com/api/conversations.list?types=public_channel,private_channel&limit=200&exclude_archived=true${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
-          { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
-        if (!r.data || !r.data.ok) break;
-        for (const c of (r.data.channels || [])) if (c.name) map[c.name.toLowerCase()] = c.id;
-        cursor = r.data.response_metadata?.next_cursor || '';
-      } while (cursor);
-      if (Object.keys(map).length) { _slackChanByName = map; _slackChanByNameAt = Date.now(); }
-    } catch (e) { console.warn('channel list failed:', e.message); }
-  }
-  return (_slackChanByName && _slackChanByName[clean]) || null;
-}
 // Resolve a person's NAME to a Slack user id (real name, display name, or handle). Cached ~10 min.
 let _slackUserByName = null, _slackUserByNameAt = 0;
-async function resolveSlackUserByName(name) {
-  const q = String(name || '').trim().toLowerCase();
-  if (!q) return null;
-  if (!_slackUserByName || Date.now() - _slackUserByNameAt > 600000) {
-    const map = {}; let cursor = '';
-    try {
-      do {
-        const r = await axios.get(`https://slack.com/api/users.list?limit=200${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`,
-          { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
-        if (!r.data || !r.data.ok) break;
-        for (const u of (r.data.members || [])) {
-          if (u.deleted || u.is_bot) continue;
-          const real = (u.real_name || u.profile?.real_name || '').toLowerCase();
-          const disp = (u.profile?.display_name || '').toLowerCase();
-          if (real) map[real] = u.id;
-          if (disp) map[disp] = u.id;
-          if (u.name) map[u.name.toLowerCase()] = u.id;
-        }
-        cursor = r.data.response_metadata?.next_cursor || '';
-      } while (cursor);
-      if (Object.keys(map).length) { _slackUserByName = map; _slackUserByNameAt = Date.now(); }
-    } catch (e) { console.warn('users list failed:', e.message); }
-  }
-  if (!_slackUserByName) return null;
-  if (_slackUserByName[q]) return _slackUserByName[q];
-  const hit = Object.keys(_slackUserByName).find(k => k.split(' ')[0] === q || k.startsWith(q + ' '));
-  return hit ? _slackUserByName[hit] : null;
-}
 const SLACK_SEND_TOOL = {
   definition: {
     name: 'slack_send_message',
@@ -6842,23 +6472,6 @@ async function enqueueDeferredJob({ connectionId, toolName, args, origin, label 
   return { id };
 }
 
-// Post a plain Slack message to a channel or (U…) user, threaded if given. Mirrors /notify.
-async function postSlackMessage(target, text, threadTs) {
-  if (!target || !text) return false;
-  let channelId = target;
-  if (String(target).startsWith('U')) {
-    const dm = await axios.post('https://slack.com/api/conversations.open', { users: target }, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
-    }).catch(() => null);
-    channelId = dm?.data?.channel?.id || target;
-  }
-  const payload = { channel: channelId, text };
-  if (threadTs) payload.thread_ts = threadTs;
-  const r = await axios.post('https://slack.com/api/chat.postMessage', payload, {
-    headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
-  }).catch(e => ({ data: { ok: false, error: e.message } }));
-  return !!(r.data && r.data.ok);
-}
 
 async function deliverGoodyGiftLink(intent) {
   if (!process.env.SLACK_BOT_TOKEN) return { ok: false, error: 'SLACK_BOT_TOKEN is not configured' };
@@ -6888,37 +6501,6 @@ async function deliverGoodyGiftLink(intent) {
   }
 }
 
-let _slackReactionCapability = 'unknown';
-async function trySlackReaction(channel, timestamp, emoji, post = axios.post) {
-  if (!channel || !timestamp || !emoji) return { reacted: false, reason: 'missing_target' };
-  if (_slackReactionCapability === 'missing_scope') return { reacted: false, reason: 'missing_scope_cached' };
-  try {
-    const response = await post('https://slack.com/api/reactions.add',
-      { channel, name: emoji, timestamp },
-      { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 1500 });
-    if (response.data?.ok) {
-      _slackReactionCapability = 'available';
-      return { reacted: true, reason: null };
-    }
-    const reason = response.data?.error || 'unknown_error';
-    if (reason === 'missing_scope') {
-      if (_slackReactionCapability !== 'missing_scope') {
-        console.log('Slack reactions are unavailable (missing reactions:write); using a one-emoji message fallback');
-      }
-      _slackReactionCapability = 'missing_scope';
-      return { reacted: false, reason };
-    }
-    console.warn('reactions.add failed:', reason);
-    return { reacted: false, reason };
-  } catch (error) {
-    console.warn('reactions.add error:', error.message);
-    return { reacted: false, reason: error.message };
-  }
-}
-
-function resetSlackReactionCapabilityForTest() {
-  _slackReactionCapability = 'unknown';
-}
 
 // Turn a raw tool result into a short human message. ImageGen and most media tools return public
 // URLs, which are the payload; otherwise summarize.
@@ -7441,19 +7023,6 @@ function verifySlackRequest(req) {
     signingSecret: process.env.SLACK_SIGNING_SECRET, now: new Date() });
 }
 
-// Build a session key that scopes conversation history correctly.
-// - DMs: per-channel (a DM channel = one conversation)
-// - Channel threads: per-thread (so distinct threads in same channel don't bleed)
-// - Top-level channel messages: per (channel, USER). One person's sequential top-level messages
-//   share a key so the back-and-forth accumulates (continuity), but two DIFFERENT people's parallel
-//   top-level exchanges never share a transcript. That second part is a SECURITY boundary, not just
-//   tidiness: financial access is per-user, so an approved user's reply (with real dollar figures)
-//   must never sit in-context when an UNapproved user speaks next in the same channel.
-function slackSessionKey(channel, threadTs, channelType, user = '') {
-  if (channelType === 'im' || channelType === 'mpim') return `dm:${channel}`;
-  if (threadTs) return `thread:${channel}:${threadTs}`;
-  return `channel:${channel}:${user}`;
-}
 
 // Cheap heuristic to drop obvious non-Nora-directed chatter before spending a Claude call.
 // Returns true if the message is clearly not for Nora (acknowledgments, emoji-only, side chatter).
@@ -8250,20 +7819,6 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   }
 }
 
-function stripSlackLookupNarration(value) {
-  const reply = String(value || '').trim();
-  if (!reply) return reply;
-  // A provider can occasionally echo an old conversational pattern even though the live prompt
-  // forbids it. Remove a leading lookup-status sentence; if that was the entire response, the
-  // ordinary empty-response recovery below will produce an honest terminal answer instead.
-  const leading = reply.match(/^\s*([^\n]{1,140}?(?:[.!?…]+|\n+))\s*([\s\S]*)$/);
-  if (!leading) return reply;
-  const sentence = leading[1].trim();
-  const progressOpener = /^(?:on it|one sec(?:ond)?|give me a sec(?:ond)?|let me (?:check|look|pull))\b/i;
-  const lookupActivity = /\b(?:check(?:ing)?|look(?:ing)?|pull(?:ing)?|fetch(?:ing)?|live details|teamwork)\b/i;
-  return progressOpener.test(sentence) && lookupActivity.test(sentence)
-    ? leading[2].trim() : reply;
-}
 
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
   sourceAttestation = null, interactionStartedAt = Date.now(), terminalAtOverride = null) {
@@ -9464,56 +9019,6 @@ async function getNoraBotUserId({ signal, post = axios.post } = {}) {
   return noraBotUserId;
 }
 
-// In-memory cache of Slack channel ID → channel name. Channel names rarely change so we
-// cache indefinitely per process; restarts just rebuild the cache on first hit. Returns
-// the cached name on hit, calls Slack conversations.info on miss, and writes either
-// the resolved name (success) or null (failure — bot not in channel, archived, etc.) so
-// we don't keep re-asking. Failures will retry on next process restart.
-const slackChannelNameCache = {};
-
-async function resolveChannelName(channelId) {
-  if (!channelId) return null;
-  if (Object.prototype.hasOwnProperty.call(slackChannelNameCache, channelId)) {
-    return slackChannelNameCache[channelId];
-  }
-  const botToken = process.env.SLACK_BOT_TOKEN;
-  if (!botToken) return null;
-  try {
-    const r = await axios.get(`https://slack.com/api/conversations.info?channel=${channelId}`, {
-      headers: { Authorization: `Bearer ${botToken}` },
-      timeout: 5000
-    });
-    const name = (r.data && r.data.ok && r.data.channel && r.data.channel.name) || null;
-    slackChannelNameCache[channelId] = name;
-    return name;
-  } catch (err) {
-    slackChannelNameCache[channelId] = null;
-    return null;
-  }
-}
-
-// Resolve names for a list of channel IDs in parallel. Cache hits are instant; misses
-// fan out to Slack with one request per channel (Slack doesn't expose a batch info call).
-async function resolveChannelNames(channelIds) {
-  const unique = [...new Set(channelIds.filter(Boolean))];
-  const entries = await Promise.all(unique.map(async id => [id, await resolveChannelName(id)]));
-  return Object.fromEntries(entries);
-}
-
-function slackThreadHasNoraReply(parent, replies, botUserId) {
-  const nora = String(botUserId || '');
-  if (!nora) return false;
-  // For a top-level mention, every thread reply necessarily follows the mention. For a later
-  // thread-broadcast mention, reply_users may include Nora because of an older reply; require an
-  // actual Nora reply timestamp after this specific mention instead.
-  if (!parent?.thread_ts
-    && (parent?.reply_users || []).some(user => String(user) === nora)) return true;
-  const mentionTs = Number.parseFloat(String(parent?.ts || '0')) || 0;
-  return (Array.isArray(replies) ? replies : []).some(reply =>
-    String(reply?.ts || '') !== String(parent?.ts || '')
-    && String(reply?.user || '') === nora
-    && (Number.parseFloat(String(reply?.ts || '0')) || 0) > mentionTs);
-}
 
 // Find @mentions of the bot in channels Nora's app is a member of that haven't been
 // responded to. This uses the BOT'S point of view (via SLACK_BOT_TOKEN), not the user

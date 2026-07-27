@@ -8,6 +8,7 @@ const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const reflection = require('../../src/intelligence/professional-viewpoint-reflection');
 const reappraisal = require('../../src/intelligence/professional-viewpoint-reappraisal');
+const { readServerSource } = require('../helpers/server-source');
 
 async function makeStore(filePath = null) {
   const dir = filePath ? path.dirname(filePath) : fs.mkdtempSync(path.join(os.tmpdir(), 'nora-viewpoint-access-'));
@@ -89,7 +90,7 @@ async function recordLifecycleRevision(store, viewpointId) {
 }
 
 test('production prompt construction atomically assigns and delivers professional viewpoint study packets', () => {
-  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const server = readServerSource();
   assert.match(server, /professionalViewpointAvailable: \(\) => intelligence\.professionalViewpointAccessAvailable\(trialConversationText\)/);
   assert.match(server, /professionalViewpointContextForAssignment\(contextAssignment, conversationText\)/);
   assert.match(server, /professionalViewpointContext,/);
