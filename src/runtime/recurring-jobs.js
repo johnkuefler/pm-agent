@@ -1,5 +1,11 @@
 'use strict';
 
+function quarantineMessage(name, error) {
+  return `⛔ Recurring runtime job ${name} quarantined after ignoring cancellation: `
+    + `${cleanError(error)}. Restarting would schedule the same hang, so the job is stopped and `
+    + 'the service stays up. Whatever it warms is now stale until this is fixed.';
+}
+
 function cleanError(error) {
   return String(error?.message || error || 'unknown recurring job failure').slice(0, 500);
 }
@@ -10,15 +16,27 @@ function createRecurringJobRegistry({
   clearTimer = timer => clearTimeout(timer),
   onError = () => {},
   onNonCooperativeTimeout = () => {},
+  onQuarantine = () => {},
   nonCooperativeGraceMs = 5000,
 } = {}) {
   const jobs = new Map();
   const activeRuns = new Set();
   let closed = false;
 
+  // `restartRecoversStuck` says whether killing the process is a plausible remedy for this job
+  // hanging. For most jobs it is: they wedge on a transient condition and come back clean.
+  //
+  // For a job whose work is guaranteed to be waiting again the moment the process restarts, it is
+  // not a remedy at all, it is a crash loop. The build-stale projection warmer is exactly that
+  // shape: every fresh start marks all three projections stale, so a restart schedules the same
+  // hang. A preemptible cache warmer took the whole service down repeatedly this way.
+  //
+  // Those jobs quarantine instead: the job stops scheduling, the condition is reported, and the
+  // service keeps serving in a degraded state rather than dying in a loop nobody can exit.
   function register(name, intervalMs, work, {
     initialDelayMs = intervalMs,
     timeoutMs = 0,
+    restartRecoversStuck = true,
   } = {}) {
     const key = String(name || '').trim();
     if (!key) throw new Error('recurring job name is required');
@@ -29,6 +47,7 @@ function createRecurringJobRegistry({
     const timeout = Number(timeoutMs) > 0 ? Math.max(100, Number(timeoutMs)) : 0;
     const state = {
       name: key, interval_ms: interval, timeout_ms: timeout, running: false, closed: false,
+      restart_recovers_stuck: restartRecoversStuck !== false, quarantined: false,
       timer: null, timeout_timer: null, quarantine_timer: null, controller: null,
       runs: 0, successes: 0, failures: 0, skipped_ticks: 0, slow_runs: 0,
       timed_out: 0, consecutive_timeouts: 0, blocked_by_timed_out_execution: false,
@@ -131,6 +150,16 @@ function createRecurringJobRegistry({
             const error = new Error(
               `recurring job ${key} ignored cancellation for ${graceMs}ms after timeout`);
             error.code = 'recurring_job_noncooperative_timeout';
+            if (!state.restart_recovers_stuck) {
+              // Stop scheduling it and leave the process alive. The work is preemptible; the
+              // service is not.
+              state.quarantined = true;
+              state.closed = true;
+              if (state.timer) clearTimer(state.timer);
+              state.timer = null;
+              try { onQuarantine(key, error); } catch {}
+              return;
+            }
             try { onNonCooperativeTimeout(key, error); } catch {}
           }, graceMs);
           state.quarantine_timer?.unref?.();
@@ -223,4 +252,4 @@ function createRecurringJobRegistry({
   return { register, snapshot, close, drain };
 }
 
-module.exports = { createRecurringJobRegistry };
+module.exports = { createRecurringJobRegistry, quarantineMessage };

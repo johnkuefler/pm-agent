@@ -281,3 +281,59 @@ test('noncooperative timeout escalates only after grace and is cancelled by late
   assert.equal(second.snapshot().noncooperative_escalations, 0);
   assert.equal(escalations.length, 1);
 });
+
+// A preemptible cache warmer took the whole service down in a restart loop. The job hung past its
+// timeout and ignored cancellation, the registry escalated to a fatal restart, and every fresh
+// start marked the same projections build-stale, so the replacement process scheduled the identical
+// hang. Restarting was not a remedy; it was the loop.
+function stuckJobHarness(options) {
+  const fatal = [];
+  const quarantined = [];
+  const timers = [];
+  let time = 0;
+  const registry = createRecurringJobRegistry({
+    now: () => time,
+    setTimer: (fn, delay) => { const timer = { fn, delay, unref() {} }; timers.push(timer); return timer; },
+    clearTimer: timer => { timer.cleared = true; },
+    onNonCooperativeTimeout: name => fatal.push(name),
+    onQuarantine: name => quarantined.push(name),
+    nonCooperativeGraceMs: 10,
+  });
+  // Never settles and never observes cancellation, which is the shape that escalates.
+  registry.register('warmer', 50, () => new Promise(() => {}),
+    { initialDelayMs: 0, timeoutMs: 20, ...options });
+  const fire = () => {
+    const pending = timers.filter(timer => !timer.cleared && !timer.fired);
+    for (const timer of pending) { timer.fired = true; timer.fn(); }
+  };
+  return { registry, fatal, quarantined, fire, advance: ms => { time += ms; } };
+}
+
+test('a job that restarting cannot rescue is quarantined instead of killing the process', async () => {
+  const h = stuckJobHarness({ restartRecoversStuck: false });
+  h.fire();
+  await new Promise(resolve => setImmediate(resolve));
+  h.advance(100); h.fire();
+  await new Promise(resolve => setImmediate(resolve));
+  h.fire();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.fatal, [], 'a preemptible warmer must never take the process down');
+  assert.deepEqual(h.quarantined, ['warmer']);
+  const job = h.registry.snapshot().jobs.find(item => item.name === 'warmer');
+  assert.equal(job.quarantined, true, 'and it stops scheduling rather than hanging again');
+  h.registry.close();
+});
+
+// The default is unchanged. A job that genuinely recovers on a clean process still escalates.
+test('an ordinary stuck job still escalates to a restart', async () => {
+  const h = stuckJobHarness({});
+  h.fire();
+  await new Promise(resolve => setImmediate(resolve));
+  h.advance(100); h.fire();
+  await new Promise(resolve => setImmediate(resolve));
+  h.fire();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(h.quarantined, []);
+  assert.deepEqual(h.fatal, ['warmer']);
+  h.registry.close();
+});
