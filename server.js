@@ -150,7 +150,7 @@ const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
-const { createRecurringJobRegistry } = require('./src/runtime/recurring-jobs');
+const { createRecurringJobRegistry, quarantineMessage } = require('./src/runtime/recurring-jobs');
 const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
@@ -13345,6 +13345,7 @@ const _recurringJobs = createRecurringJobRegistry({
     console.error(`Recurring runtime job ${name} remained stuck after cancellation; restarting cleanly`);
     _processRecovery.requestShutdown(`recurring_job_stuck:${name}`, { fatal: true, error });
   },
+  onQuarantine: (name, error) => console.error(quarantineMessage(name, error)),
 });
 function scheduleRecurringRuntimeJob(name, intervalMs, work, options = {}) {
   const handle = _recurringJobs.register(name, intervalMs, work, options);
@@ -16170,9 +16171,10 @@ async function completePostListenStartup(background) {
         throw new AggregateError(failures, `${failures.length} recurring runtime lane(s) failed`);
       }
     }, { initialDelayMs: 20000, timeoutMs: 120000 });
+    // Preemptible: restarting cannot clear a build-stale hang. See recurring-jobs.js.
     scheduleRecurringRuntimeJob('stale-research-projection-refresh', 5 * 60 * 1000,
       () => intelligenceRoutesRuntime.warmNextStaleResearchProjection(), {
-        initialDelayMs: 90000, timeoutMs: 120000,
+        initialDelayMs: 90000, timeoutMs: 120000, restartRecoversStuck: false,
       });
     scheduleStartupBackgroundTask('startup deferred job worker', 5000, () => startJobWorker()); // deferred-tool background jobs (ImageGen etc.)
   }
