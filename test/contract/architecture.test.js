@@ -36,7 +36,7 @@ test('no test reads server.js directly instead of through the shared helper', ()
 
 // server.js only shrinks. A change that needs new server-side behavior has somewhere to put it:
 // src/surfaces for extracted surface code, src/routes for route groups, src/ for everything else.
-const SERVER_LINE_CEILING = 16516;
+const SERVER_LINE_CEILING = 16504;
 test('server.js does not grow', () => {
   const lines = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').split(/\r?\n/).length - 1;
   assert.ok(lines <= SERVER_LINE_CEILING,

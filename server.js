@@ -43,6 +43,9 @@ const { registerUiRoutes } = require('./src/routes/ui');
 const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
 const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
 const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
+const { registerFindingRoutes } = require('./src/routes/registerFindingRoutes');
+const { isAskingClarification } = require('./src/integrations/reply-intent');
+const findings = require('./src/intelligence/findings');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
@@ -9545,6 +9548,15 @@ registerMarkerRoutes(app, { requireAuth, loadMarkers, mutateMarkers, loadMemory,
 
 registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects, loadMemory });
 
+// Findings are her standing observations. Kept in app state beside the other self-model records
+// so a repeat lands on the existing row and the count survives a restart.
+async function loadFindings() { return (_dbReady ? await db.getState('findings') : _cache.findings) || []; }
+async function saveFindings(list) {
+  _cache.findings = list;
+  if (_dbReady) await db.setState('findings', list);
+}
+registerFindingRoutes(app, { requireAuth, loadFindings, saveFindings });
+
 registerTaskRoutes(app, {
   requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
   onTaskCreated: task => {
@@ -11991,30 +12003,6 @@ app.post('/capability-boundaries/sync', requireAuth, (_req, res) => {
   catch (error) { res.status(409).json({ error: error.message }); }
 });
 
-// Detect if Nora's reply is asking clarifying questions rather than confirming an action
-function isAskingClarification(reply) {
-  const lower = reply.toLowerCase();
-  const clarifyPatterns = [
-    /do you mean/,
-    /which (one|project|client|competitor|team|person)/,
-    /can you clarify/,
-    /what (specifically|exactly|do you mean)/,
-    /could you (be more specific|clarify|elaborate)/,
-    /are you (referring to|talking about|looking for)/,
-    /did you mean/,
-    /just to clarify/,
-    /before i (do that|get started|jump in|dig in|start)/,
-    /a few questions/,
-    /couple (of )?questions/,
-    /first.{0,20}(need to know|need some clarity|want to understand)/,
-    /what('s| is) the (scope|timeline|deadline|priority)/,
-    /who('s| is| should) (the|be)/
-  ];
-  // Must end with a question mark or match clarification patterns
-  const hasQuestion = reply.trim().endsWith('?');
-  const matchesPattern = clarifyPatterns.some(p => p.test(lower));
-  return hasQuestion && matchesPattern;
-}
 
 // Note: Proactive interjection and handleNora are no longer needed for output_media.
 // OpenAI Realtime handles the voice conversation directly in the bot's browser.

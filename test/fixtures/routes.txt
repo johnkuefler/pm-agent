@@ -358,6 +358,10 @@ POST /projects/sync-from-teamwork
 POST /projects
 PUT /projects/:name
 DELETE /projects/:name
+GET /findings
+POST /findings
+POST /findings/:key/acknowledge
+POST /findings/:key/resolve
 GET /tasks
 GET /tasks/:id
 POST /tasks

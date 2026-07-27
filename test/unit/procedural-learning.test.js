@@ -187,11 +187,29 @@ test('SELECT stays local and bounded with the full retained procedure and outcom
     query: 'What is the project status and deadline for this request pattern 1?', selectionKey: 'warmup',
     selectionIndex,
   });
-  const started = performance.now();
-  for (let index = 0; index < 50; index++) proceduralLearning.select(procedures, outcomes, {
-    query: 'What is the project status and deadline for this request pattern 1?', selectionKey: `hot-${index}`,
-    selectionIndex,
-  });
-  const meanMs = (performance.now() - started) / 50;
-  assert.ok(meanMs < 30, `local selection should average under 30ms at retention caps; observed ${meanMs.toFixed(2)}ms`);
+  // What this actually protects: with the index in hand, selection must not walk the outcome
+  // population to recompute fitness. That is the difference between a bounded local lookup and an
+  // O(procedures x outcomes) scan on every live turn.
+  //
+  // This used to assert wall-clock milliseconds, which measures the machine as much as the code. It
+  // failed at 3,044ms under a loaded test run and passed at 262ms alone, so it reported load rather
+  // than regressions. Counting reads of the outcome array measures the property directly and gives
+  // the same answer on a busy laptop and an idle one.
+  const countReads = list => {
+    const stats = { reads: 0 };
+    const proxy = new Proxy(list, { get(target, prop, receiver) {
+      if (typeof prop === 'string' && /^\d+$/.test(prop)) stats.reads += 1;
+      return Reflect.get(target, prop, receiver);
+    } });
+    return { proxy, stats };
+  };
+  const query = 'What is the project status and deadline for this request pattern 1?';
+  const indexed = countReads(outcomes);
+  proceduralLearning.select(procedures, indexed.proxy, { query, selectionKey: 'indexed', selectionIndex });
+  const scanned = countReads(outcomes);
+  proceduralLearning.select(procedures, scanned.proxy, { query, selectionKey: 'scanned' });
+  assert.ok(scanned.stats.reads > 0, 'the unindexed path must actually consult the outcome population');
+  assert.ok(indexed.stats.reads * 10 < scanned.stats.reads,
+    'the selection index must keep live selection off the outcome population; '
+    + `indexed read ${indexed.stats.reads}, unindexed read ${scanned.stats.reads}`);
 });
