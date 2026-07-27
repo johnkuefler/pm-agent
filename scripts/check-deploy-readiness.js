@@ -19,9 +19,37 @@ function assessRoutineContract(routine = {}) {
     updated_at: routine.updated_at || null, updated_by: routine.updated_by || null };
 }
 
+// Waiting only helps when the thing you are waiting for can finish.
+//
+// Almost every blocker here means "durable work is in flight, do not yank the process out from
+// under it", and that clears on its own within seconds. Runtime reliability is different: it is a
+// health verdict, not a unit of work. A write lane that is failing repeatedly will still be failing
+// in an hour, because nothing in the retry path repairs it.
+//
+// Treating those two the same deadlocked production for four days. A transcript diverged from its
+// durable prefix, the checkpoint retried without a ceiling, the instance reported an unresolved
+// persistence failure, and this gate refused every deploy from then on. The retry ceiling that
+// fixes it was sitting in the build being refused. The gate was working exactly as written and
+// that is precisely why it could not be recovered from: it had made the cure unreachable.
+//
+// So a wedged lane no longer blocks. It is reported loudly and the deploy proceeds, because
+// restarting the process is the remedy for a wedged lane rather than a risk to it. Genuine
+// in-flight work still blocks, which is the property this gate exists to protect.
+const WEDGED_RETRY_ATTEMPTS = 10;
+
+function transcriptCheckpointsWedged(checkpoints = {}) {
+  const attempts = Math.max(0, Number(checkpoints.maximum_retry_attempt) || 0);
+  const retrying = Math.max(0, Number(checkpoints.retrying) || 0);
+  // The bounded retry gives up after six attempts (two for an unresolvable divergence), so anything
+  // past this is a lane that is not going to recover on its own no matter how long the gate waits.
+  return retrying > 0 && attempts >= WEDGED_RETRY_ATTEMPTS;
+}
+
 function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
   researchAutopilot = null, behavioralFingerprints = null, runtimePerformance = null } = {}) {
   const blockers = [];
+  // Conditions that would once have blocked forever. Surfaced, never silent, but not a veto.
+  const wedged = [];
   if (lock.locked) blockers.push({ kind: 'run_lock', holder: lock.holder || null,
     cycle_id: lock.lifecycle?.cycle_id || null, cycle_status: lock.lifecycle?.cycle_status || null });
   if (lock.expired_lease_pending_recovery) {
@@ -67,10 +95,19 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
     }
   }
   if (runtimePerformance) {
+    const checkpointLane = runtimePerformance.background_work?.transcript_checkpoints || {};
+    const laneWedged = transcriptCheckpointsWedged(checkpointLane);
     if (runtimePerformance.reliability?.status === 'action_required') {
-      blockers.push({ kind: 'runtime_reliability', status: 'action_required',
-        signals: Array.isArray(runtimePerformance.reliability.action_required)
-          ? runtimePerformance.reliability.action_required : [] });
+      const signals = Array.isArray(runtimePerformance.reliability.action_required)
+        ? runtimePerformance.reliability.action_required : [];
+      const entry = { kind: 'runtime_reliability', status: 'action_required', signals };
+      // A reliability verdict driven by a wedged write lane describes a stuck process, not work in
+      // progress. Deploying replaces that process, so it is the fix rather than the hazard.
+      if (laneWedged) {
+        wedged.push({ ...entry, reason: 'a write lane is retrying past its ceiling and will not '
+          + 'recover without a restart; deploying is the remedy',
+          maximum_retry_attempt: Math.max(0, Number(checkpointLane.maximum_retry_attempt) || 0) });
+      } else blockers.push(entry);
     }
     const postInteraction = runtimePerformance.background_work?.post_interaction || {};
     const queued = Math.max(0, Number(postInteraction.queued) || 0);
@@ -78,12 +115,18 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
       blockers.push({ kind: 'post_interaction_work_pending', queued,
         busy: postInteraction.busy === true, next: postInteraction.next || null });
     }
-    const checkpoints = runtimePerformance.background_work?.transcript_checkpoints || {};
-    const pendingCheckpoints = Math.max(0, Number(checkpoints.pending) || 0);
-    const scheduledCheckpoints = Math.max(0, Number(checkpoints.scheduled) || 0);
+    const pendingCheckpoints = Math.max(0, Number(checkpointLane.pending) || 0);
+    const scheduledCheckpoints = Math.max(0, Number(checkpointLane.scheduled) || 0);
     if (pendingCheckpoints > 0 || scheduledCheckpoints > 0) {
-      blockers.push({ kind: 'transcript_checkpoint_pending', pending: pendingCheckpoints,
-        scheduled: scheduledCheckpoints });
+      const entry = { kind: 'transcript_checkpoint_pending', pending: pendingCheckpoints,
+        scheduled: scheduledCheckpoints };
+      // The same stuck checkpoint also shows up here. Waiting for it is waiting for a write that
+      // has already refused itself thousands of times.
+      if (laneWedged) {
+        wedged.push({ ...entry, reason: 'this checkpoint has exceeded its retry ceiling and is not '
+          + 'converging; the pending count will not fall on its own',
+          maximum_retry_attempt: Math.max(0, Number(checkpointLane.maximum_retry_attempt) || 0) });
+      } else blockers.push(entry);
     }
     const persistence = runtimePerformance.persistence || {};
     const persistencePending = Math.max(0, Number(persistence.pending_revisions) || 0);
@@ -102,7 +145,9 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
         in_flight: entityWritesInFlight });
     }
   }
-  return { ready: blockers.length === 0, blockers };
+  // `wedged` deliberately does not affect readiness. It must stay in the output so a deploy that
+  // proceeded past a stuck lane is visible afterwards rather than looking like an ordinary one.
+  return { ready: blockers.length === 0, blockers, wedged };
 }
 
 async function fetchJson(path, { baseUrl, apiKey, fetchImpl, timeoutMs = 30000 }) {
@@ -150,6 +195,11 @@ async function main() {
   try {
     const result = await checkDeployReadiness();
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    // A deploy that stepped over a wedged lane says so on the way past. Silence here is how a
+    // recovering deploy becomes indistinguishable from an ordinary healthy one.
+    for (const item of result.wedged || []) {
+      process.stderr.write(`Proceeding past a wedged runtime condition (${item.kind}): ${item.reason}\n`);
+    }
     if (!result.ready) process.exitCode = 2;
   } catch (error) {
     process.stderr.write(`Deployment readiness failed closed: ${error.message}\n`);
@@ -165,5 +215,6 @@ if (require.main === module) {
   main().then(() => process.exit(process.exitCode || 0));
 }
 
-module.exports = { DEFAULT_BASE_URL, REQUIRED_ROUTINE_MARKERS, assessRoutineContract,
+module.exports = { DEFAULT_BASE_URL, REQUIRED_ROUTINE_MARKERS, WEDGED_RETRY_ATTEMPTS,
+  transcriptCheckpointsWedged, assessRoutineContract,
   assessDeployReadiness, checkDeployReadiness };
