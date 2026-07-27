@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
+const dreamProvenance = require('./dream-provenance');
 
 const PROTOCOL_VERSION = 1;
 const SUBJECT_MODEL = 'claude-sonnet-4-6';
@@ -54,7 +55,8 @@ function reviewAttempts(dreams = []) {
 }
 
 function selectSourceDream(dreams = []) {
-  return dreams.filter(dream => dream?.id && !dream.reflection?.developmental_self_reflection_attempt)
+  return dreams.filter(dream => dream?.id && !dreamProvenance.isArchived(dream)
+    && !dream.reflection?.developmental_self_reflection_attempt)
     .sort((left, right) => String(right.finished || right.started || right.date || '')
       .localeCompare(String(left.finished || left.started || left.date || ''))
       || String(left.id).localeCompare(String(right.id)))[0] || null;

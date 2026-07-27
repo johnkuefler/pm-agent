@@ -1,5 +1,7 @@
 'use strict';
 
+const { isValidScheduledFor } = require('../lib/scheduling');
+
 function cleanTaskResult(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const text = (input, max = 2000) => String(input || '').trim().slice(0, max);
@@ -59,6 +61,9 @@ function registerTaskRoutes(app, deps) {
     if (!action) return res.status(400).json({ error: 'action is required' });
     if (recurrence && !isValidRecurrence(recurrence)) {
       return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, monthly:N:HH:MM, or every:N:weeks:HH:MM' });
+    }
+    if (!isValidScheduledFor(scheduled_for)) {
+      return res.status(400).json({ error: 'invalid scheduled_for - expected an ISO datetime with a timezone offset' });
     }
     let effectiveScheduledFor = scheduled_for || null;
     // If a recurrence is set but no explicit first-fire time, seed scheduled_for from the rule.
@@ -149,6 +154,9 @@ function registerTaskRoutes(app, deps) {
     const { action, detail, assignee, due, scheduled_for, recurrence } = req.body;
     if (recurrence !== undefined && recurrence !== null && recurrence !== '' && !isValidRecurrence(recurrence)) {
       return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, monthly:N:HH:MM, or every:N:weeks:HH:MM' });
+    }
+    if (scheduled_for !== undefined && !isValidScheduledFor(scheduled_for)) {
+      return res.status(400).json({ error: 'invalid scheduled_for - expected an ISO datetime with a timezone offset' });
     }
     if (action !== undefined) task.action = action;
     if (detail !== undefined) task.detail = detail;

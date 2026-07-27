@@ -129,7 +129,7 @@ function renderCurrentActivity(items) {
     target.innerHTML = '<span class="live-current-empty">No active process. The regions below retain the most recent signal in each system.</span>';
     return;
   }
-  target.innerHTML = items.map(item => `<span class="live-current-chip" data-lane="${escHtml(item.lane)}">
+  target.innerHTML = items.map(item => `<span class="live-current-chip" data-lane="${escAttr(item.lane)}">
     <strong>${escHtml(item.label)}</strong><span>${escHtml(runtimeActivityLaneLabels[item.lane] || item.lane)}</span>
   </span>`).join('');
 }
@@ -204,7 +204,7 @@ function renderActivityHistory(items) {
   target.innerHTML = items.slice(0, 40).map(item => {
     const duration = activityDuration(item.duration_ms);
     const status = item.kind === 'hourly_phase' ? 'Started' : runtimeActivityStateLabel(item.status);
-    return `<article class="live-history-item" data-status="${escHtml(item.status)}">
+    return `<article class="live-history-item" data-status="${escAttr(item.status)}">
       <div class="live-history-rail" aria-hidden="true"></div>
       <div class="live-history-copy">
         <div class="live-item-topline"><strong>${escHtml(item.label)}</strong><span>${escHtml(status)}</span></div>

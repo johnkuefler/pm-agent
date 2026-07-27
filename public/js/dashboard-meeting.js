@@ -65,11 +65,20 @@ async function joinMeeting() {
           if (aa !== bb) return aa - bb;
           return (a.name || '').localeCompare(b.name || '');
         });
-        sel.innerHTML = '<option value="">No project hint (general meeting)</option>' +
-          projects.map(p => {
-            const label = p.status && p.status.toLowerCase() !== 'active' ? `${p.name} (${p.status})` : p.name;
-            return `<option value="${p.name.replace(/"/g, '&quot;')}">${label}</option>`;
-          }).join('');
+        sel.replaceChildren();
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = 'No project hint (general meeting)';
+        sel.appendChild(placeholder);
+        projects.forEach(p => {
+          const option = document.createElement('option');
+          const name = String(p.name || '');
+          option.value = name;
+          option.textContent = p.status && p.status.toLowerCase() !== 'active'
+            ? `${name} (${p.status})`
+            : name;
+          sel.appendChild(option);
+        });
         if (prev) sel.value = prev;
       } catch (e) { /* dropdown is optional - leave empty on failure */ }
     }
@@ -127,7 +136,11 @@ async function joinMeeting() {
           const r = await api('/' + f.ep);
           const d = await r.json();
           const el = document.getElementById(f.pill);
-          if (el) el.classList.toggle('on', !!d[f.key]);
+          if (el) {
+            const enabled = !!d[f.key];
+            el.classList.toggle('on', enabled);
+            el.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+          }
         }));
       } catch {}
       finally { meetingControlsRefreshInFlight = false; }
@@ -138,12 +151,14 @@ async function joinMeeting() {
       const status = document.getElementById('mute-status');
       if (muted) {
         btn.textContent = 'Unmute Nora';
+        btn.setAttribute('aria-pressed', 'true');
         btn.style.background = '#7c3aed';
         btn.style.borderColor = '#7c3aed';
         status.textContent = 'Muted - listening only, no voice responses';
         status.style.color = 'var(--warn)';
       } else {
         btn.textContent = 'Mute Nora';
+        btn.setAttribute('aria-pressed', 'false');
         btn.style.background = 'var(--border)';
         btn.style.borderColor = '#cfcdd9';
         status.textContent = '';

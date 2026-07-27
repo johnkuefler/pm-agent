@@ -1,6 +1,14 @@
 'use strict';
 
 const MEMORY_KINDS = new Set(['fact', 'inference', 'preference', 'commitment', 'opinion', 'learning', 'episode']);
+const COMMITMENT_AUTHORITY_CLASSES = new Set(['optional', 'bounded', 'required']);
+const OPERATIONAL_COMMITMENT_PROVENANCE = new Set([
+  'operator_attested',
+  'provider_verified',
+  'server_internal',
+  'server_task',
+  'meeting_transcript',
+]);
 const MEMORY_STATUSES = new Set(['active', 'superseded', 'disputed', 'expired']);
 const EMOTIONAL_MEMORY_PATTERN = /\b(upset|angry|furious|frustrat|trust|relief|warmth|thank|thanks|appreciat|apolog|worried|concern|anxious|happy|excited|proud|hurt|disappoint|stress|overwhelm|urgent|crisis|escalat|missed|overdue|blocked)\b/i;
 const SOCIAL_MEMORY_PATTERN = /\b(john|mallory|dawn|ali|andy|brandon|brande[e]?|elle|chelsea|teammate|client|prefers?|likes?|dislikes?|corrected|asked|told|said|wants?|needs?|relationship|communication|feedback|warmth|gift)\b/i;
@@ -121,12 +129,34 @@ function normalizeCommitment(input = {}, now = new Date()) {
     notes: input.notes ? String(input.notes).slice(0, 1000) : '',
     task_id: input.task_id || null,
     episode_id: input.episode_id || null,
+    authority_class: COMMITMENT_AUTHORITY_CLASSES.has(input.authority_class)
+      ? input.authority_class : 'optional',
+    provenance_status: input.provenance_status
+      ? String(input.provenance_status).slice(0, 100)
+      : 'unverified_candidate',
+    source_chain_verified: input.source_chain_verified === true,
+    created_by: input.created_by ? String(input.created_by).slice(0, 200) : null,
+    updated_by: input.updated_by ? String(input.updated_by).slice(0, 200) : null,
+    resolution_chain_verified: input.resolution_chain_verified === true,
+    resolution_provenance: input.resolution_provenance
+      ? String(input.resolution_provenance).slice(0, 100) : null,
   };
 }
 
+function commitmentCarriesOperationalAuthority(commitment) {
+  return Boolean(commitment)
+    && commitment.status === 'open'
+    && ['bounded', 'required'].includes(commitment.authority_class)
+    && OPERATIONAL_COMMITMENT_PROVENANCE.has(commitment.provenance_status)
+    && commitment.source_chain_verified === true;
+}
+
 module.exports = {
+  COMMITMENT_AUTHORITY_CLASSES,
   MEMORY_KINDS,
+  OPERATIONAL_COMMITMENT_PROVENANCE,
   clamp,
+  commitmentCarriesOperationalAuthority,
   inferMemoryKind,
   inferEmotionalWeight,
   inferSocialWeight,

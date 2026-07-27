@@ -213,6 +213,90 @@ test('strict intelligence persistence exposes source-of-truth write failures', a
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('legacy commitment hydration never invents provider or task authority', async () => {
+  const clock = () => new Date('2026-07-11T15:00:00Z');
+  const store = createIntelligenceStore({
+    filePath: path.join(os.tmpdir(), 'unused-legacy-intelligence-state.json'),
+    db: {},
+    isDbReady: () => false,
+    clock,
+    initialState: {
+      commitments: [
+        {
+          id: 'legacy-evidence-only',
+          what: 'An old evidence-shaped record',
+          task_id: 'old-task-1',
+          evidence: { channel: 'slack', id: 'old-message-1' },
+        },
+        {
+          id: 'legacy-auto-promoted',
+          what: 'A record promoted by the former migration',
+          authority_class: 'bounded',
+          provenance_status: 'provider_verified',
+          source_chain_verified: true,
+          updated_by: 'server:legacy-provenance-migration',
+          evidence: { channel: 'slack', id: 'old-message-2' },
+        },
+        {
+          id: 'trusted-task-lineage',
+          what: 'A task created by the strict task ingress',
+          task_id: 'strict-task-1',
+          authority_class: 'bounded',
+          provenance_status: 'server_task',
+          source_chain_verified: true,
+          created_by: 'server:task-ingress',
+          updated_by: 'server:task-ingress',
+        },
+      ],
+    },
+  });
+  await store.init();
+
+  const legacy = store.get('commitments', 'legacy-evidence-only');
+  assert.equal(legacy.authority_class, 'optional');
+  assert.equal(legacy.provenance_status, 'legacy_unverified');
+  assert.equal(legacy.source_chain_verified, false);
+  assert.equal(legacy.updated_by, 'server:legacy-provenance-audit');
+
+  const formerlyPromoted = store.get('commitments', 'legacy-auto-promoted');
+  assert.equal(formerlyPromoted.authority_class, 'optional');
+  assert.equal(formerlyPromoted.provenance_status, 'legacy_unverified');
+  assert.equal(formerlyPromoted.source_chain_verified, false);
+
+  const trusted = store.get('commitments', 'trusted-task-lineage');
+  assert.equal(trusted.authority_class, 'bounded');
+  assert.equal(trusted.provenance_status, 'server_task');
+  assert.equal(trusted.source_chain_verified, true);
+});
+
+test('stable relationship observation identities make outcome projection replay idempotent', async () => {
+  const store = createIntelligenceStore({
+    filePath: path.join(os.tmpdir(), 'unused-relationship-idempotency.json'),
+    db: {},
+    isDbReady: () => false,
+    initialState: {},
+    clock: () => new Date('2026-07-11T15:00:00Z'),
+  });
+  await store.init();
+  const input = {
+    observation_id: 'interaction-feedback:ix-stable',
+    name: 'John',
+    dimension: 'response_feedback',
+    observation: 'landed: Used the recommendation in the launch plan.',
+    confidence: 0.7,
+    evidence: { channel: 'slack', id: '171234.001' },
+    relational_signal: 'landed',
+  };
+  store.observeRelationship(input);
+  store.observeRelationship(input);
+  const relationship = store.list('relationships')[0];
+  assert.equal(relationship.observations.length, 1);
+  assert.throws(() => store.observeRelationship({
+    ...input,
+    observation: 'corrected: This conflicts with the sealed review.',
+  }), /conflicts with prior evidence/);
+});
+
 test('intelligence store connects commitments, episodes, relationships, traces, learning, and budgets', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-intelligence-'));
   const filePath = path.join(dir, 'state.json');
@@ -252,10 +336,21 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   assert.deepEqual(store.list('traces').slice(-2).map(item => item.action),
     ['response_latency', 'barge_in']);
   const experiment = store.createExperiment({ behavior: 'Lead with the answer', hypothesis: 'Replies will land better' });
-  store.recordExperimentSample({ experiment_id: experiment.id, outcome: 'landed', value: 1 });
+  const reviewedInteraction = index => ({
+    id: `experiment-interaction-${index}`,
+    reviewed: true,
+    outcome: 'landed',
+    reviewed_at: `2026-07-11T15:0${index}:00.000Z`,
+  });
+  store.recordExperimentSample({ experiment_id: experiment.id, interaction: reviewedInteraction(0) });
   assert.equal(store.get('experiments', experiment.id).samples.length, 1);
+  store.recordExperimentSample({ experiment_id: experiment.id, interaction: reviewedInteraction(0) });
+  assert.equal(store.get('experiments', experiment.id).samples.length, 1,
+    'one reviewed interaction cannot be counted twice');
   assert.equal(store.evaluateExperiment(experiment.id, { conclude: true }).status, 'active');
-  for (let i = 0; i < 4; i++) store.recordExperimentSample({ experiment_id: experiment.id, outcome: 'landed', value: 1 });
+  for (let i = 1; i < 5; i++) {
+    store.recordExperimentSample({ experiment_id: experiment.id, interaction: reviewedInteraction(i) });
+  }
   assert.equal(store.evaluateExperiment(experiment.id, { conclude: true }).status, 'retained');
 
   const selfChosen = store.chooseExperiment({ behavior: 'Ask one sharper question before proposing a plan', hypothesis: 'Fewer plans will need correction', rationale: 'Three corrected replies suggest I am solving too early', source_refs: [{ channel: 'decision_trace', id: 'trace-1' }], stop_conditions: ['Two people say it slows the conversation'] });
@@ -269,9 +364,25 @@ test('intelligence store connects commitments, episodes, relationships, traces, 
   }), /verified immutable idea snapshot/);
   assert.throws(() => store.chooseExperiment({ behavior: 'Expand my authority', hypothesis: 'Move faster', rationale: 'I want permission', source_refs: [{ channel: 'self', id: 'want-1' }] }), /authority or trust boundary/);
 
-  const overdue = store.addCommitment({ what: 'Overdue promise', due: '2026-07-10T10:00:00Z', episode_id: episode.id });
+  const unverifiedCommitment = store.addCommitment({
+    what: 'Caller-invented overdue promise',
+    due: '2026-07-09T10:00:00Z',
+    authority_class: 'optional',
+    provenance_status: 'unverified_candidate',
+    source_chain_verified: false,
+  });
+  const overdue = store.addCommitment({
+    what: 'Overdue promise',
+    due: '2026-07-10T10:00:00Z',
+    episode_id: episode.id,
+    authority_class: 'bounded',
+    provenance_status: 'server_task',
+    source_chain_verified: true,
+  });
   const orientation = store.orient();
   assert.ok(orientation.commitments.overdue.some(item => item.id === overdue.id));
+  assert.ok(orientation.commitments.candidates.some(item => item.id === unverifiedCommitment.id));
+  assert.equal(orientation.commitments.overdue.some(item => item.id === unverifiedCommitment.id), false);
   assert.ok(orientation.episodes.open.some(item => item.id === episode.id));
   store.refreshCognition({});
   const started = store.startCycle({ holder: 'test' });
@@ -320,10 +431,39 @@ test('cognition stays bounded, evidence-based, calibrated, and explicit about si
   assert.equal(busOff.workspace.capacity, 0);
   assert.equal(busOff.workspace.slots.length, 0);
 
-  const resolution = store.recordPredictionResolution({ id: 'p1', prediction: 'The launch will hold', confidence: 0.9, outcome: 'wrong', notes: 'Deadline moved' });
+  const resolutionEvidence = [{
+    type: 'teamwork_task',
+    id: 'tw-launch',
+    canonical_evidence: { receipt_commitment: 'receipt-launch-outcome' },
+  }];
+  const resolution = store.recordPredictionResolution({
+    id: 'p1',
+    prediction: 'The launch will hold',
+    confidence: 0.9,
+    outcome: 'wrong',
+    evidence: resolutionEvidence,
+  });
   assert.ok(resolution.surprise);
   assert.ok(resolution.mind_change);
   assert.equal(resolution.brier, 0.81);
+  assert.equal(resolution.mind_change.prediction_id, 'p1');
+  assert.deepEqual(resolution.surprise.evidence, resolutionEvidence);
+  assert.deepEqual(resolution.mind_change.evidence, resolutionEvidence);
+  const repeatedResolution = store.recordPredictionResolution({
+    id: 'p1',
+    prediction: 'The launch will hold',
+    confidence: 0.9,
+    outcome: 'wrong',
+    evidence: resolutionEvidence,
+  });
+  assert.equal(repeatedResolution.surprise.id, resolution.surprise.id);
+  assert.equal(repeatedResolution.mind_change.id, resolution.mind_change.id);
+  assert.equal(store.snapshot().cognition.surprises
+    .filter(item => item.prediction_id === 'p1').length, 1);
+  assert.equal(store.snapshot().cognition.mind_changes
+    .filter(item => item.prediction_id === 'p1').length, 1);
+  assert.equal(store.mindChangeSnapshot({ status: 'open' }).records
+    .find(item => item.id === resolution.mind_change.id).prediction_id, 'p1');
 
   const mindChange = store.recordMindChange({
     id: 'mind-launch-revision',

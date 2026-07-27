@@ -4,8 +4,52 @@ const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const expectationForecast = require('../intelligence/expectation-forecast');
 const consequenceReview = require('../intelligence/consequence-review');
 const cycleSelfForecast = require('../intelligence/cycle-self-forecast');
+const {
+  actorFromPrincipal,
+  createCanonicalEvidenceResolver,
+  manualAttestationAuthority,
+  manualAttestationRequest,
+} = require('../intelligence/canonical-evidence-resolver');
 const { createResearchProjectionCache, createSerializedResearchWorkerFactory } =
   require('../intelligence/research-status-cache');
+
+function unavailablePrivilegedAuth(req, res) {
+  return res.status(503).json({ error: 'privileged route authentication is not configured' });
+}
+
+const COGNITIVE_CONTEXT_FIELDS = Object.freeze([
+  'now', 'query', 'person', 'project', 'channel', 'capacity', 'attention_kind', 'cycle_id',
+]);
+const CYCLE_START_FIELDS = Object.freeze([
+  ...COGNITIVE_CONTEXT_FIELDS, 'id', 'kind', 'holder', 'run_lock_holder',
+]);
+const CYCLE_REENTRY_FIELDS = Object.freeze([
+  ...COGNITIVE_CONTEXT_FIELDS, 'signal', 'signal_id', 'evidence', 'feedback_to',
+]);
+const DYNAMICS_TICK_FIELDS = Object.freeze(['now']);
+const COGNITIVE_PULSE_PREPARE_FIELDS = Object.freeze([
+  'id', 'model', 'force', 'now', 'min_interval_minutes', 'daily_budget',
+  'rumination_cooldown_minutes',
+]);
+
+function allowlistedInput(input, fields) {
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  return Object.fromEntries(fields.filter(field => source[field] !== undefined)
+    .map(field => [field, source[field]]));
+}
+
+function stripCallerActorFields(input = {}) {
+  const sanitized = { ...(input || {}) };
+  for (const field of [
+    'actor', 'created_by', 'updated_by', 'recorded_by', 'observed_by', 'submitted_by',
+    'admitted_by', 'selected_by', 'provenance',
+  ]) delete sanitized[field];
+  delete sanitized.manual_attestation;
+  delete sanitized.manual_attestation_authority;
+  delete sanitized.manual_attestation_rationale;
+  delete sanitized.evidence_mode;
+  return sanitized;
+}
 
 function shouldRefreshWorkerSnapshot(cached, now, minimumIntervalMs) {
   return !cached?.refresh_started_at_ms
@@ -91,7 +135,76 @@ function validateDueConsequenceReviews({ cycleId, store, ledger, now = new Date(
   return { required: true, valid: true, due_action_ids: [] };
 }
 
-function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = requireAuth, requireEvaluatorAuth = requireAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getInteractions = () => [], getPredictions = () => [], getCognitiveInputs = () => ({}), getConsequenceReviews = () => consequenceReview.emptyLedger(), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+function registerIntelligenceRoutes(app, { requireAuth, requireOperatorAuth = unavailablePrivilegedAuth, requireResearchAuth = unavailablePrivilegedAuth, requireEvaluatorAuth = unavailablePrivilegedAuth, store, readingLibrary = null, activityStream = null, getDreams = () => [], getWants = () => [], getInteractions = () => [], getPredictions = () => [], getMemory = () => [], getAdditionalEvidenceSources = () => ({}), resolveCanonicalEvidenceReference = null, getCognitiveInputs = () => ({}), getConsequenceReviews = () => consequenceReview.emptyLedger(), recordLifecycleWorkspace = async () => null, validateLifecycleWorkspaceOutcome = () => ({ required: false, valid: true }), recordLifecycleWorkspaceOutcome = async () => null, getCognitivePulseRuntimeStatus = () => null, getResearchAutopilotStatus = () => null, shouldDeferResearchStatusRefresh = () => false, loadResearchProjection = async () => null, saveResearchProjection = async () => {}, runSelfInquirySelectionSubject = null, runSelfInductionSubject = null, runCognitiveInitiationStudySubject = null, runCognitiveInitiationPolicyProbe = null }) {
+  const evidenceResolver = createCanonicalEvidenceResolver({
+    store, getDreams, getWants, getInteractions, getPredictions, getMemory,
+    getConsequenceReviews, getAdditionalSources: getAdditionalEvidenceSources,
+    resolveReference: resolveCanonicalEvidenceReference,
+  });
+  function manualEvidenceAuth(req, res, next) {
+    const request = manualAttestationRequest(req.body || {});
+    if (request == null) return next();
+    if (manualAttestationAuthority(req.principal)) return next();
+    const requestedAuthority = String(request?.authority || '').trim().toLowerCase();
+    const gate = requestedAuthority === 'operator' ? requireOperatorAuth
+      : requestedAuthority === 'research' ? requireResearchAuth : null;
+    if (!gate) {
+      return res.status(403).json({
+        error: 'manual_attestation.authority must explicitly select operator or research',
+      });
+    }
+    return gate(req, res, () => {
+      if (!manualAttestationAuthority(req.principal)) {
+        return res.status(403).json({
+          error: 'manual evidence attestation scope was not established by authentication',
+        });
+      }
+      return next();
+    });
+  }
+  function ingressProvenance(req) {
+    const actor = actorFromPrincipal(req.principal);
+    const manual = manualAttestationRequest(req.body || {});
+    return {
+      actor,
+      mode: manual == null ? 'canonical_evidence_resolution' : 'authorized_manual_attestation',
+    };
+  }
+  function resolveRouteEvidence(req, value, field, options = {}) {
+    return evidenceResolver.resolve(value, {
+      principal: req.principal,
+      field,
+      manualAttestation: manualAttestationRequest(req.body || {}),
+      ...options,
+    });
+  }
+  function authoritativeCognitiveInput(requested, fields, { resumeActive = false } = {}) {
+    const authoritative = getCognitiveInputs() || {};
+    return {
+      ...allowlistedInput(requested, fields),
+      ...authoritative,
+      soma: authoritative.soma || null,
+      wants: Array.isArray(authoritative.wants) ? authoritative.wants : [],
+      inner_thread: authoritative.inner_thread || null,
+      predictions: getPredictions(),
+      ...(resumeActive ? { resume_active: true } : {}),
+    };
+  }
+  function selfClaimOrigin(req, input = {}, provenance) {
+    const requested = input.origin && typeof input.origin === 'object' ? input.origin : {};
+    const noraAuthored = ['nora_autonomy', 'server_internal'].includes(provenance.actor.kind);
+    const type = noraAuthored && requested.type === 'endogenous_model_hypothesis'
+      ? 'endogenous_model_hypothesis'
+      : noraAuthored ? 'nora_hypothesis' : 'researcher_seed';
+    const suppliedMethod = String(requested.formation_method || '').trim()
+      .replace(/\s+/g, ' ').slice(0, 220);
+    return {
+      type,
+      creator_id: provenance.actor.id,
+      formation_method: `${provenance.mode}${suppliedMethod ? `:${suppliedMethod}` : ''}`
+        .slice(0, 300),
+    };
+  }
   const snapshotCache = new Map();
   const workerSnapshotCache = new Map();
   const projectionWorkerFactory = createSerializedResearchWorkerFactory();
@@ -254,18 +367,39 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     const status = req.query.status;
     res.json(store.list('commitments', item => !status || item.status === status).sort((a, b) => b.updated.localeCompare(a.updated)));
   });
-  app.post('/commitments', requireAuth, (req, res) => {
-    try { res.json({ ok: true, commitment: store.addCommitment(req.body || {}) }); }
+  app.post('/commitments', requireAuth, requireOperatorAuth, (req, res) => {
+    try {
+      const authorityClass = req.body?.authority_class === 'required' ? 'required' : 'bounded';
+      res.json({ ok: true, commitment: store.addCommitment({
+        ...(req.body || {}),
+        authority_class: authorityClass,
+        provenance_status: 'operator_attested',
+        source_chain_verified: true,
+        created_by: req.principal?.id || 'dashboard_operator',
+        updated_by: req.principal?.id || 'dashboard_operator',
+      }) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.put('/commitments/:id', requireAuth, (req, res) => {
-    const commitment = store.updateCommitment(req.params.id, req.body || {});
+  app.put('/commitments/:id', requireAuth, requireOperatorAuth, (req, res) => {
+    const changes = { ...(req.body || {}),
+      updated_by: req.principal?.id || 'dashboard_operator' };
+    delete changes.created_by;
+    delete changes.provenance_status;
+    delete changes.source_chain_verified;
+    const commitment = store.updateCommitment(req.params.id, changes);
     if (!commitment) return res.status(404).json({ error: 'commitment not found' });
     res.json({ ok: true, commitment });
   });
-  app.patch('/commitments/:id/:status', requireAuth, (req, res) => {
+  app.patch('/commitments/:id/:status', requireAuth, requireOperatorAuth, (req, res) => {
     if (!['fulfilled', 'renegotiated', 'dropped', 'open'].includes(req.params.status)) return res.status(400).json({ error: 'invalid status' });
-    const changes = { ...(req.body || {}), status: req.params.status };
+    const changes = { ...(req.body || {}), status: req.params.status,
+      updated_by: req.principal?.id || 'dashboard_operator',
+      resolution_provenance: 'operator_attested',
+      resolution_chain_verified: true };
+    delete changes.created_by;
+    delete changes.provenance_status;
+    delete changes.source_chain_verified;
     const commitment = store.updateCommitment(req.params.id, changes);
     if (!commitment) return res.status(404).json({ error: 'commitment not found' });
     res.json({ ok: true, commitment });
@@ -296,9 +430,18 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
     res.json(store.list('relationships').sort((a, b) => a.name.localeCompare(b.name)));
   });
-  app.post('/relationships/observe', requireAuth, (req, res) => {
+  app.post('/relationships/observe', requireAuth, manualEvidenceAuth, (req, res) => {
     if (store.teammatePerspectiveStudyActive()) return teammatePerspectiveSealed(res);
-    try { res.json({ ok: true, relationship: store.observeRelationship(req.body || {}) }); }
+    try {
+      const provenance = ingressProvenance(req);
+      const input = stripCallerActorFields(req.body || {});
+      input.evidence = resolveRouteEvidence(req, req.body?.evidence, 'relationship evidence', {
+        allowSingle: true, preserveShape: true,
+      });
+      input.observed_by = provenance.actor.id;
+      input.ingress_provenance = provenance;
+      res.json({ ok: true, relationship: store.observeRelationship(input) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
 
@@ -358,8 +501,12 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     .map(experiment => ({ ...experiment, source_audits: (experiment.source_refs || [])
       .filter(ref => ref?.type === 'dream_idea').map(ref => dreamIdeaSeed.audit(ref, getDreams())) }))
     .sort((a, b) => b.started.localeCompare(a.started))));
-  app.post('/learning-experiments', requireAuth, (req, res) => {
-    try { res.json({ ok: true, experiment: store.createExperiment(req.body || {}) }); }
+  app.post('/learning-experiments', requireAuth, requireOperatorAuth, (req, res) => {
+    try {
+      res.json({ ok: true, experiment: store.createExperiment({
+        ...(req.body || {}), origin: 'human', chosen_by: null,
+      }) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/learning-experiments/choose', requireAuth, (req, res) => {
@@ -376,9 +523,19 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/learning-experiments/:id/sample', requireAuth, (req, res) => {
-    const experiments = store.recordExperimentSample({ ...(req.body || {}), experiment_id: req.params.id });
-    if (!experiments.length) return res.status(404).json({ error: 'experiment not found' });
-    res.json({ ok: true, experiment: experiments[0] });
+    try {
+      const interactionId = String(req.body?.interaction_id || '');
+      const interaction = getInteractions().find(item => String(item.id) === interactionId);
+      if (!interaction) return res.status(400).json({
+        error: 'interaction_id must reference an exact retained reviewed interaction',
+      });
+      const experiments = store.recordExperimentSample({
+        experiment_id: req.params.id,
+        interaction,
+      });
+      if (!experiments.length) return res.status(404).json({ error: 'experiment not found' });
+      res.json({ ok: true, experiment: experiments[0] });
+    } catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/learning-experiments/:id/evaluate', requireAuth, (req, res) => {
     const experiment = store.evaluateExperiment(req.params.id, req.body || {});
@@ -408,7 +565,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.post('/procedures/:id/activate', requireResearchAuth, async (req, res) => {
     let procedure = null;
     try {
-      procedure = store.changeProcedureStatus(req.params.id, 'active', { ...(req.body || {}), actor: 'human' });
+      procedure = store.changeProcedureStatus(req.params.id, 'active', {
+        ...(req.body || {}), actor: req.principal?.id || 'research-harness',
+      });
       if (!procedure) return res.status(404).json({ error: 'procedure not found' });
       await store.persistStrict();
       res.json({ ok: true, procedure });
@@ -417,7 +576,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.post('/procedures/:id/retire', requireResearchAuth, async (req, res) => {
     let procedure = null;
     try {
-      procedure = store.changeProcedureStatus(req.params.id, 'retired', { ...(req.body || {}), actor: 'human' });
+      procedure = store.changeProcedureStatus(req.params.id, 'retired', {
+        ...(req.body || {}), actor: req.principal?.id || 'research-harness',
+      });
       if (!procedure) return res.status(404).json({ error: 'procedure not found' });
       await store.persistStrict();
       res.json({ ok: true, procedure });
@@ -455,7 +616,9 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.post('/exemplars/:id/retire', requireResearchAuth, async (req, res) => {
     let exemplar = null;
     try {
-      exemplar = store.retireExemplar(req.params.id, { ...(req.body || {}), actor: 'human' });
+      exemplar = store.retireExemplar(req.params.id, {
+        ...(req.body || {}), actor: req.principal?.id || 'research-harness',
+      });
       if (!exemplar) return res.status(404).json({ error: 'exemplar not found' });
       await store.persistStrict();
       res.json({ ok: true, exemplar });
@@ -482,7 +645,11 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       const { content, ...metadata } = req.body || {};
       contentManifest = await readingLibrary.ingest(content);
       const { created: _created, ...committedManifest } = contentManifest;
-      const source = store.registerReadingSource({ ...metadata, ...committedManifest });
+      const source = store.registerReadingSource({
+        ...metadata,
+        ...committedManifest,
+        admitted_by: req.principal?.id || 'authenticated_api',
+      });
       res.json({ ok: true, source: { id: source.id, title: source.title, author: source.author,
         source_kind: source.source_kind, rights_basis: source.rights_basis,
         content_chars: source.content_chars, chunk_count: source.chunk_commitments.length,
@@ -497,7 +664,10 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.post('/developmental-reading/sessions', requireAuth, (req, res) => {
     try {
-      const session = store.startReadingSession(req.body?.source_id, req.body || {});
+      const session = store.startReadingSession(req.body?.source_id, {
+        ...(req.body || {}),
+        selected_by: req.principal?.id || 'authenticated_api',
+      });
       res.json({ ok: true, session });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
@@ -508,8 +678,18 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
 
   app.get('/initiative-budgets/:scope', requireAuth, (req, res) => res.json(store.initiativeStatus(req.params.scope)));
-  app.put('/initiative-budgets/:scope', requireAuth, (req, res) => {
-    res.json({ ok: true, budget: store.setInitiativeBudget(req.params.scope, req.body?.daily_limit) });
+  app.put('/initiative-budgets/:scope', requireAuth, requireOperatorAuth, (req, res) => {
+    const requested = Number(req.body?.daily_limit);
+    const maximum = /(?:proactive|slack|warmth|interrupt)/i.test(req.params.scope) ? 5 : 50;
+    if (!Number.isInteger(requested) || requested < 0 || requested > maximum) {
+      return res.status(400).json({
+        error: `daily_limit must be an integer from 0 to ${maximum} for this scope`,
+      });
+    }
+    res.json({ ok: true, budget: store.setInitiativeBudget(req.params.scope, requested, {
+      updated_by: req.principal?.id || 'dashboard_operator',
+      note: req.body?.note || '',
+    }) });
   });
   app.post('/initiative-budgets/:scope/spend', requireAuth, (req, res) => {
     const budget = store.spendInitiative(req.params.scope, req.body || {});
@@ -570,11 +750,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.post('/intelligence/cycles', requireAuth, async (req, res) => {
     const startedAt = process.hrtime.bigint();
     try {
-      const authoritativeInputs = getCognitiveInputs();
-      const cognitiveInput = { ...authoritativeInputs, ...(req.body || {}),
-        inner_thread: authoritativeInputs.inner_thread || null,
-        soma: authoritativeInputs.soma || null, wants: authoritativeInputs.wants || [], predictions: getPredictions(),
-        resume_active: true };
+      const cognitiveInput = authoritativeCognitiveInput(
+        req.body || {}, CYCLE_START_FIELDS, { resumeActive: true });
       const started = await store.openOrResumeCycle(cognitiveInput);
       void recordLifecycleWorkspace({ phase: 'orientation', cycle: started.cycle,
         moment: started.moment }).catch(error => console.error('Lifecycle workspace orientation failed:', error.message));
@@ -611,7 +788,8 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.post('/intelligence/cycles/:id/reenter', requireAuth, async (req, res) => {
     try {
-      const result = await store.reenterCycleDurable(req.params.id, { ...getCognitiveInputs(), ...(req.body || {}), predictions: getPredictions() });
+      const result = await store.reenterCycleDurable(req.params.id,
+        authoritativeCognitiveInput(req.body || {}, CYCLE_REENTRY_FIELDS));
       if (!result) return res.status(404).json({ error: 'intelligence cycle not found' });
       if (store.interventionActive('recurrent_feedback')) return res.json({ ok: true, experimental_outcome_sealed: true, cycle_id: result.cycle?.id || req.params.id });
       res.json({ ok: true, ...result });
@@ -846,13 +1024,19 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   app.get('/relational-affect', requireAuth, (req, res) => res.json(store.relationalAffectSnapshot()));
   app.get('/endogenous-dynamics', requireAuth, (req, res) => res.json(store.endogenousDynamicsSnapshot()));
   app.post('/endogenous-dynamics/tick', requireResearchAuth, (req, res) => {
-    try { res.json({ ok: true, dynamics: store.tickEndogenousDynamics({ ...getCognitiveInputs(), ...(req.body || {}) }) }); }
+    try {
+      res.json({ ok: true, dynamics: store.tickEndogenousDynamics(
+        authoritativeCognitiveInput(req.body || {}, DYNAMICS_TICK_FIELDS)) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/cognitive-pulses', requireAuth, (req, res) => res.json(store.cognitivePulseSnapshot()));
   app.get('/cognitive-pulses/runtime', requireAuth, (req, res) => res.json(getCognitivePulseRuntimeStatus()));
   app.post('/cognitive-pulses/prepare', requireResearchAuth, (req, res) => {
-    try { res.json({ ok: true, ...store.prepareCognitivePulse({ ...getCognitiveInputs(), ...(req.body || {}) }) }); }
+    try {
+      res.json({ ok: true, ...store.prepareCognitivePulse(authoritativeCognitiveInput(
+        req.body || {}, COGNITIVE_PULSE_PREPARE_FIELDS)) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/cognitive-pulses/:id/complete', requireResearchAuth, (req, res) => {
@@ -1049,12 +1233,18 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
   });
   app.get('/global-broadcast', requireAuth, (req, res) => res.json(store.globalBroadcastSnapshot()));
   app.post('/cognition/refresh', requireAuth, (req, res) => {
-    const authoritativeInputs = getCognitiveInputs();
-    store.refreshCognition({ ...authoritativeInputs, ...(req.body || {}), wants: authoritativeInputs.wants || [], predictions: getPredictions() });
+    store.refreshCognition(authoritativeCognitiveInput(req.body || {}, COGNITIVE_CONTEXT_FIELDS));
     res.json({ ok: true, cognition: store.cognitionSnapshot(getPredictions()) });
   });
-  app.post('/cognition/mind-changes', requireAuth, (req, res) => {
-    try { res.json({ ok: true, mind_change: store.recordMindChange(req.body || {}) }); }
+  app.post('/cognition/mind-changes', requireAuth, manualEvidenceAuth, (req, res) => {
+    try {
+      const provenance = ingressProvenance(req);
+      const input = stripCallerActorFields(req.body || {});
+      input.evidence = resolveRouteEvidence(req, req.body?.evidence, 'mind-change evidence');
+      input.recorded_by = provenance.actor.id;
+      input.ingress_provenance = provenance;
+      res.json({ ok: true, mind_change: store.recordMindChange(input) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/cognition/mind-changes', requireAuth, (req, res) => cachedJson(res,
@@ -1191,8 +1381,19 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     includeAttempts: req.query.include_attempts === 'true',
     includeAccessRecords: req.query.include_access_records === 'true',
   })));
-  app.post('/epistemic-ledger/positions', requireAuth, (req, res) => {
-    try { res.json({ ok: true, proposition: store.recordEpistemicPosition(req.body || {}) }); }
+  app.post('/epistemic-ledger/positions', requireAuth, manualEvidenceAuth, (req, res) => {
+    try {
+      const provenance = ingressProvenance(req);
+      const input = stripCallerActorFields(req.body || {});
+      input.evidence = resolveRouteEvidence(req, req.body?.evidence, 'epistemic-position evidence');
+      if (req.body?.source_family_evidence !== undefined) {
+        input.source_family_evidence = resolveRouteEvidence(
+          req, req.body.source_family_evidence, 'epistemic source-family evidence');
+      }
+      input.recorded_by = provenance.actor.id;
+      input.ingress_provenance = provenance;
+      res.json({ ok: true, proposition: store.recordEpistemicPosition(input) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.get('/earned-viewpoints', requireAuth, (req, res) => {
@@ -1483,8 +1684,16 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
       res.json({ ok: true, study });
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
-  app.post('/self-model/claims', requireAuth, (req, res) => {
-    try { res.json({ ok: true, claim: store.recordSelfClaim(req.body || {}) }); }
+  app.post('/self-model/claims', requireAuth, manualEvidenceAuth, (req, res) => {
+    try {
+      const provenance = ingressProvenance(req);
+      const input = stripCallerActorFields(req.body || {});
+      input.basis = resolveRouteEvidence(req, req.body?.basis, 'self-claim basis');
+      input.origin = selfClaimOrigin(req, req.body || {}, provenance);
+      input.recorded_by = provenance.actor.id;
+      input.ingress_provenance = provenance;
+      res.json({ ok: true, claim: store.recordSelfClaim(input) });
+    }
     catch (error) { res.status(400).json({ error: error.message }); }
   });
   app.post('/self-model/probes', requireAuth, (req, res) => {

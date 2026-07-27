@@ -67,6 +67,7 @@ test('active insight-synthesis study seals every subject-facing dream route', ()
     ['POST', '/dream-insights/:id/resolve'],
     ['POST', '/dreams'],
     ['DELETE', '/dreams/:id'],
+    ['POST', '/dreams/:id/restore'],
   ];
   for (const [method, path] of routes) {
     const response = invoke(method, path);

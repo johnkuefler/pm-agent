@@ -29,9 +29,9 @@ async function loadSelfTab() {
     async function savePersona() {
       const content = document.getElementById('persona-content').value; const s = document.getElementById('persona-status');
       if (!content.trim()) { s.className = 'toast err'; s.textContent = 'Cannot be empty.'; return; }
-      if (!confirm('Save her persona? This changes her voice everywhere immediately (Slack, calls, the hourly loop).')) return;
+      if (!confirm('Approve and save this persona revision? This signed operator action changes her voice everywhere immediately (Slack, calls, the hourly loop).')) return;
       try {
-        const r = await api('/prompt', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard' }) });
+        const r = await operatorApi('/prompt', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard-operator' }) });
         const d = await r.json();
         if (d.ok) { s.className = 'toast ok'; s.textContent = `Saved (${(d.length || 0).toLocaleString()} chars).`; loadSelfTab(); } else { s.className = 'toast err'; s.textContent = d.error || 'failed'; }
       } catch (e) { s.className = 'toast err'; s.textContent = e.message; }
@@ -53,9 +53,9 @@ async function loadSelfTab() {
       const content = document.getElementById('charter-content').value;
       const s = document.getElementById('charter-status');
       if (!content.trim()) { s.className = 'toast err'; s.textContent = 'Charter cannot be empty.'; return; }
-      if (!confirm("Save the charter? This changes Nora's authority everywhere (Slack, calls, hourly loop) immediately.")) return;
+      if (!confirm("Approve and save this charter revision? This signed operator action changes Nora's authority everywhere (Slack, calls, hourly loop) immediately.")) return;
       try {
-        const r = await api('/charter', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard' }) });
+        const r = await operatorApi('/charter', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard-operator' }) });
         const d = await r.json();
         if (d.ok) { s.className = 'toast ok'; s.textContent = `Saved (${(d.length || 0).toLocaleString()} chars).`; loadCharterEditor(); }
         else { s.className = 'toast err'; s.textContent = 'Save failed: ' + (d.error || 'unknown'); }
@@ -79,9 +79,9 @@ async function loadSelfTab() {
       const content = document.getElementById('routine-content').value;
       const s = document.getElementById('routine-status');
       if (!content.trim()) { s.className = 'toast err'; s.textContent = 'Routine cannot be empty.'; return; }
-      if (!confirm('Save this routine? It replaces the current one and takes effect on the next hourly run.')) return;
+      if (!confirm('Approve and save this routine? This signed operator action replaces the current one and takes effect on the next hourly run.')) return;
       try {
-        const r = await api('/routine', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard' }) });
+        const r = await operatorApi('/routine', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ content, updated_by: 'dashboard-operator' }) });
         const d = await r.json();
         if (d.ok) { s.className = 'toast ok'; s.textContent = `Saved (${(d.length || 0).toLocaleString()} chars). Takes effect on the next hourly run.`; loadRoutineEditor(); }
         else { s.className = 'toast err'; s.textContent = 'Save failed: ' + (d.error || 'unknown'); }

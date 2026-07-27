@@ -1,5 +1,20 @@
 'use strict';
 
+const crypto = require('crypto');
+
+function createMutationSerializer() {
+  let tail = Promise.resolve();
+  return operation => {
+    const result = tail.then(() => operation());
+    tail = result.then(() => undefined, () => undefined);
+    return result;
+  };
+}
+
+function validFencingToken(value) {
+  return /^[A-Za-z0-9_-]{32,180}$/.test(String(value || ''));
+}
+
 function normalizeLock(value) {
   if (!value || typeof value !== 'object') return null;
   const acquiredAt = Number(value.acquired_at);
@@ -11,6 +26,7 @@ function normalizeLock(value) {
     process_epoch_id: value.process_epoch_id ? String(value.process_epoch_id).slice(0, 180) : null,
     last_refreshed_at: Number.isFinite(Number(value.last_refreshed_at))
       ? Number(value.last_refreshed_at) : acquiredAt,
+    fencing_token: String(value.fencing_token || '').trim().slice(0, 180) || null,
     lifecycle: value.lifecycle && typeof value.lifecycle === 'object' ? value.lifecycle : null,
   };
 }
@@ -19,9 +35,12 @@ function registerRunLockRoutes(app, requireAuth, {
   onAcquire = null, onRelease = null, projectLifecycle = null,
   canAcquire = null,
   loadLock = null, saveLock = null, clock = () => Date.now(), activityStream = null,
+  serializeMutation = null,
   processEpochId = null, restartResumeGraceMs = 10 * 60 * 1000,
 } = {}) {
   const processStartedAt = Number(clock());
+  const mutateLock = typeof serializeMutation === 'function'
+    ? serializeMutation : createMutationSerializer();
   let _runLock = null; // Default in-memory store when persistence is not injected.
   const readLock = async () => {
     const loaded = typeof loadLock === 'function' ? await loadLock() : _runLock;
@@ -38,6 +57,20 @@ function registerRunLockRoutes(app, requireAuth, {
     console.error(`Run lock persistence ${operation} failed: ${error.message}`);
     return res.status(503).json({ acquired: false, released: false,
       reason: `lock_persistence_${operation}_failed`, error: error.message });
+  };
+  const serializedMutation = async (response, operation) => {
+    let statusCode = 200;
+    let body = null;
+    const bufferedResponse = {
+      status(code) { statusCode = code; return this; },
+      json(value) { body = value; return this; },
+    };
+    try {
+      await mutateLock(() => operation(bufferedResponse));
+    } catch (error) {
+      return persistenceFailure(response, 'mutation', error);
+    }
+    return response.status(statusCode).json(body);
   };
   const restartResumeExpired = (lock, now) => Boolean(lock && processEpochId
     && lock.process_epoch_id && lock.process_epoch_id !== processEpochId
@@ -61,9 +94,14 @@ function registerRunLockRoutes(app, requireAuth, {
     }
   };
 
-  app.post('/run-lock', requireAuth, async (req, res) => {
+  app.post('/run-lock', requireAuth, async (req, response) => serializedMutation(response, async res => {
     const now = Number(clock());
     const holder = (req.body && req.body.holder) || `run-${now}`;
+    const requestedFencingToken = String(req.body?.fencing_token || '').trim();
+    if (requestedFencingToken && !validFencingToken(requestedFencingToken)) {
+      return res.status(400).json({ acquired: false, reason: 'invalid fencing token',
+        code: 'run_lock_fencing_token_invalid' });
+    }
     const ttl = Math.min(Math.max(parseInt(req.body && req.body.ttl_seconds) || 3000, 60), 5400);
     let current;
     try { current = await readLock(); }
@@ -79,6 +117,17 @@ function registerRunLockRoutes(app, requireAuth, {
       return res.json({ acquired: false, held_by: current.holder,
         expires_at: new Date(current.expires_at).toISOString(), lifecycle: visible });
     }
+    if (active && current.fencing_token && current.fencing_token !== requestedFencingToken) {
+      const visible = await visibleLifecycle(current.lifecycle, { holder: current.holder });
+      return res.json({
+        acquired: false,
+        reason: requestedFencingToken ? 'stale fencing token' : 'fencing token required',
+        code: 'run_lock_fencing_token_mismatch',
+        held_by: current.holder,
+        expires_at: new Date(current.expires_at).toISOString(),
+        lifecycle: visible,
+      });
+    }
 
     // Expiry is a lifecycle boundary, not permission to forget an open run. Close the expired
     // lifecycle explicitly before opening a successor, then clear its durable lease.
@@ -86,6 +135,7 @@ function registerRunLockRoutes(app, requireAuth, {
       try {
         if (typeof onRelease === 'function') await onRelease({
           holder: current.holder, lifecycle: current.lifecycle || null,
+          fencing_token: current.fencing_token || null,
           released_at: new Date(now).toISOString(), expired: true,
           restart_resume_expired: restartResumeExpired(current, now),
         });
@@ -123,11 +173,14 @@ function registerRunLockRoutes(app, requireAuth, {
       }
     }
 
+    const fencingToken = active && current.fencing_token
+      ? current.fencing_token : requestedFencingToken || crypto.randomUUID();
     let lifecycle = active ? current.lifecycle || null : null;
     if (!active && typeof onAcquire === 'function') {
       try {
         lifecycle = await onAcquire({
           holder,
+          fencing_token: fencingToken,
           acquired_at: new Date(now).toISOString(),
           expires_at: new Date(now + ttl * 1000).toISOString(),
         }) || null;
@@ -142,13 +195,13 @@ function registerRunLockRoutes(app, requireAuth, {
     }
     const next = { holder, acquired_at: active ? current.acquired_at : now,
       expires_at: now + ttl * 1000, process_epoch_id: processEpochId || current?.process_epoch_id || null,
-      last_refreshed_at: now, lifecycle };
+      last_refreshed_at: now, fencing_token: fencingToken, lifecycle };
     try { await writeLock(next); }
     catch (error) {
       if (!active && lifecycle && typeof onRelease === 'function') {
         try {
           await onRelease({ holder, lifecycle, released_at: new Date(now).toISOString(),
-            persistence_failed: true });
+            fencing_token: fencingToken, persistence_failed: true });
         } catch (_) { /* The persistence failure remains the primary error. */ }
       }
       return persistenceFailure(res, 'write', error);
@@ -172,8 +225,9 @@ function registerRunLockRoutes(app, requireAuth, {
     }
     let visible;
     visible = await visibleLifecycle(lifecycle, { holder });
-    return res.json({ acquired: true, holder, expires_at: new Date(next.expires_at).toISOString(), lifecycle: visible });
-  });
+    return res.json({ acquired: true, holder, fencing_token: fencingToken,
+      expires_at: new Date(next.expires_at).toISOString(), lifecycle: visible });
+  }));
 
   app.get('/run-lock', requireAuth, async (_req, res) => {
     let current;
@@ -195,20 +249,32 @@ function registerRunLockRoutes(app, requireAuth, {
     });
   });
 
-  app.delete('/run-lock', requireAuth, async (req, res) => {
-    const holder = req.query.holder || (req.body && req.body.holder);
+  app.delete('/run-lock', requireAuth, async (req, response) => serializedMutation(response, async res => {
+    const holder = String(req.query.holder || req.body?.holder || '').trim();
+    const requestedFencingToken = String(
+      req.query.fencing_token || req.body?.fencing_token || '').trim();
     let current;
     try { current = await readLock(); }
     catch (error) { return persistenceFailure(res, 'read', error); }
     // Only the holder releases (so a late finisher doesn't release the next run's lock).
-    if (current && holder && current.holder !== holder) {
-      return res.json({ released: false, reason: 'not lock holder', held_by: current.holder });
+    if (current && (!holder || current.holder !== holder)) {
+      return res.json({ released: false,
+        reason: holder ? 'not lock holder' : 'lock holder required', held_by: current.holder });
+    }
+    if (current?.fencing_token && current.fencing_token !== requestedFencingToken) {
+      return res.json({
+        released: false,
+        reason: requestedFencingToken ? 'stale fencing token' : 'fencing token required',
+        code: 'run_lock_fencing_token_mismatch',
+        held_by: current.holder,
+      });
     }
     let lifecycle = current?.lifecycle || null;
     if (current && typeof onRelease === 'function') {
       try {
         lifecycle = await onRelease({
           holder: current.holder,
+          fencing_token: current.fencing_token || null,
           lifecycle,
           released_at: new Date(Number(clock())).toISOString(),
           expired: current.expires_at <= Number(clock()) || restartResumeExpired(current, Number(clock())),
@@ -235,7 +301,7 @@ function registerRunLockRoutes(app, requireAuth, {
         outcome: 'Ready for the next scheduled pass.' });
     }
     return res.json({ released: true, lifecycle });
-  });
+  }));
 }
 
-module.exports = { registerRunLockRoutes };
+module.exports = { registerRunLockRoutes, validFencingToken };

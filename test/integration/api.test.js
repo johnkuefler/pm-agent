@@ -89,8 +89,13 @@ test('authentication protects APIs and dashboard independently', async () => {
   const permitted = await fetch(base + '/', { headers: { Authorization: `Basic ${auth}` } });
   assert.equal(permitted.status, 200);
   const dashboardHtml = await permitted.text();
-  assert.match(dashboardHtml, /integration-key/);
-  assert.match(dashboardHtml, /meta name="nora-operator-token" content="[^".]+\.[^"]+"/);
+  assert.doesNotMatch(dashboardHtml, /integration-key/);
+  const dashboardApiSession = dashboardHtml
+    .match(/meta name="nora-api-key" content="([^"]+)"/)?.[1];
+  const dashboardOperatorSession = dashboardHtml
+    .match(/meta name="nora-operator-token" content="([^"]+)"/)?.[1];
+  assert.match(dashboardOperatorSession, /^[^.]+\.[^.]+$/);
+  assert.equal(dashboardApiSession, dashboardOperatorSession);
 
   const css = await fetch(base + '/assets/dashboard.css');
   assert.equal(css.status, 200);
@@ -419,6 +424,7 @@ test('operational epistemics track claim stance and resolution', async () => {
 test('conscious workspace records active focus with competition and feedback', async () => {
   const initial = await request('/conscious-workspace');
   assert.equal(initial.body.report.total_frames, 0);
+  const operatorHeaders = { 'x-nora-operator-token': createOperatorToken() };
 
   const frame = await request('/conscious-workspace/frames', { method: 'POST', body: {
     id: 'cw-integration',
@@ -445,9 +451,13 @@ test('conscious workspace records active focus with competition and feedback', a
   assert.equal(frame.body.frame.selected_focus_key, 'task:tw-1');
   assert.equal(frame.body.frame.arbitration_audit.complete_chain_verified, true);
   assert.equal(frame.body.frame.arbitration_receipt.baseline_winner_key, 'task:tw-1');
+  assert.deepEqual(frame.body.frame.attention_candidates.map(item => item.authority_class),
+    ['optional', 'optional', 'optional']);
+  assert.equal(frame.body.frame.created_by, 'Nora autonomous');
   assert.match(frame.body.frame.frame_commitment, /^[a-f0-9]{64}$/);
 
-  const feedback = await request('/conscious-workspace/feedback', { method: 'POST', body: {
+  const feedback = await request('/conscious-workspace/feedback', {
+    method: 'POST', headers: operatorHeaders, body: {
     frame_id: 'cw-integration',
     signal: 'The newest source showed the task was still blocked.',
     effect: 'supported',
@@ -458,7 +468,8 @@ test('conscious workspace records active focus with competition and feedback', a
   assert.equal(feedback.body.feedback.effect, 'supported');
   assert.equal(feedback.body.report.total_feedback, 1);
 
-  const redirected = await request('/conscious-workspace/feedback', { method: 'POST', body: {
+  const redirected = await request('/conscious-workspace/feedback', {
+    method: 'POST', headers: operatorHeaders, body: {
     frame_id: 'cw-integration',
     signal: 'A later source shows the deadline candidate is superseded and the blocker must be rechecked.',
     effect: 'redirected',
@@ -589,33 +600,83 @@ test('consequence reviews bind actions to later observed outcomes', async () => 
 });
 
 test('run lock enforces holder ownership', async () => {
-  assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'one', ttl_seconds: 60 } })).body.acquired, true);
+  const first = await request('/run-lock', {
+    method: 'POST', body: { holder: 'one', ttl_seconds: 60 },
+  });
+  assert.equal(first.body.acquired, true);
   assert.equal((await request('/run-lock', { method: 'POST', body: { holder: 'two', ttl_seconds: 60 } })).body.acquired, false);
   assert.equal((await request('/run-lock?holder=two', { method: 'DELETE' })).body.released, false);
-  assert.equal((await request('/run-lock?holder=one', { method: 'DELETE' })).body.released, true);
+  assert.equal((await request(`/run-lock?holder=one&fencing_token=${encodeURIComponent(first.body.fencing_token)}`,
+    { method: 'DELETE' })).body.released, true);
 });
 
 test('routine and charter reads and writes remain file-backed without Postgres', async () => {
   assert.match((await request('/routine')).body.content, /Initial routine/);
-  assert.equal((await request('/routine', { method: 'PUT', body: { content: '# New routine', updated_by: 'test' } })).body.ok, true);
+  const operatorToken = createOperatorToken();
+  const spoofedRoutineOperator = await request('/routine', {
+    method: 'PUT', body: { content: '# Spoofed routine', updated_by: 'John' },
+  });
+  assert.equal(spoofedRoutineOperator.response.status, 401);
+  const routineUpdate = await request('/routine', {
+    method: 'PUT',
+    headers: { 'x-nora-operator-token': operatorToken },
+    body: { content: '# New routine', updated_by: 'John', note: 'Exercise autonomous routine persistence.' },
+  });
+  assert.equal(routineUpdate.body.ok, true);
+  assert.equal(routineUpdate.body.updated_by, 'dashboard_operator');
   assert.equal(fs.readFileSync(path.join(dataDir, 'nora-routine.md'), 'utf8'), '# New routine');
   const largeRoutine = '# Large routine\n' + 'bounded platform instructions\n'.repeat(5000);
-  assert.equal((await request('/routine', { method: 'PUT', body: { content: largeRoutine, updated_by: 'test' } })).body.ok, true);
+  assert.equal((await request('/routine', {
+    method: 'PUT',
+    headers: { 'x-nora-operator-token': operatorToken },
+    body: { content: largeRoutine, updated_by: 'test', note: 'Exercise bounded large procedure persistence.' },
+  })).body.ok, true);
   assert.equal((await request('/routine')).body.content.length, largeRoutine.length);
 
   assert.match((await request('/charter')).body.content, /Initial charter/);
-  assert.equal((await request('/charter', { method: 'PUT', body: { content: '# New charter', updated_by: 'test' } })).body.ok, true);
+  const spoofedOperator = await request('/charter', {
+    method: 'PUT', body: { content: '# Spoofed charter', updated_by: 'John' },
+  });
+  assert.equal(spoofedOperator.response.status, 401);
+  assert.equal((await request('/charter', {
+    method: 'PUT',
+    headers: { 'x-nora-operator-token': operatorToken },
+    body: { content: '# New charter', updated_by: 'test' },
+  })).body.ok, true);
   assert.equal(fs.readFileSync(path.join(dataDir, 'nora-charter.md'), 'utf8'), '# New charter');
 });
 
 test('intelligence APIs connect commitments, episodes, relationships, experiments, traces, budgets, and bench', async () => {
-  const commitment = await request('/commitments', { method: 'POST', body: { what: 'Send integration recap', owner: 'Nora', beneficiary: 'John' } });
+  const rejectedCommitment = await request('/commitments', {
+    method: 'POST',
+    body: { what: 'Caller-invented promise', owner: 'John' },
+  });
+  assert.equal(rejectedCommitment.response.status, 401);
+  const operatorHeaders = { 'x-nora-operator-token': createOperatorToken() };
+  const manualOperatorAttestation = {
+    authority: 'operator',
+    rationale: 'The signed integration operator attests this isolated test fixture.',
+  };
+  const commitment = await request('/commitments', {
+    method: 'POST',
+    headers: operatorHeaders,
+    body: { what: 'Send integration recap', owner: 'Nora', beneficiary: 'John' },
+  });
   assert.equal(commitment.body.commitment.status, 'open');
-  assert.equal((await request(`/commitments/${commitment.body.commitment.id}/fulfilled`, { method: 'PATCH', body: {} })).body.commitment.status, 'fulfilled');
-  const externalCommitment = await request('/commitments', { method: 'POST', body: {
-    what: 'Resolve provider-backed integration request', owner: 'Nora', due: '2026-07-20T16:00:00.000Z',
-    evidence: { channel: 'gmail', id: 'integration-message-1', captured_at: '2026-07-13T15:00:00.000Z' },
-  } });
+  assert.equal(commitment.body.commitment.provenance_status, 'operator_attested');
+  assert.equal((await request(`/commitments/${commitment.body.commitment.id}/fulfilled`, {
+    method: 'PATCH', headers: operatorHeaders, body: {},
+  })).body.commitment.status, 'fulfilled');
+  const externalCommitment = await request('/commitments', {
+    method: 'POST',
+    headers: operatorHeaders,
+    body: {
+      what: 'Resolve provider-backed integration request', owner: 'Nora',
+      due: '2026-07-20T16:00:00.000Z',
+      evidence: { channel: 'gmail', id: 'integration-message-1',
+        captured_at: '2026-07-13T15:00:00.000Z' },
+    },
+  });
   const sourceAttestationBody = { provider: 'gmail', external_id: 'integration-message-1',
     verifier_id: 'integration-provider-reader',
     provider_response_digest: crypto.createHash('sha256').update('integration provider response').digest('hex'),
@@ -641,9 +702,27 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(episode.body.episode.events.length, 1);
   assert.equal((await request(`/episodes/${episode.body.episode.id}`)).body.title, 'Integration episode');
 
-  const relationship = await request('/relationships/observe', { method: 'POST', body: { name: 'John', dimension: 'communication', observation: 'Prefers the answer first', confidence: 0.9 } });
+  const relationship = await request('/relationships/observe', {
+    method: 'POST',
+    headers: operatorHeaders,
+    body: {
+      name: 'John', dimension: 'communication',
+      observation: 'Prefers the answer first', confidence: 0.9,
+      evidence: { type: 'integration_fixture', id: 'relationship-communication' },
+      manual_attestation: manualOperatorAttestation,
+    },
+  });
   assert.equal(relationship.body.relationship.name, 'John');
-  await request('/relationships/observe', { method: 'POST', body: { name: 'John', dimension: 'response_feedback', observation: 'corrected: missed the decision owner', confidence: 0.9, evidence: { channel: 'slack', id: 'integration-relational-feedback-1' } } });
+  await request('/relationships/observe', {
+    method: 'POST',
+    headers: operatorHeaders,
+    body: {
+      name: 'John', dimension: 'response_feedback',
+      observation: 'corrected: missed the decision owner', confidence: 0.9,
+      evidence: { type: 'integration_fixture', id: 'integration-relational-feedback-1' },
+      manual_attestation: manualOperatorAttestation,
+    },
+  });
   const relationalSnapshot = await request('/relational-affect');
   assert.equal(relationalSnapshot.body.report.current_verified, true);
   assert.equal(relationalSnapshot.body.current.stances.find(item => item.person === 'John').mode, 'repair_and_reconnect');
@@ -657,17 +736,21 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   } });
   assert.equal(perspective.body.perspective.status, 'open');
   assert.match(perspective.body.perspective.formation_commitment, /^[a-f0-9]{64}$/);
-  const epistemicNora = await request('/epistemic-ledger/positions', { method: 'POST', body: {
+  const epistemicNora = await request('/epistemic-ledger/positions', {
+    method: 'POST', headers: operatorHeaders, body: {
     topic_key: 'integration.launch_readiness', statement: 'The integration launch is ready.',
     source_family: 'integration-readiness', source_family_evidence: [{ type: 'fixture', id: 'integration-readiness-family' }],
     owner_type: 'nora_belief', polarity: 'supports', confidence: 0.7, rationale: 'Nora provisionally supports the proposition from her checked output.',
     evidence: [{ type: 'decision_trace', id: 'integration-nora-position' }], recorded_by: 'integration-runtime',
+    manual_attestation: manualOperatorAttestation,
   } });
   assert.equal(epistemicNora.body.proposition.report.nora_position_present, true);
-  const epistemicJohn = await request('/epistemic-ledger/positions', { method: 'POST', body: {
+  const epistemicJohn = await request('/epistemic-ledger/positions', {
+    method: 'POST', headers: operatorHeaders, body: {
     topic_key: 'integration.launch_readiness', statement: 'The integration launch is ready.',
     owner_type: 'person_belief', subject: 'John', polarity: 'denies', confidence: 0.8,
     rationale: 'John separately expressed a conflicting perspective.', evidence: [{ type: 'message', id: 'integration-john-position' }], recorded_by: 'integration-runtime',
+    manual_attestation: manualOperatorAttestation,
   } });
   assert.equal(epistemicJohn.body.proposition.report.perspective_disagreement, true);
   const integrationNoraPosition = epistemicJohn.body.proposition.positions
@@ -696,10 +779,12 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(commonGroundReview.body.record.audit.final_evidence_eligible, true);
   const commonGroundSnapshot = await request('/common-ground?person=John&query=integration%20launch%20ready');
   assert.equal(commonGroundSnapshot.body.frame.established[0].relation, 'known_disagreement');
-  await request('/epistemic-ledger/positions', { method: 'POST', body: {
+  await request('/epistemic-ledger/positions', {
+    method: 'POST', headers: operatorHeaders, body: {
     topic_key: 'integration.launch_readiness', statement: 'The integration launch is ready.',
     owner_type: 'observed_fact', source_key: 'integration-check', polarity: 'denies', confidence: 0.9,
     rationale: 'The independent integration check still reports a failure.', evidence: [{ type: 'test_result', id: 'integration-check-failure' }], recorded_by: 'integration-runtime',
+    manual_attestation: manualOperatorAttestation,
   } });
   const epistemicSnapshot = await request('/epistemic-ledger');
   assert.equal(epistemicSnapshot.body.report.total, 1);
@@ -712,18 +797,21 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(discrepancyReview.body.discrepancy.reviews.length, 1);
   const earnedViewpointRefs = [{ type: 'interaction', id: 'integration-viewpoint-signal-1' },
     { type: 'decision_trace', id: 'integration-viewpoint-signal-2' }];
-  const formedViewpoint = await request('/epistemic-ledger/positions', { method: 'POST', body: {
+  const forgedViewpoint = await request('/epistemic-ledger/positions', {
+    method: 'POST', headers: operatorHeaders, body: {
     proposition_kind: 'professional_viewpoint', topic_key: 'integration.qa_contingency',
     statement: 'Integration-heavy launches need an explicit QA contingency.',
     source_family: 'integration-delivery-observations', source_family_evidence: earnedViewpointRefs,
     owner_type: 'nora_belief', polarity: 'supports', confidence: 0.6,
     rationale: 'Two separate integration records show late QA exposure; a clean comparable launch would weaken the view.',
     evidence: earnedViewpointRefs, recorded_by: 'nora-nightly-reflection',
+    manual_attestation: manualOperatorAttestation,
   } });
-  assert.equal(formedViewpoint.response.status, 200);
+  assert.equal(forgedViewpoint.response.status, 400);
+  assert.match(forgedViewpoint.body.error, /Nora-authored formation provenance/);
   const earnedSnapshot = await request('/earned-viewpoints');
   assert.equal(earnedSnapshot.body.current_verified, true);
-  assert.equal(earnedSnapshot.body.viewpoints.some(item => item.viewpoint_id === formedViewpoint.body.proposition.id), true);
+  assert.deepEqual(earnedSnapshot.body.viewpoints, []);
   assert.equal(earnedSnapshot.body.report.natural_access.applications, 0);
   assert.equal(earnedSnapshot.body.report.natural_access.usefulness_calibration
     .eligible_resolved_single_viewpoint_applications, 0);
@@ -734,16 +822,30 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   const viewpointProvenance = await request('/earned-viewpoints/provenance');
   assert.equal(viewpointProvenance.response.status, 200);
   assert.ok(Array.isArray(viewpointProvenance.body.attestations));
-  const retiredViewpoint = await request(`/earned-viewpoints/${formedViewpoint.body.proposition.id}/retire`, { method: 'POST', body: {
+  const retiredViewpoint = await request('/earned-viewpoints/forged-viewpoint/retire', { method: 'POST', body: {
     rationale: 'A later comparable observation no longer supports carrying this as a current view.',
     recorded_by: 'nora-nightly-reflection', evidence: [{ type: 'interaction', id: 'integration-viewpoint-reversal-3' }],
   } });
-  assert.equal(retiredViewpoint.body.proposition.status, 'retired');
-  assert.equal((await request('/earned-viewpoints')).body.report.retired, 1);
+  assert.equal(retiredViewpoint.response.status, 404);
+  assert.equal((await request('/earned-viewpoints')).body.report.retired, 0);
 
-  const experiment = await request('/learning-experiments', { method: 'POST', body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops' } });
-  const sampled = await request(`/learning-experiments/${experiment.body.experiment.id}/sample`, { method: 'POST', body: { outcome: 'landed', value: 1 } });
-  assert.equal(sampled.body.experiment.samples.length, 1);
+  const spoofedExperiment = await request('/learning-experiments', {
+    method: 'POST',
+    body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops',
+      origin: 'human', chosen_by: 'John' },
+  });
+  assert.equal(spoofedExperiment.response.status, 401);
+  const experiment = await request('/learning-experiments', {
+    method: 'POST',
+    headers: { 'x-nora-operator-token': createOperatorToken() },
+    body: { behavior: 'Lead with the answer', hypothesis: 'It will reduce correction loops' },
+  });
+  const sampled = await request(`/learning-experiments/${experiment.body.experiment.id}/sample`, {
+    method: 'POST',
+    body: { outcome: 'landed', value: 1, interaction_id: 'caller-invented-review' },
+  });
+  assert.equal(sampled.response.status, 400);
+  assert.match(sampled.body.error, /exact retained reviewed interaction/);
   const selfChosen = await request('/learning-experiments/choose', { method: 'POST', body: { behavior: 'Ask one sharper question', hypothesis: 'Reduce correction loops', rationale: 'Repeated corrected replies', source_refs: [{ channel: 'trace', id: 'trace-1' }] } });
   assert.equal(selfChosen.body.experiment.origin, 'nora');
   const attentionDirective = await request('/attention-schema/directives', { method: 'POST', body: {
@@ -784,7 +886,14 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(interoceptivePrediction.body.prediction.status, 'open');
 
   assert.equal((await request('/initiative-budgets/cowork%3Aproactive')).body.limit, 1);
-  await request('/initiative-budgets/test-scope', { method: 'PUT', body: { daily_limit: 2 } });
+  assert.equal((await request('/initiative-budgets/test-scope', {
+    method: 'PUT', body: { daily_limit: 2 },
+  })).response.status, 401);
+  await request('/initiative-budgets/test-scope', {
+    method: 'PUT',
+    headers: { 'X-Nora-Operator-Token': createOperatorToken() },
+    body: { daily_limit: 2, note: 'Bound the integration initiative lane.' },
+  });
   assert.equal((await request('/initiative-budgets/test-scope')).body.limit, 2);
   assert.equal((await request('/initiative-budgets/test-scope/spend', { method: 'POST', body: { reason: 'integration' } })).body.budget.remaining, 1);
   assert.ok((await request('/decision-traces')).body.length >= 0);
@@ -907,7 +1016,10 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     soma: { stress: 0.5, score: 2, feel: 'a little sluggish', updated_at: new Date(interoceptionDue.getTime() + 60 * 1000).toISOString(), vitals: { loopLag: 150, errors10: 0, warns10: 0, uptimeMin: 60, onBackup: false, memCount: 10, embedBacklog: 0 } },
   } });
   const interoception = await request('/interoception');
-  assert.equal(interoception.body.predictions.find(item => item.id === interoceptivePrediction.body.prediction.id).resolution.outcome, 'right');
+  const retainedInteroceptivePrediction = interoception.body.predictions
+    .find(item => item.id === interoceptivePrediction.body.prediction.id);
+  assert.equal(retainedInteroceptivePrediction.resolution, null,
+    'caller-supplied clocks and telemetry cannot prematurely resolve a blinded prediction');
   assert.equal(interoception.body.report.blinded_predictions, 1);
   assert.ok((await request('/intelligence/orient')).body.commitments);
   const cognition = await request('/cognition/refresh', { method: 'POST', body: {} });
@@ -930,7 +1042,9 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(dynamicsTick.body.dynamics.advanced, true);
   const dynamics = await request('/endogenous-dynamics');
   assert.equal(dynamics.body.report.tick_count, 1);
-  assert.ok(dynamics.body.report.top_contents.some(item => item.key === 'want:api-dynamics-want'));
+  assert.equal(dynamics.body.report.top_contents.some(
+    item => item.key === 'want:api-dynamics-want'), false,
+  'research callers cannot inject wants into the authoritative cognitive snapshot');
   const goalState = await request('/goal-affect');
   assert.equal(goalState.body.report.mechanism_present, true);
   assert.equal(goalState.body.report.current_verified, false);
@@ -1097,10 +1211,12 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
   assert.equal(ledgerAnchor.body.anchor.head_hash, researchLedger.body.report.head_hash);
   assert.equal((await request('/consciousness-research/ledger')).body.report.anchor_count, 1);
   assert.ok((await request('/global-broadcast')).body.report.events >= 0);
-  const selfClaim = await request('/self-model/claims', { method: 'POST', body: {
+  const selfClaim = await request('/self-model/claims', {
+    method: 'POST', headers: operatorHeaders, body: {
     statement: 'I can prospectively detect likely revision', domain: 'capacity', confidence: 0.65,
     basis: [{ type: 'trace', id: 'trace-1' }], falsification_criteria: ['Flags do not predict reviewed revisions'],
     origin: { type: 'nora_hypothesis', creator_id: 'integration-subject', formation_method: 'integration_fixture_observation' },
+    manual_attestation: manualOperatorAttestation,
   } });
   const selfProbe = await request('/self-model/probes', { method: 'POST', body: {
     claim_id: selfClaim.body.claim.id, question: 'Will this response need revision?', prediction: { outcome: 'yes', confidence: 0.7 }, control_prediction: { confidence: 0.4, source: 'historical base rate' },
@@ -1351,7 +1467,8 @@ test('public identity and prompt endpoints retain their response contracts', asy
   assert.equal(typeof prompt.body, 'string');
   assert.ok(prompt.body.length > 100);
   const coworkHarness = await request('/cowork-prompt');
-  assert.match(coworkHarness.body, /KEY="integration-key"/);
+  assert.match(coworkHarness.body, /KEY="\$NORA_API_KEY"/);
+  assert.doesNotMatch(coworkHarness.body, /integration-key/);
   assert.doesNotMatch(coworkHarness.body, /\{\{NORA_API_KEY\}\}/);
   const self = await request('/self');
   assert.equal(typeof self.body.autobiography.content, 'string');
@@ -1393,8 +1510,12 @@ test('MCP admin supports secure auth modes without returning credentials or full
 });
 
 test('dream and transcript CRUD preserves response shapes and local files', async () => {
-  const dream = await request('/dreams', { method: 'POST', body: { date: '2026-07-14', started: '2026-07-14T05:00:00Z', finished: '2026-07-14T05:10:00Z', narrative: 'A useful dream', reflection: { ideas: ['Repeated handoff gaps may be hiding in the same project phase'] }, review: { learnings_added: ['Ask one crisper follow-up'] } } });
+  const dreamImportHeaders = { 'X-Nora-Research-Key': 'integration-research-key' };
+  const dreamOperatorHeaders = { 'X-Nora-Operator-Token': createOperatorToken() };
+  const dream = await request('/dreams', { method: 'POST', headers: dreamImportHeaders, body: { date: '2026-07-14', started: '2026-07-14T05:00:00Z', finished: '2026-07-14T05:10:00Z', narrative: 'A useful dream', reflection: { ideas: ['Repeated handoff gaps may be hiding in the same project phase'] }, review: { learnings_added: ['Ask one crisper follow-up'] } } });
   assert.equal(dream.body.dream.narrative, 'A useful dream');
+  assert.equal(dream.body.dream.provenance.origin, 'authorized_manual_import');
+  assert.equal(dream.body.provenance_audit.complete_chain_verified, true);
   assert.match((await request(`/dreams/${dream.body.dream.id}`)).body.reflection.ideas[0], /handoff gaps/);
   assert.equal((await request('/learning-experiments')).body.some(item => item.behavior === 'Ask one crisper follow-up'), true);
   const seedProjection = await request('/dream-idea-seeds?status=available');
@@ -1413,7 +1534,7 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   } });
   assert.equal(seededExperiment.body.experiment.source_refs[0].idea, seed.idea);
   assert.equal((await request('/dream-idea-seeds?status=used')).body.seeds.some(item => item.id === seed.id), true);
-  const retiredRoleDream = await request('/dreams', { method: 'POST', body: {
+  const retiredRoleDream = await request('/dreams', { method: 'POST', headers: dreamImportHeaders, body: {
     date: '2026-07-13', started: '2026-07-13T05:00:00Z', finished: '2026-07-13T05:10:00Z',
     narrative: 'Historical role residue.', reflection: { ideas: [
       'The dev-dispatch pipeline needs a standing repo-mapping fix.',
@@ -1427,7 +1548,7 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
     behavior: 'Resume repository mapping', hypothesis: 'Development dispatch will move faster',
     rationale: 'A historical dream proposed it.', source_refs: [retiredSeed],
   } })).response.status, 400);
-  const laterDream = await request('/dreams', { method: 'POST', body: { date: '2026-07-15', started: '2026-07-15T05:00:00Z', finished: '2026-07-15T05:10:00Z', narrative: 'The handoff pattern recurred.', reflection: { ideas: ['The same delivery phase keeps producing preventable handoff gaps'] } } });
+  const laterDream = await request('/dreams', { method: 'POST', headers: dreamImportHeaders, body: { date: '2026-07-15', started: '2026-07-15T05:00:00Z', finished: '2026-07-15T05:10:00Z', narrative: 'The handoff pattern recurred.', reflection: { ideas: ['The same delivery phase keeps producing preventable handoff gaps'] } } });
   const insight = await request('/dream-insights', { method: 'POST', body: {
     statement: 'A repeated delivery phase may be producing preventable handoff gaps across projects.',
     scope: 'process', confidence: 0.55,
@@ -1472,14 +1593,29 @@ test('dream and transcript CRUD preserves response shapes and local files', asyn
   assert.equal(insightReport.prospectively_windowed, 1);
   assert.equal(insightReport.retired, 1);
   assert.equal(insightReport.final_evidence_eligible, 0);
-  assert.equal((await request(`/dreams/${dream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
-  const invalidated = (await request('/dream-insights')).body.insights.find(item => item.id === insight.body.insight.id);
-  assert.equal(invalidated.audit.source_ideas_verified, false);
-  assert.equal(invalidated.audit.complete_chain_verified, false);
+  const archivedDream = await request(`/dreams/${dream.body.dream.id}`, {
+    method: 'DELETE', headers: dreamOperatorHeaders,
+    body: { reason: 'Archive this fixture source while preserving its downstream provenance.' },
+  });
+  assert.equal(archivedDream.body.archived, true);
+  assert.equal(archivedDream.body.archive_audit.chain_verified, true);
+  const preserved = (await request('/dream-insights')).body.insights.find(item => item.id === insight.body.insight.id);
+  assert.equal(preserved.audit.source_ideas_verified, true);
+  assert.equal(preserved.audit.complete_chain_verified, true);
   const sourceAudited = (await request('/learning-experiments')).body.find(item => item.id === seededExperiment.body.experiment.id);
-  assert.equal(sourceAudited.source_audits[0].source_exists, false);
-  assert.equal(sourceAudited.source_audits[0].content_commitment_verified, false);
-  assert.equal((await request(`/dreams/${laterDream.body.dream.id}`, { method: 'DELETE' })).body.ok, true);
+  assert.equal(sourceAudited.source_audits[0].source_exists, true);
+  assert.equal(sourceAudited.source_audits[0].content_commitment_verified, true);
+  assert.equal(sourceAudited.source_audits[0].archived, true);
+  const restoredDream = await request(`/dreams/${dream.body.dream.id}/restore`, {
+    method: 'POST', headers: dreamOperatorHeaders,
+    body: { reason: 'Restore this fixture after verifying the archival recovery path.' },
+  });
+  assert.equal(restoredDream.body.restored, true);
+  assert.equal(restoredDream.body.archive_audit.chain_verified, true);
+  assert.equal((await request(`/dreams/${laterDream.body.dream.id}`, {
+    method: 'DELETE', headers: dreamOperatorHeaders,
+    body: { reason: 'Archive the second fixture source after its provenance checks complete.' },
+  })).body.archived, true);
 
   const list = await request('/transcripts');
   assert.equal(list.body[0].bot_id, 'test-bot');
@@ -1526,7 +1662,10 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   assert.equal(resumedWorkspace.recent_frames.filter(frame => frame.lifecycle?.cycle_id
     === acquired.body.lifecycle.cycle_id && frame.lifecycle.phase === 'orientation').length, 1);
 
-  const released = await request('/run-lock?holder=run-integration-lifecycle', { method: 'DELETE' });
+  const lifecycleFencingToken = acquired.body.fencing_token;
+  const released = await request(
+    `/run-lock?holder=run-integration-lifecycle&fencing_token=${encodeURIComponent(lifecycleFencingToken)}`,
+    { method: 'DELETE' });
   assert.equal(released.response.status, 503);
   assert.equal(released.body.released, false);
   assert.equal(released.body.code, 'active_run_lifecycle_must_be_closed');
@@ -1543,7 +1682,9 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
     },
   })).body.cycle.status, 'failed');
   assert.equal((await request('/run-lock')).body.lifecycle.lifecycle_stage, 'release_required');
-  const failedRelease = await request('/run-lock?holder=run-integration-lifecycle', { method: 'DELETE' });
+  const failedRelease = await request(
+    `/run-lock?holder=run-integration-lifecycle&fencing_token=${encodeURIComponent(lifecycleFencingToken)}`,
+    { method: 'DELETE' });
   assert.equal(failedRelease.body.released, true);
   assert.equal(failedRelease.body.lifecycle.closure_status, 'failed');
 
@@ -1556,6 +1697,7 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   const nextLock = await request('/run-lock', { method: 'POST', body: {
     holder: 'run-integration-complete', ttl_seconds: 60,
   } });
+  const completedFencingToken = nextLock.body.fencing_token;
   const nextCycleId = nextLock.body.lifecycle.cycle_id;
   const nextMomentId = nextLock.body.lifecycle.moment_id;
   assert.equal((await request('/intelligence/cycles', { method: 'POST', body: {
@@ -1665,7 +1807,9 @@ test('hourly run locks bind one resumable lifecycle and reject premature release
   const completedLock = await request('/run-lock');
   assert.equal(completedLock.body.lifecycle.lifecycle_stage, 'release_required');
   assert.equal(completedLock.body.lifecycle.cycle_status, 'completed');
-  const cleanRelease = await request('/run-lock?holder=run-integration-complete', { method: 'DELETE' });
+  const cleanRelease = await request(
+    `/run-lock?holder=run-integration-complete&fencing_token=${encodeURIComponent(completedFencingToken)}`,
+    { method: 'DELETE' });
   assert.equal(cleanRelease.body.lifecycle.closure_status, 'completed');
   const completed = (await request('/experience-stream?limit=10')).body.moments
     .find(item => item.id === nextMomentId);

@@ -355,6 +355,7 @@ function recordUsageOutcome(registry = emptyRegistry(), usageId, input = {}, { n
   usage.outcome = outcome;
   usage.outcome_note = normalizeText(input.note, 700);
   usage.outcome_evidence = validateEvidence(input.evidence);
+  usage.reviewed_by = normalizeText(input.reviewed_by || 'server_interaction_review', 120);
   usage.reviewed_at = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
   const proposal = current.proposals.find(item => item.id === usage.proposal_id);
   if (proposal && proposal.status === 'approved') {

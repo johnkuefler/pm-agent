@@ -134,6 +134,7 @@ test('durable background writes flush their selection receipt before the connect
 });
 
 test('a timed-out durable write remains uncertain so a restart cannot repeat it', async () => {
+  let writeAttempts = 0;
   const responses = [
     { stop_reason: 'tool_use', content: [
       { type: 'tool_use', id: 'uncertain-write-1', name: 'deliver_result', input: {} },
@@ -143,6 +144,7 @@ test('a timed-out durable write remains uncertain so a restart cannot repeat it'
   await __test.runClaudeToolLoop(
     { messages: [], tools: [{ name: 'deliver_result' }] }, {}, {
       deliver_result: async () => {
+        writeAttempts += 1;
         const error = new Error('connector timed out after dispatch');
         error.code = 'ETIMEDOUT';
         throw error;
@@ -162,6 +164,40 @@ test('a timed-out durable write remains uncertain so a restart cannot repeat it'
   assert.equal(history.succeeded_writes.length, 0);
   assert.equal(history.uncertain_writes.length, 1);
   assert.equal(history.uncertain_writes[0].status, 'selected');
+
+  let replayResult;
+  let providerCalls = 0;
+  const retried = await __test.runClaudeToolLoop(
+    { messages: [], tools: [{ name: 'deliver_result' }] }, {}, {
+      deliver_result: async () => {
+        writeAttempts += 1;
+        return { ok: true };
+      },
+    }, 2, {
+      deadlineMs: 5000,
+      providerTimeoutMs: 1000,
+      toolTimeoutMs: 1000,
+      writeStartMinimumMs: 1000,
+      writeToolNames: ['deliver_result'],
+      durableWriteReceipts: true,
+      persistActionReceipt: async () => {},
+      origin: { kind: 'railway_hourly', interaction_ref: 'task-uncertain-write' },
+      post: async (_url, body) => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          return { data: { stop_reason: 'tool_use', content: [
+            { type: 'tool_use', id: 'uncertain-write-redelivery', name: 'deliver_result', input: {} },
+          ] } };
+        }
+        replayResult = JSON.parse(body.messages.at(-1).content[0].content);
+        return { data: { stop_reason: 'end_turn', content: [
+          { type: 'text', text: 'The prior delivery outcome is uncertain, so I did not repeat it.' },
+        ] } };
+      },
+    });
+  assert.equal(writeAttempts, 1);
+  assert.equal(replayResult.status, 'outcome_unknown');
+  assert.deepEqual(retried.firedTools, []);
 });
 
 test('tool loop preserves completed tool evidence when a follow-up provider call times out', async () => {
@@ -180,6 +216,105 @@ test('tool loop preserves completed tool evidence when a follow-up provider call
   });
   assert.deepEqual(result.firedTools, ['lookup']);
   assert.equal(result.response.data.stop_reason, 'tool_use');
+});
+
+test('tool loop attaches completed write evidence when the follow-up provider call fails', async () => {
+  let calls = 0;
+  const providerFailure = new Error('provider connection reset after tool completion');
+  providerFailure.code = 'ECONNRESET';
+  let failure;
+  try {
+    await __test.runClaudeToolLoop(
+      { messages: [], tools: [{ name: 'write_task' }] }, {}, {
+        write_task: async () => ({ ok: true, task_id: 'task-42' }),
+      }, 2, {
+        deadlineMs: 5000,
+        providerTimeoutMs: 1000,
+        writeStartMinimumMs: 1000,
+        writeToolNames: ['write_task'],
+        origin: { kind: 'slack', interaction_ref: `partial-write-${Date.now()}` },
+        post: async () => {
+          calls += 1;
+          if (calls === 1) {
+            return { data: { stop_reason: 'tool_use', content: [
+              { type: 'tool_use', id: 'completed-write', name: 'write_task', input: {} },
+            ] } };
+          }
+          throw providerFailure;
+        },
+      });
+  } catch (error) {
+    failure = error;
+  }
+  assert.equal(failure, providerFailure);
+  assert.deepEqual(failure.firedTools, ['write_task']);
+  assert.equal(failure.actionExecutionIds.length, 1);
+  assert.equal(typeof failure.actionExecutionIds[0], 'string');
+  assert.equal(failure.providerTrace.length, 1);
+});
+
+test('a durable event retry reuses the verified write receipt instead of repeating the side effect', async () => {
+  const interactionRef = `slack-write-replay-${Date.now()}`;
+  const origin = { kind: 'slack', channel: 'C123', interaction_ref: interactionRef };
+  let writes = 0;
+  const executor = async () => {
+    writes += 1;
+    return { ok: true, task_id: 'task-verified' };
+  };
+  const firstResponses = [
+    { data: { stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'write-first-attempt', name: 'write_task',
+        input: { title: 'Ship the brief' } },
+    ] } },
+    { data: { stop_reason: 'end_turn', content: [
+      { type: 'text', text: 'Created the task.' },
+    ] } },
+  ];
+  const first = await __test.runClaudeToolLoop(
+    { messages: [], tools: [{ name: 'write_task' }] }, {}, { write_task: executor }, 2, {
+      deadlineMs: 5000,
+      providerTimeoutMs: 1000,
+      writeStartMinimumMs: 1000,
+      writeToolNames: ['write_task'],
+      durableWriteReceipts: true,
+      persistActionReceipt: async () => {},
+      origin,
+      post: async () => firstResponses.shift(),
+    });
+
+  let replayResult;
+  const retryResponses = [
+    { data: { stop_reason: 'tool_use', content: [
+      { type: 'tool_use', id: 'write-redelivered-event', name: 'write_task',
+        input: { title: 'Ship the brief' } },
+    ] } },
+    async (_url, body) => {
+      replayResult = JSON.parse(body.messages.at(-1).content[0].content);
+      return { data: { stop_reason: 'end_turn', content: [
+        { type: 'text', text: 'The task was already created.' },
+      ] } };
+    },
+  ];
+  const retried = await __test.runClaudeToolLoop(
+    { messages: [], tools: [{ name: 'write_task' }] }, {}, { write_task: executor }, 2, {
+      deadlineMs: 5000,
+      providerTimeoutMs: 1000,
+      writeStartMinimumMs: 1000,
+      writeToolNames: ['write_task'],
+      durableWriteReceipts: true,
+      persistActionReceipt: async () => {},
+      origin,
+      post: async (...args) => {
+        const response = retryResponses.shift();
+        return typeof response === 'function' ? response(...args) : response;
+      },
+    });
+
+  assert.equal(writes, 1);
+  assert.equal(replayResult.replayed, true);
+  assert.equal(replayResult.status, 'succeeded');
+  assert.deepEqual(retried.firedTools, ['write_task']);
+  assert.deepEqual(retried.actionExecutionIds, first.actionExecutionIds);
 });
 
 test('tool loop bounds a stalled read tool and preserves time for a final answer', async () => {
@@ -247,4 +382,60 @@ test('tool loop does not report an executor error result as a completed tool', a
     },
   });
   assert.deepEqual(result.firedTools, []);
+});
+
+test('connector outcome normalization rejects resolved MCP, Slack, and API failure envelopes', () => {
+  const failures = [
+    { label: 'MCP isError', value: {
+      isError: true, content: [{ type: 'text', text: 'provider refused the request' }],
+    } },
+    { label: 'explicit error', value: { error: 'connector refused the write' } },
+    { label: 'Slack ok false', value: { ok: false, error: 'not_in_channel' } },
+    { label: 'success false', value: { success: false, message: 'API operation failed' } },
+    { label: 'nested public API response', value: {
+      usage: { id: 'use-1' }, response: { ok: false, error: 'rate_limited' },
+    } },
+  ];
+  for (const fixture of failures) {
+    const outcome = __test.normalizeConnectorOutcome(fixture.value);
+    assert.equal(outcome.ok, false, fixture.label);
+    assert.ok(outcome.error, `${fixture.label} should carry a failure reason`);
+  }
+  assert.equal(__test.normalizeConnectorOutcome({ ok: true, result: [] }).ok, true);
+});
+
+test('tool loop never records a resolved MCP isError result as fired or successful', async () => {
+  let providerCalls = 0;
+  let returnedToolResult = null;
+  const interactionRef = `false-mcp-success-${Date.now()}`;
+  const result = await __test.runClaudeToolLoop(
+    { messages: [], tools: [{ name: 'mcp_write' }] }, {}, {
+      mcp_write: async () => ({
+        isError: true,
+        content: [{ type: 'text', text: 'MCP provider rejected the write' }],
+      }),
+    }, 2, {
+      deadlineMs: 5000,
+      providerTimeoutMs: 1000,
+      writeStartMinimumMs: 1000,
+      writeToolNames: ['mcp_write'],
+      origin: { kind: 'railway_hourly', interaction_ref: interactionRef },
+      post: async (_url, body) => {
+        providerCalls += 1;
+        if (providerCalls === 1) {
+          return { data: { stop_reason: 'tool_use', content: [
+            { type: 'tool_use', id: 'false-mcp-write', name: 'mcp_write', input: {} },
+          ] } };
+        }
+        returnedToolResult = body.messages.at(-1).content[0];
+        return { data: { stop_reason: 'end_turn', content: [
+          { type: 'text', text: 'The connector rejected the write.' },
+        ] } };
+      },
+    });
+
+  assert.deepEqual(result.firedTools, []);
+  assert.match(returnedToolResult.content, /MCP provider rejected the write/);
+  assert.match(returnedToolResult.content, /"error"/);
+  assert.deepEqual(__test.nativeTaskExecutionHistory(interactionRef).succeeded_writes, []);
 });

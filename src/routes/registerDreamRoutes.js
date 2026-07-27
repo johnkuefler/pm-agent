@@ -1,19 +1,219 @@
 'use strict';
 
+function unavailableEvaluatorAuth(req, res) {
+  return res.status(503).json({ error: 'evaluator authentication is not configured' });
+}
+
+function unavailableOperatorAuth(req, res) {
+  return res.status(503).json({ error: 'operator authentication is not configured' });
+}
+
 const crypto = require('crypto');
 const dreamIdeaSeed = require('../intelligence/dream-idea-seed');
 const dreamInsight = require('../intelligence/dream-insight');
 const dreamInsightFormation = require('../intelligence/dream-insight-formation');
+const dreamProvenance = require('../intelligence/dream-provenance');
 const { commitment, dreamInsights, insightAudit, validEvidenceRefs } = dreamInsight;
+const PROJECTION_PROTOCOL_VERSION = 1;
+
+function projectionError(error) {
+  return String(error?.message || error).slice(0, 300);
+}
+
+function projectionReceipt(result) {
+  if (result === undefined) return { acknowledged: true, result: null };
+  try {
+    const serialized = JSON.stringify(result);
+    if (serialized && serialized.length > 8000) {
+      return {
+        acknowledged: true,
+        result: { truncated: true, preview: serialized.slice(0, 8000) },
+      };
+    }
+    return {
+      acknowledged: true,
+      result: serialized === undefined ? String(result).slice(0, 1200) : JSON.parse(serialized),
+    };
+  } catch (_error) {
+    return { acknowledged: true, result: String(result).slice(0, 1200) };
+  }
+}
+
+function pendingProjection(previous, at) {
+  const priorAttempts = Number.isInteger(previous?.attempts) && previous.attempts >= 0
+    ? previous.attempts : 0;
+  return {
+    protocol_version: PROJECTION_PROTOCOL_VERSION,
+    status: 'pending',
+    attempts: priorAttempts + 1,
+    requested_at: previous?.requested_at || at,
+    last_attempt_at: at,
+    updated_at: at,
+    error: null,
+    receipt: null,
+  };
+}
+
+function notRequiredProjection(at, reason) {
+  return {
+    protocol_version: PROJECTION_PROTOCOL_VERSION,
+    status: 'not_required',
+    attempts: 0,
+    requested_at: at,
+    last_attempt_at: null,
+    updated_at: at,
+    completed_at: at,
+    error: null,
+    receipt: { acknowledged: false, reason },
+  };
+}
+
+function callbackDream(dream) {
+  const copy = JSON.parse(JSON.stringify(dream));
+  delete copy.downstream_projection;
+  return copy;
+}
+
+function sameSubmissionContent(existing, candidate) {
+  const select = dream => {
+    const snapshot = dreamProvenance.submissionSnapshot(dream);
+    return {
+      consolidation: snapshot.consolidation,
+      reflection: snapshot.reflection,
+      review: snapshot.review,
+      narrative: snapshot.narrative,
+    };
+  };
+  return dreamProvenance.canonicalJson(select(existing))
+    === dreamProvenance.canonicalJson(select(candidate));
+}
+
+function controlsSubmittedTimestamp(body, key) {
+  if (!Object.prototype.hasOwnProperty.call(body, key)) return false;
+  if (key === 'date') {
+    const value = String(body[key] || '').trim();
+    return /^\d{4}-\d{2}-\d{2}$/.test(value)
+      && Number.isFinite(new Date(`${value}T00:00:00.000Z`).getTime());
+  }
+  return Number.isFinite(new Date(body[key]).getTime());
+}
+
+function isExactDreamReplay(existing, candidate, body, { lifecycle, authority }) {
+  if (!sameSubmissionContent(existing, candidate)) return false;
+  if (lifecycle) {
+    return existing.provenance?.origin === 'autonomous_nightly_cycle'
+      && dreamProvenance.canonicalJson(existing.provenance?.lifecycle)
+        === dreamProvenance.canonicalJson(candidate.provenance?.lifecycle);
+  }
+  if (existing.provenance?.origin !== 'authorized_manual_import'
+    || dreamProvenance.canonicalJson(existing.provenance?.authority)
+      !== dreamProvenance.canonicalJson(candidate.provenance?.authority)) return false;
+  const existingSnapshot = dreamProvenance.submissionSnapshot(existing);
+  const candidateSnapshot = dreamProvenance.submissionSnapshot(candidate);
+  return ['date', 'started', 'finished'].every(key =>
+    !controlsSubmittedTimestamp(body, key)
+    || existingSnapshot[key] === candidateSnapshot[key]);
+}
 
 function registerDreamRoutes(app, deps) {
-  const { requireAuth, requireEvaluatorAuth = requireAuth, loadDreams, saveDreams,
+  const { requireAuth, requireOperatorAuth = unavailableOperatorAuth,
+    requireEvaluatorAuth = unavailableEvaluatorAuth, loadDreams, saveDreams,
+    saveDreamsStrict = async dreams => saveDreams(dreams),
     listExperiments = () => [], dreamInsightStudyActive = () => false,
+    resolveAutonomousDreamLifecycle = () => null, authorizeDreamImport = () => null,
     MAX_DREAMS_KEPT, onDream, clock = () => new Date() } = deps;
   const sealed = res => res.status(423).json({
     error: 'dream insight access is sealed during an active blinded synthesis study',
     experimental_access_sealed: true,
   });
+
+  async function runDreamProjection(dreams, dream, res, {
+    replayed = false, pendingCommitted = false,
+  } = {}) {
+    if (!pendingCommitted) {
+      const pendingAt = new Date(clock()).toISOString();
+      dream.downstream_projection = pendingProjection(dream.downstream_projection, pendingAt);
+      try {
+        await saveDreamsStrict(dreams);
+      } catch (error) {
+        return res.status(503).json({
+          error: `dream downstream projection was not re-queued: ${projectionError(error)}`,
+          code: 'dream_downstream_projection_failed',
+          retryable: true,
+          source_committed: true,
+        });
+      }
+    }
+
+    let result;
+    try {
+      const projectedDream = callbackDream(dream);
+      result = await onDream(projectedDream, {
+        provenance: dreamProvenance.audit(projectedDream),
+        projection: {
+          idempotency_key: `dream:${dream.id}:v1`,
+          attempt: dream.downstream_projection.attempts,
+        },
+      });
+    } catch (error) {
+      const failedAt = new Date(clock()).toISOString();
+      const callbackFailure = projectionError(error);
+      dream.downstream_projection = {
+        ...dream.downstream_projection,
+        status: 'failed',
+        updated_at: failedAt,
+        error: callbackFailure,
+        receipt: null,
+      };
+      try {
+        await saveDreamsStrict(dreams);
+      } catch (persistenceError) {
+        return res.status(503).json({
+          error: `dream downstream projection failed (${callbackFailure}); retry state was not committed: ${projectionError(persistenceError)}`,
+          code: 'dream_downstream_projection_failed',
+          retryable: true,
+          source_committed: true,
+        });
+      }
+      return res.status(503).json({
+        error: `dream downstream projection failed: ${callbackFailure}`,
+        code: 'dream_downstream_projection_failed',
+        retryable: true,
+        source_committed: true,
+        dream,
+        provenance_audit: dreamProvenance.audit(dream),
+        downstream_projection: dream.downstream_projection,
+      });
+    }
+
+    const completedAt = new Date(clock()).toISOString();
+    dream.downstream_projection = {
+      ...dream.downstream_projection,
+      status: 'completed',
+      updated_at: completedAt,
+      completed_at: completedAt,
+      error: null,
+      receipt: projectionReceipt(result),
+    };
+    try {
+      await saveDreamsStrict(dreams);
+    } catch (error) {
+      return res.status(503).json({
+        error: `dream downstream projection completed but its receipt was not committed: ${projectionError(error)}`,
+        code: 'dream_downstream_projection_failed',
+        retryable: true,
+        source_committed: true,
+      });
+    }
+    console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before}→${dream.consolidation.memories_after} memories, +${dream.reflection.takes_added.length} takes, +${dream.review.learnings_added.length} learnings`);
+    return res.json({
+      ok: true,
+      dream,
+      provenance_audit: dreamProvenance.audit(dream),
+      downstream_projection: dream.downstream_projection,
+      ...(replayed ? { replayed: true } : {}),
+    });
+  }
 
   // GET /dreams — list dreams, newest first. Returns the full objects (they're small) so the
   // dashboard can render without a second round-trip per dream.
@@ -47,6 +247,7 @@ function registerDreamRoutes(app, deps) {
         available: allSeeds.filter(seed => seed.status === 'available').length,
         used: allSeeds.filter(seed => seed.status === 'used').length,
         role_retired: allSeeds.filter(seed => seed.status === 'role_retired').length,
+        archived: allSeeds.filter(seed => seed.status === 'archived').length,
       },
     });
   });
@@ -209,49 +410,170 @@ function registerDreamRoutes(app, deps) {
     } catch (error) { res.status(400).json({ error: error.message }); }
   });
 
-  // POST /dreams — record a completed dream. The cowork loop calls this at the end of its
-  // Dreaming Round with the consolidation stats, reflection results, and a first-person
-  // narrative ("what I dreamed about"). Server stamps id + finished if absent.
-  app.post('/dreams', requireAuth, (req, res) => {
+  // Autonomous callers prove possession of the current run-lock fencing capability. Raw imports
+  // require separately verified operator or research authority. Caller-supplied lifecycle and
+  // provenance objects are never trusted or copied.
+  app.post('/dreams', requireAuth, async (req, res) => {
     if (dreamInsightStudyActive()) return sealed(res);
-    const body = req.body || {};
-    const now = new Date(clock()).toISOString();
-    const dream = {
-      id: body.id || `dream-${Date.now()}-${crypto.randomBytes(2).toString('hex')}`,
-      date: body.date || now.split('T')[0],
-      started: body.started || now,
-      finished: body.finished || now,
-      // { memories_before, memories_after, duplicates_removed, fragments_merged,
-      //   stale_pruned, contradictions_resolved, examples: [..] }
-      consolidation: body.consolidation || {},
-      // { takes_added: [..], takes_retired: [..], ideas: [..] }
-      reflection: body.reflection || {},
-      // { interactions_reviewed, outcomes: {appreciated,landed,neutral,ignored,corrected},
-      //   learnings_added: [..], learnings_retired: [..] } — the RSI Review movement's results.
-      review: body.review || {},
-      // First-person "what I dreamed about" summary in Nora's voice.
-      narrative: body.narrative || ''
-    };
-    const dreams = loadDreams();
-    dreams.push(dream);
-    // Trim oldest beyond the cap.
-    dreams.sort((a, b) => new Date(b.finished || b.started || 0).getTime() - new Date(a.finished || a.started || 0).getTime());
-    const trimmed = dreams.slice(0, MAX_DREAMS_KEPT);
-    saveDreams(trimmed);
-    if (onDream) onDream(dream);
-    console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before ?? '?'}→${dream.consolidation.memories_after ?? '?'} memories, +${(dream.reflection.takes_added || []).length} takes, +${(dream.review.learnings_added || []).length} learnings`);
-    res.json({ ok: true, dream });
+    try {
+      const body = req.body || {};
+      const now = new Date(clock());
+      const manualRequested = body.import_mode === 'manual';
+      const lifecycle = manualRequested ? null : resolveAutonomousDreamLifecycle(req);
+      const authority = lifecycle ? null : authorizeDreamImport(req);
+      if (!lifecycle && !authority) {
+        return res.status(403).json({
+          error: 'dream creation requires the current operational run receipt or signed operator/research authority',
+          code: 'dream_provenance_required',
+        });
+      }
+
+      const requestedId = String(body.id || '').trim();
+      const safeRequestedId = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/.test(requestedId)
+        ? requestedId : null;
+      // Build against a detached snapshot so a failed strict commit cannot leak a cache-only
+      // dream into canonical evidence or downstream self-improvement.
+      const dreams = JSON.parse(JSON.stringify(loadDreams()));
+      const existing = authority && safeRequestedId
+        ? dreams.find(item => item.id === safeRequestedId)
+        : lifecycle ? dreams.find(item =>
+          item.provenance?.origin === 'autonomous_nightly_cycle'
+          && item.provenance?.lifecycle?.cycle_id === String(lifecycle.cycle_id || '').trim()
+          && item.provenance?.lifecycle?.moment_id === String(lifecycle.moment_id || '').trim())
+          : null;
+      const id = existing?.id || (authority && safeRequestedId
+        ? safeRequestedId
+        : `dream-${now.getTime()}-${crypto.randomBytes(2).toString('hex')}`);
+
+      const dream = dreamProvenance.normalizeDreamInput(body, {
+        id, now, autonomous: Boolean(lifecycle), lifecycle,
+      });
+      if (lifecycle) dreamProvenance.stampAutonomous(dream, lifecycle, now);
+      else dreamProvenance.stampAuthorizedImport(dream, authority, now);
+
+      if (existing) {
+        // Legacy duplicate IDs retain the historical conflict contract. Records written by this
+        // state machine can be replayed only when provenance identity and submitted content match.
+        if (!existing.downstream_projection
+          || !isExactDreamReplay(existing, dream, body, { lifecycle, authority })) {
+          return res.status(409).json({ error: 'dream id already exists', code: 'dream_id_conflict' });
+        }
+        const projection = existing.downstream_projection;
+        if (['completed', 'not_required'].includes(projection.status)) {
+          return res.json({
+            ok: true,
+            dream: existing,
+            provenance_audit: dreamProvenance.audit(existing),
+            downstream_projection: projection,
+            idempotent: true,
+          });
+        }
+        if (!['pending', 'failed'].includes(projection.status)) {
+          return res.status(409).json({
+            error: 'dream has an invalid downstream projection state',
+            code: 'dream_downstream_projection_invalid',
+          });
+        }
+        if (dreamProvenance.isArchived(existing)) {
+          return res.status(409).json({
+            error: 'an archived dream downstream projection cannot be rewritten',
+            code: 'dream_projection_archived',
+          });
+        }
+        if (typeof onDream !== 'function') {
+          return res.status(503).json({
+            error: 'dream downstream projection handler is unavailable',
+            code: 'dream_downstream_projection_failed',
+            retryable: true,
+            source_committed: true,
+          });
+        }
+        return runDreamProjection(dreams, existing, res, { replayed: true });
+      }
+      if (dreams.some(item => item.id === id)) {
+        return res.status(409).json({ error: 'dream id already exists', code: 'dream_id_conflict' });
+      }
+      dreams.push(dream);
+      dreams.sort((a, b) =>
+        new Date(b.finished || b.started || 0).getTime()
+        - new Date(a.finished || a.started || 0).getTime());
+
+      // Bound the active window without erasing records that can anchor later provenance.
+      const maxActive = Math.max(1, Number(MAX_DREAMS_KEPT) || 120);
+      const active = dreams.filter(item => !dreamProvenance.isArchived(item));
+      const shouldProject = typeof onDream === 'function'
+        && active.slice(0, maxActive).includes(dream);
+      const queuedAt = now.toISOString();
+      dream.downstream_projection = shouldProject
+        ? pendingProjection(null, queuedAt)
+        : notRequiredProjection(queuedAt,
+          typeof onDream === 'function' ? 'archived_by_retention' : 'no_projection_handler');
+      for (const old of active.slice(maxActive)) {
+        dreamProvenance.archive(old, {
+          reason: `Automatic provenance-preserving archival after the ${maxActive}-dream active window was exceeded.`,
+          actor: 'server-retention',
+          now,
+        });
+      }
+
+      try {
+        await saveDreamsStrict(dreams);
+      } catch (error) {
+        return res.status(503).json({
+          error: `dream was not durably committed: ${String(error?.message || error).slice(0, 300)}`,
+          code: 'dream_persistence_failed',
+          retryable: true,
+          source_committed: false,
+        });
+      }
+      if (shouldProject) {
+        return runDreamProjection(dreams, dream, res, { pendingCommitted: true });
+      }
+      console.log(`💤 Dream recorded ${dream.date}: ${dream.consolidation.memories_before}→${dream.consolidation.memories_after} memories, +${dream.reflection.takes_added.length} takes, +${dream.review.learnings_added.length} learnings`);
+      return res.json({ ok: true, dream, provenance_audit: dreamProvenance.audit(dream),
+        downstream_projection: dream.downstream_projection });
+    } catch (error) {
+      return res.status(400).json({ error: error.message, code: 'dream_rejected' });
+    }
   });
 
-  // DELETE /dreams/:id — admin cleanup of a single dream entry.
-  app.delete('/dreams/:id', requireAuth, (req, res) => {
+  // DELETE remains as a compatibility verb, but it now performs operator-only archival.
+  app.delete('/dreams/:id', requireAuth, requireOperatorAuth, (req, res) => {
     if (dreamInsightStudyActive()) return sealed(res);
     const dreams = loadDreams();
-    const idx = dreams.findIndex(d => d.id === req.params.id);
-    if (idx === -1) return res.status(404).json({ error: 'dream not found' });
-    dreams.splice(idx, 1);
-    saveDreams(dreams);
-    res.json({ ok: true });
+    const dream = dreams.find(item => item.id === req.params.id);
+    if (!dream) return res.status(404).json({ error: 'dream not found' });
+    try {
+      const event = dreamProvenance.archive(dream, {
+        reason: req.body?.reason,
+        actor: req.operatorAuthority || 'signed-operator',
+        now: clock(),
+      });
+      saveDreams(dreams);
+      return res.json({ ok: true, archived: true, dream, archive_event: event,
+        archive_audit: dreamProvenance.archiveHistoryAudit(dream) });
+    } catch (error) {
+      return res.status(409).json({ error: error.message, code: 'dream_archive_rejected' });
+    }
+  });
+
+  app.post('/dreams/:id/restore', requireAuth, requireOperatorAuth, (req, res) => {
+    if (dreamInsightStudyActive()) return sealed(res);
+    const dreams = loadDreams();
+    const dream = dreams.find(item => item.id === req.params.id);
+    if (!dream) return res.status(404).json({ error: 'dream not found' });
+    try {
+      const event = dreamProvenance.restore(dream, {
+        reason: req.body?.reason,
+        actor: req.operatorAuthority || 'signed-operator',
+        now: clock(),
+      });
+      saveDreams(dreams);
+      return res.json({ ok: true, restored: true, dream, archive_event: event,
+        archive_audit: dreamProvenance.archiveHistoryAudit(dream) });
+    } catch (error) {
+      return res.status(409).json({ error: error.message, code: 'dream_restore_rejected' });
+    }
   });
 }
 

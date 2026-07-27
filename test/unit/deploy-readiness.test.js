@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { REQUIRED_ROUTINE_MARKERS, assessRoutineContract,
-  assessDeployReadiness, checkDeployReadiness } = require('../../scripts/check-deploy-readiness');
+  assessDeployReadiness, checkDeployReadiness,
+  resolveDeploymentBaseUrl } = require('../../scripts/check-deploy-readiness');
 
 const validRoutine = { content: REQUIRED_ROUTINE_MARKERS.join('\n\n'),
   updated_at: '2026-07-18T05:00:00.000Z', updated_by: 'test' };
@@ -152,11 +153,21 @@ test('deployment readiness waits for ordinary entity writes to drain', () => {
 });
 
 test('deployment readiness fails closed when either authoritative probe fails', async () => {
-  await assert.rejects(checkDeployReadiness({ apiKey: 'test-key',
+  await assert.rejects(checkDeployReadiness({ apiKey: 'test-key', baseUrl: 'https://nora.example',
     fetchImpl: async url => url.endsWith('/run-lock')
       ? response({}, 503) : response({ count: 0, bots: [] }) }), /failed with HTTP 503/);
-  await assert.rejects(checkDeployReadiness({ apiKey: '', fetchImpl: async () => response({}) }),
+  await assert.rejects(checkDeployReadiness({ apiKey: '', baseUrl: 'https://nora.example',
+    fetchImpl: async () => response({}) }),
     /NORA_API_KEY is required/);
+});
+
+test('deployment target is environment-bound and never falls back to another production service', () => {
+  assert.equal(resolveDeploymentBaseUrl({ NORA_BASE_URL: 'https://nora.example///' }),
+    'https://nora.example');
+  assert.equal(resolveDeploymentBaseUrl({ RAILWAY_PUBLIC_DOMAIN: 'nora-production.up.railway.app' }),
+    'https://nora-production.up.railway.app');
+  assert.throws(() => resolveDeploymentBaseUrl({}),
+    /NORA_BASE_URL or RAILWAY_PUBLIC_DOMAIN is required/);
 });
 
 test('the Railway pre-deploy process exits after its terminal readiness result', () => {

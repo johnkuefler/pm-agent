@@ -1,8 +1,10 @@
 'use strict';
 
-function registerCoworkInstructionsRoute(app) {
+function registerCoworkInstructionsRoute(app, {
+  requireAuth = (_req, _res, next) => next(),
+} = {}) {
   // Cowork instructions — plain text reference for scheduled Cowork tasks
-  app.get('/cowork-instructions', (req, res) => {
+  app.get('/cowork-instructions', requireAuth, (req, res) => {
     res.type('text/plain').send(`# Nora — Cowork Instructions
   # Generated: ${new Date().toISOString()}
 
@@ -17,20 +19,23 @@ function registerCoworkInstructionsRoute(app) {
 
   ## Authentication
 
-  The following endpoints require an API key: /memory, /projects, /tasks, /teamwork, /notify, /transcripts, /dreams, /dream-insights, /developmental-reading, /interactions, /capability-boundaries, /run-lock, /markers.
-  All other endpoints (dashboard, webhooks, join, mute, proactive, etc.) are open.
+  All operational data and action endpoints require an API key, including identity, routine,
+  memory, project, task, meeting-control, Slack, research, and self-improvement surfaces.
+  Only the health check, signed provider webhooks, OAuth callbacks, and meeting media page are
+  intentionally public. The dashboard has separate operator authentication.
 
-  Pass the key as a query parameter or header:
-  - Query param: ?key=YOUR_NORA_API_KEY (append to any request URL)
+  Pass the key only in a bearer header. Hosted deployments reject query-string credentials by
+  default because URLs leak into logs, browser history, and referrers:
   - Header: Authorization: Bearer YOUR_NORA_API_KEY
 
   Examples:
-    GET /tasks?status=pending&key=YOUR_KEY
-    GET /memory?key=YOUR_KEY
-    GET /teamwork/tasks/12345/stage?stage=Done&key=YOUR_KEY
-    POST /notify  (with header: Authorization: Bearer YOUR_KEY)
+    GET /tasks?status=pending  (with header: Authorization: Bearer YOUR_KEY)
+    GET /memory                (with header: Authorization: Bearer YOUR_KEY)
+    GET /teamwork/tasks/12345/stage?stage=Done  (with the same header)
+    POST /notify               (with the same header)
 
-  If NORA_API_KEY is not set in the environment, auth is disabled (open access for local dev).
+  Hosted deployments fail closed unless a Nora API, autonomy, internal, or dashboard credential
+  is configured. Local development alone remains open when none are intentionally configured.
 
   ## API Endpoints
 
@@ -64,8 +69,11 @@ function registerCoworkInstructionsRoute(app) {
   (temp-file + rename), so concurrent writers can't lose updates or read a half-written file.
 
   ### Run lock (prevent overlapping cowork runs)
-  - POST /run-lock                — Acquire the advisory run lock. Body: { "holder": "run-...", "ttl_seconds": 3000 }
-    Response: { "acquired": true|false, "held_by"?: "...", "expires_at": "...", "lifecycle"?: {...} }.
+  - POST /run-lock                — Acquire the advisory run lock. Body: { "holder": "run-...", "fencing_token": "<caller-generated 32+ character random capability>", "ttl_seconds": 3000 }
+    Response: { "acquired": true|false, "fencing_token"?: "...", "held_by"?: "...", "expires_at": "...", "lifecycle"?: {...} }.
+    Save the returned fencing_token in private per-run temp state and echo it on every same-holder renewal
+    and DELETE. The initial caller-supplied token makes an ambiguous acquisition retry idempotent. Never
+    write it to memory, logs, summaries, or Slack. GET intentionally does not disclose it.
     A successful normal run holder atomically opens or resumes one intelligence cycle before any connector
     call. lifecycle supplies cycle_id, moment_id, protocol version, and a current machine-readable
     lifecycle_stage plus next_required_action. GET /run-lock re-derives that projection from the persisted
@@ -85,7 +93,7 @@ function registerCoworkInstructionsRoute(app) {
     non-evidence gap before the server accepts requests; never reconstruct or complete that missing interval.
     Acquire at the TOP of a run; if acquired=false, another run is active — skip all shared-state mutation.
   - GET  /run-lock                — { "locked": bool, "holder": ..., "expires_at": ..., "lifecycle": {...}|null }
-  - DELETE /run-lock?holder=...   — Release (only the holder can). Always release at run end.
+  - DELETE /run-lock?holder=...&fencing_token=... — Release only with the exact holder capability. Always release at run end.
   - GET  /runtime-activity         — Bounded live activity snapshot used by the dashboard.
   - POST /runtime-activity/report  — Report an hourly-run phase. Body: { "phase": "orientation|forecast|context|cleanup|tasks|transcripts|files|email|slack|deadlines|relationships|reflection|summary" }. The server binds it to the active run lock; reporting is best-effort and never replaces the durable cycle ledger.
     The response reports lifecycle closure. Releasing an open bound cycle records a replay-audited explicit
@@ -188,12 +196,12 @@ function registerCoworkInstructionsRoute(app) {
                   "source_channel", "source_user", "source_thread_ts",
                   "status", "created", "completed" }]
 
-    Important: tasks queued from a Slack thread now include "source_thread_ts". When you
-    notify the requester (POST /notify), pass that value as "thread_ts" so the resolution
-    posts back into the original thread instead of as a fresh channel message. This is what
-    makes the conversation feel continuous from the user's side: they ask Nora something live,
-    she promises a follow-up, then the answer lands in the same thread within the hour.
-    If "source_thread_ts" is empty (Zoom tasks, DMs), omit thread_ts and notify normally.
+    Important: tasks queued from Slack retain "source_thread_ts". When notifying the requester,
+    pass it as both "thread_ts" and "source_ts", set "delivery_mode": "auto", and classify
+    "materiality" honestly. The server preserves routine context in-thread, but makes a stale
+    shared deliverable, consequential correction, blocker, deadline risk, incident, or urgent
+    risk visible to the channel instead of burying it. If "source_thread_ts" is empty (Zoom
+    tasks and DMs), omit both timestamps and notify normally.
 
   - POST /tasks                   — Add a task. Supports one-shot scheduled tasks and
     recurring ones. The cowork loop polls GET /tasks?status=pending, which by default
@@ -295,7 +303,12 @@ function registerCoworkInstructionsRoute(app) {
   - GET  /dreams                  — List all recorded dreams, newest first
     Response: [{ "id", "date", "started", "finished", "consolidation": {...}, "reflection": {...}, "narrative" }]
 
-  - POST /dreams                  — Record a completed dream (cowork loop calls this at the end of the Dreaming Round)
+  - POST /dreams                  — Record a completed dream (cowork loop calls this at the end of the Dreaming Round).
+    Autonomous calls must include X-Nora-Run-Holder and X-Nora-Run-Fencing-Token from this exact
+    active run lock (plus X-Nora-Cycle-Id when available). The server verifies the live operational
+    lifecycle, discards caller-supplied provenance/lifecycle fields, stamps the exact cycle/moment
+    commitments, and binds them to the submitted dream. Raw/manual imports instead require a signed
+    X-Nora-Operator-Token or X-Nora-Research-Key and are explicitly labeled authorized imports.
     Body: {
       "date": "YYYY-MM-DD",
       "started": "<ISO>", "finished": "<ISO>",
@@ -309,11 +322,15 @@ function registerCoworkInstructionsRoute(app) {
                   "learnings_added": ["<learning>", ...], "learnings_retired": ["<old learning>", ...] },
       "narrative": "<first-person 'what I dreamed about' summary in Nora's voice>"
     }
-    Server stamps id + finished if omitted. Caps stored dreams at the newest ~120.
+    Server stamps autonomous id/date/times and a provenance receipt. It keeps ~120 active dreams;
+    older records are provenance-preserving archives rather than hard-deleted sources.
     Response: { "ok": true, "dream": {...} }
 
   - GET    /dreams/:id            — Full detail for one dream. 404 if not found.
-  - DELETE /dreams/:id            — Delete a dream entry. 404 if not found.
+  - DELETE /dreams/:id            — Signed-operator archival; body requires a concrete "reason".
+    The record remains available for downstream receipt replay and can no longer seed new work.
+  - POST /dreams/:id/restore      — Signed-operator recovery of an archived dream; body requires
+    a concrete "reason". Archive/restore events form a committed history.
 
   - GET /dream-idea-seeds         — List exact, content-committed dream sparks that are available or
     already used by a self-chosen experiment. Optional ?status=available|used. A seed remains a
@@ -439,9 +456,16 @@ function registerCoworkInstructionsRoute(app) {
 
   ### Notifications
   - POST /notify                  — Post a message to Slack as Nora
+    Required header: Idempotency-Key: a retry-stable logical notification id
     Body: { "channel": "C...", "text": "string" }  (or "user": "U..." for DMs)
-    Optional: "blocks" (Block Kit), "file_url" + "file_name", "thread_ts"
-    Response: { "ok": true, "channel": "...", "ts": "..." }
+    Optional: "blocks" (Block Kit), "file_url" + "file_name", "thread_ts", "source_ts",
+              "delivery_mode" ("auto"|"thread"|"thread_broadcast"|"channel"|"dm"),
+              "materiality", "channel_type"
+    Response: { "ok": true, "channel": "...", "ts": "...", "delivery": {...} }
+    Prefer delivery_mode "auto": routine work stays in context; material corrections, incidents,
+    urgent risks, or stale shared outcomes are surfaced to the channel by policy.
+    Reuse the same Idempotency-Key after a timeout or transport retry. Use a new key only for an
+    intentionally distinct message; the server turns the key into Slack's stable client message id.
     Note: When this posts in a channel thread (not a DM), Nora is automatically marked
     as joined to that thread — meaning users can reply in-thread and reach her without
     having to @mention her again. See /slack/threads to inspect or prune.
@@ -569,9 +593,10 @@ function registerCoworkInstructionsRoute(app) {
     and usage receipts. If an API needs signup/key/OAuth, propose it and stop.
 
   - POST /api-opportunities/usage/:id/outcome
-    Records helpful, unhelpful, or unclear later evidence. Live Slack uses are linked automatically to delayed
-    interaction outcomes. Three consecutive execution failures suspend a tool; five reviewed uses with at least
-    70% unhelpful outcomes retire it. This is consequence-based capability revision, not permanent accumulation.
+    Dashboard-operator adjudication only. Live Slack uses are linked automatically to replay-reviewed delayed
+    interaction outcomes, so Nora does not need to self-score them. Three consecutive execution failures suspend
+    a tool; five reviewed uses with at least 70% unhelpful outcomes retire it. This is consequence-based
+    capability revision, not permanent accumulation.
 
   ### Operational epistemics
   Use these endpoints to keep consequential claims from turning into mush. This is the practical,
@@ -614,7 +639,7 @@ function registerCoworkInstructionsRoute(app) {
   evidence committed in the historical cycle, never Nora's current motives or body state. Post a richer frame when real task, uncertainty,
   relationship, curiosity, consequence, or inhibition candidates become available.
   Episode continuity, self-experiments, and constructed-future recommendations are optional; only actual
-  commitments and lifecycle-recovery work carry bounded or required authority. Severe fresh substrate strain
+  commitments and server-created lifecycle/recovery work carry bounded or required authority. Severe fresh substrate strain
   may select recovery over optional focus, but never over a bounded or required obligation.
   Use this as Nora's durable "what has access now" integration surface. It binds the current focus
   to competing alternatives, wants, aversions, uncertainty, inhibited actions, soma constraints,
@@ -624,7 +649,12 @@ function registerCoworkInstructionsRoute(app) {
   replay-valid durable curiosity, person-bound relational stance, replay-verified consequences, and fresh
   substrate strain. It also records the no-motivation baseline,
   so the receipt shows whether motivation actually changed the choice. Explicit user/delegated obligations
-  use authority_class=required and always outrank bounded or optional candidates; wants never grant authority.
+  in the server lifecycle use authority_class=required and always outrank bounded or optional candidates;
+  wants never grant authority. Autonomous POSTed frames are discretionary only: the server stamps every new
+  candidate optional and stamps the actor. In a revision, an exact carried-forward bounded/required prior
+  winner retains its server-verified authority and cannot be rewritten or downgraded. A separately signed
+  dashboard operator may create a non-lifecycle bounded/required frame. Lifecycle fields and lifecycle frame
+  ids are reserved to the runtime even for an operator.
   Immediately after the cycle forecast reaches operational_cycle_active, read GET /conscious-workspace and
   require current.lifecycle to name that cycle and phase=operations with a replay-valid arbitration audit.
   Before any operational tool, POST /conscious-workspace/focus-commitments with that exact frame id,
@@ -650,14 +680,14 @@ function registerCoworkInstructionsRoute(app) {
       "why_this": "why this focus won over alternatives",
       "attention_candidates": [
         { "key": "task:tw-...", "type": "task", "label": "Deadline sweep", "priority": 0.8,
-          "authority_class": "bounded", "soma_demand": "moderate", "action_type": "deadline_flag",
+          "authority_class": "optional", "soma_demand": "moderate", "action_type": "deadline_flag",
           "evidence": [{ "type": "teamwork_task", "id": "tw-..." }] },
         { "key": "want:w-...", "type": "want", "label": "Know the account cold", "priority": 0.4,
           "authority_class": "optional", "soma_demand": "low",
           "want_refs": [{ "type": "want", "id": "w-..." }],
           "evidence": [{ "type": "want", "id": "w-..." }] },
         { "key": "uncertainty:blocker", "type": "uncertainty", "label": "Is it really blocked?", "priority": 0.7,
-          "authority_class": "bounded", "soma_demand": "low",
+          "authority_class": "optional", "soma_demand": "low",
           "evidence": [{ "type": "epistemic_claim", "id": "ep-..." }] }
       ],
       "selected_focus_key": "uncertainty:blocker",
@@ -670,8 +700,7 @@ function registerCoworkInstructionsRoute(app) {
       "epistemic_claim_refs": [{ "type": "epistemic_claim", "id": "ep-..." }],
       "relationship_refs": [{ "type": "relationship", "id": "rel-..." }],
       "consequence_watchlist": [{ "type": "task", "id": "tw-..." }],
-      "evidence": [{ "type": "intelligence_cycle", "id": "cycle-..." }],
-      "created_by": "Nora"
+      "evidence": [{ "type": "intelligence_cycle", "id": "cycle-..." }]
     }
     Every candidate requires evidence. selected_focus_key is Nora's pre-arbitration inclination only.
     The response's selected_focus_key is authoritative for discretionary focus and includes:
@@ -690,11 +719,15 @@ function registerCoworkInstructionsRoute(app) {
   - POST /conscious-workspace/feedback
     Body: {
       "frame_id": "cw-...",
-      "signal": "what later evidence showed",
-      "effect": "supported|contradicted|redirected|unclear",
-      "evidence": [{ "type": "...", "id": "..." }],
-      "recorded_by": "Nora"
+      "effect": "redirected",
+      "evidence": [{ "type": "interaction", "id": "exact replay-reviewed interaction id" }]
     }
+    For autonomous feedback, cite exactly one retained interaction with a replay-verified automated outcome
+    receipt. The server derives the exact observed signal, maps its immutable outcome to supported,
+    contradicted/redirected, or unclear, and stamps the actor; caller-authored signal and recorded_by text are
+    ignored. Corrected interactions may request redirected when the evidence changes which alternative should
+    win; otherwise the server records contradicted. Feedback from any other source requires a separately signed
+    dashboard operator. This prevents an API caller from manufacturing the evidence that changes a selection.
     To establish a changed mind, use contradicted or redirected feedback, then create a later frame with
     revision_of_frame_id set to the prior frame. Carry the prior winner as a candidate and add
     feedback_refs: [{ "type": "workspace_feedback", "id": "cw-fb-..." }] only to the evidence-supported
@@ -1783,7 +1816,7 @@ function registerCoworkInstructionsRoute(app) {
     "source_channel": "slack:C0123... or zoom",
     "source_user": "U0123... (Slack user ID)",
     "source_bot_id": "Recall.ai bot ID if task came from a meeting (use to fetch full transcript via GET /transcripts/{bot_id})",
-    "source_thread_ts": "Slack thread timestamp if task originated in a channel thread (empty for DMs/Zoom). Pass as thread_ts to /notify so the resolution lands in the original thread.",
+    "source_thread_ts": "Slack thread timestamp if task originated in a channel thread (empty for DMs/Zoom). Pass as thread_ts and source_ts to /notify with delivery_mode=auto so policy preserves context without burying material stale updates.",
     "context": "Conversation snippet surrounding the task request — includes the trigger, Nora's reply, and recent utterances",
     "status": "pending | done",
     "created": "ISO 8601 timestamp",
@@ -1882,17 +1915,21 @@ function registerCoworkInstructionsRoute(app) {
 
   4. Notify the requester that it's done:
      POST /notify
+     Idempotency-Key: notify-{task_id}-completion-v1
      {
        "channel": "C0123ABCDEF",  // from task.source_channel (strip "slack:" prefix)
        "text": "Done — scheduled the follow-up with Kyle for Tuesday at 2pm.",
-       "thread_ts": "1710432000.000100"  // pass task.source_thread_ts when present
+       "thread_ts": "1710432000.000100", // pass task.source_thread_ts when present
+       "source_ts": "1710432000.000100",
+       "delivery_mode": "auto",
+       "materiality": "routine"
      }
      - If source_channel starts with "slack:", strip the prefix to get the channel ID.
      - If source_channel is "zoom", use task.source_user to DM them instead.
-     - If task.source_thread_ts is non-empty, ALWAYS pass it as thread_ts so your reply
-       lands in the same thread where the conversation started. This is what makes Nora
-       feel responsive: a user asks her live, she promises a follow-up, the answer arrives
-       in-thread within the hour. Skipping thread_ts breaks that experience.
+     - If task.source_thread_ts is non-empty, pass it as thread_ts and source_ts. Keep
+       delivery_mode "auto" and classify materiality honestly. Routine work remains in the
+       originating conversation; the server broadcasts a material correction/incident/urgent
+       risk, or resurfaces a stale shared outcome, while retaining the thread anchor.
 
   5. Mark the task as done:
      PATCH /tasks/{task_id}/complete
@@ -1920,6 +1957,7 @@ function registerCoworkInstructionsRoute(app) {
 
   5. Post a meeting summary to Slack:
      POST /notify
+     Idempotency-Key: meeting-summary-{bot_id}-v1
      {
        "channel": "C0123ABCDEF",
        "text": "Meeting summary from [date]:\\n- Key decisions...\\n- Action items..."
@@ -2029,8 +2067,10 @@ function registerCoworkInstructionsRoute(app) {
 
   5. Notify the original requester (if applicable):
      POST /notify
+     Idempotency-Key: notify-{task_id}-research-complete-v1
      Use the task's source_channel/source_user to let them know Nora has updated her knowledge.
-     If task.source_thread_ts is set, pass it as thread_ts so the reply lands in-thread.
+     If task.source_thread_ts is set, pass it as thread_ts and source_ts with
+     delivery_mode "auto"; let materiality decide whether it stays threaded or is surfaced.
      Example: "I've done some research on [topic] and updated my notes. Ask me again anytime!"
 
   6. Mark the research task as done:

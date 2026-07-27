@@ -83,8 +83,8 @@ test('unattended-work instructions expose raw upload, retry, and receipt verific
   }
 
   let handler;
-  registerCoworkInstructionsRoute({ get(route, callback) {
-    if (route === '/cowork-instructions') handler = callback;
+  registerCoworkInstructionsRoute({ get(route, ...handlers) {
+    if (route === '/cowork-instructions') handler = handlers.at(-1);
   } });
   let rendered = '';
   assert.doesNotThrow(() => handler({}, {

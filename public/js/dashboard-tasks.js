@@ -1,5 +1,7 @@
 // Tasks
-    let taskDataCache = {};
+    let taskDataCache = new Map();
+    let taskRowCache = new Map();
+    let taskLoadToken = 0;
 
     function fmtScheduledFor(iso) {
       try {
@@ -18,6 +20,9 @@
 
     async function loadTasks() {
       const list = document.getElementById('task-list');
+      const token = ++taskLoadToken;
+      list.setAttribute('aria-busy', 'true');
+      list.innerHTML = '<p class="empty" role="status">Loading tasks...</p>';
       // Dashboard always shows scheduled tasks (include=all bypasses the eligibility filter).
       const url = currentFilter === 'all'
         ? '/tasks?include=all'
@@ -25,8 +30,13 @@
       try {
         const r = await api(url);
         const tasks = await r.json();
+        if (token !== taskLoadToken) return;
+        taskDataCache = new Map();
+        taskRowCache = new Map();
         if (tasks.length === 0) {
-          list.innerHTML = '<p class="empty">No tasks yet.</p>';
+          const message = currentFilter === 'pending' ? 'No pending tasks.'
+            : currentFilter === 'done' ? 'No completed tasks.' : 'No tasks yet.';
+          list.innerHTML = `<p class="empty" role="status">${message}</p>`;
           return;
         }
         // Sort: scheduled-future last (sorted by fire time ascending), then everything else by created desc.
@@ -39,14 +49,13 @@
           if (bf) return -1;
           return new Date(b.created) - new Date(a.created);
         });
-        taskDataCache = {};
-        tasks.forEach(t => { taskDataCache[t.id] = {
+        tasks.forEach(t => { taskDataCache.set(String(t.id), {
           action: t.action, detail: t.detail || '', assignee: t.assignee || '',
           due: t.due || '', scheduled_for: t.scheduled_for || '', recurrence: t.recurrence || ''
-        }; });
-        list.innerHTML = tasks.map(t => {
+        }); });
+        list.innerHTML = tasks.map((t, index) => {
           const transcriptLink = t.source_bot_id
-            ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(t.source_bot_id)}'), 100);" style="color: #1d4ed8; text-decoration: none;">View transcript</a>`
+            ? ' · <a href="#" class="task-transcript-link" style="color: #1d4ed8; text-decoration: none;">View transcript</a>'
             : '';
           const future = isFuture(t);
           const schedBadge = t.scheduled_for
@@ -59,30 +68,51 @@
             ? `<div class="task-detail" style="color: var(--muted); font-size: 12px;">Last ran ${escHtml(new Date(t.last_run).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }))}</div>`
             : '';
           return `
-          <div class="task-item ${t.status === 'done' ? 'done' : ''}" id="task-${escHtml(t.id)}">
+          <div class="task-item ${t.status === 'done' ? 'done' : ''}" data-task-index="${index}">
             <div class="task-action">${escHtml(t.action)}</div>
             ${t.detail ? `<div class="task-detail">${escHtml(t.detail)}</div>` : ''}
             ${lastRunNote}
             <div class="task-meta">
-              <span class="task-badge ${t.status === 'done' ? 'badge-done' : 'badge-pending'}">${t.status}</span>
+              <span class="task-badge ${t.status === 'done' ? 'badge-done' : 'badge-pending'}">${escHtml(t.status)}</span>
               ${t.assignee ? ' · ' + escHtml(t.assignee) : ''}
               ${t.due ? ' · due ' + escHtml(t.due) : ''}
               · ${new Date(t.created).toLocaleDateString()}${schedBadge}${recurBadge}${transcriptLink}
             </div>
             <div class="task-buttons">
-              <button class="btn btn-success" onclick="editTask('${escHtml(t.id)}')">Edit</button>
-              ${t.status === 'pending' ? `<button class="btn btn-success" onclick="completeTask('${t.id}')">${t.recurrence ? 'Mark Run' : 'Mark Done'}</button>` : ''}
-              <button class="btn btn-danger" onclick="deleteTask('${t.id}')">Delete</button>
+              <button class="btn btn-success task-edit-btn" type="button">Edit</button>
+              ${t.status === 'pending' ? `<button class="btn btn-success task-complete-btn" type="button">${t.recurrence ? 'Mark Run' : 'Mark Done'}</button>` : ''}
+              <button class="btn btn-danger task-delete-btn" type="button">Delete</button>
             </div>
           </div>`;
         }).join('');
-      } catch (e) { list.innerHTML = '<p class="empty">Failed to load tasks.</p>'; }
+        list.querySelectorAll('[data-task-index]').forEach(row => {
+          const task = tasks[Number(row.dataset.taskIndex)];
+          if (!task) return;
+          taskRowCache.set(String(task.id), row);
+          row.querySelector('.task-edit-btn')?.addEventListener('click', () => editTask(task.id, row));
+          row.querySelector('.task-complete-btn')?.addEventListener('click', () => completeTask(task.id));
+          row.querySelector('.task-delete-btn')?.addEventListener('click', () => deleteTask(task.id));
+          row.querySelector('.task-transcript-link')?.addEventListener('click', event => {
+            event.preventDefault();
+            showTab('transcripts');
+            setTimeout(() => viewTranscript(task.source_bot_id), 100);
+          });
+        });
+      } catch (e) {
+        if (token === taskLoadToken) list.innerHTML = '<p class="empty" role="alert">Failed to load tasks.</p>';
+      } finally {
+        if (token === taskLoadToken) list.setAttribute('aria-busy', 'false');
+      }
     }
 
     function filterTasks(status, btn) {
       currentFilter = status;
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.filter-btn').forEach(b => {
+        b.classList.remove('active');
+        b.setAttribute('aria-pressed', 'false');
+      });
       btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
       loadTasks();
     }
 
@@ -115,13 +145,13 @@
     }
 
     async function completeTask(id) {
-      await api('/tasks/' + id + '/complete', { method: 'PATCH' });
+      await api('/tasks/' + encodeURIComponent(id) + '/complete', { method: 'PATCH' });
       loadTasks();
     }
 
     async function deleteTask(id) {
       if (!confirm('Delete this task?')) return;
-      await api('/tasks/' + id, { method: 'DELETE' });
+      await api('/tasks/' + encodeURIComponent(id), { method: 'DELETE' });
       loadTasks();
     }
 
@@ -134,39 +164,54 @@
       return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     }
 
-    function editTask(id) {
-      const data = taskDataCache[id];
+    function editTask(id, row = taskRowCache.get(String(id))) {
+      const data = taskDataCache.get(String(id));
       if (!data) return;
-      const el = document.getElementById('task-' + id);
-      if (!el) return;
-      el.innerHTML = `
-        <input id="edit-task-action-${id}" value="${escHtml(data.action)}" placeholder="Action..." style="margin-bottom: 6px;" />
-        <input id="edit-task-detail-${id}" value="${escHtml(data.detail)}" placeholder="Detail (optional)" style="margin-bottom: 6px;" />
+      if (!row) return;
+      row.innerHTML = `
+        <input data-task-field="action" aria-label="Task action" placeholder="Action..." style="margin-bottom: 6px;" />
+        <input data-task-field="detail" aria-label="Task detail" placeholder="Detail (optional)" style="margin-bottom: 6px;" />
         <div style="display: flex; gap: 8px; margin-bottom: 6px;">
-          <input id="edit-task-assignee-${id}" value="${escHtml(data.assignee)}" placeholder="Assignee" style="flex: 1;" />
-          <input id="edit-task-due-${id}" value="${escHtml(data.due)}" placeholder="Due note" style="flex: 1;" />
+          <input data-task-field="assignee" aria-label="Task assignee" placeholder="Assignee" style="flex: 1;" />
+          <input data-task-field="due" aria-label="Task due note" placeholder="Due note" style="flex: 1;" />
         </div>
         <div style="display: flex; gap: 8px; margin-bottom: 6px;">
-          <input id="edit-task-scheduled-${id}" type="datetime-local" value="${escHtml(isoToLocalInput(data.scheduled_for))}" style="flex: 1;" title="Leave empty to clear schedule" />
-          <input id="edit-task-recurrence-${id}" value="${escHtml(data.recurrence)}" placeholder="Recurrence (e.g. weekly:friday:16:00)" style="flex: 1;" />
+          <input data-task-field="scheduled" type="datetime-local" aria-label="Task schedule" style="flex: 1;" title="Leave empty to clear schedule" />
+          <input data-task-field="recurrence" aria-label="Task recurrence" placeholder="Recurrence (e.g. weekly:friday:16:00)" style="flex: 1;" />
         </div>
         <div class="task-buttons">
-          <button class="btn btn-primary btn-sm" onclick="saveTaskEdit('${escHtml(id)}')">Save</button>
-          <button class="btn btn-danger btn-sm" onclick="loadTasks()">Cancel</button>
+          <button class="btn btn-primary btn-sm task-save-btn" type="button">Save</button>
+          <button class="btn btn-danger btn-sm task-cancel-btn" type="button">Cancel</button>
         </div>`;
-      document.getElementById('edit-task-action-' + id).focus();
+      const values = {
+        action: data.action,
+        detail: data.detail,
+        assignee: data.assignee,
+        due: data.due,
+        scheduled: isoToLocalInput(data.scheduled_for),
+        recurrence: data.recurrence,
+      };
+      Object.entries(values).forEach(([field, value]) => {
+        const input = row.querySelector(`[data-task-field="${field}"]`);
+        if (input) input.value = value || '';
+      });
+      row.querySelector('.task-save-btn')?.addEventListener('click', () => saveTaskEdit(id, row));
+      row.querySelector('.task-cancel-btn')?.addEventListener('click', () => loadTasks());
+      row.querySelector('[data-task-field="action"]')?.focus();
     }
 
-    async function saveTaskEdit(id) {
-      const action = document.getElementById('edit-task-action-' + id).value.trim();
+    async function saveTaskEdit(id, row = taskRowCache.get(String(id))) {
+      if (!row) return;
+      const value = field => row.querySelector(`[data-task-field="${field}"]`).value.trim();
+      const action = value('action');
       if (!action) return;
-      const detail = document.getElementById('edit-task-detail-' + id).value.trim();
-      const assignee = document.getElementById('edit-task-assignee-' + id).value.trim();
-      const due = document.getElementById('edit-task-due-' + id).value.trim();
-      const schedRaw = document.getElementById('edit-task-scheduled-' + id).value.trim();
-      const recurrence = document.getElementById('edit-task-recurrence-' + id).value.trim();
+      const detail = value('detail');
+      const assignee = value('assignee');
+      const due = value('due');
+      const schedRaw = value('scheduled');
+      const recurrence = value('recurrence');
       const scheduled_for = schedRaw ? new Date(schedRaw).toISOString() : null;
-      const r = await api('/tasks/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, detail, assignee, due, scheduled_for, recurrence: recurrence || null }) });
+      const r = await api('/tasks/' + encodeURIComponent(id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, detail, assignee, due, scheduled_for, recurrence: recurrence || null }) });
       const d = await r.json();
       if (d.error) { alert(d.error); return; }
       loadTasks();

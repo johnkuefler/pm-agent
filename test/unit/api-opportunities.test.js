@@ -96,7 +96,9 @@ test('installed API tools learn from usefulness outcomes and retire when repeate
     state = apiOps.recordUsageOutcome(state.registry, result.usage.id, {
       outcome: 'unhelpful', note: 'The result did not change or improve the decision.',
       evidence: [{ type: 'interaction', id: `interaction-${index}` }],
+      reviewed_by: 'reviewed-interaction-worker',
     });
+    assert.equal(state.usage.reviewed_by, 'reviewed-interaction-worker');
   }
   assert.equal(state.proposal.status, 'retired');
   assert.match(state.proposal.retirement_reason, /unhelpful/);

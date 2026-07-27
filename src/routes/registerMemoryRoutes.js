@@ -1,7 +1,10 @@
 'use strict';
 
+const { evidenceForLearning } = require('../intelligence/learning-memory-evidence');
+
 function registerMemoryRoutes(app, deps) {
   const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady,
+    loadInteractions = () => [],
     normalizeMemoryRecord, getExpectationSurprise = () => null,
     getCognitiveParameters = () => ({ expectation: { surprising_memory_salience_floor: 0.6 } }) } = deps;
 
@@ -40,7 +43,16 @@ function registerMemoryRoutes(app, deps) {
     if (req.body.expectation_surprise_id && !expectationSurprise) {
       return res.status(400).json({ error: 'expectation_surprise_id must reference a replay-verified source-bound EXPECT miss' });
     }
-    const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject,
+    let learningEvidence = {};
+    if (source === 'learning' || req.body.kind === 'learning') {
+      if (source !== 'learning' || req.body.kind !== 'learning') {
+        return res.status(400).json({ error: 'learning memories require both source and kind to equal learning' });
+      }
+      try { learningEvidence = evidenceForLearning(req.body, loadInteractions()); }
+      catch (error) { return res.status(400).json({ error: error.message }); }
+    }
+    const entry = normalizeMemoryRecord({ ...req.body, ...learningEvidence,
+      id: newMemoryId(), fact, project: canonicalProject,
       added: new Date().toISOString().split('T')[0], source: source || 'manual',
       ...(expectationSurprise ? {
         salience: Math.max(getCognitiveParameters().expectation.surprising_memory_salience_floor,
@@ -103,18 +115,33 @@ function registerMemoryRoutes(app, deps) {
     const { fact, project } = req.body;
     if (!fact) return res.status(400).json({ error: 'fact is required' });
     const key = req.params.idOrIndex;
-    const { result } = await mutateMemory(m => {
-      let target = m.find(x => x.id === key);
-      if (!target) {
-        const idx = parseInt(key);
-        if (!isNaN(idx) && idx >= 0 && idx < m.length) target = m[idx];
-      }
-      if (!target) return null;
-      const next = normalizeMemoryRecord({ ...target, ...req.body, fact });
-      if (project !== undefined) next.project = project ? ensureProject(project) : '';
-      Object.assign(target, next);
-      return target;
-    });
+    let result;
+    try {
+      ({ result } = await mutateMemory(m => {
+        let target = m.find(x => x.id === key);
+        if (!target) {
+          const idx = parseInt(key);
+          if (!isNaN(idx) && idx >= 0 && idx < m.length) target = m[idx];
+        }
+        if (!target) return null;
+        const candidate = { ...target, ...req.body, fact };
+        let learningEvidence = {};
+        if (candidate.source === 'learning' || candidate.kind === 'learning') {
+          if (candidate.source !== 'learning' || candidate.kind !== 'learning') {
+            const error = new Error('learning memories require both source and kind to equal learning');
+            error.code = 'invalid_learning_memory';
+            throw error;
+          }
+          learningEvidence = evidenceForLearning(candidate, loadInteractions());
+        }
+        const next = normalizeMemoryRecord({ ...candidate, ...learningEvidence });
+        if (project !== undefined) next.project = project ? ensureProject(project) : '';
+        Object.assign(target, next);
+        return target;
+      }));
+    } catch (error) {
+      return res.status(400).json({ error: error.message });
+    }
     if (!result) return res.status(404).json({ error: 'memory not found' });
     if (result.project) bumpProjectActivity(result.project);
     console.log('🧠 Memory updated:', fact);

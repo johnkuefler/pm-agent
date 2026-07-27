@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
+const dreamProvenance = require('./dream-provenance');
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -359,7 +360,8 @@ async function runCycle({ store, memories = [], dreams = [], enabled = true, mod
     provider_calls: 0, source_dream_id: null, decision: null, position_id: null, failure: null };
   if (!enabled) return result;
   if (!store || typeof callProvider !== 'function') throw new Error('reflection autopilot requires a store and provider call');
-  const latestDream = dreams.slice().sort((a, b) => String(b.finished || b.started || '').localeCompare(String(a.finished || a.started || '')))[0];
+  const latestDream = dreams.filter(dream => !dreamProvenance.isArchived(dream)).sort((a, b) =>
+    String(b.finished || b.started || '').localeCompare(String(a.finished || a.started || '')))[0];
   if (!latestDream?.id) return { ...result, state: 'no_dream' };
   result.source_dream_id = latestDream.id;
   const snapshot = store.professionalViewpointReflectionSnapshot();

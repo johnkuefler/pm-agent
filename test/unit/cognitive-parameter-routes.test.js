@@ -6,13 +6,20 @@ const { registerCognitiveParameterRoutes } = require('../../src/routes/cognitive
 
 function harness(overrides = {}) {
   const routes = {};
+  const registrations = {};
+  const record = (method, path, handlers) => {
+    const key = `${method} ${path}`;
+    registrations[key] = handlers;
+    routes[key] = handlers.at(-1);
+  };
   const app = {
-    get(path, ...handlers) { routes[`GET ${path}`] = handlers.at(-1); },
-    put(path, ...handlers) { routes[`PUT ${path}`] = handlers.at(-1); },
-    post(path, ...handlers) { routes[`POST ${path}`] = handlers.at(-1); },
+    get(path, ...handlers) { record('GET', path, handlers); },
+    put(path, ...handlers) { record('PUT', path, handlers); },
+    post(path, ...handlers) { record('POST', path, handlers); },
   };
   registerCognitiveParameterRoutes(app, {
     requireAuth: (_req, _res, next) => next(),
+    requireOperatorAuth: (_req, _res, next) => next(),
     isDbReady: () => true,
     snapshot: options => ({ options, status: { parameter_count: 113 } }),
     update: async input => ({ changed_paths: ['workspace.capacity'], input }),
@@ -20,6 +27,7 @@ function harness(overrides = {}) {
     repairSchema: async input => ({ repaired: true, input }),
     ...overrides,
   });
+  Object.defineProperty(routes, 'registrations', { value: registrations });
   return routes;
 }
 
@@ -41,7 +49,25 @@ test('DIALS public status is read-only and authenticated history is bounded by d
   assert.deepEqual(historyResponse.body.options, { includeHistory: true, fullHistory: false });
 });
 
-test('DIALS edits require persistence and preserve actor, note, and patch', async () => {
+test('DIALS reads retain their existing access policy while every mutation requires API and operator auth', () => {
+  const requireAuth = () => {};
+  const requireOperatorAuth = () => {};
+  const routes = harness({ requireAuth, requireOperatorAuth });
+
+  assert.deepEqual(routes.registrations['GET /cognitive-parameters'].slice(0, -1), []);
+  assert.deepEqual(routes.registrations['GET /cognitive-parameters/history'].slice(0, -1),
+    [requireAuth]);
+  for (const key of [
+    'PUT /cognitive-parameters',
+    'POST /cognitive-parameters/rollback',
+    'POST /cognitive-parameters/repair-schema',
+  ]) {
+    assert.deepEqual(routes.registrations[key].slice(0, -1),
+      [requireAuth, requireOperatorAuth], `${key} must be sealed by both auth layers`);
+  }
+});
+
+test('DIALS operator edits require persistence and preserve actor, note, and patch', async () => {
   let received = null;
   const unavailable = harness({ isDbReady: () => false });
   const unavailableResponse = response();
@@ -55,7 +81,7 @@ test('DIALS edits require persistence and preserve actor, note, and patch', asyn
   } }, res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(received, { patch: { workspace: { capacity: 6 } },
-    updatedBy: 'John', note: 'Bounded trial setup' });
+    updatedBy: 'dashboard_operator', note: 'Bounded trial setup' });
   assert.equal(res.body.ok, true);
 });
 
@@ -78,7 +104,7 @@ test('DIALS rollback is an explicit new revision request, never a history rewrit
   } }, res);
   assert.equal(res.statusCode, 200);
   assert.deepEqual(received, { targetCommitment: 'a'.repeat(64),
-    updatedBy: 'John', note: 'Restore known-good behavior' });
+    updatedBy: 'dashboard_operator', note: 'Restore known-good behavior' });
 });
 
 test('DIALS schema repair is explicit and authenticated', async () => {
@@ -95,7 +121,7 @@ test('DIALS schema repair is explicit and authenticated', async () => {
   } }, res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.ok, true);
-  assert.deepEqual(received, { updatedBy: 'John', note: 'Adopt current DIALS schema' });
+  assert.deepEqual(received, { updatedBy: 'dashboard_operator', note: 'Adopt current DIALS schema' });
 
   const noRepair = harness({ repairSchema: async () => ({ repaired: false, source_audit: { valid: false } }) });
   const noRepairResponse = response();

@@ -2,7 +2,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createMcpManager } = require('../../src/mcp/manager');
+const {
+  createMcpManager,
+  createGuardedFetch,
+  privateIp,
+} = require('../../src/mcp/manager');
 
 function fixture(overrides = {}) {
   let records = overrides.records || [];
@@ -130,7 +134,61 @@ test('custom header and URL validation rejects credential leaks and private targ
   const { manager } = fixture();
   await assert.rejects(manager.create({ name: 'bad', url: 'http://mcp.example.com', auth_type: 'none' }), /HTTPS/);
   await assert.rejects(manager.create({ name: 'bad', url: 'https://127.0.0.1/mcp', auth_type: 'none' }), /private network/);
+  await assert.rejects(manager.create({ name: 'bad', url: 'https://[::ffff:8.8.8.8]/mcp', auth_type: 'none' }), /private network/);
+  assert.equal(privateIp('::ffff:8.8.8.8'), true);
+  assert.equal(privateIp('::ffff:127.0.0.1'), true);
   await assert.rejects(manager.create({ name: 'bad', url: 'https://mcp.example.com', auth_type: 'custom_headers', headers: { Host: 'evil.example' } }), /not allowed/);
+});
+
+test('MCP guarded fetch pins the validated DNS answer and rejects redirects', async () => {
+  let dnsCalls = 0;
+  let observed;
+  const guardedFetch = createGuardedFetch({
+    dnsLookup: async hostname => {
+      dnsCalls += 1;
+      assert.equal(hostname, 'mcp.example.com');
+      return [{ address: '93.184.216.34', family: 4 }];
+    },
+    fetchImpl: async (input, init) => {
+      let pinned;
+      await new Promise((resolve, reject) => {
+        init.lookup('mcp.example.com', { family: 4 }, (error, address, family) => {
+          if (error) reject(error);
+          else { pinned = { address, family }; resolve(); }
+        });
+      });
+      observed = { input, init, pinned };
+      return new Response('', {
+        status: 302,
+        headers: { location: 'https://private.example.invalid/mcp' },
+      });
+    },
+  });
+  await assert.rejects(guardedFetch('https://mcp.example.com/mcp'), /redirects are disabled/);
+  assert.equal(dnsCalls, 1);
+  assert.equal(observed.init.redirect, 'manual');
+  assert.deepEqual(observed.pinned, { address: '93.184.216.34', family: 4 });
+});
+
+test('MCP guarded fetch revalidates each request and never dispatches a private DNS answer', async () => {
+  let dnsCalls = 0;
+  let fetchCalls = 0;
+  const guardedFetch = createGuardedFetch({
+    dnsLookup: async () => {
+      dnsCalls += 1;
+      return dnsCalls === 1
+        ? [{ address: '93.184.216.34', family: 4 }]
+        : [{ address: '127.0.0.1', family: 4 }];
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      return new Response('{}', { status: 200 });
+    },
+  });
+  await guardedFetch('https://mcp.example.com/mcp');
+  await assert.rejects(guardedFetch('https://mcp.example.com/mcp'), /private network/);
+  assert.equal(dnsCalls, 2);
+  assert.equal(fetchCalls, 1);
 });
 
 test('bearer and custom-header credentials are attached only inside the transport layer', async () => {

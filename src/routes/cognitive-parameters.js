@@ -1,7 +1,7 @@
 'use strict';
 
 function registerCognitiveParameterRoutes(app, {
-  requireAuth, isDbReady, snapshot, update, rollback, repairSchema,
+  requireAuth, requireOperatorAuth, isDbReady, snapshot, update, rollback, repairSchema,
 }) {
   app.get('/cognitive-parameters', (_req, res) => res.json(snapshot({ includeHistory: false })));
 
@@ -10,12 +10,12 @@ function registerCognitiveParameterRoutes(app, {
     res.json(snapshot({ includeHistory: true, fullHistory: full }));
   });
 
-  app.put('/cognitive-parameters', requireAuth, async (req, res) => {
+  app.put('/cognitive-parameters', requireAuth, requireOperatorAuth, async (req, res) => {
     if (!isDbReady()) return res.status(503).json({ error: 'Postgres not active' });
     try {
       const result = await update({
         patch: req.body?.params || req.body?.patch,
-        updatedBy: req.body?.updated_by,
+        updatedBy: req.principal?.id || 'dashboard_operator',
         note: req.body?.note,
       });
       return res.json({ ok: true, ...result });
@@ -25,12 +25,12 @@ function registerCognitiveParameterRoutes(app, {
     }
   });
 
-  app.post('/cognitive-parameters/rollback', requireAuth, async (req, res) => {
+  app.post('/cognitive-parameters/rollback', requireAuth, requireOperatorAuth, async (req, res) => {
     if (!isDbReady()) return res.status(503).json({ error: 'Postgres not active' });
     try {
       const result = await rollback({
         targetCommitment: req.body?.target_commitment,
-        updatedBy: req.body?.updated_by || 'human_rollback',
+        updatedBy: req.principal?.id || 'dashboard_operator',
         note: req.body?.note,
       });
       return res.json({ ok: true, ...result });
@@ -40,11 +40,11 @@ function registerCognitiveParameterRoutes(app, {
     }
   });
 
-  app.post('/cognitive-parameters/repair-schema', requireAuth, async (req, res) => {
+  app.post('/cognitive-parameters/repair-schema', requireAuth, requireOperatorAuth, async (req, res) => {
     if (!isDbReady()) return res.status(503).json({ error: 'Postgres not active' });
     try {
       const result = await repairSchema({
-        updatedBy: req.body?.updated_by || 'human_schema_repair',
+        updatedBy: req.principal?.id || 'dashboard_operator',
         note: req.body?.note,
       });
       return res.status(result.repaired ? 200 : 409).json({ ok: result.repaired, ...result });

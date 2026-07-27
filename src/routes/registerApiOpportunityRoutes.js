@@ -1,5 +1,9 @@
 'use strict';
 
+function unavailableOperatorAuth(req, res) {
+  return res.status(503).json({ error: 'operator authentication is not configured' });
+}
+
 const apiOpportunities = require('../integrations/api-opportunities');
 
 function publicProposal(proposal, registry = null) {
@@ -57,6 +61,7 @@ function publicUsage(usage) {
     outcome: usage.outcome || null,
     outcome_note: usage.outcome_note || '',
     outcome_evidence: usage.outcome_evidence || [],
+    reviewed_by: usage.reviewed_by || null,
     reviewed_at: usage.reviewed_at || null,
     used_at: usage.used_at,
     usage_commitment: usage.usage_commitment || null,
@@ -64,7 +69,8 @@ function publicUsage(usage) {
 }
 
 function registerApiOpportunityRoutes(app, deps) {
-  const { requireAuth, requireOperatorAuth = requireAuth, loadApiRegistry, saveApiRegistry } = deps;
+  const { requireAuth, requireOperatorAuth = unavailableOperatorAuth,
+    loadApiRegistry, saveApiRegistry } = deps;
 
   app.get('/api-opportunities/policy', requireAuth, (_req, res) => {
     res.json(apiOpportunities.publicPolicy(loadApiRegistry()));
@@ -90,7 +96,10 @@ function registerApiOpportunityRoutes(app, deps) {
 
   app.post('/api-opportunities/proposals', requireAuth, async (req, res) => {
     try {
-      const result = apiOpportunities.createProposal(req.body || {}, loadApiRegistry());
+      const result = apiOpportunities.createProposal({
+        ...(req.body || {}),
+        proposed_by: req.principal?.id || 'authenticated_api',
+      }, loadApiRegistry());
       await saveApiRegistry(result.registry);
       res.json({ ok: true, proposal: publicProposal(result.proposal, result.registry), policy: result.policy });
     } catch (error) {
@@ -101,7 +110,7 @@ function registerApiOpportunityRoutes(app, deps) {
   app.post('/api-opportunities/proposals/:id/approve', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = apiOpportunities.approveProposal(loadApiRegistry(), req.params.id, {
-        approvedBy: req.body?.approved_by || 'John',
+        approvedBy: req.principal?.id || 'dashboard_operator',
       });
       await saveApiRegistry(result.registry);
       res.json({ ok: true, proposal: publicProposal(result.proposal, result.registry), policy: result.policy });
@@ -113,7 +122,7 @@ function registerApiOpportunityRoutes(app, deps) {
   app.post('/api-opportunities/proposals/:id/reject', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = apiOpportunities.rejectProposal(loadApiRegistry(), req.params.id, {
-        rejectedBy: req.body?.rejected_by || 'John',
+        rejectedBy: req.principal?.id || 'dashboard_operator',
         note: req.body?.note || '',
       });
       await saveApiRegistry(result.registry);
@@ -126,7 +135,7 @@ function registerApiOpportunityRoutes(app, deps) {
   app.post('/api-opportunities/proposals/:id/retire', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = apiOpportunities.retireProposal(loadApiRegistry(), req.params.id, {
-        retiredBy: req.body?.retired_by || 'John', note: req.body?.note || '',
+        retiredBy: req.principal?.id || 'dashboard_operator', note: req.body?.note || '',
       });
       await saveApiRegistry(result.registry);
       res.json({ ok: true, proposal: publicProposal(result.proposal, result.registry), policy: result.policy });
@@ -138,9 +147,12 @@ function registerApiOpportunityRoutes(app, deps) {
       const result = await apiOpportunities.executeApprovedGet(loadApiRegistry(), req.params.id, {
         path: req.body?.path || '',
         query: req.body?.query || {},
-        requester: req.body?.requester || 'Nora',
-        purpose: req.body?.purpose || '', surface: req.body?.surface || 'api_opportunity',
-        interactionRef: req.body?.interaction_ref || null,
+        requester: req.principal?.id || 'authenticated_api',
+        purpose: req.body?.purpose || '',
+        surface: 'api_opportunity_api',
+        // Live Slack/Zoom paths call the integration directly and bind their own
+        // server-issued interaction reference. A generic caller cannot forge one.
+        interactionRef: null,
       });
       await saveApiRegistry(result.registry);
       res.json({ ok: true, usage: publicUsage(result.usage), response: result.response });
@@ -149,9 +161,15 @@ function registerApiOpportunityRoutes(app, deps) {
     }
   });
 
-  app.post('/api-opportunities/usage/:id/outcome', requireAuth, async (req, res) => {
+  // The server records delivery-linked outcomes directly from replay-reviewed
+  // interactions. Manual outcome adjudication is operator-only so an autonomous
+  // caller cannot manufacture enough negative reviews to retire an approved tool.
+  app.post('/api-opportunities/usage/:id/outcome', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
-      const result = apiOpportunities.recordUsageOutcome(loadApiRegistry(), req.params.id, req.body || {});
+      const result = apiOpportunities.recordUsageOutcome(loadApiRegistry(), req.params.id, {
+        ...(req.body || {}),
+        reviewed_by: req.principal?.id || 'dashboard_operator',
+      });
       await saveApiRegistry(result.registry);
       res.json({ ok: true, usage: publicUsage(result.usage),
         proposal: result.proposal ? publicProposal(result.proposal, result.registry) : null, health: result.health });

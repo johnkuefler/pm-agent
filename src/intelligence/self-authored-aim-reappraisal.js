@@ -4,6 +4,7 @@ const { anthropicCompatibleSchema } = require('./anthropic-structured-output');
 const professionalViewpointReflection = require('./professional-viewpoint-reflection');
 const aimReflection = require('./self-authored-aim-reflection');
 const aimProgressEvidence = require('./aim-progress-evidence');
+const dreamProvenance = require('./dream-provenance');
 const { RECEIPT_BOUND_REAPPRAISAL_PROTOCOL,
   RECEIPT_BOUND_REAPPRAISAL_PROTOCOL_V1 } = require('./wants');
 
@@ -39,7 +40,8 @@ function attemptsOnUtcDate(dreams = [], date = utcDate()) {
 }
 
 function selectSourceDream(dreams = []) {
-  return dreams.filter(dream => dream?.id && !dream.reflection?.aim_reappraisal_attempt)
+  return dreams.filter(dream => dream?.id && !dreamProvenance.isArchived(dream)
+    && !dream.reflection?.aim_reappraisal_attempt)
     .sort((left, right) => String(right.finished || right.started || right.date || '')
       .localeCompare(String(left.finished || left.started || left.date || ''))
       || String(left.id).localeCompare(String(right.id)))[0] || null;

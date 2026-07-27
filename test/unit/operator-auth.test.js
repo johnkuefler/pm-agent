@@ -20,6 +20,29 @@ test('operator authority is signed, expiring, and separate from Nora bearer auth
       () => { advanced = true; });
     assert.equal(advanced, false); assert.equal(status, 401);
     assert.match(body.error, /signed dashboard session/);
+    for (const principal of [
+      { kind: 'shared_api', id: 'shared-api-client', authentication: 'bearer' },
+      { kind: 'nora_autonomy', id: 'nora-cowork', authentication: 'bearer' },
+      { kind: 'server_internal', id: 'nora-server', authentication: 'bearer' },
+    ]) {
+      advanced = false; status = null;
+      requireOperatorAuth({ headers: {}, principal },
+        { status(value) { status = value; return this; }, json() {} },
+        () => { advanced = true; });
+      assert.equal(advanced, false);
+      assert.equal(status, 401);
+    }
+    advanced = false;
+    requireOperatorAuth({
+      headers: {},
+      principal: {
+        kind: 'dashboard_operator',
+        id: 'dashboard_operator',
+        authentication: 'signed_dashboard_bearer',
+      },
+    }, { status() { return this; }, json() {} }, () => { advanced = true; });
+    assert.equal(advanced, true);
+    advanced = false;
     requireOperatorAuth({ headers: { 'x-nora-operator-token': token } },
       { status() { return this; }, json() {} }, () => { advanced = true; });
     assert.equal(advanced, true);

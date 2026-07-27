@@ -24,3 +24,20 @@ test('deferred connector worker is serialized, observable, and drained during sh
   assert.match(server,
     /async function stop\(\)[\s\S]*_jobWorkerLoop\.drain\(\{ timeoutMs: 10000 \}\)[\s\S]*await db\.close/);
 });
+
+test('provider completion and user-visible result delivery are distinct durable states', () => {
+  assert.match(database,
+    /async function stageJobDelivery[\s\S]*status='delivery_pending'/);
+  assert.match(database,
+    /async function claimJobDelivery[\s\S]*status='delivering'[\s\S]*FOR UPDATE SKIP LOCKED/);
+  assert.match(database,
+    /async function recoverInterruptedJobDeliveries[\s\S]*status='delivery_pending'[\s\S]*WHERE status='delivering'/);
+  assert.match(server,
+    /stageDeferredJobDelivery[\s\S]*claimDeferredJobDelivery[\s\S]*processDeferredJobDelivery/);
+  const completion = server.slice(server.indexOf('async function processNextJob'),
+    server.indexOf('async function flushPendingJobFinalizations'));
+  const stagedAt = completion.indexOf('stageDeferredJobDelivery');
+  assert.ok(stagedAt >= 0);
+  assert.ok(completion.indexOf('processDeferredJobDelivery', stagedAt) > stagedAt);
+  assert.match(server, /deterministicSlackClientMsgId\(`\$\{job\.id\}:origin:/);
+});

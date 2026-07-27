@@ -116,6 +116,77 @@ test('dashboard declares a real mobile viewport and responsive control patterns'
   assert.match(css, /\.nav\{grid-template-columns:minmax\(0,1fr\)/);
 });
 
+test('dashboard navigation owns main scroll and focus without resetting the sidebar rail', () => {
+  const coreJs = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
+  const initJs = fs.readFileSync(path.join(root, 'public/js/dashboard-init.js'), 'utf8');
+  const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
+  const navigationHelpers = coreJs.slice(
+    coreJs.indexOf('function resetMainView'),
+    coreJs.indexOf('function showTab'),
+  );
+
+  assert.match(coreJs, /history\.scrollRestoration = 'manual'/,
+    'reloads must not restore a stale window scroll position');
+  assert.match(navigationHelpers, /window\.scrollTo\(\{ top: 0, left: 0, behavior: 'auto' \}\)/);
+  assert.match(navigationHelpers, /focus\(\{ preventScroll: true \}\)/,
+    'client-side navigation should announce its new heading without undoing the explicit scroll');
+  assert.doesNotMatch(navigationHelpers, /sidebar|scrollTop/,
+    'main navigation must preserve the independently scrollable sidebar position');
+  assert.match(initJs, /showTab\(pageMeta\[initialView\].*\{ focus: false \}\)/,
+    'initial load should reset position without stealing focus');
+  assert.match(initJs, /addEventListener\('pageshow'.*resetMainView\(\{ focus: false \}\)/,
+    'reload and back-forward restoration should settle at the top of the main view');
+  assert.match(intelligenceJs, /function focusIntelligenceViewHeading\(\)/);
+  assert.match(intelligenceJs, /heading\?\.focus\(\{ preventScroll: true \}\)/);
+  assert.match(css, /\[data-intelligence-section\]\{scroll-margin-top:136px\}/,
+    'mobile section jumps must clear both sticky navigation layers');
+});
+
+test('dashboard navigation, dialog, toggles, and generated editors expose accessible state', () => {
+  const coreJs = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
+  const initJs = fs.readFileSync(path.join(root, 'public/js/dashboard-init.js'), 'utf8');
+  const meetingJs = fs.readFileSync(path.join(root, 'public/js/dashboard-meeting.js'), 'utf8');
+  const taskJs = fs.readFileSync(path.join(root, 'public/js/dashboard-tasks.js'), 'utf8');
+  const memoryJs = fs.readFileSync(path.join(root, 'public/js/dashboard-memory.js'), 'utf8');
+  const knowledgeJs = fs.readFileSync(path.join(root, 'public/js/dashboard-knowledge.js'), 'utf8');
+
+  assert.doesNotMatch(html, /aria-selected=/,
+    'ordinary navigation buttons use aria-current rather than tab-only aria-selected');
+  assert.match(html, /data-tab="meeting" aria-current="page"/);
+  assert.match(coreJs, /setAttribute\('aria-current', 'page'\)/);
+  assert.match(html, /id="command-trigger"[^>]*aria-haspopup="dialog"[^>]*aria-expanded="false"/);
+  assert.match(html, /role="dialog" aria-modal="true" aria-labelledby="command-title"/);
+  assert.match(coreJs, /commandPaletteReturnFocus = document\.activeElement/);
+  assert.match(coreJs, /setAttribute\('inert', ''\)/);
+  assert.match(coreJs, /function trapCommandPaletteFocus\(event\)/);
+  assert.match(initJs, /paletteOpen && event\.key === 'Tab'/);
+  assert.match(html, /id="pill-oneonone"[^>]*aria-pressed="false"/);
+  assert.match(meetingJs, /el\.setAttribute\('aria-pressed', enabled \? 'true' : 'false'\)/);
+  assert.match(taskJs, /aria-label="Task action"/);
+  assert.match(memoryJs, /aria-label="Memory fact"/);
+  assert.match(knowledgeJs, /aria-label="Transcript text"/);
+  assert.match(initJs, /'commitment-what':'Commitment'/);
+  assert.match(initJs, /'experiment-behavior':'Behavior to try'/);
+});
+
+test('dashboard state and responsive layout contracts prevent silent failure and page overflow', () => {
+  const css = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
+  const intelligenceJs = fs.readFileSync(path.join(root, 'public/js/dashboard-intelligence.js'), 'utf8');
+  const taskJs = fs.readFileSync(path.join(root, 'public/js/dashboard-tasks.js'), 'utf8');
+  const memoryJs = fs.readFileSync(path.join(root, 'public/js/dashboard-memory.js'), 'utf8');
+
+  assert.match(css, /\.app\{[^}]*min-width:0;max-width:100%/);
+  assert.match(css, /\.page\{[^}]*min-width:0;max-width:100%/);
+  assert.match(css, /\.reading-room-layout,\.playroom-layout,\.playroom-stage\{grid-template-columns:minmax\(0,1fr\)\}/,
+    'medium-width content must collapse before fixed inner grid minimums can overflow');
+  assert.match(css, /pre\{max-width:100%;overflow:auto/);
+  assert.match(intelligenceJs, /class="intelligence-load-error" role="alert"/);
+  assert.match(intelligenceJs, /class="reading-room-empty" role="status"/);
+  assert.match(taskJs, /setAttribute\('aria-busy', 'true'\)/);
+  assert.match(memoryJs, /setAttribute\('aria-busy', 'true'\)/);
+});
+
 test('memory editor passes stable ids as strings and dashboard assets are deploy-versioned', () => {
   const memoryJs = fs.readFileSync(path.join(root, 'public/js/dashboard-memory.js'), 'utf8');
   assert.doesNotMatch(memoryJs, /saveMemoryEdit\(\$\{idx\}\)/);
@@ -295,7 +366,7 @@ test('intelligence detail is divided into bounded human-readable views', () => {
   assert.deepEqual(viewButtons, expectedViews);
   assert.match(html, /id="page-intelligence" class="page" data-active-view="overview"/);
   assert.match(html, /id="intelligence-at-a-glance"/);
-  assert.match(intelligenceJs, /function setIntelligenceView\(name, \{ load = true \} = \{\}\)/);
+  assert.match(intelligenceJs, /function setIntelligenceView\(name, \{ load = true, manageFocus = true \} = \{\}\)/);
   assert.match(intelligenceJs, /intelligenceViews\[view\]\.sections\.forEach/,
     'switching rooms should load only the selected bounded group');
   assert.match(intelligenceCss, /#page-intelligence>\[data-intelligence-view\]\{display:none!important\}/);

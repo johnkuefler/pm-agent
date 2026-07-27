@@ -216,7 +216,7 @@ test('runtime keeps cycle self-correction out of Slack and Zoom foreground handl
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.match(source, /\['cycle_self_correction_reflection',[\s\S]*runCycleSelfCorrectionReflectionRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
-  const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));
+  const zoom = source.slice(source.indexOf('async function processRecallChatWebhook'), source.indexOf('// Proactive mode toggle'));
   assert.doesNotMatch(slack, /cycleSelfCorrectionReflection|runCycleSelfCorrectionReflectionRuntime/);
   assert.doesNotMatch(zoom, /cycleSelfCorrectionReflection|runCycleSelfCorrectionReflectionRuntime/);
 });

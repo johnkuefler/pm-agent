@@ -63,22 +63,18 @@
       <h2>Authentication</h2>
       <p>The auth model has two layers:</p>
       <ul>
-        <li><strong>API key</strong> (<code>NORA_API_KEY</code>) protects all data + action endpoints: <code>/memory</code>, <code>/projects</code>, <code>/tasks</code>, <code>/teamwork</code>, <code>/notify</code>, <code>/transcripts</code>, <code>/slack/*</code>, plus <code>/join</code>, <code>/proactive</code>, <code>/mute</code>, <code>/one-on-one</code>, <code>/register-bot</code>. Pass via <code>?key=</code> query param or <code>Authorization: Bearer</code> header.</li>
-        <li><strong>Basic auth password</strong> (<code>DASHBOARD_PASSWORD</code>) protects the UI pages: <code>/</code>, <code>/instructions</code>, <code>/architecture</code>. Username is ignored; only the password is checked. Once authenticated, the dashboard HTML is rendered with <code>NORA_API_KEY</code> embedded so its JS can call API endpoints with the key.</li>
+        <li><strong>API key</strong> (<code>NORA_API_KEY</code>) protects all data + action endpoints: <code>/memory</code>, <code>/projects</code>, <code>/tasks</code>, <code>/teamwork</code>, <code>/notify</code>, <code>/transcripts</code>, <code>/slack/*</code>, plus <code>/join</code>, <code>/proactive</code>, <code>/mute</code>, <code>/one-on-one</code>, <code>/register-bot</code>. Pass it via the <code>Authorization: Bearer</code> header; hosted deployments reject query-string credentials by default.</li>
+        <li><strong>Basic auth password</strong> (<code>DASHBOARD_PASSWORD</code>) protects the UI pages: <code>/</code>, <code>/instructions</code>, <code>/architecture</code>. Username is ignored; only the password is checked. Once authenticated, the dashboard receives a short-lived signed API session; the long-lived shared API key is never embedded in HTML.</li>
       </ul>
       <p>Open (no auth) by design: <code>/cowork-instructions</code>, <code>/prompt</code> (cowork pulls these — no secret content); <code>/voice-agent</code>, <code>/voice-agent/response</code> (token-validated); <code>/webhook/*</code> (signature/token-validated by Slack and Recall.ai).</p>
-      <p>The previous <code>Sec-Fetch-Site: same-origin</code> bypass on <code>requireAuth</code> was removed — that header is browser-set in normal use but trivially spoofable from curl, so it never provided real protection. Browser fetches from the dashboard now carry the embedded API key as a Bearer header instead.</p>
-      <p>Pass the API key in one of two ways:</p>
-      <ul>
-        <li><strong>Query parameter:</strong> <code>?key=YOUR_NORA_API_KEY</code> — simplest for GET requests and tools</li>
-        <li><strong>Header:</strong> <code>Authorization: Bearer YOUR_NORA_API_KEY</code></li>
-      </ul>
-      <p>If <code>NORA_API_KEY</code> is not set in the environment, auth is disabled (open access for local dev).</p>
+      <p>The previous <code>Sec-Fetch-Site: same-origin</code> bypass on <code>requireAuth</code> was removed — that header is browser-set in normal use but trivially spoofable from curl, so it never provided real protection. Browser fetches from the dashboard now carry a short-lived signed session as a Bearer header instead.</p>
+      <p>Pass the API key in the <code>Authorization: Bearer YOUR_NORA_API_KEY</code> header. Do not put credentials in URLs, where logs, history, and referrers can retain them.</p>
+      <p>Hosted deployments fail closed without configured API or dashboard credentials. Only local development remains open when credentials are intentionally absent.</p>
       <pre>// Examples:
-GET /tasks?status=pending&amp;key=YOUR_KEY
-GET /memory?key=YOUR_KEY
-GET /teamwork/tasks/12345/stage?stage=Done&amp;key=YOUR_KEY
-POST /notify  (with header: Authorization: Bearer YOUR_KEY)</pre>
+GET /tasks?status=pending  (with header: Authorization: Bearer YOUR_KEY)
+GET /memory                (with header: Authorization: Bearer YOUR_KEY)
+GET /teamwork/tasks/12345/stage?stage=Done  (with the same header)
+POST /notify               (with the same header)</pre>
     </div>
 
     <div class="section">
@@ -435,7 +431,14 @@ GET /projects/coverage?limit=5
 { "user": "U0123ABCDEF", "text": "Hey, that follow-up with Kyle is scheduled for Tuesday 2pm." }
 
 // Reply in a specific thread:
-{ "channel": "C0123ABC", "text": "All set.", "thread_ts": "1710432000.000100" }
+{
+  "channel": "C0123ABC",
+  "text": "All set.",
+  "thread_ts": "1710432000.000100",
+  "source_ts": "1710432000.000100",
+  "delivery_mode": "auto",
+  "materiality": "routine"
+}
 
 // Attach a file (downloads from URL and uploads to Slack):
 {
@@ -472,7 +475,7 @@ GET /projects/coverage?limit=5
       </ol>
 
       <h4>Bridge to cowork (the routing fix)</h4>
-      <p>The live Slack handler only has memory + prompt — no MCP tools. To keep conversations useful, when Nora hits a knowledge gap she queues a task and tells the user she'll follow up <em>in this thread</em>. Tasks queued from a Slack thread now carry <code>source_thread_ts</code>, which the cowork loop passes to <code>/notify</code> as <code>thread_ts</code> so the resolution lands in the original thread within the hour. From the user's side, the conversation is continuous; they don't need to know cowork ran.</p>
+      <p>The live Slack handler queues tool-backed follow-up work when needed and retains the originating <code>source_thread_ts</code>. Cowork passes it to <code>/notify</code> as both <code>thread_ts</code> and <code>source_ts</code> with <code>delivery_mode: "auto"</code> and an honest <code>materiality</code>. Routine answers stay in context; corrections, incidents, urgent risks, and stale shared outcomes are surfaced to the channel instead of being buried in an old thread. The result remains anchored to the original conversation without making channel visibility mechanical.</p>
 
       <p>Joined threads are persisted to <code>/data/slack-threads.json</code> so a deploy/restart doesn't drop active conversations. The list is capped at 1000 threads (oldest evicted).</p>
       <p><strong>Slack app config requirement:</strong> for thread continuation to work, the Slack app must subscribe to <code>message.channels</code> (and <code>message.groups</code> for private channels) in addition to <code>app_mention</code> and <code>message.im</code>. Without those, Slack only delivers explicit @mention events.</p>
@@ -703,15 +706,28 @@ GET {BASE_URL}/teamwork/tasks/12345678/stage?stage=In+Progress
     <!-- Environment -->
     <div class="section">
       <h2>Environment Variables</h2>
-      <pre>RECALL_API_KEY      — Recall.ai API token
-RECALL_REGION       — Recall.ai region (us-west-2)
-ANTHROPIC_API_KEY   — Anthropic API key for Claude
-ELEVENLABS_API_KEY  — ElevenLabs API key for TTS
-ELEVENLABS_VOICE_ID — ElevenLabs voice ID (vVbAf9jRhIe9lro41Tgc)
-TEAMWORK_API_KEY    — Teamwork API key (for workflow stage updates)
-TEAMWORK_BASE_URL   — Teamwork base URL (e.g. https://yourcompany.teamwork.com)
-NORA_API_KEY        — API key for authenticating requests (omit to disable auth)
-PORT                — Server port (Railway sets automatically)</pre>
+      <pre>RECALL_API_KEY                       — Recall.ai API token
+RECALL_REGION                        — Recall.ai region (us-west-2)
+RECALL_WORKSPACE_VERIFICATION_SECRET — Recall webhook signing secret (required when Recall is enabled)
+OPENAI_API_KEY                       — OpenAI Realtime API access
+ANTHROPIC_API_KEY                    — Anthropic API key for background synthesis
+ELEVENLABS_API_KEY                   — ElevenLabs API key for TTS
+ELEVENLABS_VOICE_ID                  — ElevenLabs voice ID
+SLACK_BOT_TOKEN                      — Slack bot API token
+SLACK_SIGNING_SECRET                 — Slack request signing secret (required when Slack is enabled)
+TEAMWORK_API_KEY                     — Teamwork API key
+TEAMWORK_BASE_URL                    — Teamwork base URL
+NORA_API_KEY                         — Shared API compatibility key
+NORA_AUTONOMY_KEY                    — Scoped Cowork/autonomous-run bearer key
+NORA_INTERNAL_KEY                    — Scoped server-internal bearer key
+DASHBOARD_PASSWORD                   — UI Basic auth and signed-session secret
+NORA_RESEARCH_KEY                    — Isolated research-harness key
+NORA_EVALUATOR_KEY(S)                — Independent evaluator key(s)
+DATABASE_URL                         — Production PostgreSQL source of truth
+MCP_CREDENTIALS_ENCRYPTION_KEY       — Stable key for encrypted MCP credentials
+AGENTIC_CORPUS_BASE_URL              — Optional corpus proxy origin
+AGENTIC_CORPUS_BASIC_AUTH            — Optional upstream corpus credential
+PORT                                 — Server port (Railway sets automatically)</pre>
     </div>
 
     <!-- Team Reference -->

@@ -4,6 +4,8 @@
 
     async function loadMemory() {
       const list = document.getElementById('memory-list');
+      list.setAttribute('aria-busy', 'true');
+      list.innerHTML = '<p class="empty" role="status">Loading memory...</p>';
       try {
         const [memRes, projRes] = await Promise.all([api('/memory'), api('/projects')]);
         const memories = await memRes.json();
@@ -12,14 +14,15 @@
         // Populate project dropdown (Add Memory section)
         const select = document.getElementById('new-fact-project');
         select.innerHTML = '<option value="">General (no project)</option>' +
-          projects.map(p => `<option value="${escHtml(p.name)}">${escHtml(p.name)}</option>`).join('');
+          projects.map(p => `<option value="${escAttr(p.name)}">${escHtml(p.name)}</option>`).join('');
 
         // Stamp original index (used as a tiebreaker for newest/oldest since `added` is date-only)
         _allMemories = memories.map((m, i) => ({ ...m, _idx: i }));
         _memoryRenderCap = 80;
         renderMemory();
         loadEmbeddingStats();
-      } catch (e) { list.innerHTML = '<p class="empty">Failed to load memory.</p>'; }
+      } catch (e) { list.innerHTML = '<p class="empty" role="alert">Failed to load memory.</p>'; }
+      finally { list.setAttribute('aria-busy', 'false'); }
     }
 
     async function loadEmbeddingStats() {
@@ -114,13 +117,13 @@
 
     function memoryItemHtml(m) {
       const transcriptLink = m.source_bot_id
-        ? ` · <a href="#" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript('${escHtml(m.source_bot_id)}'), 100);" style="color: #1d4ed8; text-decoration: none;">View transcript</a>`
+        ? ` · <a href="#" data-transcript-id="${escAttr(m.source_bot_id)}" onclick="event.preventDefault(); showTab('transcripts'); setTimeout(() => viewTranscript(this.dataset.transcriptId), 100);" style="color: #1d4ed8; text-decoration: none;">View transcript</a>`
         : '';
       const key = m.id || m._idx; // prefer stable id; fall back to index for any legacy entry
-      return `<div class="memory-item" id="memory-${escHtml(String(key))}" data-memory-key="${escHtml(String(key))}">
+      return `<div class="memory-item" id="memory-${escAttr(key)}" data-memory-key="${escAttr(key)}">
         <div style="flex: 1;">
           <div class="memory-fact">${escHtml(m.fact)}</div>
-          <div class="memory-meta">${m.added || ''}${m.source ? ' · ' + m.source : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${m.kind ? ' · ' + escHtml(m.kind) : ''}${m.confidence != null ? ' · ' + Math.round(m.confidence * 100) + '% confidence' : ''}${m.status && m.status !== 'active' ? ' · ' + escHtml(m.status) : ''}${m.last_verified ? ' · verified ' + new Date(m.last_verified).toLocaleDateString() : ''}${transcriptLink}</div>
+          <div class="memory-meta">${escHtml(m.added || '')}${m.source ? ' · ' + escHtml(m.source) : ''}${m.project ? ' · ' + escHtml(m.project) : ''}${m.kind ? ' · ' + escHtml(m.kind) : ''}${m.confidence != null ? ' · ' + Math.round(m.confidence * 100) + '% confidence' : ''}${m.status && m.status !== 'active' ? ' · ' + escHtml(m.status) : ''}${m.last_verified ? ' · verified ' + new Date(m.last_verified).toLocaleDateString() : ''}${transcriptLink}</div>
         </div>
         <div style="display: flex; gap: 6px; flex-shrink: 0;">
           <button class="btn btn-success" onclick="editMemoryFromButton(this)">Edit</button>
@@ -141,14 +144,14 @@
       const projects = document.getElementById('new-fact-project').innerHTML;
       el.innerHTML = `
         <div style="flex: 1;">
-          <textarea id="edit-memory-fact-${key}" rows="3" style="width:100%; margin-bottom:6px; resize:vertical;">${escHtml(memory.fact)}</textarea>
-          <select id="edit-memory-project-${key}" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 13px;">
+          <textarea id="edit-memory-fact-${escAttr(key)}" rows="3" aria-label="Memory fact" style="width:100%; margin-bottom:6px; resize:vertical;">${escHtml(memory.fact)}</textarea>
+          <select id="edit-memory-project-${escAttr(key)}" aria-label="Memory project" style="width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 13px;">
             ${projects}
           </select>
-          <div id="edit-memory-error-${key}" class="toast" style="margin-top:6px;"></div>
+          <div id="edit-memory-error-${escAttr(key)}" class="toast" style="margin-top:6px;"></div>
         </div>
         <div style="display: flex; gap: 6px; flex-shrink: 0; align-self: center;">
-          <button class="btn btn-primary btn-sm" data-memory-key="${escHtml(String(key))}" onclick="saveMemoryEdit(this.dataset.memoryKey)">Save</button>
+          <button class="btn btn-primary btn-sm" data-memory-key="${escAttr(key)}" onclick="saveMemoryEdit(this.dataset.memoryKey)">Save</button>
           <button class="btn btn-danger btn-sm" onclick="renderMemory()">Cancel</button>
         </div>`;
       const sel = document.getElementById('edit-memory-project-' + key);

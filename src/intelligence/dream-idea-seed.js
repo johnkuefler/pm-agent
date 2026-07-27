@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const dreamProvenance = require('./dream-provenance');
 
 const RETIRED_ROLE_PATTERNS = Object.freeze([
   { id: 'development_dispatch_retired', pattern: /\b(?:copilot pr|dev(?:elopment)?[- ]dispatch|dev[- ]round|gh_token|github (?:access|token)|pr (?:closure|dispatch|monitoring)|pull[- ]request|repo(?:sitory)?[- ]mapping)\b/i },
@@ -41,12 +42,15 @@ function roleEligibility(value) {
     state: reasons.length ? 'retired_role_residue' : 'eligible', reasons };
 }
 
-function resolve(ref, dreams = []) {
+function resolve(ref, dreams = [], { allowArchived = false } = {}) {
   if (!ref || ref.type !== 'dream_idea') throw new Error('dream idea sources must use type dream_idea');
   if (!String(ref.dream_id || '').trim() || !Number.isInteger(ref.idea_index)) {
     throw new Error('dream idea sources require dream_id and integer idea_index');
   }
   const dream = dreams.find(item => item.id === ref.dream_id);
+  if (dreamProvenance.isArchived(dream) && !allowArchived) {
+    throw new Error('archived dream ideas cannot seed new self-improvement work');
+  }
   const seed = dream ? seedFor(dream, ref.idea_index) : null;
   if (!seed) throw new Error('dream idea source does not resolve to an exact bounded stored idea');
   if (ref.id && ref.id !== seed.id) throw new Error('dream idea source id does not match its stored idea');
@@ -58,8 +62,10 @@ function resolve(ref, dreams = []) {
 
 function audit(ref, dreams = []) {
   try {
-    const seed = resolve(ref, dreams);
-    return { source_exists: true, content_commitment_verified: true, source: seed };
+    const dream = dreams.find(item => item.id === ref?.dream_id);
+    const seed = resolve(ref, dreams, { allowArchived: true });
+    return { source_exists: true, content_commitment_verified: true,
+      archived: dreamProvenance.isArchived(dream), source: seed };
   } catch (error) {
     const dream = dreams.find(item => item.id === ref?.dream_id);
     return {
@@ -71,6 +77,7 @@ function audit(ref, dreams = []) {
 }
 
 function list(dreams = [], experiments = []) {
+  const dreamById = new Map(dreams.map(dream => [dream.id, dream]));
   return dreams.flatMap(dream => (Array.isArray(dream.reflection?.ideas) ? dream.reflection.ideas : [])
     .map((_, ideaIndex) => seedFor(dream, ideaIndex))
     .filter(Boolean))
@@ -78,7 +85,9 @@ function list(dreams = [], experiments = []) {
       const usedBy = experiments.filter(experiment => (experiment.source_refs || []).some(ref => ref?.type === 'dream_idea'
         && ref.id === seed.id && ref.content_commitment === seed.content_commitment)).map(experiment => experiment.id);
       const role = roleEligibility(seed);
-      return { ...seed, status: role.eligible ? (usedBy.length ? 'used' : 'available') : 'role_retired',
+      const dream = dreamById.get(seed.dream_id);
+      return { ...seed, status: dreamProvenance.isArchived(dream) ? 'archived'
+        : role.eligible ? (usedBy.length ? 'used' : 'available') : 'role_retired',
         role_eligibility: role, used_by: usedBy };
     });
 }

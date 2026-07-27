@@ -17,16 +17,23 @@
         const intents = await intentResponse.json(); const deliberations = await deliberationResponse.json();
         if (!intentResponse.ok || !deliberationResponse.ok) throw new Error(intents.error || deliberations.error || 'Gift state unavailable');
         const p = intents.report || {}; const d = deliberations.report || {};
-        policyEl.innerHTML = `<strong>$${((p.remaining_cents || 0) / 100).toFixed(2)} remaining this month</strong> &middot; ${d.total || 0} deliberations &middot; ${d.proposals_created || 0} proposals &middot; ${p.goody_send_enabled ? 'Goody ready' : 'sending disabled'}`;
+        policyEl.innerHTML = `<strong>$${((Number(p.remaining_cents) || 0) / 100).toFixed(2)} remaining this month</strong> &middot; ${Number(d.total) || 0} deliberations &middot; ${Number(d.proposals_created) || 0} proposals &middot; ${p.goody_send_enabled ? 'Goody ready' : 'sending disabled'}`;
         const actionable = (intents.intents || []).slice().reverse();
-        intentEl.innerHTML = actionable.length ? `<div class="intelligence-meta" style="margin-top:12px;">Gift proposals</div>${actionable.map(item => {
+        intentEl.innerHTML = actionable.length ? `<div class="intelligence-meta" style="margin-top:12px;">Gift proposals</div>${actionable.map((item, index) => {
           const actions = item.status === 'proposed'
-            ? `<button class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','approve')">Approve</button><button class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject')">Reject</button>`
+            ? '<button class="btn btn-primary btn-sm gift-intent-action" type="button" data-gift-action="approve">Approve</button><button class="btn btn-danger btn-sm gift-intent-action" type="button" data-gift-action="reject">Reject</button>'
             : item.status === 'approved'
-              ? `<button class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','send')">Send through Goody</button><button class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject')">Reject</button>` : '';
-          const link = item.goody_gift_link ? ` &middot; <a href="${escHtml(item.goody_gift_link)}" target="_blank" rel="noopener">gift link</a>` : '';
-          return `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name)} &middot; $${((item.amount_cents || 0) / 100).toFixed(2)} <span style="font-size:12px;color:var(--muted);">${escHtml(item.status)}</span></div><div class="memory-meta">${escHtml(item.reason)}${link}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
+              ? '<button class="btn btn-primary btn-sm gift-intent-action" type="button" data-gift-action="send">Send through Goody</button><button class="btn btn-danger btn-sm gift-intent-action" type="button" data-gift-action="reject">Reject</button>' : '';
+          const link = item.goody_gift_link ? ` &middot; <a href="${safeUrlAttr(item.goody_gift_link)}" target="_blank" rel="noopener noreferrer">gift link</a>` : '';
+          return `<div class="memory-item" data-gift-index="${index}"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name)} &middot; $${((Number(item.amount_cents) || 0) / 100).toFixed(2)} <span style="font-size:12px;color:var(--muted);">${escHtml(item.status)}</span></div><div class="memory-meta">${escHtml(item.reason)}${link}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
         }).join('')}` : '<p class="empty">No gift proposals yet.</p>';
+        intentEl.querySelectorAll('[data-gift-index]').forEach(row => {
+          const intent = actionable[Number(row.dataset.giftIndex)];
+          if (!intent) return;
+          row.querySelectorAll('.gift-intent-action').forEach(button => {
+            button.addEventListener('click', () => decideGiftIntent(intent.id, button.dataset.giftAction));
+          });
+        });
         const records = deliberations.deliberations || [];
         deliberationEl.innerHTML = records.length ? `<div class="intelligence-meta" style="margin-top:12px;">Recent deliberations</div>${records.map(item => `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name || 'Daily scan')} <span style="font-size:12px;color:var(--muted);">${escHtml(item.decision.replaceAll('_', ' '))}</span></div><div class="memory-meta">${escHtml(item.occasion)}</div><div class="memory-meta">Why: ${escHtml(item.rationale)}</div>${item.counterconsiderations?.length ? `<div class="memory-meta">Against: ${escHtml(item.counterconsiderations.join(' · '))}</div>` : ''}</div></div>`).join('')}` : '<p class="empty">No gift deliberations recorded yet.</p>';
       } catch (e) {
@@ -58,16 +65,24 @@
       try {
         const r = await api('/api-opportunities/proposals'); const d = await r.json();
         if (!d.proposals?.length) { list.innerHTML = '<p class="empty">Nora has not proposed an outside capability yet.</p>'; return; }
-        list.innerHTML = d.proposals.slice().reverse().map(p => {
+        const proposals = d.proposals.slice().reverse();
+        list.innerHTML = proposals.map((p, index) => {
           const h = p.health || {}; const success = h.success_rate == null ? 'untested' : `${Math.round(h.success_rate * 100)}% reliable`;
           const outcomes = h.reviewed_calls ? `${h.helpful} helpful / ${h.unhelpful} unhelpful / ${h.unclear} unclear` : 'no usefulness outcomes yet';
           const actions = p.status === 'proposed'
-            ? `<button class="btn btn-primary btn-sm" onclick="decideApiOpportunity('${p.id}','approve')">Approve & install</button><button class="btn btn-danger btn-sm" onclick="decideApiOpportunity('${p.id}','reject')">Reject</button>`
+            ? '<button class="btn btn-primary btn-sm api-opportunity-action" type="button" data-api-action="approve">Approve & install</button><button class="btn btn-danger btn-sm api-opportunity-action" type="button" data-api-action="reject">Reject</button>'
             : ['approved','suspended'].includes(p.status)
-              ? `<button class="btn btn-danger btn-sm" onclick="decideApiOpportunity('${p.id}','retire')">Retire</button>`
-              : p.status === 'retired' ? `<button class="btn btn-primary btn-sm" onclick="decideApiOpportunity('${p.id}','approve')">Reapprove</button>` : '';
-          return `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(p.name)} <span style="font-size:12px;color:var(--muted);">${escHtml(p.status)}</span></div><div class="memory-meta">${escHtml(p.capability || 'research')} &middot; ${escHtml(p.tool?.name || '')} &middot; ${escHtml(success)} &middot; ${escHtml(outcomes)}</div><div class="memory-meta">${escHtml(p.use_case || '')}</div>${p.suspension_reason || p.retirement_reason ? `<div class="memory-meta" style="color:var(--warn);">${escHtml(p.suspension_reason || p.retirement_reason)}</div>` : ''}</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
+              ? '<button class="btn btn-danger btn-sm api-opportunity-action" type="button" data-api-action="retire">Retire</button>'
+              : p.status === 'retired' ? '<button class="btn btn-primary btn-sm api-opportunity-action" type="button" data-api-action="approve">Reapprove</button>' : '';
+          return `<div class="memory-item" data-api-opportunity-index="${index}"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(p.name)} <span style="font-size:12px;color:var(--muted);">${escHtml(p.status)}</span></div><div class="memory-meta">${escHtml(p.capability || 'research')} &middot; ${escHtml(p.tool?.name || '')} &middot; ${escHtml(success)} &middot; ${escHtml(outcomes)}</div><div class="memory-meta">${escHtml(p.use_case || '')}</div>${p.suspension_reason || p.retirement_reason ? `<div class="memory-meta" style="color:var(--warn);">${escHtml(p.suspension_reason || p.retirement_reason)}</div>` : ''}</div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
         }).join('');
+        list.querySelectorAll('[data-api-opportunity-index]').forEach(row => {
+          const proposal = proposals[Number(row.dataset.apiOpportunityIndex)];
+          if (!proposal) return;
+          row.querySelectorAll('.api-opportunity-action').forEach(button => {
+            button.addEventListener('click', () => decideApiOpportunity(proposal.id, button.dataset.apiAction));
+          });
+        });
       } catch (e) { list.innerHTML = `<p class="empty">Could not load capability proposals: ${escHtml(e.message)}</p>`; }
     }
     async function decideApiOpportunity(id, action) {
@@ -93,8 +108,8 @@
         const r = await api('/admin/mcp');
         const conns = (await r.json()).connections || [];
         if (!conns.length) { list.innerHTML = '<p class="empty">No live connections yet. Add one below, authorize it if needed, then test it to discover tools.</p>'; return; }
-        list.innerHTML = conns.map(c => `
-          <div class="memory-item">
+        list.innerHTML = conns.map((c, index) => `
+          <div class="memory-item" data-mcp-index="${index}">
             <div style="flex:1;min-width:0;">
               <div class="memory-fact">${escHtml(c.name)} ${c.financial ? '<span style="color:var(--warn);font-size:12px;">financial</span>' : ''} ${c.enabled ? '' : '<span style="color:var(--muted);font-size:12px;">(disabled)</span>'}</div>
               <div class="memory-meta" style="word-break:break-all;">${escHtml(c.url_hint)} &middot; ${escHtml(c.auth_type.replaceAll('_', ' '))} &middot; ${c.access_mode === 'full' ? 'write enabled' : 'read only'}${c.deferred === true ? ' &middot; <span style="color:var(--accent-ink);">background: all tools</span>' : c.deferred === false ? ' &middot; <span style="color:var(--muted);">background: off</span>' : ''}</div>
@@ -102,13 +117,22 @@
               ${c.tools?.length ? `<div class="memory-meta">${c.tools.filter(t => t.allowed).length}/${c.tools.length} tools enabled</div>` : ''}
             </div>
             <div style="display:flex;gap:6px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
-              ${c.auth_type === 'oauth' && !c.oauth_connected ? `<button class="btn btn-primary btn-sm" onclick="connectMcpOAuth('${c.id}')">Connect</button>` : ''}
-              <button class="btn btn-sm" onclick="testMcpConnection('${c.id}')">Test</button>
-              <button class="btn btn-sm" style="background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);" onclick="toggleMcp('${c.id}',${!c.enabled})">${c.enabled ? 'Disable' : 'Enable'}</button>
-              <button class="btn btn-success btn-sm" onclick='editMcp(${JSON.stringify(c).replace(/'/g, "&#39;")})'>Edit</button>
-              <button class="btn btn-danger btn-sm" onclick="deleteMcp('${c.id}','${escHtml(c.name).replace(/'/g, "\\'")}')">Delete</button>
+              ${c.auth_type === 'oauth' && !c.oauth_connected ? '<button class="btn btn-primary btn-sm mcp-connect-btn" type="button">Connect</button>' : ''}
+              <button class="btn btn-sm mcp-test-btn" type="button">Test</button>
+              <button class="btn btn-sm mcp-toggle-btn" type="button" style="background:var(--surface-2);color:var(--text-2);border:1px solid var(--border);">${c.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn btn-success btn-sm mcp-edit-btn" type="button">Edit</button>
+              <button class="btn btn-danger btn-sm mcp-delete-btn" type="button">Delete</button>
             </div>
           </div>`).join('');
+        list.querySelectorAll('[data-mcp-index]').forEach(row => {
+          const connection = conns[Number(row.dataset.mcpIndex)];
+          if (!connection) return;
+          row.querySelector('.mcp-connect-btn')?.addEventListener('click', () => connectMcpOAuth(connection.id));
+          row.querySelector('.mcp-test-btn')?.addEventListener('click', () => testMcpConnection(connection.id));
+          row.querySelector('.mcp-toggle-btn')?.addEventListener('click', () => toggleMcp(connection.id, !connection.enabled));
+          row.querySelector('.mcp-edit-btn')?.addEventListener('click', () => editMcp(connection));
+          row.querySelector('.mcp-delete-btn')?.addEventListener('click', () => deleteMcp(connection.id, connection.name));
+        });
       } catch { list.innerHTML = '<p class="empty">Failed to load connections.</p>'; }
     }
     function updateMcpAuthFields() {
@@ -137,7 +161,7 @@
         catch { t.className = 'toast err'; t.textContent = 'Custom headers must be valid JSON'; return; }
       }
       try {
-        const r = await operatorApi(_editingMcpId ? `/admin/mcp/${_editingMcpId}` : '/admin/mcp', { method: _editingMcpId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const r = await operatorApi(_editingMcpId ? `/admin/mcp/${encodeURIComponent(_editingMcpId)}` : '/admin/mcp', { method: _editingMcpId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
         const d = await r.json(); if (!r.ok) { t.className = 'toast err'; t.textContent = d.error || 'Save failed'; return; }
         const savedId = d.connection.id; resetMcpForm(); await loadMcpConnections();
         t.className = 'toast ok'; t.textContent = d.connection.auth_type === 'oauth' ? 'Saved. Click Connect to authorize.' : 'Saved. Testing connection...';
@@ -177,8 +201,8 @@
       const d = await r.json(); t.className = r.ok ? 'toast ok' : 'toast err'; t.textContent = r.ok ? d.connection.status_message : (d.error || 'Connection test failed');
       await loadMcpConnections();
     }
-    async function toggleMcp(id, enabled) { await operatorApi(`/admin/mcp/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) }); loadMcpConnections(); }
-    async function deleteMcp(id, name) { if (!confirm(`Delete MCP connection "${name}"?`)) return; await operatorApi(`/admin/mcp/${id}`, { method: 'DELETE' }); loadMcpConnections(); }
+    async function toggleMcp(id, enabled) { await operatorApi(`/admin/mcp/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) }); loadMcpConnections(); }
+    async function deleteMcp(id, name) { if (!confirm(`Delete MCP connection "${name}"?`)) return; await operatorApi(`/admin/mcp/${encodeURIComponent(id)}`, { method: 'DELETE' }); loadMcpConnections(); }
 
     // Slack - channels the Nora bot is a member of
     async function loadBotChannels() {
@@ -201,7 +225,7 @@
             <div class="memory-item">
               <div style="flex: 1; min-width: 0;">
                 <div class="memory-fact">#${escHtml(c.name)}${c.is_private ? ' <span style="color:var(--dim);font-size:11px;">(private)</span>' : ''}</div>
-                <div class="memory-meta">${escHtml(c.id)}${c.num_members != null ? ' · ' + c.num_members + ' member' + (c.num_members === 1 ? '' : 's') : ''}${c.topic ? ' · ' + escHtml(c.topic) : ''}</div>
+                <div class="memory-meta">${escHtml(c.id)}${c.num_members != null ? ' · ' + (Number(c.num_members) || 0) + ' member' + (Number(c.num_members) === 1 ? '' : 's') : ''}${c.topic ? ' · ' + escHtml(c.topic) : ''}</div>
               </div>
             </div>
           `).join('')}
@@ -243,17 +267,22 @@
           list.innerHTML = '<p class="empty">No active bots.</p>';
           return;
         }
-        list.innerHTML = d.bots.map(b => `
-          <div class="memory-item">
+        list.innerHTML = d.bots.map((b, index) => `
+          <div class="memory-item" data-active-bot-index="${index}">
             <div style="flex: 1; min-width: 0;">
               <div class="memory-fact" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}</div>
               <div class="memory-meta">${escHtml(fmtBotStatus(b.status))}${b.join_at ? ' · joins ' + escHtml(new Date(b.join_at).toLocaleString()) : ''} · ${escHtml(b.id)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
-              <button class="btn btn-danger" onclick="removeBot('${escHtml(b.id)}', '${escHtml(fmtBotMeetingUrl(b.meeting_url))}')">Remove</button>
+              <button class="btn btn-danger active-bot-remove-btn" type="button">Remove</button>
             </div>
           </div>
         `).join('');
+        list.querySelectorAll('[data-active-bot-index]').forEach(row => {
+          const bot = d.bots[Number(row.dataset.activeBotIndex)];
+          if (!bot) return;
+          row.querySelector('.active-bot-remove-btn')?.addEventListener('click', () => removeBot(bot.id, fmtBotMeetingUrl(bot.meeting_url)));
+        });
       } catch (e) {
         list.innerHTML = '<p class="empty">Failed to load active bots.</p>';
       }
@@ -262,7 +291,7 @@
       if (!confirm(`Remove Nora from "${label || botId}"?`)) return;
       const s = document.getElementById('active-bots-toast');
       try {
-        const r = await api('/admin/bots/' + botId + '/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const r = await api('/admin/bots/' + encodeURIComponent(botId) + '/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
           s.className = 'toast err'; s.textContent = 'Remove failed: ' + (d.error ? JSON.stringify(d.error) : r.status);
@@ -287,26 +316,32 @@
           return;
         }
         // Show the bulk-dedupe button only when there are duplicates to clear.
-        if (dedupeBtn) dedupeBtn.style.display = d.duplicate_count > 0 ? '' : 'none';
-        const dupNote = d.duplicate_count > 0
-          ? `<div style="background:var(--danger-soft);color:var(--danger);padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px;">${d.duplicate_count} duplicate bot${d.duplicate_count === 1 ? '' : 's'} detected - two or more bots queued for the same meeting within an hour. Remove individually below, or use Remove all duplicates above.</div>`
+        const duplicateCount = Number(d.duplicate_count) || 0;
+        if (dedupeBtn) dedupeBtn.style.display = duplicateCount > 0 ? '' : 'none';
+        const dupNote = duplicateCount > 0
+          ? `<div style="background:var(--danger-soft);color:var(--danger);padding:8px 10px;border-radius:6px;margin-bottom:10px;font-size:12px;">${duplicateCount} duplicate bot${duplicateCount === 1 ? '' : 's'} detected - two or more bots queued for the same meeting within an hour. Remove individually below, or use Remove all duplicates above.</div>`
           : '';
-        list.innerHTML = dupNote + d.bots.map(b => {
+        list.innerHTML = dupNote + d.bots.map((b, index) => {
           const dupBadge = b.is_duplicate
             ? ' <span style="background:var(--danger-soft);color:var(--danger);padding:2px 6px;border-radius:4px;font-size:10px;font-weight:600;letter-spacing:0.5px;">DUPLICATE</span>'
             : '';
           const joinAt = b.join_at ? new Date(b.join_at).toLocaleString() : 'unknown';
           return `
-            <div class="memory-item">
+            <div class="memory-item" data-scheduled-bot-index="${index}">
               <div style="flex: 1; min-width: 0;">
                 <div class="memory-fact" style="word-break: break-all;">${escHtml(fmtBotMeetingUrl(b.meeting_url) || '(no meeting URL)')}${dupBadge}</div>
                 <div class="memory-meta">joins ${escHtml(joinAt)} · ${escHtml(fmtBotStatus(b.status))} · ${escHtml(b.id)}</div>
               </div>
               <div style="display: flex; gap: 6px; flex-shrink: 0;">
-                <button class="btn btn-danger" onclick="removeScheduledBot('${escHtml(b.id)}', '${escHtml(fmtBotMeetingUrl(b.meeting_url))}')">Remove</button>
+                <button class="btn btn-danger scheduled-bot-remove-btn" type="button">Remove</button>
               </div>
             </div>`;
         }).join('');
+        list.querySelectorAll('[data-scheduled-bot-index]').forEach(row => {
+          const bot = d.bots[Number(row.dataset.scheduledBotIndex)];
+          if (!bot) return;
+          row.querySelector('.scheduled-bot-remove-btn')?.addEventListener('click', () => removeScheduledBot(bot.id, fmtBotMeetingUrl(bot.meeting_url)));
+        });
       } catch (e) {
         list.innerHTML = '<p class="empty">Failed to load scheduled bots.</p>';
       }
@@ -315,7 +350,7 @@
       if (!confirm(`Cancel the scheduled bot for "${label || botId}"?`)) return;
       const s = document.getElementById('scheduled-bots-toast');
       try {
-        const r = await api('/admin/bots/' + botId + '/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        const r = await api('/admin/bots/' + encodeURIComponent(botId) + '/leave', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
         if (!r.ok) {
           const d = await r.json().catch(() => ({}));
           s.className = 'toast err'; s.textContent = 'Remove failed: ' + (d.error ? JSON.stringify(d.error) : r.status);
@@ -355,7 +390,8 @@
         if (!d.connected) {
           el.innerHTML = `
             <p class="empty" style="margin-bottom: 10px;">No calendar connected.</p>
-            <button class="btn btn-primary btn-sm" onclick="connectCalendar()">Connect Nora's Google Calendar</button>`;
+            <button class="btn btn-primary btn-sm calendar-connect-btn" type="button">Connect Nora's Google Calendar</button>`;
+          el.querySelector('.calendar-connect-btn')?.addEventListener('click', () => connectCalendar());
           return;
         }
         const connectedAt = d.connected_at ? new Date(d.connected_at).toLocaleString() : 'unknown';
@@ -367,9 +403,10 @@
               <div class="memory-meta">Connected ${escHtml(connectedAt)} · Last sync ${escHtml(lastSync)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
-              <button class="btn btn-danger" onclick="disconnectCalendar()">Disconnect</button>
+              <button class="btn btn-danger calendar-disconnect-btn" type="button">Disconnect</button>
             </div>
           </div>`;
+        el.querySelector('.calendar-disconnect-btn')?.addEventListener('click', () => disconnectCalendar());
       } catch (e) {
         el.innerHTML = '<p class="empty">Failed to load calendar status.</p>';
       }
@@ -425,17 +462,22 @@
           list.innerHTML = '<p class="empty">No users on the approved list yet - every Slack user is currently treated as unapproved (fail-closed).</p>';
           return;
         }
-        list.innerHTML = d.approved.map(u => `
-          <div class="memory-item">
+        list.innerHTML = d.approved.map((u, index) => `
+          <div class="memory-item" data-approved-user-index="${index}">
             <div style="flex: 1;">
               <div class="memory-fact">${escHtml(u.name || '(no name recorded)')}</div>
               <div class="memory-meta">${escHtml(u.user_id)}</div>
             </div>
             <div style="display: flex; gap: 6px; flex-shrink: 0;">
-              <button class="btn btn-danger" onclick="removeApprovedUser('${escHtml(u.user_id)}', '${escHtml(u.name || u.user_id)}')">Remove</button>
+              <button class="btn btn-danger approved-user-remove-btn" type="button">Remove</button>
             </div>
           </div>
         `).join('');
+        list.querySelectorAll('[data-approved-user-index]').forEach(row => {
+          const user = d.approved[Number(row.dataset.approvedUserIndex)];
+          if (!user) return;
+          row.querySelector('.approved-user-remove-btn')?.addEventListener('click', () => removeApprovedUser(user.user_id, user.name || user.user_id));
+        });
       } catch (e) {
         list.innerHTML = '<p class="empty">Failed to load approved list.</p>';
       }
@@ -484,24 +526,29 @@
           list.innerHTML = '<p class="empty">No channels enabled. Nora only responds to @mentions and DMs by default.</p>';
           return;
         }
-        list.innerHTML = d.channels.map(c => {
+        list.innerHTML = d.channels.map((c, index) => {
           const lastPost = c.last_proactive_post ? new Date(c.last_proactive_post).toLocaleString() : 'never';
           const cooldownLabel = c.cooldown_active ? '<span style="color: var(--warn);">cooldown active</span>' : '<span style="color: var(--success);">ready</span>';
           const heading = c.channel_name
             ? `<span>#${escHtml(c.channel_name)}</span> <span style="color: var(--dim); font-weight: 400; font-family: monospace; font-size: 11px; margin-left: 6px;">${escHtml(c.channel)}</span>`
             : `<span style="font-family: monospace;">${escHtml(c.channel)}</span>`;
           return `
-            <div class="memory-item">
+            <div class="memory-item" data-proactive-channel-index="${index}">
               <div style="flex: 1;">
                 <div class="memory-fact">${heading}</div>
                 <div class="memory-meta">${cooldownLabel} · last proactive post: ${lastPost}</div>
               </div>
               <div style="display: flex; gap: 6px; flex-shrink: 0;">
-                <button class="btn btn-danger" onclick="removeProactiveChannel('${escHtml(c.channel)}')">Disable</button>
+                <button class="btn btn-danger proactive-channel-remove-btn" type="button">Disable</button>
               </div>
             </div>
           `;
         }).join('');
+        list.querySelectorAll('[data-proactive-channel-index]').forEach(row => {
+          const channel = d.channels[Number(row.dataset.proactiveChannelIndex)];
+          if (!channel) return;
+          row.querySelector('.proactive-channel-remove-btn')?.addEventListener('click', () => removeProactiveChannel(channel.channel));
+        });
       } catch (e) {
         list.innerHTML = '<p class="empty">Failed to load proactive channels.</p>';
       }
@@ -547,7 +594,7 @@
           list.innerHTML = '<p class="empty">No threads currently being followed.</p>';
           return;
         }
-        list.innerHTML = d.threads.map(th => {
+        list.innerHTML = d.threads.map((th, index) => {
           const last = th.last_addressed ? new Date(th.last_addressed).toLocaleString() : 'unknown';
           const stalePill = th.stale
             ? '<span style="color: var(--warn); font-weight: 600;">STALE</span>'
@@ -557,17 +604,22 @@
             : escHtml(th.channel);
           const heading = `<span style="font-size: 14px;">${channelLabel}</span> <span style="font-family: monospace; font-size: 11px; color: var(--dim); margin-left: 6px;">${escHtml(th.thread_ts)}</span>`;
           return `
-            <div class="memory-item">
+            <div class="memory-item" data-joined-thread-index="${index}">
               <div style="flex: 1;">
                 <div class="memory-fact">${heading}</div>
-                <div class="memory-meta">${stalePill} · last addressed: ${last} · ${th.msgs_since_addressed || 0} msgs since</div>
+                <div class="memory-meta">${stalePill} · last addressed: ${last} · ${Number(th.msgs_since_addressed) || 0} msgs since</div>
               </div>
               <div style="display: flex; gap: 6px; flex-shrink: 0;">
-                <button class="btn btn-danger" onclick="unjoinThread('${escHtml(th.channel)}', '${escHtml(th.thread_ts)}')">Untrack</button>
+                <button class="btn btn-danger joined-thread-remove-btn" type="button">Untrack</button>
               </div>
             </div>
           `;
         }).join('');
+        list.querySelectorAll('[data-joined-thread-index]').forEach(row => {
+          const thread = d.threads[Number(row.dataset.joinedThreadIndex)];
+          if (!thread) return;
+          row.querySelector('.joined-thread-remove-btn')?.addEventListener('click', () => unjoinThread(thread.channel, thread.thread_ts));
+        });
       } catch (e) {
         list.innerHTML = '<p class="empty">Failed to load joined threads.</p>';
       }

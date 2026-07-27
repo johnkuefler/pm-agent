@@ -2,7 +2,9 @@
 
 const crypto = require('crypto');
 const dns = require('dns').promises;
+const https = require('https');
 const net = require('net');
+const { Readable } = require('stream');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
@@ -24,7 +26,7 @@ function toolIsDeferred(connection, tool) {
 function clampText(value, max = 500) { return value == null ? '' : String(value).slice(0, max); }
 
 function deriveKey(secret) {
-  if (!secret) throw new Error('MCP credential encryption requires MCP_CREDENTIALS_ENCRYPTION_KEY or NORA_API_KEY');
+  if (!secret) throw new Error('MCP credential encryption requires a stable configured encryption secret');
   return crypto.createHash('sha256').update(String(secret)).digest();
 }
 
@@ -45,27 +47,210 @@ function decryptObject(value, key) {
   return JSON.parse(Buffer.concat([decipher.update(Buffer.from(parts[4], 'base64url')), decipher.final()]).toString('utf8'));
 }
 
-function privateIp(address) {
-  if (!address) return true;
-  if (address === '::1' || address.startsWith('fc') || address.startsWith('fd') || address.startsWith('fe80:')) return true;
-  if (net.isIPv4(address)) {
-    const [a, b] = address.split('.').map(Number);
-    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-  }
-  return false;
+function ipv4Number(address) {
+  if (!net.isIPv4(address)) return null;
+  return address.split('.').reduce((value, octet) =>
+    ((value << 8) | Number(octet)) >>> 0, 0);
 }
 
-async function validateMcpUrl(value, { resolveDns = true } = {}) {
+function ipv4InCidr(address, network, prefix) {
+  const value = ipv4Number(address);
+  const base = ipv4Number(network);
+  if (value == null || base == null) return false;
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  return (value & mask) === (base & mask);
+}
+
+const NON_GLOBAL_IPV4 = [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+  ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24],
+  ['192.0.2.0', 24], ['192.88.99.0', 24], ['192.168.0.0', 16],
+  ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+  ['224.0.0.0', 4], ['240.0.0.0', 4],
+];
+
+function ipv6Words(address) {
+  let value = String(address || '').trim().toLowerCase()
+    .replace(/^\[|\]$/g, '').split('%')[0];
+  if (!value || !value.includes(':')) return null;
+  const dotted = value.match(/(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/)?.[1];
+  if (dotted) {
+    if (!net.isIPv4(dotted)) return null;
+    const bytes = dotted.split('.').map(Number);
+    value = value.slice(0, value.length - dotted.length)
+      + `${((bytes[0] << 8) | bytes[1]).toString(16)}:${((bytes[2] << 8) | bytes[3]).toString(16)}`;
+  }
+  const halves = value.split('::');
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(':') : [];
+  const right = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if (halves.length === 1 && left.length !== 8) return null;
+  const missing = 8 - left.length - right.length;
+  if (missing < (halves.length === 2 ? 1 : 0)) return null;
+  const words = [...left, ...Array(missing).fill('0'), ...right]
+    .map(part => /^[a-f0-9]{1,4}$/.test(part) ? Number.parseInt(part, 16) : NaN);
+  return words.length === 8 && words.every(Number.isInteger) ? words : null;
+}
+
+function privateIp(address) {
+  const value = String(address || '').trim().replace(/^\[|\]$/g, '');
+  if (!value) return true;
+  if (net.isIPv4(value)) {
+    return NON_GLOBAL_IPV4.some(([network, prefix]) =>
+      ipv4InCidr(value, network, prefix));
+  }
+  if (!net.isIPv6(value)) return false;
+  const words = ipv6Words(value);
+  if (!words) return true;
+  // Reject IPv4-mapped and legacy IPv4-compatible forms even when the embedded
+  // address looks public; they are a common parser-disagreement bypass.
+  if (words.slice(0, 5).every(word => word === 0) && words[5] === 0xffff) return true;
+  if (words.slice(0, 6).every(word => word === 0)) return true;
+  if ((words[0] & 0xfe00) === 0xfc00) return true; // unique-local
+  if ((words[0] & 0xffc0) === 0xfe80 || (words[0] & 0xffc0) === 0xfec0) return true;
+  if ((words[0] & 0xff00) === 0xff00) return true; // multicast
+  if (words[0] === 0x0064 && words[1] === 0xff9b) return true;
+  if (words[0] === 0x2001 && (words[1] <= 0x01ff || words[1] === 0x0db8)) return true;
+  if (words[0] === 0x2002) return true; // deprecated 6to4 transition space
+  if (words[0] === 0x3fff) return true; // documentation space
+  // Today globally routed unicast space is 2000::/3. Fail closed for all other
+  // special-purpose address families.
+  return (words[0] & 0xe000) !== 0x2000;
+}
+
+function parseMcpUrl(value) {
   let url;
   try { url = new URL(String(value || '')); } catch { throw new Error('MCP URL must be a valid HTTPS URL'); }
   if (url.protocol !== 'https:') throw new Error('MCP URL must use HTTPS');
   if (url.username || url.password) throw new Error('Credentials in URL userinfo are not supported');
   if (url.hostname === 'localhost' || privateIp(url.hostname)) throw new Error('MCP URL cannot target localhost or a private network');
-  if (resolveDns && !net.isIP(url.hostname)) {
-    const results = await dns.lookup(url.hostname, { all: true });
-    if (!results.length || results.some(item => privateIp(item.address))) throw new Error('MCP URL resolved to a private network');
-  }
   return url;
+}
+
+function pinnedDnsLookup(expectedHostname, addresses) {
+  const expected = String(expectedHostname || '').toLowerCase();
+  return (hostname, options, callback) => {
+    if (String(hostname || '').toLowerCase() !== expected) {
+      const error = new Error('MCP request hostname changed after validation');
+      error.code = 'EACCES';
+      return callback(error);
+    }
+    const opts = typeof options === 'number' ? { family: options } : (options || {});
+    const family = Number(opts.family) || 0;
+    const candidates = addresses.filter(item => !family || item.family === family);
+    if (!candidates.length) {
+      const error = new Error('validated MCP address family is unavailable');
+      error.code = 'EAI_AGAIN';
+      return callback(error);
+    }
+    if (opts.all) {
+      return callback(null, candidates.map(item => ({
+        address: item.address, family: item.family,
+      })));
+    }
+    return callback(null, candidates[0].address, candidates[0].family);
+  };
+}
+
+async function resolveMcpTarget(value, {
+  resolveDns = true,
+  dnsLookup = dns.lookup,
+} = {}) {
+  const url = parseMcpUrl(value);
+  const hostname = url.hostname.replace(/^\[|\]$/g, '');
+  let addresses = null;
+  if (resolveDns && !net.isIP(hostname)) {
+    const results = await dnsLookup(hostname, { all: true, verbatim: true });
+    addresses = (Array.isArray(results) ? results : [results]).filter(Boolean)
+      .map(item => ({
+        address: String(item.address || ''),
+        family: Number(item.family) || net.isIP(String(item.address || '')),
+      }));
+    if (!addresses.length || addresses.some(item =>
+      ![4, 6].includes(item.family) || privateIp(item.address))) {
+      throw new Error('MCP URL resolved to a private network');
+    }
+  } else if (net.isIP(hostname)) {
+    addresses = [{ address: hostname, family: net.isIP(hostname) }];
+  }
+  return {
+    url,
+    lookup: addresses ? pinnedDnsLookup(hostname, addresses) : undefined,
+    addresses,
+  };
+}
+
+async function validateMcpUrl(value, options = {}) {
+  return (await resolveMcpTarget(value, options)).url;
+}
+
+async function pinnedHttpsFetch(input, init = {}) {
+  const { lookup, ...requestInit } = init || {};
+  const request = input instanceof Request
+    ? new Request(input, { ...requestInit, redirect: 'manual' })
+    : new Request(input, { ...requestInit, redirect: 'manual', duplex: 'half' });
+  const url = new URL(request.url);
+  return new Promise((resolve, reject) => {
+    const headers = {};
+    for (const [name, value] of request.headers) headers[name] = value;
+    const outbound = https.request(url, {
+      method: request.method,
+      headers,
+      lookup,
+      signal: request.signal,
+      agent: false,
+    }, response => {
+      try {
+        const responseHeaders = new Headers();
+        for (let index = 0; index < response.rawHeaders.length; index += 2) {
+          responseHeaders.append(response.rawHeaders[index], response.rawHeaders[index + 1]);
+        }
+        const bodyAllowed = request.method !== 'HEAD'
+          && ![101, 204, 205, 304].includes(Number(response.statusCode));
+        const body = bodyAllowed ? Readable.toWeb(response) : null;
+        resolve(new Response(body, {
+          status: response.statusCode,
+          statusText: response.statusMessage,
+          headers: responseHeaders,
+        }));
+      } catch (error) {
+        response.destroy();
+        reject(error);
+      }
+    });
+    outbound.once('error', reject);
+    if (!request.body) {
+      outbound.end();
+      return;
+    }
+    const body = Readable.fromWeb(request.body);
+    body.once('error', error => outbound.destroy(error));
+    body.pipe(outbound);
+  });
+}
+
+function createGuardedFetch({
+  fetchImpl = pinnedHttpsFetch,
+  resolveDns = true,
+  dnsLookup = dns.lookup,
+} = {}) {
+  if (typeof fetchImpl !== 'function') throw new Error('MCP transport requires a fetch implementation');
+  return async function guardedFetch(input, init = {}) {
+    const requestUrl = input instanceof URL ? input.toString()
+      : typeof input === 'string' ? input : input?.url;
+    const target = await resolveMcpTarget(requestUrl, { resolveDns, dnsLookup });
+    const dispatchInput = input instanceof Request ? input : target.url.toString();
+    const response = await fetchImpl(dispatchInput, {
+      ...init,
+      redirect: 'manual',
+      ...(target.lookup ? { lookup: target.lookup } : {}),
+    });
+    if (response?.status >= 300 && response.status < 400) {
+      await response.body?.cancel?.().catch(() => {});
+      throw new Error('MCP redirects are disabled; configure the final public HTTPS endpoint');
+    }
+    return response;
+  };
 }
 
 function urlHint(value, authType) {
@@ -131,10 +316,21 @@ function toolIsAllowed(connection, tool) {
   return !WRITE_NAME.test(tool.name || '');
 }
 
-function createMcpManager({ loadConnections, saveConnections, encryptionSecret, clock = () => new Date(), connectFactory, resolveDns = true, authFn = auth }) {
+function createMcpManager({
+  loadConnections,
+  saveConnections,
+  encryptionSecret,
+  clock = () => new Date(),
+  connectFactory,
+  resolveDns = true,
+  authFn = auth,
+  fetchImpl = pinnedHttpsFetch,
+  dnsLookup = dns.lookup,
+}) {
   const key = deriveKey(encryptionSecret);
   const clients = new Map();
   const oauthStates = new Map();
+  const guardedFetch = createGuardedFetch({ fetchImpl, resolveDns, dnsLookup });
 
   function listRaw() { return (loadConnections() || []).map(item => ({ ...item })); }
   async function persistList(list) { await Promise.resolve(saveConnections(list)); }
@@ -195,7 +391,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     if (!name || !input.url) throw new Error('name and url are required');
     if (listRaw().some(item => String(item.name).toLowerCase() === name.toLowerCase())) throw new Error('connection name must be unique');
     const authType = AUTH_TYPES.has(input.auth_type) ? input.auth_type : 'none';
-    const url = await validateMcpUrl(input.url, { resolveDns });
+    const url = await validateMcpUrl(input.url, { resolveDns, dnsLookup });
     const secrets = { url: url.toString() };
     if (authType === 'bearer') {
       secrets.token = clampText(input.token, 8000);
@@ -231,7 +427,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
       if (!changes.name) throw new Error('name cannot be blank');
       if (listRaw().some(item => item.id !== id && String(item.name).toLowerCase() === changes.name.toLowerCase())) throw new Error('connection name must be unique');
     }
-    if (input.url) { secrets.url = (await validateMcpUrl(input.url, { resolveDns })).toString(); changes.tools = []; changes.status = 'untested'; }
+    if (input.url) { secrets.url = (await validateMcpUrl(input.url, { resolveDns, dnsLookup })).toString(); changes.tools = []; changes.status = 'untested'; }
     if (input.auth_type && AUTH_TYPES.has(input.auth_type)) { changes.auth_type = input.auth_type; changes.status = input.auth_type === 'oauth' ? 'needs_authorization' : 'untested'; }
     const authType = changes.auth_type || connection.auth_type || 'none';
     if (input.token) secrets.token = clampText(input.token, 8000);
@@ -311,14 +507,18 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
   async function startOAuth(id, callbackUrl) {
     const connection = findRaw(id); if (!connection) throw new Error('MCP connection not found');
     if (connection.auth_type !== 'oauth') throw new Error('Connection is not configured for OAuth authorization code flow');
-    await validateMcpUrl(secretsFor(connection).url, { resolveDns });
+    await validateMcpUrl(secretsFor(connection).url, { resolveDns, dnsLookup });
     const state = crypto.randomBytes(24).toString('base64url'); oauthStates.set(state, { id, created: Date.now(), callbackUrl });
     const pendingSecrets = secretsFor(connection);
     pendingSecrets.oauth_pending = { state, created: Date.now(), callbackUrl };
     await saveSecrets(connection, pendingSecrets);
     const provider = makeOAuthProvider(connection, callbackUrl, state);
     try {
-      const result = await authFn(provider, { serverUrl: secretsFor(connection).url, scope: connection.scopes || undefined });
+      const result = await authFn(provider, {
+        serverUrl: secretsFor(connection).url,
+        scope: connection.scopes || undefined,
+        fetchFn: guardedFetch,
+      });
       if (result !== 'REDIRECT' || !provider.authorizationUrl) throw new Error('MCP server did not provide an interactive OAuth authorization flow');
       await patchConnection(id, { status: 'authorizing', status_message: 'Waiting for OAuth consent' });
       return provider.authorizationUrl;
@@ -344,7 +544,12 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     const consumed = secretsFor(connection); delete consumed.oauth_pending; await saveSecrets(connection, consumed);
     const provider = makeOAuthProvider(connection, pending.callbackUrl, state);
     try {
-      const result = await authFn(provider, { serverUrl: secretsFor(connection).url, authorizationCode: code, scope: connection.scopes || undefined });
+      const result = await authFn(provider, {
+        serverUrl: secretsFor(connection).url,
+        authorizationCode: code,
+        scope: connection.scopes || undefined,
+        fetchFn: guardedFetch,
+      });
       if (result !== 'AUTHORIZED') throw new Error('OAuth token exchange did not complete');
       await patchConnection(connection.id, { status: 'connected', status_message: '' });
       return connection.id;
@@ -368,8 +573,13 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     const url = new URL(secretsFor(connection).url);
     const { headers, authProvider } = requestOptions(connection, callbackUrl);
     const attempts = [
-      () => new StreamableHTTPClientTransport(url, { requestInit: { headers }, authProvider }),
-      () => new SSEClientTransport(url, { requestInit: { headers }, eventSourceInit: { fetch: (input, init = {}) => fetch(input, { ...init, headers: { ...headers, ...(init.headers || {}) } }) }, authProvider }),
+      () => new StreamableHTTPClientTransport(url, {
+        requestInit: { headers }, authProvider, fetch: guardedFetch,
+      }),
+      () => new SSEClientTransport(url, {
+        requestInit: { headers }, eventSourceInit: { fetch: guardedFetch },
+        authProvider, fetch: guardedFetch,
+      }),
     ];
     let lastError;
     const startedAt = Date.now();
@@ -395,7 +605,9 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     const cached = clients.get(connection.id);
     if (cached && cached.expires > Date.now()) return cached;
     if (cached) await invalidateClient(connection.id);
-    if (!connectFactory) await validateMcpUrl(secretsFor(connection).url, { resolveDns });
+    if (!connectFactory) {
+      await validateMcpUrl(secretsFor(connection).url, { resolveDns, dnsLookup });
+    }
     const connected = await (connectFactory
       ? connectFactory(connection, secretsFor(connection), { signal, timeout })
       : defaultConnect(connection, undefined, { signal, timeout }));
@@ -468,9 +680,22 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
   return {
     list: () => listRaw().map(publicConnection), create, update, remove, migrate, startOAuth, finishOAuth,
     testConnection, callTool, bindings, publicConnection,
-    __test: { encryptObject: value => encryptObject(value, key), decryptObject: value => decryptObject(value, key), validateMcpUrl: value => validateMcpUrl(value, { resolveDns }), urlHint, sanitizeHeaders, toolIsAllowed, safeToolName,
+    __test: { encryptObject: value => encryptObject(value, key), decryptObject: value => decryptObject(value, key), validateMcpUrl: value => validateMcpUrl(value, { resolveDns, dnsLookup }), guardedFetch, urlHint, sanitizeHeaders, toolIsAllowed, safeToolName,
       requestOptions: (id, callbackUrl) => { const connection = findRaw(id); return connection ? requestOptions(connection, callbackUrl) : null; } },
   };
 }
 
-module.exports = { AUTH_TYPES, SLOW_NAME, createMcpManager, validateMcpUrl, urlHint, sanitizeHeaders, toolIsAllowed, toolIsDeferred };
+module.exports = {
+  AUTH_TYPES,
+  SLOW_NAME,
+  createMcpManager,
+  validateMcpUrl,
+  resolveMcpTarget,
+  createGuardedFetch,
+  pinnedHttpsFetch,
+  privateIp,
+  urlHint,
+  sanitizeHeaders,
+  toolIsAllowed,
+  toolIsDeferred,
+};

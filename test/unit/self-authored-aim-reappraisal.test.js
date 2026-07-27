@@ -393,7 +393,7 @@ test('runtime keeps aim reappraisal in the serialized preemptible background lan
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.match(source, /\['self_authored_aim_lifecycle',[\s\S]*runSelfAuthoredAimLifecycleAutopilotRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
-  const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));
+  const zoom = source.slice(source.indexOf('async function processRecallChatWebhook'), source.indexOf('// Proactive mode toggle'));
   assert.doesNotMatch(slack, /selfAuthoredAimReappraisal|runSelfAuthoredAimLifecycleAutopilotRuntime/);
   assert.doesNotMatch(zoom, /selfAuthoredAimReappraisal|runSelfAuthoredAimLifecycleAutopilotRuntime/);
 });

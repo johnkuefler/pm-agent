@@ -1,6 +1,141 @@
 'use strict';
 
 const consciousWorkspace = require('../intelligence/conscious-workspace');
+const interactionOutcomeReview = require('../intelligence/interaction-outcome-review-autopilot');
+
+const PRIVILEGED_AUTHORITY_CLASSES = new Set(['bounded', 'required']);
+const REVIEW_OUTCOME_EFFECT = Object.freeze({
+  landed: 'supported',
+  appreciated: 'supported',
+  neutral: 'unclear',
+  ignored: 'unclear',
+  corrected: 'contradicted',
+});
+
+function unavailableOperatorAuth(_req, res) {
+  return res.status(503).json({ error: 'operator authentication is not configured' });
+}
+
+function frameRequestsPrivilegedAuthority(input = {}) {
+  return (Array.isArray(input.attention_candidates) ? input.attention_candidates : [])
+    .some(candidate => PRIVILEGED_AUTHORITY_CLASSES.has(
+      String(candidate?.authority_class || '').trim().toLowerCase()));
+}
+
+function frameWriteGuard(requireOperatorAuth) {
+  return (req, res, next) => {
+    const input = req.body || {};
+    const candidateKeys = (Array.isArray(input.attention_candidates)
+      ? input.attention_candidates : [])
+      .map(candidate => String(candidate?.key || candidate?.id || '').trim())
+      .filter(Boolean);
+    if (new Set(candidateKeys).size !== candidateKeys.length) {
+      return res.status(400).json({
+        error: 'workspace attention candidate keys must be unique',
+      });
+    }
+    if (input.lifecycle != null) {
+      return res.status(400).json({
+        error: 'workspace lifecycle is server-derived and cannot be supplied through the API',
+      });
+    }
+    if (/^cw-lifecycle-/i.test(String(input.id || '').trim())) {
+      return res.status(400).json({
+        error: 'workspace lifecycle frame ids are reserved for the server runtime',
+      });
+    }
+    if (frameRequestsPrivilegedAuthority(input)) {
+      return requireOperatorAuth(req, res, next);
+    }
+    return next();
+  };
+}
+
+function frameInputForAuthority(input = {}, operatorApproved = false, ledger = null) {
+  const { lifecycle: _lifecycle, created_by: _createdBy, ...safeInput } = input;
+  const priorFrameId = String(input.revision_of_frame_id || '').trim();
+  const priorFrame = !operatorApproved && priorFrameId
+    ? (Array.isArray(ledger?.frames) ? ledger.frames : [])
+      .find(frame => String(frame?.id || '') === priorFrameId)
+    : null;
+  const priorSelected = priorFrame?.attention_candidates?.find(candidate =>
+    candidate.key === priorFrame.selected_focus_key);
+  const inheritedAuthority = PRIVILEGED_AUTHORITY_CLASSES.has(priorSelected?.authority_class)
+    ? priorSelected : null;
+  return {
+    ...safeInput,
+    attention_candidates: (Array.isArray(input.attention_candidates)
+      ? input.attention_candidates : []).map(candidate => {
+      if (inheritedAuthority
+        && String(candidate?.key || candidate?.id || '').trim() === inheritedAuthority.key) {
+        return { ...inheritedAuthority };
+      }
+      return {
+        ...candidate,
+        authority_class: operatorApproved
+          ? (candidate?.authority_class || 'optional')
+          : 'optional',
+      };
+    }),
+    created_by: operatorApproved ? 'Dashboard operator' : 'Nora autonomous',
+  };
+}
+
+function verifiedAutonomousFeedback(input = {}, interactions = [],
+  verifyReceipt = interactionOutcomeReview.verifyAutomatedReviewReceipt, ledger = null) {
+  const refs = Array.isArray(input.evidence) ? input.evidence : [];
+  const interactionRefs = refs.filter(ref =>
+    ['interaction', 'reviewed_interaction'].includes(String(ref?.type || '').trim())
+      && String(ref?.id || '').trim());
+  if (interactionRefs.length !== 1) return null;
+  const interactionId = String(interactionRefs[0].id).trim();
+  const interaction = (Array.isArray(interactions) ? interactions : [])
+    .find(item => String(item?.id || '') === interactionId);
+  const frameId = String(input.frame_id || ledger?.current?.id || '').trim();
+  const frame = (Array.isArray(ledger?.frames) ? ledger.frames : [])
+    .find(item => String(item?.id || '') === frameId);
+  const frameCreatedAt = new Date(frame?.created_at || '').getTime();
+  const reviewedAt = new Date(interaction?.reviewed_at || '').getTime();
+  if (!interaction || interaction.reviewed !== true || !interaction.automated_review_receipt
+    || !Number.isFinite(frameCreatedAt) || !Number.isFinite(reviewedAt)
+    || reviewedAt < frameCreatedAt
+    || verifyReceipt(interaction, interaction.automated_review_receipt) !== true) return null;
+  const defaultEffect = REVIEW_OUTCOME_EFFECT[interaction.outcome];
+  if (!defaultEffect || !String(interaction.signal || '').trim()) return null;
+  const requestedEffect = String(input.effect || '').trim().toLowerCase();
+  const effect = interaction.outcome === 'corrected'
+    && ['contradicted', 'redirected'].includes(requestedEffect)
+    ? requestedEffect : defaultEffect;
+  return {
+    frame_id: frame.id,
+    signal: String(interaction.signal).trim(),
+    effect,
+    evidence: [{
+      type: 'interaction',
+      id: interactionId,
+      note: `replay-verified automated review ${interaction.automated_review_receipt.receipt_commitment}`,
+    }],
+    recorded_by: 'Nora verified outcome',
+  };
+}
+
+function feedbackWriteGuard({ requireOperatorAuth, loadConsciousWorkspace,
+  loadInteractions, verifyReceipt }) {
+  return (req, res, next) => {
+    let verified = null;
+    try {
+      verified = verifiedAutonomousFeedback(req.body || {}, loadInteractions(), verifyReceipt,
+        loadConsciousWorkspace());
+    } catch {
+      verified = null;
+    }
+    if (verified) {
+      req.verifiedWorkspaceFeedback = verified;
+      return next();
+    }
+    return requireOperatorAuth(req, res, next);
+  };
+}
 
 function publicFrame(frame, ledger = null) {
   if (!frame) return null;
@@ -107,11 +242,14 @@ function durableMindChangeInput(frame, ledger) {
 }
 
 function registerConsciousWorkspaceRoutes(app, deps) {
-  const { requireAuth, loadConsciousWorkspace, saveConsciousWorkspace,
+  const { requireAuth, requireOperatorAuth = unavailableOperatorAuth,
+    loadConsciousWorkspace, saveConsciousWorkspace,
     getWants = () => [], getWantHistoryIntegrity = () => null,
     loadConsequenceReviews = () => ({ actions: [], observations: [], applications: [] }),
     getSoma = () => ({}), getEpistemicAgenda = () => ({}),
-    getRelationalContext = () => ({}), recordMindChange = null } = deps;
+    getRelationalContext = () => ({}), recordMindChange = null,
+    loadInteractions = () => [],
+    verifyAutomatedReviewReceipt = interactionOutcomeReview.verifyAutomatedReviewReceipt } = deps;
 
   app.get('/conscious-workspace', requireAuth, (req, res) => {
     const ledger = loadConsciousWorkspace();
@@ -128,9 +266,13 @@ function registerConsciousWorkspaceRoutes(app, deps) {
     });
   });
 
-  app.post('/conscious-workspace/frames', requireAuth, async (req, res) => {
+  app.post('/conscious-workspace/frames', requireAuth,
+    frameWriteGuard(requireOperatorAuth), async (req, res) => {
     try {
-      const result = consciousWorkspace.createFrame(req.body || {}, loadConsciousWorkspace(), {
+      const ledger = loadConsciousWorkspace();
+      const input = frameInputForAuthority(req.body || {},
+        req.operatorAuthority === 'dashboard', ledger);
+      const result = consciousWorkspace.createFrame(input, ledger, {
         context: {
           wants: getWants(),
           wantHistoryIntegrity: getWantHistoryIntegrity(),
@@ -153,9 +295,15 @@ function registerConsciousWorkspaceRoutes(app, deps) {
     }
   });
 
-  app.post('/conscious-workspace/feedback', requireAuth, async (req, res) => {
+  app.post('/conscious-workspace/feedback', requireAuth,
+    feedbackWriteGuard({ requireOperatorAuth, loadConsciousWorkspace, loadInteractions,
+      verifyReceipt: verifyAutomatedReviewReceipt }), async (req, res) => {
     try {
-      const result = consciousWorkspace.addFeedback(req.body || {}, loadConsciousWorkspace());
+      const operatorApproved = req.operatorAuthority === 'dashboard';
+      const input = operatorApproved
+        ? { ...(req.body || {}), recorded_by: 'Dashboard operator' }
+        : { ...(req.body || {}), ...req.verifiedWorkspaceFeedback };
+      const result = consciousWorkspace.addFeedback(input, loadConsciousWorkspace());
       await saveConsciousWorkspace(result.ledger);
       res.json({ ok: true, feedback: publicFeedback(result.feedback), report: result.report });
     } catch (error) {
@@ -165,7 +313,10 @@ function registerConsciousWorkspaceRoutes(app, deps) {
 
   app.post('/conscious-workspace/focus-commitments', requireAuth, async (req, res) => {
     try {
-      const result = consciousWorkspace.commitFocus(req.body || {}, loadConsciousWorkspace());
+      const result = consciousWorkspace.commitFocus({
+        ...(req.body || {}),
+        committed_by: 'Nora autonomous',
+      }, loadConsciousWorkspace());
       if (result.created) await saveConsciousWorkspace(result.ledger);
       res.json({ ok: true,
         focus_commitment: publicFocusCommitment(result.focus_commitment, result.ledger),
@@ -177,5 +328,6 @@ function registerConsciousWorkspaceRoutes(app, deps) {
 }
 
 module.exports = { publicFrame, publicFeedback, publicFocusCommitment, publicFocusOutcome,
-  durableMindChangeInput,
+  durableMindChangeInput, frameInputForAuthority, frameRequestsPrivilegedAuthority,
+  frameWriteGuard, feedbackWriteGuard, verifiedAutonomousFeedback,
   registerConsciousWorkspaceRoutes };

@@ -44,6 +44,9 @@ function applyMeetingIntelligence(store, { botId, ended, meetingMeta = {}, extra
   const commitments = extracted.commitments.map(item => store.addCommitment({
     what: item.what, owner: item.owner, beneficiary: item.beneficiary, due: item.due,
     episode_id: episode.id, evidence: { ...sourceRef, quote: item.evidence_quote || null },
+    authority_class: 'bounded', provenance_status: 'meeting_transcript',
+    source_chain_verified: true, created_by: 'server:meeting-extraction',
+    updated_by: 'server:meeting-extraction',
     notes: 'Extracted conservatively from an explicit meeting promise.',
   }));
   if (commitments.length) store.recordEpisodeEvent({ correlation, record_event: false, commitment_ids: commitments.map(item => item.id), status: 'open' });

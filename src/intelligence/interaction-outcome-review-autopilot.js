@@ -372,7 +372,7 @@ async function runCycle({ interactions = [], enabled = true, model = DEFAULT_MOD
       }
       if (new Set(reviews.map(item => item.output.outcome)).size !== 1) {
         result.inconclusive += 1; result.state = 'inconclusive';
-        if (typeof recordAttempt === 'function') recordAttempt(interaction.id, {
+        if (typeof recordAttempt === 'function') await recordAttempt(interaction.id, {
           protocol_version: PROTOCOL_VERSION, status: 'inconclusive', attempted_at: new Date(now).toISOString(),
           packet_commitment: commitment(packet), outcomes: reviews.map(item => ({
             role: item.receipt.role, outcome: item.output.outcome,
@@ -383,7 +383,7 @@ async function runCycle({ interactions = [], enabled = true, model = DEFAULT_MOD
       const receipt = automatedReviewReceipt(packet, reviews, { model });
       const outcome = receipt.consensus_outcome;
       const signal = reviews.map(item => item.output.signal).join(' | ').slice(0, 1200);
-      commitOutcome(interaction.id, { outcome, signal,
+      await commitOutcome(interaction.id, { outcome, signal,
         reviewed_at: receipt.reviewed_at, automated_review_receipt: receipt });
       result.reviewed += 1; result.state = 'reviewed';
     } catch (error) {

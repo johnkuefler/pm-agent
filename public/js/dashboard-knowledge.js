@@ -1,6 +1,9 @@
 // Transcripts
+    let transcriptReturnFocus = null;
     async function loadTranscripts() {
       const list = document.getElementById('transcript-list');
+      list.setAttribute('aria-busy', 'true');
+      list.innerHTML = '<p class="empty" role="status">Loading transcripts...</p>';
       document.getElementById('transcript-detail').style.display = 'none';
       list.style.display = 'block';
       try {
@@ -10,18 +13,25 @@
           list.innerHTML = '<p class="empty">No transcripts yet. Transcripts are saved when meetings end.</p>';
           return;
         }
-        list.innerHTML = transcripts.map(t => `
-          <div class="task-item" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-            <div style="flex: 1;" onclick="viewTranscript('${escHtml(t.bot_id)}')">
+        list.innerHTML = transcripts.map((t, index) => `
+          <div class="task-item" data-transcript-index="${index}" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+            <button class="dashboard-row-action transcript-view-btn" type="button">
               <div class="task-action">${escHtml(t.bot_id)}</div>
               <div class="task-meta">
-                ${t.utterance_count} utterances · ${t.ended ? 'ended ' + new Date(t.ended).toLocaleString() : '<span style="color: var(--warn);">In progress</span>'}
+                ${Number(t.utterance_count) || 0} utterances · ${t.ended ? 'ended ' + new Date(t.ended).toLocaleString() : '<span style="color: var(--warn);">In progress</span>'}
               </div>
-            </div>
-            <button class="btn btn-danger btn-sm" onclick="event.stopPropagation(); deleteTranscript('${escHtml(t.bot_id)}')" style="margin-left: 12px; flex-shrink: 0;">Delete</button>
+            </button>
+            <button class="btn btn-danger btn-sm transcript-delete-btn" type="button" style="margin-left: 12px; flex-shrink: 0;">Delete</button>
           </div>
         `).join('');
-      } catch (e) { list.innerHTML = '<p class="empty">Failed to load transcripts.</p>'; }
+        list.querySelectorAll('[data-transcript-index]').forEach(row => {
+          const transcript = transcripts[Number(row.dataset.transcriptIndex)];
+          if (!transcript) return;
+          row.querySelector('.transcript-view-btn')?.addEventListener('click', () => viewTranscript(transcript.bot_id));
+          row.querySelector('.transcript-delete-btn')?.addEventListener('click', () => deleteTranscript(transcript.bot_id));
+        });
+      } catch (e) { list.innerHTML = '<p class="empty" role="alert">Failed to load transcripts.</p>'; }
+      finally { list.setAttribute('aria-busy', 'false'); }
     }
 
     // ===== Markers tab =====
@@ -68,8 +78,17 @@
         const sel = document.getElementById('markers-category');
         const prev = sel.value;
         const cats = [...new Set(_allMarkers.map(m => m.category))].sort();
-        sel.innerHTML = '<option value="">All categories</option>' +
-          cats.map(c => `<option value="${escHtml(c)}">${escHtml(c)} (${_allMarkers.filter(m => m.category === c).length})</option>`).join('');
+        sel.replaceChildren();
+        const allOption = document.createElement('option');
+        allOption.value = '';
+        allOption.textContent = 'All categories';
+        sel.appendChild(allOption);
+        cats.forEach(category => {
+          const option = document.createElement('option');
+          option.value = category;
+          option.textContent = `${category} (${_allMarkers.filter(m => m.category === category).length})`;
+          sel.appendChild(option);
+        });
         if (prev) sel.value = prev;
         _markersRenderCap = 100;
         renderMarkers();
@@ -96,11 +115,12 @@
       items = items.slice().sort((a, b) => (a.set_at < b.set_at ? 1 : a.set_at > b.set_at ? -1 : 0));
 
       const total = _allMarkers.length, matched = items.length;
-      list.innerHTML = items.slice(0, _markersRenderCap).map(m => {
+      const visibleItems = items.slice(0, _markersRenderCap);
+      list.innerHTML = visibleItems.map((m, index) => {
         const color = MARKER_CAT_COLOR[m.category] || 'var(--muted)';
         const summary = markerSummary(m.data);
         const when = m.set_at ? new Date(m.set_at).toLocaleDateString() : '';
-        return `<div class="memory-item">
+        return `<div class="memory-item" data-marker-index="${index}">
           <div style="flex:1; min-width:0;">
             <div class="memory-fact" style="font-family:ui-monospace,monospace; font-size:13px; color:var(--text-2); word-break:break-all;">
               <span style="color:${color};">${escHtml(m.category)}</span><span style="color:var(--dim);">${escHtml(m.key.slice(m.category.length))}</span>
@@ -108,17 +128,26 @@
             ${summary ? `<div class="memory-meta" style="word-break:break-word;">${escHtml(summary)}</div>` : ''}
             <div class="memory-meta" style="color:var(--dim);">${when}</div>
           </div>
-          <button class="btn btn-danger" onclick="deleteMarker('${escHtml(m.key).replace(/'/g, "\\'")}')">Delete</button>
+          <button class="btn btn-danger marker-delete-btn" type="button">Delete</button>
         </div>`;
       }).join('') || '<p class="empty">No markers match your search.</p>';
+      list.querySelectorAll('[data-marker-index]').forEach(row => {
+        const marker = visibleItems[Number(row.dataset.markerIndex)];
+        if (!marker) return;
+        row.querySelector('.marker-delete-btn')?.addEventListener('click', () => deleteMarker(marker.key));
+      });
 
       const rendered = Math.min(matched, _markersRenderCap);
       countEl.textContent = (q || cat)
         ? `Showing ${rendered} of ${matched} match${matched === 1 ? '' : 'es'} (${total} total)`
         : `Showing ${rendered} of ${total}`;
       moreEl.innerHTML = matched > _markersRenderCap
-        ? `<button class="btn btn-sm" style="background:var(--surface-2); color:#55535f; border:1px solid var(--border);" onclick="_markersRenderCap += 200; renderMarkers();">Show ${Math.min(200, matched - _markersRenderCap)} more</button>`
+        ? `<button class="btn btn-sm markers-show-more-btn" type="button" style="background:var(--surface-2); color:#55535f; border:1px solid var(--border);">Show ${Math.min(200, matched - _markersRenderCap)} more</button>`
         : '';
+      moreEl.querySelector('.markers-show-more-btn')?.addEventListener('click', () => {
+        _markersRenderCap += 200;
+        renderMarkers();
+      });
     }
 
     async function deleteMarker(key) {
@@ -130,7 +159,7 @@
     // ===== Dreams tab =====
     function dreamStat(label, value, color) {
       if (value === undefined || value === null) return '';
-      return `<span style="display:inline-block; margin-right:14px; font-size:12px; color:var(--muted);">${label} <strong style="color:${color || 'var(--text-2)'};">${value}</strong></span>`;
+      return `<span style="display:inline-block; margin-right:14px; font-size:12px; color:var(--muted);">${escHtml(label)} <strong style="color:${color || 'var(--text-2)'};">${escHtml(value)}</strong></span>`;
     }
 
     async function loadDreams() {
@@ -149,7 +178,7 @@
           const when = d.finished || d.started || d.date;
           const whenStr = when ? new Date(when).toLocaleString() : (d.date || '');
           const beforeAfter = (c.memories_before != null && c.memories_after != null)
-            ? `<span style="color:var(--accent-ink); font-weight:600;">${c.memories_before} → ${c.memories_after}</span> memories`
+            ? `<span style="color:var(--accent-ink); font-weight:600;">${escHtml(c.memories_before)} → ${escHtml(c.memories_after)}</span> memories`
             : '';
           const rev = d.review || {};
           const takesAdded = (ref.takes_added || []);
@@ -195,7 +224,7 @@
             </div>` : '';
           const outcomeChips = Object.keys(outcomes).length ? `
             <div style="margin-top:10px; font-size:12px;">
-              <span style="color:var(--muted); margin-right:10px;">Reviewed ${reviewedCount} message${reviewedCount === 1 ? '' : 's'} - how they landed:</span>
+              <span style="color:var(--muted); margin-right:10px;">Reviewed ${escHtml(reviewedCount)} message${reviewedCount === 1 ? '' : 's'} - how they landed:</span>
               ${dreamStat('appreciated', outcomes.appreciated, 'var(--success)')}
               ${dreamStat('landed', outcomes.landed, 'var(--success)')}
               ${dreamStat('neutral', outcomes.neutral, 'var(--muted)')}
@@ -229,8 +258,10 @@
     }
 
     let currentTranscriptBotId = null;
+    let currentTranscriptUtterances = [];
 
-    async function viewTranscript(botId) {
+    async function viewTranscript(botId, { preserveReturnFocus = false } = {}) {
+      if (!preserveReturnFocus) transcriptReturnFocus = document.activeElement;
       currentTranscriptBotId = botId;
       document.getElementById('transcript-list').style.display = 'none';
       const detail = document.getElementById('transcript-detail');
@@ -239,71 +270,91 @@
       document.getElementById('transcript-detail-title').textContent = 'Transcript: ' + botId;
       document.getElementById('transcript-delete-btn').onclick = () => deleteTranscript(botId);
       content.innerHTML = 'Loading...';
+      content.setAttribute('aria-busy', 'true');
+      focusDashboardRegionHeading(document.getElementById('transcript-detail-title'));
       try {
-        const r = await api('/transcripts/' + botId);
-        if (!r.ok) { content.innerHTML = '<p class="empty">Transcript not found.</p>'; return; }
+        const r = await api('/transcripts/' + encodeURIComponent(botId));
+        if (!r.ok) { content.innerHTML = '<p class="empty" role="alert">Transcript not found.</p>'; return; }
         const data = await r.json();
         renderUtterances(data.transcript);
-      } catch (e) { content.innerHTML = '<p class="empty">Failed to load transcript.</p>'; }
+      } catch (e) { content.innerHTML = '<p class="empty" role="alert">Failed to load transcript.</p>'; }
+      finally { content.setAttribute('aria-busy', 'false'); }
     }
 
     function renderUtterances(transcript) {
       const content = document.getElementById('transcript-content');
-      content.innerHTML = transcript.map((u, i) => `
-        <div id="utt-${i}" style="padding: 4px 0; border-bottom: 1px solid var(--surface); display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+      currentTranscriptUtterances = Array.isArray(transcript) ? transcript : [];
+      content.innerHTML = currentTranscriptUtterances.map((u, i) => `
+        <div id="utt-${i}" data-utterance-index="${i}" style="padding: 4px 0; border-bottom: 1px solid var(--surface); display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
           <div style="flex: 1;">
             <strong style="color: var(--accent-ink);">${escHtml(u.speaker)}</strong>
             <span style="color: var(--dim); font-size: 11px; margin-left: 8px;">${new Date(u.timestamp).toLocaleTimeString()}</span>
             <div style="color: var(--text-2);">${escHtml(u.text)}</div>
           </div>
           <div style="display: flex; gap: 4px; flex-shrink: 0; padding-top: 2px;">
-            <button class="btn btn-success btn-sm" onclick="editUtterance(${i}, '${escHtml(u.speaker).replace(/'/g, "\\'")}', '${escHtml(u.text).replace(/'/g, "\\'")}')">Edit</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteUtterance(${i})">Del</button>
+            <button class="btn btn-success btn-sm utterance-edit-btn" type="button">Edit</button>
+            <button class="btn btn-danger btn-sm utterance-delete-btn" type="button">Del</button>
           </div>
         </div>
       `).join('');
+      content.querySelectorAll('[data-utterance-index]').forEach(row => {
+        const idx = Number(row.dataset.utteranceIndex);
+        row.querySelector('.utterance-edit-btn')?.addEventListener('click', () => editUtterance(idx));
+        row.querySelector('.utterance-delete-btn')?.addEventListener('click', () => deleteUtterance(idx));
+      });
     }
 
-    function editUtterance(idx, speaker, text) {
+    function editUtterance(idx) {
       const el = document.getElementById('utt-' + idx);
-      if (!el) return;
+      const utterance = currentTranscriptUtterances[idx];
+      if (!el || !utterance) return;
       el.innerHTML = `
         <div style="flex: 1;">
-          <input id="edit-utt-speaker-${idx}" value="${escHtml(speaker)}" placeholder="Speaker" style="margin-bottom: 4px; font-size: 13px;" />
-          <textarea id="edit-utt-text-${idx}" placeholder="Text" style="font-size: 13px; min-height: 40px;">${escHtml(text)}</textarea>
+          <input data-utterance-field="speaker" aria-label="Speaker" placeholder="Speaker" style="margin-bottom: 4px; font-size: 13px;" />
+          <textarea data-utterance-field="text" aria-label="Transcript text" placeholder="Text" style="font-size: 13px; min-height: 40px;"></textarea>
         </div>
         <div style="display: flex; gap: 4px; flex-shrink: 0; align-self: center;">
-          <button class="btn btn-primary btn-sm" onclick="saveUtterance(${idx})">Save</button>
-          <button class="btn btn-danger btn-sm" onclick="viewTranscript(currentTranscriptBotId)">Cancel</button>
+          <button class="btn btn-primary btn-sm utterance-save-btn" type="button">Save</button>
+          <button class="btn btn-danger btn-sm utterance-cancel-btn" type="button">Cancel</button>
         </div>`;
-      document.getElementById('edit-utt-speaker-' + idx).focus();
+      const speakerInput = el.querySelector('[data-utterance-field="speaker"]');
+      const textInput = el.querySelector('[data-utterance-field="text"]');
+      speakerInput.value = utterance.speaker || '';
+      textInput.value = utterance.text || '';
+      el.querySelector('.utterance-save-btn')?.addEventListener('click', () => saveUtterance(idx, el));
+      el.querySelector('.utterance-cancel-btn')?.addEventListener('click', () => viewTranscript(currentTranscriptBotId, { preserveReturnFocus: true }));
+      speakerInput.focus();
     }
 
-    async function saveUtterance(idx) {
-      const speaker = document.getElementById('edit-utt-speaker-' + idx).value.trim();
-      const text = document.getElementById('edit-utt-text-' + idx).value.trim();
+    async function saveUtterance(idx, row = document.getElementById('utt-' + idx)) {
+      if (!row) return;
+      const speaker = row.querySelector('[data-utterance-field="speaker"]').value.trim();
+      const text = row.querySelector('[data-utterance-field="text"]').value.trim();
       if (!speaker || !text) return;
-      await api('/transcripts/' + currentTranscriptBotId + '/utterances/' + idx, {
+      await api('/transcripts/' + encodeURIComponent(currentTranscriptBotId) + '/utterances/' + idx, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ speaker, text })
       });
-      viewTranscript(currentTranscriptBotId);
+      viewTranscript(currentTranscriptBotId, { preserveReturnFocus: true });
     }
 
     async function deleteUtterance(idx) {
       if (!confirm('Delete this utterance?')) return;
-      await api('/transcripts/' + currentTranscriptBotId + '/utterances/' + idx, { method: 'DELETE' });
-      viewTranscript(currentTranscriptBotId);
+      await api('/transcripts/' + encodeURIComponent(currentTranscriptBotId) + '/utterances/' + idx, { method: 'DELETE' });
+      viewTranscript(currentTranscriptBotId, { preserveReturnFocus: true });
     }
 
     function closeTranscript() {
       document.getElementById('transcript-detail').style.display = 'none';
       document.getElementById('transcript-list').style.display = 'block';
+      const returnFocus = transcriptReturnFocus;
+      transcriptReturnFocus = null;
+      if (returnFocus?.isConnected) returnFocus.focus();
     }
 
     async function deleteTranscript(botId) {
       if (!confirm('Delete this transcript? This cannot be undone.')) return;
       try {
-        const r = await api('/transcripts/' + botId, { method: 'DELETE' });
+        const r = await api('/transcripts/' + encodeURIComponent(botId), { method: 'DELETE' });
         if (r.ok) {
           loadTranscripts();
         } else {
@@ -317,9 +368,12 @@
 
     // Projects
     let editingProjectName = null; // null = adding new, string = editing existing
+    let projectReturnFocus = null;
 
     async function loadProjects() {
       const list = document.getElementById('project-list');
+      list.setAttribute('aria-busy', 'true');
+      list.innerHTML = '<p class="empty" role="status">Loading projects...</p>';
       document.getElementById('project-detail').style.display = 'none';
       document.getElementById('project-edit').style.display = 'none';
       document.getElementById('project-add-section').style.display = 'block';
@@ -331,25 +385,35 @@
           list.innerHTML = '<p class="empty">No projects yet. Add one to help Nora organize her knowledge.</p>';
           return;
         }
-        list.innerHTML = projects.map(p => `
-          <div class="task-item" style="cursor: pointer;" onclick="viewProject('${escHtml(p.name)}')">
+        list.innerHTML = projects.map((p, index) => `
+          <button class="task-item dashboard-row-action project-view-btn" data-project-index="${index}" type="button">
             <div class="task-action">${escHtml(p.name)}</div>
             <div class="task-detail">${escHtml((p.details || '').substring(0, 120))}${(p.details || '').length > 120 ? '...' : ''}</div>
             <div class="task-meta">${new Date(p.created).toLocaleDateString()}</div>
-          </div>
+          </button>
         `).join('');
-      } catch (e) { list.innerHTML = '<p class="empty">Failed to load projects.</p>'; }
+        list.querySelectorAll('[data-project-index]').forEach(button => {
+          const project = projects[Number(button.dataset.projectIndex)];
+          if (!project) return;
+          button.addEventListener('click', () => viewProject(project.name));
+        });
+      } catch (e) { list.innerHTML = '<p class="empty" role="alert">Failed to load projects.</p>'; }
+      finally { list.setAttribute('aria-busy', 'false'); }
     }
 
-    async function viewProject(name) {
+    async function viewProject(name, { preserveReturnFocus = false } = {}) {
+      if (!preserveReturnFocus) projectReturnFocus = document.activeElement;
       document.getElementById('project-list').style.display = 'none';
       document.getElementById('project-add-section').style.display = 'none';
       document.getElementById('project-edit').style.display = 'none';
       const detail = document.getElementById('project-detail');
       detail.style.display = 'block';
       document.getElementById('project-detail-name').textContent = name;
+      document.getElementById('project-detail-title').setAttribute('aria-label', name);
       document.getElementById('project-detail-info').textContent = 'Loading...';
+      document.getElementById('project-detail-info').setAttribute('aria-busy', 'true');
       document.getElementById('project-memories').innerHTML = '';
+      focusDashboardRegionHeading(document.getElementById('project-detail-title'));
       try {
         const r = await api('/projects/' + encodeURIComponent(name));
         if (!r.ok) { document.getElementById('project-detail-info').textContent = 'Project not found.'; return; }
@@ -359,12 +423,14 @@
         if (mems.length > 0) {
           document.getElementById('project-memories').innerHTML =
             '<div style="color: var(--accent-ink); font-size: 12px; font-weight: 600; margin-bottom: 8px; text-transform: uppercase;">Memories (' + mems.length + ')</div>' +
-            mems.map(m => `<div style="padding: 6px 0; border-bottom: 1px solid var(--surface-2); font-size: 13px; color: var(--text-2);">- ${escHtml(m.fact)}<span style="color: var(--dim); font-size: 11px; margin-left: 8px;">${m.added || ''}</span></div>`).join('');
+            mems.map(m => `<div style="padding: 6px 0; border-bottom: 1px solid var(--surface-2); font-size: 13px; color: var(--text-2);">- ${escHtml(m.fact)}<span style="color: var(--dim); font-size: 11px; margin-left: 8px;">${escHtml(m.added || '')}</span></div>`).join('');
         } else {
           document.getElementById('project-memories').innerHTML = '<p class="empty">No memories tagged to this project yet.</p>';
         }
       } catch (e) {
         document.getElementById('project-detail-info').textContent = 'Failed to load project.';
+      } finally {
+        document.getElementById('project-detail-info').setAttribute('aria-busy', 'false');
       }
     }
 
@@ -372,9 +438,13 @@
       document.getElementById('project-detail').style.display = 'none';
       document.getElementById('project-list').style.display = 'block';
       document.getElementById('project-add-section').style.display = 'block';
+      const returnFocus = projectReturnFocus;
+      projectReturnFocus = null;
+      if (returnFocus?.isConnected) returnFocus.focus();
     }
 
     function showAddProject() {
+      projectReturnFocus = document.activeElement;
       editingProjectName = null;
       document.getElementById('project-edit-title').textContent = 'Add Project';
       document.getElementById('project-edit-name').value = '';
@@ -383,6 +453,8 @@
       document.getElementById('project-edit').style.display = 'block';
       document.getElementById('project-add-section').style.display = 'none';
       document.getElementById('project-status').className = 'toast';
+      focusDashboardRegionHeading(document.getElementById('project-edit-title'));
+      requestAnimationFrame(() => document.getElementById('project-edit-name').focus({ preventScroll: true }));
     }
 
     function editProject() {
@@ -397,14 +469,19 @@
       document.getElementById('project-edit').style.display = 'block';
       document.getElementById('project-add-section').style.display = 'none';
       document.getElementById('project-status').className = 'toast';
+      focusDashboardRegionHeading(document.getElementById('project-edit-title'));
+      requestAnimationFrame(() => document.getElementById('project-edit-name').focus({ preventScroll: true }));
     }
 
     function cancelEditProject() {
       document.getElementById('project-edit').style.display = 'none';
       if (editingProjectName) {
-        viewProject(editingProjectName);
+        viewProject(editingProjectName, { preserveReturnFocus: true });
       } else {
         document.getElementById('project-add-section').style.display = 'block';
+        const returnFocus = projectReturnFocus;
+        projectReturnFocus = null;
+        if (returnFocus?.isConnected) returnFocus.focus();
       }
       editingProjectName = null;
     }
@@ -423,7 +500,7 @@
             body: JSON.stringify({ name, details })
           });
           s.className = 'toast ok'; s.textContent = 'Project updated';
-          setTimeout(() => { viewProject(name); }, 500);
+          setTimeout(() => { viewProject(name, { preserveReturnFocus: true }); }, 500);
         } else {
           // Create new
           const r = await api('/projects', {
@@ -434,7 +511,12 @@
           const data = await r.json();
           if (data.error) { s.className = 'toast err'; s.textContent = data.error; return; }
           s.className = 'toast ok'; s.textContent = 'Project created';
-          setTimeout(() => { loadProjects(); }, 500);
+          setTimeout(() => {
+            loadProjects();
+            const returnFocus = projectReturnFocus;
+            projectReturnFocus = null;
+            if (returnFocus?.isConnected) returnFocus.focus();
+          }, 500);
         }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }

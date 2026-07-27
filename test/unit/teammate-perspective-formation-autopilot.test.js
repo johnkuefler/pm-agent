@@ -149,8 +149,8 @@ test('runtime enables formation only in the background provider lane', () => {
   assert.match(runtime, /intelligence\.teammatePerspectiveStudyActive\(\)/);
   assert.doesNotMatch(runtime, /activeContextTrialsSnapshot\(\)/);
   const slack = server.slice(server.indexOf("app.post('/slack/events'"),
-    server.indexOf("app.post('/webhook/chat'"));
-  const zoom = server.slice(server.indexOf("app.post('/webhook/chat'"),
+    server.indexOf('async function processRecallChatWebhook'));
+  const zoom = server.slice(server.indexOf('async function processRecallChatWebhook'),
     server.indexOf('// Proactive mode toggle'));
   assert.doesNotMatch(slack, /runTeammatePerspectiveFormationAutopilotRuntime/);
   assert.doesNotMatch(zoom, /runTeammatePerspectiveFormationAutopilotRuntime/);

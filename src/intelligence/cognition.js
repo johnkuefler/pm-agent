@@ -6,6 +6,7 @@ const integratedSelf = require('./integrated-self');
 const cognitivePulse = require('./cognitive-pulse');
 const goalAffect = require('./goal-affect');
 const cognitiveParameters = require('./cognitive-parameters');
+const { commitmentCarriesOperationalAuthority } = require('./models');
 
 function clamp01(value) {
   const number = Number(value);
@@ -25,7 +26,7 @@ function computeDrives(state, input = {}, now = new Date(), parameterInput = nul
   const params = cognitiveParameters.normalizeParams(parameterInput || cognitiveParameters.DEFAULTS);
   const config = params.drives;
   const previous = state.cognition?.drives || {};
-  const open = state.commitments.filter(item => item.status === 'open');
+  const open = state.commitments.filter(commitmentCarriesOperationalAuthority);
   const overdue = open.filter(item => item.due && new Date(item.due).getTime() < now.getTime());
   const loops = state.episodes.flatMap(item => item.open_loops || []).filter(item => item.status === 'open');
   const unresolved = (input.predictions || []).filter(item => !item.outcome);
@@ -125,9 +126,13 @@ function scoreWorkspace(state, context = {}, now = new Date(), parameterInput = 
         text: `Self-authored aim ${aim.status}: ${aim.want}; tendency: ${aim.action_tendency.replaceAll('_', ' ')}` });
     }
   }
-  for (const item of state.commitments.filter(item => item.status === 'open')) {
+  for (const item of state.commitments.filter(commitmentCarriesOperationalAuthority)) {
     const overdue = item.due && new Date(item.due).getTime() < now.getTime();
-    candidates.push({ type: 'commitment', id: item.id, score: (overdue ? config.commitment.overdue_base : config.commitment.normal_base) + relevance(`${item.what} ${item.project || ''}`), text: `${item.owner} owes: ${item.what}${item.due ? ` (due ${item.due})` : ''}` });
+    candidates.push({ type: 'commitment', id: item.id,
+      authority_class: item.authority_class,
+      score: (overdue ? config.commitment.overdue_base : config.commitment.normal_base)
+        + relevance(`${item.what} ${item.project || ''}`),
+      text: `${item.owner} owes: ${item.what}${item.due ? ` (due ${item.due})` : ''}` });
   }
   for (const item of (state.cognition?.surprises || []).slice(-20)) candidates.push({ type: 'surprise', id: item.id, score: config.surprise.base + item.magnitude * config.surprise.magnitude_weight, text: `Expectation violation: ${item.expectation}` });
   if (context.includeEpistemicDiscrepancies !== false) {

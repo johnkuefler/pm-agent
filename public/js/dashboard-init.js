@@ -6,6 +6,8 @@ function enhanceFormFields() {
         'memory-source':'Source','memory-sort':'Sort order','new-fact':'Fact to remember','new-fact-project':'Project',
         'project-edit-name':'Project name','project-edit-details':'Project details','new-approved-userid':'Slack user ID','new-approved-name':'Display name',
         'new-proactive-channel':'Slack channel ID','markers-search':'Search markers','markers-category':'Category',
+        'commitment-what':'Commitment','commitment-owner':'Commitment owner','commitment-due':'Due date or expectation',
+        'experiment-behavior':'Behavior to try','experiment-hypothesis':'Expected improvement',
         'routine-content':'Routine document','charter-content':'Charter document','self-bio':'Autobiography','persona-content':'Persona document'
       };
       Object.entries(labels).forEach(([id, text]) => {
@@ -28,12 +30,21 @@ function enhanceFormFields() {
     }
 
     document.addEventListener('keydown', event => {
+      const paletteOpen = document.getElementById('command-palette')?.classList.contains('open');
+      if (paletteOpen && event.key === 'Escape') {
+        event.preventDefault();
+        closeCommandPalette();
+        return;
+      }
+      if (paletteOpen && event.key === 'Tab') {
+        trapCommandPaletteFocus(event);
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault();
         openCommandPalette();
       } else if (event.key === 'Escape') {
-        closeCommandPalette();
-        closeMobileNav();
+        closeMobileNav({ restoreFocus: true });
       }
     });
 
@@ -59,7 +70,21 @@ function enhanceFormFields() {
         }, 0);
       }
       const initialView = location.hash.slice(1);
-      showTab(pageMeta[initialView] ? initialView : 'meeting');
+      showTab(pageMeta[initialView] ? initialView : 'meeting', { focus: false });
     });
 
+    window.addEventListener('pageshow', () => resetMainView({ focus: false }));
+
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function escAttr(s) {
+      return escHtml(String(s ?? '')).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+    }
+    function safeUrlAttr(value) {
+      try {
+        const parsed = new URL(String(value || ''), window.location.origin);
+        if (!['http:', 'https:'].includes(parsed.protocol)) return '#';
+        return escAttr(parsed.href);
+      } catch {
+        return '#';
+      }
+    }

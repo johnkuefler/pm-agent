@@ -100,9 +100,21 @@ test('higher-order lesion disables only the monitor flag', () => {
 test('attention-schema control changes only the effective workspace modulation target', () => {
   const state = {
     commitments: [
-      { id: 'target', what: 'Target commitment', owner: 'Nora', status: 'open' },
-      { id: 'control-a', what: 'Control commitment A', owner: 'Nora', status: 'open' },
-      { id: 'control-b', what: 'Control commitment B', owner: 'Nora', status: 'open' },
+      {
+        id: 'target', what: 'Target commitment', owner: 'Nora', status: 'open',
+        authority_class: 'bounded', provenance_status: 'server_internal',
+        source_chain_verified: true,
+      },
+      {
+        id: 'control-a', what: 'Control commitment A', owner: 'Nora', status: 'open',
+        authority_class: 'bounded', provenance_status: 'server_internal',
+        source_chain_verified: true,
+      },
+      {
+        id: 'control-b', what: 'Control commitment B', owner: 'Nora', status: 'open',
+        authority_class: 'bounded', provenance_status: 'server_internal',
+        source_chain_verified: true,
+      },
     ],
     episodes: [], experiments: [], relationships: [], traces: [], cycles: [],
     cognition: {

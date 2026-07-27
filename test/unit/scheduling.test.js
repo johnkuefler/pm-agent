@@ -13,7 +13,7 @@ delete process.env.DATABASE_URL;
 delete process.env.DATABASE_PUBLIC_URL;
 
 const { __test: helpers } = require('../../server');
-const { SCHEDULE_TZ } = require('../../src/lib/scheduling');
+const { SCHEDULE_TZ, isValidScheduledFor } = require('../../src/lib/scheduling');
 
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
@@ -69,6 +69,10 @@ test('recurrence remains on the requested wall time across DST', () => {
     helpers.computeNextRun('daily:09:00', new Date('2026-03-08T12:00:00.000Z')),
     '2026-03-08T14:00:00.000Z'
   );
+  assert.equal(
+    helpers.computeNextRun('daily:09:00', new Date('2026-11-01T12:00:00.000Z')),
+    '2026-11-01T15:00:00.000Z'
+  );
 });
 
 test('invalid recurrence rules are rejected', () => {
@@ -80,11 +84,56 @@ test('invalid recurrence rules are rejected', () => {
   assert.equal(helpers.isValidRecurrence(''), true);
 });
 
+test('recurrence clocks reject malformed and out-of-range values', () => {
+  const invalid = [
+    'daily:24:00',
+    'daily:09:60',
+    'daily:-1:00',
+    'daily:9.5:00',
+    'daily:09:00:extra',
+    'weekdays:24:00',
+    'weekdays:09:60',
+    'weekly:friday:24:00',
+    'weekly:friday:09:60',
+    'monthly:1:24:00',
+    'monthly:1:09:60',
+    'monthly:1.5:09:00',
+  ];
+  for (const rule of invalid) {
+    assert.equal(helpers.computeNextRun(rule), null, rule);
+    assert.equal(helpers.isValidRecurrence(rule), false, rule);
+  }
+  assert.equal(
+    helpers.computeNextRun('daily:9:05', new Date('2026-01-15T15:00:00.000Z')),
+    '2026-01-15T15:05:00.000Z'
+  );
+});
+
+test('scheduled_for accepts real ISO instants and rejects malformed calendar dates', () => {
+  assert.equal(isValidScheduledFor(null), true);
+  assert.equal(isValidScheduledFor(''), true);
+  assert.equal(isValidScheduledFor('2026-01-15T09:00:00.000-06:00'), true);
+  assert.equal(isValidScheduledFor('2026-03-08T09:00:00-05:00'), true);
+  assert.equal(isValidScheduledFor('2026-01-15T15:00Z'), true);
+  for (const value of [
+    'not-a-date',
+    '2026-02-30T09:00:00.000Z',
+    '2026-01-15',
+    '2026-01-15T09:00:00',
+    '2026-01-15T24:00:00.000Z',
+    '2026-01-15T09:60:00.000Z',
+    1770000000000,
+  ]) {
+    assert.equal(isValidScheduledFor(value), false, String(value));
+  }
+});
+
 test('task eligibility respects status and scheduled time', () => {
   const now = new Date('2026-01-15T15:00:00.000Z');
   assert.equal(helpers.isTaskEligibleNow({ status: 'pending', scheduled_for: null }, now), true);
   assert.equal(helpers.isTaskEligibleNow({ status: 'done', scheduled_for: null }, now), false);
   assert.equal(helpers.isTaskEligibleNow({ status: 'pending', scheduled_for: '2026-01-15T14:59:00.000Z' }, now), true);
   assert.equal(helpers.isTaskEligibleNow({ status: 'pending', scheduled_for: '2026-01-15T15:01:00.000Z' }, now), false);
+  assert.equal(helpers.isTaskEligibleNow({ status: 'pending', scheduled_for: 'not-a-date' }, now), false);
 });
 

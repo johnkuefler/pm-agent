@@ -2,10 +2,11 @@
 // db.js — Postgres persistence layer for Nora.
 //
 // Design: Postgres is the durable source of truth. server.js keeps its existing
-// SYNCHRONOUS accessor API, backed by in-memory caches (this is a single-instance
-// app, so a process-local cache stays coherent) that write through to Postgres
-// asynchronously. The flat JSON files remain only as (a) a one-time seed on first
-// boot and (b) an offline fallback when DATABASE_URL is unset (local dev).
+// SYNCHRONOUS accessor API, backed by in-memory caches that write through to
+// Postgres asynchronously. Because those caches are process-local, init() holds a
+// Postgres session advisory lock for the process lifetime. A second service replica
+// fails startup instead of creating split-brain state. The flat JSON files remain
+// only as a one-time seed and a local-development fallback.
 //
 // Memory rows carry a pgvector embedding for semantic recall. Embeddings are filled
 // by a background backfiller so the hot write path (Slack replies) never blocks on
@@ -16,16 +17,88 @@
 // ─────────────────────────────────────────────────────────────────────────────
 'use strict';
 
+const crypto = require('crypto');
 const { Pool } = require('pg');
+const {
+  slackReplyStageAudit,
+} = require('./src/integrations/slack-reply-stage');
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.DATABASE_PUBLIC_URL || '';
 const DB_SCHEMA = (process.env.DB_SCHEMA || 'public').replace(/[^a-zA-Z0-9_]/g, '') || 'public';
 const EMBED_MODEL = 'text-embedding-3-small';
 const EMBED_DIM = 1536;
 
+function decodeDatabaseCa(env = process.env) {
+  if (env.DB_SSL_CA_BASE64) {
+    try {
+      const decoded = Buffer.from(String(env.DB_SSL_CA_BASE64), 'base64').toString('utf8').trim();
+      if (decoded) return decoded;
+    } catch {}
+  }
+  return String(env.DB_SSL_CA || '').replaceAll('\\n', '\n').trim() || null;
+}
+
+function databaseHost(databaseUrl) {
+  try { return new URL(String(databaseUrl || '')).hostname.toLowerCase(); }
+  catch { return ''; }
+}
+
+function isPrivateDatabaseHost(host) {
+  const value = String(host || '').toLowerCase();
+  return value === 'localhost' || value === '127.0.0.1' || value === '::1'
+    || value.endsWith('.railway.internal');
+}
+
+function databaseSslPolicy(databaseUrl = DATABASE_URL, env = process.env) {
+  const host = databaseHost(databaseUrl);
+  let urlMode = '';
+  try { urlMode = new URL(String(databaseUrl || '')).searchParams.get('sslmode') || ''; }
+  catch {}
+  const requestedMode = String(env.DB_SSL_MODE || urlMode || '').trim().toLowerCase();
+  const explicitDisable = ['disable', 'off', 'false'].includes(requestedMode);
+  const explicitNoVerify = ['no-verify', 'no_verify', 'insecure'].includes(requestedMode)
+    || String(env.DB_SSL_REJECT_UNAUTHORIZED || '').trim().toLowerCase() === 'false';
+  const privateNetwork = isPrivateDatabaseHost(host);
+  if (explicitDisable || (!requestedMode && privateNetwork)) {
+    return { ssl: false, mode: explicitDisable ? 'disabled_explicitly' : 'private_network_plaintext',
+      reject_unauthorized: null, private_network: privateNetwork };
+  }
+  const ca = decodeDatabaseCa(env);
+  return {
+    ssl: { rejectUnauthorized: !explicitNoVerify, ...(ca ? { ca } : {}) },
+    mode: explicitNoVerify ? 'tls_without_verification_explicitly' : 'tls_verified',
+    reject_unauthorized: !explicitNoVerify,
+    private_network: privateNetwork,
+  };
+}
+
+function databaseConnectionString(databaseUrl = DATABASE_URL) {
+  try {
+    const parsed = new URL(String(databaseUrl || ''));
+    // node-postgres gives SSL query parameters precedence over the explicit `ssl` object.
+    // Remove them after interpreting the policy above so a URL cannot silently downgrade it.
+    for (const key of ['sslmode', 'sslcert', 'sslkey', 'sslrootcert']) {
+      parsed.searchParams.delete(key);
+    }
+    return parsed.toString();
+  } catch {
+    return databaseUrl;
+  }
+}
+
 let pool = null;
 let interactivePool = null;
+let singletonClient = null;
 let ready = false;
+let singletonLeaseLossHandler = null;
+const singletonLease = {
+  required: Boolean(DATABASE_URL),
+  enforced: false,
+  held: false,
+  acquired_at: null,
+  lost_at: null,
+  last_error: null,
+};
 const DB_QUERY_TIMEOUT_MS = Math.max(5000, Math.min(60000, Number(process.env.DB_QUERY_TIMEOUT_MS) || 20000));
 const DB_INTERACTIVE_TIMEOUT_MS = Math.max(100, Math.min(3000,
   Number(process.env.DB_INTERACTIVE_TIMEOUT_MS) || 400));
@@ -45,13 +118,43 @@ function recordConnectionFailure(error) {
 
 function dbEnabled() { return !!DATABASE_URL; }
 function isReady() { return ready; }
+function singletonLeaseHeld() {
+  return !singletonLease.required || singletonLease.held;
+}
+function setSingletonLeaseLossHandler(handler) {
+  if (handler !== null && typeof handler !== 'function') {
+    throw new TypeError('singleton lease loss handler must be a function or null');
+  }
+  singletonLeaseLossHandler = handler;
+}
+function singletonOwnershipError() {
+  const error = new Error(
+    `database ownership lease is not held for schema ${DB_SCHEMA}; refusing split-brain access`);
+  error.code = 'NORA_DATABASE_OWNERSHIP_LOST';
+  return error;
+}
+function assertSingletonOwnership() {
+  if (singletonLease.enforced && !singletonLease.held) throw singletonOwnershipError();
+}
+function markSingletonLeaseLost(error) {
+  if (!singletonLease.enforced || !singletonLease.held) return;
+  singletonLease.held = false;
+  singletonLease.lost_at = new Date().toISOString();
+  singletonLease.last_error = String(error?.message || error || 'database connection lost')
+    .slice(0, 500);
+  ready = false;
+  if (typeof singletonLeaseLossHandler === 'function') {
+    queueMicrotask(() => singletonLeaseLossHandler(singletonOwnershipError()));
+  }
+}
 
 function getPool() {
   if (pool) return pool;
   if (!DATABASE_URL) throw new Error('DATABASE_URL not set');
+  const transport = databaseSslPolicy();
   pool = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    connectionString: databaseConnectionString(),
+    ssl: transport.ssl,
     max: 8,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 10000,
@@ -73,6 +176,7 @@ function getPool() {
   pool.on('connect', (client) => {
     client.on('error', (err) => {
       recordConnectionFailure(err);
+      if (client === singletonClient) markSingletonLeaseLost(err);
       console.error('pg client error:', err.message);
     });
   });
@@ -85,9 +189,10 @@ function getPool() {
 function getInteractivePool() {
   if (interactivePool) return interactivePool;
   if (!DATABASE_URL) throw new Error('DATABASE_URL not set');
+  const transport = databaseSslPolicy();
   interactivePool = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false },
+    connectionString: databaseConnectionString(),
+    ssl: transport.ssl,
     max: 2,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: DB_INTERACTIVE_TIMEOUT_MS,
@@ -110,6 +215,7 @@ function isConnectionFailure(error) {
 }
 
 async function q(text, params) {
+  assertSingletonOwnership();
   try {
     const result = await getPool().query(text, params);
     dbRuntime.consecutive_connection_failures = 0;
@@ -126,6 +232,7 @@ async function q(text, params) {
 }
 
 async function withTransaction(work) {
+  assertSingletonOwnership();
   const client = await getPool().connect();
   let discardError = null;
   dbRuntime.transactions += 1;
@@ -161,11 +268,25 @@ async function withTransaction(work) {
   }
 }
 
+async function serializeRunLockMutation(work) {
+  if (typeof work !== 'function') throw new TypeError('run-lock mutation must be a function');
+  return withTransaction(async client => {
+    // The stable text key is hashed by Postgres, so every service instance contends on the
+    // same transaction-scoped mutex without relying on a process-local numeric constant.
+    await client.query(
+      `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+      ['pm-agent:run-lock']
+    );
+    return work();
+  });
+}
+
 function backgroundAllowed() {
   return Date.now() >= dbRuntime.degraded_until;
 }
 
 function diagnostics() {
+  const transport = DATABASE_URL ? databaseSslPolicy() : null;
   return {
     query_timeout_ms: DB_QUERY_TIMEOUT_MS,
     background_degraded: !backgroundAllowed(),
@@ -175,6 +296,17 @@ function diagnostics() {
     last_error_at: dbRuntime.last_error_at,
     last_success_at: dbRuntime.last_success_at,
     pool: pool ? { total: pool.totalCount, idle: pool.idleCount, waiting: pool.waitingCount } : null,
+    transport: transport ? { mode: transport.mode,
+      reject_unauthorized: transport.reject_unauthorized,
+      private_network: transport.private_network } : null,
+    singleton_ownership: {
+      required: singletonLease.required,
+      enforced: singletonLease.enforced,
+      held: singletonLeaseHeld(),
+      acquired_at: singletonLease.acquired_at,
+      lost_at: singletonLease.lost_at,
+      last_error: singletonLease.last_error,
+    },
     transactions: {
       attempts: dbRuntime.transactions,
       failures: dbRuntime.transaction_failures,
@@ -330,45 +462,365 @@ async function init() {
       started_at    timestamptz,
       finished_at   timestamptz
     );
+    ALTER TABLE ${DB_SCHEMA}.jobs
+      ADD COLUMN IF NOT EXISTS delivery_attempts integer NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS delivery_available_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS delivery_started_at timestamptz,
+      ADD COLUMN IF NOT EXISTS delivered_at timestamptz,
+      ADD COLUMN IF NOT EXISTS delivery_error text,
+      ADD COLUMN IF NOT EXISTS claim_token text,
+      ADD COLUMN IF NOT EXISTS worker_id text,
+      ADD COLUMN IF NOT EXISTS lease_until timestamptz;
     CREATE INDEX IF NOT EXISTS jobs_status_idx ON ${DB_SCHEMA}.jobs (status, created_at);
+    CREATE INDEX IF NOT EXISTS jobs_running_lease_idx
+      ON ${DB_SCHEMA}.jobs (status, lease_until)
+      WHERE status='running';
+
+    -- Signed provider callbacks are durably accepted before HTTP acknowledgement. Processing
+    -- leases make retries safe across duplicate deliveries, process crashes, and multiple
+    -- service instances without holding Slack's three-second request open for model work.
+    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.webhook_inbox (
+      provider      text NOT NULL,
+      event_id      text NOT NULL,
+      payload       jsonb NOT NULL,
+      processing_result jsonb,
+      attestation   jsonb,
+      ordering_key  text,
+      ordering_position text,
+      status        text NOT NULL DEFAULT 'queued',
+      attempts      integer NOT NULL DEFAULT 0,
+      available_at  timestamptz NOT NULL DEFAULT now(),
+      lease_until   timestamptz,
+      claim_token   text,
+      last_error    text,
+      created_at    timestamptz NOT NULL DEFAULT now(),
+      updated_at    timestamptz NOT NULL DEFAULT now(),
+      completed_at  timestamptz,
+      PRIMARY KEY (provider, event_id)
+    );
+    ALTER TABLE ${DB_SCHEMA}.webhook_inbox
+      ADD COLUMN IF NOT EXISTS claim_token text,
+      ADD COLUMN IF NOT EXISTS processing_result jsonb,
+      ADD COLUMN IF NOT EXISTS ordering_key text,
+      ADD COLUMN IF NOT EXISTS ordering_position text;
+    UPDATE ${DB_SCHEMA}.webhook_inbox
+       SET status=CASE WHEN attempts >= 5 THEN 'dead' ELSE 'queued' END,
+           available_at=now(), lease_until=NULL,
+           claim_token=NULL,
+           last_error=COALESCE(
+             last_error,
+             CASE WHEN attempts >= 5
+               THEN 'legacy processing row dead-lettered because its lease fence was incomplete at the maximum attempt count'
+               ELSE 'legacy processing row requeued because its lease fence was incomplete'
+             END),
+           updated_at=now()
+     WHERE status='processing'
+       AND (lease_until IS NULL OR COALESCE(claim_token,'')='');
+    UPDATE ${DB_SCHEMA}.webhook_inbox
+       SET ordering_key = CASE
+             WHEN payload -> 'event' ->> 'channel_type' IN ('im','mpim')
+               THEN 'dm:' || (payload -> 'event' ->> 'channel')
+              WHEN COALESCE(payload -> 'event' ->> 'thread_ts','') <> ''
+                THEN 'thread:' || (payload -> 'event' ->> 'channel')
+                  || ':' || (payload -> 'event' ->> 'thread_ts')
+              WHEN payload -> 'event' ->> 'type' = 'message'
+                AND payload -> 'event' ->> 'channel_type' NOT IN ('im','mpim')
+                AND EXISTS (
+                  SELECT 1
+                    FROM ${DB_SCHEMA}.app_state AS proactive_policy
+                   WHERE proactive_policy.key='slack_proactive_channels'
+                     AND jsonb_typeof(proactive_policy.value)='array'
+                     AND proactive_policy.value
+                       ? (payload -> 'event' ->> 'channel')
+                )
+                THEN 'proactive-channel:' || (payload -> 'event' ->> 'channel')
+              ELSE 'channel:' || (payload -> 'event' ->> 'channel')
+                || ':' || (payload -> 'event' ->> 'user')
+           END,
+           ordering_position =
+             lpad(split_part(payload -> 'event' ->> 'ts','.',1),20,'0')
+             || '.'
+             || rpad(split_part(payload -> 'event' ->> 'ts','.',2),9,'0')
+     WHERE provider='slack'
+        AND ordering_key IS NULL
+       AND payload -> 'event' ->> 'type' IN ('app_mention','message')
+       AND COALESCE(payload -> 'event' ->> 'channel','') <> ''
+        AND COALESCE(payload -> 'event' ->> 'user','') <> ''
+        AND payload -> 'event' ->> 'ts' ~ '^[0-9]{1,20}(\\.[0-9]{1,9})?$';
+    -- A previous release populated per-user top-level lanes before proactive channels
+    -- gained a shared channel lane. Repair only live work so retained terminal audit
+    -- rows remain immutable while mixed-version queued events cannot race.
+    UPDATE ${DB_SCHEMA}.webhook_inbox
+       SET ordering_key =
+             'proactive-channel:' || (payload -> 'event' ->> 'channel'),
+           updated_at=now()
+     WHERE provider='slack'
+       AND status IN ('queued','processing')
+       AND payload -> 'event' ->> 'type' = 'message'
+       AND COALESCE(payload -> 'event' ->> 'thread_ts','') = ''
+       AND payload -> 'event' ->> 'channel_type' NOT IN ('im','mpim')
+       AND EXISTS (
+         SELECT 1
+           FROM ${DB_SCHEMA}.app_state AS proactive_policy
+          WHERE proactive_policy.key='slack_proactive_channels'
+            AND jsonb_typeof(proactive_policy.value)='array'
+            AND proactive_policy.value ? (payload -> 'event' ->> 'channel')
+       )
+       AND ordering_key LIKE
+         'channel:' || (payload -> 'event' ->> 'channel') || ':%';
+    CREATE INDEX IF NOT EXISTS webhook_inbox_claim_idx
+      ON ${DB_SCHEMA}.webhook_inbox (provider, status, available_at, created_at);
+    CREATE INDEX IF NOT EXISTS webhook_inbox_ordering_idx
+      ON ${DB_SCHEMA}.webhook_inbox
+        (provider, ordering_key, status, ordering_position, created_at);
   `);
+  // Exact scans become the dominant Slack/meeting latency cost as memory grows. pgvector's HNSW
+  // index preserves cosine-neighbor quality while avoiding a full embedding scan on every turn.
+  // Keep this outside the schema batch so an older pgvector extension cannot prevent core startup.
+  await p.query(
+    `CREATE INDEX IF NOT EXISTS memory_embedding_hnsw
+     ON ${DB_SCHEMA}.memory USING hnsw (embedding vector_cosine_ops)
+     WITH (m = 16, ef_construction = 64)`
+  ).catch((error) => console.warn('memory HNSW index unavailable; semantic recall will use exact scan:',
+    error.message));
   ready = true;
 }
 
 // ── Background job queue ────────────────────────────────────────────────────────
 async function enqueueJob(job) {
-  await q(
+  const { rows } = await q(
     `INSERT INTO ${DB_SCHEMA}.jobs (id, status, kind, connection_id, tool_name, label, args, origin)
-     VALUES ($1,'queued',$2,$3,$4,$5,$6,$7)`,
+     VALUES ($1,'queued',$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (id) DO UPDATE
+       SET id=${DB_SCHEMA}.jobs.id
+       WHERE ${DB_SCHEMA}.jobs.kind IS NOT DISTINCT FROM EXCLUDED.kind
+         AND ${DB_SCHEMA}.jobs.connection_id
+           IS NOT DISTINCT FROM EXCLUDED.connection_id
+         AND ${DB_SCHEMA}.jobs.tool_name IS NOT DISTINCT FROM EXCLUDED.tool_name
+         AND ${DB_SCHEMA}.jobs.args = EXCLUDED.args
+         AND ${DB_SCHEMA}.jobs.origin = EXCLUDED.origin
+     RETURNING id, status, (xmax = 0) AS inserted`,
     [job.id, job.kind || null, job.connection_id || null, job.tool_name || null, job.label || null,
-     JSON.stringify(job.args || {}), JSON.stringify(job.origin || {})]
+      JSON.stringify(job.args || {}), JSON.stringify(job.origin || {})]
   );
-  return job.id;
+  if (!rows.length) {
+    throw new Error(`job id ${job.id} is already bound to different work`);
+  }
+  return {
+    id: rows[0].id,
+    status: rows[0].status,
+    inserted: rows[0].inserted === true,
+  };
 }
 // Atomic claim: FOR UPDATE SKIP LOCKED so a claim never double-runs even if two workers race.
-async function claimNextQueuedJob() {
+async function claimNextQueuedJob({
+  leaseSeconds = 12 * 60,
+  workerId = null,
+  claimToken = crypto.randomUUID(),
+} = {}) {
+  const boundedLeaseSeconds = Math.max(
+    30, Math.min(30 * 60, Number(leaseSeconds) || 12 * 60));
+  const token = String(claimToken || '').trim();
+  if (!token) throw new Error('deferred job claim token is required');
   const { rows } = await q(
-    `UPDATE ${DB_SCHEMA}.jobs SET status='running', started_at=now(), attempts=attempts+1
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status='running', started_at=now(), attempts=attempts+1,
+            claim_token=$1, worker_id=$2,
+            lease_until=now() + ($3::double precision * interval '1 second')
      WHERE id = (SELECT id FROM ${DB_SCHEMA}.jobs WHERE status='queued' ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
-     RETURNING *`
+     RETURNING *`,
+    [
+      token,
+      workerId == null ? null : String(workerId).slice(0, 200),
+      boundedLeaseSeconds,
+    ],
   );
   return rows[0] || null;
 }
 async function finishJob(id, { status, result, error }) {
-  await q(
-    `UPDATE ${DB_SCHEMA}.jobs SET status=$2, result=$3, error=$4, finished_at=now() WHERE id=$1`,
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status=$2, result=COALESCE($3::jsonb, result), error=COALESCE($4, error),
+            finished_at=now(), delivered_at=now(), delivery_error=NULL
+      WHERE id=$1`,
     [id, status, result !== undefined && result !== null ? JSON.stringify(result) : null, error || null]
   );
+  return rowCount === 1;
+}
+
+async function checkpointInternalJob(id, claimToken, result) {
+  const token = String(claimToken || '').trim();
+  if (!token) throw new Error('internal job checkpoint requires a claim token');
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET result=$3::jsonb,
+            lease_until=GREATEST(lease_until, now() + interval '2 minutes')
+      WHERE id=$1 AND status='running' AND kind='slack_extraction'
+        AND claim_token=$2 AND lease_until > now()`,
+    [id, token, JSON.stringify(result || {})],
+  );
+  return rowCount === 1;
+}
+
+async function finishInternalJob(id, claimToken, { status, result, error }) {
+  const token = String(claimToken || '').trim();
+  if (!token) throw new Error('internal job completion requires a claim token');
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status=$3, result=COALESCE($4::jsonb, result),
+            error=COALESCE($5, error), finished_at=now(),
+            delivered_at=now(), delivery_error=NULL,
+            claim_token=NULL, worker_id=NULL, lease_until=NULL
+      WHERE id=$1 AND status='running' AND kind='slack_extraction'
+        AND claim_token=$2 AND lease_until > now()`,
+    [
+      id,
+      token,
+      status,
+      result !== undefined && result !== null ? JSON.stringify(result) : null,
+      error || null,
+    ],
+  );
+  return rowCount === 1;
+}
+
+async function retryInternalJob(
+  id,
+  claimToken,
+  error,
+  { maxAttempts = 5 } = {},
+) {
+  const boundedAttempts = Math.max(1, Math.min(
+    20, Number(maxAttempts) || 5));
+  const token = String(claimToken || '').trim();
+  if (!token) throw new Error('internal job retry requires a claim token');
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status=CASE WHEN attempts >= $3 THEN 'failed' ELSE 'queued' END,
+            error=$2, started_at=NULL,
+            finished_at=CASE WHEN attempts >= $3 THEN now() ELSE NULL END,
+            claim_token=NULL, worker_id=NULL, lease_until=NULL
+      WHERE id=$1 AND status='running' AND kind='slack_extraction'
+        AND claim_token=$4 AND lease_until > now()
+      RETURNING status, attempts`,
+    [
+      id,
+      String(error?.message || error || 'internal extraction failed')
+        .slice(0, 1000),
+      boundedAttempts,
+      token,
+    ],
+  );
+  return rows[0] || null;
+}
+
+async function stageJobDelivery(id, { result, error }, claimToken) {
+  const token = String(claimToken || '').trim();
+  if (!token) throw new Error('deferred job staging requires a claim token');
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status='delivery_pending', result=$2::jsonb, error=$3,
+            finished_at=NULL, delivery_available_at=now(), delivery_started_at=NULL,
+            delivery_error=NULL, claim_token=NULL, worker_id=NULL, lease_until=NULL
+      WHERE id=$1 AND status='running'
+        AND claim_token=$4 AND lease_until > now()`,
+    [
+      id,
+      result !== undefined && result !== null ? JSON.stringify(result) : null,
+      error || null,
+      token,
+    ],
+  );
+  return rowCount === 1;
+}
+
+async function claimJobDelivery(id = null, { maxAttempts = 8 } = {}) {
+  const boundedAttempts = Math.max(1, Math.min(20, Number(maxAttempts) || 8));
+  const idClause = id ? 'AND candidate.id=$2' : '';
+  const params = id ? [boundedAttempts, String(id)] : [boundedAttempts];
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs AS job
+        SET status='delivering', delivery_attempts=job.delivery_attempts+1,
+            delivery_started_at=now(), delivery_error=NULL
+      WHERE job.id = (
+        SELECT candidate.id FROM ${DB_SCHEMA}.jobs AS candidate
+         WHERE candidate.status='delivery_pending'
+           AND candidate.delivery_attempts < $1
+           AND candidate.delivery_available_at <= now()
+           ${idClause}
+         ORDER BY candidate.delivery_available_at ASC, candidate.created_at ASC
+         LIMIT 1 FOR UPDATE SKIP LOCKED
+      )
+      RETURNING job.*`,
+    params
+  );
+  return rows[0] || null;
+}
+
+async function deferJobDelivery(id, error, { maxAttempts = 8 } = {}) {
+  const boundedAttempts = Math.max(1, Math.min(20, Number(maxAttempts) || 8));
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status=CASE WHEN delivery_attempts >= $3
+          THEN 'delivery_failed' ELSE 'delivery_pending' END,
+            delivery_available_at=CASE WHEN delivery_attempts >= $3
+              THEN delivery_available_at
+              ELSE now() + (LEAST(300, power(2, GREATEST(0, delivery_attempts - 1)))
+                * interval '1 second') END,
+            delivery_error=$2, delivery_started_at=NULL,
+            finished_at=CASE WHEN delivery_attempts >= $3 THEN now() ELSE NULL END
+      WHERE id=$1 AND status='delivering'
+      RETURNING status, delivery_attempts, delivery_available_at`,
+    [id, String(error?.message || error || 'result delivery failed').slice(0, 500), boundedAttempts]
+  );
+  return rows[0] || null;
+}
+
+async function recoverInterruptedJobDeliveries() {
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status='delivery_pending', delivery_available_at=now(),
+            delivery_started_at=NULL,
+            delivery_error=COALESCE(delivery_error,
+              'Service restarted during result delivery; retrying only the notification.')
+      WHERE status='delivering'
+        AND (delivery_started_at IS NULL
+          OR delivery_started_at <= now() - interval '2 minutes')
+      RETURNING *`
+  );
+  return rows;
 }
 // A running connector job may have committed its remote side effect before a restart severed
 // the response. Replaying it is unsafe without provider-level idempotency, so preserve the
 // ambiguity explicitly and require a human-visible check before any retry.
 async function interruptRunningJobs() {
+  await q(
+    `UPDATE ${DB_SCHEMA}.jobs
+        SET status=CASE WHEN attempts >= 5 THEN 'failed' ELSE 'queued' END,
+            error=CASE WHEN attempts >= 5
+              THEN 'Slack extraction exhausted retries after a service restart'
+              ELSE 'Slack extraction requeued after a service restart' END,
+            started_at=NULL,
+            finished_at=CASE WHEN attempts >= 5 THEN now() ELSE NULL END,
+            claim_token=NULL, worker_id=NULL, lease_until=NULL
+      WHERE status='running' AND kind='slack_extraction'
+        AND COALESCE(
+          lease_until,
+          started_at + interval '12 minutes',
+          now() - interval '1 second'
+        ) <= now()`,
+  );
   const error = 'Service restarted while the connector action was in progress. Its remote outcome is unknown, so it was not retried automatically.';
   const { rows } = await q(
     `UPDATE ${DB_SCHEMA}.jobs
-        SET status='interrupted', error=$1, finished_at=now()
-      WHERE status='running'
+        SET status='interrupted', error=$1, finished_at=now(),
+            claim_token=NULL, worker_id=NULL, lease_until=NULL
+      WHERE status='running' AND kind<>'slack_extraction'
+        AND COALESCE(
+          lease_until,
+          started_at + interval '12 minutes',
+          now() - interval '1 second'
+        ) <= now()
       RETURNING *`,
     [error]
   );
@@ -376,7 +828,9 @@ async function interruptRunningJobs() {
 }
 async function recentJobs(limit = 25) {
   const { rows } = await q(
-    `SELECT id, status, kind, connection_id, tool_name, label, origin, error, created_at, started_at, finished_at
+    `SELECT id, status, kind, connection_id, tool_name, label, origin, error,
+            delivery_attempts, delivery_error, delivered_at,
+            created_at, started_at, finished_at
      FROM ${DB_SCHEMA}.jobs ORDER BY created_at DESC LIMIT $1`, [limit]
   );
   return rows;
@@ -925,6 +1379,426 @@ async function listTranscripts() {
   return rows;
 }
 
+// ── Durable provider webhook inbox ─────────────────────────────────────────
+async function enqueueWebhookEvent({
+  provider, event_id: eventId, payload, attestation = null,
+  ordering_key: orderingKey = null,
+  ordering_position: orderingPosition = null,
+  available_in_ms: availableInMs = 0,
+}) {
+  if (!provider || !eventId || !payload || typeof payload !== 'object') {
+    throw new TypeError('provider, event_id, and object payload are required');
+  }
+  const boundedDelayMs = Math.max(0, Math.min(5000, Number(availableInMs) || 0));
+  const inserted = await q(
+    `INSERT INTO ${DB_SCHEMA}.webhook_inbox
+       (provider, event_id, payload, attestation, ordering_key, ordering_position,
+        status, available_at, updated_at)
+     VALUES ($1,$2,$3::jsonb,$4::jsonb,$5,$6,'queued',
+       now() + ($7 * interval '1 millisecond'),now())
+     ON CONFLICT (provider, event_id) DO UPDATE
+       SET event_id=${DB_SCHEMA}.webhook_inbox.event_id,
+           updated_at=now()
+       WHERE ${DB_SCHEMA}.webhook_inbox.payload=EXCLUDED.payload
+         AND ${DB_SCHEMA}.webhook_inbox.attestation
+           IS NOT DISTINCT FROM EXCLUDED.attestation
+         AND ${DB_SCHEMA}.webhook_inbox.ordering_key
+           IS NOT DISTINCT FROM EXCLUDED.ordering_key
+         AND ${DB_SCHEMA}.webhook_inbox.ordering_position
+           IS NOT DISTINCT FROM EXCLUDED.ordering_position
+     RETURNING status, (xmax = 0) AS inserted`,
+    [String(provider).slice(0, 80), String(eventId).slice(0, 300),
+      JSON.stringify(payload), attestation == null ? null : JSON.stringify(attestation),
+      orderingKey == null ? null : String(orderingKey).slice(0, 500),
+      orderingPosition == null ? null : String(orderingPosition).slice(0, 120),
+      boundedDelayMs]
+  );
+  const row = inserted.rows[0];
+  if (!row) {
+    throw new Error(
+      `webhook event ${provider}:${eventId} is already bound to different input`);
+  }
+  return { inserted: row.inserted === true, status: row.status };
+}
+
+async function expireExhaustedWebhookClaims(provider, {
+  eventId = null,
+  maxAttempts = 5,
+} = {}) {
+  const boundedAttempts = Math.max(1, Math.min(20, Number(maxAttempts) || 5));
+  if (eventId != null) {
+    await q(
+      `UPDATE ${DB_SCHEMA}.webhook_inbox
+          SET status='dead', lease_until=NULL, claim_token=NULL,
+              last_error=COALESCE(last_error,
+                'processing lease expired at the maximum attempt count'),
+              updated_at=now()
+        WHERE provider=$1 AND event_id=$2 AND status='processing'
+          AND lease_until <= now() AND attempts >= $3`,
+      [String(provider), String(eventId), boundedAttempts]
+    );
+    return;
+  }
+  await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox
+        SET status='dead', lease_until=NULL, claim_token=NULL,
+            last_error=COALESCE(last_error,
+              'processing lease expired at the maximum attempt count'),
+            updated_at=now()
+      WHERE provider=$1 AND status='processing'
+        AND lease_until <= now() AND attempts >= $2`,
+    [String(provider), boundedAttempts]
+  );
+}
+
+async function claimWebhookEvent(provider, eventId, {
+  leaseSeconds = 600,
+  maxAttempts = 5,
+} = {}) {
+  const boundedLease = Math.max(30, Math.min(1800, Number(leaseSeconds) || 600));
+  const boundedAttempts = Math.max(1, Math.min(20, Number(maxAttempts) || 5));
+  await expireExhaustedWebhookClaims(provider, { eventId, maxAttempts: boundedAttempts });
+  const claimToken = crypto.randomUUID();
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox AS inbox
+        SET status='processing', attempts=attempts+1,
+            lease_until=now() + ($3 * interval '1 second'),
+            claim_token=$4, updated_at=now()
+      WHERE provider=$1 AND event_id=$2
+        AND attempts < $5
+        AND (inbox.ordering_key IS NULL OR NOT EXISTS (
+          SELECT 1 FROM ${DB_SCHEMA}.webhook_inbox AS earlier
+           WHERE earlier.provider=inbox.provider
+             AND earlier.ordering_key=inbox.ordering_key
+             AND earlier.status IN ('queued','processing')
+              AND (
+                (earlier.status='processing' AND earlier.lease_until > now())
+                OR COALESCE(earlier.ordering_position, '') <
+                  COALESCE(inbox.ordering_position, '')
+               OR (COALESCE(earlier.ordering_position, '') =
+                     COALESCE(inbox.ordering_position, '')
+                 AND (earlier.created_at, earlier.event_id) <
+                   (inbox.created_at, inbox.event_id))
+             )
+        ))
+        AND ((status='queued' AND available_at <= now())
+          OR (status='processing' AND lease_until <= now()))
+      RETURNING *`,
+    [String(provider), String(eventId), boundedLease, claimToken, boundedAttempts]
+  );
+  return rows[0] || null;
+}
+
+async function claimNextWebhookEvent(provider, {
+  leaseSeconds = 600,
+  maxAttempts = 5,
+} = {}) {
+  const boundedLease = Math.max(30, Math.min(1800, Number(leaseSeconds) || 600));
+  const boundedAttempts = Math.max(1, Math.min(20, Number(maxAttempts) || 5));
+  await expireExhaustedWebhookClaims(provider, { maxAttempts: boundedAttempts });
+  const claimToken = crypto.randomUUID();
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox AS inbox
+        SET status='processing', attempts=inbox.attempts+1,
+            lease_until=now() + ($2 * interval '1 second'),
+            claim_token=$3, updated_at=now()
+      WHERE (inbox.provider, inbox.event_id) = (
+        SELECT candidate.provider, candidate.event_id
+          FROM ${DB_SCHEMA}.webhook_inbox AS candidate
+         WHERE candidate.provider=$1
+           AND candidate.attempts < $4
+           AND (candidate.ordering_key IS NULL OR NOT EXISTS (
+             SELECT 1 FROM ${DB_SCHEMA}.webhook_inbox AS earlier
+              WHERE earlier.provider=candidate.provider
+                AND earlier.ordering_key=candidate.ordering_key
+                AND earlier.status IN ('queued','processing')
+                AND (
+                  (earlier.status='processing' AND earlier.lease_until > now())
+                  OR COALESCE(earlier.ordering_position, '') <
+                    COALESCE(candidate.ordering_position, '')
+                  OR (COALESCE(earlier.ordering_position, '') =
+                        COALESCE(candidate.ordering_position, '')
+                    AND (earlier.created_at, earlier.event_id) <
+                      (candidate.created_at, candidate.event_id))
+                )
+           ))
+           AND ((candidate.status='queued' AND candidate.available_at <= now())
+             OR (candidate.status='processing' AND candidate.lease_until <= now()))
+         ORDER BY candidate.available_at ASC, candidate.created_at ASC
+         LIMIT 1 FOR UPDATE SKIP LOCKED
+      )
+      RETURNING inbox.*`,
+    [String(provider), boundedLease, claimToken, boundedAttempts]
+  );
+  return rows[0] || null;
+}
+
+async function renewWebhookEventLease(provider, eventId, claimToken, {
+  leaseSeconds = 30,
+} = {}) {
+  const token = typeof claimToken === 'string' ? claimToken.trim() : '';
+  if (!token) return false;
+  const boundedLease = Math.max(5, Math.min(1800, Number(leaseSeconds) || 30));
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox
+        SET lease_until=GREATEST(
+              lease_until, now() + ($4 * interval '1 second')),
+            updated_at=now()
+      WHERE provider=$1 AND event_id=$2 AND status='processing'
+        AND claim_token=$3 AND lease_until > now()`,
+    [String(provider), String(eventId), token, boundedLease]
+  );
+  return rowCount === 1;
+}
+
+async function completeWebhookEvent(provider, eventId, claimToken, {
+  allowEmptyResult = false,
+} = {}) {
+  const token = typeof claimToken === 'string' ? claimToken.trim() : '';
+  if (!token) return false;
+  if (String(provider) === 'slack') {
+    const { rows } = await q(
+      `SELECT processing_result
+         FROM ${DB_SCHEMA}.webhook_inbox
+        WHERE provider=$1 AND event_id=$2 AND status='processing'
+          AND claim_token=$3 AND lease_until > now()`,
+      [String(provider), String(eventId), token],
+    );
+    if (!rows.length) return false;
+    const result = rows[0].processing_result;
+    if (result == null) {
+      if (allowEmptyResult !== true) return false;
+    } else {
+      const audit = slackReplyStageAudit(result);
+      if (!audit.valid
+        || !['delivered', 'suppressed', 'partially_delivered_suppressed']
+          .includes(result.delivery?.status)
+        || result.finalization?.status !== 'completed') {
+        return false;
+      }
+    }
+  }
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox
+        SET status='completed', lease_until=NULL, claim_token=NULL, last_error=NULL,
+            completed_at=now(), updated_at=now()
+      WHERE provider=$1 AND event_id=$2 AND status='processing'
+        AND claim_token=$3 AND lease_until > now()
+        AND (
+          provider <> 'slack'
+          OR ($4::boolean = true AND processing_result IS NULL)
+          OR (
+            processing_result -> 'delivery' ->> 'status'
+              IN ('delivered','suppressed','partially_delivered_suppressed')
+            AND processing_result -> 'finalization' ->> 'status' = 'completed'
+          )
+        )`,
+    [String(provider), String(eventId), token, allowEmptyResult === true]
+  );
+  return rowCount === 1;
+}
+
+async function stageWebhookEventResult(provider, eventId, claimToken, result) {
+  const token = typeof claimToken === 'string' ? claimToken.trim() : '';
+  const validStage = String(provider) === 'slack'
+    ? slackReplyStageAudit(result).valid === true
+    : Boolean(result && typeof result === 'object' && !Array.isArray(result));
+  if (!token || !validStage) return false;
+  const commitment = typeof result.content_commitment === 'string'
+    ? result.content_commitment : '';
+  const nextStatus = String(result.delivery?.status || '');
+  const { rowCount } = await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox
+        SET processing_result=$4::jsonb, updated_at=now()
+      WHERE provider=$1 AND event_id=$2 AND status='processing'
+        AND claim_token=$3 AND lease_until > now()
+        AND (
+          (processing_result IS NULL AND $6 = 'staged')
+          OR (
+            processing_result ->> 'content_commitment' = $5
+            AND CASE processing_result -> 'delivery' ->> 'status'
+              WHEN 'staged' THEN 0 WHEN 'attempted' THEN 1
+              WHEN 'delivered' THEN 2 WHEN 'suppressed' THEN 2
+              WHEN 'partially_delivered_suppressed' THEN 2 ELSE 99 END
+              <= CASE $6
+                WHEN 'staged' THEN 0 WHEN 'attempted' THEN 1
+                WHEN 'delivered' THEN 2 WHEN 'suppressed' THEN 2
+                WHEN 'partially_delivered_suppressed' THEN 2 ELSE -1 END
+            AND COALESCE(
+                  (processing_result -> 'delivery' ->> 'attempts')::integer, 0)
+              <= COALESCE(
+                  ($4::jsonb -> 'delivery' ->> 'attempts')::integer, 0)
+            AND NOT EXISTS (
+              SELECT 1
+                FROM jsonb_array_elements(COALESCE(
+                  processing_result -> 'delivery' -> 'segment_receipts',
+                  '[]'::jsonb)) AS prior_receipt
+               WHERE prior_receipt ->> 'ok' = 'true'
+                 AND NOT COALESCE(
+                   $4::jsonb -> 'delivery' -> 'segment_receipts',
+                   '[]'::jsonb) @> jsonb_build_array(prior_receipt)
+            )
+            AND (
+              processing_result -> 'delivery' -> 'first_response' IS NULL
+              OR processing_result -> 'delivery' -> 'first_response'
+                   = 'null'::jsonb
+              OR processing_result -> 'delivery' -> 'first_response'
+                   = $4::jsonb -> 'delivery' -> 'first_response'
+            )
+            AND COALESCE(
+                  (processing_result -> 'finalization' ->> 'attempts')::integer, 0)
+              <= COALESCE(
+                  ($4::jsonb -> 'finalization' ->> 'attempts')::integer, 0)
+            AND COALESCE(
+                  $4::jsonb -> 'finalization' -> 'receipts', '[]'::jsonb)
+              @> COALESCE(
+                  processing_result -> 'finalization' -> 'receipts', '[]'::jsonb)
+            AND (
+              processing_result -> 'delivery' ->> 'status'
+                NOT IN ('delivered','suppressed','partially_delivered_suppressed')
+              OR (
+                processing_result -> 'delivery' = $4::jsonb -> 'delivery'
+                AND CASE COALESCE(
+                      processing_result -> 'finalization' ->> 'status', 'pending')
+                      WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1
+                      WHEN 'failed' THEN 1
+                      WHEN 'completed' THEN 2 ELSE 99 END
+                    <= CASE COALESCE(
+                      $4::jsonb -> 'finalization' ->> 'status', 'pending')
+                      WHEN 'pending' THEN 0 WHEN 'in_progress' THEN 1
+                      WHEN 'failed' THEN 1
+                      WHEN 'completed' THEN 2 ELSE -1 END
+                AND (
+                  processing_result -> 'finalization' ->> 'status' IS DISTINCT FROM 'completed'
+                  OR processing_result -> 'finalization'
+                       = $4::jsonb -> 'finalization'
+                )
+              )
+            )
+          )
+        )`,
+    [String(provider), String(eventId), token, JSON.stringify(result),
+      commitment, nextStatus]
+  );
+  return rowCount === 1;
+}
+
+async function failWebhookEvent(provider, eventId, claimToken, error, { maxAttempts = 5 } = {}) {
+  const token = typeof claimToken === 'string' ? claimToken.trim() : '';
+  if (!token) return null;
+  const boundedAttempts = Math.max(1, Math.min(20, Number(maxAttempts) || 5));
+  const { rows } = await q(
+    `UPDATE ${DB_SCHEMA}.webhook_inbox
+        SET status=CASE WHEN attempts >= $4 THEN 'dead' ELSE 'queued' END,
+            available_at=CASE WHEN attempts >= $4 THEN available_at
+              ELSE now() + (LEAST(60, power(2, GREATEST(0, attempts - 1)))
+                * interval '1 second') END,
+            lease_until=NULL, claim_token=NULL, last_error=$3, updated_at=now()
+      WHERE provider=$1 AND event_id=$2 AND status='processing'
+        AND claim_token=$5 AND lease_until > now()
+      RETURNING status, attempts, available_at`,
+    [String(provider), String(eventId),
+      String(error?.message || error || 'webhook processing failed').slice(0, 500),
+      boundedAttempts, token]
+  );
+  return rows[0] || null;
+}
+
+async function hasRecentTerminalWebhookEvent(provider, orderingKey, excludeEventId, {
+  withinSeconds = 1800,
+  mode = null,
+} = {}) {
+  const key = String(orderingKey || '').trim();
+  if (!key) return false;
+  const boundedSeconds = Math.max(
+    1, Math.min(86400, Number(withinSeconds) || 1800));
+  const { rows } = await q(
+    `SELECT 1
+       FROM ${DB_SCHEMA}.webhook_inbox
+      WHERE provider=$1 AND ordering_key=$2 AND event_id<>$3
+        AND status='completed'
+        AND completed_at > now() - ($4 * interval '1 second')
+        AND ($5::text IS NULL OR processing_result ->> 'mode' = $5)
+        AND (
+          processing_result -> 'delivery' ->> 'status'
+            IN ('delivered','partially_delivered_suppressed')
+          OR (
+            processing_result -> 'delivery' ->> 'status' = 'suppressed'
+            AND processing_result -> 'delivery' ->> 'terminal_reason'
+              IN ('intentional_silence','proactive_model_declined')
+          )
+        )
+      LIMIT 1`,
+    [String(provider), key, String(excludeEventId || ''), boundedSeconds,
+      mode == null ? null : String(mode)]
+  );
+  return rows.length > 0;
+}
+
+async function hasLaterTerminalWebhookEvent(
+  provider,
+  orderingKey,
+  orderingPosition,
+  excludeEventId,
+) {
+  const key = String(orderingKey || '').trim();
+  const position = String(orderingPosition || '').trim();
+  if (!key || !position) return false;
+  const { rows } = await q(
+    `SELECT 1
+       FROM ${DB_SCHEMA}.webhook_inbox
+      WHERE provider=$1 AND ordering_key=$2 AND event_id<>$4
+        AND status='completed'
+        AND COALESCE(ordering_position, '') > $3
+      LIMIT 1`,
+    [String(provider), key, position, String(excludeEventId || '')],
+  );
+  return rows.length > 0;
+}
+
+async function webhookInboxStats(provider) {
+  const { rows } = await q(
+    `SELECT status, count(*)::integer AS count,
+            min(created_at) AS oldest_created_at
+       FROM ${DB_SCHEMA}.webhook_inbox
+      WHERE provider=$1
+      GROUP BY status`,
+    [String(provider)]
+  );
+  const counts = {};
+  let oldestActiveAt = null;
+  for (const row of rows) {
+    counts[row.status] = Number(row.count) || 0;
+    if (['queued', 'processing'].includes(row.status) && row.oldest_created_at) {
+      const timestamp = new Date(row.oldest_created_at).getTime();
+      if (Number.isFinite(timestamp)
+        && (oldestActiveAt == null || timestamp < oldestActiveAt)) {
+        oldestActiveAt = timestamp;
+      }
+    }
+  }
+  return {
+    counts,
+    active_count: Number(counts.queued || 0) + Number(counts.processing || 0),
+    dead_letters: Number(counts.dead || 0),
+    oldest_active_at: oldestActiveAt == null
+      ? null : new Date(oldestActiveAt).toISOString(),
+    oldest_active_age_ms: oldestActiveAt == null
+      ? 0 : Math.max(0, Date.now() - oldestActiveAt),
+  };
+}
+
+async function pruneWebhookEvents({ retentionDays = 14 } = {}) {
+  const days = Math.max(1, Math.min(90, Number(retentionDays) || 14));
+  const { rowCount } = await q(
+    `DELETE FROM ${DB_SCHEMA}.webhook_inbox
+      WHERE status IN ('completed','dead')
+        AND updated_at < now() - ($1 * interval '1 day')`,
+    [days]
+  );
+  return rowCount;
+}
+
 async function applySlackThreadChanges({ upserts = [], deleted_keys: deletedKeys = [] } = {}) {
   if (!upserts.length && !deletedKeys.length) return { upserted: 0, deleted: 0 };
   return withTransaction(async client => {
@@ -1056,7 +1930,8 @@ async function close() {
 
 module.exports = {
   dbEnabled, isReady, init, close, q, embed, count, backgroundAllowed, diagnostics,
-  EMBED_DIM, EMBED_MODEL, DB_SCHEMA,
+  EMBED_DIM, EMBED_MODEL, DB_SCHEMA, databaseSslPolicy, databaseConnectionString,
+  serializeRunLockMutation,
   loadAllMemory, replaceAllMemory, applyMemoryChanges, memoryNeedingEmbedding, setMemoryEmbedding, searchMemoryByVector,
   clearEmbeddings, embeddingStats, bumpMemoryRecall, randomEmbeddedMemory, neighborsOfMemory,
   loadAllTasks, replaceAllTasks, applyTaskChanges,
@@ -1068,5 +1943,13 @@ module.exports = {
   loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,
   upsertTranscript, appendTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
-  enqueueJob, claimNextQueuedJob, finishJob, interruptRunningJobs, recentJobs,
+  enqueueJob, claimNextQueuedJob, finishJob, checkpointInternalJob,
+  finishInternalJob, retryInternalJob,
+  stageJobDelivery, claimJobDelivery,
+  deferJobDelivery, recoverInterruptedJobDeliveries, interruptRunningJobs, recentJobs,
+  enqueueWebhookEvent, claimWebhookEvent, claimNextWebhookEvent,
+  completeWebhookEvent, renewWebhookEventLease, stageWebhookEventResult,
+  failWebhookEvent, hasRecentTerminalWebhookEvent,
+  hasLaterTerminalWebhookEvent, webhookInboxStats,
+  pruneWebhookEvents,
 };

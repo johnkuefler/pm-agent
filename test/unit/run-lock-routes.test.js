@@ -23,6 +23,58 @@ function routeHarness(options = {}) {
   return { call };
 }
 
+test('concurrent fresh acquisitions admit exactly one holder and one lifecycle', async () => {
+  let persisted = null;
+  let acquisitions = 0;
+  const { call } = routeHarness({
+    loadLock: async () => {
+      const snapshot = persisted == null ? null : JSON.parse(JSON.stringify(persisted));
+      await new Promise(resolve => setImmediate(resolve));
+      return snapshot;
+    },
+    saveLock: value => {
+      persisted = value == null ? null : JSON.parse(JSON.stringify(value));
+    },
+    onAcquire: ({ holder }) => {
+      acquisitions += 1;
+      return { cycle_id: `cycle:${holder}`, moment_id: `moment:${holder}` };
+    },
+  });
+
+  const results = await Promise.all([
+    call('POST', '/run-lock', { body: { holder: 'run-racer-one', ttl_seconds: 60 } }),
+    call('POST', '/run-lock', { body: { holder: 'run-racer-two', ttl_seconds: 60 } }),
+  ]);
+  const winners = results.filter(result => result.body.acquired);
+  const deferred = results.filter(result => !result.body.acquired);
+
+  assert.equal(winners.length, 1, 'only one request may observe and replace the empty lease');
+  assert.equal(deferred.length, 1);
+  assert.equal(acquisitions, 1, 'only the winning request may open a run-bound lifecycle');
+  assert.equal(deferred[0].body.held_by, winners[0].body.holder);
+  assert.equal(persisted.holder, winners[0].body.holder);
+});
+
+test('a caller-proposed strong fencing token makes acquisition retries recoverable', async () => {
+  const { call } = routeHarness();
+  const fencingToken = 'caller_owned_recovery_token_1234567890';
+  const first = await call('POST', '/run-lock', {
+    body: { holder: 'run-recoverable', fencing_token: fencingToken, ttl_seconds: 60 },
+  });
+  assert.equal(first.body.acquired, true);
+  assert.equal(first.body.fencing_token, fencingToken);
+  const retry = await call('POST', '/run-lock', {
+    body: { holder: 'run-recoverable', fencing_token: fencingToken, ttl_seconds: 60 },
+  });
+  assert.equal(retry.body.acquired, true);
+  assert.equal(retry.body.fencing_token, fencingToken);
+  const invalid = await call('POST', '/run-lock', {
+    body: { holder: 'another-run', fencing_token: 'too-short', ttl_seconds: 60 },
+  });
+  assert.equal(invalid.statusCode, 400);
+  assert.equal(invalid.body.code, 'run_lock_fencing_token_invalid');
+});
+
 test('run lock carries one lifecycle from acquisition through holder-owned release', async () => {
   const acquired = [];
   const released = [];
@@ -42,9 +94,19 @@ test('run lock carries one lifecycle from acquisition through holder-owned relea
   assert.equal(first.body.acquired, true);
   assert.equal(first.body.lifecycle.cycle_id, 'cycle-1');
   assert.equal(acquired.length, 1);
+  assert.match(first.body.fencing_token, /^[0-9a-f-]{36}$/);
 
-  const refreshed = await call('POST', '/run-lock', { body: { holder: 'run-one', ttl_seconds: 120 } });
+  const unfencedRefresh = await call('POST', '/run-lock', {
+    body: { holder: 'run-one', ttl_seconds: 120 },
+  });
+  assert.equal(unfencedRefresh.body.acquired, false);
+  assert.equal(unfencedRefresh.body.code, 'run_lock_fencing_token_mismatch');
+
+  const refreshed = await call('POST', '/run-lock', {
+    body: { holder: 'run-one', fencing_token: first.body.fencing_token, ttl_seconds: 120 },
+  });
   assert.equal(refreshed.body.acquired, true);
+  assert.equal(refreshed.body.fencing_token, first.body.fencing_token);
   assert.equal(refreshed.body.lifecycle.moment_id, 'moment-1');
   assert.equal(acquired.length, 1, 'refreshing the same lock must not open another lifecycle');
 
@@ -54,7 +116,9 @@ test('run lock carries one lifecycle from acquisition through holder-owned relea
   assert.equal((await call('DELETE', '/run-lock', { query: { holder: 'run-two' } })).body.released, false);
   assert.equal(released.length, 0);
 
-  const final = await call('DELETE', '/run-lock', { query: { holder: 'run-one' } });
+  const final = await call('DELETE', '/run-lock', {
+    query: { holder: 'run-one', fencing_token: first.body.fencing_token },
+  });
   assert.equal(final.body.released, true);
   assert.equal(final.body.lifecycle.closure_status, 'explicit_gap_recorded');
   assert.equal(final.body.lifecycle.evidence_eligible, false);
@@ -123,6 +187,37 @@ test('run lock fails closed when its lifecycle cannot start', async () => {
   assert.equal((await call('GET', '/run-lock')).body.locked, false);
 });
 
+test('an expired holder cannot release a newer lease that reused the same holder name', async () => {
+  let now = Date.parse('2026-07-26T12:00:00.000Z');
+  const { call } = routeHarness({ clock: () => now });
+
+  const first = await call('POST', '/run-lock', {
+    body: { holder: 'run-reused', ttl_seconds: 60 },
+  });
+  now += 61_000;
+  const successor = await call('POST', '/run-lock', {
+    body: { holder: 'run-reused', ttl_seconds: 60 },
+  });
+  assert.equal(successor.body.acquired, true);
+  assert.notEqual(successor.body.fencing_token, first.body.fencing_token);
+
+  const staleRelease = await call('DELETE', '/run-lock', {
+    query: { holder: 'run-reused', fencing_token: first.body.fencing_token },
+  });
+  assert.equal(staleRelease.body.released, false);
+  assert.equal(staleRelease.body.code, 'run_lock_fencing_token_mismatch');
+  const stillHeld = await call('GET', '/run-lock');
+  assert.equal(stillHeld.body.locked, true);
+  assert.equal(stillHeld.body.holder, 'run-reused');
+  assert.equal(stillHeld.body.fencing_token, undefined,
+    'read-only inspection must not disclose the ownership capability');
+
+  const ownerRelease = await call('DELETE', '/run-lock', {
+    query: { holder: 'run-reused', fencing_token: successor.body.fencing_token },
+  });
+  assert.equal(ownerRelease.body.released, true);
+});
+
 test('interactive priority defers a new hourly lifecycle but never strands its existing holder', async () => {
   let blocked = true;
   let acquisitions = 0;
@@ -157,7 +252,8 @@ test('interactive priority defers a new hourly lifecycle but never strands its e
 
   blocked = true;
   const refreshed = await call('POST', '/run-lock', {
-    body: { holder: 'run-after-call', ttl_seconds: 3000 },
+    body: { holder: 'run-after-call', fencing_token: acquired.body.fencing_token,
+      ttl_seconds: 3000 },
   });
   assert.equal(refreshed.body.acquired, true,
     'the current holder must retain a path to close and release its lifecycle');
@@ -197,7 +293,8 @@ test('durable run lock survives route reconstruction and preserves the exact lif
   assert.equal(contender.body.acquired, false);
   assert.equal(contender.body.lifecycle.moment_id, 'durable-moment');
   const resumed = await restartedProcess.call('POST', '/run-lock', {
-    body: { holder: 'run-durable', ttl_seconds: 3000 },
+    body: { holder: 'run-durable', fencing_token: first.body.fencing_token,
+      ttl_seconds: 3000 },
   });
   assert.equal(resumed.body.acquired, true);
   assert.equal(resumed.body.lifecycle.moment_id, 'durable-moment');
@@ -309,8 +406,12 @@ test('lifecycle release failures preserve the durable lease for recovery', async
     onRelease: () => { throw new Error('ledger temporarily unavailable'); },
   };
   const { call } = routeHarness(options);
-  await call('POST', '/run-lock', { body: { holder: 'run-protected', ttl_seconds: 3000 } });
-  const release = await call('DELETE', '/run-lock', { query: { holder: 'run-protected' } });
+  const acquired = await call('POST', '/run-lock', {
+    body: { holder: 'run-protected', ttl_seconds: 3000 },
+  });
+  const release = await call('DELETE', '/run-lock', {
+    query: { holder: 'run-protected', fencing_token: acquired.body.fencing_token },
+  });
   assert.equal(release.statusCode, 503);
   assert.equal(release.body.released, false);
   assert.equal(release.body.reason, 'lifecycle_release_failed');
@@ -330,8 +431,12 @@ test('lifecycle release failures expose a machine-readable recovery action witho
     onAcquire: () => ({ cycle_id: 'cycle-live', moment_id: 'moment-live' }),
     onRelease: () => { throw error; },
   });
-  await call('POST', '/run-lock', { body: { holder: 'run-live', ttl_seconds: 3000 } });
-  const release = await call('DELETE', '/run-lock', { query: { holder: 'run-live' } });
+  const acquired = await call('POST', '/run-lock', {
+    body: { holder: 'run-live', ttl_seconds: 3000 },
+  });
+  const release = await call('DELETE', '/run-lock', {
+    query: { holder: 'run-live', fencing_token: acquired.body.fencing_token },
+  });
   assert.equal(release.statusCode, 503);
   assert.equal(release.body.code, 'active_run_lifecycle_must_be_closed');
   assert.equal(release.body.next_required_action,

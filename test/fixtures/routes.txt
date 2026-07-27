@@ -250,6 +250,9 @@ GET /
 GET /instructions
 GET /architecture
 GET /cowork-instructions
+GET /agentic-corpus/corpus
+GET /agentic-corpus/agent/:slug
+GET /agentic-corpus/search
 GET /prompt
 PUT /prompt
 GET /prompt/history
@@ -283,6 +286,9 @@ PUT /people
 PUT /self/inner
 GET /routine
 PUT /routine
+GET /routine/governance
+POST /routine/proposals
+POST /routine/proposals/:id/apply
 GET /routine/history
 POST /routine/rollback
 GET /self-review/stats
@@ -439,5 +445,6 @@ GET /dream-insights/review-queue
 POST /dream-insights/:id/review
 POST /dreams
 DELETE /dreams/:id
+POST /dreams/:id/restore
 GET /capability-boundaries
 POST /capability-boundaries/sync

@@ -37,9 +37,13 @@ test('Slack verification rejects tampered and stale requests and does not invent
   const valid = signedSlackRequest();
   assert.equal(attestation.verifySlackRequest({ ...valid, rawBody: Buffer.from('{}') }).valid, false);
   assert.equal(attestation.verifySlackRequest({ ...valid, now: new Date('2026-07-13T16:40:01.000Z') }).valid, false);
-  const development = attestation.verifySlackRequest({ ...valid, signingSecret: '' });
+  const missingSecret = attestation.verifySlackRequest({ ...valid, signingSecret: '' });
+  assert.equal(missingSecret.valid, false);
+  assert.equal(missingSecret.reason, 'signing_secret_unavailable');
+  const development = attestation.verifySlackRequest({ ...valid, signingSecret: '', allowUnsigned: true });
   assert.equal(development.valid, true);
   assert.equal(development.cryptographically_verified, false);
+  assert.equal(development.reason, 'signing_secret_unavailable_dev_override');
   assert.equal(development.attestation, null);
 });
 

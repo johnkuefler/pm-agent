@@ -22,6 +22,8 @@ function healthySnapshot() {
       recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
       api_opportunity_operations: { pending: 0, last_error: null },
       slack_webhook_events: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
+      recall_webhook_events: { active_count: 0, oldest_active_ms: 0,
+        recent_failures: [], inbox: { queued: 0, dead_letters: 0 } },
       acknowledged_meeting_work: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
       recent_meetings_cache: { in_flight: false, active_ms: 0, consecutive_failures: 0 } },
     entity_writes: { pending: 0, in_flight: 0, current_errors: 0 },
@@ -103,6 +105,32 @@ test('reliability escalates acknowledged Slack work that cannot reach a terminal
   verdict = assessRuntimeReliability(slow, { now });
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'slack_webhook_work_stuck');
+});
+
+test('reliability exposes durable Recall backlog, retries, and terminal dead letters', () => {
+  const retrying = healthySnapshot();
+  retrying.background_work.recall_webhook_events = {
+    active_count: 1,
+    oldest_active_ms: 0,
+    recent_failures: [{ at: '2026-07-22T18:59:00.000Z' }],
+    inbox: { queued: 1, dead_letters: 0 },
+  };
+  let verdict = assessRuntimeReliability(retrying, { now });
+  assert.equal(verdict.status, 'degraded');
+  assert.equal(verdict.degraded[0].code, 'recall_webhook_work_pressure');
+
+  retrying.background_work.recall_webhook_events.inbox.dead_letters = 1;
+  verdict = assessRuntimeReliability(retrying, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'recall_webhook_dead_letter');
+});
+
+test('reliability treats Slack dead letters as operator-actionable', () => {
+  const snapshot = healthySnapshot();
+  snapshot.background_work.slack_webhook_events.inbox = { dead_letters: 2 };
+  const verdict = assessRuntimeReliability(snapshot, { now });
+  assert.equal(verdict.status, 'action_required');
+  assert.equal(verdict.action_required[0].code, 'slack_webhook_dead_letter');
 });
 
 test('reliability escalates acknowledged meeting work that cannot reach a terminal state', () => {

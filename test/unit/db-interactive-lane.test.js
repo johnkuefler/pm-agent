@@ -115,6 +115,17 @@ test('semantic recall uses an independent fast-fail database pool and degrades c
     assert.deepEqual(db.diagnostics().transactions, {
       attempts: 3, failures: 2, discarded_clients: 1, rollback_failures: 0,
     });
+
+    let serialized = false;
+    await db.serializeRunLockMutation(async () => { serialized = true; });
+    assert.equal(serialized, true);
+    const lockClient = pools[1].clients[3];
+    assert.deepEqual(lockClient.queries, [
+      'BEGIN',
+      'SET LOCAL search_path TO public, public',
+      'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+      'COMMIT',
+    ]);
   } finally {
     if (db) await db.close();
     Module._load = originalLoad;

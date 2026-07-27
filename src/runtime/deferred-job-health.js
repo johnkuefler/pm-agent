@@ -60,6 +60,9 @@ function createDeferredJobHealth({ pollMs = DEFAULT_POLL_MS, maxBackoffMs = MAX_
         memory_queue: {
           queued: queuedJobs.length,
           running: memoryJobs.filter(job => job?.status === 'running').length,
+          delivery_pending: memoryJobs.filter(job => job?.status === 'delivery_pending').length,
+          delivering: memoryJobs.filter(job => job?.status === 'delivering').length,
+          delivery_failed: memoryJobs.filter(job => job?.status === 'delivery_failed').length,
           retained: memoryJobs.length,
           oldest_queued_age_ms: oldest ? Math.max(0, Number(now) - oldest) : 0,
         },

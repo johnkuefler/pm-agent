@@ -35,9 +35,12 @@ function slackEventSnapshot(body = {}) {
   };
 }
 
-function verifySlackRequest({ body = {}, rawBody, timestamp, signature, signingSecret, now = new Date() } = {}) {
-  if (!signingSecret) return { valid: true, cryptographically_verified: false,
-    reason: 'signing_secret_unavailable', attestation: null };
+function verifySlackRequest({
+  body = {}, rawBody, timestamp, signature, signingSecret, now = new Date(), allowUnsigned = false,
+} = {}) {
+  if (!signingSecret) return { valid: Boolean(allowUnsigned), cryptographically_verified: false,
+    reason: allowUnsigned ? 'signing_secret_unavailable_dev_override' : 'signing_secret_unavailable',
+    attestation: null };
   const seconds = Number(timestamp); const nowDate = new Date(now);
   if (!Number.isFinite(seconds) || !signature || !rawBody || !Number.isFinite(nowDate.getTime())
     || Math.abs(nowDate.getTime() / 1000 - seconds) > 300) {

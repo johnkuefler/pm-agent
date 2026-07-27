@@ -7,10 +7,10 @@
   <meta name="nora-api-key" content="{{NORA_API_KEY}}">
   <meta name="nora-operator-token" content="{{NORA_OPERATOR_TOKEN}}">
   <!--
-    The {{NORA_API_KEY}} placeholder is replaced server-side with the real key
-    after Basic auth on / passes. JS reads this on load and includes it as a
-    Bearer header on every API call (see api() helper at the top of <script>).
-    If NORA_API_KEY is unset (dev mode), this stays empty and APIs are open.
+    The {{NORA_API_KEY}} placeholder is replaced server-side with a short-lived
+    signed dashboard session after Basic auth on / passes. JS reads this on load
+    and includes it as a Bearer header on every API call. In local development
+    without dashboard auth, the server may use the configured development key.
   -->
 
   <link rel="stylesheet" href="/assets/dashboard.css?v={{ASSET_VERSION}}">
@@ -25,47 +25,47 @@
           <div class="brand-sub">PM Agent · LimeLight</div>
         </div>
       </div>
-      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="workspace-nav" onclick="toggleMobileNav()">Menu</button>
+      <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="workspace-nav" aria-label="Open workspace navigation" onclick="toggleMobileNav()">Menu</button>
       <nav id="workspace-nav" class="nav" aria-label="Workspace">
         <div class="nav-group">
           <div class="nav-label">Work</div>
-          <button class="tab" type="button" data-tab="live" aria-selected="false" onclick="showTab('live')">Live</button>
-          <button class="tab active" type="button" data-tab="meeting" aria-selected="true" onclick="showTab('meeting')">Meeting</button>
-          <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Tasks</button>
-          <button class="tab" type="button" data-tab="projects" aria-selected="false" onclick="showTab('projects')">Projects</button>
-          <button class="tab" type="button" data-tab="transcripts" aria-selected="false" onclick="showTab('transcripts')">Transcripts</button>
+          <button class="tab" type="button" data-tab="live" onclick="showTab('live')">Live</button>
+          <button class="tab active" type="button" data-tab="meeting" aria-current="page" onclick="showTab('meeting')">Meeting</button>
+          <button class="tab" type="button" data-tab="tasks" onclick="showTab('tasks')">Tasks</button>
+          <button class="tab" type="button" data-tab="projects" onclick="showTab('projects')">Projects</button>
+          <button class="tab" type="button" data-tab="transcripts" onclick="showTab('transcripts')">Transcripts</button>
         </div>
         <div class="nav-group">
           <div class="nav-label">Knowledge</div>
-          <button class="tab" type="button" data-tab="memory" aria-selected="false" onclick="showTab('memory')">Memory</button>
-          <button class="tab" type="button" data-tab="dreams" aria-selected="false" onclick="showTab('dreams')">Dreams</button>
+          <button class="tab" type="button" data-tab="memory" onclick="showTab('memory')">Memory</button>
+          <button class="tab" type="button" data-tab="dreams" onclick="showTab('dreams')">Dreams</button>
           <button class="nav-jump" type="button" data-intelligence-jump="reading-room" aria-controls="reading-room-state" onclick="openIntelligenceSection('reading-room')">
             <span>Reading Room</span><small>Live activity</small>
           </button>
-          <button class="tab" type="button" data-tab="markers" aria-selected="false" onclick="showTab('markers')">Markers</button>
+          <button class="tab" type="button" data-tab="markers" onclick="showTab('markers')">Markers</button>
         </div>
         <div class="nav-group">
           <div class="nav-label">Identity</div>
-          <button class="tab" type="button" data-tab="routine" aria-selected="false" onclick="showTab('routine')">Routine</button>
-          <button class="tab" type="button" data-tab="charter" aria-selected="false" onclick="showTab('charter')">Charter</button>
-          <button class="tab" type="button" data-tab="self" aria-selected="false" onclick="showTab('self')">Self</button>
+          <button class="tab" type="button" data-tab="routine" onclick="showTab('routine')">Routine</button>
+          <button class="tab" type="button" data-tab="charter" onclick="showTab('charter')">Charter</button>
+          <button class="tab" type="button" data-tab="self" onclick="showTab('self')">Self</button>
         </div>
         <div class="nav-group">
           <div class="nav-label">System</div>
-          <button class="tab" type="button" data-tab="intelligence" aria-selected="false" onclick="showTab('intelligence')">Intelligence</button>
-          <button class="tab" type="button" data-tab="admin" aria-selected="false" onclick="showTab('admin')">Admin</button>
+          <button class="tab" type="button" data-tab="intelligence" onclick="showTab('intelligence')">Intelligence</button>
+          <button class="tab" type="button" data-tab="admin" onclick="showTab('admin')">Admin</button>
         </div>
       </nav>
     </aside>
-    <main class="content">
+    <main class="content" aria-labelledby="page-title">
       <div class="content-head">
         <div class="content-head-copy">
-          <h1 id="page-title">Meeting</h1>
+          <h1 id="page-title" tabindex="-1">Meeting</h1>
           <p id="page-description" class="subtitle">Send Nora into a call with the right context, mandate, and participation mode.</p>
         </div>
         <div class="content-actions">
-          <button class="utility-btn" type="button" onclick="openCommandPalette()" title="Switch view (Ctrl or Command + K)">Switch view</button>
-          <button id="theme-toggle" class="utility-btn" type="button" onclick="toggleTheme()">Dark theme</button>
+          <button id="command-trigger" class="utility-btn" type="button" aria-haspopup="dialog" aria-controls="command-palette" aria-expanded="false" onclick="openCommandPalette()" title="Switch view (Ctrl or Command + K)">Switch view</button>
+          <button id="theme-toggle" class="utility-btn" type="button" aria-label="Dark theme" aria-pressed="false" onclick="toggleTheme()">Dark theme</button>
         </div>
       </div>
       <button id="global-activity-strip" class="global-activity-strip is-connecting" type="button" onclick="showTab('live')" aria-label="Open Nora's live activity">
@@ -182,13 +182,13 @@
         </div>
         <div id="join-status" class="toast"></div>
         <div id="mute-controls" style="margin-top: 14px; display: none;">
-          <button id="mute-btn" class="btn" onclick="toggleMute()">Mute Nora</button>
+          <button id="mute-btn" class="btn" type="button" aria-label="Mute Nora" aria-pressed="false" onclick="toggleMute()">Mute Nora</button>
           <span id="mute-status" style="margin-left: 8px; font-size: 13px; color: var(--muted);"></span>
           <div class="toggle-row">
-            <div class="toggle-pill" id="pill-oneonone" onclick="toggleFlag('one-on-one')" title="Respond to every turn without her name - best for a 1:1"><span class="dot"></span> 1:1 mode</div>
-            <div class="toggle-pill" id="pill-leanin" onclick="toggleFlag('lean-in')" title="In a group, answer a direct question even without her name"><span class="dot"></span> Lean-in</div>
-            <div class="toggle-pill" id="pill-proactive" onclick="toggleFlag('proactive')" title="Let her volunteer a fact unprompted when she has one"><span class="dot"></span> Proactive</div>
-            <div class="toggle-pill" id="pill-diagnostics" onclick="toggleFlag('meeting-diagnostics')" title="Show or hide Nora's in-meeting diagnostic panels"><span class="dot"></span> Diagnostics</div>
+            <button class="toggle-pill" id="pill-oneonone" type="button" aria-pressed="false" onclick="toggleFlag('one-on-one')" title="Respond to every turn without her name - best for a 1:1"><span class="dot" aria-hidden="true"></span> 1:1 mode</button>
+            <button class="toggle-pill" id="pill-leanin" type="button" aria-pressed="false" onclick="toggleFlag('lean-in')" title="In a group, answer a direct question even without her name"><span class="dot" aria-hidden="true"></span> Lean-in</button>
+            <button class="toggle-pill" id="pill-proactive" type="button" aria-pressed="false" onclick="toggleFlag('proactive')" title="Let her volunteer a fact unprompted when she has one"><span class="dot" aria-hidden="true"></span> Proactive</button>
+            <button class="toggle-pill" id="pill-diagnostics" type="button" aria-pressed="false" onclick="toggleFlag('meeting-diagnostics')" title="Show or hide Nora's in-meeting diagnostic panels"><span class="dot" aria-hidden="true"></span> Diagnostics</button>
           </div>
         </div>
       </div>
@@ -225,10 +225,10 @@
     <div id="page-tasks" class="page">
       <div class="section">
         <h2>Nora's Action Items</h2>
-        <div class="filter-bar">
-          <button class="filter-btn" onclick="filterTasks('all', this)">All</button>
-          <button class="filter-btn active" onclick="filterTasks('pending', this)">Pending</button>
-          <button class="filter-btn" onclick="filterTasks('done', this)">Done</button>
+        <div class="filter-bar" role="group" aria-label="Task status filter">
+          <button class="filter-btn" type="button" aria-pressed="false" onclick="filterTasks('all', this)">All</button>
+          <button class="filter-btn active" type="button" aria-pressed="true" onclick="filterTasks('pending', this)">Pending</button>
+          <button class="filter-btn" type="button" aria-pressed="false" onclick="filterTasks('done', this)">Done</button>
         </div>
         <div id="task-list"></div>
       </div>
@@ -306,19 +306,19 @@
         <div id="project-list"></div>
       </div>
       <div id="project-detail" class="section" style="display: none;">
-        <h2 id="project-detail-title" style="display: flex; justify-content: space-between; align-items: center;">
+        <h2 id="project-detail-title" tabindex="-1" style="display: flex; justify-content: space-between; align-items: center;">
           <span id="project-detail-name"></span>
           <div style="display: flex; gap: 6px;">
             <button class="btn btn-success btn-sm" onclick="editProject()">Edit</button>
             <button class="btn btn-danger btn-sm" onclick="deleteProject()">Delete</button>
           </div>
         </h2>
-        <div id="project-detail-info" style="font-size: 13px; color: var(--text-2); line-height: 1.5; white-space: pre-wrap;"></div>
+        <div id="project-detail-info" role="status" aria-live="polite" style="font-size: 13px; color: var(--text-2); line-height: 1.5; white-space: pre-wrap;"></div>
         <div id="project-memories" style="margin-top: 16px;"></div>
         <button class="btn btn-sm" onclick="closeProject()" style="margin-top: 12px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);">Back to list</button>
       </div>
       <div id="project-edit" class="section" style="display: none;">
-        <h2 id="project-edit-title">Add Project</h2>
+        <h2 id="project-edit-title" tabindex="-1">Add Project</h2>
         <input id="project-edit-name" placeholder="Project name..." />
         <textarea id="project-edit-details" placeholder="Project details (stakeholders, timelines, goals, etc.)..." style="margin-top: 8px; min-height: 80px;"></textarea>
         <div class="row">
@@ -335,15 +335,15 @@
     <!-- Intelligence Tab -->
     <div id="page-intelligence" class="page" data-active-view="overview">
       <nav class="intelligence-view-nav" aria-label="Intelligence views">
-        <button class="intelligence-view-button active" type="button" data-intelligence-view-button="overview" aria-pressed="true" onclick="setIntelligenceView('overview')">Now</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="learning" aria-pressed="false" onclick="setIntelligenceView('learning')">Learning</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="self" aria-pressed="false" onclick="setIntelligenceView('self')">Self &amp; behavior</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="research" aria-pressed="false" onclick="setIntelligenceView('research')">Research</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="history" aria-pressed="false" onclick="setIntelligenceView('history')">History</button>
+        <button class="intelligence-view-button active" type="button" data-intelligence-view-button="overview" aria-current="page" onclick="setIntelligenceView('overview')">Now</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="learning" onclick="setIntelligenceView('learning')">Learning</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="self" onclick="setIntelligenceView('self')">Self &amp; behavior</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="research" onclick="setIntelligenceView('research')">Research</button>
+        <button class="intelligence-view-button" type="button" data-intelligence-view-button="history" onclick="setIntelligenceView('history')">History</button>
       </nav>
       <header class="intelligence-view-heading">
         <div>
-          <h2 id="intelligence-view-title">Nora right now</h2>
+          <h2 id="intelligence-view-title" tabindex="-1">Nora right now</h2>
           <p id="intelligence-view-description">The few signals that explain her current state and activity.</p>
         </div>
         <button class="btn btn-success btn-sm" type="button" onclick="loadIntelligence()">Refresh</button>
@@ -353,7 +353,7 @@
         <h2>At a glance</h2>
         <div id="intelligence-stats" class="intelligence-stats"></div>
         <div id="intelligence-at-a-glance" class="intelligence-at-a-glance"></div>
-        <div id="bench-status" class="intelligence-bench">Loading evaluation status...</div>
+        <div id="bench-status" class="intelligence-bench" role="status" aria-live="polite">Loading evaluation status...</div>
       </div>
 
       <section class="section intelligence-brain" data-intelligence-view="overview" aria-labelledby="brain-title">
@@ -730,7 +730,7 @@
         <div id="transcript-list"></div>
       </div>
       <div id="transcript-detail" class="section" style="display: none;">
-        <h2 id="transcript-detail-title">Transcript</h2>
+        <h2 id="transcript-detail-title" tabindex="-1">Transcript</h2>
         <div style="margin-bottom: 12px;">
           <button class="btn btn-danger btn-sm" onclick="closeTranscript()">Back to list</button>
           <button id="transcript-delete-btn" class="btn btn-danger btn-sm" style="margin-left: 8px; background: var(--danger-soft); border-color: var(--danger-line);">Delete transcript</button>
@@ -787,8 +787,10 @@
         <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
           Nora's editable hourly routine - the ordered steps her Cowork session runs each hour. The stable
           harness (auth, run lock, security rules) lives in <code>cowork-prompt.md</code> and fetches this at
-          <code>GET /routine</code> every run, so editing here changes what she does without touching the harness
-          or the Cowork config. Nora can also revise it herself via <code>PUT /routine</code>. Saves take effect on the next hourly run.
+          <code>GET /routine</code> every run, so this signed operator editor changes what she does without
+          touching the harness or Cowork config. Nora's autonomous improvement lane is narrower: one
+          evidence-bound allowlisted section proposal, applied only by a later run after server validation
+          and a cooling-off period. Full replacement and rollback require this signed operator session.
         </p>
         <div id="routine-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
         <textarea id="routine-content" spellcheck="false" style="width:100%; min-height:540px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
@@ -808,12 +810,12 @@
           <span style="font-size:11px; color:var(--dim); font-weight:400;">what Nora may do in John's name</span>
         </h2>
         <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
-          A living document Nora co-owns. It defines what she can decide or commit to on John's behalf, what
-          she brings back to him, and what she never does, plus the "What I've learned about John" section she
-          maintains herself. It's injected into her live prompts (Slack, Zoom chat, voice) and fetched by the
-          hourly routine, so edits change her authority everywhere immediately. Nora evolves it as she earns
-          trust: her edits carry a note, land in version history, and she DMs John each time. The financial
-          gate and external-email approval are code-enforced and unaffected by edits here.
+          This operator-owned authority document defines what Nora can decide or commit to on John's behalf,
+          what she brings back to him, and what she never does. It's injected into her live prompts (Slack,
+          Zoom chat, voice) and fetched by the hourly routine, so approved edits take effect everywhere
+          immediately. Nora may propose evidence-backed revisions, but a proposal cannot expand or change her
+          authority until a signed operator session approves and saves it. Version history and the code-enforced
+          financial and external-email gates remain independent safeguards.
         </p>
         <div id="charter-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
         <textarea id="charter-content" spellcheck="false" style="width:100%; min-height:480px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
@@ -856,8 +858,8 @@
         <div id="self-bio-status" class="toast"></div>
       </div>
       <div class="section">
-        <h2 style="display:flex; justify-content:space-between; align-items:center;">Persona <span style="font-size:11px; color:var(--dim); font-weight:400;">nora-prompt, now a living document</span></h2>
-        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Her core personality. She can refine it herself (highest bar, note required, history + rollback); the hard voice floors are code-enforced and survive any edit here.</p>
+        <h2 style="display:flex; justify-content:space-between; align-items:center;">Persona <span style="font-size:11px; color:var(--dim); font-weight:400;">operator-approved living document</span></h2>
+        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Her core personality. Nora may propose evidence-backed revisions, but only a signed operator approval can change the live persona. History and rollback preserve recovery, and the code-enforced voice floors survive every approved edit.</p>
         <div id="persona-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
         <textarea id="persona-content" spellcheck="false" style="width:100%; min-height:340px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
         <div class="row">
@@ -871,8 +873,9 @@
   </div>
 
   <div id="command-palette" class="command-backdrop" aria-hidden="true" onclick="closeCommandPalette(event)">
-    <div class="command-dialog" role="dialog" aria-modal="true" aria-label="Switch workspace view" onclick="event.stopPropagation()">
-      <input id="command-input" aria-label="Find a workspace view" placeholder="Find a view..." oninput="renderCommandResults()" />
+    <div id="command-dialog" class="command-dialog" role="dialog" aria-modal="true" aria-labelledby="command-title" tabindex="-1" onclick="event.stopPropagation()">
+      <h2 id="command-title" class="sr-only">Switch workspace view</h2>
+      <input id="command-input" aria-label="Find a workspace view" aria-controls="command-results" placeholder="Find a view..." oninput="renderCommandResults()" />
       <div id="command-results" class="command-results"></div>
     </div>
   </div>

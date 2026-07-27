@@ -269,7 +269,7 @@ test('live runtime is scheduled only in the preemptible background lane', () => 
   const source = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
   assert.match(source, /\['meeting_professional_reflection',[\s\S]*runMeetingProfessionalReflectionRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
-  const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));
+  const zoom = source.slice(source.indexOf('async function processRecallChatWebhook'), source.indexOf('// Proactive mode toggle'));
   assert.doesNotMatch(slack, /runMeetingProfessionalReflectionRuntime/);
   assert.doesNotMatch(zoom, /runMeetingProfessionalReflectionRuntime/);
 });

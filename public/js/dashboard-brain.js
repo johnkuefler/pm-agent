@@ -331,7 +331,7 @@ function selectNoraBrainNode(id, redraw = true) {
     <span class="brain-detail-kicker">${escHtml(node.layer)} system</span>
     <h3>${escHtml(node.label)}</h3>
     <p>${escHtml(node.description)}</p>
-    <div class="brain-detail-meter" aria-label="${escHtml(node.label)} activity ${Math.round(node.level * 100)} percent"><span style="width:${Math.round(node.level * 100)}%"></span></div>
+    <div class="brain-detail-meter" aria-label="${escAttr(node.label)} activity ${Math.round(node.level * 100)} percent"><span style="width:${Math.round(node.level * 100)}%"></span></div>
     <div class="brain-detail-meta">${escHtml(node.evidence)}</div>`;
   document.querySelectorAll('[data-brain-node]').forEach(button => {
     const selected = button.dataset.brainNode === node.id;

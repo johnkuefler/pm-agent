@@ -64,7 +64,9 @@ test('operational recovery is scheduled before optional background intelligence'
     source.indexOf("scheduleRecurringRuntimeJob('stale-research-projection-refresh'"));
   assert.match(scheduler, /const trigger = runNumber === 1 \? 'startup' : 'five-minute-scheduler'/);
   assert.ok(scheduler.indexOf('await runHourlyFallbackRuntime({ trigger })')
-    < scheduler.indexOf('await runBackgroundIntelligenceRuntime({ trigger })'));
+    < scheduler.indexOf('await runBackgroundIntelligenceRuntime({'));
+  assert.match(scheduler, /trigger, signal, budget: backgroundBudget/,
+    'the optional lane must inherit the recurring owner cancellation and remaining deadline');
   assert.match(scheduler,
     /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*initialDelayMs: 20000/,
     'startup and periodic recovery must share one non-overlapping scheduler owner');
@@ -168,8 +170,9 @@ test('Slack provider readback repairs a lost local thread marker without duplica
   ], 'UNORA'), false);
 });
 
-test('hourly recovery answers one verified missed Slack mention on a bounded guarded path', async () => {
-  let captured;
+test('hourly recovery durably enqueues and processes one missed Slack mention', async () => {
+  let enqueued;
+  let processedEventId;
   const result = await __test.recoverUnhandledSlackMention({
     channel: 'C-MISSED',
     is_private: false,
@@ -180,33 +183,49 @@ test('hourly recovery answers one verified missed Slack mention on a bounded gua
   }, {
     deadlineAt: Date.now() + 60000,
     prioritySnapshot: () => ({ active_interactions: 0, quiet_remaining_ms: 0 }),
-    handle: async (...args) => {
-      captured = args;
-      return { status: 'replied' };
+    enqueue: async (body, attestation, eventId) => {
+      enqueued = { body, attestation, eventId };
+      return { inserted: true, status: 'queued' };
+    },
+    process: async eventId => {
+      processedEventId = eventId;
+      return { state: 'processed', event_id: eventId };
     },
   });
-  assert.equal(result.status, 'replied');
-  assert.equal(captured[0], 'C-MISSED');
-  assert.equal(captured[2], 'can you check the launch date?');
-  assert.equal(captured[3], '1784781000.000100');
-  assert.equal(captured[5], 'normal');
-  assert.equal(captured[9].recoveryGuard, true);
-  assert.ok(captured[9].terminalAt <= Date.now() + 30000);
+  assert.equal(result.status, 'processed');
+  assert.equal(enqueued.body.event.type, 'app_mention');
+  assert.equal(enqueued.body.event.channel, 'C-MISSED');
+  assert.equal(enqueued.body.event.text, '<@UNORA> can you check the launch date?');
+  assert.equal(enqueued.body.event.ts, '1784781000.000100');
+  assert.equal(enqueued.attestation.internal_durable_recovery, true);
+  assert.equal(enqueued.attestation.kind, 'slack_web_api_missed_mention_recovery');
+  assert.ok(enqueued.attestation.processing_budget_ms <= 30000);
+  assert.equal(processedEventId, enqueued.eventId);
+  assert.match(result.durable_event_id, /^slack-recovery-[a-f0-9]{64}$/);
+
+  const source = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const claimed = source.slice(
+    source.indexOf('async function processClaimedSlackWebhook'),
+    source.indexOf('async function processNextSlackWebhookInbox'),
+  );
+  assert.match(claimed, /internal_durable_recovery/);
+  assert.match(claimed, /stage_result: async result/);
 });
 
 test('hourly missed-mention recovery yields to a current live interaction', async () => {
-  let handled = false;
+  let enqueued = false;
   const result = await __test.recoverUnhandledSlackMention({
     channel: 'C-BUSY', ts: '1784781002.000100', user: 'U-REQUESTER',
     text: '<@UNORA> check this',
   }, {
     deadlineAt: Date.now() + 60000,
     prioritySnapshot: () => ({ active_interactions: 1, quiet_remaining_ms: 0 }),
-    handle: async () => { handled = true; },
+    enqueue: async () => { enqueued = true; },
   });
   assert.equal(result.status, 'deferred');
   assert.equal(result.reason, 'interactive_priority');
-  assert.equal(handled, false);
+  assert.equal(enqueued, false);
 });
 
 test('Gmail coverage adapts to the connected tool schema and fails closed on unknown requirements', () => {
@@ -237,6 +256,30 @@ test('native hourly tools cannot complete a task without a successful preceding 
   assert.equal(toolset.tools.some(tool => tool.name === 'nora_deliver_task_result'), true);
   const result = await toolset.executors.nora_complete_local_task({ summary: 'done' });
   assert.match(result.error, /no successful external or delivery action/i);
+});
+
+test('native hourly MCP wrappers do not count resolved failure envelopes as successful actions', async () => {
+  const successful = new Set();
+  const task = { id: 'task-false-mcp-success', status: 'pending',
+    action: 'Perform the requested connector write' };
+  const toolset = __test.nativeHourlyTaskToolset(task, successful, {
+    mcpBindings: {
+      claudeTools: [{ name: 'mcp_write' }],
+      executors: {
+        mcp_write: async () => ({
+          isError: true,
+          content: [{ type: 'text', text: 'remote provider rejected the write' }],
+        }),
+      },
+      meta: { mcp_write: { accessMode: 'write' } },
+    },
+  });
+
+  const failed = await toolset.executors.mcp_write({});
+  assert.equal(failed.isError, true);
+  assert.equal(successful.size, 0);
+  const completion = await toolset.executors.nora_complete_local_task({ summary: 'done' });
+  assert.match(completion.error, /no successful external or delivery action/i);
 });
 
 test('native hourly task execution finishes one bounded task through an auditable tool chain', async () => {

@@ -22,6 +22,9 @@
   "author": "",
   "license": "ISC",
   "description": "",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "axios": "^1.13.6",
@@ -29,5 +32,8 @@
     "express": "^5.2.1",
     "pg": "^8.22.0",
     "ws": "^8.19.0"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.12"
   }
 }

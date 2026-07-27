@@ -10,6 +10,40 @@
 //   every:N:weeks:HH:MM     — every N weeks from the most recent completion/seed
 const SCHEDULE_TZ = 'America/Chicago';
 const WEEKDAY_INDEX = { sunday: 0, monday: 1, tuesday: 2, wednesday: 3, thursday: 4, friday: 5, saturday: 6 };
+const ISO_SCHEDULED_FOR = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:\d{2})$/i;
+
+function parseClock(hour, minute) {
+  if (!/^\d{1,2}$/.test(hour || '') || !/^\d{1,2}$/.test(minute || '')) return null;
+  const hh = Number(hour);
+  const mm = Number(minute);
+  if (!Number.isInteger(hh) || hh < 0 || hh > 23
+    || !Number.isInteger(mm) || mm < 0 || mm > 59) return null;
+  return { hh, mm };
+}
+
+function isValidScheduledFor(value) {
+  if (value == null || value === '') return true;
+  if (typeof value !== 'string') return false;
+  const match = ISO_SCHEDULED_FOR.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText = '0'] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  if (month < 1 || month > 12 || hour > 23 || minute > 59 || second > 59) return false;
+
+  // Date.parse normalizes some impossible calendar dates. Check the written calendar
+  // components independently before accepting the timestamp and its explicit offset.
+  const calendar = new Date(0);
+  calendar.setUTCHours(0, 0, 0, 0);
+  calendar.setUTCFullYear(year, month - 1, day);
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1
+    || calendar.getUTCDate() !== day) return false;
+  return Number.isFinite(Date.parse(value));
+}
 
 function getTzOffsetMinutes(date, tz) {
   // Returns the offset in minutes for the given instant in the given tz.
@@ -58,6 +92,7 @@ function daysInMonth(year, month /* 1-12 */) {
 
 function computeNextRun(rule, fromTime = new Date()) {
   if (!rule || typeof rule !== 'string') return null;
+  if (!(fromTime instanceof Date) || !Number.isFinite(fromTime.getTime())) return null;
   const parts = rule.trim().toLowerCase().split(':');
   const kind = parts[0];
   const tz = SCHEDULE_TZ;
@@ -70,8 +105,10 @@ function computeNextRun(rule, fromTime = new Date()) {
   };
 
   if (kind === 'daily') {
-    const hh = Number(parts[1]); const mm = Number(parts[2]);
-    if (isNaN(hh) || isNaN(mm)) return null;
+    if (parts.length !== 3) return null;
+    const clock = parseClock(parts[1], parts[2]);
+    if (!clock) return null;
+    const { hh, mm } = clock;
     let candidate = tryBuild(now.year, now.month, now.day, hh, mm);
     if (candidate.getTime() <= fromTime.getTime()) {
       // Advance by adding 24h to fromTime then reading the tz date — going through
@@ -85,8 +122,10 @@ function computeNextRun(rule, fromTime = new Date()) {
   }
 
   if (kind === 'weekdays') {
-    const hh = Number(parts[1]); const mm = Number(parts[2]);
-    if (isNaN(hh) || isNaN(mm)) return null;
+    if (parts.length !== 3) return null;
+    const clock = parseClock(parts[1], parts[2]);
+    if (!clock) return null;
+    const { hh, mm } = clock;
     let cursor = new Date(fromTime);
     for (let i = 0; i < 8; i++) {
       const p = getDatePartsInTz(cursor, tz);
@@ -101,8 +140,11 @@ function computeNextRun(rule, fromTime = new Date()) {
   }
 
   if (kind === 'weekly') {
-    const dayName = parts[1]; const hh = Number(parts[2]); const mm = Number(parts[3]);
-    if (!(dayName in WEEKDAY_INDEX) || isNaN(hh) || isNaN(mm)) return null;
+    if (parts.length !== 4) return null;
+    const dayName = parts[1];
+    const clock = parseClock(parts[2], parts[3]);
+    if (!(dayName in WEEKDAY_INDEX) || !clock) return null;
+    const { hh, mm } = clock;
     const target = WEEKDAY_INDEX[dayName];
     const todayIdx = WEEKDAY_INDEX[now.weekday];
     let daysAhead = (target - todayIdx + 7) % 7;
@@ -121,8 +163,11 @@ function computeNextRun(rule, fromTime = new Date()) {
   }
 
   if (kind === 'monthly') {
-    const dom = Number(parts[1]); const hh = Number(parts[2]); const mm = Number(parts[3]);
-    if (isNaN(dom) || dom < 1 || dom > 31 || isNaN(hh) || isNaN(mm)) return null;
+    if (parts.length !== 4 || !/^\d{1,2}$/.test(parts[1] || '')) return null;
+    const dom = Number(parts[1]);
+    const clock = parseClock(parts[2], parts[3]);
+    if (!Number.isInteger(dom) || dom < 1 || dom > 31 || !clock) return null;
+    const { hh, mm } = clock;
     let candidate = tryBuild(now.year, now.month, dom, hh, mm);
     if (candidate.getTime() <= fromTime.getTime()) {
       const nextMonth = now.month === 12 ? 1 : now.month + 1;
@@ -152,6 +197,8 @@ function isValidRecurrence(rule) {
 function isTaskEligibleNow(task, now = new Date()) {
   if (task.status !== 'pending') return false;
   if (!task.scheduled_for) return true;
+  if (!isValidScheduledFor(task.scheduled_for)
+    || !(now instanceof Date) || !Number.isFinite(now.getTime())) return false;
   return new Date(task.scheduled_for).getTime() <= now.getTime();
 }
 
@@ -159,6 +206,7 @@ module.exports = {
   SCHEDULE_TZ,
   computeNextRun,
   isValidRecurrence,
+  isValidScheduledFor,
   isTaskEligibleNow,
   getDatePartsInTz,
 };

@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "default_module_budget": {
+    "max_lines": 600,
+    "max_bytes": 60000
+  },
+  "legacy_module_budgets": {
+    "db.js": {
+      "max_lines": 1803,
+      "max_bytes": 80485
+    },
+    "server.js": {
+      "max_lines": 22899,
+      "max_bytes": 1162434
+    },
+    "src/gifting/goody.js": {
+      "max_lines": 699,
+      "max_bytes": 32404
+    },
+    "src/integrations/slack-delivery.js": {
+      "max_lines": 996,
+      "max_bytes": 35044
+    },
+    "src/intelligence/autonomous-play.js": {
+      "max_lines": 666,
+      "max_bytes": 36481
+    },
+    "src/intelligence/behavioral-fingerprint.js": {
+      "max_lines": 837,
+      "max_bytes": 58077
+    },
+    "src/intelligence/consequence-review.js": {
+      "max_lines": 608,
+      "max_bytes": 27731
+    },
+    "src/intelligence/conscious-workspace.js": {
+      "max_lines": 719,
+      "max_bytes": 36482
+    },
+    "src/intelligence/cycle-self-forecast.js": {
+      "max_lines": 1264,
+      "max_bytes": 68217
+    },
+    "src/intelligence/developmental-self-reflection.js": {
+      "max_lines": 776,
+      "max_bytes": 47957
+    },
+    "src/intelligence/dream-insight-reflection.js": {
+      "max_lines": 679,
+      "max_bytes": 39795
+    },
+    "src/intelligence/indicators.js": {
+      "max_lines": 2435,
+      "max_bytes": 258141
+    },
+    "src/intelligence/research-status-cache.js": {
+      "max_lines": 784,
+      "max_bytes": 33449
+    },
+    "src/intelligence/self-authored-aim-reappraisal.js": {
+      "max_lines": 621,
+      "max_bytes": 35213
+    },
+    "src/intelligence/store.js": {
+      "max_lines": 29421,
+      "max_bytes": 2279877
+    },
+    "src/mcp/manager.js": {
+      "max_lines": 702,
+      "max_bytes": 37732
+    },
+    "src/routes/cowork-instructions.js": {
+      "max_lines": 2184,
+      "max_bytes": 171797
+    },
+    "src/routes/intelligence.js": {
+      "max_lines": 2050,
+      "max_bytes": 118048
+    }
+  },
+  "inline_route_budgets": {
+    "server.js": 99
+  }
+}

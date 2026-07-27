@@ -84,7 +84,7 @@ function registerGiftRoutes(app, deps) {
         per_gift_limit_cents: req.body?.per_gift_limit_cents,
         requires_approval_over_cents: req.body?.requires_approval_over_cents,
         monthly_budget_cents: req.body?.monthly_budget_cents,
-        updated_by: req.body?.updated_by || 'John',
+        updated_by: req.principal?.id || 'dashboard_operator',
       });
       await saveGiftLedger(result.ledger);
       res.json({ ok: true, report: result.report });
@@ -166,7 +166,10 @@ function registerGiftRoutes(app, deps) {
   // /gifts/deliberations so every proposal has an explicit alternatives-and-evidence receipt.
   app.post('/gifts/intents', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
-      const result = goodyGifting.createIntent(req.body || {}, loadGiftLedger());
+      const result = goodyGifting.createIntent({
+        ...(req.body || {}),
+        created_by: req.principal?.id || 'dashboard_operator',
+      }, loadGiftLedger());
       await saveGiftLedger(result.ledger);
       res.json({ ok: true, intent: publicIntent(result.intent), report: result.report });
     } catch (error) {
@@ -177,7 +180,7 @@ function registerGiftRoutes(app, deps) {
   app.post('/gifts/intents/:id/approve', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = goodyGifting.approveIntent(loadGiftLedger(), req.params.id, {
-        approvedBy: req.body?.approved_by || 'John',
+        approvedBy: req.principal?.id || 'dashboard_operator',
       });
       await saveGiftLedger(result.ledger);
       res.json({ ok: true, intent: publicIntent(result.intent), report: result.report });
@@ -189,7 +192,7 @@ function registerGiftRoutes(app, deps) {
   app.post('/gifts/intents/:id/reject', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = goodyGifting.rejectIntent(loadGiftLedger(), req.params.id, {
-        rejectedBy: req.body?.rejected_by || 'John',
+        rejectedBy: req.principal?.id || 'dashboard_operator',
         note: req.body?.note || '',
       });
       await saveGiftLedger(result.ledger);
@@ -202,7 +205,7 @@ function registerGiftRoutes(app, deps) {
   app.post('/gifts/intents/:id/send', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
       const result = await goodyGifting.sendIntent(loadGiftLedger(), req.params.id, {
-        sentBy: req.body?.sent_by || 'John',
+        sentBy: req.principal?.id || 'dashboard_operator',
       });
       await saveGiftLedger(result.ledger);
       let delivery = null;
@@ -217,7 +220,7 @@ function registerGiftRoutes(app, deps) {
           channel: delivery.channel || '',
           ts: delivery.ts || '',
           error: delivery.ok ? '' : delivery.error || 'gift link delivery failed',
-          deliveredBy: req.body?.delivered_by || 'Nora',
+          deliveredBy: 'nora-server',
         });
         await saveGiftLedger(recorded.ledger);
         currentIntent = recorded.intent;

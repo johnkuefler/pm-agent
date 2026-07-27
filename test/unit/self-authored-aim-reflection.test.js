@@ -206,7 +206,7 @@ test('production runtime keeps aim reflection off Slack and Zoom foreground hand
   assert.match(source, /\['self_authored_aim_lifecycle',[\s\S]*runSelfAuthoredAimLifecycleAutopilotRuntime/);
   const slack = source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams'));
   assert.doesNotMatch(slack, /runSelfAuthoredAimReflectionAutopilotRuntime|selfAuthoredAimReflection\.runCycle/);
-  const zoom = source.slice(source.indexOf("app.post('/webhook/chat'"), source.indexOf('// Proactive mode toggle'));
+  const zoom = source.slice(source.indexOf('async function processRecallChatWebhook'), source.indexOf('// Proactive mode toggle'));
   assert.doesNotMatch(zoom, /runSelfAuthoredAimReflectionAutopilotRuntime|selfAuthoredAimReflection\.runCycle/);
   assert.match(source, /_cache\.wants\.items\.filter\(w => goalAffect\.verifiedWant\(w\)\)/,
     'unverified repository seeds must not be described as Nora\'s own aims in live prompts');

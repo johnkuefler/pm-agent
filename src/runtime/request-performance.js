@@ -9,6 +9,15 @@ function normalizePath(req) {
     .replace(/\/[a-z0-9_-]{16,}(?=\/|$)/gi, '/:id');
 }
 
+function requestDeadlineOutcome(method) {
+  const normalized = String(method || 'GET').toUpperCase();
+  const readOnly = normalized === 'GET' || normalized === 'HEAD' || normalized === 'OPTIONS';
+  return readOnly
+    ? { retryable: true, outcome: 'not_delivered' }
+    : { retryable: false, outcome: 'unknown',
+      recovery: 'Verify the resource state before issuing another write.' };
+}
+
 function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
   maxSlowEvents = 50, deadlineMs = 45000, longDeadlineMs = 120000,
   clock = () => new Date(), setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
@@ -93,10 +102,12 @@ function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
           error.code = 'REQUEST_DEADLINE_EXCEEDED';
           controller.abort(error);
         }
+        req.deadlineExceeded = true;
         console.error(`Request deadline exceeded ${req.method} ${path}: ${event.elapsed_ms}ms`);
         if (!res.headersSent && !res.writableEnded) {
+          const outcome = requestDeadlineOutcome(req.method);
           res.status(504).json({ error: 'request exceeded the server deadline',
-            code: 'REQUEST_DEADLINE_EXCEEDED', retryable: true });
+            code: 'REQUEST_DEADLINE_EXCEEDED', ...outcome });
         } else if (!res.writableEnded) {
           res.destroy?.(controller.signal.reason);
         }
@@ -121,4 +132,4 @@ function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
   return { middleware, snapshot };
 }
 
-module.exports = { createRequestPerformanceMonitor, normalizePath };
+module.exports = { createRequestPerformanceMonitor, normalizePath, requestDeadlineOutcome };

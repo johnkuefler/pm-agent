@@ -196,8 +196,8 @@ test('runtime is provider-gated and exists only in the preemptible background la
     server.indexOf('function tickEndogenousRuntimeWithDiagnostics'));
   assert.match(background, /interaction_outcome_review[\s\S]*teammate_perspective_resolution[\s\S]*teammate_perspective_formation/);
   const slack = server.slice(server.indexOf("app.post('/slack/events'"),
-    server.indexOf("app.post('/webhook/chat'"));
-  const zoom = server.slice(server.indexOf("app.post('/webhook/chat'"),
+    server.indexOf('async function processRecallChatWebhook'));
+  const zoom = server.slice(server.indexOf('async function processRecallChatWebhook'),
     server.indexOf('// Proactive mode toggle'));
   assert.doesNotMatch(slack, /runTeammatePerspectiveResolutionAutopilotRuntime/);
   assert.doesNotMatch(zoom, /runTeammatePerspectiveResolutionAutopilotRuntime/);

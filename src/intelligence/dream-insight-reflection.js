@@ -51,7 +51,8 @@ function utcDate(value = new Date()) {
 }
 
 function seedPacket(dreams = [], limit = MAX_PACKET_SEEDS) {
-  return dreamIdeaSeed.list(dreams, []).filter(seed => seed.role_eligibility?.eligible).map(seed => ({
+  return dreamIdeaSeed.list(dreams, [])
+    .filter(seed => seed.status !== 'archived' && seed.role_eligibility?.eligible).map(seed => ({
     type: seed.type, id: seed.id, dream_id: seed.dream_id, dream_date: seed.dream_date,
     idea_index: seed.idea_index, idea: seed.idea, content_commitment: seed.content_commitment,
   })).sort((left, right) => String(right.dream_date || '').localeCompare(String(left.dream_date || ''))

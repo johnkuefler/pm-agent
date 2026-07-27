@@ -70,8 +70,18 @@ function legacyAppraisal(state, drives, input, now) {
 function fixture() {
   return {
     commitments: [
-      { id: 'late', what: 'Send launch plan', project: 'Launch', owner: 'Nora', status: 'open', due: '2026-07-16T12:00:00Z' },
-      { id: 'later', what: 'Review budget', project: 'Finance', owner: 'John', status: 'open', due: '2026-07-20T12:00:00Z' },
+      {
+        id: 'late', what: 'Send launch plan', project: 'Launch', owner: 'Nora',
+        status: 'open', due: '2026-07-16T12:00:00Z',
+        authority_class: 'bounded', provenance_status: 'server_internal',
+        source_chain_verified: true,
+      },
+      {
+        id: 'later', what: 'Review budget', project: 'Finance', owner: 'John',
+        status: 'open', due: '2026-07-20T12:00:00Z',
+        authority_class: 'bounded', provenance_status: 'server_internal',
+        source_chain_verified: true,
+      },
     ],
     episodes: [{ id: 'episode-1', status: 'open', open_loops: [{ status: 'open' }] }],
     experiments: [{ id: 'experiment-1', status: 'active', behavior: 'Verify before claiming' }],

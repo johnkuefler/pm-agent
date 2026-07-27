@@ -189,6 +189,9 @@ test('Slack greetings use bounded conversation and a social empty-response fallb
   assert.equal(helpers.slackEmptyReplyFallback('Hey there', helpers.slackConversationPolicy('Hey there')), 'hey');
   assert.equal(helpers.slackEmptyReplyFallback('Good morning', policy, { sentSlack: true }), 'Sent.');
   assert.doesNotMatch(helpers.slackEmptyReplyFallback('Good morning', policy), /action|retry|rephrase/i);
+  assert.equal(helpers.slackEmptyReplyFallback(
+    'What is the launch status?', helpers.slackConversationPolicy('What is the launch status?')),
+  null, 'substantive empty turns must enter durable retry instead of posting an error bubble');
 });
 
 test('Slack relational self-reflection is isolated from PM tools and task-performance trials', () => {
@@ -251,6 +254,18 @@ test('missing Slack reaction scope is cached and degrades without repeated API f
   assert.equal(first.reason, 'missing_scope');
   assert.equal(second.reason, 'missing_scope_cached');
   assert.equal(calls, 1);
+  helpers.resetSlackReactionCapabilityForTest();
+});
+
+test('an already-present Slack reaction is idempotent delivery success', async () => {
+  helpers.resetSlackReactionCapabilityForTest();
+  const result = await helpers.trySlackReaction(
+    'D1', '123.45', 'heart',
+    async () => ({ data: { ok: false, error: 'already_reacted' } }),
+  );
+  assert.equal(result.reacted, true);
+  assert.equal(result.idempotent, true);
+  assert.equal(result.reason, 'already_reacted');
   helpers.resetSlackReactionCapabilityForTest();
 });
 

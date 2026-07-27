@@ -4,7 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const express = require('express');
-const { createRequestPerformanceMonitor, normalizePath } = require('../../src/runtime/request-performance');
+const { createRequestPerformanceMonitor, normalizePath,
+  requestDeadlineOutcome } = require('../../src/runtime/request-performance');
 
 test('request performance monitor records bounded normalized route timings', async () => {
   const monitor = createRequestPerformanceMonitor({ slowMs: 0, maxRoutes: 2, maxSlowEvents: 2 });
@@ -60,7 +61,10 @@ test('ordinary API requests receive a terminal deadline and abort signal', async
   assert.equal(req.deadlineSignal.aborted, true);
   assert.equal(req.deadlineSignal.reason.code, 'REQUEST_DEADLINE_EXCEEDED');
   assert.equal(res.statusCode, 504);
-  assert.equal(res.body.retryable, true);
+  assert.equal(res.body.retryable, false);
+  assert.equal(res.body.outcome, 'unknown');
+  assert.match(res.body.recovery, /Verify the resource state/);
+  assert.equal(req.deadlineExceeded, true);
   assert.equal(monitor.snapshot().active_requests, 0);
   assert.equal(monitor.snapshot().deadline_exceeded, 1);
 });
@@ -96,25 +100,39 @@ test('isolated heavy projection reads receive the long non-interactive deadline'
   }
 });
 
-test('a genuinely hung Express handler returns a retryable 504', async () => {
+test('a genuinely hung write returns an outcome-unknown 504 that forbids blind retry', async () => {
   const monitor = createRequestPerformanceMonitor({ deadlineMs: 15 });
   const app = express();
   app.use(monitor.middleware);
-  app.get('/hang-forever', () => {});
+  app.post('/hang-forever', () => {});
   const server = await new Promise(resolve => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
   });
   try {
     const { port } = server.address();
-    const response = await fetch(`http://127.0.0.1:${port}/hang-forever`);
+    const response = await fetch(`http://127.0.0.1:${port}/hang-forever`, { method: 'POST' });
     assert.equal(response.status, 504);
     assert.deepEqual(await response.json(), {
       error: 'request exceeded the server deadline',
       code: 'REQUEST_DEADLINE_EXCEEDED',
-      retryable: true,
+      retryable: false,
+      outcome: 'unknown',
+      recovery: 'Verify the resource state before issuing another write.',
     });
     assert.equal(monitor.snapshot().active_requests, 0);
   } finally {
     await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('only read-only deadline failures invite a direct retry', () => {
+  assert.deepEqual(requestDeadlineOutcome('GET'),
+    { retryable: true, outcome: 'not_delivered' });
+  assert.deepEqual(requestDeadlineOutcome('HEAD'),
+    { retryable: true, outcome: 'not_delivered' });
+  for (const method of ['POST', 'PATCH', 'PUT', 'DELETE']) {
+    const outcome = requestDeadlineOutcome(method);
+    assert.equal(outcome.retryable, false, method);
+    assert.equal(outcome.outcome, 'unknown', method);
   }
 });

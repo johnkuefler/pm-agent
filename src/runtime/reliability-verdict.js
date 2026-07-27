@@ -31,6 +31,7 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const startupTasks = background.startup_tasks || {};
   const apiOpportunityOperations = background.api_opportunity_operations || {};
   const slackWebhookEvents = background.slack_webhook_events || {};
+  const recallWebhookEvents = background.recall_webhook_events || {};
   const acknowledgedMeetingWork = background.acknowledged_meeting_work || {};
   const recentMeetingsCache = background.recent_meetings_cache || {};
   const backgroundAdmission = snapshot.background_admission || {};
@@ -236,7 +237,13 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
     const at = new Date(item?.at || 0).getTime();
     return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
   });
-  if (recentSlackWebhookFailures.length >= 3 || Number(slackWebhookEvents.oldest_active_ms) >= 45000) {
+  const slackDeadLetters = Number(slackWebhookEvents.inbox?.dead_letters)
+    || Number(slackWebhookEvents.dead_letters) || 0;
+  if (slackDeadLetters > 0) {
+    actionRequired.push({ code: 'slack_webhook_dead_letter', count: slackDeadLetters,
+      message: 'At least one Slack event exhausted its bounded durable retries.' });
+  } else if (recentSlackWebhookFailures.length >= 3
+    || Number(slackWebhookEvents.oldest_active_ms) >= 45000) {
     actionRequired.push({ code: 'slack_webhook_work_stuck',
       count: recentSlackWebhookFailures.length || Number(slackWebhookEvents.active_count) || undefined,
       age_ms: Number(slackWebhookEvents.oldest_active_ms) || undefined,
@@ -247,6 +254,34 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       count: recentSlackWebhookFailures.length || Number(slackWebhookEvents.active_count) || undefined,
       age_ms: Number(slackWebhookEvents.oldest_active_ms) || undefined,
       message: 'Acknowledged Slack event work is slow, failing, or accumulating.' });
+  }
+  const recentRecallWebhookFailures = (recallWebhookEvents.recent_failures || []).filter(item => {
+    const at = new Date(item?.at || 0).getTime();
+    return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
+  });
+  const recallQueued = Number(recallWebhookEvents.inbox?.queued) || 0;
+  const recallDeadLetters = Number(recallWebhookEvents.inbox?.dead_letters)
+    || Number(recallWebhookEvents.dead_letters) || 0;
+  if (recallDeadLetters > 0) {
+    actionRequired.push({ code: 'recall_webhook_dead_letter', count: recallDeadLetters,
+      message: 'At least one Recall meeting event exhausted its bounded durable retries.' });
+  } else if (recentRecallWebhookFailures.length >= 3
+    || Number(recallWebhookEvents.oldest_active_ms) >= 45000
+    || recallQueued > 50) {
+    actionRequired.push({ code: 'recall_webhook_work_stuck',
+      count: recentRecallWebhookFailures.length || recallQueued
+        || Number(recallWebhookEvents.active_count) || undefined,
+      age_ms: Number(recallWebhookEvents.oldest_active_ms) || undefined,
+      message: 'Durable Recall event work is repeatedly failing, stuck, or accumulating.' });
+  } else if (recentRecallWebhookFailures.length
+    || Number(recallWebhookEvents.oldest_active_ms) >= 20000
+    || Number(recallWebhookEvents.active_count) > 10
+    || recallQueued > 10) {
+    degraded.push({ code: 'recall_webhook_work_pressure',
+      count: recentRecallWebhookFailures.length || recallQueued
+        || Number(recallWebhookEvents.active_count) || undefined,
+      age_ms: Number(recallWebhookEvents.oldest_active_ms) || undefined,
+      message: 'Durable Recall event work is slow, retrying, or accumulating.' });
   }
   const recentMeetingWorkFailures = (acknowledgedMeetingWork.recent_failures || []).filter(item => {
     const at = new Date(item?.at || 0).getTime();

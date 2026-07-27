@@ -41,7 +41,16 @@ async function intelligenceJson(path, signal) {
   return response.json();
 }
 
-function setIntelligenceView(name, { load = true } = {}) {
+function focusIntelligenceViewHeading() {
+  const container = document.querySelector('.intelligence-view-heading');
+  const heading = document.getElementById('intelligence-view-title');
+  requestAnimationFrame(() => {
+    container?.scrollIntoView({ behavior: 'auto', block: 'start' });
+    heading?.focus({ preventScroll: true });
+  });
+}
+
+function setIntelligenceView(name, { load = true, manageFocus = true } = {}) {
   const view = intelligenceViews[name] ? name : 'overview';
   activeIntelligenceView = view;
   const page = document.getElementById('page-intelligence');
@@ -50,7 +59,8 @@ function setIntelligenceView(name, { load = true } = {}) {
   page.querySelectorAll('[data-intelligence-view-button]').forEach(button => {
     const active = button.dataset.intelligenceViewButton === view;
     button.classList.toggle('active', active);
-    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    if (active) button.setAttribute('aria-current', 'page');
+    else button.removeAttribute('aria-current');
   });
   const title = document.getElementById('intelligence-view-title');
   const description = document.getElementById('intelligence-view-description');
@@ -60,6 +70,7 @@ function setIntelligenceView(name, { load = true } = {}) {
     intelligenceViews[view].sections.forEach(section =>
       loadIntelligenceSection(section, intelligenceLoadToken));
   }
+  if (manageFocus && page.classList.contains('active')) focusIntelligenceViewHeading();
 }
 
 function resetIntelligenceSection(name) {
@@ -76,7 +87,7 @@ function resetIntelligenceSection(name) {
       target.innerHTML = `<div class="playroom-loading" aria-hidden="true"><div class="playroom-loading-board"></div><div class="playroom-loading-copy"></div></div><span class="sr-only">Loading Nora's playroom experiment.</span>`;
       return;
     }
-    target.innerHTML = index === 0 ? `<div class="intelligence-loading-state">
+    target.innerHTML = index === 0 ? `<div class="intelligence-loading-state" role="status">
       <span>Details load when this section approaches the viewport.</span>
       <button class="btn btn-sm" type="button" onclick="loadIntelligenceSection('${name}', intelligenceLoadToken)">Load now</button>
     </div>` : '';
@@ -98,7 +109,7 @@ function markIntelligenceSectionReady(name) {
 
 function markIntelligenceSectionError(name) {
   const target = document.getElementById((intelligenceSectionTargets[name] || [])[0]);
-  if (target) target.innerHTML = `<div class="intelligence-load-error">This section could not load.
+  if (target) target.innerHTML = `<div class="intelligence-load-error" role="alert">This section could not load.
     <button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('${name}')">Retry</button></div>`;
   markIntelligenceSectionReady(name);
 }
@@ -117,10 +128,10 @@ async function loadIntelligence() {
   intelligenceLoadedSections.clear();
   intelligenceSectionPromises.clear();
   Object.keys(intelligenceSectionTargets).forEach(resetIntelligenceSection);
-  document.getElementById('intelligence-stats').innerHTML = '<div class="intelligence-loading-state"><span>Loading Nora\'s current functional state.</span></div>';
+  document.getElementById('intelligence-stats').innerHTML = '<div class="intelligence-loading-state" role="status"><span>Loading Nora\'s current functional state.</span></div>';
   document.getElementById('bench-status').textContent = 'Evaluation status loading independently.';
   document.getElementById('brain-stage')?.classList.add('brain-loading');
-  setIntelligenceView(activeIntelligenceView, { load: false });
+  setIntelligenceView(activeIntelligenceView, { load: false, manageFocus: false });
 
   try {
     const summary = await intelligenceJson('/intelligence/dashboard-summary', intelligenceAbortController.signal);
@@ -142,21 +153,26 @@ async function loadIntelligence() {
     loadIntelligenceBench(token);
   } catch (error) {
     if (error.name === 'AbortError') return;
-    document.getElementById('intelligence-stats').innerHTML = '<div class="error">Could not load intelligence state.</div>';
+    document.getElementById('intelligence-stats').innerHTML = '<div class="error" role="alert">Could not load intelligence state.</div>';
     renderNoraBrainError();
   }
 }
 
 function openIntelligenceSection(name) {
   if (!intelligenceSectionTargets[name]) return;
-  showTab('intelligence');
-  setIntelligenceView(intelligenceSectionViews[name] || 'overview', { load: false });
+  showTab('intelligence', { focus: false });
+  setIntelligenceView(intelligenceSectionViews[name] || 'overview', { load: false, manageFocus: false });
   const token = intelligenceLoadToken;
   requestAnimationFrame(() => {
     const section = document.querySelector(`[data-intelligence-section="${name}"]`);
     if (!section) return;
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     section.scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'start' });
+    const heading = section.querySelector('h2');
+    if (heading) {
+      heading.tabIndex = -1;
+      heading.focus({ preventScroll: true });
+    }
     loadIntelligenceSection(name, token);
   });
 }
@@ -342,7 +358,7 @@ function renderEpistemicAgenda(value = {}) {
     const accessState = item.prompt_access?.eligible ? 'eligible' : 'held';
     const stateLabel = item.status === 'open' && accessState === 'held'
       ? 'open history · held from work' : `${item.status} · ${accessState}`;
-    return `<article class="epistemic-question" data-status="${escHtml(item.status)}" data-access="${accessState}">
+    return `<article class="epistemic-question" data-status="${escAttr(item.status)}" data-access="${escAttr(accessState)}">
       <div class="epistemic-question-heading"><span>${escHtml(stateLabel)}</span><strong>${Math.round(Number(item.confidence || 0) * 100)}% tentative</strong></div>
       <h3>${escHtml(item.question)}</h3>
       <p>${escHtml(item.current_best_answer || 'No tentative answer yet.')}</p>
@@ -358,7 +374,7 @@ function readingRoomBook(source, session) {
   const completed = Math.max(session?.notes?.length || 0, session?.next_chunk_index || 0,
     session?.quarantined_note_count || 0);
   const total = source?.chunk_count || 0;
-  return `<article class="reading-book" aria-label="${escHtml(source?.title || 'No admitted book')}">
+  return `<article class="reading-book" aria-label="${escAttr(source?.title || 'No admitted book')}">
     <div class="reading-book-rule" aria-hidden="true"></div>
     <span class="reading-book-kicker">${escHtml(source?.source_kind || 'library')}</span>
     <h3>${escHtml(source?.title || 'Awaiting the first admitted work')}</h3>
@@ -368,7 +384,7 @@ function readingRoomBook(source, session) {
       <div><dt>Rights</dt><dd>${escHtml(String(source?.rights_basis || 'pending').replaceAll('_', ' '))}</dd></div>
       <div><dt>Admitted</dt><dd>${source ? readingRoomDate(source.admitted_at) : 'Pending'}</dd></div>
     </dl>
-    ${source?.source_url ? `<a class="reading-source-link" href="${escHtml(source.source_url)}" target="_blank" rel="noopener noreferrer">Open verified source</a>` : ''}
+    ${source?.source_url ? `<a class="reading-source-link" href="${safeUrlAttr(source.source_url)}" target="_blank" rel="noopener noreferrer">Open verified source</a>` : ''}
   </article>`;
 }
 
@@ -421,7 +437,7 @@ function renderReadingRoom(report) {
   if (active) startReadingRoomPolling();
 
   if (!source) {
-    target.innerHTML = `<div class="reading-room-empty"><div>
+    target.innerHTML = `<div class="reading-room-empty" role="status"><div>
       <span class="brain-detail-kicker">Source admission required</span>
       <h3>The shelves are ready</h3>
       <p>No verified work has been admitted to Nora's library yet. Full text is accepted only when it is public domain, openly licensed, or explicitly authorized.</p>
@@ -470,7 +486,7 @@ function renderReadingRoomError() {
   const target = document.getElementById('reading-room-state');
   const live = document.getElementById('reading-room-live-state');
   if (live) live.textContent = 'Connection interrupted';
-  if (target) target.innerHTML = `<div class="reading-room-error"><div><strong>The reading ledger is temporarily unavailable.</strong><p>Nora's source and reflection records remain intact on Railway.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('reading-room')">Retry</button></div></div>`;
+  if (target) target.innerHTML = `<div class="reading-room-error" role="alert"><div><strong>The reading ledger is temporarily unavailable.</strong><p>Nora's source and reflection records remain intact on Railway.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('reading-room')">Retry</button></div></div>`;
 }
 
 function stopPlayroomPolling() {
@@ -532,7 +548,7 @@ function renderPlayroom(report) {
 
   if (!latest) {
     const isolated = report.automation?.acquisition_mode?.startsWith('isolated_');
-    target.innerHTML = `<div class="playroom-empty"><div class="playroom-empty-inner">
+    target.innerHTML = `<div class="playroom-empty" role="status"><div class="playroom-empty-inner">
       <h3>The experiment is ready</h3>
       <p>Nora will receive a sealed leisure opportunity after thirty idle minutes during off-hours. Work and live conversations always preempt play.</p>
       <div class="playroom-empty-meta">${escHtml(playroomStatusLabel(report.automation?.state || 'scheduled'))} | 0 completed sessions | durable influence locked</div>
@@ -560,7 +576,7 @@ function renderPlayroom(report) {
         <div class="playroom-score"><strong>${game?.score ?? 0}</strong><span>${game ? 'score' : 'quiet interval'}</span></div>
         <div class="playroom-score"><strong>${game?.maximum_tile ?? 0}</strong><span>${game ? 'highest tile' : 'game moves'}</span></div>
         <div class="playroom-game-fact">${game ? `${game.move_count}/${game.maximum_moves} bounded moves. ${game.accepted_moves} changed the board.` : `${latest.pre_state?.idle_minutes || 0} idle minutes observed before the opportunity.`}</div>
-        ${moves.length ? `<div><span class="playroom-label">Recent moves</span><div class="playroom-moves">${moves.map(move => `<span class="playroom-move${move.accepted ? '' : ' rejected'}" title="${escHtml(move.direction)}">${playroomDirection(move.direction)}</span>`).join('')}</div></div>` : ''}
+        ${moves.length ? `<div><span class="playroom-label">Recent moves</span><div class="playroom-moves">${moves.map(move => `<span class="playroom-move${move.accepted ? '' : ' rejected'}" title="${escAttr(move.direction)}">${playroomDirection(move.direction)}</span>`).join('')}</div></div>` : ''}
       </div>
     </div>
     <aside class="playroom-observation" aria-live="polite">
@@ -586,7 +602,7 @@ function renderPlayroomError() {
   const target = document.getElementById('playroom-state');
   const live = document.getElementById('playroom-live-state');
   if (live) live.textContent = 'Connection interrupted';
-  if (target) target.innerHTML = `<div class="playroom-error"><div><strong>Playroom state is temporarily unavailable.</strong><p>The experiment remains on Railway and will continue without this view.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('playroom')">Retry</button></div></div>`;
+  if (target) target.innerHTML = `<div class="playroom-error" role="alert"><div><strong>Playroom state is temporarily unavailable.</strong><p>The experiment remains on Railway and will continue without this view.</p><button class="btn btn-sm" type="button" onclick="retryIntelligenceSection('playroom')">Retry</button></div></div>`;
 }
 
 function renderIntelligenceGlance(summary = {}) {
@@ -981,14 +997,14 @@ function renderCommitments(items) {
     <div class="intelligence-card"><strong>${escHtml(item.what)}</strong>
       <div>${escHtml(item.owner)}${item.beneficiary ? ` → ${escHtml(item.beneficiary)}` : ''}${item.due ? ` &middot; due ${escHtml(item.due)}` : ''}</div>
       <div class="intelligence-meta">${item.evidence?.channel ? `source: ${escHtml(item.evidence.channel)}` : 'manually recorded'} &middot; updated ${new Date(item.updated).toLocaleString()}</div>
-      <button class="btn btn-success btn-sm" style="margin-top:7px" onclick="fulfillCommitment('${item.id}')">Mark fulfilled</button>
+      <button class="btn btn-success btn-sm" style="margin-top:7px" data-commitment-id="${escAttr(item.id)}" onclick="fulfillCommitment(this.dataset.commitmentId)">Mark fulfilled</button>
     </div>`).join('') : '<div class="empty">No open commitments.</div>';
 }
 
 async function addCommitment() {
   const what = document.getElementById('commitment-what').value.trim();
   if (!what) return;
-  await api('/commitments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+  await operatorApi('/commitments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
     what, owner: document.getElementById('commitment-owner').value.trim() || 'Nora', due: document.getElementById('commitment-due').value.trim() || null,
   }) });
   document.getElementById('commitment-what').value = '';
@@ -996,7 +1012,7 @@ async function addCommitment() {
 }
 
 async function fulfillCommitment(id) {
-  await api(`/commitments/${encodeURIComponent(id)}/fulfilled`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+  await operatorApi(`/commitments/${encodeURIComponent(id)}/fulfilled`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
   loadIntelligence();
 }
 
@@ -1021,7 +1037,7 @@ function renderExperiments(items) {
     <div class="intelligence-card"><strong>${escHtml(item.behavior)}</strong><div>${escHtml(item.hypothesis)}</div>
       <div class="intelligence-meta">${item.status} &middot; ${item.origin === 'nora' ? 'chosen by Nora' : escHtml(item.origin || 'human')} &middot; ${item.samples.length} outcome sample${item.samples.length === 1 ? '' : 's'}${item.review_at ? ` &middot; review ${escHtml(item.review_at)}` : ''}</div>
       ${item.rationale ? `<div class="intelligence-meta">Why: ${escHtml(item.rationale)}</div>` : ''}
-      ${item.status === 'active' ? `<button class="btn btn-sm" style="margin-top:7px" onclick="evaluateExperiment('${item.id}')">Evaluate</button>` : ''}
+      ${item.status === 'active' ? `<button class="btn btn-sm" style="margin-top:7px" data-experiment-id="${escAttr(item.id)}" onclick="evaluateExperiment(this.dataset.experimentId)">Evaluate</button>` : ''}
     </div>`).join('') : '<div class="empty">No behavior experiments yet.</div>';
 }
 

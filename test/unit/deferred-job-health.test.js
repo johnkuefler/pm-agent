@@ -32,6 +32,7 @@ test('deferred worker snapshot exposes fallback pressure and pending durable out
   assert.equal(snapshot.fallback_rejected, 1);
   assert.equal(snapshot.pending_finalizations, 2);
   assert.deepEqual(snapshot.memory_queue, {
-    queued: 1, running: 1, retained: 3, oldest_queued_age_ms: 3000,
+    queued: 1, running: 1, delivery_pending: 0, delivering: 0,
+    delivery_failed: 0, retained: 3, oldest_queued_age_ms: 3000,
   });
 });

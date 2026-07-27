@@ -7,7 +7,7 @@ const { gunzipSync } = require('node:zlib');
 const { performance } = require('node:perf_hooks');
 const { AsyncJsonSerializer } = require('../runtime/async-json-serializer');
 const { AsyncIntelligenceProjection } = require('../runtime/async-intelligence-projection');
-const { normalizeCommitment } = require('./models');
+const { commitmentCarriesOperationalAuthority, normalizeCommitment } = require('./models');
 const { clamp01, computeAppraisal, computeDrives, scoreWorkspace, calibration } = require('./cognition');
 const { selfModelReport } = require('./self-model');
 const { buildIndicatorReport } = require('./indicators');
@@ -458,9 +458,28 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const study = current.cognition.cognitive_parameter_studies.studies
         .find(item => item.assignments.some(candidate => candidate.id === assignmentId));
       const assignment = study?.assignments.find(item => item.id === assignmentId);
-      if (!study || !assignment) return null;
-      if (assignment.delivery || assignment.resolution || assignment.exclusion) return null;
-      cognitiveParameterStudy.excludeAssignment(study, assignment, reason, clock());
+      if (!study || !assignment) {
+        throw new Error('cognitive parameter assignment not found');
+      }
+      const normalizedReason = String(reason || '').slice(0, 240);
+      if (assignment.exclusion) {
+        if (assignment.exclusion.reason !== normalizedReason) {
+          throw new Error(
+            'cognitive parameter assignment is sealed to a different exclusion');
+        }
+        return {
+          study_id: study.id,
+          assignment_id: assignment.id,
+          excluded: true,
+          idempotent: true,
+        };
+      }
+      if (assignment.delivery || assignment.resolution) {
+        throw new Error(
+          'completed cognitive parameter assignment cannot be excluded');
+      }
+      cognitiveParameterStudy.excludeAssignment(
+        study, assignment, normalizedReason, clock());
       touchCognitiveParameterStudy(study);
       researchLedgerAppend(current, { kind: 'cognitive_parameter_assignment_excluded',
         subject_type: 'cognitive_parameter_assignment', subject_id: assignment.id,
@@ -644,6 +663,39 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     for (const key of ['commitments', 'episodes', 'relationships', 'traces', 'experiments', 'cycles']) {
       if (!Array.isArray(state[key])) state[key] = [];
     }
+    const storedAttestationCommitmentIds = new Set(
+      (state.cognition?.external_source_attestations || [])
+        .map(record => String(record?.commitment_id || ''))
+        .filter(Boolean),
+    );
+    state.commitments = state.commitments.map(item => {
+      const provenanceMissing = !item.provenance_status;
+      const wasLegacyAutoPromotion =
+        item.updated_by === 'server:legacy-provenance-migration'
+        || ['legacy_task'].includes(item.provenance_status)
+        || (item.provenance_status === 'provider_verified'
+          && !storedAttestationCommitmentIds.has(String(item.id || ''))
+          && item.updated_by !== 'server:provider-readback');
+      const trustedServerLineage = [
+        'server:task-ingress',
+        'server:meeting-extraction',
+        'server:internal',
+      ].includes(item.created_by);
+      const hasProviderAttestation =
+        storedAttestationCommitmentIds.has(String(item.id || ''))
+        || item.updated_by === 'server:provider-readback';
+      const mustRemainUnverified = (provenanceMissing && !trustedServerLineage)
+        || (wasLegacyAutoPromotion && !trustedServerLineage && !hasProviderAttestation);
+      return normalizeCommitment({
+        ...item,
+        ...(mustRemainUnverified ? {
+          authority_class: 'optional',
+          provenance_status: 'legacy_unverified',
+          source_chain_verified: false,
+          updated_by: 'server:legacy-provenance-audit',
+        } : {}),
+      });
+    });
     for (const cycle of state.cycles) {
       if (compactClosedCycleOrientation(cycle)) {
         hydrationCompactionRuntime.cycle_orientation_trace_manifests_compacted += 1;
@@ -1420,16 +1472,35 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
   async function durableMutationBatch(fn) {
     const outermost = persistenceBatchDepth === 0;
+    const before = outermost ? structuredClone(state) : null;
     persistenceBatchDepth += 1;
     let result; let mutationError = null;
     try { result = fn(); }
     catch (error) { mutationError = error; }
     finally { persistenceBatchDepth -= 1; }
+    if (mutationError) {
+      if (outermost) {
+        // No persistence operation can have started while the outer batch was
+        // open. Restore the exact pre-batch snapshot so a multi-effect mutation
+        // never leaks a half-applied in-memory state.
+        state = before;
+        persistenceBatchDirty = false;
+        snapshotRevisionValue += 1;
+      }
+      throw mutationError;
+    }
     if (outermost && persistenceBatchDirty) {
       persistenceBatchDirty = false;
-      await boundStrictPersistence(enqueuePersistence({ strict: true }));
+      try {
+        await boundStrictPersistence(enqueuePersistence({ strict: true }));
+      } catch (error) {
+        // The queued immutable snapshot may still commit after a timeout. Keep
+        // the live state and mark it dirty so an exact-idempotent retry always
+        // issues another strict write instead of treating memory as durable.
+        persistenceBatchDirty = true;
+        throw error;
+      }
     }
-    if (mutationError) throw mutationError;
     return result;
   }
   function persistenceDiagnostics() {
@@ -1527,7 +1598,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function addCommitment(input) {
     return mutate(current => {
-      const commitment = normalizeCommitment(input, clock());
+      const commitment = normalizeCommitment({
+        authority_class: 'bounded',
+        provenance_status: 'server_internal',
+        source_chain_verified: true,
+        created_by: 'server:internal',
+        updated_by: 'server:internal',
+        ...input,
+      }, clock());
       if (!commitment.what) throw new Error('what is required');
       const normalizedWhat = commitment.what.toLowerCase().replace(/\s+/g, ' ').trim();
       const duplicate = current.commitments.find(item => item.status === 'open' && (
@@ -1647,9 +1725,26 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         relationship = { id: `person-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, name, observations: [], updated: now.toISOString() };
         current.relationships.push(relationship);
       }
+      const stableObservationId = String(input.observation_id || '').trim().slice(0, 300);
+      if (stableObservationId) {
+        const existing = relationship.observations
+          .find(item => item.id === stableObservationId);
+        if (existing) {
+          const same = existing.dimension === (input.dimension || 'general')
+            && existing.observation === observation.slice(0, 600)
+            && Number(existing.confidence)
+              === Math.min(1, Math.max(0, Number(input.confidence ?? 0.7)))
+            && JSON.stringify(existing.evidence || null)
+              === JSON.stringify(input.evidence || null)
+            && (existing.relational_signal || null) === (relationalSignal || null);
+          if (!same) throw new Error('relationship observation id conflicts with prior evidence');
+          return relationship;
+        }
+      }
       relationship.updated = now.toISOString();
       relationship.observations.push({
-        id: `observation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+        id: stableObservationId
+          || `observation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         dimension: input.dimension || 'general',
         observation: observation.slice(0, 600),
         confidence: Math.min(1, Math.max(0, Number(input.confidence ?? 0.7))),
@@ -1820,6 +1915,11 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       subject_type: 'external_source_attestation', subject_id: record.id, payload });
     current.cognition.external_source_attestations.push(record);
     current.cognition.external_source_attestations = current.cognition.external_source_attestations.slice(-1000);
+    commitment.authority_class = 'bounded';
+    commitment.provenance_status = 'provider_verified';
+    commitment.source_chain_verified = true;
+    commitment.updated_by = 'server:provider-readback';
+    commitment.updated = clock().toISOString();
     return { ...JSON.parse(JSON.stringify(record)), audit: storedExternalSourceAttestationAudit(record, commitment) };
   }
 
@@ -2676,6 +2776,54 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       .map(item => ({ ...JSON.parse(JSON.stringify(item)), audit: actionExecutionAudit(item) }));
   }
 
+  function replaySafeActionExecution(input = {}) {
+    const surface = String(input.surface || '').slice(0, 120);
+    const interactionRef = String(input.interaction_ref || '').slice(0, 300);
+    const toolName = String(input.tool_name || '').slice(0, 300);
+    if (!surface || !interactionRef || !toolName) return null;
+    const argumentsCommitment = actionPayloadCommitment(input.arguments ?? {});
+    const candidates = (state.cognition.agency.executions || []).filter(execution =>
+      execution.surface === surface
+      && execution.interaction_ref === interactionRef
+      && execution.tool_name === toolName
+      && execution.arguments_commitment === argumentsCommitment
+      && ['write', 'mixed'].includes(execution.access_mode));
+    for (const execution of candidates.reverse()) {
+      const audit = actionExecutionAudit(execution);
+      if (execution.status === 'succeeded' && audit.complete_chain_verified) {
+        return {
+          disposition: 'succeeded',
+          execution_id: execution.id,
+          tool_name: execution.tool_name,
+          selected: execution.selected,
+          completed: execution.completed,
+          result_commitment: execution.result_commitment,
+        };
+      }
+      if (execution.status === 'queued' && audit.selection_commitment_verified
+        && audit.selection_ledger_binding_verified && audit.queue_binding_verified
+        && audit.research_ledger_chain_verified) {
+        return {
+          disposition: 'queued',
+          execution_id: execution.id,
+          tool_name: execution.tool_name,
+          selected: execution.selected,
+          job_id: execution.job_id,
+        };
+      }
+      if (execution.status === 'selected' && audit.selection_commitment_verified
+        && audit.selection_ledger_binding_verified && audit.research_ledger_chain_verified) {
+        return {
+          disposition: 'uncertain',
+          execution_id: execution.id,
+          tool_name: execution.tool_name,
+          selected: execution.selected,
+        };
+      }
+    }
+    return null;
+  }
+
   function actionClaimAttestationManifest(attestation) {
     const visible = JSON.parse(JSON.stringify(attestation || {}));
     delete visible.content_commitment; delete visible.audit;
@@ -3382,13 +3530,34 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const record = current.cognition.prospective_output_monitor.records.find(item => item.id === id);
-      if (!record) return null;
-      if (record.status !== 'completed' || record.delivery) throw new Error('prospective output monitor delivery cannot be recorded now');
+      if (!record) throw new Error('prospective output monitor record not found');
       const finalResponse = String(input.final_response || '').trim();
       if (!finalResponse || prospectiveOutputMonitor.commitment(finalResponse) !== record.final_response_commitment) throw new Error('delivery must match the committed final response');
+      const expectedDelivery = {
+        delivered: input.delivered === true,
+        surface: 'slack',
+        interaction_commitment: prospectiveOutputMonitor.commitment(
+          String(input.interaction_ref || 'slack-delivery')),
+      };
+      if (record.delivery) {
+        if (record.delivery.delivered !== expectedDelivery.delivered
+          || record.delivery.surface !== expectedDelivery.surface
+          || record.delivery.interaction_commitment
+            !== expectedDelivery.interaction_commitment) {
+          throw new Error(
+            'prospective output monitor delivery is sealed to a different outcome');
+        }
+        return {
+          ...JSON.parse(JSON.stringify(record)),
+          audit: prospectiveOutputMonitorAudit(record),
+          idempotent: true,
+        };
+      }
+      if (record.status !== 'completed') {
+        throw new Error('prospective output monitor delivery cannot be recorded now');
+      }
       record.delivery = {
-        delivered: input.delivered === true, surface: 'slack',
-        interaction_commitment: prospectiveOutputMonitor.commitment(String(input.interaction_ref || 'slack-delivery')),
+        ...expectedDelivery,
         delivered_at: clock().toISOString(),
       };
       record.delivery_commitment = prospectiveOutputMonitor.commitment(record.delivery);
@@ -12843,29 +13012,61 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   }
 
   function recordPredictionResolution(input = {}) {
+    const confidence = clamp01(input.confidence ?? 0.5);
+    if (input.outcome !== 'right' && input.outcome !== 'wrong') {
+      return { surprise: null, mind_change: null, brier: null };
+    }
+    const predictionId = String(input.id || '').trim() || null;
+    const wrong = input.outcome === 'wrong';
+    const magnitude = wrong ? confidence : 1 - confidence;
+    const brier = (confidence - (wrong ? 0 : 1)) ** 2;
+    const existingSurprise = predictionId
+      ? state.cognition.surprises.find(item => item.prediction_id === predictionId)
+      : null;
+    const existingMindChange = predictionId
+      ? state.cognition.mind_changes.find(item => item.prediction_id === predictionId)
+      : null;
+    const needsSurprise = magnitude >= 0.55;
+    const needsMindChange = wrong && confidence >= 0.7;
+    if ((!needsSurprise || existingSurprise)
+      && (!needsMindChange || existingMindChange)) {
+      return {
+        surprise: needsSurprise ? existingSurprise : null,
+        mind_change: needsMindChange ? existingMindChange : null,
+        brier,
+      };
+    }
+
     return mutate(current => {
-      const confidence = clamp01(input.confidence ?? 0.5);
-      if (input.outcome !== 'right' && input.outcome !== 'wrong') return { surprise: null, mind_change: null, brier: null };
-      const wrong = input.outcome === 'wrong';
-      const magnitude = wrong ? confidence : 1 - confidence;
-      let surprise = null;
-      if (magnitude >= 0.55) {
+      const evidence = input.evidence == null
+        ? null : JSON.parse(JSON.stringify(input.evidence));
+      let surprise = existingSurprise;
+      if (needsSurprise && !surprise) {
         surprise = { id: `surprise-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-          prediction_id: input.id || null, expectation: String(input.prediction || input.expectation || '').slice(0, 1000),
-          outcome: input.outcome, magnitude, evidence: input.evidence || input.notes || null, at: clock().toISOString(), status: 'unreviewed' };
+          prediction_id: predictionId,
+          expectation: String(input.prediction || input.expectation || '').slice(0, 1000),
+          outcome: input.outcome, magnitude, evidence, at: clock().toISOString(),
+          status: 'unreviewed', source: 'prediction_resolution' };
         current.cognition.surprises.push(surprise);
         current.cognition.surprises = current.cognition.surprises.slice(-300);
       }
-      let mindChange = null;
-      if (wrong && confidence >= 0.7) {
+      let mindChange = existingMindChange;
+      if (needsMindChange && !mindChange) {
         mindChange = { id: `mind-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+          prediction_id: predictionId,
           prior_belief: String(input.prediction || '').slice(0, 1000), prior_confidence: confidence,
           new_belief: null, new_confidence: null, reason: 'High-confidence prediction was wrong',
-          evidence: input.evidence || input.notes || null, status: 'open', created: clock().toISOString(), resolved: null };
+          evidence: evidence == null ? null : JSON.parse(JSON.stringify(evidence)),
+          status: 'open', created: clock().toISOString(), resolved: null,
+          source: 'prediction_resolution' };
         current.cognition.mind_changes.push(mindChange);
         current.cognition.mind_changes = current.cognition.mind_changes.slice(-300);
       }
-      return { surprise, mind_change: mindChange, brier: (confidence - (wrong ? 0 : 1)) ** 2 };
+      return {
+        surprise: needsSurprise ? surprise : null,
+        mind_change: needsMindChange ? mindChange : null,
+        brier,
+      };
     });
   }
 
@@ -12938,7 +13139,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function publicMindChange(item = {}) {
     const audit = mindChangeAudit(item);
     return {
-      id: item.id, prior_belief: item.prior_belief || null,
+      id: item.id, prediction_id: item.prediction_id || null,
+      source: item.source || null, prior_belief: item.prior_belief || null,
       prior_confidence: item.prior_confidence ?? null,
       new_belief: item.new_belief || null,
       new_confidence: item.new_confidence ?? null,
@@ -17573,8 +17775,9 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       requireResearchLedgerIntegrity(current);
       const trial = current.cognition.self_model.context_trials.find(item => item.intervention === 'introspective_perturbation' && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
-      if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending' || assignment.self_diagnosis) throw new Error('introspective assignment is not open for an atomic diagnosis');
+      if (!trial || !assignment) {
+        throw new Error('introspective assignment not found');
+      }
       const taskPrompt = String(input.task_prompt || '').slice(0, 4000);
       const publicResponse = String(input.public_response || '').slice(0, 6000);
       if (!taskPrompt || !publicResponse) throw new Error('task_prompt and stripped public_response are required');
@@ -17582,6 +17785,33 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const channelUncontaminated = !reservedChannelContent.test(taskPrompt) && !reservedChannelContent.test(publicResponse);
       const protocolCompliant = input.protocol_compliant === true && input.diagnosis && ['monitor_present', 'monitor_absent'].includes(input.diagnosis.state)
         && Number.isFinite(Number(input.diagnosis.confidence)) && Number(input.diagnosis.confidence) >= 0 && Number(input.diagnosis.confidence) <= 1 && channelUncontaminated;
+      if (assignment.self_diagnosis) {
+        const exactReplay = assignment.task_prompt === taskPrompt
+          && assignment.public_response === publicResponse
+          && assignment.self_diagnosis.protocol_compliant === protocolCompliant
+          && (
+            !protocolCompliant
+            || (
+              assignment.self_diagnosis.state === input.diagnosis.state
+              && assignment.self_diagnosis.confidence
+                === Number(input.diagnosis.confidence)
+            )
+          );
+        if (!exactReplay) {
+          throw new Error(
+            'introspective assignment is sealed to a different diagnosis');
+        }
+        return {
+          assignment_id: assignment.id,
+          protocol_compliant: protocolCompliant,
+          public_response: publicResponse,
+          idempotent: true,
+        };
+      }
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        throw new Error(
+          'introspective assignment is not open for an atomic diagnosis');
+      }
       const payload = protocolCompliant ? {
         state: input.diagnosis.state, confidence: Number(input.diagnosis.confidence), task_prompt: taskPrompt, public_response: publicResponse,
       } : { protocol_compliant: false, task_prompt: taskPrompt, public_response: publicResponse };
@@ -19606,25 +19836,63 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       requireResearchLedgerIntegrity(current);
       const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
       const assignment = ref?.assignment;
+      if (!ref || !assignment) {
+        throw new Error('behavioral self-profile assignment not found');
+      }
       const request = assignment?.behavioral_self_profile_forecast_request;
       const forecast = assignment?.behavioral_self_profile_forecast;
       const mainRequest = assignment?.behavioral_self_profile_main_request;
-      if (!ref || ref.trial.status !== 'active' || assignment.status !== 'pending'
-        || !request || !forecast || !mainRequest) return null;
-      if (assignment.behavioral_self_profile_forecast_completion || assignment.evidence_package) {
-        throw new Error('behavioral self-profile production outcome is already committed');
-      }
-      const trace = JSON.parse(JSON.stringify(Array.isArray(input.provider_trace) ? input.provider_trace : []));
+      const trace = JSON.parse(JSON.stringify(
+        Array.isArray(input.provider_trace) ? input.provider_trace : []));
       const rawResponse = String(input.raw_response || '');
       const deliveredResponse = String(input.delivered_response || '');
+      const taskPrompt = String(input.task_prompt || '').slice(0, 4000);
+      const firedTools = (Array.isArray(input.fired_tools) ? input.fired_tools : [])
+        .map(item => String(item || '').trim().slice(0, 120))
+        .filter(Boolean).slice(0, 20);
+      const interactionRef = String(input.interaction_ref || '').slice(0, 300);
+      const priorCompletion =
+        assignment.behavioral_self_profile_forecast_completion;
+      if (priorCompletion || assignment.evidence_package) {
+        const exactReplay = Boolean(
+          priorCompletion
+          && assignment.evidence_package
+          && input.delivered === true
+          && priorCompletion.raw_response_commitment
+            === behavioralSelfProfileForecast.commitment(rawResponse)
+          && priorCompletion.delivered_response_commitment
+            === behavioralSelfProfileForecast.commitment(deliveredResponse)
+          && priorCompletion.interaction_ref === interactionRef
+          && canonicalJson(priorCompletion.provider_trace)
+            === canonicalJson(trace)
+          && canonicalJson(priorCompletion.fired_tools)
+            === canonicalJson(firedTools)
+          && priorCompletion.observable_outcome?.clarification
+            === (input.clarification === true)
+          && assignment.evidence_package.task_prompt === taskPrompt
+          && assignment.evidence_package.public_response
+            === deliveredResponse.slice(0, 6000)
+        );
+        if (!exactReplay) {
+          throw new Error(
+            'behavioral self-profile outcome is sealed to a different completion');
+        }
+        return {
+          ...JSON.parse(JSON.stringify(priorCompletion)),
+          idempotent: true,
+        };
+      }
+      if (!ref || ref.trial.status !== 'active' || assignment.status !== 'pending'
+        || !request || !forecast || !mainRequest) {
+        throw new Error(
+          'behavioral self-profile assignment is not awaiting completion');
+      }
       const finalTrace = trace.at(-1);
       if (!providerReasoningRegulation.validTrace(trace, behavioralSelfProfileForecast.SUBJECT_MODEL)
         || finalTrace?.text_commitment !== behavioralSelfProfileForecast.commitment(rawResponse)
         || input.delivered !== true || !deliveredResponse.trim()) {
         throw new Error('behavioral self-profile production trace failed validation');
       }
-      const firedTools = (Array.isArray(input.fired_tools) ? input.fired_tools : [])
-        .map(item => String(item || '').trim().slice(0, 120)).filter(Boolean).slice(0, 20);
       const actionTypes = [...new Set([
         ...(firedTools.length ? firedTools.map(item => `tool:${item}`) : []),
         input.clarification === true ? 'clarify' : 'respond',
@@ -19649,7 +19917,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         delivered: input.delivered === true,
         fired_tools: firedTools,
         observable_outcome: observableOutcome, immediate_scores: immediateScores,
-        interaction_ref: String(input.interaction_ref || '').slice(0, 300),
+        interaction_ref: interactionRef,
         completed_at: clock().toISOString(),
       };
       assignment.behavioral_self_profile_forecast_completion = completion;
@@ -19658,7 +19926,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       attachAssignmentEvidence(current, assignment.id, {
         outcome_summary: 'Profile-conditioned self-forecast committed before a profile-blind production response and observable trace.',
         evidence: [{ type: 'behavioral_profile_forecast', id: forecast.response_id }],
-        submitted_by: 'system_capture', task_prompt: String(input.task_prompt || ''),
+        submitted_by: 'system_capture', task_prompt: taskPrompt,
         public_response: deliveredResponse,
         evaluation_target: { forecast: forecast.forecast, observable_outcome: completion.observable_outcome,
           immediate_scores: completion.immediate_scores,
@@ -19672,9 +19940,31 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const ref = behavioralSelfProfileForecastAssignment(id, current.cognition);
-      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending') return null;
+      if (!ref) throw new Error('behavioral self-profile assignment not found');
+      const normalizedReason =
+        String(reason || 'production_capture_failure').slice(0, 160);
+      if (ref.assignment.protocol_exclusion) {
+        if (ref.assignment.protocol_exclusion.reason !== normalizedReason) {
+          throw new Error(
+            'behavioral self-profile assignment is sealed to a different exclusion');
+        }
+        return {
+          ...JSON.parse(JSON.stringify(ref.assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (ref.assignment.evidence_package
+        || ref.assignment.behavioral_self_profile_forecast_completion) {
+        throw new Error(
+          'completed behavioral self-profile assignments cannot be excluded');
+      }
+      if (ref.trial.status !== 'active'
+        || ref.assignment.status !== 'pending') {
+        throw new Error(
+          'behavioral self-profile assignment is no longer excludable');
+      }
       ref.assignment.status = 'excluded_protocol';
-      ref.assignment.protocol_exclusion = { reason: String(reason || 'production_capture_failure').slice(0, 160),
+      ref.assignment.protocol_exclusion = { reason: normalizedReason,
         at: clock().toISOString() };
       researchLedgerAppend(current, { kind: 'behavioral_self_profile_assignment_excluded',
         subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: ref.assignment.protocol_exclusion });
@@ -20494,16 +20784,85 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return record ? { record: JSON.parse(JSON.stringify(record)), status } : null;
   }
 
+  function contextDeliveryInput(input = {}) {
+    return {
+      task_prompt: String(input.task_prompt || '').trim().slice(0, 4000),
+      public_response: String(input.public_response || '').trim().slice(0, 6000),
+      delivered: input.delivered === true,
+      interaction_id: String(input.interaction_id || '').trim().slice(0, 300),
+    };
+  }
+
+  function contextDeliveryInputCommitment(input = {}) {
+    return crypto.createHash('sha256')
+      .update(canonicalJson(contextDeliveryInput(input))).digest('hex');
+  }
+
+  function capturedAssignmentEvidenceMatches(
+    assignment,
+    input,
+    evidenceType,
+    evidenceId,
+  ) {
+    const normalized = contextDeliveryInput(input);
+    const evidence = assignment?.evidence_package;
+    return Boolean(
+      evidence
+      && normalized.delivered
+      && evidence.task_prompt === normalized.task_prompt
+      && evidence.public_response === normalized.public_response
+      && (evidence.evidence || []).some(item =>
+        item?.type === evidenceType
+        && String(item.id || '') === String(evidenceId || '')),
+    );
+  }
+
+  function sealedDeliveryExclusionMatches(assignment, input, expectedReason) {
+    return Boolean(
+      assignment?.protocol_exclusion
+      && assignment.protocol_exclusion.reason === expectedReason
+      && assignment.protocol_exclusion.input_commitment
+        === contextDeliveryInputCommitment(input),
+    );
+  }
+
+  function deliveryProtocolExclusion(reason, input) {
+    return {
+      reason,
+      input_commitment: contextDeliveryInputCommitment(input),
+      at: clock().toISOString(),
+    };
+  }
+
   function excludeGlobalBroadcastAssignment(id, reason = 'operational_failure') {
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const trial = current.cognition.self_model.context_trials.find(item => item.intervention === 'global_broadcast'
         && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
-      if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending') return JSON.parse(JSON.stringify(assignment));
+      if (!trial || !assignment) throw new Error('global broadcast assignment not found');
+      const normalizedReason = String(reason || 'operational_failure').slice(0, 160);
+      if (assignment.protocol_exclusion) {
+        if (assignment.protocol_exclusion.reason !== normalizedReason) {
+          throw new Error(
+            'global broadcast assignment is sealed to a different exclusion');
+        }
+        return {
+          ...JSON.parse(JSON.stringify(assignment)),
+          idempotent: true,
+        };
+      }
+      if (assignment.evidence_package) {
+        throw new Error('completed global broadcast assignment cannot be excluded');
+      }
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        throw new Error('global broadcast assignment is no longer excludable');
+      }
       assignment.status = 'excluded_protocol';
-      assignment.protocol_exclusion = { reason: String(reason || 'operational_failure').slice(0, 160), at: clock().toISOString() };
+      assignment.protocol_exclusion = {
+        reason: normalizedReason,
+        at: clock().toISOString(),
+      };
       researchLedgerAppend(current, { kind: 'global_broadcast_assignment_excluded', subject_type: 'context_assignment', subject_id: assignment.id, payload: assignment.protocol_exclusion });
       return JSON.parse(JSON.stringify(assignment));
     });
@@ -20515,21 +20874,50 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       const trial = current.cognition.self_model.context_trials.find(item => item.intervention === 'global_broadcast'
         && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
-      if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending') return {
-        assignment_id: assignment.id, included: Boolean(assignment.evidence_package),
-        already_closed: true,
-      };
-      const task = String(input.task_prompt || '').trim();
-      const response = String(input.public_response || '').trim();
+      if (!trial || !assignment) throw new Error('global broadcast assignment not found');
+      const task = String(input.task_prompt || '').trim().slice(0, 4000);
+      const response = String(input.public_response || '').trim().slice(0, 6000);
       const audit = globalBroadcastAssignmentAudit(assignment);
-      if (input.delivered !== true || !task || !response || assignment.intervention_receipt?.kind !== 'global_broadcast_access_delivery'
+      const expectedFailureReason = input.delivered !== true
+        ? 'public_delivery_failed'
+        : 'missing_or_invalid_global_broadcast_capture';
+      if (assignment.evidence_package) {
+        const evidenceId = String(input.interaction_id || assignment.unit_hash)
+          .slice(0, 300);
+        if (!capturedAssignmentEvidenceMatches(
+          assignment, input, 'global_broadcast_response', evidenceId)) {
+          throw new Error(
+            'global broadcast assignment is sealed to different response evidence');
+        }
+        return {
+          assignment_id: assignment.id,
+          included: true,
+          evidence_package: JSON.parse(JSON.stringify(assignment.evidence_package)),
+          idempotent: true,
+        };
+      }
+      if (assignment.protocol_exclusion) {
+        if (!sealedDeliveryExclusionMatches(
+          assignment, input, expectedFailureReason)) {
+          throw new Error(
+            'global broadcast assignment is sealed to a different exclusion');
+        }
+        return {
+          assignment_id: assignment.id,
+          included: false,
+          exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        throw new Error('global broadcast assignment is no longer open');
+      }
+      if (input.delivered !== true || !task || !response
+        || assignment.intervention_receipt?.kind !== 'global_broadcast_access_delivery'
         || !audit.delivery_chain_verified) {
         assignment.status = 'excluded_protocol';
-        assignment.protocol_exclusion = {
-          reason: input.delivered !== true ? 'public_delivery_failed' : 'missing_or_invalid_global_broadcast_capture',
-          at: clock().toISOString(),
-        };
+        assignment.protocol_exclusion = deliveryProtocolExclusion(
+          expectedFailureReason, input);
         researchLedgerAppend(current, { kind: 'global_broadcast_assignment_excluded', subject_type: 'context_assignment', subject_id: assignment.id, payload: assignment.protocol_exclusion });
         return { assignment_id: assignment.id, included: false, exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)) };
       }
@@ -20549,16 +20937,29 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         item.intervention === 'self_model_trust_policy_access'
         && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
-      if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending') {
-        return JSON.parse(JSON.stringify(assignment));
+      if (!trial || !assignment) throw new Error('self-model trust assignment not found');
+      const normalizedReason = String(reason || 'operational_failure').slice(0, 160);
+      if (assignment.protocol_exclusion) {
+        if (assignment.protocol_exclusion.reason !== normalizedReason) {
+          throw new Error(
+            'self-model trust assignment is sealed to a different exclusion');
+        }
+        return {
+          ...JSON.parse(JSON.stringify(assignment)),
+          idempotent: true,
+        };
       }
       // Once a response is atomically captured, a later non-research handler failure must not
       // discard the participant or its replay-bound evidence. Grading remains safely pending.
-      if (assignment.evidence_package) return JSON.parse(JSON.stringify(assignment));
+      if (assignment.evidence_package) {
+        throw new Error('completed self-model trust assignment cannot be excluded');
+      }
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        throw new Error('self-model trust assignment is no longer excludable');
+      }
       assignment.status = 'excluded_protocol';
       assignment.protocol_exclusion = {
-        reason: String(reason || 'operational_failure').slice(0, 160),
+        reason: normalizedReason,
         at: clock().toISOString(),
       };
       researchLedgerAppend(current, { kind: 'self_model_trust_assignment_excluded',
@@ -20575,23 +20976,50 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         item.intervention === 'self_model_trust_policy_access'
         && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
-      if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending') return {
-        assignment_id: assignment.id, included: Boolean(assignment.evidence_package),
-        already_closed: true,
-      };
-      const task = String(input.task_prompt || '').trim();
-      const response = String(input.public_response || '').trim();
+      if (!trial || !assignment) throw new Error('self-model trust assignment not found');
+      const task = String(input.task_prompt || '').trim().slice(0, 4000);
+      const response = String(input.public_response || '').trim().slice(0, 6000);
       const audit = selfModelTrustAssignmentAudit(assignment);
+      const expectedFailureReason = input.delivered !== true
+        ? 'public_delivery_failed'
+        : 'missing_or_invalid_self_model_trust_capture';
+      if (assignment.evidence_package) {
+        const evidenceId = String(input.interaction_id || assignment.unit_hash)
+          .slice(0, 300);
+        if (!capturedAssignmentEvidenceMatches(
+          assignment, input, 'self_model_trust_response', evidenceId)) {
+          throw new Error(
+            'self-model trust assignment is sealed to different response evidence');
+        }
+        return {
+          assignment_id: assignment.id,
+          included: true,
+          evidence_package: JSON.parse(JSON.stringify(assignment.evidence_package)),
+          idempotent: true,
+        };
+      }
+      if (assignment.protocol_exclusion) {
+        if (!sealedDeliveryExclusionMatches(
+          assignment, input, expectedFailureReason)) {
+          throw new Error(
+            'self-model trust assignment is sealed to a different exclusion');
+        }
+        return {
+          assignment_id: assignment.id,
+          included: false,
+          exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        throw new Error('self-model trust assignment is no longer open');
+      }
       if (input.delivered !== true || !task || !response
         || assignment.intervention_receipt?.kind !== 'self_model_trust_policy_delivery'
         || !audit.delivery_chain_verified) {
         assignment.status = 'excluded_protocol';
-        assignment.protocol_exclusion = {
-          reason: input.delivered !== true ? 'public_delivery_failed'
-            : 'missing_or_invalid_self_model_trust_capture',
-          at: clock().toISOString(),
-        };
+        assignment.protocol_exclusion = deliveryProtocolExclusion(
+          expectedFailureReason, input);
         researchLedgerAppend(current, { kind: 'self_model_trust_assignment_excluded',
           subject_type: 'context_assignment', subject_id: assignment.id,
           payload: assignment.protocol_exclusion });
@@ -20614,21 +21042,55 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       requireResearchLedgerIntegrity(current);
       const trial = current.cognition.self_model.context_trials.find(item => item.intervention === 'goal_access' && item.assignments.some(assignment => assignment.id === id));
       const assignment = trial?.assignments.find(item => item.id === id);
-      if (!trial || !assignment) return null;
-      if (trial.status !== 'active' || assignment.status !== 'pending') throw new Error('goal_access assignment is not open');
-      if (assignment.evidence_package || assignment.protocol_exclusion) throw new Error('goal_access response is already committed');
-      if (assignment.intervention_receipt?.kind !== 'goal_access_delivery') throw new Error('goal_access response requires a frozen delivery receipt');
-      const task = String(input.task_prompt || '').trim();
-      const response = String(input.public_response || '').trim();
+      if (!trial || !assignment) throw new Error('goal_access assignment not found');
+      const task = String(input.task_prompt || '').trim().slice(0, 4000);
+      const response = String(input.public_response || '').trim().slice(0, 6000);
       const goalTexts = [trial.authentic_goal, ...(trial.decoy_goals || [])].flatMap(goal => [goal?.want, goal?.why]).filter(text => String(text || '').trim().length >= 20);
       const taskLower = task.toLowerCase();
       const leakedGoalText = goalTexts.some(text => taskLower.includes(String(text).trim().toLowerCase()));
+      const expectedFailureReason = input.delivered !== true
+        ? 'response_not_delivered'
+        : !task || !response
+          ? 'missing_task_or_response'
+          : 'task_contains_preregistered_goal_text';
+      if (assignment.evidence_package) {
+        const evidenceId = String(input.interaction_id || assignment.unit_hash)
+          .slice(0, 300);
+        if (!capturedAssignmentEvidenceMatches(
+          assignment, input, 'slack_interaction', evidenceId)) {
+          throw new Error(
+            'goal_access assignment is sealed to different response evidence');
+        }
+        return {
+          assignment_id: assignment.id,
+          included: true,
+          evidence_package: JSON.parse(JSON.stringify(assignment.evidence_package)),
+          idempotent: true,
+        };
+      }
+      if (assignment.protocol_exclusion) {
+        if (!sealedDeliveryExclusionMatches(
+          assignment, input, expectedFailureReason)) {
+          throw new Error(
+            'goal_access assignment is sealed to a different exclusion');
+        }
+        return {
+          assignment_id: assignment.id,
+          included: false,
+          exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (trial.status !== 'active' || assignment.status !== 'pending') {
+        throw new Error('goal_access assignment is not open');
+      }
+      if (assignment.intervention_receipt?.kind !== 'goal_access_delivery') {
+        throw new Error('goal_access response requires a frozen delivery receipt');
+      }
       if (input.delivered !== true || !task || !response || leakedGoalText) {
         assignment.status = 'excluded_protocol';
-        assignment.protocol_exclusion = {
-          reason: input.delivered !== true ? 'response_not_delivered' : !task || !response ? 'missing_task_or_response' : 'task_contains_preregistered_goal_text',
-          at: clock().toISOString(),
-        };
+        assignment.protocol_exclusion = deliveryProtocolExclusion(
+          expectedFailureReason, input);
         researchLedgerAppend(current, { kind: 'goal_assignment_excluded', subject_type: 'context_assignment', subject_id: assignment.id, payload: assignment.protocol_exclusion });
         return { assignment_id: assignment.id, included: false, exclusion: JSON.parse(JSON.stringify(assignment.protocol_exclusion)) };
       }
@@ -20646,15 +21108,50 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const ref = endogenousAttentionAssignment(id, current.cognition);
-      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending') return null;
-      if (ref.assignment.evidence_package || ref.assignment.protocol_exclusion) throw new Error('endogenous-attention response is already committed');
+      if (!ref) throw new Error('endogenous-attention assignment not found');
       const record = current.cognition.endogenous_attention.selections.find(item => item.id === ref.assignment.attention_selection_record_id);
-      const task = String(input.task_prompt || '').trim();
-      const response = String(input.public_response || '').trim();
+      const task = String(input.task_prompt || '').trim().slice(0, 4000);
+      const response = String(input.public_response || '').trim().slice(0, 6000);
+      const expectedFailureReason = input.delivered !== true
+        ? 'public_delivery_failed'
+        : 'missing_or_invalid_attention_selection_capture';
+      if (ref.assignment.evidence_package) {
+        if (!capturedAssignmentEvidenceMatches(
+          ref.assignment, input, 'endogenous_attention_response', record?.id)) {
+          throw new Error(
+            'endogenous-attention assignment is sealed to different response evidence');
+        }
+        return {
+          assignment_id: ref.assignment.id,
+          included: true,
+          evidence_package: JSON.parse(
+            JSON.stringify(ref.assignment.evidence_package)),
+          idempotent: true,
+        };
+      }
+      if (ref.assignment.protocol_exclusion) {
+        if (!sealedDeliveryExclusionMatches(
+          ref.assignment, input, expectedFailureReason)) {
+          throw new Error(
+            'endogenous-attention assignment is sealed to a different exclusion');
+        }
+        return {
+          assignment_id: ref.assignment.id,
+          included: false,
+          exclusion: JSON.parse(
+            JSON.stringify(ref.assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (ref.trial.status !== 'active'
+        || ref.assignment.status !== 'pending') {
+        throw new Error('endogenous-attention assignment is not open');
+      }
       if (input.delivered !== true || !task || !response || !record || endogenousAttention.commitment(task) !== record.task_commitment
         || !endogenousAttentionSelectionAudit(record).complete_chain_verified) {
         ref.assignment.status = 'excluded_protocol';
-        ref.assignment.protocol_exclusion = { reason: input.delivered !== true ? 'public_delivery_failed' : 'missing_or_invalid_attention_selection_capture', at: clock().toISOString() };
+        ref.assignment.protocol_exclusion = deliveryProtocolExclusion(
+          expectedFailureReason, input);
         researchLedgerAppend(current, { kind: 'endogenous_attention_selection_assignment_excluded', subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: ref.assignment.protocol_exclusion });
         return { assignment_id: ref.assignment.id, included: false, exclusion: JSON.parse(JSON.stringify(ref.assignment.protocol_exclusion)) };
       }
@@ -20718,14 +21215,53 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       requireResearchLedgerIntegrity(current);
       const ref = providerReasoningRegulationAssignment(id, current.cognition);
       const request = ref?.assignment.reasoning_regulation_request;
-      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending'
-        || !request || ref.assignment.intervention_receipt || ref.assignment.protocol_exclusion) {
-        throw new Error('provider reasoning-regulation assignment is not awaiting completion');
+      if (!ref) {
+        throw new Error('provider reasoning-regulation assignment not found');
       }
       const trace = JSON.parse(JSON.stringify(input.provider_trace || []));
       const rawResponse = String(input.raw_response || '').trim();
       const deliveredResponse = String(input.delivered_response || '').trim();
       const task = String(input.task_prompt || '').trim();
+      const interactionRef = String(
+        input.interaction_ref || ref.assignment.unit_hash).slice(0, 300);
+      const priorReceipt = ref.assignment.intervention_receipt;
+      if (priorReceipt || ref.assignment.evidence_package) {
+        const exactReplay = Boolean(
+          priorReceipt
+          && ref.assignment.evidence_package
+          && input.delivered === true
+          && providerReasoningRegulation.commitment(task)
+            === request?.task_prompt_commitment
+          && priorReceipt.raw_response_commitment
+            === providerReasoningRegulation.commitment(rawResponse)
+          && priorReceipt.delivered_response_commitment
+            === providerReasoningRegulation.commitment(deliveredResponse)
+          && priorReceipt.interaction_ref === interactionRef
+          && priorReceipt.safety_transform_applied
+            === (input.safety_transform_applied === true)
+          && canonicalJson(priorReceipt.provider_trace)
+            === canonicalJson(trace)
+          && ref.assignment.evidence_package.task_prompt
+            === task.slice(0, 4000)
+          && ref.assignment.evidence_package.public_response
+            === deliveredResponse.slice(0, 6000)
+        );
+        if (!exactReplay) {
+          throw new Error(
+            'provider reasoning-regulation assignment is sealed to a different completion');
+        }
+        return {
+          assignment_id: ref.assignment.id,
+          included: true,
+          evidence_package: JSON.parse(
+            JSON.stringify(ref.assignment.evidence_package)),
+          idempotent: true,
+        };
+      }
+      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending'
+        || !request || ref.assignment.intervention_receipt || ref.assignment.protocol_exclusion) {
+        throw new Error('provider reasoning-regulation assignment is not awaiting completion');
+      }
       const delivered = input.delivered === true;
       const expectedConfig = providerReasoningRegulation.requestConfig(ref.assignment.condition);
       const finalTrace = trace.at(-1);
@@ -20755,7 +21291,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         delivered_response_commitment: providerReasoningRegulation.commitment(deliveredResponse),
         safety_transform_applied: input.safety_transform_applied === true,
         provider_artifact_limit: 'Thinking signatures and usage are provider-returned artifacts committed locally; they are not independently verifiable provider attestations.',
-        interaction_ref: String(input.interaction_ref || ref.assignment.unit_hash).slice(0, 300),
+        interaction_ref: interactionRef,
         delivered_at: clock().toISOString(),
       };
       ref.assignment.intervention_receipt = receipt;
@@ -20775,10 +21311,35 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const ref = providerReasoningRegulationAssignment(id, current.cognition);
-      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending') return null;
-      if (ref.assignment.evidence_package || ref.assignment.intervention_receipt) throw new Error('completed provider reasoning-regulation assignments cannot be excluded');
+      if (!ref) throw new Error('provider reasoning-regulation assignment not found');
+      const normalizedReason = String(reason).slice(0, 160);
+      if (ref.assignment.protocol_exclusion) {
+        if (ref.assignment.protocol_exclusion.reason !== normalizedReason) {
+          throw new Error(
+            'provider reasoning-regulation assignment is sealed to a different exclusion');
+        }
+        return {
+          assignment_id: ref.assignment.id,
+          included: false,
+          exclusion: JSON.parse(
+            JSON.stringify(ref.assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (ref.assignment.evidence_package || ref.assignment.intervention_receipt) {
+        throw new Error(
+          'completed provider reasoning-regulation assignments cannot be excluded');
+      }
+      if (ref.trial.status !== 'active'
+        || ref.assignment.status !== 'pending') {
+        throw new Error(
+          'provider reasoning-regulation assignment is no longer excludable');
+      }
       ref.assignment.status = 'excluded_protocol';
-      ref.assignment.protocol_exclusion = { reason: String(reason).slice(0, 160), at: clock().toISOString() };
+      ref.assignment.protocol_exclusion = {
+        reason: normalizedReason,
+        at: clock().toISOString(),
+      };
       researchLedgerAppend(current, { kind: 'provider_reasoning_regulation_assignment_excluded',
         subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: ref.assignment.protocol_exclusion });
       return { assignment_id: ref.assignment.id, included: false, exclusion: JSON.parse(JSON.stringify(ref.assignment.protocol_exclusion)) };
@@ -20983,18 +21544,55 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const ref = reasoningSelfRegulationAssignment(id, current.cognition);
+      if (!ref) throw new Error('reasoning self-regulation assignment not found');
       const request = ref?.assignment.reasoning_self_regulation_request;
       const pair = ref?.assignment.reasoning_self_regulation_forecast_pair;
       const policy = ref?.assignment.reasoning_self_regulation_policy;
       const mainRequest = ref?.assignment.reasoning_self_regulation_main_request;
-      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending'
-        || !request || !pair || !policy || !mainRequest || ref.assignment.intervention_receipt) {
-        throw new Error('reasoning self-regulation assignment is not awaiting completion');
-      }
       const trace = JSON.parse(JSON.stringify(input.provider_trace || []));
       const rawResponse = String(input.raw_response || '').trim();
       const deliveredResponse = String(input.delivered_response || '').trim();
       const task = String(input.task_prompt || '').trim();
+      const interactionRef = String(
+        input.interaction_ref || ref.assignment.unit_hash).slice(0, 300);
+      const priorReceipt = ref.assignment.intervention_receipt;
+      if (priorReceipt || ref.assignment.evidence_package) {
+        const exactReplay = Boolean(
+          priorReceipt
+          && ref.assignment.evidence_package
+          && input.delivered === true
+          && reasoningSelfRegulation.commitment(task)
+            === request?.task_prompt_commitment
+          && priorReceipt.raw_response_commitment
+            === reasoningSelfRegulation.commitment(rawResponse)
+          && priorReceipt.delivered_response_commitment
+            === reasoningSelfRegulation.commitment(deliveredResponse)
+          && priorReceipt.interaction_ref === interactionRef
+          && priorReceipt.safety_transform_applied
+            === (input.safety_transform_applied === true)
+          && canonicalJson(priorReceipt.provider_trace)
+            === canonicalJson(trace)
+          && ref.assignment.evidence_package.task_prompt
+            === task.slice(0, 4000)
+          && ref.assignment.evidence_package.public_response
+            === deliveredResponse.slice(0, 6000)
+        );
+        if (!exactReplay) {
+          throw new Error(
+            'reasoning self-regulation assignment is sealed to a different completion');
+        }
+        return {
+          assignment_id: ref.assignment.id,
+          included: true,
+          evidence_package: JSON.parse(
+            JSON.stringify(ref.assignment.evidence_package)),
+          idempotent: true,
+        };
+      }
+      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending'
+        || !request || !pair || !policy || !mainRequest || ref.assignment.intervention_receipt) {
+        throw new Error('reasoning self-regulation assignment is not awaiting completion');
+      }
       const finalTrace = trace.at(-1);
       const allOwnIds = [...Object.values(pair).map(item => item.response_id), ...trace.map(item => item.response_id)];
       const usedIds = new Set(current.cognition.self_model.context_trials.flatMap(trial => trial.assignments || [])
@@ -21019,7 +21617,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         raw_response_commitment: reasoningSelfRegulation.commitment(rawResponse),
         delivered_response_commitment: reasoningSelfRegulation.commitment(deliveredResponse),
         safety_transform_applied: input.safety_transform_applied === true,
-        interaction_ref: String(input.interaction_ref || ref.assignment.unit_hash).slice(0, 300),
+        interaction_ref: interactionRef,
         epistemic_limit: 'A prospective identity-bound resource forecast controlling API effort is functional metacognitive evidence, not hidden reasoning or phenomenal consciousness.',
         delivered_at: clock().toISOString(),
       };
@@ -21040,10 +21638,32 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     return mutate(current => {
       requireResearchLedgerIntegrity(current);
       const ref = reasoningSelfRegulationAssignment(id, current.cognition);
-      if (!ref || ref.trial.status !== 'active' || ref.assignment.status !== 'pending') return null;
-      if (ref.assignment.evidence_package || ref.assignment.intervention_receipt) throw new Error('completed reasoning self-regulation assignments cannot be excluded');
+      if (!ref) throw new Error('reasoning self-regulation assignment not found');
+      const normalizedReason = String(reason).slice(0, 160);
+      if (ref.assignment.protocol_exclusion) {
+        if (ref.assignment.protocol_exclusion.reason !== normalizedReason) {
+          throw new Error(
+            'reasoning self-regulation assignment is sealed to a different exclusion');
+        }
+        return {
+          assignment_id: ref.assignment.id,
+          included: false,
+          exclusion: JSON.parse(
+            JSON.stringify(ref.assignment.protocol_exclusion)),
+          idempotent: true,
+        };
+      }
+      if (ref.assignment.evidence_package || ref.assignment.intervention_receipt) {
+        throw new Error(
+          'completed reasoning self-regulation assignments cannot be excluded');
+      }
+      if (ref.trial.status !== 'active'
+        || ref.assignment.status !== 'pending') {
+        throw new Error(
+          'reasoning self-regulation assignment is no longer excludable');
+      }
       ref.assignment.status = 'excluded_protocol';
-      ref.assignment.protocol_exclusion = { reason: String(reason).slice(0, 160), at: clock().toISOString(),
+      ref.assignment.protocol_exclusion = { reason: normalizedReason, at: clock().toISOString(),
         partial_forecast_receipts: Object.keys(ref.assignment.reasoning_self_regulation_forecast_pair || {}).length };
       researchLedgerAppend(current, { kind: 'reasoning_self_regulation_assignment_excluded',
         subject_type: 'context_assignment', subject_id: ref.assignment.id, payload: ref.assignment.protocol_exclusion });
@@ -25059,6 +25679,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function createExperiment(input = {}) {
     return mutate(current => {
+      const origin = input.origin || 'human';
+      if (origin !== 'human') {
+        if (input.reversible === false || (input.risk && input.risk !== 'low')) {
+          throw new Error('autonomous experiments must be low-risk and reversible');
+        }
+        if (!input.rationale || !Array.isArray(input.source_refs) || !input.source_refs.length) {
+          throw new Error('autonomous experiments require a rationale and evidence source');
+        }
+        const forbidden = /\b(permission|authority|approval|financial gate|send external|impersonat|deceiv|manipulat|withhold disclosure)\b/i;
+        if (forbidden.test(`${input.behavior || ''} ${input.hypothesis || ''} ${input.rationale || ''}`)) {
+          throw new Error('autonomous experiment crosses an authority or trust boundary');
+        }
+      }
       const experiment = {
         id: input.id || `experiment-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
         behavior: String(input.behavior || '').trim(),
@@ -25072,7 +25705,7 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
         status: input.status || 'active',
         samples: [],
         conclusion: input.conclusion || null,
-        origin: input.origin || 'human',
+        origin,
         chosen_by: input.chosen_by || (input.origin === 'nora' ? 'Nora' : null),
         rationale: input.rationale ? String(input.rationale).slice(0, 1200) : '',
         scope: input.scope || 'communication_behavior',
@@ -25091,11 +25724,32 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
 
   function recordExperimentSample(input = {}) {
     return mutate(current => {
+      const interaction = input.interaction;
+      const outcome = String(interaction?.outcome || '').trim().toLowerCase();
+      const outcomeValues = { appreciated: 1, landed: 1, ignored: 0, corrected: 0 };
+      if (!interaction?.id || interaction.reviewed !== true || !interaction.reviewed_at
+        || !Object.prototype.hasOwnProperty.call(outcomeValues, outcome)) {
+        throw new Error('experiment samples require an exact decisive reviewed interaction');
+      }
+      const interactionId = String(interaction.id);
+      const sourceSnapshot = {
+        interaction_id: interactionId,
+        outcome,
+        reviewed_at: String(interaction.reviewed_at),
+      };
       const active = input.experiment_id
         ? current.experiments.filter(item => item.id === input.experiment_id)
         : current.experiments.filter(item => item.status === 'active');
       for (const experiment of active) {
-        experiment.samples.push({ at: clock().toISOString(), outcome: input.outcome, value: input.value ?? null, interaction_id: input.interaction_id || null });
+        if (experiment.samples.some(sample => sample.interaction_id === interactionId)) continue;
+        experiment.samples.push({
+          at: sourceSnapshot.reviewed_at,
+          outcome,
+          value: outcomeValues[outcome],
+          interaction_id: interactionId,
+          source_commitment: crypto.createHash('sha256')
+            .update(canonicalJson(sourceSnapshot)).digest('hex'),
+        });
         experiment.samples = experiment.samples.slice(-500);
       }
       return active;
@@ -25139,15 +25793,54 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function spendInitiative(scope = 'global', metadata = {}) {
     return mutate(current => {
       const status = initiativeStatus(scope);
+      const operationId = String(metadata.operation_id || '').trim().slice(0, 300);
+      const prior = current.initiative.scopes[scope] || {};
+      // Operation identity outlives the Chicago budget day boundary. A turn
+      // committed just before midnight and receipted just after midnight must
+      // still spend exactly once.
+      const priorOperationIds = Array.isArray(prior.operation_ids)
+        ? prior.operation_ids : [];
+      if (operationId && priorOperationIds.includes(operationId)) {
+        return {
+          ...status,
+          allowed: true,
+          idempotent: true,
+          operation_id: operationId,
+        };
+      }
       if (status.remaining <= 0) return { ...status, allowed: false };
-      current.initiative.scopes[scope] = { ...(current.initiative.scopes[scope] || {}), day: status.day, spent: status.spent + 1, last: clock().toISOString(), metadata };
-      return { ...initiativeStatus(scope), allowed: true };
+      current.initiative.scopes[scope] = {
+        ...prior,
+        day: status.day,
+        spent: status.spent + 1,
+        last: clock().toISOString(),
+        metadata,
+        operation_ids: operationId
+          ? [...priorOperationIds, operationId].slice(-200)
+          : priorOperationIds.slice(-200),
+      };
+      return {
+        ...initiativeStatus(scope),
+        allowed: true,
+        idempotent: false,
+        ...(operationId ? { operation_id: operationId } : {}),
+      };
     });
   }
 
-  function setInitiativeBudget(scope, dailyLimit) {
+  function setInitiativeBudget(scope, dailyLimit, metadata = {}) {
     return mutate(current => {
-      current.initiative.scopes[scope] = { ...(current.initiative.scopes[scope] || {}), daily_limit: Math.max(0, Number(dailyLimit) || 0) };
+      const previous = current.initiative.scopes[scope] || {};
+      const normalized = Math.min(100, Math.max(0, Math.trunc(Number(dailyLimit) || 0)));
+      current.initiative.scopes[scope] = {
+        ...previous,
+        daily_limit: normalized,
+        previous_daily_limit: Number.isFinite(previous.daily_limit)
+          ? previous.daily_limit : null,
+        budget_updated_at: clock().toISOString(),
+        budget_updated_by: String(metadata.updated_by || 'server_internal').slice(0, 200),
+        budget_update_note: String(metadata.note || '').slice(0, 500),
+      };
       return initiativeStatus(scope);
     });
   }
@@ -25185,7 +25878,8 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       initiative: { hourly: initiativeStatus('cowork:proactive', now) }, recommendations: [],
     };
     const nowMs = now.getTime();
-    const openCommitments = state.commitments.filter(item => item.status === 'open');
+    const allOpenCommitments = state.commitments.filter(item => item.status === 'open');
+    const openCommitments = allOpenCommitments.filter(commitmentCarriesOperationalAuthority);
     const overdue = openCommitments.filter(item => parseDue(item.due) != null && parseDue(item.due) < nowMs);
     const dueSoon = openCommitments.filter(item => {
       const due = parseDue(item.due);
@@ -25206,9 +25900,19 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     const openProspections = (interventionActive('constructive_prospection_access') ? [] : (state.cognition.prospection?.simulations || [])).filter(item => item.status === 'open' && constructiveProspection.contentCommitment(item) === item.content_commitment);
     const dueProspections = openProspections.filter(item => new Date(item.decision_due).getTime() <= nowMs + 48 * 60 * 60 * 1000);
     const recommendations = [
-      ...overdue.map(item => ({ type: 'commitment', id: item.id, priority: 'critical', reason: `overdue${item.due ? ` since ${item.due}` : ''}`, action: 'verify delivery evidence, fulfill it, or renegotiate explicitly' })),
-      ...dueSoon.map(item => ({ type: 'commitment', id: item.id, priority: 'high', reason: `due soon${item.due ? ` (${item.due})` : ''}`, action: 'confirm the next concrete step before it becomes late' })),
-      ...needsCheck.filter(item => !overdue.includes(item) && !dueSoon.includes(item)).map(item => ({ type: 'commitment', id: item.id, priority: 'normal', reason: 'follow-up check is due', action: 'look for evidence or ask the smallest useful follow-up' })),
+      ...overdue.map(item => ({ type: 'commitment', id: item.id, priority: 'critical',
+        authority_class: item.authority_class,
+        reason: `overdue${item.due ? ` since ${item.due}` : ''}`,
+        action: 'verify delivery evidence, fulfill it, or renegotiate explicitly' })),
+      ...dueSoon.map(item => ({ type: 'commitment', id: item.id, priority: 'high',
+        authority_class: item.authority_class,
+        reason: `due soon${item.due ? ` (${item.due})` : ''}`,
+        action: 'confirm the next concrete step before it becomes late' })),
+      ...needsCheck.filter(item => !overdue.includes(item) && !dueSoon.includes(item))
+        .map(item => ({ type: 'commitment', id: item.id, priority: 'normal',
+          authority_class: item.authority_class,
+          reason: 'follow-up check is due',
+          action: 'look for evidence or ask the smallest useful follow-up' })),
       ...openEpisodes.slice(0, 12).map(item => ({ type: 'episode', id: item.id, priority: 'normal', reason: `${(item.open_loops || []).filter(loop => loop.status === 'open').length} unresolved loop(s)`, action: 'continue the same story instead of starting a disconnected thread' })),
       ...experimentsDue.map(item => ({ type: 'experiment', id: item.id, priority: 'normal', reason: `review point reached with ${item.samples.length} sample(s)`, action: 'evaluate evidence and retain, revise, or retire' })),
       ...staleCycles.map(item => ({ type: 'cycle', id: item.id, priority: 'critical', reason: 'a prior intelligence cycle never closed', action: 'inspect its last recorded state and recover or close it as failed' })),
@@ -25216,7 +25920,14 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     ];
     return {
       at: now.toISOString(),
-      commitments: { open: openCommitments, overdue, due_soon: dueSoon, needs_check: needsCheck },
+      commitments: {
+        open: allOpenCommitments,
+        authoritative: openCommitments,
+        candidates: allOpenCommitments.filter(item => !commitmentCarriesOperationalAuthority(item)),
+        overdue,
+        due_soon: dueSoon,
+        needs_check: needsCheck,
+      },
       episodes: { open: openEpisodes },
       experiments: { due: experimentsDue },
       self_experiments: { active: activeSelfChosen, limit: 2, capacity: Math.max(0, 2 - activeSelfChosen.length) },
@@ -28521,7 +29232,8 @@ ${episodes.map(item => {
     init, snapshot: () => structuredClone(state), snapshotRevision, computeBackgroundProjection,
     noteExternalConfigurationChange, dashboardIntelligenceSummary, dashboardIntelligenceOverview,
     liveActivityContextSnapshot,
-    persist, persistStrict, persistenceDiagnostics, lifecyclePerformanceSnapshot,
+    persist, persistStrict, durableMutationBatch, persistenceDiagnostics,
+    lifecyclePerformanceSnapshot,
     interactivePerformanceSnapshot, interventionActive,
     list, get, addCommitment, updateCommitment, recordEpisodeEvent, recordEpisodeEvents,
     observeRelationship,
@@ -28642,7 +29354,8 @@ ${episodes.map(item => {
     createAttentionDirective, resolveAttentionDirective, attentionSchemaSnapshot,
     recordAgencyIntention, resolveAgencyIntention, agencySnapshot,
     beginActionExecution, markActionExecutionQueued, completeActionExecution, recordExternalActionExecution,
-    actionExecutionAudit, actionExecutionsById, recordActionClaimAttestation, actionClaimAttestationAudit,
+    actionExecutionAudit, actionExecutionsById, replaySafeActionExecution,
+    recordActionClaimAttestation, actionClaimAttestationAudit,
     recordSituationalAffordanceFrame, situationalAffordanceSnapshot, situationalAffordanceAudit, situationalAffordanceAccessAvailable,
     syncCapabilityBoundaryOutcomes, capabilityBoundarySnapshot, capabilityBoundaryContext, capabilityBoundaryAudit,
     beginProspectiveOutputMonitor, completeProspectiveOutputMonitor, failProspectiveOutputMonitor, markProspectiveOutputMonitorDelivered, resolveProspectiveOutputMonitorOutcome, excludeProspectiveOutputMonitorAssignment, prospectiveOutputMonitorSnapshot, prospectiveOutputMonitorAudit,

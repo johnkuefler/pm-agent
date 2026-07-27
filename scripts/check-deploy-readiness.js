@@ -1,6 +1,6 @@
 'use strict';
 
-const DEFAULT_BASE_URL = 'https://pm-agent-production-c49e.up.railway.app';
+const DEFAULT_BASE_URL = '';
 const REQUIRED_ROUTINE_MARKERS = Object.freeze([
   '## Step 0.5: Start the Intelligence Cycle',
   '## Step 0.7: EXPECT',
@@ -17,6 +17,17 @@ function assessRoutineContract(routine = {}) {
   return { valid: Boolean(content) && missingMarkers.length === 0 && stepOrderValid,
     missing_markers: missingMarkers, step_order_valid: stepOrderValid,
     updated_at: routine.updated_at || null, updated_by: routine.updated_by || null };
+}
+
+function resolveDeploymentBaseUrl(env = process.env) {
+  const explicit = String(env.NORA_BASE_URL || '').trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const railway = String(env.RAILWAY_PUBLIC_DOMAIN || env.RAILWAY_STATIC_URL || '').trim();
+  if (!railway) {
+    throw new Error('NORA_BASE_URL or RAILWAY_PUBLIC_DOMAIN is required for the deployment readiness check');
+  }
+  const withProtocol = /^https?:\/\//i.test(railway) ? railway : `https://${railway}`;
+  return withProtocol.replace(/\/+$/, '');
 }
 
 function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
@@ -120,13 +131,15 @@ async function fetchJson(path, { baseUrl, apiKey, fetchImpl, timeoutMs = 30000 }
 }
 
 async function checkDeployReadiness({
-  baseUrl = process.env.NORA_BASE_URL || DEFAULT_BASE_URL,
+  baseUrl,
   apiKey = process.env.NORA_API_KEY,
   fetchImpl = globalThis.fetch,
 } = {}) {
   if (!apiKey) throw new Error('NORA_API_KEY is required for the deployment readiness check');
   if (typeof fetchImpl !== 'function') throw new Error('deployment readiness check requires fetch');
-  const normalizedBase = String(baseUrl).replace(/\/+$/, '');
+  const normalizedBase = baseUrl
+    ? String(baseUrl).replace(/\/+$/, '')
+    : resolveDeploymentBaseUrl();
   const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints,
     runtimePerformance] = await Promise.all([
     fetchJson('/run-lock', { baseUrl: normalizedBase, apiKey, fetchImpl }),
@@ -166,4 +179,4 @@ if (require.main === module) {
 }
 
 module.exports = { DEFAULT_BASE_URL, REQUIRED_ROUTINE_MARKERS, assessRoutineContract,
-  assessDeployReadiness, checkDeployReadiness };
+  assessDeployReadiness, checkDeployReadiness, resolveDeploymentBaseUrl };

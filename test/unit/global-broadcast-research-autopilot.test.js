@@ -306,3 +306,18 @@ test('Slack runtime captures only direct delivered broadcast responses and seque
   assert.match(server, /excludeGlobalBroadcastAssignment\(globalBroadcastAssignmentForFailure\.assignment_id, 'slack_handler_failure'\)/);
   assert.match(server, /current_stage: 'sealed_active_pilot'/);
 });
+
+test('public API inventory is composed before Slack global-broadcast response capture', () => {
+  const server = fs.readFileSync(path.join(__dirname, '..', '..', 'server.js'), 'utf8');
+  const inventoryStart = server.indexOf('if (toolDefs.length > 1 || publicApiBindings.inventory.length)');
+  const inventoryEnd = server.indexOf('tail += diagnosisInstruction(contextAssignment)', inventoryStart);
+  const broadcastStart = server.indexOf('const recordGlobalBroadcastResponse');
+  const broadcastEnd = server.indexOf('let selfModelTrustResponseRecorded', broadcastStart);
+  assert.ok(inventoryStart >= 0 && inventoryEnd > inventoryStart);
+  assert.ok(broadcastStart >= 0 && broadcastEnd > broadcastStart);
+  assert.match(server.slice(inventoryStart, inventoryEnd),
+    /publicApiBindings\.inventory\.length[\s\S]*APPROVED PUBLIC APIs/,
+    'approved public APIs belong in the live tool inventory while its note is in scope');
+  assert.doesNotMatch(server.slice(broadcastStart, broadcastEnd), /\bnote\s*\+=/,
+    'global-broadcast receipt capture must not reference the earlier inventory note');
+});

@@ -3,6 +3,7 @@
     // requireAuth middleware skips the check anyway, so this is no-op safe.
     const NORA_API_KEY = (document.querySelector('meta[name="nora-api-key"]') || {}).content || '';
     const NORA_OPERATOR_TOKEN = (document.querySelector('meta[name="nora-operator-token"]') || {}).content || '';
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
     async function api(path, opts) {
       opts = opts || {};
       const headers = Object.assign({}, opts.headers || {});
@@ -100,13 +101,33 @@
     };
 
     let currentFilter = 'pending';
+    let commandPaletteReturnFocus = null;
 
-    function showTab(name) {
+    function resetMainView({ focus = true } = {}) {
+      const heading = document.getElementById('page-title');
+      const reset = () => window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+      reset();
+      requestAnimationFrame(() => {
+        reset();
+        if (focus && heading) heading.focus({ preventScroll: true });
+      });
+    }
+
+    function focusDashboardRegionHeading(heading) {
+      if (!heading) return;
+      requestAnimationFrame(() => {
+        heading.scrollIntoView({ behavior: 'auto', block: 'start' });
+        heading.focus({ preventScroll: true });
+      });
+    }
+
+    function showTab(name, { focus = true, resetScroll = true } = {}) {
       if (!pageMeta[name]) name = 'meeting';
       document.querySelectorAll('.tab').forEach(t => {
         const active = t.dataset.tab === name;
         t.classList.toggle('active', active);
-        t.setAttribute('aria-selected', active ? 'true' : 'false');
+        if (active) t.setAttribute('aria-current', 'page');
+        else t.removeAttribute('aria-current');
       });
       document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
       document.getElementById('page-' + name).classList.add('active');
@@ -114,8 +135,11 @@
       document.getElementById('page-description').textContent = pageMeta[name][1];
       document.title = pageMeta[name][0] + ' | Nora';
       history.replaceState(null, '', location.pathname + location.search + '#' + name);
-      closeMobileNav();
-      closeCommandPalette();
+      closeMobileNav({ restoreFocus: false });
+      closeCommandPalette(null, { restoreFocus: false });
+      if (resetScroll) resetMainView({ focus });
+      else if (focus) requestAnimationFrame(() =>
+        document.getElementById('page-title')?.focus({ preventScroll: true }));
       if (name === 'meeting' && typeof checkMuteState === 'function') checkMuteState();
       if (name === 'memory') loadMemory();
       if (name === 'live') loadRuntimeActivity();
@@ -137,23 +161,30 @@
       const button = document.querySelector('.nav-toggle');
       const open = sidebar.classList.toggle('nav-open');
       button.setAttribute('aria-expanded', open ? 'true' : 'false');
+      button.setAttribute('aria-label', open ? 'Close workspace navigation' : 'Open workspace navigation');
       button.textContent = open ? 'Close' : 'Menu';
     }
 
-    function closeMobileNav() {
+    function closeMobileNav({ restoreFocus = false } = {}) {
       const sidebar = document.querySelector('.sidebar');
       const button = document.querySelector('.nav-toggle');
       if (!sidebar || !button) return;
+      const wasOpen = sidebar.classList.contains('nav-open');
       sidebar.classList.remove('nav-open');
       button.setAttribute('aria-expanded', 'false');
+      button.setAttribute('aria-label', 'Open workspace navigation');
       button.textContent = 'Menu';
+      if (restoreFocus && wasOpen) button.focus();
     }
 
     function applyTheme(theme) {
       document.documentElement.dataset.theme = theme;
       localStorage.setItem('nora-theme', theme);
       const button = document.getElementById('theme-toggle');
-      if (button) button.textContent = theme === 'dark' ? 'Light theme' : 'Dark theme';
+      if (button) {
+        button.textContent = theme === 'dark' ? 'Light theme' : 'Dark theme';
+        button.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false');
+      }
     }
 
     function toggleTheme() {
@@ -162,20 +193,50 @@
 
     function openCommandPalette() {
       const palette = document.getElementById('command-palette');
+      if (palette.classList.contains('open')) return;
+      commandPaletteReturnFocus = document.activeElement;
       palette.classList.add('open');
       palette.setAttribute('aria-hidden', 'false');
+      document.querySelector('.app')?.setAttribute('inert', '');
+      document.getElementById('command-trigger')?.setAttribute('aria-expanded', 'true');
       const input = document.getElementById('command-input');
       input.value = '';
       renderCommandResults();
       input.focus();
     }
 
-    function closeCommandPalette(event) {
+    function closeCommandPalette(event, { restoreFocus = true } = {}) {
       if (event && event.target !== document.getElementById('command-palette')) return;
       const palette = document.getElementById('command-palette');
-      if (!palette) return;
+      if (!palette || !palette.classList.contains('open')) return;
       palette.classList.remove('open');
       palette.setAttribute('aria-hidden', 'true');
+      document.querySelector('.app')?.removeAttribute('inert');
+      document.getElementById('command-trigger')?.setAttribute('aria-expanded', 'false');
+      const returnFocus = commandPaletteReturnFocus;
+      commandPaletteReturnFocus = null;
+      if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
+    }
+
+    function trapCommandPaletteFocus(event) {
+      const palette = document.getElementById('command-palette');
+      if (!palette?.classList.contains('open')) return;
+      const focusable = [...palette.querySelectorAll('input, button, [href], [tabindex]:not([tabindex="-1"])')]
+        .filter(element => !element.disabled && element.getAttribute('aria-hidden') !== 'true');
+      if (!focusable.length) {
+        event.preventDefault();
+        document.getElementById('command-dialog')?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !palette.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !palette.contains(document.activeElement))) {
+        event.preventDefault();
+        first.focus();
+      }
     }
 
     function renderCommandResults() {
@@ -183,5 +244,5 @@
       const matches = Object.entries(pageMeta).filter(([key, value]) => !query || key.includes(query) || value.join(' ').toLowerCase().includes(query));
       document.getElementById('command-results').innerHTML = matches.length
         ? matches.map(([key, value]) => `<button class="command-result" type="button" onclick="showTab('${key}')">${value[0]}</button>`).join('')
-        : '<div class="command-empty">No matching view</div>';
+        : '<div class="command-empty" role="status">No matching view</div>';
     }

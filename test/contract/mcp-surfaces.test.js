@@ -11,7 +11,8 @@ test('credential-aware MCP bindings are attached to Slack, Zoom chat, and Zoom v
   assert.match(server, /const mcpBindings = attachLiveTools\s+\? mcpManager\.bindings\(\{ financialApproved: isDirect \? financialApproved : false, allowWrites: isDirect \}\)\s+: \{ claudeTools: \[\], executors: \{\}, inventory: \[\], meta: \{\} \}/);
   assert.match(server, /const zoomMcp = zoomAttachLiveTools\s+\? mcpManager\.bindings\(\{ financialApproved: false, allowWrites: true \}\)\s+: \{ claudeTools: \[\], executors: \{\}, inventory: \[\], meta: \{\} \}/);
   assert.match(server, /const mcp = mcpManager\.bindings\(\{ financialApproved: false, voice: true \}\)/);
-  assert.match(server, /handleRealtimeVoiceTool\([^\n]+voiceBundle\.executors/);
+  assert.match(server,
+    /handleRealtimeVoiceTool\(\s*openaiWs,[\s\S]{0,220}?handledToolCalls,\s*voiceBundle\.executors/);
 });
 
 test('deprecated hosted connector payload is no longer used for managed MCPs', () => {

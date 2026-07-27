@@ -64,6 +64,7 @@ test('reading routes expose bounded state and keep admitted source text out of c
   assert.equal(admitted.statusCode, 200);
   assert.equal(calls.ingest[0], content);
   assert.equal(calls.source[0].content, undefined);
+  assert.equal(calls.source[0].admitted_by, 'authenticated_api');
   assert.equal(admitted.body.source.content, undefined);
   assert.equal(admitted.body.source.chunk_count, 1);
 });
@@ -78,6 +79,7 @@ test('reading session selection remains an explicit source-bound act', async () 
   } });
   assert.equal(response.body.session.status, 'active');
   assert.equal(calls.session[0].sourceId, 'reading-source-1234567890abcdef');
+  assert.equal(calls.session[0].input.selected_by, 'authenticated_api');
 });
 
 test('source admission fails closed when the filesystem library is unavailable', async () => {

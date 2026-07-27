@@ -307,7 +307,8 @@ test('autopilot ledger-aborts a pilot that the foreground latency protocol can n
 test('server schedules the bounded autopilot only outside test mode', () => {
   const root = path.join(__dirname, '..', '..');
   const server = fs.readFileSync(path.join(root, 'server.js'), 'utf8');
-  assert.match(server, /runBackgroundIntelligenceRuntime\(\{ trigger: 'startup' \}\)/);
+  assert.match(server, /const trigger = runNumber === 1 \? 'startup' : 'five-minute-scheduler'/);
+  assert.match(server, /await runBackgroundIntelligenceRuntime\(\{/);
   assert.match(server, /\['research_autopilot', \(\) => runResearchAutopilotRuntime\(\{ post: priorityPost \}\)\]/);
   assert.match(server, /NORA_RESEARCH_AUTOPILOT !== '0'/);
   assert.match(server, /NORA_TEST_MODE !== '1'/);
