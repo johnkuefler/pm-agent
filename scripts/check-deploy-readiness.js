@@ -172,8 +172,7 @@ async function checkDeployReadiness({
   if (!apiKey) throw new Error('NORA_API_KEY is required for the deployment readiness check');
   if (typeof fetchImpl !== 'function') throw new Error('deployment readiness check requires fetch');
   const normalizedBase = String(baseUrl).replace(/\/+$/, '');
-  const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints,
-    runtimePerformance] = await Promise.all([
+  const probes = await Promise.allSettled([
     fetchJson('/run-lock', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/admin/active-bots', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/routine', { baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000 }),
@@ -185,6 +184,28 @@ async function checkDeployReadiness({
     }),
     fetchJson('/runtime/performance', { baseUrl: normalizedBase, apiKey, fetchImpl }),
   ]);
+
+  // Everything this gate protects is work happening inside a running instance. When there is no
+  // instance answering at all there is no run to interrupt, no meeting to cut off, and no write to
+  // lose, so refusing the deploy protects nothing and simply keeps the service down.
+  //
+  // That is not hypothetical. Clearing a jammed deploy queue took the running instance with it, and
+  // the next deploy would have been blocked by a readiness check that could not reach the service it
+  // was trying to restore. A gate that cannot pass during an outage cannot recover from one.
+  //
+  // A partial failure stays fail-closed. Some probes answering and others not means the instance is
+  // alive and possibly mid-work, which is exactly when caution is warranted.
+  if (probes.every(probe => probe.status === 'rejected')) {
+    return { ready: true, blockers: [], wedged: [{ kind: 'service_unreachable',
+      reason: 'no probe reached the service, so there is no in-flight work to protect and deploying '
+        + 'is the only way back up',
+      probe_errors: probes.map(probe => String(probe.reason?.message || probe.reason)).slice(0, 6) }],
+    checked_at: new Date().toISOString(), base_url: normalizedBase };
+  }
+  const failed = probes.find(probe => probe.status === 'rejected');
+  if (failed) throw failed.reason;
+  const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints,
+    runtimePerformance] = probes.map(probe => probe.value);
   return { ...assessDeployReadiness({ lock, activeBots, routine, researchAutopilot,
     behavioralFingerprints, runtimePerformance }),
     checked_at: new Date().toISOString(),

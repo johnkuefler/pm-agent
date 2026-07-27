@@ -96,3 +96,28 @@ test('a healthy runtime is unchanged by any of this', () => {
   });
   assert.deepEqual(result, { ready: true, blockers: [], wedged: [] });
 });
+
+// The outage version of the same trap. Clearing a jammed deploy queue took the running instance
+// with it, and the next deploy would have been refused by a readiness check that could not reach
+// the service it was trying to restore.
+test('an unreachable service does not block the deploy that restores it', async () => {
+  const { checkDeployReadiness } = require('../../scripts/check-deploy-readiness');
+  const down = async () => { throw new Error('connect ECONNREFUSED'); };
+  const result = await checkDeployReadiness({ apiKey: 'k', fetchImpl: down });
+  assert.equal(result.ready, true, 'no instance means no in-flight work to protect');
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.wedged[0].kind, 'service_unreachable');
+  assert.ok(result.wedged[0].probe_errors.length > 0, 'the outage must be recorded, not glossed');
+});
+
+// A half-answering instance is alive and possibly mid-write, which is exactly when caution matters.
+test('a partially reachable service still fails closed', async () => {
+  const { checkDeployReadiness } = require('../../scripts/check-deploy-readiness');
+  let call = 0;
+  const flaky = async () => {
+    call += 1;
+    if (call === 1) return { ok: true, json: async () => ({}) };
+    throw new Error('connect ECONNREFUSED');
+  };
+  await assert.rejects(checkDeployReadiness({ apiKey: 'k', fetchImpl: flaky }));
+});
