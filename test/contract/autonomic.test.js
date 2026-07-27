@@ -45,8 +45,10 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /LIVE_LIFECYCLE_STAGE.*operational_cycle_active/s);
   assert.match(routine, /LIVE_LOCK_HOLDER.*"\$HOLDER"/s);
   assert.match(routine, /lifecycle_projection_integrity_verified.*release_required/s);
-  const forecastExample = routine.indexOf('/self-forecast?key=${KEY}');
-  const revisionExample = routine.indexOf('/self-forecast/revision?key=${KEY}');
+  // Anchored on the path alone: the credential moved out of the query string into an
+  // Authorization header, so a URL ending in ?key= no longer appears anywhere in the routine.
+  const forecastExample = routine.indexOf('/self-forecast"');
+  const revisionExample = routine.indexOf('/self-forecast/revision"');
   const liveStageVerification = routine.indexOf('LIVE_LIFECYCLE_STAGE=');
   const subjectInbox = routine.indexOf('## Step 0.75: Consume the Subject Research Inbox');
   assert.ok(forecastExample >= 0 && forecastExample < revisionExample);
