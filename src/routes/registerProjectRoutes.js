@@ -2,6 +2,26 @@
 
 const axios = require('axios');
 
+// Is this project the agency's own work rather than a client engagement?
+//
+// The client field carries a Teamwork-style code suffix, so every internal project reads
+// "LimeLight Marketing (LL)". The previous check compared for exact equality against
+// "limelight marketing", which that value never matches, so all fifteen internal projects sailed
+// through the exclusion. They also score as the thinnest projects in the portfolio, because nobody
+// writes client research about internal billing buckets, which put them at the very top of the
+// "most in need first" sort and handed the idle-research loop the same dead ends every run.
+//
+// Parentheticals are stripped rather than special-cased so a renamed code, a trailing "LLC", or
+// stray whitespace cannot quietly reopen the same hole.
+function isLimeLightInternalClient(client) {
+  const normalized = String(client || '')
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  return normalized === 'limelight' || normalized.startsWith('limelight marketing');
+}
+
 function registerProjectRoutes(app, deps) {
   const { requireAuth, loadProjects, saveProjects, loadMemory } = deps;
 
@@ -78,16 +98,14 @@ function registerProjectRoutes(app, deps) {
       rows = rows.filter(r => !r.name.toLowerCase().startsWith('opportunity - '));
     }
     if (!includeInternal) {
-      // Detect LimeLight-internal projects by name prefix or client field. Two heuristics
-      // because some internal projects use the "LimeLight ..." name convention while others
-      // are tagged via client = "LimeLight" / "LimeLight Marketing".
+      // Detect LimeLight-internal projects by name prefix or client field. Two heuristics because
+      // some internal projects use the "LimeLight ..." name convention while others carry the
+      // agency in the client field under names like "LLM - T&M Billing".
+      const byName = new Map(projects.map(project => [project.name, project]));
       rows = rows.filter(r => {
         const name = r.name.toLowerCase();
         if (name.startsWith('limelight ') || name === 'limelight') return false;
-        const project = projects.find(p => p.name === r.name);
-        const client = (project?.client || '').toLowerCase().trim();
-        if (client === 'limelight' || client === 'limelight marketing') return false;
-        return true;
+        return !isLimeLightInternalClient(byName.get(r.name)?.client);
       });
     }
 
@@ -359,4 +377,4 @@ function registerProjectRoutes(app, deps) {
   });
 }
 
-module.exports = { registerProjectRoutes };
+module.exports = { registerProjectRoutes, isLimeLightInternalClient };
