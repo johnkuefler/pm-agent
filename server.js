@@ -44,7 +44,7 @@ const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
 const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
 const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
 const { registerFindingRoutes } = require('./src/routes/registerFindingRoutes');
-const { isAskingClarification } = require('./src/integrations/reply-intent');
+const { isAskingClarification } = require('./src/surfaces/slack/reply-intent');
 const findings = require('./src/intelligence/findings');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
@@ -113,13 +113,14 @@ const { anthropicCompatibleSchema } = require('./src/intelligence/anthropic-stru
 const { createReadingLibrary } = require('./src/intelligence/reading-library');
 const slackEvidence = require('./src/intelligence/slack-evidence');
 const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneElse,
-  VOLUNTEER_CUE } = require('./src/integrations/meeting-turn-taking');
+  VOLUNTEER_CUE } = require('./src/surfaces/meeting/turn-taking');
 const { describeTranscript, filterTranscriptsByStatus,
   sortTranscriptsNewestFirst } = require('./src/surfaces/meeting/transcript-index');
 const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLiveTranscript, applyUtteranceEditToSession,
   applyUtteranceDeleteToSession } = require('./src/surfaces/meeting/transcript-checkpoint');
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
+const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
 const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSelfReflectionMessage,
   slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey,
   stripSlackLookupNarration, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
@@ -7831,8 +7832,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
   let behavioralSelfProfileAssignmentForFailure = null;
   let cognitiveParameterAssignmentForFailure = null;
   const conversationPolicy = slackConversationPolicy(text, mode);
-  const boundedTerminalAt = defaultTerminalAt => Number.isFinite(Number(terminalAtOverride))
-    ? Math.min(defaultTerminalAt, Number(terminalAtOverride)) : defaultTerminalAt;
+  const boundedTerminalAt = def => boundedSlackTerminalAt(terminalAtOverride, def); // src/surfaces/slack/budget.js
   let slackTerminalAt = boundedTerminalAt(
     interactionStartedAt + (conversationPolicy.attachLiveTools
       ? SLACK_TOOL_TURN_TERMINAL_MS : SLACK_CONVERSATIONAL_TERMINAL_MS));
