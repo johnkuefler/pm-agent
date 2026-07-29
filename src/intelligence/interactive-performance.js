@@ -1,9 +1,18 @@
 'use strict';
 
-const PROTOCOL_VERSION = 13;
+const PROTOCOL_VERSION = 14;
 const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// A turn that answers from memory and a turn that reads two people's calendars before booking a
+// meeting are not the same job, and holding both to 8 seconds mismeasures the second one. Every
+// successful connector answer was being logged "over budget" at 10s to 22s, which is not a defect,
+// it is the work taking as long as the work takes.
+//
+// This matters beyond log noise: the gate feeds the reliability verdict and the self-improvement
+// round, so a permanently failing Slack gate is standing pressure to get faster, and the cheapest
+// way to be fast is to stop calling connectors. That is the opposite of what these turns are for.
 const BUDGET_MS = Object.freeze({
   slack: 8000,
+  'slack-tools': 30000,
   'zoom-chat': 6000,
   realtime: 2000,
 });
@@ -22,8 +31,26 @@ const BUDGET_MS = Object.freeze({
 // Protocol v13 removes remote query embedding from Slack and typed Zoom first-delivery paths;
 // bounded in-memory lexical recall preserves relevant memory while voice refresh retains quiet-time
 // semantic recall outside active speech.
+// Protocol v14 measures a tool-using Slack turn against its own first-delivery budget instead of
+// the conversational one, so reading calendars before booking is no longer scored as a failure, and
+// raises the Slack prompt ceiling above the real compiled envelope.
+//
+// Why the Slack ceilings are so much higher than the others: fitSlackSystemPrompt can only trim the
+// volatile half, because the stable half is the prompt-cached persona and charter. It computes
+// available = budget - stable.length, so once the stable block approaches the ceiling, live
+// conversation context is squeezed to nothing while the stable block passes through untouched. At
+// 38000 against a measured p95 of 103530 that was happening constantly: p50 sat at exactly 38000
+// (trimmed to the ceiling) and every turn reported context_compacted, including one where Nora was
+// booking a meeting and needed the conversation she was compacting away.
+//
+// 115000 clears the measured envelope with headroom, so compaction becomes the exception it was
+// meant to be. The cost is mostly cached input reads rather than full-price tokens, since the large
+// half is exactly the half that gets cached. This is a ceiling, not a target: the persona is still
+// too big, and trimming it is the real fix. If this number ever needs raising again, that is the
+// signal to do the trimming instead.
 const PROMPT_BUDGET_CHARS = Object.freeze({
-  slack: 38000,
+  slack: 115000,
+  'slack-tools': 115000,
   'zoom-chat': 40000,
   realtime: 45000,
 });
