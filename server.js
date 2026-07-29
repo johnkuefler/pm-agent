@@ -44,7 +44,8 @@ const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
 const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
 const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
 const { registerFindingRoutes } = require('./src/routes/registerFindingRoutes');
-const { isAskingClarification } = require('./src/surfaces/slack/reply-intent');
+const { isAskingClarification, researchCouldHelp: slackResearchCouldHelp } = require('./src/surfaces/slack/reply-intent');
+const { createInteractiveLatencyRecorder } = require('./src/surfaces/interactive-latency');
 const findings = require('./src/intelligence/findings');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
@@ -2168,38 +2169,9 @@ function recordRuntimeSituationalAffordance({ surface, contextKind, direct, fina
   }
 }
 
-function recordInteractiveResponseLatency({ surface, startedAt, stages = {}, promptChars = null,
-  interactionId = null, trigger = null, traceSink = null } = {}) {
-  if (!startedAt || !interactivePerformance.BUDGET_MS[surface]) return null;
-  const assessment = interactivePerformance.assess(surface, Date.now() - startedAt,
-    { promptChars, stages });
-  const boundedStages = assessment.stages;
-  try {
-    const traceInput = {
-      channel: surface === 'realtime' ? 'meeting' : surface,
-      action: 'response_latency',
-      decision: assessment.within_budget ? 'within_budget' : 'over_budget',
-      confidence: 1,
-      reasons: [
-        `first delivery in ${assessment.latency_ms}ms`,
-        `${surface} budget ${assessment.budget_ms}ms`,
-        ...Object.entries(boundedStages).map(([key, value]) => `${key} ${value}ms`),
-      ],
-      interaction_id: interactionId,
-      preview: trigger ? String(trigger).slice(0, 120) : String(assessment.latency_ms),
-      outcome: assessment,
-      at: new Date().toISOString(),
-    };
-    const trace = typeof traceSink === 'function'
-      ? traceSink(traceInput) : intelligence.recordTrace(traceInput);
-    console.log(`⚡ ${surface} first delivery ${assessment.latency_ms}ms / ${assessment.budget_ms}ms (${assessment.within_budget ? 'within budget' : 'over budget'})`);
-    return trace;
-  } catch (error) {
-    // Telemetry is strictly post-delivery and must never turn a successful response into a failure.
-    console.warn(`interactive latency receipt failed for ${surface}: ${error.message}`);
-    return null;
-  }
-}
+// First-delivery telemetry for every surface; see src/surfaces/interactive-latency.js.
+const recordInteractiveResponseLatency = createInteractiveLatencyRecorder({
+  recordTrace: traceInput => intelligence.recordTrace(traceInput) });
 
 const INTERACTIVE_INTELLIGENCE_BUDGET_CHARS = Object.freeze({
   slack: 3100,
@@ -8312,7 +8284,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     }
     try {
       // runClaudeToolLoop executes Teamwork and MCP calls locally; web search stays server-side.
-      ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 4, {
+      // Six rounds, matching Zoom. Booking a meeting costs a calendar read per attendee, the create,
+      // and the confirm; running out mid-sequence looks exactly like the work being impossible.
+      ({ response, firedTools, actionExecutionIds, providerTrace } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
         deferredMeta: mcpBindings.meta,
         writeToolNames: [...TW_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
         toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
@@ -8552,7 +8526,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (reacted) {
         if (!firstDeliveryRecorded) {
           latencyStages.postprocess_ms = Date.now() - (providerFinishedAt || handlerStartedAt);
-          slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+          slackLatencyTrace = recordInteractiveResponseLatency({ surface: attachLiveTools ? 'slack-tools' : 'slack',
+            startedAt: interactionStartedAt,
             stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
           firstDeliveryRecorded = true;
         }
@@ -8661,7 +8636,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
         if (i === 0 && res?.data?.ok === true && !firstDeliveryRecorded) {
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
-          slackLatencyTrace = recordInteractiveResponseLatency({ surface: 'slack', startedAt: interactionStartedAt,
+          slackLatencyTrace = recordInteractiveResponseLatency({ surface: attachLiveTools ? 'slack-tools' : 'slack',
+            startedAt: interactionStartedAt,
             stages: latencyStages, promptChars: slackPromptChars, interactionId: turnRef, trigger: text });
           firstDeliveryRecorded = true;
         }
@@ -8808,6 +8784,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       // message on the next loop); or (b) this was a PROACTIVE interjection — an unsolicited
       // observation shouldn't manufacture queued work.
       const shouldExtractTask = !(wroteLive || sentSlack || isProactive || conversationPolicy.boundedConversation);
+      const researchCouldHelp = slackResearchCouldHelp(firedTools, reply);
+      if (!researchCouldHelp) console.log(`⏭️ Skipping research extraction (live tools answered it: ${firedTools.join(', ')})`);
       if (!shouldExtractTask) {
         console.log(`⏭️ Skipping task extraction (${wroteLive ? 'live write handled it' : sentSlack ? 'sent live' : isProactive ? 'proactive observation' : 'bounded conversation lane'})`);
       }
@@ -8819,8 +8797,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
             attestation: sourceAttestation }, { post });
         }
         await extractMemory(text, text, reply, null, { post });
-      // Research needs: also skip on proactive — don't queue research off chatter she wasn't asked about.
-      if (!isProactive && !conversationPolicy.boundedConversation) {
+      // Skip on proactive chatter, and on turns a live read already answered: see reply-intent.js.
+      if (!isProactive && !conversationPolicy.boundedConversation && researchCouldHelp) {
           await extractResearchNeeds(text, text, reply,
             { channel: `slack:${channel}`, user, thread_ts: sourceThreadTs }, { post });
       }

@@ -34,12 +34,13 @@ test('no test reads server.js directly instead of through the shared helper', ()
     'use require("../helpers/server-source").readServerSource() so extraction stays invisible to source-text assertions');
 });
 
-// server.js only shrinks, with one exception: wiring a callback in the composition root has no
-// better home. This ceiling moved up 2 for the recurring-job quarantine handler during an outage.
-// If it moves up again for anything that is not composition wiring, that is the smell.
 // server.js only shrinks. A change that needs new server-side behavior has somewhere to put it:
 // src/surfaces for extracted surface code, src/routes for route groups, src/ for everything else.
-const SERVER_LINE_CEILING = 16506;
+//
+// It has moved up exactly once, by 2, to wire a recurring-job quarantine callback in the
+// composition root during an outage. Anything that is not composition wiring should pay for itself
+// by extracting something, which is how this came down from 16506.
+const SERVER_LINE_CEILING = 16484;
 test('server.js does not grow', () => {
   const lines = fs.readFileSync(path.join(ROOT, 'server.js'), 'utf8').split(/\r?\n/).length - 1;
   assert.ok(lines <= SERVER_LINE_CEILING,

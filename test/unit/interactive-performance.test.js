@@ -441,7 +441,9 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(server, /relationalSelfReflection: conversationPolicy\.relationalSelfReflection/);
   assert.match(server, /const enabled = Boolean\(assignment\)/);
   assert.doesNotMatch(server, /NORA_PROSPECTIVE_OUTPUT_MONITOR_ENABLED/);
-  assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'slack'/);
+  // A Slack turn is budgeted by kind now: a tool turn that reads calendars before booking is not
+  // held to the 8 second conversational budget. Both kinds still route through one recorder.
+  assert.match(server, /recordInteractiveResponseLatency\(\{ surface: attachLiveTools \? 'slack-tools' : 'slack'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'zoom-chat'/);
   assert.match(server, /recordInteractiveResponseLatency\(\{ surface: 'realtime'/);
   assert.match(server, /retrieveInteractiveMemories\(convText, 8\)/,
