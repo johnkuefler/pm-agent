@@ -121,3 +121,61 @@ test('a partially reachable service still fails closed', async () => {
   };
   await assert.rejects(checkDeployReadiness({ apiKey: 'k', fetchImpl: flaky }));
 });
+
+// Third costume, same mistake, and this time it caught the deploy that fixed it.
+//
+// interactive_latency_failing and interactive_prompt_failing are p95 verdicts about the build that
+// is currently running. Neither can improve while that build is the one serving, so a deploy is the
+// only thing that can clear them. Production reported exactly this pair and refused the build
+// carrying corrected Slack budgets, which is the correction for that pair.
+//
+// The distinction is direction, not severity: a signal about work a restart would destroy is a
+// reason to wait, a signal about the quality of the code being replaced is an argument for going.
+const MEASUREMENT_ONLY_RUNTIME = {
+  reliability: {
+    status: 'action_required',
+    action_required: [
+      { code: 'interactive_latency_failing', message: 'A human-facing response surface is failing its measured latency gate.' },
+      { code: 'interactive_prompt_failing', message: 'A human-facing response surface is exceeding its prompt-size gate.' },
+    ],
+  },
+  background_work: { transcript_checkpoints: {}, post_interaction: { queued: 0, busy: false } },
+  requests: {},
+};
+
+test('a failing latency or prompt gate does not block the deploy that retunes it', () => {
+  const result = assessDeployReadiness({ runtimePerformance: MEASUREMENT_ONLY_RUNTIME });
+  assert.equal(result.ready, true,
+    'the only way to fix a p95 over budget is to ship different code; blocking on it is circular');
+  assert.equal(result.blockers.length, 0);
+  assert.equal(result.wedged.length, 1, 'the verdict still has to be visible on the way past');
+  assert.match(result.wedged[0].reason, /measures the build being replaced/);
+});
+
+test('a measurement verdict mixed with real work still blocks on the work', () => {
+  const mixed = {
+    ...MEASUREMENT_ONLY_RUNTIME,
+    reliability: {
+      status: 'action_required',
+      action_required: [
+        { code: 'interactive_prompt_failing', message: 'prompt over budget' },
+        { code: 'entity_persistence_failure', message: 'a durable write lane has an unresolved failure' },
+      ],
+    },
+  };
+  const result = assessDeployReadiness({ runtimePerformance: mixed });
+  assert.equal(result.ready, false,
+    'the escape hatch applies only when every signal describes the outgoing build');
+  assert.equal(result.blockers.length, 1);
+  assert.equal(result.blockers[0].kind, 'runtime_reliability');
+});
+
+test('an empty action_required list is not treated as an all-clear to step past', () => {
+  // Defensive: a verdict claiming action_required with no signals is malformed, not permission.
+  const result = assessDeployReadiness({
+    runtimePerformance: { ...MEASUREMENT_ONLY_RUNTIME,
+      reliability: { status: 'action_required', action_required: [] } },
+  });
+  assert.equal(result.ready, false);
+  assert.equal(result.blockers[0].kind, 'runtime_reliability');
+});
