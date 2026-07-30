@@ -37,6 +37,23 @@ function assessRoutineContract(routine = {}) {
 // in-flight work still blocks, which is the property this gate exists to protect.
 const WEDGED_RETRY_ATTEMPTS = 10;
 
+// The same mistake in a third costume, and this one caught the deploy that fixed it.
+//
+// These two signals are p95 verdicts about the build that is currently running: its replies are
+// slower than budget, or its prompt is larger than budget. Neither can improve while that build is
+// the one serving, so the only thing that can clear them is a deploy, and blocking on them means
+// the correction can never ship. That is what happened to the build carrying corrected Slack
+// budgets: the gate read the old build's failing measurements and refused the fix for them.
+//
+// The distinction that matters here is not severity, it is direction. A signal about work that
+// would be destroyed by a restart is a reason to wait. A signal about the quality of the code being
+// replaced is an argument for deploying, not against it. Anything measured stays visible in the
+// output either way.
+const OUTGOING_BUILD_QUALITY_SIGNALS = new Set([
+  'interactive_latency_failing',
+  'interactive_prompt_failing',
+]);
+
 function transcriptCheckpointsWedged(checkpoints = {}) {
   const attempts = Math.max(0, Number(checkpoints.maximum_retry_attempt) || 0);
   const retrying = Math.max(0, Number(checkpoints.retrying) || 0);
@@ -107,6 +124,11 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
         wedged.push({ ...entry, reason: 'a write lane is retrying past its ceiling and will not '
           + 'recover without a restart; deploying is the remedy',
           maximum_retry_attempt: Math.max(0, Number(checkpointLane.maximum_retry_attempt) || 0) });
+      } else if (signals.length && signals.every(signal => OUTGOING_BUILD_QUALITY_SIGNALS.has(signal?.code))) {
+        // Every signal is a measurement of the build being replaced, so none of them argue for
+        // waiting. A mixed verdict still blocks on whatever else is in it.
+        wedged.push({ ...entry, reason: 'every signal measures the build being replaced, and a '
+          + 'deploy is the only thing that can change them' });
       } else blockers.push(entry);
     }
     const postInteraction = runtimePerformance.background_work?.post_interaction || {};

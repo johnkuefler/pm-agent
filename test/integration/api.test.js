@@ -652,7 +652,11 @@ test('intelligence APIs connect commitments, episodes, relationships, experiment
     dimension: 'communication_format', confidence: 0.55,
     evidence: [{ type: 'slack_message',
       id: 'C12345678:1784226000.000001:1784226000.000001' }],
-    prediction: { due_at: '2026-07-30T00:00:00.000Z', observable: 'Whether John asks for the recommendation before implementation detail', probability: 0.55, control_probability: 0.5,
+    // A perspective is only 'open' while its prediction is still ahead of it, so this date has to be
+    // relative. As a literal it was a time bomb: it passed at midnight UTC on 2026-07-30 and the
+    // assertion below would have failed every run from then on, for a reason having nothing to do
+    // with whatever change was being tested.
+    prediction: { due_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), observable: 'Whether John asks for the recommendation before implementation detail', probability: 0.55, control_probability: 0.5,
       falsification_criteria: ['John accepts implementation detail without asking for the recommendation first.'] },
   } });
   assert.equal(perspective.body.perspective.status, 'open');

@@ -52,8 +52,13 @@ test('Railway waits for readiness and gives graceful shutdown a bounded drain wi
 
 test('latency evidence is assessed against frozen per-surface budgets without a composite consciousness score', () => {
   const now = Date.parse('2026-07-17T01:00:00.000Z');
+  // Prompt sizes straddle the Slack ceiling on purpose: one under, one over, so the within-budget
+  // count is actually being computed. Derived from the budget rather than written as literals,
+  // because literals sized to a previous ceiling turn this into a test of that old number.
+  const underSlackBudget = performance.PROMPT_BUDGET_CHARS.slack - 10000;
+  const overSlackBudget = performance.PROMPT_BUDGET_CHARS.slack + 9000;
   const traces = [
-    ['slack', 7000, 28000, 5200], ['slack', 9000, 47000, 7100],
+    ['slack', 7000, underSlackBudget, 5200], ['slack', 9000, overSlackBudget, 7100],
     ['zoom-chat', 4200, 31000, 3000], ['realtime', 1700, 34000, 1400],
   ].map(([surface, latency, promptChars, providerMs], index) => ({
     at: new Date(now - index * 1000).toISOString(), action: 'response_latency',
@@ -69,7 +74,7 @@ test('latency evidence is assessed against frozen per-surface budgets without a 
     { 2: 1, [performance.PROTOCOL_VERSION]: 4 });
   assert.equal(summary.within_budget, 3);
   assert.equal(summary.surfaces.slack.p95_ms, 9000);
-  assert.equal(summary.surfaces.slack.prompt_p95_chars, 47000);
+  assert.equal(summary.surfaces.slack.prompt_p95_chars, overSlackBudget);
   assert.equal(summary.surfaces.slack.prompt_within_budget, 1);
   assert.equal(summary.surfaces.slack.stage_p95_ms.provider_ms, 7100);
   assert.equal(summary.surfaces.slack.gate, 'collecting');
@@ -954,7 +959,10 @@ test('interactive intelligence uses one shared epistemic contract and a bounded 
 
 test('Slack final prompt fit preserves live safety constraints inside the hard provider envelope', () => {
   const { __test } = require('../../server');
-  const stable = 'S'.repeat(31887);
+  // Sized so the volatile half cannot fit: the point is that compaction sacrifices live context to
+  // keep the safety constraints, whatever the ceiling happens to be. A literal here silently stops
+  // testing compaction the moment the ceiling moves, which is exactly what happened at 31887.
+  const stable = 'S'.repeat(performance.PROMPT_BUDGET_CHARS.slack - 6113);
   const context = `\n\n[Live cognitive context]\n${'working context '.repeat(900)}`;
   const required = '[Before you hit send: preserve Nora voice.]'
     + '\n\nFINANCIAL ACCESS: never disclose restricted figures.'
