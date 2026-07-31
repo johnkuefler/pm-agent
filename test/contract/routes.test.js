@@ -18,6 +18,9 @@ test('the complete HTTP route surface remains registered in the same order', () 
     .filter(layer => layer.route)
     .flatMap(layer => Object.keys(layer.route.methods).map(method => `${method.toUpperCase()} ${layer.route.path}`));
   const expected = fs.readFileSync(path.join(__dirname, '../fixtures/routes.txt'), 'utf8').trim().split(/\r?\n/);
-  assert.equal(expected.length, 447, 'route fixture should cover the complete known API surface');
+  // 447 to 448: POST /learning-experiments/:id/conclude. Deliberate. An experiment could be
+  // measured but never finished, so review points accumulated forever with no way to record the
+  // decision. This count moving is meant to be an argument, not a formality.
+  assert.equal(expected.length, 448, 'route fixture should cover the complete known API surface');
   assert.deepEqual(actual, expected);
 });
