@@ -23685,6 +23685,100 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
     });
   }
 
+  // Write down what was decided about an experiment, and let it leave the queue.
+  //
+  // The apparatus could measure an experiment but not finish one. evaluateExperiment defaults
+  // conclude to false, that parameter was documented nowhere Nora could see it, and the due filter
+  // is status-based, so evaluating a decisive result recomputed the numbers and left it active to
+  // resurface every hour forever. Fourteen experiments, none ever concluded. She was told to
+  // "retain, revise, or retire" and given no way to write any of the three down.
+  //
+  // Two rules follow from that failure. The vocabulary here is the same vocabulary she is given, so
+  // there is nothing to translate. And every experiment can always reach a terminal state: retiring
+  // or revising never requires an evidence bar, because a decision to stop or reformulate is
+  // legitimate at any sample count, and gating it would rebuild the trap one level up. Only retain
+  // needs evidence, because claiming a behavior worked is the one claim samples have to support.
+  const EXPERIMENT_DISPOSITIONS = Object.freeze(['retain', 'revise', 'retire']);
+  const EXPERIMENT_TERMINAL_STATUS = Object.freeze({
+    retain: 'retained', revise: 'revised', retire: 'retired',
+  });
+
+  function concludeExperiment(id, { disposition, notes = '', successor = null } = {}) {
+    const choice = String(disposition || '').trim().toLowerCase();
+    if (!EXPERIMENT_DISPOSITIONS.includes(choice)) {
+      throw new Error(`disposition must be one of ${EXPERIMENT_DISPOSITIONS.join(', ')}`);
+    }
+    // A conclusion without a reason is how unfalsifiable rules accumulate, which is the thing these
+    // experiments exist to prevent. Same rail as routine self-editing: the note is not optional.
+    const reason = String(notes || '').trim();
+    if (!reason) throw new Error('concluding an experiment requires a note explaining the decision');
+
+    let successorInput = null;
+    if (choice === 'revise') {
+      const input = successor || {};
+      if (!String(input.behavior || '').trim() || !String(input.hypothesis || '').trim()) {
+        throw new Error('revising an experiment requires a successor behavior and hypothesis');
+      }
+      successorInput = input;
+    }
+
+    const concluded = mutate(current => {
+      const experiment = current.experiments.find(item => item.id === id);
+      if (!experiment) return null;
+      if (experiment.status !== 'active') {
+        throw new Error(`experiment ${id} is already ${experiment.status}`);
+      }
+      const values = experiment.samples.map(sample => Number(sample.value)).filter(Number.isFinite);
+      const currentValue = values.length
+        ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+      const comparator = experiment.baseline != null ? Number(experiment.baseline)
+        : experiment.target != null ? Number(experiment.target) : null;
+      const improved = currentValue == null || comparator == null ? null : currentValue >= comparator;
+      const enoughEvidence = values.length >= (experiment.minimum_samples || 5);
+      if (choice === 'retain' && !enoughEvidence) {
+        throw new Error(`retaining needs at least ${experiment.minimum_samples || 5} outcome samples; `
+          + `this experiment has ${values.length}. Retire or revise it instead.`);
+      }
+      experiment.evaluation = { samples: values.length, current: currentValue, comparator, improved,
+        enough_evidence: enoughEvidence, evaluated_at: clock().toISOString(), notes: reason.slice(0, 1000) };
+      experiment.status = EXPERIMENT_TERMINAL_STATUS[choice];
+      experiment.disposition = choice;
+      experiment.concluded_at = clock().toISOString();
+      experiment.conclusion = reason.slice(0, 1000);
+      return experiment;
+    });
+    if (!concluded) return null;
+    if (choice !== 'revise') return { experiment: concluded, successor: null };
+
+    // A revision keeps the evidence trail rather than deleting and re-creating: the closed
+    // experiment says what it became, and the successor says what it came from. Origin carries over
+    // so a revised self-chosen experiment stays hers, and the two-active cap is unaffected because
+    // the original is no longer active.
+    const next = createExperiment({
+      metric: concluded.metric,
+      baseline: concluded.baseline,
+      target: concluded.target,
+      minimum_samples: concluded.minimum_samples,
+      scope: concluded.scope,
+      origin: concluded.origin,
+      chosen_by: concluded.chosen_by,
+      guardrails: concluded.guardrails,
+      stop_conditions: concluded.stop_conditions,
+      source_refs: concluded.source_refs,
+      ...successorInput,
+      review_at: successorInput.review_at
+        || new Date(clock().getTime() + 14 * 86400000).toISOString(),
+      rationale: successorInput.rationale || `Revised from ${concluded.id}: ${reason}`.slice(0, 1200),
+    });
+    return mutate(current => {
+      const original = current.experiments.find(item => item.id === id);
+      const created = current.experiments.find(item => item.id === next.id);
+      if (created) created.revised_from = id;
+      if (original) original.revised_to = next.id;
+      return { experiment: original || concluded, successor: created || next };
+    });
+  }
+
   function initiativeStatus(scope = 'global', now = clock()) {
     const day = now.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
     const configured = state.initiative.scopes[scope] || {};
@@ -23771,7 +23865,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
       ...dueSoon.map(item => ({ type: 'commitment', id: item.id, priority: 'high', reason: `due soon${item.due ? ` (${item.due})` : ''}`, action: 'confirm the next concrete step before it becomes late' })),
       ...needsCheck.filter(item => !overdue.includes(item) && !dueSoon.includes(item)).map(item => ({ type: 'commitment', id: item.id, priority: 'normal', reason: 'follow-up check is due', action: 'look for evidence or ask the smallest useful follow-up' })),
       ...openEpisodes.slice(0, 12).map(item => ({ type: 'episode', id: item.id, priority: 'normal', reason: `${(item.open_loops || []).filter(loop => loop.status === 'open').length} unresolved loop(s)`, action: 'continue the same story instead of starting a disconnected thread' })),
-      ...experimentsDue.map(item => ({ type: 'experiment', id: item.id, priority: 'normal', reason: `review point reached with ${item.samples.length} sample(s)`, action: 'evaluate evidence and retain, revise, or retire' })),
+      // Naming the endpoint is the point. This line used to say "retain, revise, or retire" without
+      // saying how, and the call that does it took an undocumented flag, so the work was impossible
+      // to discharge and resurfaced every hour.
+      ...experimentsDue.map(item => ({ type: 'experiment', id: item.id, priority: 'normal', reason: `review point reached with ${item.samples.length} sample(s)`, action: 'POST /learning-experiments/<id>/conclude with disposition retain, revise, or retire and a note' })),
       ...staleCycles.map(item => ({ type: 'cycle', id: item.id, priority: 'critical', reason: 'a prior intelligence cycle never closed', action: 'inspect its last recorded state and recover or close it as failed' })),
       ...dueProspections.map(item => ({ type: 'prospection', id: item.id, priority: 'high', reason: `constructed-future decision due ${item.decision_due}`, action: 'check disconfirming evidence, preserve authority boundaries, and use or revise the planned option' })),
     ];
@@ -27150,6 +27247,7 @@ ${episodes.map(item => {
     reviewPerspective, teammatePerspectiveModelsSnapshot, teammatePerspectiveFrameForPerson,
     teammatePerspectiveResolutionSnapshot, recordTeammatePerspectiveResolutionAttempt,
     recordTrace, recordTraces, updateTraceOutcome, createExperiment, chooseExperiment, recordExperimentSample, evaluateExperiment,
+    concludeExperiment, EXPERIMENT_DISPOSITIONS,
     createProcedure, changeProcedureStatus, recordProcedureInteractionOutcome, runProcedureSelectionPass,
     procedureStatsSnapshot, procedureContextSelection, procedureAudit, procedureOutcomeAudit,
     procedureSelectionPassAudit,

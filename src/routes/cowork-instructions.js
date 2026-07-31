@@ -964,7 +964,16 @@ function registerCoworkInstructionsRoute(app) {
     work-behavior prior, never mind-reading, personality, private state, fact, permission, or consciousness.
   - GET /learning-experiments and POST /learning-experiments — measurable behavior changes. Every
     experiment needs a behavior, hypothesis, metric, and review point. Outcomes are sampled from
-    reviewed interactions. Evaluate and retain, revise, or retire; don't accumulate unfalsifiable rules.
+    reviewed interactions. Don't accumulate unfalsifiable rules.
+    POST /learning-experiments/<id>/evaluate recomputes the numbers and changes nothing else.
+    POST /learning-experiments/<id>/conclude is how an experiment ends, and it is the only thing that
+    clears it from your due list: { "disposition": "retain" | "revise" | "retire", "notes": "why" }.
+    Retain requires the minimum sample count, because claiming a behavior worked is the claim the
+    evidence has to carry. Retire and revise never do: deciding to stop or reformulate is legitimate
+    at any sample count, so a review point can always be discharged. Revise also takes
+    "successor": { "behavior", "hypothesis", optional "review_at" }, closes the current experiment,
+    and opens a linked one, so the revision keeps its evidence trail through revised_from and
+    revised_to rather than becoming an untraceable delete-and-recreate.
     POST /learning-experiments/choose is Nora's agency lane: she may originate at most two active,
     low-risk, reversible behavior experiments from her wants, takes, predictions, decision evidence,
     or an exact GET /dream-idea-seeds spark. It requires a rationale and source_refs and cannot alter

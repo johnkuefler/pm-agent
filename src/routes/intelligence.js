@@ -385,6 +385,15 @@ function registerIntelligenceRoutes(app, { requireAuth, requireResearchAuth = re
     if (!experiment) return res.status(404).json({ error: 'experiment not found' });
     res.json({ ok: true, experiment });
   });
+  // Evaluate recomputes; this decides. They were the same call with a flag that was documented
+  // nowhere, so an experiment could be measured forever and never finished. See concludeExperiment.
+  app.post('/learning-experiments/:id/conclude', requireAuth, (req, res) => {
+    try {
+      const result = store.concludeExperiment(req.params.id, req.body || {});
+      if (!result) return res.status(404).json({ error: 'experiment not found' });
+      res.json({ ok: true, ...result });
+    } catch (error) { res.status(400).json({ error: error.message }); }
+  });
 
   app.get('/procedures', requireAuth, (req, res) => {
     try {
