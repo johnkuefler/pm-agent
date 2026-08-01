@@ -6,6 +6,7 @@
 
 const axios = require('axios');
 const interactionOutcomeReviewAutopilot = require('../../intelligence/interaction-outcome-review-autopilot');
+const { SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./table-format');
 
 // Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
 // 24h so repeat lookups within the same hot session don't hammer Slack's API. Returns
@@ -236,19 +237,19 @@ async function resolveSlackUserByName(name) {
   return hit ? _slackUserByName[hit] : null;
 }
 
-// Post a plain Slack message to a channel or (U…) user, threaded if given. Mirrors /notify.
-async function postSlackMessage(target, text, threadTs) {
+// Post a Slack message to a channel or (U…) user, threaded if given. Mirrors /notify.
+async function postSlackMessage(target, text, threadTs, { post = axios.post } = {}) {
   if (!target || !text) return false;
   let channelId = target;
   if (String(target).startsWith('U')) {
-    const dm = await axios.post('https://slack.com/api/conversations.open', { users: target }, {
+    const dm = await post('https://slack.com/api/conversations.open', { users: target }, {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
     }).catch(() => null);
     channelId = dm?.data?.channel?.id || target;
   }
-  const payload = { channel: channelId, text };
+  const payload = { channel: channelId, ...formatSlackMessagePayload(text) };
   if (threadTs) payload.thread_ts = threadTs;
-  const r = await axios.post('https://slack.com/api/chat.postMessage', payload, {
+  const r = await post('https://slack.com/api/chat.postMessage', payload, {
     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
   }).catch(e => ({ data: { ok: false, error: e.message } }));
   return !!(r.data && r.data.ok);
@@ -337,4 +338,6 @@ module.exports = {
   resetSlackReactionCapabilityForTest,
   resolveChannelName,
   resolveChannelNames,
+  SLACK_TABLE_FORMATTING_INSTRUCTION,
+  formatSlackMessagePayload,
 };

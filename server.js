@@ -129,7 +129,7 @@ const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
 const { getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
   fetchSlackLanding, buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
-  resolveChannelNames } = require('./src/surfaces/slack/web-api');
+  resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
 const interactivePerformance = require('./src/intelligence/interactive-performance');
@@ -6244,7 +6244,7 @@ const SLACK_SEND_TOOL = {
     if (!text || !text.trim()) return { error: 'text is required' };
     if (containsFinancialContent(text)) return { error: 'Refused: that message contains financial figures. You will not broadcast dollar amounts or rates to a channel or person; tell the requester to share those directly.' };
     const post = async (channelId, where) => {
-      const r = await axios.post('https://slack.com/api/chat.postMessage', { channel: channelId, text },
+      const r = await axios.post('https://slack.com/api/chat.postMessage', { channel: channelId, ...formatSlackMessagePayload(text) },
         { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
       if (!r.data || !r.data.ok) return { error: `Slack send failed: ${r.data && r.data.error}` };
       return { ok: true, sent_to: where, ts: r.data.ts };
@@ -8137,7 +8137,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
-    tail += diagnosisInstruction(contextAssignment);
+    tail += SLACK_TABLE_FORMATTING_INSTRUCTION + diagnosisInstruction(contextAssignment);
     const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
     tail = fittedSlackPrompt.tail;
     if (fittedSlackPrompt.context_compacted || fittedSlackPrompt.linked_content_truncated
@@ -8626,7 +8626,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           Math.min(8000, slackTerminalAt - Date.now()));
         const res = await axios.post('https://slack.com/api/chat.postMessage', {
           channel,
-          text: segments[i],
+          ...formatSlackMessagePayload(segments[i]),
           thread_ts: threadTs
         }, {
           headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: deliveryBudgetMs,
@@ -9208,7 +9208,7 @@ app.post('/notify', requireAuth, async (req, res) => {
     }
 
     // Post the message
-    const msgPayload = { channel: channelId, text };
+    const msgPayload = { channel: channelId, ...formatSlackMessagePayload(text) };
     if (blocks) msgPayload.blocks = blocks;
     if (thread_ts) msgPayload.thread_ts = thread_ts;
 
