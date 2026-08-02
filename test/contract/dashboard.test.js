@@ -59,8 +59,14 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(meetingJs, /Promise\.all\(MEETING_FLAGS\.map/,
     'meeting controls should load concurrently instead of serially taxing the dashboard');
   assert.match(html, /id="gift-deliberation-list"/);
+  assert.match(html, /signed approval authorizes that exact gift/);
+  assert.match(html, /Slack conversation with you and the recipient/);
   assert.match(adminJs, /\/gifts\/deliberations\?limit=20/);
   assert.match(adminJs, /operatorApi\(`\/gifts\/intents/);
+  assert.match(adminJs, /Approve and send/);
+  assert.match(adminJs, /type="button"/);
+  assert.match(adminJs, /requestGiftDecision\(id, 'approve'/);
+  assert.match(adminJs, /Gift approved, but not sent/);
   assert.match(intelligenceJs, /authorship-boundary\/studies/);
   assert.match(intelligenceJs, /Only completed independently curated confirmatory studies enter the indicator/);
   assert.match(intelligenceJs, /matched self-prediction/);

@@ -6459,7 +6459,7 @@ async function deliverGoodyGiftLink(intent) {
   ].filter(Boolean).join('\n\n');
   try {
     const dm = await axios.post('https://slack.com/api/conversations.open',
-      { users: intent.recipient_slack_user_id },
+      { users: goodyGifting.giftSlackConversationUsers(intent.recipient_slack_user_id, resolveJohnSlackId()) },
       { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
     if (!dm.data?.ok || !dm.data?.channel?.id) {
       return { ok: false, error: dm.data?.error || 'Slack conversations.open failed' };
@@ -6468,7 +6468,7 @@ async function deliverGoodyGiftLink(intent) {
       { channel: dm.data.channel.id, text: message, unfurl_links: false, unfurl_media: false },
       { headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 8000 });
     if (!posted.data?.ok) return { ok: false, channel: dm.data.channel.id, error: posted.data?.error || 'Slack chat.postMessage failed' };
-    return { ok: true, channel: dm.data.channel.id, ts: posted.data.ts || null };
+    return { ok: true, channel: dm.data.channel.id, ts: posted.data.ts || null, included_operator: true };
   } catch (error) {
     return { ok: false, error: error.response?.data?.error || error.message || 'Slack delivery failed' };
   }

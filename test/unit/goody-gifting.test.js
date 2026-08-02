@@ -259,6 +259,12 @@ test('Goody gift link delivery is recorded separately from order send', () => {
   assert.match(recorded.intent.gift_link_delivery_commitment, /^[a-f0-9]{64}$/);
 });
 
+test('gift Slack delivery includes the recipient and John', () => {
+  assert.equal(goody.giftSlackConversationUsers('U03RECIPIENT', 'U03JOHNK'), 'U03RECIPIENT,U03JOHNK');
+  assert.equal(goody.giftSlackConversationUsers('U03JOHNK', 'U03JOHNK'), 'U03JOHNK');
+  assert.throws(() => goody.giftSlackConversationUsers('U03RECIPIENT', ''), /John Slack user ID/);
+});
+
 test('Goody defaults can be stored in the gift policy without Railway env edits', () => {
   const updated = goody.updateGiftDefaults(goody.emptyLedger(), {
     environment: 'production',

@@ -45,6 +45,14 @@ function commitment(value) {
   return crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
 }
 
+function giftSlackConversationUsers(recipientSlackUserId, johnSlackUserId) {
+  const recipient = normalizeText(recipientSlackUserId, 80);
+  const john = normalizeText(johnSlackUserId, 80);
+  if (!recipient) throw new Error('recipient_slack_user_id is required for Slack delivery');
+  if (!john) throw new Error('John Slack user ID is required for shared gift delivery');
+  return [...new Set([recipient, john])].join(',');
+}
+
 function emptyLedger(policy = DEFAULT_POLICY) {
   return { version: 2, policy: { ...DEFAULT_POLICY, ...(policy || {}) }, intents: [], deliberations: [] };
 }
@@ -685,6 +693,7 @@ module.exports = {
   deliberationReport,
   emptyLedger,
   extractHighPriceCents,
+  giftSlackConversationUsers,
   listGoodyCards,
   listGoodyProducts,
   normalizeLedger,

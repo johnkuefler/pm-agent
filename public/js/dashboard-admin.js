@@ -21,9 +21,9 @@
         const actionable = (intents.intents || []).slice().reverse();
         intentEl.innerHTML = actionable.length ? `<div class="intelligence-meta" style="margin-top:12px;">Gift proposals</div>${actionable.map(item => {
           const actions = item.status === 'proposed'
-            ? `<button class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','approve')">Approve</button><button class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject')">Reject</button>`
+            ? `<button type="button" class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','approve_and_send'); return false;">Approve and send</button><button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>`
             : item.status === 'approved'
-              ? `<button class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','send')">Send through Goody</button><button class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject')">Reject</button>` : '';
+              ? `<button type="button" class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','send'); return false;">Send approved gift</button><button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>` : '';
           const link = item.goody_gift_link ? ` &middot; <a href="${escHtml(item.goody_gift_link)}" target="_blank" rel="noopener">gift link</a>` : '';
           return `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name)} &middot; $${((item.amount_cents || 0) / 100).toFixed(2)} <span style="font-size:12px;color:var(--muted);">${escHtml(item.status)}</span></div><div class="memory-meta">${escHtml(item.reason)}${link}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
         }).join('')}` : '<p class="empty">No gift proposals yet.</p>';
@@ -35,19 +35,42 @@
       }
     }
 
+    async function requestGiftDecision(id, action, body) {
+      const response = await operatorApi(`/gifts/intents/${encodeURIComponent(id)}/${action}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const responseText = await response.text();
+      let value = {};
+      try { value = responseText ? JSON.parse(responseText) : {}; }
+      catch { value = { error: responseText.trim().slice(0, 240) || `Gift request failed with HTTP ${response.status}` }; }
+      return { response, value };
+    }
+
     async function decideGiftIntent(id, action) {
       const toast = document.getElementById('gift-toast');
-      let body = action === 'approve' ? { approved_by: 'John' } : action === 'send'
-        ? { sent_by: 'John', delivered_by: 'Nora' }
-        : { rejected_by: 'John', note: prompt('Why reject this gift?', '') || '' };
-      if ((action === 'approve' || action === 'send') && !confirm(`${action === 'send' ? 'Send' : 'Approve'} this gift?`)) return;
-      toast.className = 'toast'; toast.textContent = action === 'send' ? 'Creating the Goody gift...' : 'Saving decision...';
+      const approveAndSend = action === 'approve_and_send';
+      const sendsGift = action === 'send' || approveAndSend;
+      let body = action === 'send' ? { sent_by: 'John', delivered_by: 'Nora' }
+        : action === 'reject' ? { rejected_by: 'John', note: prompt('Why reject this gift?', '') || '' } : {};
+      if (sendsGift && !confirm(`${approveAndSend ? 'Approve and send' : 'Send'} this gift through Goody?`)) return;
+      toast.className = 'toast';
+      toast.textContent = approveAndSend ? 'Saving approval...' : action === 'send' ? 'Creating the Goody gift...' : 'Saving decision...';
       try {
-        const r = await operatorApi(`/gifts/intents/${encodeURIComponent(id)}/${action}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        });
-        const value = await r.json(); toast.className = r.ok ? 'toast ok' : 'toast err';
-        toast.textContent = r.ok ? (action === 'send' ? `Gift sent${value.delivery?.ok ? ' and link delivered in Slack.' : '.'}` : action === 'approve' ? 'Gift approved.' : 'Gift rejected.') : (value.error || 'Gift decision failed');
+        if (approveAndSend) {
+          const approval = await requestGiftDecision(id, 'approve', { approved_by: 'John' });
+          if (!approval.response.ok) {
+            toast.className = 'toast err'; toast.textContent = approval.value.error || 'Gift approval failed';
+            return;
+          }
+          toast.textContent = 'Approval saved. Creating the Goody gift...';
+          body = { sent_by: 'John', delivered_by: 'Nora' };
+          action = 'send';
+        }
+        const { response, value } = await requestGiftDecision(id, action, body);
+        toast.className = response.ok ? 'toast ok' : 'toast err';
+        toast.textContent = response.ok
+          ? (action === 'send' ? `Gift sent${value.delivery?.ok ? ' and link delivered by Nora in Slack with you included.' : '.'}` : 'Gift rejected.')
+          : (approveAndSend ? `Gift approved, but not sent: ${value.error || 'Goody send failed'}` : (value.error || 'Gift decision failed'));
         await loadGiftDeliberations();
       } catch (e) { toast.className = 'toast err'; toast.textContent = e.message; }
     }
