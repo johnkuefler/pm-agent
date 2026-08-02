@@ -8,7 +8,7 @@ function fixture(overrides = {}) {
   let records = overrides.records || [];
   const calls = [];
   const fakeClient = {
-    listTools: async () => ({ tools: [
+    listTools: async () => ({ tools: overrides.tools || [
       { name: 'find_projects', description: 'Find projects', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, annotations: { readOnlyHint: true } },
       { name: 'delete_project', description: 'Delete a project', inputSchema: { type: 'object' }, annotations: { destructiveHint: true } },
     ] }),
@@ -151,6 +151,36 @@ test('voice remains read-only even when a connection explicitly allows writes el
   assert.equal(regular.claudeTools.length, 2);
   assert.equal(voice.openaiTools.length, 1);
   assert.doesNotMatch(voice.openaiTools[0].name, /delete/);
+});
+
+test('Fleet stays read-only even when its connection is configured for full access', async () => {
+  const tools = [
+    { name: 'fleet_status', description: 'Fleet health', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+    { name: 'agent_detail', description: 'Agent detail', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+    { name: 'list_agent_runs', description: 'Agent runs', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
+    { name: 'set_agent_once_instructions', description: 'Queue work', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } },
+    { name: 'delete_agent', description: 'Delete agent', inputSchema: { type: 'object' }, annotations: { readOnlyHint: false, destructiveHint: true } },
+  ];
+  const { manager, calls } = fixture({ tools });
+  const created = await manager.create({ name: 'LimeLight Fleet', url: 'https://fleet.example.com/api/mcp', auth_type: 'none', access_mode: 'full' });
+  const tested = await manager.testConnection(created.id);
+
+  assert.equal(tested.access_mode, 'read_only');
+  assert.deepEqual(tested.tools.filter(tool => tool.allowed).map(tool => tool.name), [
+    'fleet_status', 'agent_detail', 'list_agent_runs',
+  ]);
+
+  const direct = manager.bindings({ allowWrites: true });
+  assert.deepEqual(direct.inventory.map(item => item.tool), [
+    'fleet_status', 'agent_detail', 'list_agent_runs',
+  ]);
+  await assert.rejects(
+    manager.callTool(created.id, 'set_agent_once_instructions', { onceInstructions: 'do this' }),
+    /not allowed/,
+  );
+  await direct.executors[direct.claudeTools[0].name]({});
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].name, 'fleet_status');
 });
 
 test('legacy plaintext MCP records are migrated in place to encrypted storage', async () => {

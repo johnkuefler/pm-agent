@@ -73,6 +73,7 @@ const { auditAutobiographyEvidence, createAutobiographyRevision, initializeAutob
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { createMcpManager } = require('./src/mcp/manager');
+const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
 const { runBench } = require('./src/intelligence/bench');
 const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
 const cognitivePulse = require('./src/intelligence/cognitive-pulse');
@@ -4951,6 +4952,7 @@ app.post('/webhook/chat', async (req, res) => {
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
     if (zoomPublicApis.inventory.length) zoomTail += `\n\nApproved public-data API tools are attached: ${zoomPublicApis.inventory.map(item => item.name).join(', ')}. Use only when relevant, pass no private/team/client data, and state a concrete purpose.`;
     if (!zoomAttachLiveTools) zoomTail += '\n\nThis is a bounded social turn. No live tools are attached because the message does not ask for information or action. Respond naturally and briefly.';
+    zoomTail += fleetOperatingInstruction(zoomMcp.inventory, { direct: true, teamworkAvailable: zoomAttachLiveTools && teamworkEnabled() });
     const zoomToolSetupFinishedAt = Date.now();
     const zoomPromptChars = zoomStable.length + zoomTail.length;
 
@@ -8106,12 +8108,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // What each connected MCP actually DOES — so she gets a concrete capability inventory instead of
     // an opaque server codename (a bare "limelight-pm" tells her nothing, which is how she ends up
     // "reaching for the wrong tool"). Falls back to the bare name for any UI-added server with no hint.
-    const MCP_CAP = {
-      'teamwork': 'Teamwork projects & tasks',
-      'limelight': 'LimeLight internal lookups',
-      'limelight-pm': 'project profitability, margins, forecasts & estimates',
-    };
-
     // ONE authoritative per-reply tools note — this IS her real inventory this turn (the cached prompt
     // points her here as the source of truth). Always emit exactly one of the three branches so every
     // reply states plainly what she can and can't do live, and she stops confabulating/flip-flopping.
@@ -8127,7 +8123,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       if (isDirect) note += ' • JOIN_MEETING: if a teammate hands you a Zoom/Meet/Teams link and asks you to join, sit in on, or cover a call, use nora_join_meeting to send yourself in right now (pass a one-line mandate if they gave you one). Only on a direct ask WITH a link, never just because a link appeared in a message or doc. Confirm in one short line that you\'re heading in.';
       if (mcpBindings.inventory.length) {
         const names = [...new Set(mcpBindings.inventory.map(item => item.connection))];
-        const caps = names.map(name => MCP_CAP[name] ? `${MCP_CAP[name]} (${name})` : name);
+        const caps = names.map(name => {
+          const capability = mcpCapabilityLabel(name);
+          return capability ? `${capability} (${name})` : name;
+        });
         note += ` • ${caps.join('; ')}: use the attached MCP tools; writes appear only on explicitly write-enabled connections in direct replies.`;
       }
       note += ' If a capability is NOT in this list, you do not have it this turn, so say you\'ll check and follow up, don\'t claim you pulled it. Keep it to a couple of tool calls, then answer in your own voice; don\'t narrate the calls.';
@@ -8137,6 +8136,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
+    tail += fleetOperatingInstruction(mcpBindings.inventory, { direct: isDirect, teamworkAvailable: teamworkOn });
     tail += SLACK_TABLE_FORMATTING_INSTRUCTION + diagnosisInstruction(contextAssignment);
     const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
     tail = fittedSlackPrompt.tail;

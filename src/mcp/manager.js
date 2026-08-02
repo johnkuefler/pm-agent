@@ -7,6 +7,7 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 const { auth, UnauthorizedError } = require('@modelcontextprotocol/sdk/client/auth.js');
+const { isFleetConnection } = require('./fleet-policy');
 
 const AUTH_TYPES = new Set(['none', 'bearer', 'url_token', 'oauth', 'client_credentials', 'custom_headers']);
 const BLOCKED_HEADERS = new Set(['host', 'content-length', 'connection', 'cookie', 'set-cookie', 'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'proxy-authorization']);
@@ -125,10 +126,21 @@ function withAbortableTimeout(operation, ms, label, parentSignal) {
   });
 }
 
+function toolIsWriteCapable(tool) {
+  return tool.annotations?.readOnlyHint === false
+    || tool.annotations?.destructiveHint === true
+    || WRITE_NAME.test(tool.name || '');
+}
+
 function toolIsAllowed(connection, tool) {
+  const writeCapable = toolIsWriteCapable(tool);
+  // Nora observes and routes work across Fleet, but never administers Fleet from
+  // a conversational surface. A direct Slack or meeting request can enable
+  // writes for other MCPs, so the Fleet connection needs its own hard ceiling
+  // even when its saved access mode is accidentally set to full.
+  if (isFleetConnection(connection) && writeCapable) return false;
   if (connection.access_mode === 'full') return true;
-  if (tool.annotations?.readOnlyHint === false || tool.annotations?.destructiveHint === true) return false;
-  return !WRITE_NAME.test(tool.name || '');
+  return !writeCapable;
 }
 
 function createMcpManager({ loadConnections, saveConnections, encryptionSecret, clock = () => new Date(), connectFactory, resolveDns = true, authFn = auth }) {
@@ -171,7 +183,8 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     const tokens = secrets.oauth_tokens || {};
     return {
       id: connection.id, name: connection.name, url_hint: urlHint(secrets.url || '', authType), auth_type: authType,
-      financial: !!connection.financial, enabled: connection.enabled !== false, access_mode: connection.access_mode || 'read_only',
+      financial: !!connection.financial, enabled: connection.enabled !== false,
+      access_mode: isFleetConnection(connection) ? 'read_only' : (connection.access_mode || 'read_only'),
       deferred: connection.deferred === undefined ? null : connection.deferred, // null = name-heuristic default
       credential_set: !!(authType === 'url_token' || secrets.token || secrets.client_secret || Object.keys(secrets.headers || {}).length || tokens.access_token),
       oauth_connected: !!tokens.access_token, oauth_expires_at: connection.oauth_expires_at || null,
@@ -447,7 +460,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
       if (connection.enabled === false || connection.status !== 'connected' || (connection.financial && !financialApproved)) continue;
       for (const tool of connection.tools || []) {
         if (!toolIsAllowed(connection, tool)) continue;
-        const writeCapable = tool.annotations?.readOnlyHint === false || tool.annotations?.destructiveHint === true || WRITE_NAME.test(tool.name || '');
+        const writeCapable = toolIsWriteCapable(tool);
         if ((voice || !allowWrites) && writeCapable) continue;
         const name = safeToolName(connection, tool.name);
         const description = `[${connection.name}] ${tool.description || tool.name}`.slice(0, 1000);
