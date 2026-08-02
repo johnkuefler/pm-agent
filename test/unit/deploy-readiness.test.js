@@ -130,6 +130,34 @@ test('deployment readiness waits for post-interaction, transcript, and persisten
   ]);
 });
 
+test('deployment readiness steps over only a stale post-interaction queue with no active work', () => {
+  const result = assessDeployReadiness({ lock: { locked: false }, activeBots: { count: 0, bots: [] },
+    routine: validRoutine, runtimePerformance: {
+      background_work: { post_interaction: { queued: 2, busy: false, in_flight: false,
+        next: 'slack', oldest_queued_age_ms: 10 * 60 * 1000 },
+        transcript_checkpoints: { pending: 0, scheduled: 0 } },
+      persistence: { pending_revisions: 0, strict_waiters: 0, flush_running: false,
+        cycle_open: { in_flight: false } },
+      entity_writes: { pending: 0, in_flight: 0 },
+    } });
+  assert.equal(result.ready, true);
+  assert.deepEqual(result.blockers, []);
+  assert.equal(result.wedged[0].kind, 'post_interaction_work_pending');
+  assert.equal(result.wedged[0].oldest_queued_age_ms, 10 * 60 * 1000);
+});
+
+test('deployment readiness still protects recent idle post-interaction work', () => {
+  const result = assessDeployReadiness({ lock: { locked: false }, activeBots: { count: 0, bots: [] },
+    routine: validRoutine, runtimePerformance: {
+      background_work: { post_interaction: { queued: 1, busy: false, in_flight: false,
+        next: 'slack', oldest_queued_age_ms: 60 * 1000 },
+        transcript_checkpoints: { pending: 0, scheduled: 0 } },
+      persistence: {}, entity_writes: {},
+    } });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.blockers.map(item => item.kind), ['post_interaction_work_pending']);
+});
+
 test('deployment readiness refuses to restart a runtime that needs reliability intervention', () => {
   const result = assessDeployReadiness({ lock: { locked: false }, activeBots: { count: 0, bots: [] },
     routine: validRoutine, runtimePerformance: {
