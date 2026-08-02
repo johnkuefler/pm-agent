@@ -5,6 +5,74 @@
       await Promise.all([loadGiftDeliberations(), loadApiOpportunities(), loadMcpConnections(), loadActiveBots(), loadScheduledBots(), loadBotChannels(), loadCalendarStatus(), loadFinancialApproved(), loadProactiveChannels(), loadJoinedThreads()]);
     }
 
+    function giftMoney(cents) {
+      return `$${((Number(cents) || 0) / 100).toFixed(2)}`;
+    }
+
+    function giftHasCents(value) {
+      return value !== null && value !== undefined && Number.isFinite(Number(value));
+    }
+
+    function giftDecisionButton(item, action, label, amountCents = null, quoteCommitment = '') {
+      const call = `decideGiftIntent(${JSON.stringify(String(item.id))},${JSON.stringify(action)},${amountCents == null ? 'null' : Number(amountCents)},${JSON.stringify(quoteCommitment)}); return false;`;
+      return `<button type="button" class="btn btn-primary btn-sm" onclick="${escHtml(call)}">${escHtml(label)}</button>`;
+    }
+
+    async function loadGiftQuotes(items) {
+      const quotedItems = [];
+      for (const item of items) {
+        if (!['proposed', 'approved'].includes(item.status)) {
+          quotedItems.push(item);
+          continue;
+        }
+        try {
+          const { response, value } = await requestGiftDecision(item.id, 'send', { preview: true });
+          quotedItems.push(response.ok && value.intent ? value.intent : { ...item, quote_error: value.error || 'Current Goody quote unavailable' });
+        } catch (error) {
+          quotedItems.push({ ...item, quote_error: error.message });
+        }
+      }
+      return quotedItems;
+    }
+
+    function giftCostRow(label, cents, strong = false) {
+      if (!giftHasCents(cents)) return '';
+      return `<div class="gift-cost-row${strong ? ' gift-cost-total' : ''}"><span>${escHtml(label)}</span><strong>${giftMoney(cents)}</strong></div>`;
+    }
+
+    function renderGiftQuote(item) {
+      const quote = item.goody_quote;
+      const product = quote?.product || {};
+      const breakdown = quote?.breakdown || {};
+      const total = giftHasCents(quote?.total_high_cents) ? Number(quote.total_high_cents) : NaN;
+      const approved = Number(item.amount_cents) || 0;
+      const original = Number(item.original_amount_cents) || approved;
+      const imageUrl = /^https:\/\//i.test(String(product.image_url || '')) ? String(product.image_url) : '';
+      const productPrice = giftHasCents(breakdown.product_cents) ? breakdown.product_cents : product.price;
+      const shipping = giftHasCents(breakdown.shipping_cents) ? breakdown.shipping_cents : product.shipping_price;
+      const hasQuote = Number.isFinite(total);
+      const overage = hasQuote ? total - approved : 0;
+      const title = product.name || item.product_name || item.suggested_gift || 'Goody gift';
+      const brand = product.brand_name ? `<div class="gift-product-brand">${escHtml(product.brand_name)}</div>` : '';
+      const image = imageUrl ? `<img class="gift-product-image" src="${escHtml(imageUrl)}" alt="">` : '<div class="gift-product-image gift-product-placeholder" aria-hidden="true">Gift</div>';
+      const proposal = original !== approved
+        ? `<div class="gift-approval-history"><span>Nora proposed ${giftMoney(original)}</span><span>Current approval ${giftMoney(approved)}</span></div>`
+        : `<div class="gift-approval-history"><span>Current approval ceiling ${giftMoney(approved)}</span></div>`;
+      const estimate = hasQuote ? `<div class="gift-costs">
+          ${giftCostRow('Product', productPrice)}
+          ${giftCostRow('Shipping', shipping)}
+          ${giftCostRow('Processing fee', breakdown.processing_fee_cents)}
+          ${giftCostRow('Estimated tax', breakdown.estimated_tax_high_cents)}
+          ${giftCostRow('Estimated Goody total', total, true)}
+        </div>` : `<div class="gift-quote-error">${escHtml(item.quote_error || quote?.product_error || 'Current Goody quote unavailable')}</div>`;
+      const warning = overage > 0
+        ? `<div class="gift-overage"><strong>${giftMoney(overage)} above the current approval.</strong> Approve the exact Goody estimate before this can be sent.</div>` : '';
+      return `<div class="gift-product-card">
+        <div class="gift-product-summary">${image}<div><div class="gift-product-name">${escHtml(title)}</div>${brand}<div class="gift-product-source">Selected Goody product</div></div></div>
+        ${estimate}${proposal}${warning}
+      </div>`;
+    }
+
     async function loadGiftDeliberations() {
       const policyEl = document.getElementById('gift-policy-state');
       const intentEl = document.getElementById('gift-intent-list');
@@ -18,14 +86,17 @@
         if (!intentResponse.ok || !deliberationResponse.ok) throw new Error(intents.error || deliberations.error || 'Gift state unavailable');
         const p = intents.report || {}; const d = deliberations.report || {};
         policyEl.innerHTML = `<strong>$${((p.remaining_cents || 0) / 100).toFixed(2)} remaining this month</strong> &middot; ${d.total || 0} deliberations &middot; ${d.proposals_created || 0} proposals &middot; ${p.goody_send_enabled ? 'Goody ready' : 'sending disabled'}`;
-        const actionable = (intents.intents || []).slice().reverse();
+        const actionable = await loadGiftQuotes((intents.intents || []).slice().reverse());
         intentEl.innerHTML = actionable.length ? `<div class="intelligence-meta" style="margin-top:12px;">Gift proposals</div>${actionable.map(item => {
+          const quoteTotal = Number(item.goody_quote?.total_high_cents);
+          const quoteCommitment = item.goody_quote?.commitment || '';
+          const needsMoreApproval = Number.isFinite(quoteTotal) && quoteTotal > Number(item.amount_cents);
           const actions = item.status === 'proposed'
-            ? `<button type="button" class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','approve_and_send'); return false;">Approve and send</button><button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>`
+            ? `${needsMoreApproval ? giftDecisionButton(item, 'approve_quote_and_send', `Approve ${giftMoney(quoteTotal)} and send`, quoteTotal, quoteCommitment) : giftDecisionButton(item, 'approve_and_send', 'Approve and send')}<button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>`
             : item.status === 'approved'
-              ? `<button type="button" class="btn btn-primary btn-sm" onclick="decideGiftIntent('${item.id}','send'); return false;">Send approved gift</button><button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>` : '';
+              ? `${needsMoreApproval ? giftDecisionButton(item, 'approve_quote_and_send', `Approve ${giftMoney(quoteTotal)} and send`, quoteTotal, quoteCommitment) : giftDecisionButton(item, 'send', 'Send approved gift')}<button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>` : '';
           const link = item.goody_gift_link ? ` &middot; <a href="${escHtml(item.goody_gift_link)}" target="_blank" rel="noopener">gift link</a>` : '';
-          return `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name)} &middot; $${((item.amount_cents || 0) / 100).toFixed(2)} <span style="font-size:12px;color:var(--muted);">${escHtml(item.status)}</span></div><div class="memory-meta">${escHtml(item.reason)}${link}</div></div><div style="display:flex;gap:6px;flex-wrap:wrap;">${actions}</div></div>`;
+          return `<div class="gift-intent"><div class="gift-intent-heading"><div><div class="memory-fact">${escHtml(item.recipient_name)} <span class="gift-status">${escHtml(item.status)}</span></div><div class="gift-reason">${escHtml(item.reason)}${link}</div></div></div>${renderGiftQuote(item)}<div class="gift-actions">${actions}</div></div>`;
         }).join('')}` : '<p class="empty">No gift proposals yet.</p>';
         const records = deliberations.deliberations || [];
         deliberationEl.innerHTML = records.length ? `<div class="intelligence-meta" style="margin-top:12px;">Recent deliberations</div>${records.map(item => `<div class="memory-item"><div style="flex:1;min-width:0;"><div class="memory-fact">${escHtml(item.recipient_name || 'Daily scan')} <span style="font-size:12px;color:var(--muted);">${escHtml(item.decision.replaceAll('_', ' '))}</span></div><div class="memory-meta">${escHtml(item.occasion)}</div><div class="memory-meta">Why: ${escHtml(item.rationale)}</div>${item.counterconsiderations?.length ? `<div class="memory-meta">Against: ${escHtml(item.counterconsiderations.join(' · '))}</div>` : ''}</div></div>`).join('')}` : '<p class="empty">No gift deliberations recorded yet.</p>';
@@ -46,18 +117,30 @@
       return { response, value };
     }
 
-    async function decideGiftIntent(id, action) {
+    async function decideGiftIntent(id, action, quoteAmountCents = null, quoteCommitment = '') {
       const toast = document.getElementById('gift-toast');
       const approveAndSend = action === 'approve_and_send';
-      const sendsGift = action === 'send' || approveAndSend;
+      const approveQuoteAndSend = action === 'approve_quote_and_send';
+      const approvalFlow = approveAndSend || approveQuoteAndSend;
+      const sendsGift = action === 'send' || approvalFlow;
       let body = action === 'send' ? { sent_by: 'John', delivered_by: 'Nora' }
         : action === 'reject' ? { rejected_by: 'John', note: prompt('Why reject this gift?', '') || '' } : {};
-      if (sendsGift && !confirm(`${approveAndSend ? 'Approve and send' : 'Send'} this gift through Goody?`)) return;
+      const confirmation = approveQuoteAndSend
+        ? `Approve the exact ${giftMoney(quoteAmountCents)} Goody estimate and send this gift? This replaces the earlier ceiling and explicitly authorizes the quoted overage.`
+        : `${approveAndSend ? 'Approve and send' : 'Send'} this gift through Goody?`;
+      if (sendsGift && !confirm(confirmation)) return;
       toast.className = 'toast';
-      toast.textContent = approveAndSend ? 'Saving approval...' : action === 'send' ? 'Creating the Goody gift...' : 'Saving decision...';
+      toast.textContent = approvalFlow ? 'Saving approval...' : action === 'send' ? 'Creating the Goody gift...' : 'Saving decision...';
       try {
-        if (approveAndSend) {
-          const approval = await requestGiftDecision(id, 'approve', { approved_by: 'John' });
+        if (approvalFlow) {
+          const approvalBody = approveQuoteAndSend ? {
+            approved_by: 'John',
+            amount_cents: Number(quoteAmountCents),
+            allow_per_gift_overage: true,
+            quote_commitment: quoteCommitment,
+            note: 'John approved the current itemized Goody estimate in the operator dashboard.',
+          } : { approved_by: 'John' };
+          const approval = await requestGiftDecision(id, 'approve', approvalBody);
           if (!approval.response.ok) {
             toast.className = 'toast err'; toast.textContent = approval.value.error || 'Gift approval failed';
             return;
@@ -70,7 +153,7 @@
         toast.className = response.ok ? 'toast ok' : 'toast err';
         toast.textContent = response.ok
           ? (action === 'send' ? `Gift sent${value.delivery?.ok ? ' and link delivered by Nora in Slack with you included.' : '.'}` : 'Gift rejected.')
-          : (approveAndSend ? `Gift approved, but not sent: ${value.error || 'Goody send failed'}` : (value.error || 'Gift decision failed'));
+          : (approvalFlow ? `Gift approved, but not sent: ${value.error || 'Goody send failed'}` : (value.error || 'Gift decision failed'));
         await loadGiftDeliberations();
       } catch (e) { toast.className = 'toast err'; toast.textContent = e.message; }
     }

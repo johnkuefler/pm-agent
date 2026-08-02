@@ -224,11 +224,114 @@ test('Goody send refuses estimates above the approved amount', async () => {
       evidence: [{ type: 'intelligence_cycle_action', id: 'cycle-1:warmth' }],
     }, goody.emptyLedger());
     const approved = goody.approveIntent(created.ledger, 'gift-too-much');
-    await assert.rejects(() => goody.sendIntent(approved.ledger, 'gift-too-much', { fetchImpl }), /exceeds approved amount/);
-    assert.equal(calls, 1);
+    await assert.rejects(() => goody.sendIntent(approved.ledger, 'gift-too-much', { fetchImpl }), error => {
+      assert.match(error.message, /exceeds approved amount/);
+      assert.equal(error.code, 'goody_approval_too_low');
+      assert.equal(error.required_amount_cents, 2600);
+      assert.equal(error.approved_amount_cents, 1500);
+      assert.equal(error.quote_result.intent.goody_price_estimate_cents, 2600);
+      return true;
+    });
+    assert.equal(calls, 2);
   } finally {
     if (prior.key === undefined) delete process.env.GOODY_API_KEY; else process.env.GOODY_API_KEY = prior.key;
     if (prior.enabled === undefined) delete process.env.GOODY_SEND_ENABLED; else process.env.GOODY_SEND_ENABLED = prior.enabled;
+    if (prior.product === undefined) delete process.env.GOODY_PRODUCT_ID; else process.env.GOODY_PRODUCT_ID = prior.product;
+  }
+});
+
+test('Goody quote surfaces product costs and binds an exact operator overage approval', async () => {
+  const prior = {
+    key: process.env.GOODY_API_KEY,
+    product: process.env.GOODY_PRODUCT_ID,
+  };
+  Object.assign(process.env, {
+    GOODY_API_KEY: 'test-goody-key',
+    GOODY_PRODUCT_ID: 'product-lego',
+  });
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET' });
+    if (url.endsWith('/v1/order_batches/price')) {
+      return new Response(JSON.stringify({
+        cart_price: {
+          price_product: 4000,
+          price_shipping: 900,
+          price_processing_fee: 0,
+          price_pre_tax: 4900,
+          price_est_tax_low: 700,
+          price_est_tax_high: 760,
+          price_est_total_low: 5600,
+          price_est_total_high: 5660,
+        },
+        total_price: { est_group_total_low: 5600, est_group_total_high: 5660 },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    if (url.endsWith('/v1/products/product-lego')) {
+      return new Response(JSON.stringify({ data: {
+        id: 'product-lego',
+        name: 'Botanicals Petite Sunny Bouquet Flower Set',
+        brand: { name: 'LEGO', shipping_price: 900 },
+        price: 4000,
+        images: [{ image_large: { url: 'https://cdn.example.com/lego.jpg' } }],
+      } }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+    throw new Error(`unexpected Goody URL ${url}`);
+  };
+  try {
+    const created = goody.createIntent({
+      id: 'gift-quote-overage',
+      recipient_name: 'Mallory Maryman',
+      recipient_slack_user_id: 'U03MALLORY',
+      reason_category: 'thanks',
+      reason: 'Mallory stepped onto the website project mid-crunch and unblocked six migration pages.',
+      amount_cents: 2500,
+      suggested_gift: 'Configured Goody default if it prices within the approved amount',
+      evidence: [{ type: 'teamwork_task', id: 'tw-mallory' }],
+    }, goody.emptyLedger());
+    const approved = goody.approveIntent(created.ledger, 'gift-quote-overage');
+    const quoted = await goody.quoteIntent(approved.ledger, 'gift-quote-overage', {
+      fetchImpl,
+      now: new Date('2026-08-02T20:00:00Z'),
+    });
+
+    assert.equal(quoted.quote.product.name, 'Botanicals Petite Sunny Bouquet Flower Set');
+    assert.equal(quoted.quote.product.brand_name, 'LEGO');
+    assert.equal(quoted.quote.breakdown.product_cents, 4000);
+    assert.equal(quoted.quote.breakdown.shipping_cents, 900);
+    assert.equal(quoted.quote.breakdown.estimated_tax_high_cents, 760);
+    assert.equal(quoted.quote.total_high_cents, 5660);
+    assert.match(quoted.quote.commitment, /^[a-f0-9]{64}$/);
+    assert.deepEqual(calls.map(call => call.method), ['POST', 'GET']);
+
+    assert.throws(() => goody.approveIntent(quoted.ledger, 'gift-quote-overage', {
+      amountCents: 5660,
+      quoteCommitment: quoted.quote.commitment,
+      note: 'John approved the itemized quote.',
+    }), /explicit per-gift overage approval/);
+    assert.throws(() => goody.approveIntent(quoted.ledger, 'gift-quote-overage', {
+      amountCents: 5660,
+      allowPerGiftOverage: true,
+      quoteCommitment: 'stale-quote',
+      note: 'John approved the itemized quote.',
+    }), /quote changed/);
+
+    const revised = goody.approveIntent(quoted.ledger, 'gift-quote-overage', {
+      approvedBy: 'John',
+      amountCents: 5660,
+      allowPerGiftOverage: true,
+      quoteCommitment: quoted.quote.commitment,
+      note: 'John approved the itemized quote.',
+      now: new Date('2026-08-02T20:01:00Z'),
+    });
+    assert.equal(revised.intent.original_amount_cents, 2500);
+    assert.equal(revised.intent.amount_cents, 5660);
+    assert.equal(revised.intent.amount_authorization.approved_amount_cents, 5660);
+    assert.equal(revised.intent.amount_authorization.quote_commitment, quoted.quote.commitment);
+    assert.equal(revised.report.approved_or_sent_cents, 5660);
+    assert.equal(revised.report.remaining_cents, 4340);
+  } finally {
+    if (prior.key === undefined) delete process.env.GOODY_API_KEY; else process.env.GOODY_API_KEY = prior.key;
     if (prior.product === undefined) delete process.env.GOODY_PRODUCT_ID; else process.env.GOODY_PRODUCT_ID = prior.product;
   }
 });

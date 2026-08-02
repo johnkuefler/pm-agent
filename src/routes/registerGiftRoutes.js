@@ -14,6 +14,8 @@ function publicIntent(intent) {
     reason_category: intent.reason_category,
     reason: intent.reason,
     amount_cents: intent.amount_cents,
+    original_amount_cents: intent.original_amount_cents || null,
+    amount_authorization: intent.amount_authorization || null,
     currency: intent.currency,
     product_id: intent.product_id || null,
     product_name: intent.product_name || null,
@@ -36,6 +38,7 @@ function publicIntent(intent) {
     goody_reference_id: intent.goody_reference_id || null,
     goody_customer_reference_id: intent.goody_customer_reference_id || null,
     goody_price_estimate_cents: intent.goody_price_estimate_cents || null,
+    goody_quote: intent.goody_quote || null,
     goody_send_commitment: intent.goody_send_commitment || null,
     gift_link_delivery_status: intent.gift_link_delivery_status || null,
     gift_link_delivery_channel: intent.gift_link_delivery_channel || null,
@@ -178,6 +181,10 @@ function registerGiftRoutes(app, deps) {
     try {
       const result = goodyGifting.approveIntent(loadGiftLedger(), req.params.id, {
         approvedBy: req.body?.approved_by || 'John',
+        amountCents: req.body?.amount_cents,
+        allowPerGiftOverage: req.body?.allow_per_gift_overage === true,
+        quoteCommitment: req.body?.quote_commitment || '',
+        note: req.body?.note || '',
       });
       await saveGiftLedger(result.ledger);
       res.json({ ok: true, intent: publicIntent(result.intent), report: result.report });
@@ -201,6 +208,12 @@ function registerGiftRoutes(app, deps) {
 
   app.post('/gifts/intents/:id/send', requireAuth, requireOperatorAuth, async (req, res) => {
     try {
+      if (req.body?.preview === true) {
+        const quoted = await goodyGifting.quoteIntent(loadGiftLedger(), req.params.id);
+        await saveGiftLedger(quoted.ledger);
+        return res.json({ ok: true, preview: true, quote: quoted.quote,
+          intent: publicIntent(quoted.intent), report: quoted.report });
+      }
       const result = await goodyGifting.sendIntent(loadGiftLedger(), req.params.id, {
         sentBy: req.body?.sent_by || 'John',
       });
@@ -230,8 +243,25 @@ function registerGiftRoutes(app, deps) {
         report: goodyGifting.policyReport(loadGiftLedger()),
       });
     } catch (error) {
-      const status = error.code === 'goody_not_ready' ? 409 : 400;
-      res.status(status).json({ error: error.message });
+      if (error.quote_result?.ledger) {
+        try {
+          await saveGiftLedger(error.quote_result.ledger);
+        } catch {
+          return res.status(500).json({
+            error: 'Goody quote could not be saved; no gift was sent',
+            code: 'gift_quote_persistence_failed',
+          });
+        }
+      }
+      const status = ['goody_not_ready', 'goody_approval_too_low'].includes(error.code) ? 409 : 400;
+      res.status(status).json({
+        error: error.message,
+        code: error.code || null,
+        required_amount_cents: error.required_amount_cents || null,
+        approved_amount_cents: error.approved_amount_cents || null,
+        quote: error.quote_result?.quote || null,
+        intent: publicIntent(error.quote_result?.intent),
+      });
     }
   });
 }

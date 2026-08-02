@@ -451,8 +451,10 @@ function registerCoworkInstructionsRoute(app) {
   than silently skipping the question: propose, choose ordinary warmth, defer, or explicitly
   record that the daily relationship scan found no candidate. Nora may propose, but her API
   credential cannot approve, reject, change defaults, or send; those routes require a signed
-  operator dashboard session. The dashboard normally approves and sends in one confirmed action;
-  an approved intent remains available for a send retry if Goody or Slack delivery fails. Never
+  operator dashboard session. The dashboard retrieves the selected product and itemized Goody
+  estimate before approval. If that estimate is above Nora's proposal, only John can replace the
+  ceiling with an approval bound to that exact quote. The dashboard normally approves and sends
+  in one confirmed action; an approved intent remains available for a send retry if Goody or Slack delivery fails. Never
   claim a gift was sent unless the operator-only send succeeds.
   Default policy is proposal-only: $100/month, $50 max per gift, approval over $15,
   internal-team-first, allowed reasons only thanks/congratulations/support/milestone/repair.
@@ -514,7 +516,9 @@ function registerCoworkInstructionsRoute(app) {
 
   - POST /gifts/intents/:id/approve
     Signed operator-dashboard approval only. Nora cannot call it. The dashboard follows a
-    successful approval with the send call in the same confirmed operator action.
+    successful approval with the send call in the same confirmed operator action. An amount
+    change requires the current quote commitment, an operator note, and explicit authorization
+    when the quote is above the normal per-gift limit. The original proposed amount is retained.
 
   - POST /gifts/intents/:id/reject
     Signed operator-dashboard rejection only. Nora cannot call it.
@@ -523,7 +527,8 @@ function registerCoworkInstructionsRoute(app) {
     Signed operator-dashboard send after approval. Nora cannot call it. Fails closed unless GOODY_SEND_ENABLED=true,
     GOODY_API_KEY, and a default or intent-specific product ID are configured. Before
     creating the Goody order batch, the server calls Goody's price endpoint and refuses
-    any estimate above the approved amount. If the recipient has a Slack user ID and the
+    any estimate above the approved amount. The operator dashboard may call this endpoint
+    with { "preview": true } to save a non-purchasing product and price quote first. If the recipient has a Slack user ID and the
     order response includes a gift link, the endpoint opens a Slack conversation with the
     recipient and John, posts the gift link as Nora, and records
     gift_link_delivery_status. A successful response includes stored goody_order_batch_id,

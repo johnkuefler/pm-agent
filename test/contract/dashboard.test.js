@@ -61,9 +61,13 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(html, /id="gift-deliberation-list"/);
   assert.match(html, /signed approval authorizes that exact gift/);
   assert.match(html, /Slack conversation with you and the recipient/);
+  assert.match(html, /current itemized estimate/);
   assert.match(adminJs, /\/gifts\/deliberations\?limit=20/);
   assert.match(adminJs, /operatorApi\(`\/gifts\/intents/);
   assert.match(adminJs, /Approve and send/);
+  assert.match(adminJs, /Approve the exact/);
+  assert.match(adminJs, /allow_per_gift_overage: true/);
+  assert.match(adminJs, /Estimated Goody total/);
   assert.match(adminJs, /type="button"/);
   assert.match(adminJs, /requestGiftDecision\(id, 'approve'/);
   assert.match(adminJs, /Gift approved, but not sent/);

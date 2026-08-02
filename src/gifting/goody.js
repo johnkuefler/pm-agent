@@ -405,20 +405,65 @@ function createDeliberation(input = {}, ledger = emptyLedger(), { now = new Date
     report: deliberationReport(current, { now }), policy_report: policyReport(current, { now }) };
 }
 
-function approveIntent(ledger = emptyLedger(), id, { approvedBy = 'John', now = new Date() } = {}) {
+function approveIntent(ledger = emptyLedger(), id, {
+  approvedBy = 'John',
+  amountCents = null,
+  allowPerGiftOverage = false,
+  quoteCommitment = '',
+  note = '',
+  now = new Date(),
+} = {}) {
   const current = normalizeLedger(ledger);
   const intent = current.intents.find(item => item.id === id);
   if (!intent) throw new Error('gift intent not found');
   if (!['proposed', 'approved'].includes(intent.status)) throw new Error('only proposed gift intents can be approved');
   const alreadyApproved = intent.status === 'approved';
+  const requestedAmount = amountCents == null ? Number(intent.amount_cents) : Math.round(Number(amountCents));
+  if (!Number.isFinite(requestedAmount) || requestedAmount < 100) throw new Error('approved amount must be at least 100 cents');
+  const amountChanged = requestedAmount !== Number(intent.amount_cents);
+  const approvalNote = normalizeText(note, 500);
+  if (amountChanged) {
+    const quotedAmount = Number(intent.goody_quote?.total_high_cents);
+    if (!Number.isFinite(quotedAmount) || !intent.goody_quote?.commitment) {
+      throw new Error('a current Goody quote is required before changing the approved amount');
+    }
+    if (normalizeText(quoteCommitment, 128) !== intent.goody_quote.commitment) {
+      throw new Error('the Goody quote changed; refresh it before approving the new amount');
+    }
+    if (requestedAmount !== quotedAmount) {
+      throw new Error('the changed approval must equal the current Goody high estimate');
+    }
+    if (!approvalNote) throw new Error('an approval note is required when changing the gift amount');
+    if (requestedAmount > Number(current.policy.per_gift_limit_cents) && allowPerGiftOverage !== true) {
+      throw new Error('explicit per-gift overage approval is required above the policy limit');
+    }
+  }
   const report = policyReport(current, { now });
-  if (!alreadyApproved && intent.amount_cents > report.remaining_cents) throw new Error('approving this gift would exceed monthly budget');
-  if (alreadyApproved) return { ledger: current, intent, report };
+  const availableCents = report.remaining_cents + (alreadyApproved ? Number(intent.amount_cents) : 0);
+  if (requestedAmount > availableCents) throw new Error('approving this gift would exceed monthly budget');
+  if (alreadyApproved && !amountChanged) return { ledger: current, intent, report };
+  const approvedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  if (amountChanged) {
+    const priorAmount = Number(intent.amount_cents);
+    intent.original_amount_cents = Number(intent.original_amount_cents) || priorAmount;
+    intent.amount_cents = requestedAmount;
+    intent.amount_authorization = {
+      prior_amount_cents: priorAmount,
+      approved_amount_cents: requestedAmount,
+      quote_commitment: intent.goody_quote.commitment,
+      note: approvalNote,
+      approved_by: normalizeText(approvedBy, 120) || 'John',
+      approved_at: approvedAt,
+    };
+  }
   intent.status = 'approved';
   intent.approved_by = normalizeText(approvedBy, 120) || 'John';
-  intent.approved_at = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  intent.approved_at = approvedAt;
   intent.approval_commitment = commitment({
     id: intent.id, request_commitment: intent.request_commitment,
+    amount_cents: intent.amount_cents,
+    quote_commitment: amountChanged ? intent.goody_quote.commitment : null,
+    amount_authorization: intent.amount_authorization || null,
     approved_by: intent.approved_by, approved_at: intent.approved_at,
   });
   return { ledger: current, intent, report: policyReport(current, { now }) };
@@ -631,6 +676,84 @@ function extractHighPriceCents(priceBody = {}) {
   return candidates.length ? Math.max(...candidates) : null;
 }
 
+function optionalCents(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const cents = Number(value);
+  return Number.isFinite(cents) ? Math.round(cents) : null;
+}
+
+function publicPriceBreakdown(priceBody = {}) {
+  const cart = priceBody.cart_price || priceBody.cart_price_estimate || {};
+  const total = priceBody.total_price || priceBody.total_price_estimate || {};
+  return {
+    product_cents: optionalCents(cart.price_product),
+    shipping_cents: optionalCents(cart.price_shipping),
+    processing_fee_cents: optionalCents(cart.price_processing_fee),
+    pre_tax_cents: optionalCents(cart.price_pre_tax),
+    estimated_tax_low_cents: optionalCents(cart.price_est_tax_low),
+    estimated_tax_high_cents: optionalCents(cart.price_est_tax_high),
+    total_low_cents: optionalCents(total.est_group_total_low ?? cart.price_est_total_low),
+    total_high_cents: optionalCents(total.est_group_total_high ?? cart.price_est_total_high),
+  };
+}
+
+async function getGoodyProduct(ledger = emptyLedger(), id, { fetchImpl = globalThis.fetch } = {}) {
+  const current = normalizeLedger(ledger);
+  const productId = normalizeText(id, 120);
+  if (!productId) throw new Error('Goody product ID is required');
+  const body = await getGoodyJson(`/v1/products/${encodeURIComponent(productId)}`, {
+    policy: current.policy,
+    fetchImpl,
+  });
+  return publicProduct(body.data || body);
+}
+
+async function quoteIntent(ledger = emptyLedger(), id, {
+  now = new Date(),
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  const current = normalizeLedger(ledger);
+  const intent = current.intents.find(item => item.id === id);
+  if (!intent) throw new Error('gift intent not found');
+  if (!['proposed', 'approved'].includes(intent.status)) throw new Error('only proposed or approved gifts can be quoted');
+  const { payload, config } = buildGoodyOrderPayload(intent, current.policy);
+  if (!config.api_key) throw new Error('GOODY_API_KEY is not configured');
+  const pricePayload = { send_method: payload.send_method, recipients: payload.recipients, cart: payload.cart };
+  const price = await postGoodyJson('/v1/order_batches/price', pricePayload, { config, fetchImpl });
+  const breakdown = publicPriceBreakdown(price);
+  const highEstimate = extractHighPriceCents(price);
+  if (!Number.isFinite(highEstimate)) throw new Error('Goody price response did not include a high estimate');
+  const productId = payload.cart.items[0].product_id;
+  let product = null;
+  let productError = '';
+  try {
+    product = await getGoodyProduct(current, productId, { fetchImpl });
+  } catch (error) {
+    productError = normalizeText(error.message, 240);
+  }
+  const quotedAt = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  const quote = {
+    product: product || { id: productId, name: intent.product_name || intent.suggested_gift || null },
+    product_error: productError || null,
+    breakdown,
+    total_low_cents: breakdown.total_low_cents,
+    total_high_cents: highEstimate,
+    quoted_at: quotedAt,
+  };
+  quote.commitment = commitment({
+    intent_id: intent.id,
+    request_commitment: intent.request_commitment,
+    product_id: productId,
+    breakdown,
+    total_high_cents: highEstimate,
+  });
+  intent.product_id = productId;
+  if (product?.name) intent.product_name = normalizeText(product.name, 200);
+  intent.goody_price_estimate_cents = highEstimate;
+  intent.goody_quote = quote;
+  return { ledger: current, intent, quote, price, report: policyReport(current, { now }) };
+}
+
 async function sendIntent(ledger = emptyLedger(), id, {
   sentBy = 'John',
   now = new Date(),
@@ -646,37 +769,42 @@ async function sendIntent(ledger = emptyLedger(), id, {
     error.code = 'goody_not_ready';
     throw error;
   }
-  const { payload, config } = buildGoodyOrderPayload(intent, current.policy);
-  const pricePayload = { send_method: payload.send_method, recipients: payload.recipients, cart: payload.cart };
-  const price = await postGoodyJson('/v1/order_batches/price', pricePayload, { config, fetchImpl });
-  const highEstimate = extractHighPriceCents(price);
-  if (!Number.isFinite(highEstimate)) throw new Error('Goody price response did not include a high estimate');
-  if (highEstimate > Number(intent.amount_cents)) {
-    throw new Error(`Goody estimated total ${highEstimate} exceeds approved amount ${intent.amount_cents}`);
+  const quoted = await quoteIntent(current, id, { now, fetchImpl });
+  const sendLedger = quoted.ledger;
+  const sendIntentRecord = quoted.intent;
+  const highEstimate = quoted.quote.total_high_cents;
+  if (highEstimate > Number(sendIntentRecord.amount_cents)) {
+    const error = new Error(`Goody estimated total ${highEstimate} exceeds approved amount ${sendIntentRecord.amount_cents}`);
+    error.code = 'goody_approval_too_low';
+    error.required_amount_cents = highEstimate;
+    error.approved_amount_cents = Number(sendIntentRecord.amount_cents);
+    error.quote_result = quoted;
+    throw error;
   }
+  const { payload, config } = buildGoodyOrderPayload(sendIntentRecord, sendLedger.policy);
   const orderBatch = await postGoodyJson('/v1/order_batches', payload, { config, fetchImpl });
   const firstOrder = Array.isArray(orderBatch.orders_preview) ? orderBatch.orders_preview[0] : null;
-  intent.status = 'sent';
-  intent.sent_by = normalizeText(sentBy, 120) || 'John';
-  intent.sent_at = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
-  intent.goody_environment = current.policy.goody_environment;
-  intent.goody_order_batch_id = orderBatch.id || null;
-  intent.goody_order_id = firstOrder?.id || null;
-  intent.goody_send_status = orderBatch.send_status || null;
-  intent.goody_gift_link = firstOrder?.individual_gift_link || firstOrder?.individual_order_link || null;
-  intent.goody_reference_id = orderBatch.reference_id || null;
-  intent.goody_customer_reference_id = orderBatch.customer_reference_id || payload.customer_reference_id;
-  intent.goody_price_estimate_cents = highEstimate;
-  intent.goody_send_commitment = commitment({
-    id: intent.id,
-    request_commitment: intent.request_commitment,
-    approval_commitment: intent.approval_commitment,
-    goody_order_batch_id: intent.goody_order_batch_id,
-    goody_order_id: intent.goody_order_id,
-    goody_customer_reference_id: intent.goody_customer_reference_id,
-    goody_price_estimate_cents: intent.goody_price_estimate_cents,
+  sendIntentRecord.status = 'sent';
+  sendIntentRecord.sent_by = normalizeText(sentBy, 120) || 'John';
+  sendIntentRecord.sent_at = now instanceof Date ? now.toISOString() : new Date(now).toISOString();
+  sendIntentRecord.goody_environment = sendLedger.policy.goody_environment;
+  sendIntentRecord.goody_order_batch_id = orderBatch.id || null;
+  sendIntentRecord.goody_order_id = firstOrder?.id || null;
+  sendIntentRecord.goody_send_status = orderBatch.send_status || null;
+  sendIntentRecord.goody_gift_link = firstOrder?.individual_gift_link || firstOrder?.individual_order_link || null;
+  sendIntentRecord.goody_reference_id = orderBatch.reference_id || null;
+  sendIntentRecord.goody_customer_reference_id = orderBatch.customer_reference_id || payload.customer_reference_id;
+  sendIntentRecord.goody_price_estimate_cents = highEstimate;
+  sendIntentRecord.goody_send_commitment = commitment({
+    id: sendIntentRecord.id,
+    request_commitment: sendIntentRecord.request_commitment,
+    approval_commitment: sendIntentRecord.approval_commitment,
+    goody_order_batch_id: sendIntentRecord.goody_order_batch_id,
+    goody_order_id: sendIntentRecord.goody_order_id,
+    goody_customer_reference_id: sendIntentRecord.goody_customer_reference_id,
+    goody_price_estimate_cents: sendIntentRecord.goody_price_estimate_cents,
   });
-  return { ledger: current, intent, report: policyReport(current, { now }), price, order_batch: orderBatch };
+  return { ledger: sendLedger, intent: sendIntentRecord, report: policyReport(sendLedger, { now }), price: quoted.price, order_batch: orderBatch };
 }
 
 module.exports = {
@@ -694,10 +822,13 @@ module.exports = {
   emptyLedger,
   extractHighPriceCents,
   giftSlackConversationUsers,
+  getGoodyProduct,
   listGoodyCards,
   listGoodyProducts,
   normalizeLedger,
   policyReport,
+  publicPriceBreakdown,
+  quoteIntent,
   recordGiftLinkDelivery,
   rejectIntent,
   sendIntent,

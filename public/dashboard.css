@@ -86,6 +86,32 @@
     #memory-list{margin-bottom:16px}
     .empty{color:var(--dim);font-style:italic;font-size:13px;padding:14px 0;text-align:center}
 
+    /* Gift approvals keep Nora's judgment separate from Goody's current checkout estimate. */
+    .gift-intent{padding:18px 0;border-bottom:1px solid var(--border)}
+    .gift-intent:last-child{border-bottom:none}
+    .gift-intent-heading{display:flex;justify-content:space-between;gap:12px;margin-bottom:12px}
+    .gift-status{display:inline-flex;margin-left:7px;padding:2px 8px;border-radius:999px;background:var(--surface-3);color:var(--muted);font-size:11px;font-weight:650;text-transform:capitalize;vertical-align:2px}
+    .gift-reason{max-width:720px;margin-top:4px;color:var(--muted);font-size:12.5px;line-height:1.55}
+    .gift-product-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(210px,260px);gap:14px 24px;padding:15px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)}
+    .gift-product-summary{display:flex;align-items:center;gap:13px;min-width:0}
+    .gift-product-image{width:86px;height:86px;flex:0 0 86px;border-radius:10px;object-fit:cover;background:var(--surface);border:1px solid var(--border)}
+    .gift-product-placeholder{display:grid;place-items:center;color:var(--accent-ink);font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+    .gift-product-name{font-size:15px;font-weight:680;line-height:1.3;color:var(--text)}
+    .gift-product-brand{margin-top:4px;color:var(--text-2);font-size:12px;font-weight:600}
+    .gift-product-source{margin-top:3px;color:var(--dim);font-size:11px}
+    .gift-costs{grid-column:2;grid-row:1 / span 2;align-self:start;padding:11px 12px;border-radius:9px;background:var(--surface);border:1px solid var(--border);font-variant-numeric:tabular-nums}
+    .gift-cost-row{display:flex;justify-content:space-between;gap:18px;padding:3px 0;color:var(--muted);font-size:11.5px}
+    .gift-cost-row strong{font-weight:600;font-family:var(--mono);font-size:11px}
+    .gift-cost-total{margin-top:5px;padding-top:8px;border-top:1px solid var(--border);color:var(--text);font-size:12px;font-weight:700}
+    .gift-cost-total strong{color:var(--accent-ink);font-size:12px}
+    .gift-approval-history{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .gift-approval-history span{padding:4px 8px;border-radius:7px;background:var(--surface);border:1px solid var(--border);color:var(--muted);font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+    .gift-overage,.gift-quote-error{grid-column:1/-1;padding:9px 11px;border-radius:8px;font-size:12px;line-height:1.45}
+    .gift-overage{color:var(--warn);background:var(--warn-soft);border:1px solid var(--warn-line)}
+    .gift-overage strong{color:var(--warn)}
+    .gift-quote-error{color:var(--danger);background:var(--danger-soft);border:1px solid var(--danger-line)}
+    .gift-actions{display:flex;gap:7px;flex-wrap:wrap;margin-top:11px}
+
     /* Legacy tab strip replaced by the sidebar nav */
     .tab-bar{display:none}
     .page{display:none;animation:fade .18s ease}
@@ -491,6 +517,8 @@
       .page.active div[style*="display: flex"]>input:not([type="checkbox"]),.page.active div[style*="display:flex"]>input:not([type="checkbox"]),.page.active div[style*="display: flex"]>select,.page.active div[style*="display:flex"]>select{flex:1 1 220px!important;width:100%!important;min-width:0!important}
       .memory-item{flex-direction:column;align-items:stretch;gap:9px}
       .memory-item>[style*="display: flex"],.memory-item>[style*="display:flex"]{width:100%;justify-content:flex-start!important}
+      .gift-product-card{grid-template-columns:minmax(0,1fr)}
+      .gift-costs{grid-column:1;grid-row:auto}
       .task-item[style*="display: flex"],.task-item[style*="display:flex"]{flex-wrap:wrap;align-items:flex-start!important;gap:9px}
       .task-item[style*="display: flex"]>[style*="flex-shrink"],.task-item[style*="display:flex"]>[style*="flex-shrink"]{width:100%;margin-left:0!important;justify-content:flex-start}
       #vectorize-row .btn{margin-left:0!important}
