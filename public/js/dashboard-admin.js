@@ -13,9 +13,13 @@
       return value !== null && value !== undefined && Number.isFinite(Number(value));
     }
 
-    function giftDecisionButton(item, action, label, amountCents = null, quoteCommitment = '') {
+    function giftHtmlAttribute(value) {
+      return escHtml(value).replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+    }
+
+    function giftDecisionButton(item, action, label, amountCents = null, quoteCommitment = '', buttonClass = 'btn-primary') {
       const call = `decideGiftIntent(${JSON.stringify(String(item.id))},${JSON.stringify(action)},${amountCents == null ? 'null' : Number(amountCents)},${JSON.stringify(quoteCommitment)}); return false;`;
-      return `<button type="button" class="btn btn-primary btn-sm" onclick="${escHtml(call)}">${escHtml(label)}</button>`;
+      return `<button type="button" class="btn ${escHtml(buttonClass)} btn-sm" onclick="${giftHtmlAttribute(call)}">${escHtml(label)}</button>`;
     }
 
     async function loadGiftQuotes(items) {
@@ -92,9 +96,9 @@
           const quoteCommitment = item.goody_quote?.commitment || '';
           const needsMoreApproval = Number.isFinite(quoteTotal) && quoteTotal > Number(item.amount_cents);
           const actions = item.status === 'proposed'
-            ? `${needsMoreApproval ? giftDecisionButton(item, 'approve_quote_and_send', `Approve ${giftMoney(quoteTotal)} and send`, quoteTotal, quoteCommitment) : giftDecisionButton(item, 'approve_and_send', 'Approve and send')}<button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>`
+            ? `${needsMoreApproval ? giftDecisionButton(item, 'approve_quote_and_send', `Approve ${giftMoney(quoteTotal)} and send`, quoteTotal, quoteCommitment) : giftDecisionButton(item, 'approve_and_send', 'Approve and send')}${giftDecisionButton(item, 'reject', 'Reject', null, '', 'btn-danger')}`
             : item.status === 'approved'
-              ? `${needsMoreApproval ? giftDecisionButton(item, 'approve_quote_and_send', `Approve ${giftMoney(quoteTotal)} and send`, quoteTotal, quoteCommitment) : giftDecisionButton(item, 'send', 'Send approved gift')}<button type="button" class="btn btn-danger btn-sm" onclick="decideGiftIntent('${item.id}','reject'); return false;">Reject</button>` : '';
+              ? `${needsMoreApproval ? giftDecisionButton(item, 'approve_quote_and_send', `Approve ${giftMoney(quoteTotal)} and send`, quoteTotal, quoteCommitment) : giftDecisionButton(item, 'send', 'Send approved gift')}${giftDecisionButton(item, 'reject', 'Reject', null, '', 'btn-danger')}` : '';
           const link = item.goody_gift_link ? ` &middot; <a href="${escHtml(item.goody_gift_link)}" target="_blank" rel="noopener">gift link</a>` : '';
           return `<div class="gift-intent"><div class="gift-intent-heading"><div><div class="memory-fact">${escHtml(item.recipient_name)} <span class="gift-status">${escHtml(item.status)}</span></div><div class="gift-reason">${escHtml(item.reason)}${link}</div></div></div>${renderGiftQuote(item)}<div class="gift-actions">${actions}</div></div>`;
         }).join('')}` : '<p class="empty">No gift proposals yet.</p>';

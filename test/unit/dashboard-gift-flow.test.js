@@ -17,6 +17,10 @@ function giftDashboardContext(responses) {
     history: { replaceState: () => {} },
     setTimeout,
     document: { getElementById: id => id === 'gift-toast' ? toast : null },
+    escHtml: value => String(value)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;'),
     confirm: () => true,
     prompt: () => '',
     operatorApi: async (url, options) => {
@@ -35,6 +39,20 @@ function giftDashboardContext(responses) {
   vm.runInContext('loadGiftDeliberations = async () => { refreshCount += 1; }', context);
   return { context, requests, toast };
 }
+
+test('gift action buttons preserve a complete executable click handler', () => {
+  const { context } = giftDashboardContext([]);
+  const html = context.giftDecisionButton(
+    { id: 'gift-"quoted"' }, 'send', 'Send approved gift');
+  const onclick = html.match(/onclick="([^"]*)"/)[1]
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&amp;', '&');
+
+  assert.match(html, /onclick="decideGiftIntent\(&quot;gift-/);
+  assert.doesNotThrow(() => new vm.Script(
+    `function decideGiftIntent() {}\nfunction clickHandler() { ${onclick} }`));
+});
 
 test('one confirmed gift approval approves then sends through Goody', async () => {
   const { context, requests, toast } = giftDashboardContext([

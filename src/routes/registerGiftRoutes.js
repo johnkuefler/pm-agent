@@ -19,6 +19,7 @@ function publicIntent(intent) {
     currency: intent.currency,
     product_id: intent.product_id || null,
     product_name: intent.product_name || null,
+    variable_price_cents: intent.variable_price_cents || null,
     suggested_gift: intent.suggested_gift,
     card_message: intent.card_message || '',
     evidence: intent.evidence || [],

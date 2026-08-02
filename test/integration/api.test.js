@@ -317,12 +317,14 @@ test('gift intents are proposal-first, budgeted, and fail closed before Goody se
     intent: { id: 'gift-integration-chelsea', recipient_slack_user_id: 'U03CJSL85AL',
       reason: 'Chelsea delivered all eight copy docs and proactively flagged the SEO length risk.',
       amount_cents: 1500, product_id: 'product-integration', product_name: 'Integration default gift',
+      variable_price_cents: 1400,
       suggested_gift: 'Coffee or lunch gift of choice',
       card_message: 'Thank you for closing the loop and flagging the risk early.' },
   } });
   assert.equal(created.body.ok, true);
   assert.equal(created.body.intent.status, 'proposed');
   assert.equal(created.body.intent.product_id, 'product-integration');
+  assert.equal(created.body.intent.variable_price_cents, 1400);
   assert.equal(created.body.intent.requires_approval, true);
   assert.match(created.body.intent.request_commitment, /^[a-f0-9]{64}$/);
 

@@ -489,14 +489,17 @@ function registerCoworkInstructionsRoute(app) {
         "amount_cents": 1500,
         "product_id": "optional Goody product id for this gift",
         "product_name": "optional display name for the selected product",
+        "variable_price_cents": 1500,
         "suggested_gift": "Coffee, LEGO Botanicals, or another proportionate catalog fit",
         "card_message": "short, specific, not gushy"
       }
     }
     Omit intent unless decision=propose. A proposal is created atomically and linked to the
     deliberation. The server deduplicates candidates, caps four deliberations/day and two
-    proposals/rolling week, and applies a 30-day recipient proposal cooldown. Use no_candidate
-    once on the first daily relationship scan when nothing crosses the threshold. Do not call
+    proposals/rolling week, and applies a 30-day recipient proposal cooldown. Omit
+    variable_price_cents unless the selected Goody product has variable pricing. When used, it is
+    the funded product amount and cannot exceed amount_cents. Use no_candidate once on the first
+    daily relationship scan when nothing crosses the threshold. Do not call
     POST /gifts/intents as a shortcut. Include new proposals in the hour summary as proposals only.
 
   - GET /gifts/goody/products?q=coffee&limit=10

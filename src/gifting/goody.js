@@ -232,6 +232,15 @@ function validateIntentInput(input = {}, ledger = emptyLedger(), { now = new Dat
   const amountCents = Math.round(Number(input.amount_cents));
   if (!Number.isFinite(amountCents) || amountCents < 100) throw new Error('amount_cents must be at least 100');
   if (amountCents > Number(policy.per_gift_limit_cents)) throw new Error('gift exceeds per-gift limit');
+  const variablePriceCents = input.variable_price_cents == null
+    ? null : Math.round(Number(input.variable_price_cents));
+  if (variablePriceCents !== null
+    && (!Number.isFinite(variablePriceCents) || variablePriceCents < 100)) {
+    throw new Error('variable_price_cents must be at least 100');
+  }
+  if (variablePriceCents !== null && variablePriceCents > amountCents) {
+    throw new Error('variable_price_cents cannot exceed amount_cents');
+  }
   const reasonCategory = normalizeReasonCategory(input.reason_category || input.reason);
   if (!policy.allowed_reasons.includes(reasonCategory)) throw new Error('gift reason_category is not allowed by policy');
   if (policy.blocked_reasons.includes(reasonCategory)) throw new Error('gift reason_category is blocked by policy');
@@ -251,6 +260,7 @@ function validateIntentInput(input = {}, ledger = emptyLedger(), { now = new Dat
     currency: policy.currency,
     ...(input.product_id ? { product_id: normalizeText(input.product_id, 120) } : {}),
     ...(input.product_name ? { product_name: normalizeText(input.product_name, 200) } : {}),
+    ...(variablePriceCents !== null ? { variable_price_cents: variablePriceCents } : {}),
     suggested_gift: normalizeText(input.suggested_gift || 'Goody gift of choice', 200),
     card_message: normalizeText(input.card_message, 600),
     evidence,
@@ -275,6 +285,7 @@ function intentPayload(record) {
     currency: record.currency,
     product_id: record.product_id || null,
     product_name: record.product_name || null,
+    variable_price_cents: record.variable_price_cents || null,
     suggested_gift: record.suggested_gift,
     card_message: record.card_message || '',
     evidence: record.evidence,
@@ -636,7 +647,12 @@ function buildGoodyOrderPayload(intent, policy = DEFAULT_POLICY) {
     from_name: config.from_name,
     send_method: config.send_method,
     recipients: [recipient],
-    cart: { items: [{ product_id: productId, quantity: 1 }] },
+    cart: { items: [{
+      product_id: productId,
+      quantity: 1,
+      ...(Number.isFinite(Number(intent.variable_price_cents))
+        ? { variable_price: Math.round(Number(intent.variable_price_cents)) } : {}),
+    }] },
     customer_reference_id: `nora-${intent.id}-${String(intent.approval_commitment || intent.request_commitment || '').slice(0, 12)}`,
     ...(intent.card_message && config.card_id ? { message: intent.card_message, card_id: config.card_id } : {}),
     ...(config.payment_method_id ? { payment_method_id: config.payment_method_id } : {}),

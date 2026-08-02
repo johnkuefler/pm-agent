@@ -44,6 +44,29 @@ test('Goody gift intents reject pressure, thin reasons, and oversized gifts', ()
   assert.throws(() => goody.createIntent({ ...base, reason_category: 'pressure' }, ledger), /not allowed|blocked/);
   assert.throws(() => goody.createIntent({ ...base, reason: 'nice', amount_cents: 1500 }, ledger), /specific/);
   assert.throws(() => goody.createIntent({ ...base, amount_cents: 5001 }, ledger), /per-gift limit/);
+  assert.throws(() => goody.createIntent({ ...base, variable_price_cents: 1600 }, ledger),
+    /cannot exceed amount_cents/);
+});
+
+test('Goody variable-price gifts preserve the funded amount in the cart', () => {
+  const created = goody.createIntent({
+    id: 'gift-wellness-choice',
+    recipient_name: 'Mallory Maryman',
+    recipient_slack_user_id: 'U-MALLORY',
+    reason_category: 'thanks',
+    reason: 'Mallory stepped into a difficult project handoff and kept the client work moving.',
+    amount_cents: 5000,
+    product_id: 'wellness-choice',
+    product_name: 'A Gift Of Wellness',
+    variable_price_cents: 5000,
+    evidence: [{ type: 'teamwork_task', id: 'tw-wellness' }],
+  }, goody.emptyLedger());
+  const { payload } = goody.buildGoodyOrderPayload(created.intent, created.ledger.policy);
+
+  assert.deepEqual(payload.cart.items, [{
+    product_id: 'wellness-choice', quantity: 1, variable_price: 5000,
+  }]);
+  assert.equal(created.intent.variable_price_cents, 5000);
 });
 
 test('gift deliberation makes proposal or abstention explicit and atomically creates an intent', () => {
