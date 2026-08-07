@@ -39,10 +39,17 @@ function registerCoworkInstructionsRoute(app) {
   (the index shifts between your read and your write under concurrency, which corrupts the store).
   - GET  /memory                  — Returns full memory array
     Response: [{ "id": "m-...", "fact": "string", "project": "string (empty if general)", "added": "YYYY-MM-DD", "source": "meeting|slack|manual|system|auto|opinion|learning", "source_bot_id": "..." }]
+    Optional views use the same route: ?view=working, ?view=long_term, ?view=archive,
+    ?view=digest, or ?view=stats. Working memory covers the latest 30 days. Long-term memory
+    remains searchable when recent memory is insufficient. The daily digest is a bounded,
+    evidence-preserving quick reference and lists its exact source memory ids.
 
   - POST /memory                  — Add a new memory
-    Body: { "fact": "string", "source": "string", "project": "string (optional)" }
+    Body: { "fact": "string", "source": "string", "project": "string (optional)", "retention_class": "snapshot|durable|episodic (optional)" }
     Response: { "ok": true, "id": "m-...", "memory": [...] }
+    Autonomous research must use source: "research". Current status and dated observations
+    should use retention_class: "snapshot". The shared daily autonomous budget returns 429
+    when full; stop adding memory for that day and continue the run normally.
 
   - DELETE /memory/by-id/:id      — PREFERRED. Remove one memory by its stable id. 404 if not found.
     Response: { "ok": true, "removed": {...}, "memory": [...] }
@@ -1791,6 +1798,9 @@ function registerCoworkInstructionsRoute(app) {
   valid_until, last_verified, supersedes, contradicted_by, and sensitivity. Use POST /memory/:id/verify
   to strengthen or resolve a memory and POST /memory/:id/contradict when evidence conflicts. Preserve
   both sides until resolved; do not silently overwrite history.
+  Memory retention also adds retention_class (snapshot|durable|episodic), pinned, expired_at,
+  and expiration_reason. Low-value snapshots expire after 30 days. Durable, verified, recalled,
+  high-salience, social, and emotional records are protected from automatic expiry.
 
   ## Schemas
 

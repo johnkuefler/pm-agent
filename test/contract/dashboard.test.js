@@ -130,6 +130,13 @@ test('memory editor passes stable ids as strings and dashboard assets are deploy
   const memoryJs = fs.readFileSync(path.join(root, 'public/js/dashboard-memory.js'), 'utf8');
   assert.doesNotMatch(memoryJs, /saveMemoryEdit\(\$\{idx\}\)/);
   assert.match(memoryJs, /saveMemoryEdit\(this\.dataset\.memoryKey\)/);
+  assert.match(html, /id="memory-tier"/);
+  assert.match(html, /id="memory-digest"/);
+  assert.match(html, /id="new-fact-retention"/);
+  assert.match(memoryJs, /api\('\/memory\?view=stats'\)/);
+  assert.match(memoryJs, /api\('\/memory\?view=digest'\)/);
+  assert.match(memoryJs, /el\.textContent = counts/,
+    'memory digest content must be rendered as text');
   assert.match(html, /dashboard-core\.js\?v=\{\{ASSET_VERSION\}\}/);
   assert.match(html, /dashboard-memory\.js\?v=\{\{ASSET_VERSION\}\}/);
 });

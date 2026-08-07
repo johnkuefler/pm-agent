@@ -9,6 +9,8 @@ function persistenceFingerprint(memory) {
     memory?.valid_from, memory?.valid_until, memory?.last_verified,
     memory?.verification_count, memory?.supersedes, memory?.contradicted_by,
     memory?.sensitivity, memory?.emotional_weight, memory?.social_weight,
+    memory?.retention_class, memory?.pinned, memory?.expired_at,
+    memory?.expiration_reason,
   ]);
 }
 

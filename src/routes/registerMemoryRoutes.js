@@ -3,10 +3,25 @@
 function registerMemoryRoutes(app, deps) {
   const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady,
     normalizeMemoryRecord, getExpectationSurprise = () => null,
-    getCognitiveParameters = () => ({ expectation: { surprising_memory_salience_floor: 0.6 } }) } = deps;
+    getCognitiveParameters = () => ({ expectation: { surprising_memory_salience_floor: 0.6 } }),
+    memoryLifecycle = null, getMemoryDigest = () => null } = deps;
 
   // Memory API — view and edit Nora's memory
-  app.get('/memory', requireAuth, (req, res) => res.json(loadMemory()));
+  app.get('/memory', requireAuth, (req, res) => {
+    const memory = loadMemory();
+    const view = String(req.query?.view || '').trim().toLowerCase();
+    if (view === 'digest') return res.json(getMemoryDigest());
+    if (memoryLifecycle && ['working', 'long_term', 'archive'].includes(view)) {
+      return res.json(memoryLifecycle.partitionMemory(memory)[view]);
+    }
+    if (view === 'stats' && memoryLifecycle) {
+      const partition = memoryLifecycle.partitionMemory(memory);
+      return res.json({ total: memory.length, working: partition.working.length,
+        long_term: partition.long_term.length, archive: partition.archive.length,
+        digest: getMemoryDigest()?.counts || null, policy: memoryLifecycle.DEFAULT_MEMORY_POLICY });
+    }
+    return res.json(memory);
+  });
 
   // Vectorization status: how many memories are embedded, and with which model.
   app.get('/memory/embedding-stats', requireAuth, async (req, res) => {
@@ -32,6 +47,16 @@ function registerMemoryRoutes(app, deps) {
   app.post('/memory', requireAuth, async (req, res) => {
     const { fact, source, project } = req.body;
     if (!fact) return res.status(400).json({ error: 'fact is required' });
+    const memorySource = source || 'manual';
+    if (memoryLifecycle) {
+      const admission = memoryLifecycle.autonomousMemoryAdmission(loadMemory(), {
+        ...req.body, source: memorySource,
+      });
+      if (!admission.allowed) {
+        return res.status(429).json({ error: 'daily autonomous memory budget reached',
+          used: admission.used, limit: admission.limit, retry_after: admission.retry_after });
+      }
+    }
     // Memory CAN contain financial content. Distribution is gated at the live handler's
     // output side. Memory is the source of truth; output is where the approval check happens.
     const canonicalProject = project ? ensureProject(project) : '';
@@ -41,7 +66,7 @@ function registerMemoryRoutes(app, deps) {
       return res.status(400).json({ error: 'expectation_surprise_id must reference a replay-verified source-bound EXPECT miss' });
     }
     const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject,
-      added: new Date().toISOString().split('T')[0], source: source || 'manual',
+      added: new Date().toISOString().split('T')[0], source: memorySource,
       ...(expectationSurprise ? {
         salience: Math.max(getCognitiveParameters().expectation.surprising_memory_salience_floor,
           Number(req.body.salience) || 0),

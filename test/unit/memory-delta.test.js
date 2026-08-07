@@ -43,6 +43,16 @@ test('an unchanged mutation produces no database work', () => {
     { upserts: [], deleted_ids: [] });
 });
 
+test('retention transitions are persisted as targeted row updates', () => {
+  const items = [memory('a'), memory('b')];
+  const before = captureMemoryPersistence(items);
+  Object.assign(items[1], { status: 'expired', retention_class: 'snapshot',
+    expired_at: '2026-08-07T18:00:00.000Z',
+    expiration_reason: 'point-in-time snapshot exceeded 30 days' });
+  const delta = diffMemoryPersistence(before, items);
+  assert.deepEqual(delta.upserts.map(change => change.item.id), ['b']);
+});
+
 test('a large memory ledger still identifies one appended row without a rewrite', () => {
   const items = Array.from({ length: 2500 }, (_, index) => memory(`m-${index}`));
   const before = captureMemoryPersistence(items);

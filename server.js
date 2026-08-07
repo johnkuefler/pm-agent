@@ -46,6 +46,7 @@ const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
 const { registerFindingRoutes } = require('./src/routes/registerFindingRoutes');
 const { isAskingClarification, researchCouldHelp: slackResearchCouldHelp } = require('./src/surfaces/slack/reply-intent');
 const { createInteractiveLatencyRecorder } = require('./src/surfaces/interactive-latency');
+const { createInteractiveMemoryRecall } = require('./src/surfaces/memory/interactive-recall');
 const findings = require('./src/intelligence/findings');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
@@ -61,6 +62,7 @@ const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-par
 const { registerCognitiveParameterStudyRoutes } = require('./src/routes/cognitive-parameter-studies');
 const { requireAuth, requireDashboardAuth, requireResearchAuth, requireEvaluatorAuth, requireOperatorAuth } = require('./src/middleware/auth');
 const { normalizeMemoryRecord, memoryIsActive, memoryPromptLine } = require('./src/intelligence/models');
+const memoryLifecycle = require('./src/intelligence/memory-lifecycle');
 const { createIntelligenceStore } = require('./src/intelligence/store');
 const { renderInnerThreadContext, workspaceCapacityForAssignment, higherOrderMonitorEnabled, globalBroadcastEnabled, attentionDirectiveModeForAssignment } = require('./src/intelligence/self-model');
 const { diagnosisInstruction, extractDiagnosis } = require('./src/intelligence/introspective-perturbation');
@@ -152,6 +154,7 @@ const { createDeferredJobHealth } = require('./src/runtime/deferred-job-health')
 const { createProcessRecovery } = require('./src/runtime/process-recovery');
 const { createProcessResourceMonitor } = require('./src/runtime/process-resources');
 const { captureMemoryPersistence, diffMemoryPersistence } = require('./src/runtime/memory-delta');
+const { createMemoryMaintenance } = require('./src/runtime/memory-maintenance');
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { createRecurringJobRegistry, quarantineMessage } = require('./src/runtime/recurring-jobs');
 const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
@@ -718,6 +721,16 @@ function mutateMemory(mutator) {
   return run;
 }
 
+const memoryMaintenance = createMemoryMaintenance({
+  loadMemory,
+  mutateMemory,
+  loadDigest: async () => _dbReady ? db.getState('memory_digest_v1') : null,
+  saveDigest: async digest => {
+    _cache.memoryDigest = digest;
+    if (_dbReady) await db.setState('memory_digest_v1', digest);
+  },
+});
+
 // One-time backfill: assign ids to any pre-existing memory entries that lack them, so the
 // by-id endpoints work for the whole store from the first boot after this deploy.
 async function backfillMemoryIds() {
@@ -768,6 +781,14 @@ function markerKeyForFact(fact) {
   }
   return null;
 }
+
+const { rankLexicalMemories, retrieveInteractiveMemories } = createInteractiveMemoryRecall({
+  loadMemory,
+  isDbReady: () => _dbReady,
+  writeThrough: _writeThrough,
+  db,
+  markerKeyForFact,
+});
 
 const MARKERS_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-markers.json');
 const MARKERS_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-markers.json');
@@ -2472,6 +2493,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   }
 
   const allMemory = loadMemory().map(item => normalizeMemoryRecord(item));
+  const memoryPartition = memoryLifecycle.partitionMemory(allMemory);
   const projects = loadProjects();
 
   // Split legacy opinions and learnings out of the ordinary memory pool.
@@ -2492,7 +2514,17 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   // the knowledge block — they're idempotency bookkeeping, not things to reference in
   // conversation. They live in /markers now; this filter catches any not-yet-migrated
   // stragglers so they never reach her live prompt.
-  const memory = allMemory.filter(m => m.source !== 'opinion' && m.source !== 'learning' && !markerKeyForFact(m.fact) && memoryIsActive(m));
+  const memory = memoryPartition.working.filter(m => m.source !== 'opinion'
+    && m.source !== 'learning' && !markerKeyForFact(m.fact) && memoryIsActive(m));
+
+  const dailyMemoryDigest = memoryMaintenance.currentDigest()
+    || memoryLifecycle.buildMemoryDigest(allMemory);
+  if (dailyMemoryDigest?.text) {
+    base = `${base}\n\n${dailyMemoryDigest.text}`;
+    promptDiagnostics.memory_digest_chars = dailyMemoryDigest.text.length;
+    promptDiagnostics.working_memory_count = memoryPartition.working.length;
+    promptDiagnostics.long_term_memory_count = memoryPartition.long_term.length;
+  }
 
   if (learnings.length > 0) {
     const learningLines = learnings.slice(-4).map(item => memoryPromptLine(item));
@@ -3113,20 +3145,30 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
     // salience (how hot the memory encoded) and recall history (retrieval strengthening) tip
     // the order the way a brain's does. A charged, oft-used memory outcompetes a slightly
     // closer piece of trivia.
-    const rows = await db.searchMemoryByVector(vec, (limit * 2) + 6, {
-      excludeSources: ['opinion', 'learning'], signal, interactive: true,
-    });
+    const workingCutoff = new Date(Date.now()
+      - memoryLifecycle.DEFAULT_MEMORY_POLICY.working_days * 86400000)
+      .toISOString().slice(0, 10);
+    const [workingRows, longTermRows] = await Promise.all([
+      db.searchMemoryByVector(vec, (limit * 2) + 6, {
+        excludeSources: ['opinion', 'learning'], signal, interactive: true,
+        addedSince: workingCutoff,
+      }),
+      db.searchMemoryByVector(vec, (limit * 2) + 6, {
+        excludeSources: ['opinion', 'learning'], signal, interactive: true,
+        addedBefore: workingCutoff,
+      }),
+    ]);
     const retrieval = currentCognitiveParameters().memory.retrieval;
-    const ranked = rows
+    const rankedWorking = memoryLifecycle.scoreMemoryRecallRows(workingRows
       .filter(r => !markerKeyForFact(r.fact))
       .map(r => normalizeMemoryRecord(r))
-      .map(r => ({ ...r, _score: (1 - (r.distance ?? 1))
-        + (r.salience || 0) * retrieval.salience_weight
-        + (r.emotional_weight || 0) * retrieval.emotional_weight
-        + (r.social_weight || 0) * retrieval.social_weight
-        + Math.min(r.recall_count || 0, retrieval.recall_cap) * retrieval.recall_weight }))
-      .sort((a, b) => b._score - a._score)
-      .slice(0, limit);
+      .filter(r => memoryIsActive(r)), retrieval);
+    const rankedLongTerm = memoryLifecycle.scoreMemoryRecallRows(longTermRows
+      .filter(r => !markerKeyForFact(r.fact))
+      .map(r => normalizeMemoryRecord(r))
+      .filter(r => memoryIsActive(r)), retrieval);
+    const ranked = memoryLifecycle.selectTieredRecall(
+      rankedWorking, rankedLongTerm, limit);
     // Reconsolidation: surfacing them strengthens them. Keep the write off the reply deadline,
     // but put it behind the drainable memory owner so bursts serialize and deploys cannot close
     // the database underneath an untracked update.
@@ -3164,60 +3206,6 @@ function realtimePromptForSession(session) {
     return buildDummyPrompt(session.dummyPrompt, session.dummyName || 'Nora (Test)');
   }
   return buildSystemPrompt('realtime', session?.transcript, session?.project_hint, session?.meetingMeta, { trialUnitKey: session?.trialUnitKey });
-}
-
-const INTERACTIVE_RECALL_STOPWORDS = new Set([
-  'about', 'after', 'again', 'also', 'been', 'before', 'being', 'could', 'does', 'from',
-  'have', 'here', 'into', 'just', 'like', 'more', 'nora', 'only', 'really', 'should',
-  'slack', 'some', 'that', 'their', 'them', 'then', 'there', 'these', 'they', 'this',
-  'through', 'today', 'very', 'want', 'what', 'when', 'where', 'which', 'while', 'with',
-  'would', 'your', 'youre', 'zoom',
-]);
-
-function interactiveRecallTokens(value) {
-  return (String(value || '').toLowerCase().match(/[a-z0-9]{3,}/g) || [])
-    .filter(term => !INTERACTIVE_RECALL_STOPWORDS.has(term));
-}
-
-function rankLexicalMemories(items, queryText, limit = 8) {
-  const terms = [...new Set(interactiveRecallTokens(queryText))].slice(-48);
-  if (!terms.length || !Array.isArray(items) || !items.length) return [];
-  const candidates = items
-    .map(item => normalizeMemoryRecord(item))
-    .filter(item => item.fact && memoryIsActive(item)
-      && item.source !== 'opinion' && item.source !== 'learning' && !markerKeyForFact(item.fact))
-    .map(item => {
-      const text = `${item.fact} ${item.project || ''}`.toLowerCase();
-      const tokens = new Set(interactiveRecallTokens(text));
-      return { item, text, tokens };
-    });
-  if (!candidates.length) return [];
-  const documentFrequency = new Map(terms.map(term => [term,
-    candidates.reduce((count, candidate) => count + (candidate.tokens.has(term) ? 1 : 0), 0)]));
-  const queryNormalized = terms.join(' ');
-  return candidates.map(candidate => {
-    const matched = terms.filter(term => candidate.tokens.has(term));
-    const lexical = matched.reduce((score, term) => score
-      + Math.log((candidates.length + 1) / ((documentFrequency.get(term) || 0) + 1)) + 1, 0);
-    const project = String(candidate.item.project || '').trim().toLowerCase();
-    const projectBoost = project.length >= 3 && queryNormalized.includes(project) ? 8 : 0;
-    const score = lexical + projectBoost + matched.length
-      + (Number(candidate.item.salience) || 0) * 0.5
-      + (Number(candidate.item.emotional_weight) || 0) * 0.25
-      + (Number(candidate.item.social_weight) || 0) * 0.25;
-    return { ...candidate.item, _score: score, _matched_terms: matched.length,
-      _recall_mode: 'local_lexical' };
-  }).filter(item => item._matched_terms > 0 && item._score >= 2.5)
-    .sort((left, right) => right._score - left._score
-      || String(right.added || '').localeCompare(String(left.added || '')))
-    .slice(0, Math.max(1, Math.min(20, Number(limit) || 8)));
-}
-
-function retrieveInteractiveMemories(queryText, limit = 8) {
-  const ranked = rankLexicalMemories(loadMemory(), queryText, limit);
-  const ids = ranked.map(item => item.id).filter(Boolean);
-  if (ids.length && _dbReady) _writeThrough('memory', () => db.bumpMemoryRecall(ids));
-  return ranked;
 }
 
 function voiceMeetingContextPacket(session, { systemPrompt = '', voiceTools = [], model = 'gpt-realtime-2.1', refreshedAt = null } = {}) {
@@ -9258,6 +9246,7 @@ app.post('/notify', requireAuth, async (req, res) => {
 
 registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db,
   isDbReady: () => _dbReady, normalizeMemoryRecord,
+  memoryLifecycle, getMemoryDigest: () => memoryMaintenance.currentDigest(),
   getExpectationSurprise: id => intelligence.expectationSurprise(id),
   getCognitiveParameters: currentCognitiveParameters });
 
@@ -16071,6 +16060,11 @@ async function completePostListenStartup(background) {
   // Upgrade the active source of truth only after Postgres hydration. Running this before
   // hydration upgrades the fallback volume, then immediately replaces it with legacy DB rows.
   await backfillMemoryIds();
+  await memoryMaintenance.hydrate();
+  const memoryMaintenanceResult = await memoryMaintenance.run();
+  if (memoryMaintenanceResult.ran) {
+    console.log(`Memory maintenance indexed ${memoryMaintenanceResult.examined} records and expired ${memoryMaintenanceResult.expired} stale snapshots`);
+  }
   console.log('Startup phase: intelligence store init');
   await intelligence.init();
   // Hydration is three bounded database reads, not projection compute. Keeping verified snapshots
@@ -16123,6 +16117,8 @@ async function completePostListenStartup(background) {
     scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, {
       timeoutMs: 15000,
     });
+    scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
+      () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });
     scheduleRecurringRuntimeJob('operational-and-intelligence-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {
       // Operational recovery always gets the first bounded window. Optional reading, play,

@@ -1,5 +1,7 @@
 'use strict';
 
+const { inferMemoryRetentionClass } = require('./memory-lifecycle');
+
 const MEMORY_KINDS = new Set(['fact', 'inference', 'preference', 'commitment', 'opinion', 'learning', 'episode']);
 const MEMORY_STATUSES = new Set(['active', 'superseded', 'disputed', 'expired']);
 const EMOTIONAL_MEMORY_PATTERN = /\b(upset|angry|furious|frustrat|trust|relief|warmth|thank|thanks|appreciat|apolog|worried|concern|anxious|happy|excited|proud|hurt|disappoint|stress|overwhelm|urgent|crisis|escalat|missed|overdue|blocked)\b/i;
@@ -73,6 +75,10 @@ function normalizeMemoryRecord(record, defaults = {}) {
     sensitivity: record.sensitivity || 'normal',
     emotional_weight: clamp(record.emotional_weight ?? defaults.emotional_weight ?? inferEmotionalWeight({ ...record, source_ref: sourceRef })),
     social_weight: clamp(record.social_weight ?? defaults.social_weight ?? inferSocialWeight({ ...record, source_ref: sourceRef })),
+    retention_class: inferMemoryRetentionClass({ ...record, kind }),
+    pinned: record.pinned === true,
+    expired_at: record.expired_at || null,
+    expiration_reason: record.expiration_reason || null,
   };
 }
 

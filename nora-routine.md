@@ -2821,11 +2821,11 @@ ONE project per run. 3–5 memories max. The Teamwork-to-`/projects` reconciliat
 
    **When a working call 500s anyway — retry once before reporting an outage.** Wait 2-3 seconds, retry the exact same call with the exact same args. Transient hiccups happen on Teamwork's side. Only after a confirmed second failure should it appear in the end-of-run summary, and even then as "transient TW MCP error on list_tasks at HH:MM, retried once" — not "the MCP is broken." That generalization has been wrong every time it's been made.
 
-4. **Write 3–5 concise project-scoped memories** via `POST /memory`. Concrete (names, dates, decisions, blockers, status). Don't restate `project.details` or existing memories. Skip the round if you can't find 3 substantive items — don't pad.
+4. **Write at most 3 concise project-scoped memories** via `POST /memory`. Every autonomous research write must set `source: "research"`. Use `retention_class: "snapshot"` for current status, dates, blockers, forecasts, hours, milestones, and other point-in-time observations. Use `retention_class: "durable"` only for stable facts that should remain true across months. Do not restate `project.details` or existing memories. One or two strong items is a successful round. The server enforces a shared daily autonomous-memory budget; if it returns 429, stop writing memory for the day and continue without treating that as an error.
 
 5. **`POST /projects/{name}/research-touch`** with a brief `summary` of where you looked. This bumps `last_research_at` and prevents re-picking tomorrow.
 
-6. Optionally save a one-line general meta-memory: "Idle research round on {project} on {date}: added N memories from {sources}."
+6. Never save a meta-memory saying that a research round ran. The research-touch receipt and operational markers already record that work.
 
 The cooldown filter on `/projects/coverage` prevents re-picking the same project tomorrow — don't track that yourself, trust the API's sort. Don't include this round in the end-of-run summary unless something noteworthy was discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory").
 

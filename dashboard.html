@@ -266,6 +266,14 @@
             <option value="auto">Auto</option>
             <option value="manual">Manual</option>
             <option value="system">System</option>
+            <option value="research">Research</option>
+          </select>
+          <select id="memory-tier" onchange="renderMemory()"
+            style="padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13px;">
+            <option value="">All tiers</option>
+            <option value="working">Working, 30 days</option>
+            <option value="long_term">Long term</option>
+            <option value="archive">Archive</option>
           </select>
           <select id="memory-sort" onchange="renderMemory()"
             style="padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13px;">
@@ -275,6 +283,7 @@
           </select>
         </div>
         <div id="memory-count" style="font-size:12px; color:var(--muted); margin-bottom:10px;"></div>
+        <div id="memory-digest" style="white-space:pre-wrap; font-size:12px; line-height:1.55; color:var(--muted); margin-bottom:12px; padding:12px; background:var(--surface-2); border:1px solid var(--border); border-radius:9px; max-height:240px; overflow:auto;">Daily digest loading...</div>
         <div id="vectorize-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:9px;">
           <span id="vectorize-stats" style="font-size:12px; color:var(--muted); font-family:var(--mono);">Vectorization: …</span>
           <button class="btn btn-sm" onclick="reembedAll()" style="margin-left:auto;" title="Clear embeddings so they're recomputed with the current model. Re-embeds ~16 rows every 20s in the background.">Re-vectorize</button>
@@ -291,6 +300,9 @@
         <div class="row">
           <select id="new-fact-kind" aria-label="Memory type"><option value="fact">Confirmed fact</option><option value="inference">Inference</option><option value="preference">Observed preference</option><option value="commitment">Commitment</option><option value="opinion">Nora's take</option><option value="learning">Behavioral learning</option></select>
           <select id="new-fact-confidence" aria-label="Confidence"><option value="0.95">High confidence</option><option value="0.75">Medium confidence</option><option value="0.55">Low confidence</option></select>
+        </div>
+        <div class="row">
+          <select id="new-fact-retention" aria-label="Memory retention"><option value="durable">Durable knowledge</option><option value="snapshot">30-day snapshot</option><option value="episodic">Episode</option></select>
         </div>
         <div class="row">
           <button class="btn btn-primary btn-sm" onclick="addMemory()">Add to Memory</button>

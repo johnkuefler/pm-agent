@@ -64,12 +64,17 @@ test('semantic recall uses an independent fast-fail database pool and degrades c
     const vector = Array(db.EMBED_DIM).fill(0);
     const rows = await db.searchMemoryByVector(vector, 4, {
       interactive: true, excludeSources: ['opinion'], signal: new AbortController().signal,
+      addedSince: '2026-07-08',
     });
     assert.equal(rows[0].emotional_weight, 0.4);
     assert.equal(pools.length, 1, 'interactive recall must not initialize the background pool');
     assert.equal(pools[0].options.max, 2);
     assert.equal(pools[0].options.connectionTimeoutMillis, 400);
     assert.equal(pools[0].queries[0].query_timeout, 400);
+    assert.match(pools[0].queries[0].text,
+      /COALESCE\(metadata ->> 'status', 'active'\) = 'active'/);
+    assert.match(pools[0].queries[0].text, /added >= \$4/);
+    assert.equal(pools[0].queries[0].values[3], '2026-07-08');
 
     pools[0].fail = true;
     assert.deepEqual(await db.searchMemoryByVector(vector, 4, { interactive: true }), []);
