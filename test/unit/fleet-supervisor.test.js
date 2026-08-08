@@ -165,3 +165,48 @@ test('scheduled supervision sends only after baseline and uses the shared budget
   await supervisor.scan({ notify: true });
   assert.equal(messages.length, 1, 'unchanged critical evidence stays silent');
 });
+
+test('Fleet hands actionable incidents to the Executive Firewall without spending attention', async () => {
+  let clock = new Date('2026-08-08T18:00:00.000Z');
+  let status = 'overdue';
+  let saved = null;
+  let spent = 0;
+  const handoffs = [];
+  const tools = [
+    { name: 'fleet_status', allowed: true }, { name: 'agent_detail', allowed: true },
+    { name: 'list_agent_runs', allowed: true }, { name: 'list_agents', allowed: true },
+    { name: 'recent_activity', allowed: true }, { name: 'list_learnings', allowed: true },
+  ];
+  const manager = {
+    list: () => [{ id: 'fleet', name: 'Fleet', status: 'connected', enabled: true, tools }],
+    callTool: async (_id, tool, args) => {
+      if (tool === 'fleet_status') return { generatedAt: clock.toISOString(), total: 1,
+        counts: { [status]: 1 }, needsAttention: ['a'], agents: [{ slug: 'a', client: 'A',
+          status, detail: `${status} now`, overdueSince: '2026-08-08T10:00:00.000Z' }] };
+      if (tool === 'list_agents') return { agents: [{ slug: 'a', client: 'A',
+        runnerReady: true, configWarnings: [] }] };
+      if (tool === 'recent_activity') return { events: [] };
+      if (tool === 'list_learnings') return { total: args.status === 'held' ? 2 : 0 };
+      throw new Error(`unexpected tool ${tool}`);
+    },
+  };
+  const supervisor = createFleetSupervisor({
+    mcpManager: manager, loadState: async () => saved,
+    saveState: async state => { saved = structuredClone(state); }, now: () => clock,
+    getInterruptionBudget: () => ({ limit: 1, spent, remaining: 1 - spent }),
+    spendInterruption: () => { spent += 1; return { allowed: true, spent, remaining: 1 - spent }; },
+    notifyHuman: async () => { throw new Error('Fleet must not message the executive directly'); },
+    handoffCandidates: async incidents => {
+      handoffs.push(incidents.map(item => item.id));
+      return { accepted: true, case_ids: incidents.map(item => `case:${item.id}`) };
+    },
+  });
+  await supervisor.scan({ notify: true });
+  clock = new Date('2026-08-08T18:15:00.000Z');
+  status = 'stuck';
+  const result = await supervisor.scan({ notify: true });
+  assert.equal(handoffs.length, 1);
+  assert.equal(spent, 0);
+  assert.equal(result.scan.delivery.reason, 'executive_firewall');
+  assert.equal(result.incidents[0].firewall_handoff_at, clock.toISOString());
+});

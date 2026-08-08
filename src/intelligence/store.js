@@ -23782,10 +23782,10 @@ function createIntelligenceStore({ filePath, db, isDbReady, clock = () => new Da
   function initiativeStatus(scope = 'global', now = clock()) {
     const day = now.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
     const configured = state.initiative.scopes[scope] || {};
-    // Cowork reminders are uniquely interruption-prone because Teamwork comments and Slack DMs
-    // can reach many people from one hourly sweep. Keep their default budget deliberately lower
-    // than other initiative surfaces; a human can still explicitly configure another limit.
-    const scopeDefault = scope === 'cowork:proactive' ? 1 : state.initiative.default_daily;
+    // Cowork reminders and executive decision packets are uniquely interruption-prone. Keep each
+    // default at one daily delivery while separating team coordination from John's attention.
+    const scopeDefault = ['cowork:proactive', 'executive:john'].includes(scope)
+      ? 1 : state.initiative.default_daily;
     const limit = Number.isFinite(configured.daily_limit) ? configured.daily_limit : scopeDefault;
     const spent = configured.day === day ? configured.spent || 0 : 0;
     return { scope, day, limit, spent, remaining: Math.max(0, limit - spent) };

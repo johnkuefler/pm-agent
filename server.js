@@ -78,7 +78,7 @@ const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { createMcpManager } = require('./src/mcp/manager');
 const { createMcpStore } = require('./src/mcp/store');
 const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
-const { registerFleetSupervisorRuntime } = require('./src/fleet/runtime');
+const { registerExecutiveOperationsRuntime, handleExecutiveDecisionReply, createExecutiveFirewallTools } = require('./src/executive/server-runtime');
 const { findJohnSlackId } = require('./src/surfaces/slack/owner');
 const { runBench } = require('./src/intelligence/bench');
 const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
@@ -4937,6 +4937,7 @@ app.post('/webhook/chat', async (req, res) => {
     // Her own meeting record, read-only ("didn't we cover this on Tuesday's call?").
     if (zoomAttachLiveTools) {
       for (const t of MEETING_TOOLS) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
+      for (const t of createExecutiveFirewallTools(executiveFirewall, { source: 'meeting_chat', sourceRef: `${bot_id}:${chatData?.timestamp || Date.now()}` })) { zoomToolDefs.push(t.definition); zoomExecutors[t.definition.name] = t.execute; }
     }
     zoomToolDefs.push(...zoomMcp.claudeTools);
     Object.assign(zoomExecutors, zoomMcp.executors);
@@ -4947,7 +4948,7 @@ app.post('/webhook/chat', async (req, res) => {
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
     if (zoomPublicApis.inventory.length) zoomTail += `\n\nApproved public-data API tools are attached: ${zoomPublicApis.inventory.map(item => item.name).join(', ')}. Use only when relevant, pass no private/team/client data, and state a concrete purpose.`;
     if (!zoomAttachLiveTools) zoomTail += '\n\nThis is a bounded social turn. No live tools are attached because the message does not ask for information or action. Respond naturally and briefly.';
-    zoomTail += fleetOperatingInstruction(zoomMcp.inventory, { direct: true, teamworkAvailable: zoomAttachLiveTools && teamworkEnabled() }) + fleetSupervisor.promptContext();
+    zoomTail += fleetOperatingInstruction(zoomMcp.inventory, { direct: true, teamworkAvailable: zoomAttachLiveTools && teamworkEnabled() }) + fleetSupervisor.promptContext() + executiveFirewall.promptContext();
     const zoomToolSetupFinishedAt = Date.now();
     const zoomPromptChars = zoomStable.length + zoomTail.length;
 
@@ -5465,10 +5466,7 @@ const mcpManager = createMcpManager({
   resolveDns: process.env.NORA_TEST_MODE !== '1',
 });
 
-const fleetSupervisor = registerFleetSupervisorRuntime({ app, requireAuth, requireOperatorAuth,
-  mcpManager, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady,
-  writeThrough: _writeThrough, intelligence, resolveOwner: () => findJohnSlackId(loadMemory()),
-  postMessage: postSlackMessage });
+const { executiveFirewall, fleetSupervisor } = registerExecutiveOperationsRuntime({ app, requireAuth, requireOperatorAuth, mcpManager, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, intelligence, resolveOwner: () => findJohnSlackId(loadMemory()), postMessage: postSlackMessage, loadProjectControl: projectControlRuntime.load });
 
 // ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
 // Custom client-side tools: the model requests one, we execute it against the Teamwork API
@@ -7657,6 +7655,8 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   // intent and we route to the file inbox path below. Otherwise still bail.
   if (!query && !hasFiles) return;
 
+  if (await handleExecutiveDecisionReply({ text: query, isDirectMessage: isDMEvent, user, executiveUserId: findJohnSlackId(loadMemory()), channel, threadTs, runtime: executiveFirewall, postMessage: postSlackMessage })) return;
+
   // File-share path: ONLY in DMs. Without this gate, every file drop in a
   // proactive-enabled channel triggered Nora to download and ask what to do with it,
   // which is noisy and inappropriate for general channel activity. File handling is
@@ -8053,6 +8053,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     if (attachLiveTools && isDirect) {
       const ownQueue = buildNoraQueueTaskTool({ channel, threadTs, user });
       toolDefs.push(ownQueue.definition); toolExecutors[ownQueue.definition.name] = ownQueue.execute;
+      for (const t of createExecutiveFirewallTools(executiveFirewall, { source: 'slack', sourceRef: triggerTs })) { toolDefs.push(t.definition); toolExecutors[t.definition.name] = t.execute; }
     }
     // Her own meeting record — read-only, both modes (a grounded proactive comment may cite a call).
     if (attachLiveTools) {
@@ -8122,7 +8123,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
-    tail += fleetOperatingInstruction(mcpBindings.inventory, { direct: isDirect, teamworkAvailable: teamworkOn }) + fleetSupervisor.promptContext();
+    tail += fleetOperatingInstruction(mcpBindings.inventory, { direct: isDirect, teamworkAvailable: teamworkOn }) + fleetSupervisor.promptContext() + executiveFirewall.promptContext();
     tail += SLACK_TABLE_FORMATTING_INSTRUCTION + diagnosisInstruction(contextAssignment);
     const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
     tail = fittedSlackPrompt.tail;
@@ -16096,6 +16097,7 @@ async function completePostListenStartup(background) {
   try { await mcpManager.migrate(); }
   catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
   await fleetSupervisor.hydrate();
+  await executiveFirewall.hydrate();
   // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
   // authoritative substrate observation soon after listening so that restart and persistence
   // scoring do not depend on a long startup race.
@@ -16123,6 +16125,7 @@ async function completePostListenStartup(background) {
     scheduleRecurringRuntimeJob('fleet-supervisor-scan', 15 * 60 * 1000,
       ({ signal }) => fleetSupervisor.scan({ reason: 'scheduled', notify: true, signal }),
       { initialDelayMs: 45 * 1000, timeoutMs: 120000 });
+    scheduleRecurringRuntimeJob('executive-firewall-cycle', 15 * 60 * 1000, () => executiveFirewall.cycle({ notify: true }), { initialDelayMs: 75 * 1000, timeoutMs: 120000 });
     projectControlRuntime.scheduleHydration(scheduleRecurringRuntimeJob);
     scheduleRecurringRuntimeJob('operational-recovery-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {

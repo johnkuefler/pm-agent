@@ -313,6 +313,17 @@ GET /mute
 POST /mute
 POST /webhook/participant
 POST /webhook/status
+GET /executive-firewall
+GET /executive-firewall/brief
+POST /executive-firewall/intake
+POST /executive-firewall/cases/:id/attempts
+POST /executive-firewall/cases/:id/decision-packet
+POST /executive-firewall/cases/:id/decision
+POST /executive-firewall/cases/:id/close
+POST /executive-firewall/cases/:id/dismiss
+POST /executive-firewall/cases/:id/feedback
+POST /executive-firewall/reconcile
+PUT /executive-firewall/policy
 GET /fleet-supervisor
 POST /fleet-supervisor/scan
 POST /fleet-supervisor/incidents/:id/acknowledge

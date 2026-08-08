@@ -16,6 +16,7 @@ function registerFleetSupervisorRuntime({
   intelligence,
   resolveOwner,
   postMessage,
+  handoffCandidates,
 } = {}) {
   const persistence = createFleetSupervisorPersistence({
     db, stateKey: STATE_KEY, dataDirectory, databaseReady, writeThrough,
@@ -30,6 +31,7 @@ function registerFleetSupervisorRuntime({
       const target = resolveOwner();
       return target ? postMessage(target, message) : false;
     },
+    handoffCandidates,
   });
   registerFleetSupervisorRoutes(app, { requireAuth, requireOperatorAuth, supervisor });
   return supervisor;

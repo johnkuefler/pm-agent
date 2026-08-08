@@ -288,6 +288,83 @@ test('Project Autopilot API closes charter, action, meeting, and learning loops'
   assert.equal(project.body.observations.length, 1);
 });
 
+test('Executive Firewall API owns team work, gates executive decisions, and verifies closure', async () => {
+  const operatorHeaders = { 'X-Nora-Operator-Token': createOperatorToken() };
+  const ordinary = await request('/executive-firewall/intake', { method: 'POST', body: {
+    source: 'slack', source_ref: 'integration-thread-1', category: 'coordination',
+    authority_class: 'status_followup', severity: 'medium',
+    summary: 'Delivery owner has not confirmed the handoff', owner: 'Taylor',
+    next_action: 'Ask Taylor for the handoff and verify Teamwork.',
+    resolution_plan: 'Resolve through the project owner before involving John.',
+    evidence: [{ type: 'slack_thread', ref: 'integration-thread-1' }],
+  } });
+  assert.equal(ordinary.response.status, 200);
+  assert.equal(ordinary.body.case.state, 'resolving');
+  const duplicate = await request('/executive-firewall/intake', { method: 'POST', body: {
+    source: 'slack', source_ref: 'integration-thread-1', category: 'coordination',
+    authority_class: 'status_followup', severity: 'medium',
+    summary: 'Delivery owner has not confirmed the handoff', owner: 'Taylor',
+    next_action: 'Ask Taylor for the handoff and verify Teamwork.',
+    resolution_plan: 'Resolve through the project owner before involving John.',
+    evidence: [{ type: 'slack_thread', ref: 'integration-thread-1' }],
+  } });
+  assert.equal(duplicate.body.created, false);
+  assert.equal(duplicate.body.material_change, false);
+
+  const attempt = await request(`/executive-firewall/cases/${ordinary.body.case.id}/attempts`, {
+    method: 'POST', body: { action: 'Requested the handoff from Taylor',
+      result: 'Taylor supplied the asset and updated the task.', target: 'Taylor', channel: 'Slack',
+      evidence: [{ type: 'teamwork_task', ref: 'task-handoff' }] },
+  });
+  assert.equal(attempt.body.case.state, 'resolving');
+  const closed = await request(`/executive-firewall/cases/${ordinary.body.case.id}/close`, {
+    method: 'POST', body: { outcome: 'The asset is handed off and dependent work began.',
+      evidence: [{ type: 'teamwork_task', ref: 'task-dependent-started' }] },
+  });
+  assert.equal(closed.body.case.handled_without_executive, true);
+
+  const gated = await request('/executive-firewall/intake', { method: 'POST', body: {
+    source: 'project_risk', source_ref: 'budget-risk-1', category: 'project_delivery',
+    severity: 'high', summary: 'Production recovery requires additional budget', owner: 'Nora',
+    executive_gate: 'budget', requires_executive: true,
+    next_action: 'Prepare the lowest-risk decision packet.',
+    evidence: [{ type: 'estimate', ref: 'estimate-budget-1' }],
+  } });
+  const prepared = await request(`/executive-firewall/cases/${gated.body.case.id}/decision-packet`, {
+    method: 'POST', body: { question: 'Approve the recovery budget?',
+      recommendation: 'Approve the smaller recovery option.',
+      consequence: 'The launch slips without additional production capacity.',
+      options: ['Approve smaller recovery', 'Accept launch slip'],
+      evidence: [{ type: 'estimate', ref: 'estimate-budget-1' }], executive_gate: 'budget' },
+  });
+  assert.equal(prepared.body.case.state, 'decision_ready');
+  const denied = await request(`/executive-firewall/cases/${gated.body.case.id}/decision`, {
+    method: 'POST', body: { decision: 'approve' },
+  });
+  assert.equal(denied.response.status, 401);
+  const decided = await request(`/executive-firewall/cases/${gated.body.case.id}/decision`, {
+    method: 'POST', headers: operatorHeaders, body: { decision: 'approve' },
+  });
+  assert.equal(decided.body.case.state, 'executing');
+  const gatedClosed = await request(`/executive-firewall/cases/${gated.body.case.id}/close`, {
+    method: 'POST', body: { outcome: 'Recovery capacity was approved and scheduled.',
+      evidence: [{ type: 'teamwork_task', ref: 'recovery-scheduled' }] },
+  });
+  assert.equal(gatedClosed.body.case.handled_without_executive, false);
+  const feedback = await request(`/executive-firewall/cases/${gated.body.case.id}/feedback`, {
+    method: 'POST', headers: operatorHeaders,
+    body: { rating: 'helpful', behavior_change: 'Keep budget decisions this compact.' },
+  });
+  assert.equal(feedback.body.feedback.rating, 'helpful');
+
+  const snapshot = await request('/executive-firewall');
+  assert.equal(snapshot.body.state.policy.team_pm_role_preserved, true);
+  assert.equal((await request('/initiative-budgets/executive%3Ajohn')).body.limit, 1);
+  assert.equal(snapshot.body.metrics.verified_closed, 2);
+  assert.equal(snapshot.body.metrics.handled_without_executive, 1);
+  assert.equal(snapshot.body.brief.decisions.length, 0);
+});
+
 test('hourly summary policy rejects idle-loop noise before notification', async () => {
   const quiet = await request('/pm-control/run-summary/evaluate', { method: 'POST', body: {
     recipient: 'John',

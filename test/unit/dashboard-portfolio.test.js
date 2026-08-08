@@ -46,7 +46,7 @@ test('portfolio opens as Nora default workspace and retains every existing room'
   assert.match(source, /Teamwork task detail/);
   assert.match(source, /Context still needed/);
   assert.match(html, /data-project-filter="attention"/);
-  assert.equal([...html.matchAll(/data-tab="([^"]+)"/g)].length, 14);
+  assert.equal([...html.matchAll(/data-tab="([^"]+)"/g)].length, 15);
 });
 
 test('portfolio attention is source-bound and does not turn unknown health red', () => {

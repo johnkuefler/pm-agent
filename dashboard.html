@@ -31,6 +31,7 @@
           <div class="nav-label">Work</div>
           <button class="tab" type="button" data-tab="live" aria-selected="false" onclick="showTab('live')">Live</button>
           <button class="tab active" type="button" data-tab="projects" aria-selected="true" onclick="showTab('projects')">Portfolio</button>
+          <button class="tab" type="button" data-tab="executive" aria-selected="false" onclick="showTab('executive')">Executive</button>
           <button class="tab" type="button" data-tab="fleet" aria-selected="false" onclick="showTab('fleet')">Fleet</button>
           <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Tasks</button>
           <button class="tab" type="button" data-tab="meeting" aria-selected="false" onclick="showTab('meeting')">Meeting</button>
@@ -422,6 +423,43 @@
         </div>
         <div id="project-status" class="toast"></div>
       </section>
+    </div>
+
+    <!-- Executive Firewall Tab -->
+    <div id="page-executive" class="page">
+      <section class="executive-hero" aria-labelledby="executive-title">
+        <div>
+          <span class="portfolio-kicker">Executive firewall</span>
+          <h2 id="executive-title">Nora handles the work before it reaches John</h2>
+          <p>Nora remains the project manager for the entire team. This view shows what she is resolving, the few decisions that truly require executive authority, and what she closed without consuming attention.</p>
+        </div>
+        <div class="executive-hero-actions">
+          <div id="executive-firewall-sync" class="fleet-sync">Loading the accountability ledger</div>
+          <button class="btn btn-primary btn-sm" type="button" onclick="reconcileExecutiveFirewall(this)">Reconcile now</button>
+        </div>
+      </section>
+      <section id="executive-firewall-stats" class="portfolio-stat-grid" aria-label="Executive firewall outcomes"></section>
+      <div class="executive-workspace">
+        <section class="section executive-case-queue" aria-labelledby="executive-queue-title">
+          <header class="portfolio-section-head">
+            <div><span class="portfolio-kicker">Accountability queue</span><h2 id="executive-queue-title">What Nora owns now</h2><p id="executive-case-summary">Loading active matters.</p></div>
+            <div class="executive-filter-bar" role="group" aria-label="Case filter">
+              <button class="fleet-filter active" type="button" data-executive-filter="active" aria-pressed="true" onclick="setExecutiveFilter('active')">Active</button>
+              <button class="fleet-filter" type="button" data-executive-filter="decisions" aria-pressed="false" onclick="setExecutiveFilter('decisions')">Needs John</button>
+              <button class="fleet-filter" type="button" data-executive-filter="closed" aria-pressed="false" onclick="setExecutiveFilter('closed')">Closed</button>
+            </div>
+          </header>
+          <div id="executive-case-list" class="executive-case-list" aria-live="polite"></div>
+        </section>
+        <aside class="executive-sidebar" aria-label="Executive protection summary">
+          <section class="section"><span class="portfolio-kicker">Decision desk</span><h2>Decision-ready only</h2><div id="executive-decision-list"></div></section>
+          <section class="section"><span class="portfolio-kicker">Operating contract</span><h2>Team PM and executive firewall</h2><div id="executive-policy"></div></section>
+        </aside>
+      </div>
+      <dialog id="executive-case-dialog" class="fleet-dialog" aria-labelledby="executive-dialog-title">
+        <button class="fleet-dialog-close" type="button" aria-label="Close case details" onclick="this.closest('dialog').close()">Close</button>
+        <div id="executive-case-detail"></div>
+      </dialog>
     </div>
 
     <!-- Fleet Supervisor Tab -->
@@ -1055,6 +1093,7 @@
   <script src="/assets/js/dashboard-knowledge.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-portfolio.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-fleet.js?v={{ASSET_VERSION}}"></script>
+  <script src="/assets/js/dashboard-executive.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-admin.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-brain.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-intelligence.js?v={{ASSET_VERSION}}"></script>

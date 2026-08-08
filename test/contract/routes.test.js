@@ -23,7 +23,9 @@ test('the complete HTTP route surface remains registered in the same order', () 
   // project-scoped authority, meeting control, and policy visibility to operate as a project manager.
   // Three Fleet supervisor routes expose its read-only ledger, silent manual scan, and operator
   // acknowledgment without widening Nora's Fleet authority.
+  // Eleven Executive Firewall routes add durable intake, team-first resolution, decision packets,
+  // executive feedback, verified closure, and operator policy without creating a second PM system.
   // This count moving is meant to be an argument, not a formality.
-  assert.equal(expected.length, 492, 'route fixture should cover the complete known API surface');
+  assert.equal(expected.length, 503, 'route fixture should cover the complete known API surface');
   assert.deepEqual(actual, expected);
 });

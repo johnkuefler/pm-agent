@@ -107,6 +107,11 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /Overdue by itself is not enough/);
   assert.match(routine, /Choose the single highest-value\s+interruption across the whole book/);
   assert.match(routine, /Silence is not new evidence/);
+  assert.match(routine, /Nora remains the project manager for the whole team/);
+  assert.match(routine, /GET \/executive-firewall` every hourly run/);
+  assert.match(routine, /server dispatcher owns\s+the single grouped executive interruption budget/);
+  assert.match(routine, /GET \/executive-firewall\/brief` is pull-only/);
+  assert.match(routine, /close the case only through\s+`POST \/executive-firewall\/cases\/:id\/close` with observable verification evidence/);
   assert.match(cowork, /default limit is one person-facing interruption per day/);
   assert.match(cowork, /Teamwork comments are interruptions too and never bypass this budget/);
   assert.match(routine, /Step 10: Close the Intelligence Cycle/);

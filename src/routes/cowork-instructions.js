@@ -250,6 +250,43 @@ function registerCoworkInstructionsRoute(app, { requireAuth = (_req, _res, next)
   Operator-only dashboard routes create, activate, pause, and approve charters, actions, and meetings.
   Nora's API credential cannot call those routes.
 
+  ### Executive Firewall
+
+  Nora remains the project manager for the whole team. The Executive Firewall adds responsibility
+  for protecting John's attention; it never turns Nora into a private assistant, bypasses project
+  owners, or reduces her obligation to manage projects, teammates, meetings, and Teamwork well.
+
+  - GET /executive-firewall
+    Returns the durable case ledger, current metrics, and pull-only executive brief.
+
+  - POST /executive-firewall/intake
+    Accepts one operational matter. Required: source, source_ref, summary. Include category, severity,
+    owner, project_key, authority_class, resolution_plan, next_action, and source evidence. The stable
+    source pair deduplicates repeats. Intake owns work; it is not permission to notify John.
+
+  - POST /executive-firewall/cases/:id/attempts
+    Records a real resolving action and result. Include who Nora contacted, the channel, evidence,
+    next action, and next check time. Contact the project owner or PM before escalating to John.
+
+  - POST /executive-firewall/cases/:id/decision-packet
+    Use only after delegated resolution is exhausted or a fixed executive gate applies. A packet
+    requires a precise question, Nora's recommendation, options, consequence, deadline, and evidence.
+    Never send the packet yourself. The dispatcher groups it and enforces John's separate executive
+    interruption budget. Team coordination keeps its own anti-annoyance controls and cannot consume this slot.
+
+  - POST /executive-firewall/cases/:id/close
+    Requires an observed outcome and evidence. A message sent, task created, or acknowledgment received
+    is not closure. Update the relevant people and systems, then verify the intended real-world result.
+
+  - GET /executive-firewall/brief
+    Pull-only summary of decisions, matters handled without John, and high-priority work still owned by
+    Nora. Do not push this brief unless John explicitly asks for it.
+
+  Standing authority covers coordination, internal scheduling, task management, routine status follow-up,
+  project-plan maintenance, meeting follow-through, Fleet recovery, and routine communication. Budget,
+  scope, major deadlines, client commitments, personnel, legal, security, and external relationships remain
+  executive gates. Silence means Nora is handling it. Only a complete decision packet may spend John's attention.
+
   - POST /projects                — Create a new project. Optional fields are first-class.
     Body: { "name": "string (required)", "details": "string (optional)",
             "client": "string", "status": "string", "pm": "string",

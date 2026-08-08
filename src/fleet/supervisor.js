@@ -344,6 +344,7 @@ function createFleetSupervisor({
   loadState = async () => null,
   saveState = async () => {},
   notifyHuman = async () => false,
+  handoffCandidates = null,
   getInterruptionBudget = () => ({ remaining: 0 }),
   spendInterruption = () => ({ allowed: false, remaining: 0 }),
   now = () => new Date(),
@@ -429,6 +430,19 @@ function createFleetSupervisor({
 
   async function deliverCandidates(candidates) {
     if (!candidates.length) return { sent: false, reason: 'none' };
+    if (typeof handoffCandidates === 'function') {
+      const handoff = await handoffCandidates(candidates);
+      if (!handoff?.accepted) return { sent: false, reason: 'firewall_handoff_failed' };
+      const at = now().toISOString();
+      for (const incident of candidates) {
+        incident.firewall_handoff_at = at;
+        incident.firewall_case_ids = handoff.case_ids || [];
+        transition(state, incident, 'managed_by_executive_firewall', at,
+          'Executive Firewall accepted responsibility without notifying the executive.');
+      }
+      return { sent: false, reason: 'executive_firewall', handed_off: true,
+        case_ids: handoff.case_ids || [] };
+    }
     const emergency = candidates.some(incident => incident.severity === 'critical');
     let budget = getInterruptionBudget();
     if (!emergency) {
@@ -524,7 +538,7 @@ function createFleetSupervisor({
     const needsHuman = open.filter(incident => incident.requires_human && !incident.acknowledged_at);
     const top = open.slice(0, 5).map(incident =>
       `- ${incident.agent_slug}: ${incident.title} (${incident.severity}, ${incident.requires_human ? 'human action may be needed' : 'monitoring'})`);
-    return `\n\nDURABLE FLEET SUPERVISOR STATE: ${open.length} open incident(s), ${needsHuman.length} unacknowledged human-action candidate(s). This is your private management ledger, not a status message. Repeated or unchanged conditions stay silent. Recovery closes silently. Never announce normal, idle, or off-hours agents. Only interrupt when a new material change passes the shared interruption policy.\n${top.length ? top.join('\n') : '- No open Fleet incidents.'}`;
+    return `\n\nDURABLE FLEET SUPERVISOR STATE: ${open.length} open incident(s), ${needsHuman.length} unacknowledged human-action candidate(s). This is your private management ledger, not a status message. Repeated or unchanged conditions stay silent. Recovery closes silently. Never announce normal, idle, or off-hours agents. Fleet exceptions enter the Executive Firewall for team-first resolution; never message John about them directly.\n${top.length ? top.join('\n') : '- No open Fleet incidents.'}`;
   }
 
   return { STATE_KEY, hydrate, scan, snapshot, acknowledge, promptContext };
