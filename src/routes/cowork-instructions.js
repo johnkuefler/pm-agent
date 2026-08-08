@@ -1,6 +1,9 @@
 'use strict';
 
-function registerCoworkInstructionsRoute(app) {
+const fs = require('fs');
+const path = require('path');
+
+function registerCoworkInstructionsRoute(app, { requireAuth = (_req, _res, next) => next() } = {}) {
   // Cowork instructions — plain text reference for scheduled Cowork tasks
   app.get('/cowork-instructions', (req, res) => {
     res.type('text/plain').send(`# Nora — Cowork Instructions
@@ -507,7 +510,8 @@ function registerCoworkInstructionsRoute(app) {
     variable_price_cents unless the selected Goody product has variable pricing. When used, it is
     the funded product amount and cannot exceed amount_cents. Use no_candidate once on the first
     daily relationship scan when nothing crosses the threshold. Do not call
-    POST /gifts/intents as a shortcut. Include new proposals in the hour summary as proposals only.
+    POST /gifts/intents as a shortcut. A new proposal is a decision candidate for the project-control
+    summary evaluator, not an automatic hour summary or a completed action.
 
   - GET /gifts/goody/products?q=coffee&limit=10
     Uses the configured Goody API key/environment to list safe product summaries from the Goody catalog.
@@ -2162,12 +2166,19 @@ function registerCoworkInstructionsRoute(app) {
     even if you don't proceed to deep research, just reconciling new active projects into
     Nora's store is a meaningful improvement. If you reconcile but find no good research
     target, that's still a successful round.
-  - Don't include this round in the end-of-run summary unless something noteworthy was
-    discovered (e.g., "Found Pitsco launch slipped to May 14 — not previously in memory"
-    or "Reconciled 2 new Teamwork projects into Nora's store").
+  - Keep the idle round private. Convert verified findings into project control and manage the
+    next action there. Research work and reconciliation counts are not end-of-run messages.
   - Never run this round on a project the user has flagged "do not touch" (check memory
     for any "skip Nora research on X" entries before picking).
   `);
+  });
+  app.get('/routine/research', requireAuth, (_req, res) => {
+    try {
+      res.type('text/markdown').send(fs.readFileSync(
+        path.join(__dirname, '..', '..', 'nora-research-routine.md'), 'utf8'));
+    } catch (error) {
+      res.status(500).json({ error: `research routine unavailable: ${error.message}` });
+    }
   });
 }
 

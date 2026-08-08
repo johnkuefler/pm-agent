@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const artifactUpload = require('../../src/integrations/drive-artifact-upload');
 const { registerCoworkInstructionsRoute } = require('../../src/routes/cowork-instructions');
+const { readRoutineSource } = require('../helpers/routine-source');
 
 const input = {
   bytes: Buffer.from('real binary bytes\0\1', 'utf8'),
@@ -74,7 +75,7 @@ test('ledger compaction retains pending work and bounds settled receipts', () =>
 test('unattended-work instructions expose raw upload, retry, and receipt verification', () => {
   const root = path.resolve(__dirname, '../..');
   const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
-  const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
+  const routine = readRoutineSource();
   for (const text of [cowork, routine]) {
     assert.match(text, /\/admin\/drive\/upload-artifact/);
     assert.match(text, /--data-binary/);

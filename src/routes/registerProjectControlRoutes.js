@@ -1,6 +1,7 @@
 'use strict';
 
 const projectControl = require('../intelligence/project-control');
+const runSummaryPolicy = require('../intelligence/run-summary-policy');
 
 function registerProjectControlRoutes(app, deps) {
   const {
@@ -165,6 +166,16 @@ function registerProjectControlRoutes(app, deps) {
     const ledger = loadProjectControl();
     res.json({ ...projectControl.shadowEvaluation(ledger),
       quality: projectControl.qualityEvaluation(ledger) });
+  });
+
+  app.post('/pm-control/run-summary/evaluate', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => runSummaryPolicy.recordRunSummaryEvaluation(
+        ledger, req.body || {}));
+      res.json(result.evaluation);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.post('/pm-control/syncs', requireAuth, async (req, res) => {

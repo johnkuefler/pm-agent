@@ -251,6 +251,7 @@ GET /
 GET /instructions
 GET /architecture
 GET /cowork-instructions
+GET /routine/research
 GET /prompt
 PUT /prompt
 GET /prompt/history
@@ -421,6 +422,7 @@ POST /pm-control/interventions/:id/authorize
 POST /pm-control/interventions/:id/execute
 POST /pm-control/interventions/:id/observe
 GET /pm-control/evaluation
+POST /pm-control/run-summary/evaluate
 POST /pm-control/syncs
 PUT /pm-control/policy
 GET /runtime-activity

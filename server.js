@@ -3286,7 +3286,7 @@ async function realtimePromptWithRecall(session, { signal: callerSignal = null }
 registerUiRoutes(app, { requireDashboardAuth, rootDir: __dirname });
 
 // Cowork instructions — plain text reference for scheduled Cowork tasks
-registerCoworkInstructionsRoute(app);
+registerCoworkInstructionsRoute(app, { requireAuth });
 
 // Nora's system prompt as raw text (for Claude Code to fetch); ?json=1 returns
 // { content, updated_at, updated_by } for the dashboard editor.

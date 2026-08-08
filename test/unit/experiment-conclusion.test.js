@@ -5,6 +5,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { createIntelligenceStore } = require('../../src/intelligence/store');
+const { readRoutineSource } = require('../helpers/routine-source');
 
 async function freshStore() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-experiment-'));
@@ -166,7 +167,7 @@ test('an experiment cannot be concluded twice', async () => {
 test('the conclude endpoint is documented everywhere Nora is told to make the decision', () => {
   const root = path.join(__dirname, '..', '..');
   const cowork = fs.readFileSync(path.join(root, 'src', 'routes', 'cowork-instructions.js'), 'utf8');
-  const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
+  const routine = readRoutineSource();
   const store = fs.readFileSync(path.join(root, 'src', 'intelligence', 'store.js'), 'utf8');
   for (const [name, source] of [['cowork instructions', cowork], ['routine', routine]]) {
     assert.match(source, /learning-experiments\/<id>\/conclude/,

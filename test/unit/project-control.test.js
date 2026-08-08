@@ -116,6 +116,34 @@ test('silent maintenance and requested work do not consume a human interruption 
   assert.equal(requested.intervention.evaluation.uses_human_budget, false);
 });
 
+test('relationship messages compete for the same scarce human attention as PM reminders', () => {
+  const planned = projectControl.planIntervention(withProject(), {
+    project_key: 'tw-100',
+    lane: 'relationship',
+    recipient: 'Taylor',
+    target_ref: 'teamwork:task-42:milestone',
+    description: 'Thank Taylor for resolving the verified launch blocker before it moved the date.',
+    intended_effect: 'Acknowledge specific high-value work without adding an ask.',
+    success_criteria: 'The acknowledgment is delivered once and creates no follow-up burden.',
+    confidence: 0.9,
+    actionability: 0.9,
+    impact: 0.7,
+    evidence: EVIDENCE,
+    cognitive_context: cognitiveContext(),
+  }, { now: NOW, initiative: { remaining: 1 } });
+  assert.equal(planned.intervention.evaluation.allowed, true);
+  assert.equal(planned.intervention.evaluation.uses_human_budget, true);
+
+  const unavailable = projectControl.planIntervention(withProject(), {
+    project_key: 'tw-100', lane: 'relationship', recipient: 'Taylor',
+    description: 'Send a generic thank-you.', intended_effect: 'Be friendly.',
+    success_criteria: 'A note is delivered.', confidence: 0.9, actionability: 0.9,
+    evidence: EVIDENCE, cognitive_context: cognitiveContext(),
+  }, { now: NOW, initiative: { remaining: 0 } });
+  assert.equal(unavailable.intervention.status, 'suppressed');
+  assert.match(unavailable.intervention.evaluation.reasons.join(' '), /budget is unavailable/);
+});
+
 test('human-facing interventions require quality, cognitive grounding, and a reservation', () => {
   let ledger = withProject();
   const planned = projectControl.planIntervention(ledger, {

@@ -3,10 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { readServerSource } = require('../helpers/server-source');
+const { readRoutineSource } = require('../helpers/routine-source');
 
 const root = path.resolve(__dirname, '../..');
 const server = readServerSource();
-const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
+const operationalRoutine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
+const routine = readRoutineSource();
 const store = fs.readFileSync(path.join(root, 'src/intelligence/store.js'), 'utf8');
 const routes = fs.readFileSync(path.join(root, 'src/routes/intelligence.js'), 'utf8');
 const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
@@ -194,7 +196,9 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(cowork, /Nora must never invent, infer, copy, or self-attest provider metadata/);
   assert.match(routes, /awaiting_subject_prediction/);
   assert.match(routine, /Step 0\.75: Consume the Subject Research Inbox/);
-  assert.match(routine, /mandatory checkpoint on every ordinary run/);
+  assert.match(operationalRoutine, /fetch `GET \/routine\/research` and execute only its Step 0\.75 section/);
+  assert.doesNotMatch(operationalRoutine, /mandatory checkpoint on every ordinary run/);
+  assert.match(routine, /Within an eligible off-hours research cycle, run this checkpoint/);
   assert.match(routine, /never exposes\s+queued or previously resolved events/s);
   assert.match(store, /\['predicting', 'awaiting_resolution'\]\.includes\(item\.status\)/);
   assert.match(routine, /must not access\s+either the shared-only or yoked-observer queue/);

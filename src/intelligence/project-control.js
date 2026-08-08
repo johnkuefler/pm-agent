@@ -6,6 +6,7 @@ const LANES = Object.freeze([
   'silent_maintenance',
   'requested_action',
   'consolidated_coordination',
+  'relationship',
   'escalation',
   'emergency',
 ]);
@@ -14,7 +15,7 @@ const INTERVENTION_STATUSES = Object.freeze(['planned', 'authorized', 'executed'
 const OUTCOMES = Object.freeze(['helped', 'neutral', 'ignored', 'backfired', 'resolved']);
 const HEALTHS = Object.freeze(['green', 'amber', 'red', 'unknown']);
 const SEVERITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
-const HUMAN_LANES = new Set(['consolidated_coordination', 'escalation', 'emergency']);
+const HUMAN_LANES = new Set(['consolidated_coordination', 'relationship', 'escalation', 'emergency']);
 
 function clean(value, max = 1000) {
   return String(value || '').trim().replace(/\s+/g, ' ').slice(0, max);
@@ -65,6 +66,7 @@ function emptyLedger() {
     interventions: [],
     outcomes: [],
     syncs: [],
+    summary_evaluations: [],
   };
 }
 
@@ -114,6 +116,8 @@ function normalizeLedger(value = {}) {
       ? source.interventions.filter(item => item?.id).slice(-10000) : [],
     outcomes: Array.isArray(source.outcomes) ? source.outcomes.filter(item => item?.id).slice(-10000) : [],
     syncs: Array.isArray(source.syncs) ? source.syncs.filter(item => item?.id).slice(-2000) : [],
+    summary_evaluations: Array.isArray(source.summary_evaluations)
+      ? source.summary_evaluations.filter(item => item?.id).slice(-5000) : [],
   };
 }
 
@@ -267,6 +271,7 @@ function recordDecision(ledger = emptyLedger(), input = {}, { now = new Date() }
 function interventionThreshold(lane) {
   if (lane === 'emergency') return { confidence: 0.8, actionability: 0.75 };
   if (lane === 'escalation') return { confidence: 0.75, actionability: 0.7 };
+  if (lane === 'relationship') return { confidence: 0.8, actionability: 0.7 };
   if (lane === 'consolidated_coordination') return { confidence: 0.65, actionability: 0.6 };
   return { confidence: 0, actionability: 0 };
 }
@@ -304,7 +309,9 @@ function evaluateIntervention(current, intervention, { initiative = null, now = 
     reasons.push('Confidence is below the lane threshold.');
   }
   if (intervention.actionability < Math.max(threshold.actionability, Number(current.policy.minimum_actionability) || 0)) {
-    reasons.push('The recipient does not have a concrete action or decision.');
+    reasons.push(intervention.lane === 'relationship'
+      ? 'The acknowledgment is not specific or proportionate enough to interrupt the recipient.'
+      : 'The recipient does not have a concrete action or decision.');
   }
   if (intervention.lane === 'requested_action' && !intervention.request_ref) {
     reasons.push('Requested action requires an explicit request reference.');
@@ -668,6 +675,14 @@ function report(ledger = emptyLedger(), { now = new Date() } = {}) {
     },
     decisions: { total: current.decisions.length },
     interventions: shadowEvaluation(current),
+    run_summaries: {
+      evaluated: current.summary_evaluations.length,
+      suppressed: current.summary_evaluations.filter(item => !item.allowed).length,
+      allowed: current.summary_evaluations.filter(item => item.allowed).length,
+      proactive_eligible: current.summary_evaluations.filter(item => item.uses_human_budget).length,
+      private_signals: current.summary_evaluations.reduce(
+        (sum, item) => sum + (Number(item.private_signal_count) || 0), 0),
+    },
     latest_sync: current.syncs.at(-1) || null,
   };
 }

@@ -184,10 +184,45 @@ test('project control API separates quiet agency from scarce human interruption'
   assert.equal(policyUpdated.body.policy.recipient_cooldown_hours, 72);
 });
 
+test('hourly summary policy rejects idle-loop noise before notification', async () => {
+  const quiet = await request('/pm-control/run-summary/evaluate', { method: 'POST', body: {
+    recipient: 'John',
+    signals: [
+      { kind: 'quiet_check', description: 'No tasks, unread mail, or missed mentions.' },
+      { kind: 'idle_research', description: 'An idle round found stale project metadata.',
+        materiality: 1, recipient_needs_to_know: true,
+        evidence: [{ type: 'teamwork_task', ref: 'task-stale' }] },
+      { kind: 'bookkeeping', description: 'Cleaned up project records.' },
+    ],
+  } });
+  assert.equal(quiet.response.status, 200);
+  assert.equal(quiet.body.allowed, false);
+  assert.equal(quiet.body.private_signal_count, 3);
+
+  const delivery = await request('/pm-control/run-summary/evaluate', { method: 'POST', body: {
+    recipient: 'John',
+    signals: [{ kind: 'requested_delivery', description: 'Built and verified the requested task lists.',
+      materiality: 0.9, requested_by_recipient: true, recipient_needs_to_know: true,
+      evidence: [{ type: 'teamwork_tasklist', ref: 'tasklist-4241792' }] }],
+  } });
+  assert.equal(delivery.body.allowed, true);
+  assert.equal(delivery.body.classification, 'requested_delivery');
+  assert.equal(delivery.body.uses_human_budget, false);
+  const report = await request('/pm-control/report');
+  assert.equal(report.body.run_summaries.evaluated, 2);
+  assert.equal(report.body.run_summaries.suppressed, 1);
+  assert.equal(report.body.run_summaries.allowed, 1);
+  assert.equal(report.body.run_summaries.private_signals, 3);
+});
+
 test('authentication protects APIs and dashboard independently', async () => {
   const api = await fetch(base + '/memory');
   assert.equal(api.status, 401);
   assert.equal((await fetch(base + '/memory?key=integration-key')).status, 200);
+  assert.equal((await fetch(base + '/routine/research')).status, 401);
+  const researchRoutine = await request('/routine/research');
+  assert.equal(researchRoutine.response.status, 200);
+  assert.match(researchRoutine.response.headers.get('content-type'), /text\/markdown/);
 
   const dashboard = await fetch(base + '/');
   assert.equal(dashboard.status, 401);

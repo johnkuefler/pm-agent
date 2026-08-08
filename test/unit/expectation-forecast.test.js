@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createIntelligenceStore } = require('../../src/intelligence/store');
 const expectationForecast = require('../../src/intelligence/expectation-forecast');
 const { shouldRefreshWorkerSnapshot } = require('../../src/routes/intelligence');
+const { readRoutineSource } = require('../helpers/routine-source');
 
 test('stale expectation calibration refreshes at most once per cooldown window', () => {
   assert.equal(shouldRefreshWorkerSnapshot(null, 100000, 60000), true);
@@ -165,7 +166,7 @@ test('EXPECT collection gate requires longitudinal, cross-scope, surprise-bearin
 test('EXPECT exposes compact calibration before forecast formation without adding a provider path', () => {
   const routes = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
   const storeSource = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'intelligence', 'store.js'), 'utf8');
-  const routine = fs.readFileSync(path.join(__dirname, '..', '..', 'nora-routine.md'), 'utf8');
+  const routine = readRoutineSource();
   const instructions = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'routes',
     'cowork-instructions.js'), 'utf8');
   assert.match(routes, /const summary = req\.query\.summary === '1'[\s\S]*expectationForecastRuntimeSnapshot[\s\S]*summary,/);
