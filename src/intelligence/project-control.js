@@ -140,7 +140,14 @@ function normalizeDecisionState(value = {}) {
   const candidates = Array.isArray(source.candidates) ? source.candidates.slice(0, 20).map(item => ({
     id: clean(item?.id, 160),
     title: clean(item?.title, 600),
+    description: clean(item?.description, 1600),
+    tasklist: clean(item?.tasklist, 300),
+    priority: clean(item?.priority, 40).toLowerCase(),
+    progress: Math.max(0, Math.min(100, Number(item?.progress) || 0)),
+    start_at: item?.start_at ? timestamp(item.start_at) : null,
     due_at: item?.due_at ? timestamp(item.due_at) : null,
+    updated_at: item?.updated_at ? timestamp(item.updated_at) : null,
+    out_of_sequence: item?.out_of_sequence === true,
     assignees: normalizeList(item?.assignees, 20, 240),
     evidence_ref: clean(item?.evidence_ref, 500),
   })).filter(item => item.id && item.title) : [];

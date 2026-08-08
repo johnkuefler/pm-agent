@@ -33,6 +33,7 @@ function enhanceFormFields() {
         openCommandPalette();
       } else if (event.key === 'Escape') {
         closeCommandPalette();
+        if (typeof closeDecisionDetail === 'function') closeDecisionDetail();
         closeMobileNav();
       }
     });

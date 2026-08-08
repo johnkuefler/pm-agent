@@ -39,7 +39,12 @@ test('portfolio opens as Nora default workspace and retains every existing room'
   assert.match(html, /Nora's judgment/);
   assert.match(html, /id="pm-autopilot-summary"/);
   assert.match(html, /id="project-autopilot-panel"/);
+  assert.match(html, /id="decision-detail"/);
+  assert.match(html, /id="decision-detail-content"/);
   assert.match(source, /Why Nora believes this/);
+  assert.match(source, /viewDecisionCandidate/);
+  assert.match(source, /Teamwork task detail/);
+  assert.match(source, /Context still needed/);
   assert.match(html, /data-project-filter="attention"/);
   assert.equal([...html.matchAll(/data-tab="([^"]+)"/g)].length, 13);
 });

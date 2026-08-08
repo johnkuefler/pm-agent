@@ -1,6 +1,8 @@
 // Portfolio command center. This loads after dashboard-knowledge.js and replaces the legacy
 // project-memory list with the durable project-control story while keeping context editing available.
 var selectedPortfolioProjectKey = null;
+var selectedPortfolioDecisionProjectKey = null;
+var portfolioDecisionReturnFocus = null;
 var projectPortfolioFilter = 'attention';
 var projectPortfolioState = {
   projects: [], legacy: [], risks: [], evaluation: {}, report: {}, hydration: {}, autopilot: {},
@@ -132,11 +134,62 @@ function renderPortfolioDecisions() {
     - (portfolioDateValue(right.due_at) || Infinity));
   document.getElementById('pm-control-decisions').innerHTML = candidates.length
     ? candidates.slice(0, 6).map(candidate => `
-      <button class="portfolio-radar-item" type="button" data-project-key="${escHtml(candidate.project.key)}" onclick="viewProject(this.dataset.projectKey)">
+      <button class="portfolio-radar-item" type="button" data-project-key="${escHtml(candidate.project.key)}" data-decision-id="${escHtml(candidate.id)}" onclick="viewDecisionCandidate(this.dataset.projectKey,this.dataset.decisionId)">
         <span>${escHtml(candidate.project.name)}</span><strong>${escHtml(candidate.title)}</strong>
-        <small>${escHtml(portfolioDate(candidate.due_at))} · ${escHtml((candidate.assignees || []).join(', ') || 'unassigned')}</small>
+        <small>${escHtml(portfolioDate(candidate.due_at))} · ${escHtml((candidate.assignees || []).join(', ') || 'unassigned')} · View details</small>
       </button>`).join('')
     : '<p class="portfolio-empty">No decision candidates are currently visible.</p>';
+}
+
+function viewDecisionCandidate(projectKey, candidateId) {
+  const project = projectPortfolioState.projects.find(item => item.key === projectKey);
+  const candidate = project?.decision_state?.candidates?.find(item => String(item.id) === String(candidateId));
+  if (!project || !candidate) return;
+  const detail = document.getElementById('decision-detail');
+  const description = candidate.description || '';
+  const confidence = Math.round((project.hydration?.field_sources?.decision_state?.confidence || 0) * 100);
+  const interpretation = 'Nora surfaced this because an open Teamwork task contains approval, sign-off, review, confirmation, or decision language. It is a candidate for attention, not proof that work is blocked.';
+  portfolioDecisionReturnFocus = document.activeElement;
+  selectedPortfolioDecisionProjectKey = project.key;
+  document.getElementById('decision-detail-title').textContent = candidate.title;
+  document.getElementById('decision-detail-content').innerHTML = `
+    <div class="decision-source-detail ${description ? '' : 'is-missing'}">
+      <span>Teamwork task detail</span>
+      <p>${escHtml(description || 'No description is recorded for this Teamwork task. The task title is currently the only source detail Nora has.')}</p>
+    </div>
+    <div class="decision-fact-grid">
+      <div><span>Project</span><strong>${escHtml(project.name)}</strong></div>
+      <div><span>Owner</span><strong>${escHtml((candidate.assignees || []).join(', ') || 'Unassigned')}</strong></div>
+      <div><span>Needed by</span><strong>${escHtml(portfolioDate(candidate.due_at))}</strong></div>
+      <div><span>Teamwork list</span><strong>${escHtml(candidate.tasklist || 'Not provided')}</strong></div>
+      <div><span>Priority</span><strong>${escHtml(candidate.priority || 'Not set')}</strong></div>
+      <div><span>Progress</span><strong>${Math.round(Number(candidate.progress) || 0)}%</strong></div>
+    </div>
+    <section class="decision-explanation">
+      <h3>Why Nora surfaced this</h3>
+      <p>${escHtml(interpretation)}</p>
+      <small>${confidence ? `${confidence}% heuristic confidence · ` : ''}${escHtml(candidate.evidence_ref || `teamwork:task:${candidate.id}`)}${candidate.updated_at ? ` · source updated ${escHtml(portfolioDate(candidate.updated_at))}` : ''}</small>
+    </section>
+    ${description ? '' : '<section class="decision-missing-context"><h3>Context still needed</h3><p>Add the exact decision question, viable options, and final approver to the Teamwork task. Nora will preserve that detail on the next project refresh.</p></section>'}`;
+  detail.classList.add('open');
+  detail.setAttribute('aria-hidden', 'false');
+  document.getElementById('decision-detail-close').focus();
+}
+
+function closeDecisionDetail(event) {
+  const detail = document.getElementById('decision-detail');
+  if (event && event.target !== detail) return;
+  if (!detail || !detail.classList.contains('open')) return;
+  detail.classList.remove('open');
+  detail.setAttribute('aria-hidden', 'true');
+  if (portfolioDecisionReturnFocus?.isConnected) portfolioDecisionReturnFocus.focus();
+  portfolioDecisionReturnFocus = null;
+}
+
+function viewDecisionProject() {
+  const projectKey = selectedPortfolioDecisionProjectKey;
+  closeDecisionDetail();
+  if (projectKey) viewProject(projectKey);
 }
 
 function renderPortfolioRisks() {
@@ -357,7 +410,7 @@ async function viewProject(key) {
   const path = critical.length ? `<ol class="portfolio-path-list">${critical.map(item => `<li>${escHtml(item)}</li>`).join('')}</ol>`
     : '<p class="portfolio-empty">No critical-path task is currently inferred.</p>';
   const decisions = candidates.length ? `<div class="portfolio-decision-list">${candidates.map(candidate => `
-    <div><strong>${escHtml(candidate.title)}</strong><span>${escHtml(portfolioDate(candidate.due_at))} · ${escHtml((candidate.assignees || []).join(', ') || 'unassigned')}</span></div>`).join('')}</div>`
+    <button class="portfolio-decision-item" type="button" data-project-key="${escHtml(project.key)}" data-decision-id="${escHtml(candidate.id)}" onclick="viewDecisionCandidate(this.dataset.projectKey,this.dataset.decisionId)"><strong>${escHtml(candidate.title)}</strong><span>${escHtml(portfolioDate(candidate.due_at))} · ${escHtml((candidate.assignees || []).join(', ') || 'unassigned')} · View details</span></button>`).join('')}</div>`
     : '<p class="portfolio-empty">No approval, sign-off, or decision candidate is currently visible.</p>';
   const provenance = sources.length ? `<div class="portfolio-source-list">${sources.map(([field, source]) => `
     <div><span>${escHtml(field.replaceAll('_', ' '))}</span><strong>${source.derived ? 'Nora inferred' : 'Source exact'}</strong><small>${Math.round((source.confidence || 0) * 100)}% confidence · ${escHtml(String(source.source || '').replaceAll('_', ' '))}</small></div>`).join('')}</div>`

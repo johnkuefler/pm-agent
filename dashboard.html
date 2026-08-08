@@ -961,6 +961,23 @@
     </main>
   </div>
 
+  <div id="decision-detail" class="decision-backdrop" aria-hidden="true" onclick="closeDecisionDetail(event)">
+    <section class="decision-dialog" role="dialog" aria-modal="true" aria-labelledby="decision-detail-title" onclick="event.stopPropagation()">
+      <header class="decision-dialog-head">
+        <div>
+          <span class="portfolio-kicker">Decision candidate</span>
+          <h2 id="decision-detail-title">Decision details</h2>
+        </div>
+        <button id="decision-detail-close" class="decision-close" type="button" aria-label="Close decision details" onclick="closeDecisionDetail()">Close</button>
+      </header>
+      <div id="decision-detail-content"></div>
+      <footer class="decision-dialog-actions">
+        <button class="btn" type="button" onclick="viewDecisionProject()">View full project story</button>
+        <button class="btn btn-primary" type="button" onclick="closeDecisionDetail()">Done</button>
+      </footer>
+    </section>
+  </div>
+
   <div id="command-palette" class="command-backdrop" aria-hidden="true" onclick="closeCommandPalette(event)">
     <div class="command-dialog" role="dialog" aria-modal="true" aria-label="Switch workspace view" onclick="event.stopPropagation()">
       <input id="command-input" aria-label="Find a workspace view" placeholder="Find a view..." oninput="renderCommandResults()" />

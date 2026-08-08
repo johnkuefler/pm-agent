@@ -3,7 +3,7 @@
 const crypto = require('crypto');
 const projectControl = require('../intelligence/project-control');
 
-const HYDRATION_VERSION = 1;
+const HYDRATION_VERSION = 2;
 const DECISION_PATTERN = /\b(?:approv(?:e|al)|sign[ -]?off|decision|choose|confirm|client review)\b/i;
 const GATE_PATTERN = /\b(?:launch|go[ -]?live|deploy|uat|qa|quality assurance|approv(?:e|al)|sign[ -]?off|handoff|migration|cutover)\b/i;
 const PHASE_RULES = Object.freeze([
@@ -307,7 +307,11 @@ function buildProjectStories(snapshot = {}, { now = new Date() } = {}) {
       project, checkpoint: checkpoint ? { id: checkpoint.id, due_at: checkpoint.due_at,
         name: checkpoint.name, kind: checkpointKind } : null,
       phase, critical_task_ids: criticalTasks.map(task => task.id),
-      decision_task_ids: decisions.map(task => task.id),
+      decision_tasks: decisions.map(task => ({ id: task.id, name: task.name,
+        description: task.description, tasklist_name: task.tasklist_name,
+        priority: task.priority, progress: task.progress, start_at: task.start_at,
+        due_at: task.due_at, updated_at: task.updated_at, out_of_sequence: task.out_of_sequence,
+        assignees: task.assignees })),
       task_count: tasks.length, milestone_count: milestones.length,
     };
     return {
@@ -327,7 +331,10 @@ function buildProjectStories(snapshot = {}, { now = new Date() } = {}) {
         status: decisions.length ? 'open_candidates' : 'clear',
         open_count: decisions.length,
         candidates: decisions.map(task => ({ id: task.id, title: task.name,
-          due_at: task.due_at, assignees: task.assignees,
+          description: task.description, tasklist: task.tasklist_name,
+          priority: task.priority, progress: task.progress, start_at: task.start_at,
+          due_at: task.due_at, updated_at: task.updated_at,
+          out_of_sequence: task.out_of_sequence, assignees: task.assignees,
           evidence_ref: `teamwork:task:${task.id}` })),
       },
       evidence,
@@ -383,8 +390,10 @@ function applyProjectStories(ledger, stories, { now = new Date(), dryRun = false
     const directFields = ['client', 'objective', 'phase', 'pm', 'critical_path', 'decision_refs', 'decision_state'];
     for (const field of directFields) {
       const candidate = story[field];
-      const missing = Array.isArray(existing?.[field]) ? existing[field].length === 0
-        : !existing?.[field];
+      const unknownDecisionState = field === 'decision_state' && existing?.decision_state?.status === 'unknown'
+        && !existing.decision_state.candidates?.length && !existing.decision_state.open_count;
+      const missing = unknownDecisionState || (Array.isArray(existing?.[field])
+        ? existing[field].length === 0 : !existing?.[field]);
       if ((missing || priorManaged.has(field)) && candidate
         && (!Array.isArray(candidate) || candidate.length)) {
         input[field] = candidate;

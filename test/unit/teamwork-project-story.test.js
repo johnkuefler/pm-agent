@@ -31,7 +31,8 @@ function snapshot() {
     }],
     tasks: [{
       id: '700', project_id: '100', tasklist_id: '600', tasklist_name: 'Quality assurance',
-      milestone_id: '500', name: 'UAT sign-off', description: '', priority: 'high', progress: 20,
+      milestone_id: '500', name: 'UAT sign-off',
+      description: 'Client must confirm UAT acceptance before launch.', priority: 'high', progress: 20,
       start_at: null, due_at: '2026-08-11T00:00:00.000Z',
       updated_at: '2026-08-08T13:00:00.000Z', out_of_sequence: false,
       assignees: ['Taylor Reed'],
@@ -57,6 +58,14 @@ test('Teamwork project stories derive an evidence-bound operating picture', () =
   assert.deepEqual(story.critical_path, ['UAT sign-off due 2026-08-11']);
   assert.deepEqual(story.decision_refs, ['teamwork:task:700']);
   assert.equal(story.decision_state.open_count, 1);
+  assert.deepEqual(story.decision_state.candidates[0], {
+    id: '700', title: 'UAT sign-off',
+    description: 'Client must confirm UAT acceptance before launch.',
+    tasklist: 'Quality assurance', priority: 'high', progress: 20, start_at: null,
+    due_at: '2026-08-11T00:00:00.000Z', updated_at: '2026-08-08T13:00:00.000Z',
+    out_of_sequence: false, assignees: ['Taylor Reed'], evidence_ref: 'teamwork:task:700',
+  });
+  assert.equal(story.hydration.version, 2);
   assert.equal(story.hydration.field_sources.objective.derived, true);
   assert.equal(story.hydration.field_sources.next_milestone.confidence, 1);
   assert.deepEqual(story.hydration.schedule, {
@@ -83,6 +92,9 @@ test('hydration fills gaps, preserves human curation, and becomes idempotent', (
   assert.equal(project.phase, 'client review');
   assert.equal(project.pm, 'Human selected PM');
   assert.deepEqual(project.critical_path, ['Human verified dependency']);
+  assert.equal(project.decision_state.candidates[0].description,
+    'Client must confirm UAT acceptance before launch.');
+  assert.equal(project.decision_state.candidates[0].tasklist, 'Quality assurance');
   assert.equal(project.next_milestone, 'Client approval');
   assert.equal(project.completeness.ratio, 1);
   assert.equal(project.hydration.source, 'teamwork_project_story');
