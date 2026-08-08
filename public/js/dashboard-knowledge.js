@@ -320,25 +320,56 @@
 
     async function loadProjects() {
       const list = document.getElementById('project-list');
+      const controlStats = document.getElementById('pm-control-stats');
+      const controlRisks = document.getElementById('pm-control-risks');
       document.getElementById('project-detail').style.display = 'none';
       document.getElementById('project-edit').style.display = 'none';
       document.getElementById('project-add-section').style.display = 'block';
       list.style.display = 'block';
       try {
-        const r = await api('/projects');
-        const projects = await r.json();
+        const [r, controlResponse, evaluationResponse] = await Promise.all([
+          api('/projects'), api('/pm-control'), api('/pm-control/evaluation'),
+        ]);
+        const [projects, control, evaluation] = await Promise.all([
+          r.json(), controlResponse.json(), evaluationResponse.json(),
+        ]);
+        const report = control.report || {};
+        const quality = evaluation.quality || {};
+        const openRisks = (control.ledger?.risks || []).filter(item =>
+          item.status === 'open' || item.status === 'monitoring');
+        controlStats.innerHTML = [
+          ['Controlled projects', report.projects?.total || 0],
+          ['Open high risks', report.risks?.high || 0],
+          ['Unowned risks', report.risks?.unowned || 0],
+          ['PM quality', `${Math.round((quality.score || 0) * 100)}%`],
+          ['Rollout', String(quality.rollout_stage || 'shadow_calibration').replaceAll('_', ' ')],
+          ['Observed outcomes', evaluation.observed || 0],
+        ].map(([label, value]) => `<div class="intelligence-stat"><strong>${escHtml(value)}</strong><span>${escHtml(label)}</span></div>`).join('');
+        controlRisks.innerHTML = openRisks.length
+          ? `<div class="intelligence-meta">Highest current risks</div>${openRisks
+            .sort((a, b) => ['low', 'medium', 'high', 'critical'].indexOf(b.severity)
+              - ['low', 'medium', 'high', 'critical'].indexOf(a.severity))
+            .slice(0, 6).map(item => `<div class="intelligence-card"><strong>${escHtml(item.title)}</strong><div class="intelligence-meta">${escHtml(item.severity)} risk · ${escHtml(item.owner || 'unowned')} · ${escHtml(item.next_action || item.decision_needed || 'next action not recorded')}</div></div>`).join('')}`
+          : '<p class="empty">No open project-control risks.</p>';
+        const controlByName = new Map((control.ledger?.projects || [])
+          .map(item => [String(item.name || '').toLowerCase(), item]));
         if (projects.length === 0) {
           list.innerHTML = '<p class="empty">No projects yet. Add one to help Nora organize her knowledge.</p>';
           return;
         }
-        list.innerHTML = projects.map(p => `
+        list.innerHTML = projects.map(p => {
+          const controlled = controlByName.get(String(p.name || '').toLowerCase());
+          return `
           <div class="task-item" style="cursor: pointer;" onclick="viewProject('${escHtml(p.name)}')">
             <div class="task-action">${escHtml(p.name)}</div>
             <div class="task-detail">${escHtml((p.details || '').substring(0, 120))}${(p.details || '').length > 120 ? '...' : ''}</div>
-            <div class="task-meta">${new Date(p.created).toLocaleDateString()}</div>
+            <div class="task-meta">${controlled ? `${escHtml(controlled.health)} · ${escHtml(controlled.next_milestone || 'milestone missing')}` : 'control record missing'} · ${new Date(p.created).toLocaleDateString()}</div>
           </div>
-        `).join('');
-      } catch (e) { list.innerHTML = '<p class="empty">Failed to load projects.</p>'; }
+        `; }).join('');
+      } catch (e) {
+        list.innerHTML = '<p class="empty">Failed to load projects.</p>';
+        if (controlStats) controlStats.innerHTML = '<div class="error">PM control unavailable.</div>';
+      }
     }
 
     async function viewProject(name) {

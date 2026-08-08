@@ -209,10 +209,11 @@ test('runtime enables reappraisal only in background-capable production mode', (
   const source = readServerSource();
   assert.equal((source.match(/runDreamReflectionLifecycleWithPriorityRuntime\(\)/g) || []).length, 1,
     'dream capture should enter the foreground-aware background lane exactly once');
-  assert.equal((source.match(/runBackgroundIntelligenceRuntime\(\{ trigger \}\)/g) || []).length, 1,
+  assert.match(source,
+    /scheduleRecurringRuntimeJob\('background-intelligence-cycle'[\s\S]*?runBackgroundIntelligenceRuntime/,
     'all scheduled intelligence work should enter one non-overlapping recurring owner');
-  assert.match(source, /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*?initialDelayMs: 20000/,
-    'the recurring owner should provide the startup run and completion-aware cadence');
+  assert.match(source, /scheduleRecurringRuntimeJob\('background-intelligence-cycle'[\s\S]*?initialDelayMs: 2 \* 60 \* 1000/,
+    'the intelligence owner should provide a delayed startup run and completion-aware cadence');
   assert.match(source, /runProfessionalViewpointLifecycleAutopilotRuntime\(\{ post: priorityPost \}\)/,
     'scheduled viewpoint work must inherit the preemptible provider signal');
   assert.doesNotMatch(source.slice(source.indexOf("app.post('/webhook/slack'"), source.indexOf('// Dreams')),

@@ -742,15 +742,15 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(intelligenceRoutesSource,
     /if \(shouldDeferResearchStatusRefresh\(\)\)[\s\S]*interactive_or_resource_priority/,
     'post-deploy projection refresh must yield before starting under interactive or resource pressure');
-  assert.match(server, /await runBackgroundIntelligenceRuntime\(\{ trigger \}\)/,
-    'background intelligence must be serialized behind the foreground-priority lane');
+  assert.match(server, /runBackgroundIntelligenceRuntime\(\{[\s\S]*?thirty-minute-reflection/,
+    'background intelligence must have a bounded completion-aware lane');
   const recurringStartup = server.slice(server.indexOf('async function completePostListenStartup'),
     server.indexOf('async function start('));
   assert.doesNotMatch(recurringStartup, /setInterval\(/,
     'production recurring background work must not use overlap-prone raw intervals');
   assert.match(recurringStartup,
-    /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*?await runHourlyFallbackRuntime\(\{ trigger \}\)[\s\S]*?await runBackgroundIntelligenceRuntime\(\{ trigger \}\)/,
-    'the operational and intelligence chain must remain owned until all async work settles');
+    /scheduleRecurringRuntimeJob\('operational-recovery-cycle'[\s\S]*?await runHourlyFallbackRuntime\(\{ trigger \}\)[\s\S]*?scheduleRecurringRuntimeJob\('background-intelligence-cycle'/,
+    'operational recovery and cognitive work must have separate non-overlapping owners');
   assert.match(server,
     /function closeRuntimeIntervals\(\)[\s\S]*for \(const timer of _runtimeIntervals\.splice\(0\)\)[\s\S]*timer\.close\(\)/,
     'graceful shutdown must close completion-aware recurring jobs');

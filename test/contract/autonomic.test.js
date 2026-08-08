@@ -395,7 +395,7 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(server, /developmentContextForAssignment\(contextAssignment\)/);
   assert.match(server, /endogenousContextForAssignment\(contextAssignment\)/);
   assert.match(server,
-    /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*?tickEndogenousRuntimeWithDiagnostics\(trigger\)/);
+    /scheduleRecurringRuntimeJob\('operational-recovery-cycle'[\s\S]*?tickEndogenousRuntimeWithDiagnostics\(trigger\)/);
   assert.match(server, /interventionActive\('continuity_context'\)/);
   assert.match(store, /Relevant conversation continuity/);
   assert.match(store, /continuity_handoff_committed/);

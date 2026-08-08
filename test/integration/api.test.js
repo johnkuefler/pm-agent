@@ -76,6 +76,114 @@ test('deployment health exposes completed startup and drained persistence withou
   assert.equal(health.persistence.strict_waiters, 0);
 });
 
+test('project control API separates quiet agency from scarce human interruption', async () => {
+  const evidence = [{ type: 'teamwork_task', ref: 'task-9001', observed_at: new Date().toISOString() }];
+  const project = await request('/pm-control/projects/tw-900', { method: 'PUT', body: {
+    name: 'Control plane integration',
+    teamwork_id: '900',
+    objective: 'Verify bounded project management behavior.',
+    phase: 'delivery',
+    pm: 'Taylor',
+    health: 'amber',
+    health_reason: 'A critical-path task has no owner.',
+    next_milestone: 'Integration approval',
+    next_milestone_due: new Date(Date.now() + 2 * 86400000).toISOString(),
+    critical_path: ['Assign the critical task', 'Complete integration approval'],
+    evidence,
+  } });
+  assert.equal(project.response.status, 200);
+  assert.equal(project.body.project.completeness.ratio, 1);
+
+  const risk = await request('/pm-control/risks', { method: 'POST', body: {
+    project_key: 'tw-900',
+    title: 'Critical task has no owner',
+    description: 'The task is on the critical path and still unassigned.',
+    severity: 'high',
+    urgency: 0.85,
+    confidence: 0.9,
+    subject_ref: 'teamwork:task-9001',
+    next_action: 'Name an owner and completion time.',
+    evidence,
+  } });
+  assert.equal(risk.response.status, 200);
+  assert.equal(risk.body.report.risks.open, 1);
+
+  const cognitiveContext = {
+    rationale: 'A single grounded ownership question can protect the milestone.',
+    uncertainty: 'The assignment may exist outside Teamwork.',
+    assumptions: ['The attached Teamwork observation is current.'],
+    self_limitations: ['I cannot see work that is not in connected systems.'],
+    teammate_preferences: ['Use one concise question with a decision attached.'],
+    lesson_refs: ['consequence-review:helpful-coordination'],
+    workspace_frame_id: 'integration-frame',
+  };
+  const quiet = await request('/pm-control/interventions/plan', { method: 'POST', body: {
+    project_key: 'tw-900',
+    lane: 'silent_maintenance',
+    description: 'Refresh the local control record from Teamwork.',
+    intended_effect: 'Keep state current without contacting a teammate.',
+    success_criteria: 'The control record matches Teamwork.',
+    confidence: 0.95,
+    actionability: 1,
+    evidence,
+    cognitive_context: cognitiveContext,
+  } });
+  assert.equal(quiet.body.intervention.status, 'planned');
+  const quietAuthorized = await request(`/pm-control/interventions/${quiet.body.intervention.id}/authorize`, {
+    method: 'POST', body: {},
+  });
+  assert.equal(quietAuthorized.response.status, 200);
+  assert.equal(quietAuthorized.body.intervention.initiative_reservation, null);
+
+  const human = await request('/pm-control/interventions/plan', { method: 'POST', body: {
+    project_key: 'tw-900',
+    lane: 'consolidated_coordination',
+    recipient: 'Taylor',
+    target_ref: 'teamwork:task-9001',
+    description: 'Ask once who owns the critical task and when it will finish.',
+    intended_effect: 'Close the ownership gap before approval.',
+    success_criteria: 'An owner and completion time are recorded.',
+    confidence: 0.9,
+    actionability: 0.95,
+    impact: 0.85,
+    risk_refs: [risk.body.risk.id],
+    evidence,
+    cognitive_context: cognitiveContext,
+  } });
+  assert.equal(human.body.intervention.status, 'planned');
+  const humanAuthorized = await request(`/pm-control/interventions/${human.body.intervention.id}/authorize`, {
+    method: 'POST', body: {},
+  });
+  assert.equal(humanAuthorized.response.status, 200);
+  assert.equal(humanAuthorized.body.intervention.initiative_reservation.scope, 'cowork:proactive');
+  assert.equal((await request('/initiative-budgets/cowork%3Aproactive')).body.remaining, 0);
+
+  const executed = await request(`/pm-control/interventions/${human.body.intervention.id}/execute`, {
+    method: 'POST', body: { execution_ref: 'teamwork:comment-9002' },
+  });
+  assert.equal(executed.body.intervention.status, 'executed');
+  const observed = await request(`/pm-control/interventions/${human.body.intervention.id}/observe`, {
+    method: 'POST', body: {
+      outcome: 'helped',
+      observed_effect: 'Taylor assigned the task and supplied a completion time.',
+      evidence: [{ type: 'teamwork_comment', ref: 'comment-9003' }],
+      learning: 'One evidence-rich ownership question resolved the risk without repeated reminders.',
+      behavior_change: 'Prefer consolidated decision requests over status reminders.',
+    },
+  });
+  assert.equal(observed.body.outcome.outcome, 'helped');
+  assert.equal((await request('/pm-control/evaluation')).body.helpful_rate, 1);
+
+  const policyDenied = await request('/pm-control/policy', { method: 'PUT', body: {
+    recipient_cooldown_hours: 12,
+  } });
+  assert.equal(policyDenied.response.status, 401);
+  const policyUpdated = await request('/pm-control/policy', { method: 'PUT',
+    headers: { 'X-Nora-Operator-Token': createOperatorToken() },
+    body: { recipient_cooldown_hours: 72 } });
+  assert.equal(policyUpdated.body.policy.recipient_cooldown_hours, 72);
+});
+
 test('authentication protects APIs and dashboard independently', async () => {
   const api = await fetch(base + '/memory');
   assert.equal(api.status, 401);

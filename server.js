@@ -56,6 +56,7 @@ const { registerApiOpportunityRoutes } = require('./src/routes/registerApiOpport
 const { registerOperationalEpistemicsRoutes } = require('./src/routes/registerOperationalEpistemicsRoutes');
 const { registerConsciousWorkspaceRoutes } = require('./src/routes/registerConsciousWorkspaceRoutes');
 const { registerConsequenceReviewRoutes } = require('./src/routes/registerConsequenceReviewRoutes');
+const { createProjectControlRuntime } = require('./src/surfaces/project-control-runtime');
 const { registerInteractionRoutes } = require('./src/routes/registerInteractionRoutes');
 const { registerDreamRoutes } = require('./src/routes/registerDreamRoutes');
 const { registerCognitiveParameterRoutes } = require('./src/routes/cognitive-parameters');
@@ -392,6 +393,7 @@ let _persistedDreamState = new Map();
 const _writeThroughQueue = createWriteThroughQueue({
   onError: (entity, error) => console.error(`❌ db write-through [${entity}]:`, error.message),
 });
+const projectControlRuntime = createProjectControlRuntime({ localDataDir: LOCAL_DATA_DIR, db, cache: _cache, isDbReady: () => _dbReady, writeThrough: _writeThrough, intelligence });
 const _serviceReadiness = {
   ready: false, phase: 'booting', updated_at: new Date().toISOString(), error: null,
 };
@@ -1815,6 +1817,7 @@ async function initPersistence() {
     _cache.operationalEpistemics = operationalEpistemics.normalizeLedger(await db.getState('operational_epistemics'));
     _cache.consciousWorkspace = consciousWorkspace.normalizeLedger(await db.getState('conscious_workspace'));
     _cache.consequenceReviews = consequenceReview.normalizeLedger(await db.getState('consequence_reviews'));
+    projectControlRuntime.hydrate(await db.getState('project_control'));
     _cache.charter = await db.getState('charter');
     _cache.autobiography = await db.getState('autobiography');
     _cache.autobiographyRevisions = (await db.getState('autobiography_revisions')) || [];
@@ -2495,6 +2498,7 @@ function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = nu
   const allMemory = loadMemory().map(item => normalizeMemoryRecord(item));
   const memoryPartition = memoryLifecycle.partitionMemory(allMemory);
   const projects = loadProjects();
+  base = projectControlRuntime.appendPromptContext(base, { query: conversationText, projectHint: hintCanonical }, promptDiagnostics);
 
   // Split legacy opinions and learnings out of the ordinary memory pool.
   // - legacy opinions are historical records only; they are not cognition inputs.
@@ -10464,6 +10468,8 @@ registerConsequenceReviewRoutes(app, {
   saveConsequenceReviews,
 });
 
+projectControlRuntime.register(app, { requireAuth, requireOperatorAuth });
+
 registerRuntimeActivityRoutes(app, {
   requireAuth,
   requireDashboardAuth,
@@ -11321,7 +11327,9 @@ async function extractMeetingIntelligence(botId, transcriptData, meetingMeta = {
   }, { headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01' }, timeout: 30000 });
   const text = (response.data.content || []).filter(block => block.type === 'text').map(block => block.text).join('').trim();
   const extracted = parseMeetingIntelligence(text);
-  return applyMeetingIntelligence(intelligence, { botId, ended: transcriptData.ended, meetingMeta, extracted });
+  const result = applyMeetingIntelligence(intelligence, { botId, ended: transcriptData.ended, meetingMeta, extracted });
+  const control = await projectControlRuntime.ingestExtractedMeeting({ extracted, meetingMeta, botId, ended: transcriptData.ended });
+  return { ...result, project_control: { matched: control.matched, decisions: control.decisions.length, risks: control.risks.length } };
 }
 async function getTranscriptDoc(botId) {
   if (_dbReady) {
@@ -16119,11 +16127,10 @@ async function completePostListenStartup(background) {
     });
     scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
       () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });
-    scheduleRecurringRuntimeJob('operational-and-intelligence-cycle', 5 * 60 * 1000,
+    scheduleRecurringRuntimeJob('operational-recovery-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {
-      // Operational recovery always gets the first bounded window. Optional reading, play,
-      // reflection, and research can follow; they must never make the hourly check wait behind
-      // a long background provider cycle.
+      // Operational recovery stays frequent and isolated. Research and reflection have their own
+      // cadence so a provider-heavy cognitive cycle cannot turn this lane into an hourly reporter.
       const trigger = runNumber === 1 ? 'startup' : 'five-minute-scheduler';
       const failures = [];
       try { await runHourlyFallbackRuntime({ trigger }); }
@@ -16136,15 +16143,12 @@ async function completePostListenStartup(background) {
         failures.push(error);
         console.error('Endogenous dynamics tick failed:', error.message);
       }
-      try { await runBackgroundIntelligenceRuntime({ trigger }); }
-      catch (error) {
-        failures.push(error);
-        console.error('Background intelligence cycle failed:', error.message);
-      }
       if (failures.length) {
         throw new AggregateError(failures, `${failures.length} recurring runtime lane(s) failed`);
       }
-    }, { initialDelayMs: 20000, timeoutMs: 120000 });
+    }, { initialDelayMs: 20000, timeoutMs: 60000 });
+    scheduleRecurringRuntimeJob('background-intelligence-cycle', 30 * 60 * 1000, ({ run_number: runNumber }) =>
+      runBackgroundIntelligenceRuntime({ trigger: runNumber === 1 ? 'startup-reflection' : 'thirty-minute-reflection' }), { initialDelayMs: 2 * 60 * 1000, timeoutMs: 240000 });
     // Preemptible: restarting cannot clear a build-stale hang. See recurring-jobs.js.
     scheduleRecurringRuntimeJob('stale-research-projection-refresh', 5 * 60 * 1000,
       () => intelligenceRoutesRuntime.warmNextStaleResearchProjection(), {

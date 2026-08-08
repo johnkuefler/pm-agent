@@ -58,17 +58,19 @@ test('hourly coverage connector reads propagate cancellation and remaining budge
   assert.match(source, /signal => binding\.execute\(args, \{ signal, timeoutMs: gmailBudgetMs \}\)/);
 });
 
-test('operational recovery is scheduled before optional background intelligence', () => {
+test('operational recovery is scheduled independently from optional background intelligence', () => {
   const source = readServerSource();
-  const scheduler = source.slice(
-    source.indexOf("scheduleRecurringRuntimeJob('operational-and-intelligence-cycle'"),
+  const recoveryStart = source.indexOf("scheduleRecurringRuntimeJob('operational-recovery-cycle'");
+  const reflectionStart = source.indexOf("scheduleRecurringRuntimeJob('background-intelligence-cycle'");
+  const scheduler = source.slice(recoveryStart,
     source.indexOf("scheduleRecurringRuntimeJob('stale-research-projection-refresh'"));
+  assert.ok(recoveryStart >= 0 && reflectionStart > recoveryStart);
   assert.match(scheduler, /const trigger = runNumber === 1 \? 'startup' : 'five-minute-scheduler'/);
-  assert.ok(scheduler.indexOf('await runHourlyFallbackRuntime({ trigger })')
-    < scheduler.indexOf('await runBackgroundIntelligenceRuntime({ trigger })'));
+  assert.ok(scheduler.indexOf('await runHourlyFallbackRuntime({ trigger })') < reflectionStart - recoveryStart);
+  assert.doesNotMatch(source.slice(recoveryStart, reflectionStart), /runBackgroundIntelligenceRuntime/);
   assert.match(scheduler,
-    /scheduleRecurringRuntimeJob\('operational-and-intelligence-cycle'[\s\S]*initialDelayMs: 20000/,
-    'startup and periodic recovery must share one non-overlapping scheduler owner');
+    /scheduleRecurringRuntimeJob\('background-intelligence-cycle', 30 \* 60 \* 1000/,
+    'research and reflection should retain a completion-aware but slower cadence');
 });
 
 test('self-forecast commit briefly joins its existing replay preparation instead of forcing a retry', () => {
