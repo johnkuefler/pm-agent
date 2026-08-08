@@ -181,6 +181,75 @@ function registerCoworkInstructionsRoute(app, { requireAuth = (_req, _res, next)
     Existing human-curated values are preserved. Body (optional): { "dry_run": true }.
     Hydration is silent maintenance and must never become an end-of-run message or reminder.
 
+  ### Project Autopilot
+
+  Project Autopilot is project-scoped standing authority. It never changes the global charter, fixed
+  safety gates, connector permissions, or PM interruption budget.
+
+  - GET /pm-control/autopilot/report
+    Portfolio counts for active shadow, copilot, and managed charters; open source events; action states;
+    meeting lifecycles; observed outcomes; and confidence calibration.
+
+  - GET /pm-control/autopilot/charters
+    Lists every project charter and its explicit standing authorities. Fixed gates remain read-only.
+
+  - GET /pm-control/autopilot/projects/:key
+    Returns one project's charter, source events, actions, meetings, and outcome observations.
+
+  - POST /pm-control/autopilot/reconcile
+    Body: { "project_key": "optional", "source": "stable source label" }
+    Reconciles active charters against the current durable project picture. It creates one event and
+    candidate action per continuing exception, resolves cleared conditions, deduplicates repeats, and
+    performs no connector action or human notification.
+
+  - GET /pm-control/autopilot/actions?project_key=&state=
+    Lists durable action candidates. Shadow actions cannot execute. Copilot actions require operator
+    approval. Managed actions require the exact charter authority. Human-facing request_update and
+    escalate_risk actions also require an already-authorized PM intervention ID.
+
+  - POST /pm-control/autopilot/actions/:id/authorize
+    Managed-mode authorization. Body may include { "resolution", "intervention_id" }. Authorization
+    validates current charter state, required input, meeting cooldowns, and the PM interruption rail.
+
+  - POST /pm-control/autopilot/actions/:id/execute
+    Body: { "execution_ref": "stable connector reference", "note": "optional" }. Call only after the
+    real connector action succeeds.
+
+  - POST /pm-control/autopilot/actions/:id/observe
+    Body: { "outcome": "helped|neutral|ignored|backfired|resolved", "observed_effect": "...",
+            "evidence": [{"type":"teamwork_task","ref":"..."}], "lesson": "...",
+            "behavior_change": "..." }
+    Scores the action's prior confidence against reality. Delivery or acknowledgment alone is not proof.
+
+  - GET /pm-control/autopilot/meetings?project_key=&state=
+    Lists durable meeting lifecycles.
+
+  - POST /pm-control/autopilot/meetings
+    Body: { "project_key", "action_id" or "request_ref", "title", "objective", "agenda": [],
+            "attendees": [], "external_attendees": false, "expected_decisions": [],
+            "duration_minutes", "preferred_window_start", "preferred_window_end" }
+
+  - POST /pm-control/autopilot/meetings/:id/authorize
+    Managed-mode meeting authorization. External attendees and copilot mode require operator approval.
+
+  - POST /pm-control/autopilot/meetings/:id/schedule
+    Body: { "calendar_event_ref", "join_url", "scheduled_for" }. Record only after Google Calendar
+    successfully creates the event.
+
+  - POST /pm-control/autopilot/meetings/:id/join
+    Body: { "bot_ref" }. Record when Recall actually joins.
+
+  - POST /pm-control/autopilot/meetings/:id/complete
+    Body: { "transcript_ref", "outcome_summary", "decisions": [], "action_items": [],
+            "unresolved": [] }
+
+  - POST /pm-control/autopilot/meetings/:id/reconcile
+    Body: { "teamwork_refs": [], "followup_ref", "evidence": [] }. Action items require stable
+    Teamwork references. A meeting is not closed-loop until this succeeds.
+
+  Operator-only dashboard routes create, activate, pause, and approve charters, actions, and meetings.
+  Nora's API credential cannot call those routes.
+
   - POST /projects                — Create a new project. Optional fields are first-class.
     Body: { "name": "string (required)", "details": "string (optional)",
             "client": "string", "status": "string", "pm": "string",

@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const projectControl = require('../intelligence/project-control');
+const projectAutopilot = require('../intelligence/project-autopilot');
 const teamworkProjectStory = require('../integrations/teamwork-project-story');
 const { registerProjectControlRoutes } = require('../routes/registerProjectControlRoutes');
 
@@ -58,7 +59,11 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
   }
 
   function ingestMeeting(input) {
-    return mutate(ledger => projectControl.ingestMeeting(ledger, input));
+    return mutate(ledger => {
+      const control = projectControl.ingestMeeting(ledger, input);
+      const autopilot = projectAutopilot.ingestMeetingEvidence(control.ledger, input);
+      return { ...control, ledger: autopilot.ledger, autopilot };
+    });
   }
 
   function promptContext(options) {
@@ -94,10 +99,21 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
       const stories = projectStory.buildProjectStories(snapshot);
       const result = dryRun
         ? projectStory.applyProjectStories(load(), stories, { dryRun: true })
-        : await mutate(ledger => projectStory.applyProjectStories(ledger, stories));
+        : await mutate(ledger => {
+          const applied = projectStory.applyProjectStories(ledger, stories);
+          const autopilot = projectAutopilot.reconcilePortfolio(applied.ledger, {
+            source: 'teamwork_project_story_hydration',
+          });
+          return { ...applied, ledger: autopilot.ledger, autopilot: {
+            events_created: autopilot.events.length,
+            actions_created: autopilot.actions.length,
+            events_resolved: autopilot.resolved_events.length,
+          } };
+        });
       const summary = { projects_seen: result.projects_seen, created: result.created,
         updated: result.updated, unchanged: result.unchanged, fields_filled: result.fields_filled,
-        dry_run: result.dry_run, pagination: snapshot.pagination };
+        dry_run: result.dry_run, pagination: snapshot.pagination,
+        autopilot: result.autopilot || null };
       hydrationStatus = { ...hydrationStatus, state: 'succeeded',
         completed_at: new Date().toISOString(), result: summary };
       return { ...result, pagination: snapshot.pagination };

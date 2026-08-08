@@ -37,6 +37,8 @@ test('portfolio opens as Nora default workspace and retains every existing room'
   assert.match(html, /id="page-projects" class="page active"/);
   assert.match(html, /What needs management now/);
   assert.match(html, /Nora's judgment/);
+  assert.match(html, /id="pm-autopilot-summary"/);
+  assert.match(html, /id="project-autopilot-panel"/);
   assert.match(source, /Why Nora believes this/);
   assert.match(html, /data-project-filter="attention"/);
   assert.equal([...html.matchAll(/data-tab="([^"]+)"/g)].length, 13);
@@ -83,7 +85,11 @@ test('portfolio loads the durable PM sources together and never starts its own p
   assert.match(source, /api\('\/pm-control'\)/);
   assert.match(source, /api\('\/pm-control\/evaluation'\)/);
   assert.match(source, /api\('\/pm-control\/hydration'\)/);
+  assert.match(source, /api\('\/pm-control\/autopilot\/report'\)/);
   assert.match(source, /api\('\/projects'\)/);
+  assert.match(source, /operatorApi\(`\/pm-control\/autopilot\/charters/);
+  assert.match(source, /operatorApi\(`\/pm-control\/autopilot\/actions/);
+  assert.match(source, /operatorApi\(`\/pm-control\/autopilot\/meetings/);
   assert.match(source, /Hydration never spends a human interruption/);
   assert.doesNotMatch(source, /setInterval\(/);
   assert.doesNotThrow(() => new vm.Script(source));

@@ -1,6 +1,7 @@
 'use strict';
 
 const projectControl = require('../intelligence/project-control');
+const projectAutopilot = require('../intelligence/project-autopilot');
 const runSummaryPolicy = require('../intelligence/run-summary-policy');
 
 function registerProjectControlRoutes(app, deps) {
@@ -200,6 +201,199 @@ function registerProjectControlRoutes(app, deps) {
     try {
       const result = await mutateProjectControl(ledger => projectControl.recordSync(ledger, req.body || {}));
       res.json({ ok: true, sync: result.sync, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get('/pm-control/autopilot/report', requireAuth, (_req, res) => {
+    res.json(projectAutopilot.report(loadProjectControl()));
+  });
+
+  app.get('/pm-control/autopilot/charters', requireAuth, (_req, res) => {
+    const ledger = loadProjectControl();
+    const charters = projectAutopilot.normalizeState(ledger.autopilot).charters;
+    res.json({ count: charters.length, charters });
+  });
+
+  app.get('/pm-control/autopilot/projects/:key', requireAuth, (req, res) => {
+    res.json(projectAutopilot.projectView(loadProjectControl(), req.params.key));
+  });
+
+  app.put('/pm-control/autopilot/charters/:key', requireOperatorAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.upsertCharter(
+        ledger, req.params.key, req.body || {}, { actor: 'operator-dashboard' }));
+      res.json({ ok: true, charter: result.charter, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/charters/:key/activate', requireOperatorAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.activateCharter(
+        ledger, req.params.key, req.body || {}, { actor: 'operator-dashboard' }));
+      res.json({ ok: true, charter: result.charter, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/charters/:key/pause', requireOperatorAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.pauseCharter(
+        ledger, req.params.key, req.body || {}, { actor: 'operator-dashboard' }));
+      res.json({ ok: true, charter: result.charter, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/reconcile', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.reconcilePortfolio(
+        ledger, { project_key: req.body?.project_key || '', source: req.body?.source || 'requested_reconcile' }));
+      res.json({ ok: true, reconciliation: result.reconciliation, events: result.events,
+        actions: result.actions, resolved_events: result.resolved_events, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get('/pm-control/autopilot/actions', requireAuth, (req, res) => {
+    const actions = projectAutopilot.normalizeState(loadProjectControl().autopilot).actions;
+    const projectKey = req.query.project_key ? String(req.query.project_key).toLowerCase() : '';
+    const state = req.query.state ? String(req.query.state).toLowerCase() : '';
+    const filtered = actions.filter(item => (!projectKey || item.project_key === projectKey)
+      && (!state || item.state === state));
+    res.json({ count: filtered.length, actions: filtered.slice(-500) });
+  });
+
+  app.post('/pm-control/autopilot/actions/:id/authorize', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.authorizeAction(
+        ledger, req.params.id, req.body || {}, { actor: 'Nora' }));
+      res.json({ ok: true, action: result.action, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/actions/:id/approve', requireOperatorAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.authorizeAction(
+        ledger, req.params.id, req.body || {}, { operator: true, actor: 'operator-dashboard' }));
+      res.json({ ok: true, action: result.action, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/actions/:id/execute', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.executeAction(
+        ledger, req.params.id, req.body || {}));
+      res.json({ ok: true, action: result.action, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/actions/:id/observe', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.observeAction(
+        ledger, req.params.id, req.body || {}));
+      res.json({ ok: true, action: result.action, observation: result.observation,
+        idempotent: result.idempotent, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.get('/pm-control/autopilot/meetings', requireAuth, (req, res) => {
+    const meetings = projectAutopilot.normalizeState(loadProjectControl().autopilot).meetings;
+    const projectKey = req.query.project_key ? String(req.query.project_key).toLowerCase() : '';
+    const state = req.query.state ? String(req.query.state).toLowerCase() : '';
+    const filtered = meetings.filter(item => (!projectKey || item.project_key === projectKey)
+      && (!state || item.state === state));
+    res.json({ count: filtered.length, meetings: filtered.slice(-500) });
+  });
+
+  app.post('/pm-control/autopilot/meetings', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.planMeeting(
+        ledger, req.body || {}));
+      res.json({ ok: true, meeting: result.meeting, report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/meetings/:id/authorize', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.authorizeMeeting(
+        ledger, req.params.id, req.body || {}, { actor: 'Nora' }));
+      res.json({ ok: true, meeting: result.meeting, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/meetings/:id/approve', requireOperatorAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.authorizeMeeting(
+        ledger, req.params.id, req.body || {}, { operator: true, actor: 'operator-dashboard' }));
+      res.json({ ok: true, meeting: result.meeting, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/meetings/:id/schedule', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.scheduleMeeting(
+        ledger, req.params.id, req.body || {}));
+      res.json({ ok: true, meeting: result.meeting, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/meetings/:id/join', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.joinMeeting(
+        ledger, req.params.id, req.body || {}));
+      res.json({ ok: true, meeting: result.meeting, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/meetings/:id/complete', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.completeMeeting(
+        ledger, req.params.id, req.body || {}));
+      res.json({ ok: true, meeting: result.meeting, idempotent: result.idempotent,
+        report: result.report });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
+  app.post('/pm-control/autopilot/meetings/:id/reconcile', requireAuth, async (req, res) => {
+    try {
+      const result = await mutateProjectControl(ledger => projectAutopilot.reconcileMeeting(
+        ledger, req.params.id, req.body || {}));
+      res.json({ ok: true, meeting: result.meeting, idempotent: result.idempotent,
+        report: result.report });
     } catch (error) {
       res.status(400).json({ error: error.message });
     }

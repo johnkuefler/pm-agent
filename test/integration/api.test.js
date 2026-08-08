@@ -42,6 +42,7 @@ for (const [name, contents] of Object.entries(seed)) fs.writeFileSync(path.join(
 
 const runtime = require('../../server');
 let base;
+let integrationPmInterventionId;
 
 test.before(async () => {
   const server = await runtime.start({ port: 0, background: false });
@@ -150,6 +151,7 @@ test('project control API separates quiet agency from scarce human interruption'
     evidence,
     cognitive_context: cognitiveContext,
   } });
+  integrationPmInterventionId = human.body.intervention.id;
   assert.equal(human.body.intervention.status, 'planned');
   const humanAuthorized = await request(`/pm-control/interventions/${human.body.intervention.id}/authorize`, {
     method: 'POST', body: {},
@@ -185,6 +187,105 @@ test('project control API separates quiet agency from scarce human interruption'
     headers: { 'X-Nora-Operator-Token': createOperatorToken() },
     body: { recipient_cooldown_hours: 72 } });
   assert.equal(policyUpdated.body.policy.recipient_cooldown_hours, 72);
+});
+
+test('Project Autopilot API closes charter, action, meeting, and learning loops', async () => {
+  const operatorHeaders = { 'X-Nora-Operator-Token': createOperatorToken() };
+  const charterBody = {
+    mode: 'managed', sponsor: 'John Kuefler',
+    mandate: 'Own routine delivery coordination for the integration project.',
+    success_criteria: ['Protect the integration approval milestone'],
+    stakeholders: ['Taylor'],
+    pilot_note: 'A deliberate managed integration pilot with bounded internal authority.',
+    authority: {
+      schedule_internal_meetings: true, create_tasks: true, assign_tasks: true,
+      request_updates: true, facilitate_meetings: true, record_decisions: true,
+      update_project_plan: true, max_meetings_per_week: 2, meeting_cooldown_hours: 24,
+    },
+  };
+  const denied = await request('/pm-control/autopilot/charters/tw-900', {
+    method: 'PUT', body: charterBody,
+  });
+  assert.equal(denied.response.status, 401);
+  const drafted = await request('/pm-control/autopilot/charters/tw-900', {
+    method: 'PUT', headers: operatorHeaders, body: charterBody,
+  });
+  assert.equal(drafted.response.status, 200);
+  assert.equal(drafted.body.charter.status, 'draft');
+  const activated = await request('/pm-control/autopilot/charters/tw-900/activate', {
+    method: 'POST', headers: operatorHeaders,
+    body: { mode: 'managed', pilot_note: charterBody.pilot_note },
+  });
+  assert.equal(activated.response.status, 200);
+  assert.equal(activated.body.charter.mode, 'managed');
+
+  const reconciled = await request('/pm-control/autopilot/reconcile', {
+    method: 'POST', body: { project_key: 'tw-900', source: 'integration_test' },
+  });
+  assert.equal(reconciled.response.status, 200);
+  assert.ok(reconciled.body.actions.length >= 1);
+  const riskAction = reconciled.body.actions.find(item => item.type === 'escalate_risk');
+  assert.ok(riskAction);
+  const blocked = await request(`/pm-control/autopilot/actions/${riskAction.id}/authorize`, {
+    method: 'POST', body: {},
+  });
+  assert.equal(blocked.response.status, 400);
+  assert.match(blocked.body.error, /authorized PM intervention/);
+  const actionAuthorized = await request(`/pm-control/autopilot/actions/${riskAction.id}/authorize`, {
+    method: 'POST', body: { intervention_id: integrationPmInterventionId },
+  });
+  assert.equal(actionAuthorized.response.status, 200);
+  const actionExecuted = await request(`/pm-control/autopilot/actions/${riskAction.id}/execute`, {
+    method: 'POST', body: { execution_ref: 'teamwork:comment-autopilot-1' },
+  });
+  assert.equal(actionExecuted.body.action.state, 'executed');
+  const actionObserved = await request(`/pm-control/autopilot/actions/${riskAction.id}/observe`, {
+    method: 'POST', body: {
+      outcome: 'helped', observed_effect: 'Taylor named the owner and mitigation date.',
+      evidence: [{ type: 'teamwork_comment', ref: 'comment-autopilot-2' }],
+      lesson: 'A single decision request closed the verified risk.',
+      behavior_change: 'Keep project requests consolidated.',
+    },
+  });
+  assert.equal(actionObserved.body.observation.outcome, 'helped');
+
+  const meeting = await request('/pm-control/autopilot/meetings', { method: 'POST', body: {
+    project_key: 'tw-900', request_ref: 'slack:integration-request',
+    title: 'Integration approval', objective: 'Close integration approval.',
+    agenda: ['Review evidence', 'Record decision'], attendees: ['Taylor'],
+    expected_decisions: ['Approve or name the blocker'], duration_minutes: 30,
+  } });
+  assert.equal(meeting.response.status, 200);
+  const meetingId = meeting.body.meeting.id;
+  assert.equal((await request(`/pm-control/autopilot/meetings/${meetingId}/authorize`, {
+    method: 'POST', body: {},
+  })).body.meeting.state, 'authorized');
+  assert.equal((await request(`/pm-control/autopilot/meetings/${meetingId}/schedule`, {
+    method: 'POST', body: { calendar_event_ref: 'gcal:event-integration',
+      join_url: 'https://meet.google.com/abc-defg-hij',
+      scheduled_for: new Date(Date.now() + 86400000).toISOString() },
+  })).body.meeting.state, 'scheduled');
+  assert.equal((await request(`/pm-control/autopilot/meetings/${meetingId}/join`, {
+    method: 'POST', body: { bot_ref: 'recall:integration-bot' },
+  })).body.meeting.state, 'joined');
+  assert.equal((await request(`/pm-control/autopilot/meetings/${meetingId}/complete`, {
+    method: 'POST', body: { transcript_ref: '/transcripts/integration-bot',
+      outcome_summary: 'Integration approval was recorded.', decisions: ['Approved'],
+      action_items: ['Taylor closes the integration task'] },
+  })).body.meeting.state, 'completed');
+  assert.equal((await request(`/pm-control/autopilot/meetings/${meetingId}/reconcile`, {
+    method: 'POST', body: { teamwork_refs: ['teamwork:task-integration'],
+      followup_ref: 'teamwork:comment-integration',
+      evidence: [{ type: 'teamwork_task', ref: 'task-integration' }] },
+  })).body.meeting.state, 'reconciled');
+
+  const report = await request('/pm-control/autopilot/report');
+  assert.equal(report.body.charters.managed, 1);
+  assert.equal(report.body.learning.observed, 1);
+  assert.equal(report.body.meetings.reconciled, 1);
+  const project = await request('/pm-control/autopilot/projects/tw-900');
+  assert.equal(project.body.charter.status, 'active');
+  assert.equal(project.body.observations.length, 1);
 });
 
 test('hourly summary policy rejects idle-loop noise before notification', async () => {

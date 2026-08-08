@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const projectAutopilot = require('./project-autopilot');
 
 const LANES = Object.freeze([
   'silent_maintenance',
@@ -67,6 +68,7 @@ function emptyLedger() {
     outcomes: [],
     syncs: [],
     summary_evaluations: [],
+    autopilot: projectAutopilot.emptyState(),
   };
 }
 
@@ -164,6 +166,7 @@ function normalizeLedger(value = {}) {
     syncs: Array.isArray(source.syncs) ? source.syncs.filter(item => item?.id).slice(-2000) : [],
     summary_evaluations: Array.isArray(source.summary_evaluations)
       ? source.summary_evaluations.filter(item => item?.id).slice(-5000) : [],
+    autopilot: projectAutopilot.normalizeState(source.autopilot),
   };
 }
 
@@ -756,6 +759,7 @@ function report(ledger = emptyLedger(), { now = new Date() } = {}) {
       private_signals: current.summary_evaluations.reduce(
         (sum, item) => sum + (Number(item.private_signal_count) || 0), 0),
     },
+    autopilot: projectAutopilot.report(current, { now }),
     latest_sync: current.syncs.at(-1) || null,
   };
 }
@@ -788,6 +792,10 @@ function renderPromptContext(ledger = emptyLedger(), { query = '', projectHint =
     }
   }
   lines.push('Treat this as a compact control projection. Verify live Teamwork before claiming a changed status or taking action.');
+  const autopilotContext = projectAutopilot.renderPromptContext(current, {
+    project_key: scored.length === 1 ? scored[0].project.key : '',
+  });
+  if (autopilotContext) lines.push(autopilotContext);
   return lines.join('\n').slice(0, 5000);
 }
 

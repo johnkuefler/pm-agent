@@ -3,7 +3,7 @@
 var selectedPortfolioProjectKey = null;
 var projectPortfolioFilter = 'attention';
 var projectPortfolioState = {
-  projects: [], legacy: [], risks: [], evaluation: {}, report: {}, hydration: {},
+  projects: [], legacy: [], risks: [], evaluation: {}, report: {}, hydration: {}, autopilot: {},
 };
 
 function portfolioDateValue(value) {
@@ -151,6 +151,22 @@ function renderPortfolioRisks() {
     : '<div class="portfolio-clear-state"><span aria-hidden="true">✓</span><div><strong>No verified delivery risks</strong><p>Nora will not manufacture a red status from missing source data.</p></div></div>';
 }
 
+function renderAutopilotSummary() {
+  const report = projectPortfolioState.autopilot || {};
+  const charters = report.charters || {};
+  const actions = report.actions || {};
+  const meetings = report.meetings || {};
+  document.getElementById('pm-autopilot-summary').innerHTML = `
+    <div class="autopilot-summary">
+      <div class="autopilot-mode-row">
+        <div><strong>${Number(charters.shadow) || 0}</strong><span>shadow</span></div>
+        <div><strong>${Number(charters.copilot) || 0}</strong><span>copilot</span></div>
+        <div><strong>${Number(charters.managed) || 0}</strong><span>managed</span></div>
+      </div>
+      <p class="autopilot-summary-note"><strong>${Number(actions.pending) || 0} pending actions</strong><br>${Number(meetings.open) || 0} open meeting cycles. Quiet projects produce no report.</p>
+    </div>`;
+}
+
 function portfolioProjectCard(project) {
   const signal = portfolioProjectSignals(project);
   const dueText = signal.checkpointOverdue
@@ -244,9 +260,11 @@ async function loadProjects() {
   try {
     const responses = await Promise.all([
       api('/projects'), api('/pm-control'), api('/pm-control/evaluation'), api('/pm-control/hydration'),
+      api('/pm-control/autopilot/report'),
     ]);
     if (responses.some(response => !response.ok)) throw new Error('One or more portfolio sources failed');
-    const [legacy, control, evaluation, hydration] = await Promise.all(responses.map(response => response.json()));
+    const [legacy, control, evaluation, hydration, autopilot] = await Promise.all(
+      responses.map(response => response.json()));
     projectPortfolioState.legacy = Array.isArray(legacy) ? legacy : [];
     projectPortfolioState.projects = control.ledger?.projects || [];
     projectPortfolioState.risks = (control.ledger?.risks || []).filter(risk =>
@@ -254,11 +272,13 @@ async function loadProjects() {
     projectPortfolioState.report = control.report || {};
     projectPortfolioState.evaluation = evaluation || {};
     projectPortfolioState.hydration = hydration || {};
+    projectPortfolioState.autopilot = autopilot || {};
     renderPortfolioStats();
     renderHydrationStatus();
     renderPortfolioPosture();
     renderPortfolioDecisions();
     renderPortfolioRisks();
+    renderAutopilotSummary();
     renderProjectPortfolio();
   } catch (error) {
     list.innerHTML = `<div class="portfolio-load-error"><strong>Portfolio unavailable</strong><span>${escHtml(error.message)}</span><button class="btn btn-sm" type="button" onclick="loadProjects()">Try again</button></div>`;
@@ -309,6 +329,7 @@ async function viewProject(key) {
   document.getElementById('project-detail-badges').innerHTML = badges.map(([label, tone]) =>
     `<span class="portfolio-chip is-${escHtml(tone)}">${escHtml(label)}</span>`).join('');
   document.getElementById('project-detail-info').innerHTML = '<div class="portfolio-loading"><span></span><span></span></div>';
+  document.getElementById('project-autopilot-panel').innerHTML = '<div class="portfolio-empty">Loading Project Autopilot charter and action history.</div>';
   document.getElementById('project-memories').innerHTML = '';
   let legacy = null;
   try {
@@ -354,6 +375,253 @@ async function viewProject(key) {
     <h2>Memory and research</h2>${legacy?.details ? `<p class="portfolio-legacy-detail">${escHtml(legacy.details)}</p>` : ''}
     ${memories.length ? `<div class="portfolio-memory-list">${memories.map(memory => `<div><p>${escHtml(memory.fact)}</p><small>${escHtml(memory.added || '')}</small></div>`).join('')}</div>`
     : '<p class="portfolio-empty">No additional memories are tagged to this project.</p>'}`;
+  await loadProjectAutopilot(project);
+}
+
+function autopilotAuthorityLabel(key) {
+  return ({
+    schedule_internal_meetings: 'Schedule internal meetings',
+    create_tasks: 'Create tasks',
+    assign_tasks: 'Assign named owners',
+    update_routine_dates: 'Move routine dates',
+    request_updates: 'Request updates',
+    facilitate_meetings: 'Facilitate meetings',
+    record_decisions: 'Record decisions',
+    update_project_plan: 'Maintain project plan',
+  })[key] || key.replaceAll('_', ' ');
+}
+
+function autopilotCharterForm(project, charter) {
+  const authority = charter?.authority || {};
+  const defaults = {
+    schedule_internal_meetings: true, create_tasks: false, assign_tasks: false,
+    update_routine_dates: false, request_updates: true, facilitate_meetings: true,
+    record_decisions: true, update_project_plan: true,
+  };
+  const authorityOptions = Object.keys(defaults).map(key => {
+    const checked = charter ? Boolean(authority[key]) : defaults[key];
+    return `<label class="autopilot-authority-option"><input type="checkbox" data-autopilot-authority="${key}"${checked ? ' checked' : ''}><span>${escHtml(autopilotAuthorityLabel(key))}</span></label>`;
+  }).join('');
+  return `<form class="autopilot-form" onsubmit="return false">
+    <div class="autopilot-form-grid">
+      <label>Operating mode<select data-autopilot-field="mode">
+        ${['shadow', 'copilot', 'managed'].map(mode => `<option value="${mode}"${(charter?.mode || 'shadow') === mode ? ' selected' : ''}>${mode}</option>`).join('')}
+      </select></label>
+      <label>Accountable sponsor<input data-autopilot-field="sponsor" value="${escHtml(charter?.sponsor || 'John Kuefler')}" placeholder="Human sponsor"></label>
+    </div>
+    <label>Bounded mandate<textarea data-autopilot-field="mandate" placeholder="What Nora owns on this project">${escHtml(charter?.mandate || `Own routine delivery coordination for ${project.name} while preserving human scope, budget, client, and major deadline gates.`)}</textarea></label>
+    <label>Success criteria, one per line<textarea data-autopilot-field="success_criteria" placeholder="Observable delivery outcomes">${escHtml((charter?.success_criteria || ['Keep critical work owned and current', 'Close decisions before they block the next checkpoint', 'Use meetings only when they create a decision']).join('\n'))}</textarea></label>
+    <label>Stakeholders, comma separated<input data-autopilot-field="stakeholders" value="${escHtml((charter?.stakeholders || [project.pm].filter(Boolean)).join(', '))}" placeholder="People Nora coordinates with"></label>
+    <div><span class="portfolio-kicker">Standing internal authority</span><div class="autopilot-authority-grid">${authorityOptions}</div></div>
+    <div class="autopilot-form-grid">
+      <label>Routine date shift limit<input type="number" min="0" max="14" data-autopilot-field="date_limit" value="${Number(authority.routine_date_shift_limit_days) || 0}"></label>
+      <label>Meeting limit per week<input type="number" min="1" max="5" data-autopilot-field="meeting_limit" value="${Number(authority.max_meetings_per_week) || 2}"></label>
+    </div>
+    <label>Pilot authorization note<textarea data-autopilot-field="pilot_note" placeholder="Why this autonomy level is appropriate">${escHtml(charter?.pilot_note || '')}</textarea></label>
+    <div class="autopilot-actions">
+      <button class="btn btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="saveProjectAutopilot(this.dataset.projectKey, false, this)">Save draft</button>
+      <button class="btn btn-primary btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="saveProjectAutopilot(this.dataset.projectKey, true, this)">${charter?.status === 'active' ? 'Save and reactivate' : 'Save and activate'}</button>
+    </div>
+    <div class="autopilot-status" role="status"></div>
+  </form>`;
+}
+
+function autopilotActionItem(action, projectKey) {
+  const canApprove = ['proposed', 'approval_required'].includes(action.state) && !action.human_facing;
+  return `<div class="autopilot-stream-item">
+    <span>${escHtml(action.state)} · ${escHtml(action.type.replaceAll('_', ' '))}</span>
+    <strong>${escHtml(action.description)}</strong>
+    <small>${Math.round((action.prediction?.confidence || 0) * 100)}% expected to help · ${escHtml(action.success_criteria)}</small>
+    ${action.human_facing && ['proposed', 'approval_required'].includes(action.state)
+      ? '<small>Requires the existing PM intervention rail before authorization.</small>' : ''}
+    ${canApprove ? `<button class="btn btn-sm" type="button" data-action-id="${escHtml(action.id)}" data-project-key="${escHtml(projectKey)}" data-required-input="${escHtml(action.required_input || '')}" onclick="approveProjectAutopilotAction(this)">Approve action</button>` : ''}
+  </div>`;
+}
+
+function autopilotMeetingItem(meeting, projectKey) {
+  const canApprove = meeting.state === 'planned';
+  return `<div class="autopilot-stream-item">
+    <span>${escHtml(meeting.state)} · meeting cycle</span>
+    <strong>${escHtml(meeting.title)}</strong>
+    <small>${escHtml(meeting.objective)}${meeting.scheduled_for ? ` · ${escHtml(portfolioDate(meeting.scheduled_for))}` : ''}</small>
+    ${canApprove ? `<button class="btn btn-sm" type="button" data-meeting-id="${escHtml(meeting.id)}" data-project-key="${escHtml(projectKey)}" onclick="approveProjectAutopilotMeeting(this)">Approve meeting</button>` : ''}
+  </div>`;
+}
+
+function renderProjectAutopilot(project, view) {
+  const panel = document.getElementById('project-autopilot-panel');
+  const charter = view.charter;
+  if (!charter) {
+    panel.innerHTML = `<div class="autopilot-head"><div><span class="portfolio-kicker">Project Autopilot</span>
+      <h2>Start with a supervised pilot</h2><p>Shadow observes, copilot proposes, and managed executes only the internal authorities you grant here. Every fixed human gate remains in force.</p></div></div>
+      <div class="autopilot-fixed-gates"><strong>Always human-gated:</strong> external email, client commitments, scope, budget, financial disclosure, and major deadline changes.</div>
+      ${autopilotCharterForm(project, null)}`;
+    return;
+  }
+  const granted = Object.entries(charter.authority || {}).filter(([key, value]) => value === true
+    && !key.startsWith('max_')).map(([key]) => `<span>${escHtml(autopilotAuthorityLabel(key))}</span>`).join('');
+  const actions = [...(view.actions || [])].reverse().slice(0, 8);
+  const meetings = [...(view.meetings || [])].reverse().slice(0, 6);
+  const observed = (view.observations || []).length;
+  const helpful = (view.observations || []).filter(item => ['helped', 'resolved'].includes(item.outcome)).length;
+  const modeHeading = {
+    shadow: 'Shadow project oversight',
+    copilot: 'Copilot project management',
+    managed: 'Managed project delivery',
+  }[charter.mode] || 'Project Autopilot';
+  panel.innerHTML = `<div class="autopilot-head"><div><span class="portfolio-kicker">Project Autopilot</span>
+      <h2>${escHtml(modeHeading)}</h2>
+      <p>${escHtml(charter.mandate)}</p></div>
+      <div class="autopilot-actions"><span class="autopilot-mode is-${escHtml(charter.status === 'paused' ? 'paused' : charter.mode)}">${escHtml(charter.status)} · ${escHtml(charter.mode)}</span>
+        ${charter.status === 'active' ? `<button class="btn btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="reconcileProjectAutopilot(this.dataset.projectKey, this)">Reconcile now</button><button class="btn btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="pauseProjectAutopilot(this.dataset.projectKey, this)">Pause pilot</button>` : ''}</div></div>
+    <div class="autopilot-fact-grid">
+      <div><span>Human sponsor</span><strong>${escHtml(charter.sponsor)}</strong></div>
+      <div><span>Pending actions</span><strong>${actions.filter(item => ['proposed', 'approval_required', 'authorized'].includes(item.state)).length}</strong></div>
+      <div><span>Open meetings</span><strong>${meetings.filter(item => !['reconciled', 'cancelled', 'shadow'].includes(item.state)).length}</strong></div>
+      <div><span>Observed usefulness</span><strong>${observed ? `${helpful}/${observed}` : 'Collecting evidence'}</strong></div>
+    </div>
+    <div><span class="portfolio-kicker">Granted internal authority</span><div class="autopilot-authority">${granted || '<span>No standing writes</span>'}</div></div>
+    <div class="autopilot-fixed-gates"><strong>Still human-gated:</strong> external email, client commitments, scope, budget, financial disclosure, major deadline changes, and every external-attendee meeting.</div>
+    <div class="autopilot-stream-grid">
+      <div class="autopilot-stream"><h3>Action history</h3>${actions.length ? actions.map(item => autopilotActionItem(item, project.key)).join('') : '<p class="portfolio-empty">No source event has justified an action.</p>'}</div>
+      <div class="autopilot-stream"><h3>Meeting lifecycle</h3>${meetings.length ? meetings.map(item => autopilotMeetingItem(item, project.key)).join('') : '<p class="portfolio-empty">No meeting cycle is open.</p>'}</div>
+    </div>
+    <details><summary>Configure charter</summary>${autopilotCharterForm(project, charter)}</details>`;
+}
+
+async function loadProjectAutopilot(project) {
+  const panel = document.getElementById('project-autopilot-panel');
+  try {
+    const response = await api('/pm-control/autopilot/projects/' + encodeURIComponent(project.key));
+    const view = await response.json();
+    if (!response.ok) throw new Error(view.error || 'Project Autopilot unavailable');
+    renderProjectAutopilot(project, view);
+  } catch (error) {
+    panel.innerHTML = `<div class="portfolio-load-error"><strong>Project Autopilot unavailable</strong><span>${escHtml(error.message)}</span></div>`;
+  }
+}
+
+function projectAutopilotFormBody(panel) {
+  const field = name => panel.querySelector(`[data-autopilot-field="${name}"]`);
+  const authority = {};
+  panel.querySelectorAll('[data-autopilot-authority]').forEach(input => {
+    authority[input.dataset.autopilotAuthority] = input.checked;
+  });
+  authority.routine_date_shift_limit_days = Number(field('date_limit').value) || 0;
+  authority.max_meetings_per_week = Number(field('meeting_limit').value) || 2;
+  authority.meeting_cooldown_hours = 24;
+  return {
+    mode: field('mode').value,
+    sponsor: field('sponsor').value.trim(),
+    mandate: field('mandate').value.trim(),
+    success_criteria: field('success_criteria').value.split('\n').map(value => value.trim()).filter(Boolean),
+    stakeholders: field('stakeholders').value.split(',').map(value => value.trim()).filter(Boolean),
+    pilot_note: field('pilot_note').value.trim(),
+    authority,
+  };
+}
+
+async function saveProjectAutopilot(projectKey, activate, button) {
+  const form = button.closest('.autopilot-form');
+  const status = form.querySelector('.autopilot-status');
+  const body = projectAutopilotFormBody(form);
+  const prior = button.textContent;
+  button.disabled = true;
+  button.textContent = activate ? 'Activating pilot' : 'Saving charter';
+  status.className = 'autopilot-status';
+  status.textContent = '';
+  try {
+    let response = await operatorApi('/pm-control/autopilot/charters/' + encodeURIComponent(projectKey), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    let result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Charter save failed');
+    if (activate) {
+      response = await operatorApi(`/pm-control/autopilot/charters/${encodeURIComponent(projectKey)}/activate`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: body.mode, pilot_note: body.pilot_note }),
+      });
+      result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Pilot activation failed');
+      await api('/pm-control/autopilot/reconcile', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_key: projectKey, source: 'operator_activation' }) });
+    }
+    status.className = 'autopilot-status is-success';
+    status.textContent = activate ? 'Pilot active' : 'Charter saved';
+    await loadProjects();
+    await viewProject(projectKey);
+  } catch (error) {
+    status.className = 'autopilot-status is-error';
+    status.textContent = error.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = prior;
+  }
+}
+
+async function reconcileProjectAutopilot(projectKey, button) {
+  const prior = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Reconciling';
+  try {
+    const response = await api('/pm-control/autopilot/reconcile', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_key: projectKey, source: 'operator_dashboard' }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Reconciliation failed');
+    await loadProjectAutopilot(projectPortfolioState.projects.find(item => item.key === projectKey));
+  } catch (error) { alert(`Project Autopilot failed: ${error.message}`); }
+  finally { button.disabled = false; button.textContent = prior; }
+}
+
+async function pauseProjectAutopilot(projectKey, button) {
+  const reason = prompt('Why are you pausing this project pilot?');
+  if (!reason) return;
+  button.disabled = true;
+  try {
+    const response = await operatorApi(`/pm-control/autopilot/charters/${encodeURIComponent(projectKey)}/pause`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Pause failed');
+    await loadProjects();
+    await viewProject(projectKey);
+  } catch (error) { alert(`Pause failed: ${error.message}`); }
+  finally { button.disabled = false; }
+}
+
+async function approveProjectAutopilotAction(button) {
+  const body = {};
+  if (button.dataset.requiredInput) {
+    const resolution = prompt(`Provide the required ${button.dataset.requiredInput}:`);
+    if (!resolution) return;
+    body.resolution = resolution;
+  }
+  button.disabled = true;
+  try {
+    const response = await operatorApi(`/pm-control/autopilot/actions/${encodeURIComponent(button.dataset.actionId)}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Action approval failed');
+    await loadProjectAutopilot(projectPortfolioState.projects.find(item => item.key === button.dataset.projectKey));
+  } catch (error) { alert(`Action approval failed: ${error.message}`); }
+  finally { button.disabled = false; }
+}
+
+async function approveProjectAutopilotMeeting(button) {
+  button.disabled = true;
+  try {
+    const response = await operatorApi(`/pm-control/autopilot/meetings/${encodeURIComponent(button.dataset.meetingId)}/approve`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Meeting approval failed');
+    await loadProjectAutopilot(projectPortfolioState.projects.find(item => item.key === button.dataset.projectKey));
+  } catch (error) { alert(`Meeting approval failed: ${error.message}`); }
+  finally { button.disabled = false; }
 }
 
 function closeProject() {

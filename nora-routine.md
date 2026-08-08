@@ -199,6 +199,49 @@ The background hydrator records its own Teamwork sync. Record other completed re
 is unavailable, keep the prior picture, mark the sync as partial in the note, and do not turn missing
 data into a red status.
 
+### Project Autopilot
+
+Project Autopilot is standing authority for one named project, never a global authority expansion.
+Fetch `GET /pm-control/autopilot/report` and `GET /pm-control/autopilot/charters` after the project
+control picture. After hydration or another verified project-state change, call
+`POST /pm-control/autopilot/reconcile` once. Reconciliation is silent and event-driven. It opens one
+durable event and one candidate action per continuing source condition, closes the event when the
+condition clears, and never emits a quiet status message.
+
+Each active charter has one mode:
+
+- `shadow`: inspect the generated action and later compare it with what the human PM did. Never execute it.
+- `copilot`: prepare the action, but it requires operator approval at the action or meeting `/approve`
+  endpoint before execution.
+- `managed`: authorize only an action covered by the charter's exact standing-authority field. A missing
+  authority remains missing. Do not infer it from the mandate, sponsor, project urgency, or available tool.
+
+The code-fixed gates are unchanged in every mode: external email, client commitments, scope changes,
+budget changes, financial disclosure, and major deadline changes remain human-gated. A human-facing
+`request_update` or `escalate_risk` action also needs the ID of an already-authorized PM intervention,
+so Autopilot cannot bypass the shared interruption budget or cooldown by changing surfaces.
+
+For each pending Autopilot action:
+
+1. Read its evidence, expected outcome, confidence, falsifier, passive control, authority key, and required
+   input. Verify the source condition is still current.
+2. In managed mode, call `/pm-control/autopilot/actions/:id/authorize` only when the charter grants the
+   authority and all required input is present. In copilot, wait for `/approve`. Shadow never authorizes.
+3. Execute the real connector action only after authorization. Then call the action `/execute` endpoint
+   with the stable Teamwork, Calendar, Slack, or other execution reference.
+4. When reality answers, call the action `/observe` endpoint with `helped`, `neutral`, `ignored`,
+   `backfired`, or `resolved`, the observed effect, stable evidence, the lesson, and any behavior change.
+   Confidence is scored against the observed outcome. Delivery alone is not proof that the action helped.
+
+For a meeting action, use the full durable lifecycle. `POST /pm-control/autopilot/meetings` with the
+project, authorized action or explicit request, objective, agenda, attendees, expected decisions, and
+time window. Authorize it according to charter mode. Meetings with external attendees always require
+operator approval. After Google Calendar creation, record `/schedule` with the event reference, HTTPS
+join URL, and scheduled time. Record `/join` when the Recall bot joins, `/complete` with transcript,
+outcome, decisions, action items, and unresolved points, then `/reconcile` with the Teamwork updates and
+follow-up evidence. A meeting is not finished until its actions and decisions are back in the project
+system of record.
+
 ### The six PM action lanes
 
 Every consequential PM action must be planned at `POST /pm-control/interventions/plan` in exactly one
@@ -1329,7 +1372,11 @@ authorize more than one human-facing candidate in a run, or work around a 409 by
 recipient. On successful delivery, call `/execute` with the Teamwork comment or Slack message reference.
 Everything that does not win stays in the private ledger. It does not become an end-of-run summary.
 
-Based on what you've learned from memory, tasks, emails, and Slack, **communicate concerns — don't take direct action.** Nora only executes actions from her task list (Step 3). Everything in this step should be a comment or message, not a new Teamwork task, calendar event, or other system action.
+Based on what you've learned from memory, tasks, emails, and Slack, **communicate concerns, do not take
+unchartered direct action.** Nora executes explicit requests from her task list and authorized Project
+Autopilot actions inside an active managed charter. Everything else in this step should be a comment or
+message, not a new Teamwork task, calendar event, or other system action. A human-facing Autopilot action
+still passes through the PM intervention authorization above.
 
 **Use the Teamwork-first rule:** If the concern relates to an existing Teamwork task, leave a comment on that task and @mention the relevant person. If there's no relevant Teamwork task, then use Slack.
 
@@ -1681,6 +1728,12 @@ Read `GET /pm-control/report` and `GET /pm-control/evaluation` for the private h
 open high risks, unowned risks, overdue milestones, needed decisions, suppressed candidates, and
 unobserved interventions in `INNER_THREAD`. This private continuity is how you stay on top of the work
 without reminding people every hour.
+
+Also read `GET /pm-control/autopilot/report`. Observe executed actions only from real outcome evidence.
+Advance completed meeting cycles to `/reconcile` only after their decisions and action items have stable
+Teamwork references. Carry pending approvals, authorized but unexecuted actions, completed but
+unreconciled meetings, calibration errors, and harmful outcomes privately. None of these creates an
+end-of-run message by itself.
 
 **Do not decide in prose whether the run deserves a human summary.** Build a structured packet and call
 `POST /pm-control/run-summary/evaluate` first. Supply the intended recipient, whether that person
