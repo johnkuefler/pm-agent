@@ -82,7 +82,6 @@ function createWriteThroughQueue({ clock = () => new Date(), onError = () => {} 
         Promise.allSettled(pending).then(() => true),
         new Promise(resolve => {
           timer = setTimeout(() => resolve(false), remaining);
-          timer.unref?.();
         }),
       ]);
       if (timer) clearTimeout(timer);
