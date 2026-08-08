@@ -171,14 +171,17 @@ Only `/cowork-instructions` is unauthenticated. `/prompt` and `/charter` now req
 This is the operational center of the run. Teamwork remains the source for live project and task facts;
 `/pm-control` is Nora's durable model of what those facts mean for delivery.
 
-1. Run `POST /projects/sync-from-teamwork` once. Then fetch `GET /projects`, `GET /pm-control`, and
-   `GET /pm-control/report`.
-2. Ensure every active client project has a control record at `PUT /pm-control/projects/:key`. Prefer
-   the Teamwork project id as `:key`; otherwise use a stable lowercase project name. Preserve current
-   evidence and never invent missing fields. The minimum useful picture is objective, phase, PM,
-   health with a reason, next milestone with its date, critical path, dependencies, and source evidence.
-3. Reconcile only material changes each hour. Use current Teamwork tasks, milestones, comments, meeting
-   decisions, Slack requests, and commitments as evidence. An unchanged record needs no rewrite.
+1. Run `POST /projects/sync-from-teamwork` once. Then fetch `GET /projects`, `GET /pm-control`,
+   `GET /pm-control/report`, and `GET /pm-control/hydration`.
+2. The background Teamwork story hydrator refreshes every 30 minutes. It fills objective, phase, PM,
+   next milestone, critical path, and decision candidates from verified project, owner, task, and
+   milestone data. It preserves human-curated values and updates only fields it previously managed.
+   Do not rebuild these fields manually, and do not report hydration activity to anyone.
+3. Reconcile only material gaps the source projection cannot establish, such as health with a reason,
+   external dependencies, meeting decisions, Slack requests, and commitments. Use
+   `PUT /pm-control/projects/:key` only for verified additions or corrections. An unchanged record needs
+   no rewrite. The minimum useful picture is objective, phase, PM, health with a reason, next milestone
+   with its date, critical path, dependencies, and source evidence.
 4. Record a risk with `POST /pm-control/risks` only when evidence shows plausible delivery impact.
    A risk needs a project key, title, description, severity, urgency, confidence, owner when known,
    subject reference, next action or decision needed, and one or more evidence objects shaped like
@@ -191,9 +194,10 @@ This is the operational center of the run. Teamwork remains the source for live 
    lets one consolidated intervention compete across the whole portfolio instead of letting the first
    overdue task consume the day.
 
-Record each completed reconciliation with `POST /pm-control/syncs`. Include source, project counts,
-risk counts, and a short note. If a connector is unavailable, keep the prior picture, mark the sync as
-partial in the note, and do not turn missing data into a red status.
+The background hydrator records its own Teamwork sync. Record other completed reconciliations with
+`POST /pm-control/syncs`, including source, project counts, risk counts, and a short note. If a connector
+is unavailable, keep the prior picture, mark the sync as partial in the note, and do not turn missing
+data into a red status.
 
 ### The six PM action lanes
 

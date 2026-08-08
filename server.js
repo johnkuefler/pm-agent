@@ -16122,11 +16122,10 @@ async function completePostListenStartup(background) {
     // The worker is serialized, low-priority, resource-gated, and preempted by Slack/meetings.
     scheduleRecurringRuntimeJob('recent-meetings-refresh', 10 * 60 * 1000,
       refreshRecentMeetingsCache, { initialDelayMs: 12000, timeoutMs: 30000 });
-    scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, {
-      timeoutMs: 15000,
-    });
+    scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, { timeoutMs: 15000 });
     scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
       () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });
+    projectControlRuntime.scheduleHydration(scheduleRecurringRuntimeJob);
     scheduleRecurringRuntimeJob('operational-recovery-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {
       // Operational recovery stays frequent and isolated. Research and reflection have their own

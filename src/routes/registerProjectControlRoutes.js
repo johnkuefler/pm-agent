@@ -11,6 +11,8 @@ function registerProjectControlRoutes(app, deps) {
     saveProjectControl,
     getInitiativeStatus,
     spendInitiative,
+    hydrateProjectStories,
+    getProjectHydrationStatus,
   } = deps;
   const mutateProjectControl = deps.mutateProjectControl || (async operation => {
     const result = await operation(loadProjectControl());
@@ -166,6 +168,22 @@ function registerProjectControlRoutes(app, deps) {
     const ledger = loadProjectControl();
     res.json({ ...projectControl.shadowEvaluation(ledger),
       quality: projectControl.qualityEvaluation(ledger) });
+  });
+
+  app.get('/pm-control/hydration', requireAuth, (_req, res) => {
+    res.json(getProjectHydrationStatus ? getProjectHydrationStatus() : { state: 'unavailable' });
+  });
+
+  app.post('/pm-control/hydrate/teamwork', requireAuth, async (req, res) => {
+    try {
+      if (!hydrateProjectStories) throw new Error('Teamwork project hydration is unavailable');
+      const result = await hydrateProjectStories({ dryRun: req.body?.dry_run === true,
+        signal: req.deadlineSignal });
+      const { ledger: _ledger, ...response } = result;
+      res.json({ ok: true, ...response });
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+    }
   });
 
   app.post('/pm-control/run-summary/evaluate', requireAuth, async (req, res) => {

@@ -171,6 +171,16 @@ function registerCoworkInstructionsRoute(app, { requireAuth = (_req, _res, next)
                 "created", "promoted", "unchanged",
                 "created_names": [...], "promoted_names": [...] }
 
+  - GET /pm-control/hydration
+    Returns the current background Teamwork project-story hydration state and last result. The silent
+    hydrator runs every 30 minutes and fills only missing or previously machine-managed control fields.
+
+  - POST /pm-control/hydrate/teamwork
+    Runs Teamwork project-story hydration on demand. It derives project objective, phase, PM, next
+    milestone, critical path, and decision candidates with source evidence and field provenance.
+    Existing human-curated values are preserved. Body (optional): { "dry_run": true }.
+    Hydration is silent maintenance and must never become an end-of-run message or reminder.
+
   - POST /projects                — Create a new project. Optional fields are first-class.
     Body: { "name": "string (required)", "details": "string (optional)",
             "client": "string", "status": "string", "pm": "string",

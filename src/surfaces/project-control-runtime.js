@@ -3,12 +3,22 @@
 const fs = require('fs');
 const path = require('path');
 const projectControl = require('../intelligence/project-control');
+const teamworkProjectStory = require('../integrations/teamwork-project-story');
 const { registerProjectControlRoutes } = require('../routes/registerProjectControlRoutes');
 
 function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, writeThrough,
-  intelligence }) {
+  intelligence, projectStory = teamworkProjectStory }) {
   const filePath = path.join(localDataDir, 'nora-project-control.json');
   let writeQueue = Promise.resolve();
+  let hydrationPromise = null;
+  let hydrationStatus = {
+    state: 'idle',
+    source: 'teamwork_project_story',
+    started_at: null,
+    completed_at: null,
+    error: null,
+    result: null,
+  };
 
   function load() {
     if (isDbReady()) return projectControl.normalizeLedger(cache.projectControl);
@@ -71,6 +81,43 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
     });
   }
 
+  function getHydrationStatus() {
+    return JSON.parse(JSON.stringify(hydrationStatus));
+  }
+
+  async function hydrateFromTeamwork({ dryRun = false, signal } = {}) {
+    if (hydrationPromise) return hydrationPromise;
+    hydrationStatus = { ...hydrationStatus, state: 'running', started_at: new Date().toISOString(),
+      completed_at: null, error: null, result: null };
+    hydrationPromise = (async () => {
+      const snapshot = await projectStory.fetchTeamworkPortfolio({ signal });
+      const stories = projectStory.buildProjectStories(snapshot);
+      const result = dryRun
+        ? projectStory.applyProjectStories(load(), stories, { dryRun: true })
+        : await mutate(ledger => projectStory.applyProjectStories(ledger, stories));
+      const summary = { projects_seen: result.projects_seen, created: result.created,
+        updated: result.updated, unchanged: result.unchanged, fields_filled: result.fields_filled,
+        dry_run: result.dry_run, pagination: snapshot.pagination };
+      hydrationStatus = { ...hydrationStatus, state: 'succeeded',
+        completed_at: new Date().toISOString(), result: summary };
+      return { ...result, pagination: snapshot.pagination };
+    })();
+    try {
+      return await hydrationPromise;
+    } catch (error) {
+      hydrationStatus = { ...hydrationStatus, state: 'failed', completed_at: new Date().toISOString(),
+        error: String(error?.message || error), result: null };
+      throw error;
+    } finally {
+      hydrationPromise = null;
+    }
+  }
+
+  function scheduleHydration(scheduleRecurringRuntimeJob) {
+    return scheduleRecurringRuntimeJob('teamwork-project-story-hydration', 30 * 60 * 1000,
+      ({ signal }) => hydrateFromTeamwork({ signal }), { initialDelayMs: 45 * 1000, timeoutMs: 2 * 60 * 1000 });
+  }
+
   function register(app, { requireAuth, requireOperatorAuth }) {
     registerProjectControlRoutes(app, {
       requireAuth,
@@ -80,11 +127,14 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
       mutateProjectControl: mutate,
       getInitiativeStatus: scope => intelligence.initiativeStatus(scope),
       spendInitiative: (scope, metadata) => intelligence.spendInitiative(scope, metadata),
+      hydrateProjectStories: hydrateFromTeamwork,
+      getProjectHydrationStatus: getHydrationStatus,
     });
   }
 
   return { load, save, mutate, hydrate, ingestMeeting, ingestExtractedMeeting,
-    promptContext, appendPromptContext, register };
+    promptContext, appendPromptContext, hydrateFromTeamwork, getHydrationStatus,
+    scheduleHydration, register };
 }
 
 module.exports = { createProjectControlRuntime };

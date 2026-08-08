@@ -173,6 +173,9 @@ test('project control API separates quiet agency from scarce human interruption'
   });
   assert.equal(observed.body.outcome.outcome, 'helped');
   assert.equal((await request('/pm-control/evaluation')).body.helpful_rate, 1);
+  const hydration = await request('/pm-control/hydration');
+  assert.equal(hydration.response.status, 200);
+  assert.equal(hydration.body.state, 'idle');
 
   const policyDenied = await request('/pm-control/policy', { method: 'PUT', body: {
     recipient_cooldown_hours: 12,

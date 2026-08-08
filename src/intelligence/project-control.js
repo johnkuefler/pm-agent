@@ -103,6 +103,52 @@ function normalizeCognitiveContext(value = {}) {
   };
 }
 
+function normalizeFieldSources(value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return Object.fromEntries(Object.entries(source).slice(0, 20).map(([field, item]) => [
+    clean(field, 80), {
+      source: clean(item?.source, 120),
+      confidence: clamp(item?.confidence),
+      derived: Boolean(item?.derived),
+      refs: normalizeList(item?.refs, 20, 500),
+    },
+  ]).filter(([field]) => field));
+}
+
+function normalizeHydration(value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  return {
+    source: clean(source.source, 120),
+    version: Math.max(0, Number(source.version) || 0),
+    source_signature: clean(source.source_signature, 128),
+    hydrated_at: source.hydrated_at ? timestamp(source.hydrated_at) : null,
+    managed_fields: normalizeList(source.managed_fields, 30, 80),
+    field_sources: normalizeFieldSources(source.field_sources),
+    schedule: {
+      open_tasks: Math.max(0, Number(source.schedule?.open_tasks) || 0),
+      overdue_tasks: Math.max(0, Number(source.schedule?.overdue_tasks) || 0),
+      unassigned_tasks: Math.max(0, Number(source.schedule?.unassigned_tasks) || 0),
+      open_milestones: Math.max(0, Number(source.schedule?.open_milestones) || 0),
+    },
+  };
+}
+
+function normalizeDecisionState(value = {}) {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const candidates = Array.isArray(source.candidates) ? source.candidates.slice(0, 20).map(item => ({
+    id: clean(item?.id, 160),
+    title: clean(item?.title, 600),
+    due_at: item?.due_at ? timestamp(item.due_at) : null,
+    assignees: normalizeList(item?.assignees, 20, 240),
+    evidence_ref: clean(item?.evidence_ref, 500),
+  })).filter(item => item.id && item.title) : [];
+  return {
+    status: clean(source.status || (candidates.length ? 'open_candidates' : 'unknown'), 40),
+    open_count: Math.max(candidates.length, Number(source.open_count) || 0),
+    candidates,
+  };
+}
+
 function normalizeLedger(value = {}) {
   const base = emptyLedger();
   const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -125,6 +171,19 @@ function projectKey(input = {}) {
   const key = clean(input.key || input.teamwork_id || input.name, 240).toLowerCase();
   if (!key) throw new Error('project key, Teamwork id, or name is required');
   return key;
+}
+
+function projectHydration(existing, input) {
+  if (input.hydration !== undefined) return normalizeHydration(input.hydration);
+  const inherited = existing?.hydration || normalizeHydration();
+  if (!existing?.hydration?.managed_fields?.length) return inherited;
+  const explicit = new Set(['client', 'objective', 'phase', 'pm', 'critical_path', 'decision_refs',
+    'decision_state', 'next_milestone', 'next_milestone_due']
+    .filter(field => Object.prototype.hasOwnProperty.call(input, field)));
+  if (explicit.has('next_milestone')) explicit.add('next_milestone_due');
+  if (!explicit.size) return inherited;
+  return normalizeHydration({ ...inherited,
+    managed_fields: inherited.managed_fields.filter(field => !explicit.has(field)) });
 }
 
 function upsertProject(ledger = emptyLedger(), input = {}, { now = new Date() } = {}) {
@@ -153,7 +212,10 @@ function upsertProject(ledger = emptyLedger(), input = {}, { now = new Date() } 
     critical_path: normalizeList(input.critical_path ?? existing?.critical_path, 20, 500),
     dependency_refs: normalizeList(input.dependency_refs ?? existing?.dependency_refs, 30, 240),
     decision_refs: normalizeList(input.decision_refs ?? existing?.decision_refs, 30, 240),
+    decision_state: input.decision_state === undefined
+      ? existing?.decision_state || normalizeDecisionState() : normalizeDecisionState(input.decision_state),
     evidence: input.evidence ? normalizeEvidence(input.evidence) : existing?.evidence || [],
+    hydration: projectHydration(existing, input),
     source_updated_at: input.source_updated_at ? timestamp(input.source_updated_at)
       : existing?.source_updated_at || null,
     updated_at: updatedAt,
@@ -163,7 +225,8 @@ function upsertProject(ledger = emptyLedger(), input = {}, { now = new Date() } 
   project.control_commitment = commitment({ key: project.key, objective: project.objective,
     phase: project.phase, pm: project.pm, health: project.health, next_milestone: project.next_milestone,
     next_milestone_due: project.next_milestone_due, critical_path: project.critical_path,
-    dependency_refs: project.dependency_refs, evidence: project.evidence, updated_at: project.updated_at });
+    dependency_refs: project.dependency_refs, decision_state: project.decision_state,
+    evidence: project.evidence, hydration: project.hydration, updated_at: project.updated_at });
   if (existing) Object.assign(existing, project);
   else current.projects.push(project);
   return { ledger: current, project, report: report(current, { now }) };
@@ -661,9 +724,19 @@ function report(ledger = emptyLedger(), { now = new Date() } = {}) {
     policy: current.policy,
     projects: {
       total: current.projects.length,
+      complete: current.projects.filter(item => item.completeness?.ratio === 1).length,
       red: current.projects.filter(item => item.health === 'red').length,
       amber: current.projects.filter(item => item.health === 'amber').length,
       incomplete: current.projects.filter(item => item.completeness?.ratio < 1).length,
+      objectives_known: current.projects.filter(item => item.objective).length,
+      phases_known: current.projects.filter(item => item.phase).length,
+      pms_known: current.projects.filter(item => item.pm).length,
+      milestones_known: current.projects.filter(item => item.next_milestone
+        && item.next_milestone_due).length,
+      teamwork_hydrated: current.projects.filter(item => item.hydration?.source
+        === 'teamwork_project_story').length,
+      decision_candidates: current.projects.reduce((sum, item) =>
+        sum + (Number(item.decision_state?.open_count) || 0), 0),
       milestone_overdue: current.projects.filter(item => item.next_milestone_due
         && new Date(item.next_milestone_due).getTime() < nowMs).length,
     },
@@ -706,7 +779,7 @@ function renderPromptContext(ledger = emptyLedger(), { query = '', projectHint =
   if (!scored.length) return '';
   const lines = ['[PM control, current durable operating picture]'];
   for (const { project, openRiskCount } of scored) {
-    lines.push(`- ${project.name}: health ${project.health}; phase ${project.phase || 'unknown'}; PM ${project.pm || 'unknown'}; next milestone ${project.next_milestone || 'unknown'}${project.next_milestone_due ? ` due ${project.next_milestone_due}` : ''}; open risks ${openRiskCount}.`);
+    lines.push(`- ${project.name}: health ${project.health}; phase ${project.phase || 'unknown'}; PM ${project.pm || 'unknown'}; next milestone ${project.next_milestone || 'unknown'}${project.next_milestone_due ? ` due ${project.next_milestone_due}` : ''}; open risks ${openRiskCount}; decision candidates ${project.decision_state?.open_count || 0}.`);
     for (const risk of current.risks.filter(item => item.project_key === project.key
       && ['open', 'monitoring'].includes(item.status))
       .sort((left, right) => (SEVERITIES.indexOf(right.severity) - SEVERITIES.indexOf(left.severity)))

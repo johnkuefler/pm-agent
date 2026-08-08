@@ -422,6 +422,8 @@ POST /pm-control/interventions/:id/authorize
 POST /pm-control/interventions/:id/execute
 POST /pm-control/interventions/:id/observe
 GET /pm-control/evaluation
+GET /pm-control/hydration
+POST /pm-control/hydrate/teamwork
 POST /pm-control/run-summary/evaluate
 POST /pm-control/syncs
 PUT /pm-control/policy
