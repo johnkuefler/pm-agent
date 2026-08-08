@@ -76,7 +76,10 @@ const { auditAutobiographyEvidence, createAutobiographyRevision, initializeAutob
 const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('./src/intelligence/policy');
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { createMcpManager } = require('./src/mcp/manager');
+const { createMcpStore } = require('./src/mcp/store');
 const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
+const { registerFleetSupervisorRuntime } = require('./src/fleet/runtime');
+const { findJohnSlackId } = require('./src/surfaces/slack/owner');
 const { runBench } = require('./src/intelligence/bench');
 const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPrompt, parseMeetingIntelligence } = require('./src/intelligence/meeting');
 const cognitivePulse = require('./src/intelligence/cognitive-pulse');
@@ -4944,7 +4947,7 @@ app.post('/webhook/chat', async (req, res) => {
     if (zoomMcp.inventory.length) zoomTail += `\n\nYou also have live MCP tools from: ${[...new Set(zoomMcp.inventory.map(item => item.connection))].join(', ')}. Use them for current facts instead of guessing. Only use a write tool when the typed request is explicit and unambiguous.`;
     if (zoomPublicApis.inventory.length) zoomTail += `\n\nApproved public-data API tools are attached: ${zoomPublicApis.inventory.map(item => item.name).join(', ')}. Use only when relevant, pass no private/team/client data, and state a concrete purpose.`;
     if (!zoomAttachLiveTools) zoomTail += '\n\nThis is a bounded social turn. No live tools are attached because the message does not ask for information or action. Respond naturally and briefly.';
-    zoomTail += fleetOperatingInstruction(zoomMcp.inventory, { direct: true, teamworkAvailable: zoomAttachLiveTools && teamworkEnabled() });
+    zoomTail += fleetOperatingInstruction(zoomMcp.inventory, { direct: true, teamworkAvailable: zoomAttachLiveTools && teamworkEnabled() }) + fleetSupervisor.promptContext();
     const zoomToolSetupFinishedAt = Date.now();
     const zoomPromptChars = zoomStable.length + zoomTail.length;
 
@@ -5450,25 +5453,22 @@ async function fetchUrlText(url, { signal = undefined } = {}) {
 // Credential-aware remote MCP connections. Secrets and even credential-bearing URLs are encrypted
 // before persistence. The manager discovers tools once during Test/Connect, then exposes only the
 // cached schemas to Slack and Zoom so live voice startup never waits on a remote server.
-const MCP_PATH_VOLUME = path.join(VOLUME_DIR, 'nora-mcp.json');
-const MCP_PATH_LOCAL = path.join(LOCAL_DATA_DIR, 'nora-mcp.json');
-function getMcpPath() { return fs.existsSync(VOLUME_DIR) ? MCP_PATH_VOLUME : MCP_PATH_LOCAL; }
-function loadMcpStore() {
-  if (_dbReady) return _cache.mcp || [];
-  try { return JSON.parse(fs.readFileSync(getMcpPath(), 'utf8')); } catch { return []; }
-}
-function saveMcpStore(list) {
-  if (_dbReady) { _cache.mcp = list; return _writeThrough('mcp', () => db.replaceAllMcp(list)); }
-  const p = getMcpPath(); const tmp = `${p}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, JSON.stringify(list, null, 2)); fs.renameSync(tmp, p);
-}
+const mcpStore = createMcpStore({ fs, path, volumeDirectory: VOLUME_DIR,
+  localDataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady,
+  getCache: () => _cache.mcp || [], setCache: list => { _cache.mcp = list; },
+  writeThrough: _writeThrough, replaceAll: db.replaceAllMcp });
 
 const mcpManager = createMcpManager({
-  loadConnections: loadMcpStore,
-  saveConnections: saveMcpStore,
+  loadConnections: mcpStore.load,
+  saveConnections: mcpStore.save,
   encryptionSecret: process.env.MCP_CREDENTIALS_ENCRYPTION_KEY || process.env.NORA_API_KEY || 'nora-local-development-only',
   resolveDns: process.env.NORA_TEST_MODE !== '1',
 });
+
+const fleetSupervisor = registerFleetSupervisorRuntime({ app, requireAuth, requireOperatorAuth,
+  mcpManager, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady,
+  writeThrough: _writeThrough, intelligence, resolveOwner: () => findJohnSlackId(loadMemory()),
+  postMessage: postSlackMessage });
 
 // ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
 // Custom client-side tools: the model requests one, we execute it against the Teamwork API
@@ -6384,13 +6384,7 @@ function enqueueMemoryJob(job) {
   pruneMemoryJobs();
 }
 
-function resolveJohnSlackId() {
-  for (const m of loadMemory()) {
-    const match = /John Kuefler'?s Slack user ID is (U[A-Z0-9]{6,})/i.exec(m.fact || '');
-    if (match) return match[1];
-  }
-  return null;
-}
+const resolveJohnSlackId = () => findJohnSlackId(loadMemory());
 
 const ACTION_WRITE_NAME = /(?:create|update|complete|reopen|add_comment|send|post|write|delete|remove|join|upload|move|rename|queue|schedule)/i;
 
@@ -8128,7 +8122,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     } else {
       tail += '\n\nNo live tools are attached to THIS reply. Answer from your memory and the conversation, or say you\'ll check and follow up. Do NOT claim you pulled live data or hit a system you don\'t have access to this turn.';
     }
-    tail += fleetOperatingInstruction(mcpBindings.inventory, { direct: isDirect, teamworkAvailable: teamworkOn });
+    tail += fleetOperatingInstruction(mcpBindings.inventory, { direct: isDirect, teamworkAvailable: teamworkOn }) + fleetSupervisor.promptContext();
     tail += SLACK_TABLE_FORMATTING_INSTRUCTION + diagnosisInstruction(contextAssignment);
     const fittedSlackPrompt = fitSlackSystemPrompt(slackStable, tail, urlBlock);
     tail = fittedSlackPrompt.tail;
@@ -16101,6 +16095,7 @@ async function completePostListenStartup(background) {
   await reconcileInnerThreadProjection();
   try { await mcpManager.migrate(); }
   catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
+  await fleetSupervisor.hydrate();
   // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
   // authoritative substrate observation soon after listening so that restart and persistence
   // scoring do not depend on a long startup race.
@@ -16125,6 +16120,9 @@ async function completePostListenStartup(background) {
     scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, { timeoutMs: 15000 });
     scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
       () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });
+    scheduleRecurringRuntimeJob('fleet-supervisor-scan', 15 * 60 * 1000,
+      ({ signal }) => fleetSupervisor.scan({ reason: 'scheduled', notify: true, signal }),
+      { initialDelayMs: 45 * 1000, timeoutMs: 120000 });
     projectControlRuntime.scheduleHydration(scheduleRecurringRuntimeJob);
     scheduleRecurringRuntimeJob('operational-recovery-cycle', 5 * 60 * 1000,
       async ({ run_number: runNumber }) => {

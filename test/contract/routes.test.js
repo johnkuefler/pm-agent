@@ -21,7 +21,9 @@ test('the complete HTTP route surface remains registered in the same order', () 
   // 409 to 449: the project control plane, including the 20-route Autopilot lifecycle.
   // Deliberate. Nora needs durable projects, risks, decisions, interventions, outcomes,
   // project-scoped authority, meeting control, and policy visibility to operate as a project manager.
+  // Three Fleet supervisor routes expose its read-only ledger, silent manual scan, and operator
+  // acknowledgment without widening Nora's Fleet authority.
   // This count moving is meant to be an argument, not a formality.
-  assert.equal(expected.length, 489, 'route fixture should cover the complete known API surface');
+  assert.equal(expected.length, 492, 'route fixture should cover the complete known API surface');
   assert.deepEqual(actual, expected);
 });

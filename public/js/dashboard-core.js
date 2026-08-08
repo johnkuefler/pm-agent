@@ -88,6 +88,7 @@
       meeting: ['Meeting', 'Send Nora into a call with the right context, mandate, and participation mode.'],
       tasks: ['Tasks', 'Review Nora\'s action queue, schedule follow-up work, and close completed items.'],
       projects: ['Portfolio', 'See what needs management now, what Nora knows, and why she is staying quiet or stepping in.'],
+      fleet: ['Fleet', 'See the incidents Nora is quietly managing across the agent team, plus the evidence behind any human interruption.'],
       transcripts: ['Transcripts', 'Review and correct the conversations Nora captured in meetings.'],
       memory: ['Memory', 'Search, maintain, and vectorize the facts Nora can recall.'],
       dreams: ['Dreams', 'Review nightly consolidation, reflection, and learning.'],
@@ -121,6 +122,7 @@
       if (name === 'live') loadRuntimeActivity();
       if (name === 'tasks') loadTasks();
       if (name === 'projects') loadProjects();
+      if (name === 'fleet') loadFleetSupervisor();
       if (name === 'transcripts') loadTranscripts();
       if (name === 'dreams') loadDreams();
       if (name === 'markers') loadMarkers();

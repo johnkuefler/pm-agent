@@ -31,6 +31,7 @@
           <div class="nav-label">Work</div>
           <button class="tab" type="button" data-tab="live" aria-selected="false" onclick="showTab('live')">Live</button>
           <button class="tab active" type="button" data-tab="projects" aria-selected="true" onclick="showTab('projects')">Portfolio</button>
+          <button class="tab" type="button" data-tab="fleet" aria-selected="false" onclick="showTab('fleet')">Fleet</button>
           <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Tasks</button>
           <button class="tab" type="button" data-tab="meeting" aria-selected="false" onclick="showTab('meeting')">Meeting</button>
           <button class="tab" type="button" data-tab="transcripts" aria-selected="false" onclick="showTab('transcripts')">Transcripts</button>
@@ -422,6 +423,66 @@
         <div id="project-status" class="toast"></div>
       </section>
     </div>
+
+    <!-- Fleet Supervisor Tab -->
+    <div id="page-fleet" class="page">
+      <section class="fleet-hero" aria-labelledby="fleet-supervisor-title">
+        <div>
+          <span class="portfolio-kicker">Silent supervision</span>
+          <h2 id="fleet-supervisor-title">Nora's agent team</h2>
+          <p>Nora keeps a durable incident ledger, merges repeated signals, and interrupts a person only when a material change needs human action.</p>
+        </div>
+        <div class="fleet-hero-actions">
+          <div id="fleet-supervisor-sync" class="fleet-sync" role="status" aria-live="polite">Waiting for the first supervisor scan.</div>
+          <button id="fleet-scan-button" class="btn btn-primary btn-sm" type="button" onclick="scanFleetSupervisor(this)">Scan now</button>
+        </div>
+      </section>
+
+      <section id="fleet-supervisor-stats" class="portfolio-stat-grid" aria-label="Fleet supervisor summary"></section>
+
+      <div class="fleet-workspace">
+        <section class="section fleet-incidents" aria-labelledby="fleet-incidents-title">
+          <header class="fleet-section-head">
+            <div>
+              <span class="portfolio-kicker">Management ledger</span>
+              <h2 id="fleet-incidents-title">Incidents Nora owns</h2>
+              <p id="fleet-incident-summary">Loading durable Fleet incidents.</p>
+            </div>
+            <div class="fleet-filter-bar" role="group" aria-label="Fleet incident filter">
+              <button class="fleet-filter active" type="button" data-fleet-filter="open" aria-pressed="true" onclick="setFleetFilter('open')">Open</button>
+              <button class="fleet-filter" type="button" data-fleet-filter="human" aria-pressed="false" onclick="setFleetFilter('human')">Needs human</button>
+              <button class="fleet-filter" type="button" data-fleet-filter="resolved" aria-pressed="false" onclick="setFleetFilter('resolved')">Resolved</button>
+            </div>
+          </header>
+          <div id="fleet-incident-list" class="fleet-incident-list" aria-live="polite"></div>
+        </section>
+
+        <aside class="fleet-sidebar" aria-label="Fleet supervision policy">
+          <section class="section fleet-side-card">
+            <span class="portfolio-kicker">Interruption discipline</span>
+            <h2>Why Nora is quiet</h2>
+            <div id="fleet-quiet-state"></div>
+          </section>
+          <section class="section fleet-side-card">
+            <span class="portfolio-kicker">Shared brain</span>
+            <h2>Learning closure</h2>
+            <div id="fleet-learning-state"></div>
+          </section>
+        </aside>
+      </div>
+
+      <section class="section fleet-roster" aria-labelledby="fleet-roster-title">
+        <header class="fleet-section-head">
+          <div><span class="portfolio-kicker">Operating team</span><h2 id="fleet-roster-title">Agent roster</h2></div>
+        </header>
+        <div id="fleet-agent-list" class="fleet-agent-list"></div>
+      </section>
+    </div>
+
+    <dialog id="fleet-incident-dialog" class="fleet-dialog" aria-labelledby="fleet-dialog-title">
+      <form method="dialog"><button class="fleet-dialog-close" aria-label="Close incident details">Close</button></form>
+      <div id="fleet-incident-detail"></div>
+    </dialog>
 
     <!-- Intelligence Tab -->
     <div id="page-intelligence" class="page" data-active-view="overview">
@@ -993,6 +1054,7 @@
   <script src="/assets/js/dashboard-memory.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-knowledge.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-portfolio.js?v={{ASSET_VERSION}}"></script>
+  <script src="/assets/js/dashboard-fleet.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-admin.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-brain.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-intelligence.js?v={{ASSET_VERSION}}"></script>

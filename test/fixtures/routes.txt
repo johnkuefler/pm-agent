@@ -313,6 +313,9 @@ GET /mute
 POST /mute
 POST /webhook/participant
 POST /webhook/status
+GET /fleet-supervisor
+POST /fleet-supervisor/scan
+POST /fleet-supervisor/incidents/:id/acknowledge
 GET /admin/inbox
 GET /admin/inbox/file/:inboxId
 DELETE /admin/inbox/file/:inboxId
