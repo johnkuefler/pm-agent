@@ -133,6 +133,16 @@ test('dashboard declares a real mobile viewport and responsive control patterns'
   assert.match(css, /\.nav\{grid-template-columns:minmax\(0,1fr\)/);
 });
 
+test('portfolio queue responds to its usable desktop width without clipping controls or cards', () => {
+  const css = fs.readFileSync(path.join(root, 'public/dashboard.css'), 'utf8');
+  assert.match(css, /\.portfolio-queue\{[^}]*container-type:inline-size/);
+  assert.match(css, /@container\(max-width:1050px\)/);
+  assert.match(css, /\.portfolio-section-head\{grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /\.portfolio-project-list,\.portfolio-loading\{grid-template-columns:minmax\(0,1fr\)/);
+  assert.match(css, /\.portfolio-filter-bar\{[^}]*flex-wrap:wrap/);
+  assert.match(css, /\.portfolio-project-card\{[^}]*overflow:hidden/);
+});
+
 test('memory editor passes stable ids as strings and dashboard assets are deploy-versioned', () => {
   const memoryJs = fs.readFileSync(path.join(root, 'public/js/dashboard-memory.js'), 'utf8');
   assert.doesNotMatch(memoryJs, /saveMemoryEdit\(\$\{idx\}\)/);
