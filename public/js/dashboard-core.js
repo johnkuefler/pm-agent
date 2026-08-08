@@ -87,7 +87,7 @@
       live: ['Live', 'See Nora\'s hourly work, conversations, and background processes as they happen.'],
       meeting: ['Meeting', 'Send Nora into a call with the right context, mandate, and participation mode.'],
       tasks: ['Tasks', 'Review Nora\'s action queue, schedule follow-up work, and close completed items.'],
-      projects: ['Projects', 'Manage the durable project context Nora uses across meetings, Slack, and scheduled work.'],
+      projects: ['Portfolio', 'See what needs management now, what Nora knows, and why she is staying quiet or stepping in.'],
       transcripts: ['Transcripts', 'Review and correct the conversations Nora captured in meetings.'],
       memory: ['Memory', 'Search, maintain, and vectorize the facts Nora can recall.'],
       dreams: ['Dreams', 'Review nightly consolidation, reflection, and learning.'],

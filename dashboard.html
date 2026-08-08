@@ -30,9 +30,9 @@
         <div class="nav-group">
           <div class="nav-label">Work</div>
           <button class="tab" type="button" data-tab="live" aria-selected="false" onclick="showTab('live')">Live</button>
-          <button class="tab active" type="button" data-tab="meeting" aria-selected="true" onclick="showTab('meeting')">Meeting</button>
+          <button class="tab active" type="button" data-tab="projects" aria-selected="true" onclick="showTab('projects')">Portfolio</button>
           <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Tasks</button>
-          <button class="tab" type="button" data-tab="projects" aria-selected="false" onclick="showTab('projects')">Projects</button>
+          <button class="tab" type="button" data-tab="meeting" aria-selected="false" onclick="showTab('meeting')">Meeting</button>
           <button class="tab" type="button" data-tab="transcripts" aria-selected="false" onclick="showTab('transcripts')">Transcripts</button>
         </div>
         <div class="nav-group">
@@ -60,8 +60,8 @@
     <main class="content">
       <div class="content-head">
         <div class="content-head-copy">
-          <h1 id="page-title">Meeting</h1>
-          <p id="page-description" class="subtitle">Send Nora into a call with the right context, mandate, and participation mode.</p>
+          <h1 id="page-title">Portfolio</h1>
+          <p id="page-description" class="subtitle">See what needs management now, what Nora knows, and why she is staying quiet or stepping in.</p>
         </div>
         <div class="content-actions">
           <button class="utility-btn" type="button" onclick="openCommandPalette()" title="Switch view (Ctrl or Command + K)">Switch view</button>
@@ -160,7 +160,7 @@
     </div>
 
     <!-- Meeting Tab -->
-    <div id="page-meeting" class="page active">
+    <div id="page-meeting" class="page">
       <div class="section">
         <h2>Send Nora to a Meeting</h2>
         <input id="url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
@@ -311,43 +311,110 @@
       </div>
     </div>
 
-    <!-- Projects Tab -->
-    <div id="page-projects" class="page">
-      <div class="section">
-        <h2>PM control</h2>
-        <p class="intelligence-note">Nora's durable delivery picture, intervention quality, and bounded-agency rollout.</p>
-        <div id="pm-control-stats" class="intelligence-stats"></div>
-        <div id="pm-control-risks" style="margin-top:12px;"></div>
-      </div>
-      <div class="section">
-        <h2>Nora's Projects</h2>
-        <div id="project-list"></div>
-      </div>
-      <div id="project-detail" class="section" style="display: none;">
-        <h2 id="project-detail-title" style="display: flex; justify-content: space-between; align-items: center;">
-          <span id="project-detail-name"></span>
-          <div style="display: flex; gap: 6px;">
-            <button class="btn btn-success btn-sm" onclick="editProject()">Edit</button>
-            <button class="btn btn-danger btn-sm" onclick="deleteProject()">Delete</button>
+    <!-- Portfolio Tab -->
+    <div id="page-projects" class="page active">
+      <div id="portfolio-overview" class="portfolio-overview">
+        <section class="portfolio-hero" aria-labelledby="portfolio-command-title">
+          <div class="portfolio-hero-copy">
+            <span class="portfolio-kicker">Project management command</span>
+            <h2 id="portfolio-command-title">What needs management now</h2>
+            <p>Nora turns Teamwork activity into one durable project story, then stays quiet unless a verified risk, decision, or dependency justifies attention.</p>
           </div>
-        </h2>
-        <div id="project-detail-info" style="font-size: 13px; color: var(--text-2); line-height: 1.5; white-space: pre-wrap;"></div>
-        <div id="project-memories" style="margin-top: 16px;"></div>
-        <button class="btn btn-sm" onclick="closeProject()" style="margin-top: 12px; background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);">Back to list</button>
+          <div class="portfolio-hero-actions">
+            <div id="pm-hydration-status" class="portfolio-sync" role="status" aria-live="polite">
+              <span class="portfolio-sync-dot" aria-hidden="true"></span>
+              <span>Connecting to Teamwork story hydration</span>
+            </div>
+            <div class="portfolio-action-row">
+              <button class="btn btn-sm" type="button" onclick="loadProjects()">Refresh view</button>
+              <button id="portfolio-sync-button" class="btn btn-primary btn-sm" type="button" onclick="refreshProjectStories(this)">Sync Teamwork now</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="pm-control-stats" class="portfolio-stat-grid" aria-label="Portfolio summary"></section>
+
+        <div class="portfolio-workspace">
+          <section class="section portfolio-queue" aria-labelledby="portfolio-queue-title">
+            <header class="portfolio-section-head">
+              <div>
+                <span class="portfolio-kicker">Priority queue</span>
+                <h2 id="portfolio-queue-title">Projects Nora is watching</h2>
+                <p id="portfolio-result-summary">Loading current project stories.</p>
+              </div>
+              <div class="portfolio-view-tools">
+                <label class="sr-only" for="portfolio-search">Search portfolio</label>
+                <input id="portfolio-search" type="search" placeholder="Search project, PM, client, or phase" oninput="renderProjectPortfolio()" />
+                <label class="sr-only" for="portfolio-sort">Sort portfolio</label>
+                <select id="portfolio-sort" onchange="renderProjectPortfolio()">
+                  <option value="priority">Highest priority</option>
+                  <option value="checkpoint">Next checkpoint</option>
+                  <option value="project">Project name</option>
+                  <option value="pm">Project manager</option>
+                </select>
+              </div>
+            </header>
+            <div class="portfolio-filter-bar" role="group" aria-label="Portfolio filter">
+              <button class="portfolio-filter active" type="button" data-project-filter="attention" aria-pressed="true" onclick="setProjectFilter('attention')">Needs attention <span id="portfolio-filter-attention-count">0</span></button>
+              <button class="portfolio-filter" type="button" data-project-filter="decisions" aria-pressed="false" onclick="setProjectFilter('decisions')">Decisions <span id="portfolio-filter-decisions-count">0</span></button>
+              <button class="portfolio-filter" type="button" data-project-filter="overdue" aria-pressed="false" onclick="setProjectFilter('overdue')">Past due <span id="portfolio-filter-overdue-count">0</span></button>
+              <button class="portfolio-filter" type="button" data-project-filter="active" aria-pressed="false" onclick="setProjectFilter('active')">Active stories <span id="portfolio-filter-active-count">0</span></button>
+              <button class="portfolio-filter" type="button" data-project-filter="all" aria-pressed="false" onclick="setProjectFilter('all')">All records <span id="portfolio-filter-all-count">0</span></button>
+            </div>
+            <div id="project-list" class="portfolio-project-list" aria-live="polite"></div>
+          </section>
+
+          <aside class="portfolio-sidebar" aria-label="Nora's portfolio judgment">
+            <section class="section portfolio-side-card">
+              <span class="portfolio-kicker">Operating posture</span>
+              <h2>Nora's judgment</h2>
+              <div id="pm-control-posture"></div>
+            </section>
+            <section class="section portfolio-side-card">
+              <span class="portfolio-kicker">Decision radar</span>
+              <h2>Open candidates</h2>
+              <div id="pm-control-decisions"></div>
+            </section>
+            <section class="section portfolio-side-card">
+              <span class="portfolio-kicker">Risk watch</span>
+              <h2>Verified risks</h2>
+              <div id="pm-control-risks"></div>
+            </section>
+          </aside>
+        </div>
+
+        <details id="project-add-section" class="section portfolio-context-admin">
+          <summary>Legacy project context</summary>
+          <p>This record supports Nora's memory and research system. Teamwork project stories above remain the delivery source.</p>
+          <button class="btn btn-sm" type="button" onclick="showAddProject()">Add context record</button>
+        </details>
       </div>
-      <div id="project-edit" class="section" style="display: none;">
-        <h2 id="project-edit-title">Add Project</h2>
-        <input id="project-edit-name" placeholder="Project name..." />
-        <textarea id="project-edit-details" placeholder="Project details (stakeholders, timelines, goals, etc.)..." style="margin-top: 8px; min-height: 80px;"></textarea>
+
+      <section id="project-detail" class="portfolio-detail" style="display:none;" aria-labelledby="project-detail-name">
+        <button class="portfolio-back" type="button" onclick="closeProject()">Back to portfolio</button>
+        <header class="portfolio-detail-head">
+          <div>
+            <span id="project-detail-client" class="portfolio-kicker"></span>
+            <h2 id="project-detail-name"></h2>
+            <div id="project-detail-badges" class="portfolio-chip-row"></div>
+          </div>
+          <button class="btn btn-sm" type="button" onclick="editProject()">Edit legacy context</button>
+        </header>
+        <div id="project-detail-info" class="portfolio-detail-grid"></div>
+        <div id="project-memories" class="section portfolio-project-memories"></div>
+      </section>
+
+      <section id="project-edit" class="section portfolio-context-editor" style="display:none;">
+        <h2 id="project-edit-title">Add project context</h2>
+        <input id="project-edit-name" placeholder="Project name" />
+        <textarea id="project-edit-details" placeholder="Stakeholders, goals, and durable context" style="margin-top:8px;min-height:100px;"></textarea>
         <div class="row">
-          <button class="btn btn-primary btn-sm" onclick="saveProject()">Save</button>
-          <button class="btn btn-sm" onclick="cancelEditProject()" style="background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);">Cancel</button>
+          <button class="btn btn-primary btn-sm" type="button" onclick="saveProject()">Save context</button>
+          <button class="btn btn-sm" type="button" onclick="cancelEditProject()">Cancel</button>
+          <button id="project-context-delete" class="btn btn-danger btn-sm" type="button" onclick="deleteProject()">Delete context record</button>
         </div>
         <div id="project-status" class="toast"></div>
-      </div>
-      <div class="section" id="project-add-section">
-        <button class="btn btn-primary btn-sm" onclick="showAddProject()">+ New Project</button>
-      </div>
+      </section>
     </div>
 
     <!-- Intelligence Tab -->
@@ -902,6 +969,7 @@
   <script src="/assets/js/dashboard-tasks.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-memory.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-knowledge.js?v={{ASSET_VERSION}}"></script>
+  <script src="/assets/js/dashboard-portfolio.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-admin.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-brain.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-intelligence.js?v={{ASSET_VERSION}}"></script>

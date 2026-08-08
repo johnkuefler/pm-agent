@@ -31,6 +31,7 @@ test('dashboard presentation and behavior live in focused external assets', () =
     '/assets/js/dashboard-tasks.js',
     '/assets/js/dashboard-memory.js',
     '/assets/js/dashboard-knowledge.js',
+    '/assets/js/dashboard-portfolio.js',
     '/assets/js/dashboard-admin.js',
     '/assets/js/dashboard-brain.js',
     '/assets/js/dashboard-intelligence.js',
@@ -59,6 +60,10 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(meetingJs, /Promise\.all\(MEETING_FLAGS\.map/,
     'meeting controls should load concurrently instead of serially taxing the dashboard');
   assert.match(html, /id="gift-deliberation-list"/);
+  assert.match(html, /id="portfolio-overview"/);
+  assert.match(html, /id="pm-hydration-status"/);
+  assert.match(html, /id="pm-control-posture"/);
+  assert.match(html, /id="pm-control-decisions"/);
   assert.match(html, /signed approval authorizes that exact gift/);
   assert.match(html, /Slack conversation with you and the recipient/);
   assert.match(html, /current itemized estimate/);

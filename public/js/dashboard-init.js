@@ -59,7 +59,7 @@ function enhanceFormFields() {
         }, 0);
       }
       const initialView = location.hash.slice(1);
-      showTab(pageMeta[initialView] ? initialView : 'meeting');
+      showTab(pageMeta[initialView] ? initialView : 'projects');
     });
 
     function escHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
