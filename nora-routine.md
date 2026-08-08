@@ -1713,8 +1713,10 @@ effort. Never open a message with "quiet run," inventory empty queues, or tell a
 of the hour was quiet.
 
 If the evaluator returns `requested_summary` or `requested_delivery`, answer the requester in the
-source conversation. Report the verified result, not the routine steps that produced it. This does not
-spend proactive attention because the person asked for the work or status.
+source conversation. First create a `requested_action` intervention with the source `request_ref`,
+authorize it, and after successful delivery call `/execute` with the real reply reference. Report the
+verified result, not the routine steps that produced it. This does not spend proactive attention because
+the person asked for the work or status.
 
 For every other allowed classification, the evaluation is eligibility, not authorization. Create one
 human-facing project intervention for the selected signal, then call its `/authorize` endpoint. Send

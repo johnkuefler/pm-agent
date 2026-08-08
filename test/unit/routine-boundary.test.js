@@ -45,4 +45,5 @@ test('end-of-run routine requires the structured anti-noise gate', () => {
   assert.match(routine, /Never open a message with "quiet run,"/);
   assert.match(routine, /The fact that a dream ran is never itself a human\s+notification/);
   assert.match(routine, /If the evaluator returns `allowed:false`, do not call `\/notify`/);
+  assert.match(routine, /requested_summary` or `requested_delivery`[\s\S]*create a `requested_action` intervention/);
 });
