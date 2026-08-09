@@ -180,7 +180,7 @@ test('voice remains read-only even when a connection explicitly allows writes el
   assert.doesNotMatch(voice.openaiTools[0].name, /delete/);
 });
 
-test('Fleet stays read-only even when its connection is configured for full access', async () => {
+test('Fleet writes require a current request-scoped allowlist even with full connection access', async () => {
   const tools = [
     { name: 'fleet_status', description: 'Fleet health', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
     { name: 'agent_detail', description: 'Agent detail', inputSchema: { type: 'object' }, annotations: { readOnlyHint: true } },
@@ -197,17 +197,28 @@ test('Fleet stays read-only even when its connection is configured for full acce
     'fleet_status', 'agent_detail', 'list_agent_runs',
   ]);
 
-  const direct = manager.bindings({ allowWrites: true });
-  assert.deepEqual(direct.inventory.map(item => item.tool), [
+  const unscoped = manager.bindings({ allowWrites: true });
+  assert.deepEqual(unscoped.inventory.map(item => item.tool), [
     'fleet_status', 'agent_detail', 'list_agent_runs',
   ]);
   await assert.rejects(
     manager.callTool(created.id, 'set_agent_once_instructions', { onceInstructions: 'do this' }),
     /not allowed/,
   );
-  await direct.executors[direct.claudeTools[0].name]({});
+  const now = Date.now();
+  const fleetAuthority = Object.freeze({ kind: 'fleet_request_v1', surface: 'slack',
+    requesterId: 'UTEAM', requesterName: 'Team Member', requesterRole: 'internal_member',
+    interactionRef: 'slack:D1:1.2', requestText: 'Push work to this agent', issuedAt: now,
+    expiresAt: now + 60_000, allowedTools: Object.freeze(['set_agent_once_instructions']) });
+  const scoped = manager.bindings({ allowWrites: true, fleetAuthority });
+  assert.deepEqual(scoped.inventory.map(item => item.tool), [
+    'fleet_status', 'agent_detail', 'list_agent_runs', 'set_agent_once_instructions',
+  ]);
+  assert.equal(scoped.inventory.at(-1).access_mode, 'request_scoped');
+  const queueName = scoped.inventory.find(item => item.tool === 'set_agent_once_instructions').name;
+  await scoped.executors[queueName]({ slug: 'content-agent', onceInstructions: 'Complete task 52.' });
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].name, 'fleet_status');
+  assert.equal(calls[0].name, 'set_agent_once_instructions');
 });
 
 test('legacy plaintext MCP records are migrated in place to encrypted storage', async () => {

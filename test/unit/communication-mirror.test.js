@@ -49,6 +49,20 @@ test('a read-only connector result never becomes a monitor copy even if its name
     args: {}, result: {}, writeCapable: false }), null);
 });
 
+test('a confirmed Fleet change copies the requester, exact change, and provider result', () => {
+  const record = toolCommunication({ connectionName: 'LimeLight Fleet MCP',
+    toolName: 'set_agent_once_instructions', writeCapable: true,
+    args: { slug: 'content-agent', onceInstructions: 'Complete task 52.' },
+    result: { structuredContent: { ok: true, pending: true } },
+    fleetAuthority: { requesterName: 'Mallory Maryman', requesterId: 'UMALLORY',
+      interactionRef: 'slack:D1:1.2', requestText: 'Push task 52 through.' } });
+  assert.equal(record.target, 'content-agent');
+  assert.match(record.exact, /Mallory Maryman/);
+  assert.match(record.exact, /Push task 52 through/);
+  assert.match(record.exact, /Complete task 52/);
+  assert.match(record.exact, /pending/);
+});
+
 test('confirmed Slack and meeting chat deliveries become monitor records', () => {
   const slack = httpCommunication({ status: 200, data: { ok: true }, config: {
     url: 'https://slack.com/api/chat.postMessage',

@@ -11,14 +11,14 @@ const { SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = requir
 // Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
 // 24h so repeat lookups within the same hot session don't hammer Slack's API. Returns
 // null on failure, and handleSlack falls back to the bare user ID.
-const slackUserNameCache = {};
+const slackUserIdentityCache = {};
 
 const SLACK_USER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-async function getSlackUserName(userId, { signal = undefined } = {}) {
+async function getSlackUserIdentity(userId, { signal = undefined } = {}) {
   if (!userId) return null;
-  const cached = slackUserNameCache[userId];
-  if (cached && (Date.now() - cached.ts) < SLACK_USER_CACHE_TTL_MS) return cached.name;
+  const cached = slackUserIdentityCache[userId];
+  if (cached && (Date.now() - cached.ts) < SLACK_USER_CACHE_TTL_MS) return cached.identity;
   try {
     const r = await axios.get(`https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`, {
       headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
@@ -28,14 +28,25 @@ async function getSlackUserName(userId, { signal = undefined } = {}) {
       console.warn(`Slack users.info not ok for ${userId}: ${r.data?.error}`);
       return null;
     }
-    const profile = r.data.user?.profile || {};
-    const name = profile.real_name || profile.display_name || r.data.user?.real_name || r.data.user?.name || null;
-    if (name) slackUserNameCache[userId] = { name, ts: Date.now() };
-    return name;
+    const member = r.data.user || {};
+    const profile = member.profile || {};
+    const name = profile.real_name || profile.display_name || member.real_name || member.name || null;
+    const identity = Object.freeze({
+      id: String(member.id || userId), name,
+      isBot: member.is_bot === true, isAppUser: member.is_app_user === true,
+      deleted: member.deleted === true,
+      fullMember: member.is_restricted !== true && member.is_ultra_restricted !== true,
+    });
+    slackUserIdentityCache[userId] = { identity, ts: Date.now() };
+    return identity;
   } catch (err) {
     if (!signal?.aborted) console.warn('Slack users.info lookup failed:', err.message);
     return null;
   }
+}
+
+async function getSlackUserName(userId, options = {}) {
+  return (await getSlackUserIdentity(userId, options))?.name || null;
 }
 
 // Convert Slack's wire formatting to readable text: <@U123> → @name, <url|label> → "label (url)",
@@ -325,6 +336,7 @@ async function resolveChannelNames(channelIds) {
 }
 
 module.exports = {
+  getSlackUserIdentity,
   getSlackUserName,
   cleanSlackText,
   fetchSlackThread,

@@ -79,6 +79,7 @@ const { createMcpManager } = require('./src/mcp/manager');
 const { createMcpStore } = require('./src/mcp/store');
 const { createSlackCommunicationMirror, wrapCommunicationTools, meetingVoiceCommunication } = require('./src/communications/mirror');
 const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
+const { createFleetRequestAuthority } = require('./src/mcp/fleet-authorization');
 const { registerExecutiveOperationsRuntime, handleExecutiveDecisionReply, createExecutiveFirewallTools } = require('./src/executive/server-runtime');
 const { findJohnSlackId } = require('./src/surfaces/slack/owner');
 const { runBench } = require('./src/intelligence/bench');
@@ -134,7 +135,7 @@ const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSe
   slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey,
   stripSlackLookupNarration, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
 const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
-const { getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
+const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
   fetchSlackLanding, buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
   resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
@@ -7805,7 +7806,6 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       : `slack:${channel}:turn-${interactionStartedAt}`;
     if (!slackSessions[key]) slackSessions[key] = [];
     const history = slackSessions[key];
-
     // Stale-session reset: if this conversation has sat idle past the staleness window, drop the
     // accumulated turns before this message so a brand-new (likely different-topic) question isn't
     // answered with hours-old context prepended. Clearing here makes firstContact true below, which
@@ -7814,17 +7814,16 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       history.length = 0;
     }
     slackSessionTouched[key] = Date.now();
-
     // Resolve the Slack user ID to a real name so the model knows who it's replying to
     // by NAME, not by opaque <@U123ABC> mention. Falls back to the user ID if lookup
     // fails — better something than nothing.
     const identityStartedAt = Date.now();
-    const requesterName = await settleWithinAbortable(
-      signal => getSlackUserName(user, { signal }), 1200, null, 'Slack requester lookup');
+    const requesterIdentity = await settleWithinAbortable(
+      signal => getSlackUserIdentity(user, { signal }), 1200, null, 'Slack requester lookup');
+    const requesterName = requesterIdentity?.name || null;
     latencyStages.identity_ms = Date.now() - identityStartedAt;
     const userLabel = requesterName ? `${requesterName} (Slack: <@${user}>)` : `Slack user <@${user}>`;
     history.push({ role: 'user', content: `[${userLabel}]: ${text}` });
-
     // THREAD CONTEXT: for channel threads, pull the WHOLE thread from Slack so Nora sees
     // everything said before she was mentioned (her in-memory history only has what she
     // already processed — that's why she kept asking people to repeat themselves). DMs stay
@@ -7963,8 +7962,9 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     const slackRemainingMs = (reserveMs = slackDeliveryReserveMs) =>
       Math.max(0, slackTerminalAt - Date.now() - reserveMs);
     const affordanceStartedAt = Date.now();
+    const fleetAuthority = createFleetRequestAuthority({ identity: requesterIdentity, requesterId: user, ownerId: resolveJohnSlackId(), interactionRef: turnRef, requestText: text, conversationText: convText, direct: isDirect, sourceAttestation, expiresAt: slackTerminalAt });
     const mcpBindings = attachLiveTools
-      ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect })
+      ? mcpManager.bindings({ financialApproved: isDirect ? financialApproved : false, allowWrites: isDirect, fleetAuthority })
       : { claudeTools: [], executors: {}, inventory: [], meta: {} };
     const publicApiBindings = attachLiveTools && isDirect
       ? apiOpportunityToolBindings({ surface: 'slack', requester: requesterName || user, interactionRef: turnRef })

@@ -56,9 +56,28 @@ function isCommunicationTool(toolName) {
     || TASK_COMMUNICATION.test(name);
 }
 
-function toolCommunication({ surface, connectionName, toolName, args, result, writeCapable } = {}) {
-  if (writeCapable === false || !isCommunicationTool(toolName)
-    || result?.isError === true || targetsOnlyJohn(args)) return null;
+function toolCommunication({ surface, connectionName, toolName, args, result, writeCapable,
+  fleetAuthority } = {}) {
+  const fleetChange = writeCapable === true && /fleet/i.test(String(connectionName || ''));
+  if (writeCapable === false || (!fleetChange && !isCommunicationTool(toolName))
+    || result?.isError === true || (!fleetChange && targetsOnlyJohn(args))) return null;
+  if (fleetChange) {
+    return {
+      surface: clean(connectionName || 'LimeLight Fleet', 120),
+      action: clean(toolName || 'Fleet change', 160),
+      target: clean(args?.slug || 'Fleet control plane', 500),
+      exact: JSON.stringify(safeValue({
+        requester: fleetAuthority ? {
+          name: fleetAuthority.requesterName,
+          slack_user_id: fleetAuthority.requesterId,
+          interaction: fleetAuthority.interactionRef,
+          request: fleetAuthority.requestText,
+        } : 'unattributed',
+        change: args || {},
+        provider_result: result || {},
+      }), null, 2),
+    };
+  }
   return {
     surface: clean(surface || connectionName || 'Connected tool', 120),
     action: clean(toolName || 'communication', 160),

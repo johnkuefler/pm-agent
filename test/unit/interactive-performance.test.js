@@ -1102,7 +1102,7 @@ test('Slack uses a fast Claude path only for bounded conversational turns', asyn
 test('Slack enrichment deadlines abort their losing network requests', () => {
   const server = readServerSource();
   assert.match(server,
-    /settleWithinAbortable\(\s*signal => getSlackUserName\(user, \{ signal \}\), 1200/);
+    /settleWithinAbortable\(\s*signal => getSlackUserIdentity\(user, \{ signal \}\), 1200/);
   assert.match(server,
     /signal => fetchSlackThread\(channel, threadTs, \{ signal \}\)/);
   assert.match(server,

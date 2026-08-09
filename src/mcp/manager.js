@@ -8,6 +8,7 @@ const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/cli
 const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
 const { auth, UnauthorizedError } = require('@modelcontextprotocol/sdk/client/auth.js');
 const { isFleetConnection } = require('./fleet-policy');
+const { allowedFleetWriteTool, validateFleetWrite } = require('./fleet-authorization');
 
 const AUTH_TYPES = new Set(['none', 'bearer', 'url_token', 'oauth', 'client_credentials', 'custom_headers']);
 const BLOCKED_HEADERS = new Set(['host', 'content-length', 'connection', 'cookie', 'set-cookie', 'forwarded', 'x-forwarded-for', 'x-forwarded-host', 'proxy-authorization']);
@@ -132,13 +133,12 @@ function toolIsWriteCapable(tool) {
     || WRITE_NAME.test(tool.name || '');
 }
 
-function toolIsAllowed(connection, tool) {
+function toolIsAllowed(connection, tool, fleetAuthority = null) {
   const writeCapable = toolIsWriteCapable(tool);
-  // Nora observes and routes work across Fleet, but never administers Fleet from
-  // a conversational surface. A direct Slack or meeting request can enable
-  // writes for other MCPs, so the Fleet connection needs its own hard ceiling
-  // even when its saved access mode is accidentally set to full.
-  if (isFleetConnection(connection) && writeCapable) return false;
+  // Fleet writes never inherit a connection's broad access mode. A short-lived
+  // authority bound to one verified Slack request must name the exact operation.
+  if (isFleetConnection(connection)) return !writeCapable
+    || allowedFleetWriteTool(tool.name, fleetAuthority);
   if (connection.access_mode === 'full') return true;
   return !writeCapable;
 }
@@ -441,10 +441,14 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
 
   // timeout is the OUTER cap. Live turns use the default (~16s, so a live reply never stalls);
   // the background job worker passes a generous timeout for deferred tools like ImageGen.
-  async function callTool(connectionId, toolName, args, { timeout = 16000, signal } = {}) {
+  async function callTool(connectionId, toolName, args, { timeout = 16000, signal, fleetAuthority = null } = {}) {
     const connection = findRaw(connectionId); if (!connection || connection.enabled === false) throw new Error('MCP connection is unavailable');
     const catalogTool = (connection.tools || []).find(tool => tool.name === toolName);
-    if (!catalogTool || !toolIsAllowed(connection, catalogTool)) throw new Error('MCP tool is not allowed for this connection');
+    if (!catalogTool || !toolIsAllowed(connection, catalogTool, fleetAuthority)) throw new Error('MCP tool is not allowed for this connection');
+    if (isFleetConnection(connection) && toolIsWriteCapable(catalogTool)) {
+      const authorization = validateFleetWrite(toolName, args || {}, fleetAuthority);
+      if (!authorization.allowed) throw new Error(`Fleet change denied: ${authorization.reason}`);
+    }
     let entry;
     const startedAt = Date.now();
     try {
@@ -456,7 +460,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
       }, timeout, 'MCP tool call', signal);
       if (result?.isError !== true && typeof onToolSuccess === 'function') {
         Promise.resolve(onToolSuccess({ connectionName: connection.name, toolName, args: args || {}, result,
-          writeCapable: toolIsWriteCapable(catalogTool) }))
+          writeCapable: toolIsWriteCapable(catalogTool), fleetAuthority }))
           .catch(() => {});
       }
       return result;
@@ -464,25 +468,28 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     catch (error) { await invalidateClient(connectionId); throw error; }
   }
 
-  function bindings({ financialApproved = false, voice = false, allowWrites = false } = {}) {
+  function bindings({ financialApproved = false, voice = false, allowWrites = false, fleetAuthority = null } = {}) {
     const claudeTools = [], openaiTools = [], executors = {}, inventory = [], meta = {};
     for (const connection of listRaw()) {
       if (connection.enabled === false || connection.status !== 'connected' || (connection.financial && !financialApproved)) continue;
       for (const tool of connection.tools || []) {
-        if (!toolIsAllowed(connection, tool)) continue;
+        if (!toolIsAllowed(connection, tool, fleetAuthority)) continue;
         const writeCapable = toolIsWriteCapable(tool);
         if ((voice || !allowWrites) && writeCapable) continue;
         const name = safeToolName(connection, tool.name);
-        const description = `[${connection.name}] ${tool.description || tool.name}`.slice(0, 1000);
+        const fleetWriteNotice = isFleetConnection(connection) && writeCapable
+          ? ' Use only for the explicit request in the current verified Slack turn. Provider success is copied to John.' : '';
+        const description = `[${connection.name}] ${tool.description || tool.name}${fleetWriteNotice}`.slice(0, 1000);
         const schema = tool.inputSchema || { type: 'object', properties: {} };
         claudeTools.push({ name, description, input_schema: schema });
         openaiTools.push({ type: 'function', name, description, parameters: schema });
         executors[name] = (args, options = {}) => callTool(connection.id, tool.name, args,
-          { timeout: options.timeoutMs || 16000, signal: options.signal });
+          { timeout: options.timeoutMs || 16000, signal: options.signal, fleetAuthority });
         // meta lets a live turn recognize a deferred tool and enqueue it (by connection + real
         // tool name) instead of running it inline; the background worker runs it via callTool.
         meta[name] = { connectionId: connection.id, toolName: tool.name, connectionName: connection.name, deferred: toolIsDeferred(connection, tool), accessMode: writeCapable ? 'write' : 'read' };
-        inventory.push({ connection: connection.name, tool: tool.name, name, access_mode: connection.access_mode || 'read_only', deferred: meta[name].deferred });
+        inventory.push({ connection: connection.name, tool: tool.name, name,
+          access_mode: isFleetConnection(connection) && writeCapable ? 'request_scoped' : (connection.access_mode || 'read_only'), deferred: meta[name].deferred });
       }
     }
     return { claudeTools, openaiTools, executors, inventory, meta };

@@ -9,7 +9,8 @@ const { readServerSource } = require('../helpers/server-source');
 const server = readServerSource();
 
 test('credential-aware MCP bindings are attached to Slack, Zoom chat, and Zoom voice', () => {
-  assert.match(server, /const mcpBindings = attachLiveTools\s+\? mcpManager\.bindings\(\{ financialApproved: isDirect \? financialApproved : false, allowWrites: isDirect \}\)\s+: \{ claudeTools: \[\], executors: \{\}, inventory: \[\], meta: \{\} \}/);
+  assert.match(server, /const fleetAuthority = createFleetRequestAuthority\(\{[^\n]+sourceAttestation, expiresAt: slackTerminalAt \}\);/);
+  assert.match(server, /const mcpBindings = attachLiveTools\s+\? mcpManager\.bindings\(\{ financialApproved: isDirect \? financialApproved : false, allowWrites: isDirect, fleetAuthority \}\)\s+: \{ claudeTools: \[\], executors: \{\}, inventory: \[\], meta: \{\} \}/);
   assert.match(server, /const zoomMcp = zoomAttachLiveTools\s+\? mcpManager\.bindings\(\{ financialApproved: false, allowWrites: true \}\)\s+: \{ claudeTools: \[\], executors: \{\}, inventory: \[\], meta: \{\} \}/);
   assert.match(server, /const mcp = mcpManager\.bindings\(\{ financialApproved: false, voice: true \}\)/);
   assert.match(server, /handleRealtimeVoiceTool\([^\n]+voiceBundle\.executors/);
