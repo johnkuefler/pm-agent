@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const { sourceRegion } = require('../helpers/server-source');
 const { splitMarkdownTableRow, markdownTablesToBlocks,
   formatSlackMessagePayload } = require('../../src/surfaces/slack/table-format');
-const { postSlackMessage } = require('../../src/surfaces/slack/web-api');
+const { postSlackMessage, postSlackMessageReceipt } = require('../../src/surfaces/slack/web-api');
 
 test('Slack pipe-table rows preserve escaped pipes and inline code pipes', () => {
   assert.deepEqual(splitMarkdownTableRow('| Client | Detail |'), ['Client', 'Detail']);
@@ -58,6 +58,20 @@ test('Slack Web API delivery uses native table blocks without losing thread or f
   assert.equal(calls[0].payload.text, text);
   assert.equal(calls[0].payload.thread_ts, '1712345.0001');
   assert.equal(calls[0].payload.blocks[0].type, 'table');
+});
+
+test('Slack direct-message delivery returns the durable channel and message receipt', async () => {
+  const calls = [];
+  const receipt = await postSlackMessageReceipt('UMALLORY', 'Exact proposal', undefined, {
+    post: async (url, payload) => {
+      calls.push({ url, payload });
+      if (url.endsWith('/conversations.open')) return { data: { ok: true, channel: { id: 'DMALLORY' } } };
+      return { data: { ok: true, channel: 'DMALLORY', ts: '1712345.0003' } };
+    },
+  });
+  assert.deepEqual(receipt, { ok: true, channel: 'DMALLORY', ts: '1712345.0003', error: null });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].payload.channel, 'DMALLORY');
 });
 
 test('Slack table rendering happens only after the final financial egress guard', () => {

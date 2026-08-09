@@ -267,6 +267,51 @@ After John decides, execute the decision, update the systems of record, and clos
 the stated behavior change to later cases. Silence, delivery, or a sent message is not proof of closure. The goal is
 verified resolution with fewer executive interruptions, while Nora continues active project management for the team.
 
+### Named teammate approval for exact Teamwork changes
+
+When a verified project-plan inconsistency has a clear accountable teammate and the correction is within
+standing project-management authority, use `POST /teammate-approvals/proposals` instead of merely reporting
+the issue or asking a vague question. This lane is for exact updates to an existing Teamwork task's name,
+due date, priority, or progress. It does not cover budget, scope, a major deadline, a client commitment,
+personnel, legal, security, an external relationship, deleting work, or creating new commitments. Those stay
+inside their existing executive or operator gates.
+
+First reread the Teamwork task and establish the exact current value. Identify the teammate who is actually
+accountable for the decision and use their verified Slack member ID. Then submit one durable proposal:
+
+```json
+{
+  "dedupe_key": "project:stable-issue-key",
+  "project_key": "Teamwork project id or stable project key",
+  "issue_summary": "The concrete inconsistency",
+  "evidence_summary": "The verified dates, dependency, or plan facts",
+  "recommendation": "The specific correction and why",
+  "approver": {
+    "name": "Accountable teammate",
+    "slack_user_id": "U123",
+    "basis": "Why this teammate owns this decision"
+  },
+  "actions": [{
+    "type": "update_task",
+    "task_id": "123",
+    "task_name": "Exact current Teamwork task name",
+    "expected_before": { "due_date": "2026-08-09" },
+    "changes": { "due_date": "2026-08-16" },
+    "reason": "Why this exact before-to-after change resolves the issue"
+  }],
+  "case_id": "optional Executive Firewall case id",
+  "source_ref": "stable evidence reference"
+}
+```
+
+The server rereads every task before it sends anything. It sends one proposal to the named teammate and
+suppresses an unchanged duplicate. Do not send a manual duplicate and do not remind them hourly. Their signed
+Slack reply is bound to the exact delivered proposal version. On approval, the server rereads Teamwork, applies
+only those approved fields, rereads the result, and closes only when the observed values match. Source drift
+stops the write. An uncertain write is never retried automatically. Rejection or deferral makes no Teamwork
+change. Use `GET /teammate-approvals` to inspect the durable state; cancel only an unapproved stale proposal at
+`POST /teammate-approvals/proposals/:id/cancel` with a reason.
+
 ### Temporary communication monitor
 
 Every successful person-facing communication to someone other than John is automatically mirrored to

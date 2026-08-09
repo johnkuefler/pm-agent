@@ -80,6 +80,7 @@ const { createMcpStore } = require('./src/mcp/store');
 const { createSlackCommunicationMirror, wrapCommunicationTools, meetingVoiceCommunication } = require('./src/communications/mirror');
 const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
 const { createFleetRequestAuthority } = require('./src/mcp/fleet-authorization');
+const { registerTeammateApprovalRuntime } = require('./src/approvals/server-runtime');
 const { registerExecutiveOperationsRuntime, handleExecutiveDecisionReply, createExecutiveFirewallTools } = require('./src/executive/server-runtime');
 const { findJohnSlackId } = require('./src/surfaces/slack/owner');
 const { runBench } = require('./src/intelligence/bench');
@@ -137,7 +138,7 @@ const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSe
 const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
 const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
   fetchSlackLanding, buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
-  postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
+  postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
   resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
 const selfPredictionSubjectRuntime = require('./src/intelligence/self-prediction-subject-runtime');
 const selfPredictionStudySequencer = require('./src/intelligence/self-prediction-study-sequencer');
@@ -5869,10 +5870,10 @@ const TEAMWORK_TOOLS = [
       return { ok: true, comment_id: d.commentId || d.id || (d.comment && d.comment.id) };
     } },
 ];
-
 // Teamwork WRITE tool names (create/update/complete/reopen/comment). READ tools are everything else.
 const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
 wrapCommunicationTools(TEAMWORK_TOOLS, TW_WRITE_NAMES, communicationMirror, 'Teamwork');
+const teammateApprovals = registerTeammateApprovalRuntime({ app, requireAuth, teamworkTools: TEAMWORK_TOOLS, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, resolveSlackIdentity: getSlackUserIdentity, sendProposal: postSlackMessageReceipt, postMessage: postSlackMessage, executiveFirewall });
 // Teamwork READ tools, converted to the OpenAI Realtime function-tool shape ({type:'function', name,
 // description, parameters}) so the live VOICE agent can look things up on a call. READ ONLY: writes
 // never attach to voice (a misheard instruction creating the wrong task, possibly in front of a
@@ -7649,15 +7650,13 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   // raw event.thread_ts, not this value, so making DMs inline doesn't touch her continuity.)
   const isDMEvent = event.channel_type === 'im' || event.channel_type === 'mpim';
   const threadTs = event.thread_ts || (isDMEvent ? undefined : event.ts);
-
   // Strip @mention tags from the text
   const query = text.replace(/<@[A-Z0-9]+>/g, '').trim();
   // Empty text is fine when files are attached — that's a "do something with this file"
   // intent and we route to the file inbox path below. Otherwise still bail.
   if (!query && !hasFiles) return;
-
   if (await handleExecutiveDecisionReply({ text: query, isDirectMessage: isDMEvent, user, executiveUserId: findJohnSlackId(loadMemory()), channel, threadTs, runtime: executiveFirewall, postMessage: postSlackMessage })) return;
-
+  if (isDMEvent && await teammateApprovals.handleSlackDecision({ text: query, rawText: text, user, channel, eventTs: event.ts, attestation: sourceAttestation })) return;
   // File-share path: ONLY in DMs. Without this gate, every file drop in a
   // proactive-enabled channel triggered Nora to download and ask what to do with it,
   // which is noisy and inappropriate for general channel activity. File handling is
@@ -16098,6 +16097,7 @@ async function completePostListenStartup(background) {
   catch (error) { console.error('MCP credential migration failed; MCP connections will remain unavailable:', error.message); }
   await fleetSupervisor.hydrate();
   await executiveFirewall.hydrate();
+  await teammateApprovals.hydrate();
   // A run lock can open a cycle immediately after the port becomes reachable. Finish the first
   // authoritative substrate observation soon after listening so that restart and persistence
   // scoring do not depend on a long startup race.

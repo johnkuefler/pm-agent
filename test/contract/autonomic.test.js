@@ -112,6 +112,12 @@ test('autonomic loop spans orientation, continuity, judgment, evidence, and clos
   assert.match(routine, /server dispatcher owns\s+the single grouped executive interruption budget/);
   assert.match(routine, /GET \/executive-firewall\/brief` is pull-only/);
   assert.match(routine, /close the case only through\s+`POST \/executive-firewall\/cases\/:id\/close` with observable verification evidence/);
+  assert.match(routine, /POST \/teammate-approvals\/proposals/);
+  assert.match(routine, /suppresses an unchanged duplicate/);
+  assert.match(routine, /Source drift\s+stops the write/);
+  assert.match(routine, /uncertain write is never retried automatically/);
+  assert.match(cowork, /signed Slack reply authorizes only the exact delivered version/);
+  assert.match(cowork, /Do not send another copy or an hourly reminder/);
   assert.match(routine, /Every successful person-facing communication to someone other than John is automatically mirrored/);
   assert.match(routine, /Slack, email sends, Teamwork writes, calendar invitations,\s+meeting chat, spoken meeting responses, gifts/);
   assert.match(cowork, /server creates the copy after confirmed delivery, redacts\s+credentials, retries the monitor DM/);

@@ -25,7 +25,9 @@ test('the complete HTTP route surface remains registered in the same order', () 
   // acknowledgment without widening Nora's Fleet authority.
   // Eleven Executive Firewall routes add durable intake, team-first resolution, decision packets,
   // executive feedback, verified closure, and operator policy without creating a second PM system.
+  // Three teammate approval routes create exact, named, approval-bound Teamwork proposals without
+  // adding a generic execution endpoint or a reminder surface.
   // This count moving is meant to be an argument, not a formality.
-  assert.equal(expected.length, 503, 'route fixture should cover the complete known API surface');
+  assert.equal(expected.length, 506, 'route fixture should cover the complete known API surface');
   assert.deepEqual(actual, expected);
 });

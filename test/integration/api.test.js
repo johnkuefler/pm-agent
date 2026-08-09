@@ -363,6 +363,10 @@ test('Executive Firewall API owns team work, gates executive decisions, and veri
   assert.equal(snapshot.body.metrics.verified_closed, 2);
   assert.equal(snapshot.body.metrics.handled_without_executive, 1);
   assert.equal(snapshot.body.brief.decisions.length, 0);
+  const teammateApprovals = await request('/teammate-approvals');
+  assert.equal(teammateApprovals.response.status, 200);
+  assert.equal(teammateApprovals.body.report.open, 0);
+  assert.equal(teammateApprovals.body.report.anti_noise.reminders_sent, 0);
 });
 
 test('hourly summary policy rejects idle-loop noise before notification', async () => {

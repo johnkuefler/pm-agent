@@ -249,8 +249,8 @@ async function resolveSlackUserByName(name) {
 }
 
 // Post a Slack message to a channel or (U…) user, threaded if given. Mirrors /notify.
-async function postSlackMessage(target, text, threadTs, { post = axios.post } = {}) {
-  if (!target || !text) return false;
+async function postSlackMessageReceipt(target, text, threadTs, { post = axios.post } = {}) {
+  if (!target || !text) return { ok: false, error: 'target and text are required' };
   let channelId = target;
   if (String(target).startsWith('U')) {
     const dm = await post('https://slack.com/api/conversations.open', { users: target }, {
@@ -263,7 +263,12 @@ async function postSlackMessage(target, text, threadTs, { post = axios.post } = 
   const r = await post('https://slack.com/api/chat.postMessage', payload, {
     headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: 5000,
   }).catch(e => ({ data: { ok: false, error: e.message } }));
-  return !!(r.data && r.data.ok);
+  return { ok: r.data?.ok === true, channel: r.data?.channel || channelId,
+    ts: r.data?.ts || null, error: r.data?.error || null };
+}
+
+async function postSlackMessage(target, text, threadTs, options = {}) {
+  return (await postSlackMessageReceipt(target, text, threadTs, options)).ok;
 }
 
 let _slackReactionCapability = 'unknown';
@@ -345,6 +350,7 @@ module.exports = {
   buildSlackThreadHistory,
   resolveSlackChannelByName,
   resolveSlackUserByName,
+  postSlackMessageReceipt,
   postSlackMessage,
   trySlackReaction,
   resetSlackReactionCapabilityForTest,

@@ -70,6 +70,8 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(html, /id="project-autopilot-panel"/);
   assert.match(html, /id="fleet-supervisor-stats"/);
   assert.match(html, /id="fleet-incident-list"/);
+  assert.match(html, /id="teammate-approval-list"/);
+  assert.match(html, /Exact project-plan changes/);
   assert.match(html, /signed approval authorizes that exact gift/);
   assert.match(html, /Slack conversation with you and the recipient/);
   assert.match(html, /current itemized estimate/);

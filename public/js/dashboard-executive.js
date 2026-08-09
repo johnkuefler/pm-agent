@@ -1,5 +1,6 @@
 var executiveFirewallState = null;
 var executiveFirewallFilter = 'active';
+var teammateApprovalState = null;
 
 function executivePercent(value) {
   return `${Math.round(Math.max(0, Math.min(1, Number(value) || 0)) * 100)}%`;
@@ -88,6 +89,28 @@ function renderExecutiveDecisions(data) {
     : '<div class="executive-clear"><strong>No decisions needed</strong><p>Nora is working through owners and project managers first.</p></div>';
 }
 
+function teammateApprovalAction(action) {
+  const changes = Object.entries(action.changes || {}).map(([field, after]) => {
+    const before = action.expected_before?.[field];
+    return `<li><span>${escHtml(field.replaceAll('_', ' '))}</span><strong>${escHtml(before == null ? '(none)' : before)} to ${escHtml(after)}</strong></li>`;
+  }).join('');
+  return `<div class="teammate-approval-action"><strong>${escHtml(action.task_name)} <small>#${escHtml(action.task_id)}</small></strong><ul>${changes}</ul></div>`;
+}
+
+function renderTeammateApprovals(data) {
+  teammateApprovalState = data;
+  const target = document.getElementById('teammate-approval-list');
+  const proposals = [...(data.state?.proposals || [])].sort((left, right) =>
+    new Date(right.updated_at).getTime() - new Date(left.updated_at).getTime()).slice(0, 8);
+  target.innerHTML = proposals.length ? proposals.map(item => `<details class="teammate-approval-card">
+    <summary><span><strong>${escHtml(item.issue_summary)}</strong><small>${escHtml(item.approver?.name || 'Unknown approver')} | ${escHtml(executiveStateLabel(item.status))}</small></span><em>${escHtml(item.id)}</em></summary>
+    <p>${escHtml(item.evidence_summary)}</p><p><strong>Recommendation:</strong> ${escHtml(item.recommendation)}</p>
+    <div class="teammate-approval-actions">${(item.actions || []).map(teammateApprovalAction).join('')}</div>
+    <small>One proposal, no reminders. Execution requires this named teammate's verified Slack approval and a fresh Teamwork reread.</small>
+  </details>`).join('')
+    : '<div class="executive-clear"><strong>No teammate approvals open</strong><p>Nora will propose an exact change only when a verified project-plan inconsistency needs the accountable teammate.</p></div>';
+}
+
 function renderExecutivePolicy(data) {
   const policy = data.state?.policy || {};
   const authority = policy.standing_authority || [];
@@ -116,12 +139,16 @@ async function loadExecutiveFirewall() {
   const list = document.getElementById('executive-case-list');
   if (!executiveFirewallState) list.innerHTML = '<div class="portfolio-loading"><span></span><span></span><span></span></div>';
   try {
-    const response = await api('/executive-firewall');
-    const data = await response.json();
+    const [response, teammateResponse] = await Promise.all([
+      api('/executive-firewall'), api('/teammate-approvals'),
+    ]);
+    const [data, teammateData] = await Promise.all([response.json(), teammateResponse.json()]);
     if (!response.ok) throw new Error(data.error || 'Executive firewall unavailable');
-    renderExecutiveFirewall(data);
+    if (!teammateResponse.ok) throw new Error(teammateData.error || 'Teammate approvals unavailable');
+    renderExecutiveFirewall(data); renderTeammateApprovals(teammateData);
   } catch (error) {
     list.innerHTML = `<div class="portfolio-load-error"><strong>Executive firewall unavailable</strong><span>${escHtml(error.message)}</span><button class="btn btn-sm" type="button" onclick="loadExecutiveFirewall()">Try again</button></div>`;
+    document.getElementById('teammate-approval-list').innerHTML = `<div class="portfolio-load-error"><strong>Teammate approvals unavailable</strong><span>${escHtml(error.message)}</span></div>`;
   }
 }
 

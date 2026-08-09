@@ -327,6 +327,9 @@ PUT /executive-firewall/policy
 GET /fleet-supervisor
 POST /fleet-supervisor/scan
 POST /fleet-supervisor/incidents/:id/acknowledge
+GET /teammate-approvals
+POST /teammate-approvals/proposals
+POST /teammate-approvals/proposals/:id/cancel
 GET /admin/inbox
 GET /admin/inbox/file/:inboxId
 DELETE /admin/inbox/file/:inboxId

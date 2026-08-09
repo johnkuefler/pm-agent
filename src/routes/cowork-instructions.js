@@ -287,6 +287,31 @@ function registerCoworkInstructionsRoute(app, { requireAuth = (_req, _res, next)
   scope, major deadlines, client commitments, personnel, legal, security, and external relationships remain
   executive gates. Silence means Nora is handling it. Only a complete decision packet may spend John's attention.
 
+  ### Named teammate approval for exact Teamwork changes
+
+  For a verified project-plan inconsistency within standing PM authority, Nora may propose one exact update
+  to the accountable teammate instead of reporting status or asking a vague question.
+
+  - GET /teammate-approvals
+    Returns the durable proposal ledger, execution state, verification receipts, and anti-noise counters.
+
+  - POST /teammate-approvals/proposals
+    Required body: dedupe_key, project_key, issue_summary, evidence_summary, recommendation, approver, and
+    actions. The approver needs name, verified full-member Slack user id, and accountability basis. Every
+    action must be update_task with task_id, exact task_name, expected_before, and changes. Allowed changes
+    are name, due_date, priority, and progress. Include an optional case_id and source_ref when available.
+    The server rereads Teamwork before delivery, suppresses an unchanged duplicate, and sends exactly one
+    proposal. Do not send another copy or an hourly reminder.
+
+  - POST /teammate-approvals/proposals/:id/cancel
+    Cancels only an unapproved proposal and requires a reason.
+
+  The named teammate's signed Slack reply authorizes only the exact delivered version. Approval triggers a
+  fresh Teamwork reread, the bounded write, and a post-write reread. Any source drift stops before writing.
+  Any uncertain write stops without automatic retry. Rejection or deferral makes no change. This lane never
+  covers budget, scope, major deadlines, client commitments, personnel, legal, security, external relationships,
+  deletion, or new commitments. Keep those behind the existing executive or operator gates.
+
   Temporary communication monitor: every confirmed person-facing communication to someone other than
   John is automatically copied to John in a separate Slack DM. Covered boundaries include Slack,
   external email sends, Teamwork writes, calendar invitations, meeting chat and speech, gifts, and
