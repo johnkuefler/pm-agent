@@ -39,6 +39,10 @@ function renderExecutiveMetrics(data) {
 
 function executiveCaseCard(item) {
   const owner = item.owner || 'Nora';
+  const packet = ['decision_ready', 'escalated'].includes(item.state) ? item.decision_packet : null;
+  const body = packet
+    ? `<p><strong>Decision needed:</strong> ${escHtml(packet.question)}</p><p class="executive-case-recommendation"><strong>Nora recommends:</strong> ${escHtml(packet.recommendation)}</p>`
+    : `<p>${escHtml(item.next_action || item.resolution_plan || item.detail || 'Nora is establishing the next resolving action.')}</p>`;
   const outcome = item.state === 'verified_closed'
     ? `<p class="executive-case-outcome"><strong>Verified outcome:</strong> ${escHtml(item.verified_outcome || 'Closed with evidence.')}</p>` : '';
   const protection = item.handled_without_executive === true
@@ -46,7 +50,7 @@ function executiveCaseCard(item) {
   return `<button class="executive-case-card is-${escHtml(item.severity || 'medium')}" type="button" data-case-id="${escHtml(item.id)}" onclick="openExecutiveCase(this.dataset.caseId)">
     <div class="executive-case-top"><span>${escHtml(item.project_key || item.source || 'operations')}</span><span>${escHtml(item.severity || 'medium')}</span></div>
     <h3>${escHtml(item.summary)}</h3>
-    <p>${escHtml(item.next_action || item.resolution_plan || item.detail || 'Nora is establishing the next resolving action.')}</p>
+    ${body}
     ${outcome}<div class="executive-case-meta"><span>${escHtml(executiveStateLabel(item.state))}</span><span>Owner: ${escHtml(owner)}</span>${protection}</div>
   </button>`;
 }

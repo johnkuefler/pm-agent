@@ -152,7 +152,7 @@ function gateFromText(value = '') {
   if (/security|breach|credential|data exposure/.test(text)) return 'security';
   if (/legal|contract|liability|compliance/.test(text)) return 'legal';
   if (/budget|spend|cost|price|margin|\$/.test(text)) return 'budget';
-  if (/scope change|out of scope|change order/.test(text)) return 'scope';
+  if (/scope change|change order|expand scope|reduce scope|scope approval/.test(text)) return 'scope';
   if (/major deadline|launch date|go-live|client deadline/.test(text)) return 'major_deadline';
   if (/hire|fire|termination|compensation|performance plan/.test(text)) return 'personnel';
   if (/client commitment|promise to client|external commitment/.test(text)) return 'client_commitment';

@@ -3,8 +3,8 @@
 const crypto = require('crypto');
 const projectControl = require('../intelligence/project-control');
 
-const HYDRATION_VERSION = 2;
-const DECISION_PATTERN = /\b(?:approv(?:e|al)|sign[ -]?off|decision|choose|confirm|client review)\b/i;
+const HYDRATION_VERSION = 3;
+const DECISION_PATTERN = /\b(?:approv(?:e|al)|sign[ -]?off|decision|choose|confirm)\b/i;
 const GATE_PATTERN = /\b(?:launch|go[ -]?live|deploy|uat|qa|quality assurance|approv(?:e|al)|sign[ -]?off|handoff|migration|cutover)\b/i;
 const PHASE_RULES = Object.freeze([
   ['launch', /\b(?:launch|go[ -]?live|deploy|cutover|hypercare)\b/i],

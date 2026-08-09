@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createExecutiveFirewallRuntime } = require('../../src/executive/runtime');
+const { createExecutiveFirewallRuntime,
+  teamworkCandidateExecutiveGate } = require('../../src/executive/runtime');
 
 test('dispatcher groups decision packets into one budgeted executive interruption', async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-executive-runtime-'));
@@ -100,4 +101,53 @@ test('the first source reconciliation establishes a silent executive baseline', 
   assert.ok(cycle.state.baseline_at);
   assert.equal(cycle.state.quiet.baseline_suppressions, 1);
   assert.equal((await runtime.dispatch()).reason, 'none');
+});
+
+test('Teamwork template text cannot manufacture executive decisions', async t => {
+  assert.equal(teamworkCandidateExecutiveGate({ title: 'LE - Client review revisions',
+    description: 'Note anything out of scope before pushing back to the client.' }), null);
+  assert.equal(teamworkCandidateExecutiveGate({ title: 'Approve scope change for launch' }), 'scope');
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-executive-teamwork-gates-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const projects = [{ key: '1621783', pm: 'Mallory', decision_state: { candidates: [{
+    id: '40272393', title: 'LE - Client review revisions',
+    description: 'Note anything out of scope before pushing back to the client.',
+    assignees: ['Lydia Murphy'], evidence_ref: 'teamwork:task:40272393',
+  }, {
+    id: '40279999', title: 'Approve scope change for launch',
+    description: 'A named change order needs an executive decision.',
+    assignees: ['Mallory'], evidence_ref: 'teamwork:task:40279999',
+  }] } }];
+  const runtime = createExecutiveFirewallRuntime({
+    dataDirectory: directory, databaseReady: () => false,
+    writeThrough: async (_key, operation) => operation(),
+    intelligence: { initiativeStatus: () => ({ remaining: 0 }), spendInitiative: () => null },
+    resolveOwner: () => 'UJOHN', postMessage: async () => true,
+    loadProjectControl: () => ({ projects, risks: [] }), loadFleetSupervisor: async () => null,
+  });
+  await runtime.hydrate();
+  await runtime.intake({ source: 'teamwork_decision', source_ref: '40272393',
+    project_key: '1621783', severity: 'medium', summary: 'LE - Client review revisions',
+    detail: 'Note anything out of scope before pushing back to the client.', owner: 'Lydia Murphy',
+    executive_gate: 'scope', requires_executive: true,
+    decision_packet: { question: 'LE - Client review revisions',
+      recommendation: 'Accept the project owner recommendation unless it crosses the named executive gate.',
+      consequence: 'Template task text', options: ['Approve', 'Override', 'Defer'],
+      evidence: [{ type: 'teamwork_decision_candidate', ref: 'teamwork:task:40272393' }] },
+    evidence: [{ type: 'teamwork_decision_candidate', ref: 'teamwork:task:40272393' }],
+  });
+
+  const reconciliation = await runtime.reconcileSources({ now: new Date('2026-08-09T16:00:00.000Z') });
+  const state = runtime.snapshot();
+  const falsePositive = state.state.cases.find(item => item.source_ref === '40272393');
+  const genuineGate = state.state.cases.find(item => item.source_ref === '40279999');
+  assert.equal(falsePositive.state, 'dismissed');
+  assert.match(falsePositive.dismissal_reason, /did not establish/);
+  assert.equal(genuineGate.state, 'resolving');
+  assert.equal(genuineGate.requires_executive, true);
+  assert.equal(genuineGate.decision_packet, null);
+  assert.match(genuineGate.next_action, /owner recommendation/);
+  assert.equal(state.metrics.decisions_ready, 0);
+  assert.equal(reconciliation.reconciliation.dismissed_teamwork_false_positives, 1);
 });

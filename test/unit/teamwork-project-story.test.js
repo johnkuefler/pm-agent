@@ -42,6 +42,13 @@ function snapshot() {
       start_at: null, due_at: '2026-08-10T00:00:00.000Z',
       updated_at: '2026-08-08T11:00:00.000Z', out_of_sequence: false,
       assignees: [],
+    }, {
+      id: '702', project_id: '100', tasklist_id: '602', tasklist_name: 'Client review',
+      milestone_id: '', name: 'Client review revisions',
+      description: 'Note anything out of scope before pushing back to the client.',
+      priority: 'medium', progress: 0, start_at: null,
+      due_at: '2026-08-13T00:00:00.000Z', updated_at: '2026-08-08T10:00:00.000Z',
+      out_of_sequence: false, assignees: ['Taylor Reed'],
     }],
   };
 }
@@ -58,6 +65,7 @@ test('Teamwork project stories derive an evidence-bound operating picture', () =
   assert.deepEqual(story.critical_path, ['UAT sign-off due 2026-08-11']);
   assert.deepEqual(story.decision_refs, ['teamwork:task:700']);
   assert.equal(story.decision_state.open_count, 1);
+  assert.equal(story.decision_state.candidates.some(item => item.id === '702'), false);
   assert.deepEqual(story.decision_state.candidates[0], {
     id: '700', title: 'UAT sign-off',
     description: 'Client must confirm UAT acceptance before launch.',
@@ -65,11 +73,11 @@ test('Teamwork project stories derive an evidence-bound operating picture', () =
     due_at: '2026-08-11T00:00:00.000Z', updated_at: '2026-08-08T13:00:00.000Z',
     out_of_sequence: false, assignees: ['Taylor Reed'], evidence_ref: 'teamwork:task:700',
   });
-  assert.equal(story.hydration.version, 2);
+  assert.equal(story.hydration.version, 3);
   assert.equal(story.hydration.field_sources.objective.derived, true);
   assert.equal(story.hydration.field_sources.next_milestone.confidence, 1);
   assert.deepEqual(story.hydration.schedule, {
-    open_tasks: 2, overdue_tasks: 0, unassigned_tasks: 1, open_milestones: 1,
+    open_tasks: 3, overdue_tasks: 0, unassigned_tasks: 1, open_milestones: 1,
   });
   assert.match(story.hydration.source_signature, /^[a-f0-9]{64}$/);
 });

@@ -4,6 +4,15 @@ const firewall = require('./firewall');
 const { createExecutiveFirewallPersistence } = require('./persistence');
 const { registerExecutiveFirewallRoutes } = require('../routes/executive-firewall');
 
+const EXPLICIT_DECISION_TITLE = /\b(?:approve|approval|authorize|authorization|decision|sign[ -]?off|choose|confirm)\b/i;
+const LEGACY_TEAMWORK_RECOMMENDATION = 'Accept the project owner recommendation unless it crosses the named executive gate.';
+
+function teamworkCandidateExecutiveGate(candidate = {}) {
+  const title = String(candidate.title || '');
+  if (!EXPLICIT_DECISION_TITLE.test(title)) return null;
+  return firewall.gateFromText(title);
+}
+
 function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writeThrough,
   intelligence, resolveOwner, postMessage, loadProjectControl, loadFleetSupervisor } = {}) {
   const persistence = createExecutiveFirewallPersistence({ db, dataDirectory, databaseReady,
@@ -87,6 +96,7 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
 
   async function reconcileSources({ now = new Date() } = {}) {
     const baseline = !state.baseline_at;
+    let dismissedTeamworkFalsePositives = 0;
     const projectLedger = typeof loadProjectControl === 'function' ? loadProjectControl() : null;
     if (projectLedger) {
       const projects = new Map((projectLedger.projects || []).map(item => [item.key, item]));
@@ -120,24 +130,37 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
           evidence: risk.evidence?.length ? risk.evidence
             : [{ type: 'project_risk', ref: risk.id, note: `status:${risk.status}` }] }, { now });
       }
+      const executiveCandidates = [];
       for (const project of projectLedger.projects || []) {
         for (const candidate of project.decision_state?.candidates || []) {
-          const gate = firewall.gateFromText(`${candidate.title} ${candidate.description}`);
+          const gate = teamworkCandidateExecutiveGate(candidate);
+          if (!gate) continue;
+          executiveCandidates.push({ project, candidate, gate });
+        }
+      }
+      const activeCandidateRefs = new Set(executiveCandidates.map(item => String(item.candidate.id).toLowerCase()));
+      for (const item of state.cases.filter(entry => entry.source === 'teamwork_decision'
+        && !['verified_closed', 'dismissed'].includes(entry.state))) {
+        const stale = !activeCandidateRefs.has(String(item.source_ref).toLowerCase());
+        const legacyPacket = item.decision_packet?.recommendation === LEGACY_TEAMWORK_RECOMMENDATION;
+        if (!stale && !legacyPacket) continue;
+        await dismiss(item.id, { reason: stale
+          ? 'Automated Teamwork text did not establish a concrete executive decision.'
+          : 'Removed a legacy heuristic decision packet that lacked a concrete owner recommendation.' },
+        { now, operator: true });
+        dismissedTeamworkFalsePositives += 1;
+      }
+      for (const { project, candidate, gate } of executiveCandidates) {
           const evidence = [{ type: 'teamwork_decision_candidate',
             ref: candidate.evidence_ref || candidate.id }];
           await intake({ source: 'teamwork_decision', source_ref: candidate.id,
             category: 'project_decision', authority_class: 'coordination', project_key: project.key,
             severity: candidate.out_of_sequence ? 'high' : 'medium', summary: candidate.title,
             detail: candidate.description, owner: candidate.assignees?.[0] || project.pm || 'Nora',
-            next_action: 'Get the decision from its project owner and record it in Teamwork.',
-            resolution_plan: 'Resolve with the assigned owner before considering executive escalation.',
+            next_action: 'Get the project owner recommendation, alternatives, and consequence before preparing an executive packet.',
+            resolution_plan: 'Resolve with the assigned owner first, then prepare a concrete executive packet only if the fixed gate remains.',
             executive_gate: gate, requires_executive: Boolean(gate),
-            decision_packet: gate ? { question: candidate.title,
-              recommendation: 'Accept the project owner recommendation unless it crosses the named executive gate.',
-              consequence: candidate.description || 'The project cannot advance cleanly without this decision.',
-              options: ['Approve', 'Override', 'Defer'], deadline: candidate.due_at || undefined,
-              evidence, executive_gate: gate } : null, evidence }, { now });
-        }
+            evidence }, { now });
       }
     }
     const fleet = typeof loadFleetSupervisor === 'function' ? await loadFleetSupervisor() : null;
@@ -160,7 +183,8 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
     }
     await persistence.save(state);
     return { ...snapshot(), reconciliation: { baseline,
-      baseline_suppressions: baseline ? state.quiet.baseline_suppressions : 0 } };
+      baseline_suppressions: baseline ? state.quiet.baseline_suppressions : 0,
+      dismissed_teamwork_false_positives: dismissedTeamworkFalsePositives } };
   }
 
   async function dispatch() {
@@ -217,4 +241,4 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
   return api;
 }
 
-module.exports = { createExecutiveFirewallRuntime };
+module.exports = { createExecutiveFirewallRuntime, teamworkCandidateExecutiveGate };

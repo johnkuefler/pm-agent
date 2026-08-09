@@ -54,6 +54,7 @@ test('material source changes update the owned case without duplicating it', () 
 test('budget and scope language are recognized as executive gates', () => {
   assert.equal(firewall.gateFromText('Approve a $20,000 budget increase'), 'budget');
   assert.equal(firewall.gateFromText('This needs a scope change'), 'scope');
+  assert.equal(firewall.gateFromText('Note anything out of scope before client review'), null);
   assert.equal(firewall.gateFromText('Ask the task owner for status'), null);
 });
 
