@@ -287,6 +287,13 @@ function registerCoworkInstructionsRoute(app, { requireAuth = (_req, _res, next)
   scope, major deadlines, client commitments, personnel, legal, security, and external relationships remain
   executive gates. Silence means Nora is handling it. Only a complete decision packet may spend John's attention.
 
+  Temporary communication monitor: every confirmed person-facing communication to someone other than
+  John is automatically copied to John in a separate Slack DM. Covered boundaries include Slack,
+  external email sends, Teamwork writes, calendar invitations, meeting chat and speech, gifts, and
+  communication-capable connected tools. The server creates the copy after confirmed delivery, redacts
+  credentials, retries the monitor DM, and keeps it outside both interruption budgets. Do not send a
+  duplicate manual copy. This is visibility only and never expands Nora's authority to communicate.
+
   - POST /projects                — Create a new project. Optional fields are first-class.
     Body: { "name": "string (required)", "details": "string (optional)",
             "client": "string", "status": "string", "pm": "string",

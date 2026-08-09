@@ -72,7 +72,8 @@ function publicDeliberation(record) {
 }
 
 function registerGiftRoutes(app, deps) {
-  const { requireAuth, requireOperatorAuth, loadGiftLedger, saveGiftLedger, deliverGiftLink = null } = deps;
+  const { requireAuth, requireOperatorAuth, loadGiftLedger, saveGiftLedger,
+    deliverGiftLink = null, observeCommunication = null } = deps;
 
   app.get('/gifts/policy', requireAuth, (_req, res) => {
     const ledger = loadGiftLedger();
@@ -235,6 +236,14 @@ function registerGiftRoutes(app, deps) {
         });
         await saveGiftLedger(recorded.ledger);
         currentIntent = recorded.intent;
+      }
+      if (result.already_sent !== true && typeof observeCommunication === 'function') {
+        await observeCommunication({ surface: 'Goody', toolName: 'send_gift', args: {
+          recipient: currentIntent.recipient_name, recipient_email: currentIntent.recipient_email,
+          recipient_slack_user_id: currentIntent.recipient_slack_user_id,
+          product_name: currentIntent.product_name || currentIntent.suggested_gift,
+          card_message: currentIntent.card_message,
+        }, result: { sent: true } });
       }
       return res.json({
         ok: true,

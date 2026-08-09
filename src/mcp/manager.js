@@ -143,7 +143,7 @@ function toolIsAllowed(connection, tool) {
   return !writeCapable;
 }
 
-function createMcpManager({ loadConnections, saveConnections, encryptionSecret, clock = () => new Date(), connectFactory, resolveDns = true, authFn = auth }) {
+function createMcpManager({ loadConnections, saveConnections, encryptionSecret, clock = () => new Date(), connectFactory, resolveDns = true, authFn = auth, onToolSuccess = null }) {
   const key = deriveKey(encryptionSecret);
   const clients = new Map();
   const oauthStates = new Map();
@@ -181,14 +181,18 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     const secrets = secretsFor(connection);
     const authType = AUTH_TYPES.has(connection.auth_type) ? connection.auth_type : (secrets.token ? 'bearer' : 'none');
     const tokens = secrets.oauth_tokens || {};
+    const credentialSet = !!(authType === 'url_token' || secrets.token || secrets.client_secret
+      || Object.keys(secrets.headers || {}).length || tokens.access_token);
+    const missingRequiredCredential = authType !== 'none' && !credentialSet;
     return {
       id: connection.id, name: connection.name, url_hint: urlHint(secrets.url || '', authType), auth_type: authType,
       financial: !!connection.financial, enabled: connection.enabled !== false,
       access_mode: isFleetConnection(connection) ? 'read_only' : (connection.access_mode || 'read_only'),
       deferred: connection.deferred === undefined ? null : connection.deferred, // null = name-heuristic default
-      credential_set: !!(authType === 'url_token' || secrets.token || secrets.client_secret || Object.keys(secrets.headers || {}).length || tokens.access_token),
+      credential_set: credentialSet,
       oauth_connected: !!tokens.access_token, oauth_expires_at: connection.oauth_expires_at || null,
-      status: connection.status || 'untested', status_message: connection.status_message || '',
+      status: missingRequiredCredential ? 'needs_authorization' : connection.status || 'untested',
+      status_message: missingRequiredCredential ? 'A saved credential is required before this connection can run.' : connection.status_message || '',
       tools: (connection.tools || []).map(tool => ({ name: tool.name, description: tool.description || '', allowed: toolIsAllowed(connection, tool), annotations: tool.annotations || {} })),
       last_tested: connection.last_tested || null, created: connection.created || null,
     };
@@ -444,12 +448,18 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     let entry;
     const startedAt = Date.now();
     try {
-      return await withAbortableTimeout(async toolSignal => {
+      const result = await withAbortableTimeout(async toolSignal => {
         entry = await getClient(connection, { signal: toolSignal, timeout });
         const remaining = Math.max(1, timeout - (Date.now() - startedAt));
         return entry.client.callTool({ name: toolName, arguments: args || {} }, undefined,
           { timeout: remaining, maxTotalTimeout: remaining, signal: toolSignal });
       }, timeout, 'MCP tool call', signal);
+      if (result?.isError !== true && typeof onToolSuccess === 'function') {
+        Promise.resolve(onToolSuccess({ connectionName: connection.name, toolName, args: args || {}, result,
+          writeCapable: toolIsWriteCapable(catalogTool) }))
+          .catch(() => {});
+      }
+      return result;
     }
     catch (error) { await invalidateClient(connectionId); throw error; }
   }

@@ -12,7 +12,7 @@ function fixture(overrides = {}) {
       { name: 'find_projects', description: 'Find projects', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, annotations: { readOnlyHint: true } },
       { name: 'delete_project', description: 'Delete a project', inputSchema: { type: 'object' }, annotations: { destructiveHint: true } },
     ] }),
-    callTool: async input => { calls.push(input); return { content: [{ type: 'text', text: 'ok' }] }; },
+    callTool: async input => { calls.push(input); return overrides.callResult || { content: [{ type: 'text', text: 'ok' }] }; },
     close: async () => {},
   };
   const manager = createMcpManager({
@@ -23,6 +23,7 @@ function fixture(overrides = {}) {
       ? overrides.connectFactory(...args, fakeClient)
       : ({ client: fakeClient, transport: {} }),
     authFn: overrides.authFn,
+    onToolSuccess: overrides.onToolSuccess,
   });
   return { manager, records: () => records, calls };
 }
@@ -42,6 +43,32 @@ test('all MCP credential modes store secrets encrypted and never expose raw URLs
     assert.equal('url' in connection, false);
     if (auth_type === 'url_token') assert.match(connection.url_hint, /••••/);
   }
+});
+
+test('a successful MCP write is observable after provider confirmation', async () => {
+  const observed = [];
+  const tools = [{ name: 'gmail_send_email', description: 'Send mail',
+    inputSchema: { type: 'object' }, annotations: { readOnlyHint: false } }];
+  const { manager } = fixture({ tools, onToolSuccess: event => { observed.push(event); } });
+  const created = await manager.create({ name: 'Mail', url: 'https://mcp.example.com/mcp',
+    auth_type: 'none', access_mode: 'full' });
+  await manager.testConnection(created.id);
+  const binding = manager.bindings({ allowWrites: true });
+  await binding.executors[binding.claudeTools[0].name]({ to: 'teammate@example.com', body: 'Hello' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].toolName, 'gmail_send_email');
+  assert.equal(observed[0].args.body, 'Hello');
+});
+
+test('a stale connected status cannot hide a missing OAuth credential', async () => {
+  const { manager } = fixture();
+  const created = await manager.create({ name: 'Missing OAuth', url: 'https://mcp.example.com/mcp',
+    auth_type: 'oauth' });
+  const tested = await manager.testConnection(created.id);
+  assert.equal(tested.credential_set, false);
+  assert.equal(tested.status, 'needs_authorization');
+  assert.match(tested.status_message, /saved credential is required/);
 });
 
 test('MCP manager discovers tools, hard-filters writes, and executes the same binding for every surface', async () => {

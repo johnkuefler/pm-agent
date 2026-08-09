@@ -77,6 +77,7 @@ const { reasoningGuidance, meetingTurnDecision, initiativeDecision } = require('
 const { registerIntelligenceRoutes } = require('./src/routes/intelligence');
 const { createMcpManager } = require('./src/mcp/manager');
 const { createMcpStore } = require('./src/mcp/store');
+const { createSlackCommunicationMirror, wrapCommunicationTools, meetingVoiceCommunication } = require('./src/communications/mirror');
 const { mcpCapabilityLabel, fleetOperatingInstruction } = require('./src/mcp/fleet-policy');
 const { registerExecutiveOperationsRuntime, handleExecutiveDecisionReply, createExecutiveFirewallTools } = require('./src/executive/server-runtime');
 const { findJohnSlackId } = require('./src/surfaces/slack/owner');
@@ -5458,14 +5459,13 @@ const mcpStore = createMcpStore({ fs, path, volumeDirectory: VOLUME_DIR,
   localDataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady,
   getCache: () => _cache.mcp || [], setCache: list => { _cache.mcp = list; },
   writeThrough: _writeThrough, replaceAll: db.replaceAllMcp });
-
+const communicationMirror = createSlackCommunicationMirror({ axios, slackToken: process.env.SLACK_BOT_TOKEN, resolveJohnSlackId: () => findJohnSlackId(loadMemory()), enabled: process.env.NORA_COMMUNICATION_MIRROR_ENABLED !== 'false' });
 const mcpManager = createMcpManager({
   loadConnections: mcpStore.load,
   saveConnections: mcpStore.save,
   encryptionSecret: process.env.MCP_CREDENTIALS_ENCRYPTION_KEY || process.env.NORA_API_KEY || 'nora-local-development-only',
-  resolveDns: process.env.NORA_TEST_MODE !== '1',
+  resolveDns: process.env.NORA_TEST_MODE !== '1', onToolSuccess: event => communicationMirror.observeTool(event),
 });
-
 const { executiveFirewall, fleetSupervisor } = registerExecutiveOperationsRuntime({ app, requireAuth, requireOperatorAuth, mcpManager, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, intelligence, resolveOwner: () => findJohnSlackId(loadMemory()), postMessage: postSlackMessage, loadProjectControl: projectControlRuntime.load });
 
 // ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
@@ -5871,7 +5871,7 @@ const TEAMWORK_TOOLS = [
 
 // Teamwork WRITE tool names (create/update/complete/reopen/comment). READ tools are everything else.
 const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
-
+wrapCommunicationTools(TEAMWORK_TOOLS, TW_WRITE_NAMES, communicationMirror, 'Teamwork');
 // Teamwork READ tools, converted to the OpenAI Realtime function-tool shape ({type:'function', name,
 // description, parameters}) so the live VOICE agent can look things up on a call. READ ONLY: writes
 // never attach to voice (a misheard instruction creating the wrong task, possibly in front of a
@@ -10419,9 +10419,8 @@ registerGiftRoutes(app, {
   requireOperatorAuth,
   loadGiftLedger,
   saveGiftLedger,
-  deliverGiftLink: deliverGoodyGiftLink,
+  deliverGiftLink: deliverGoodyGiftLink, observeCommunication: event => communicationMirror.observeTool(event),
 });
-
 registerApiOpportunityRoutes(app, {
   requireAuth,
   requireOperatorAuth,
@@ -13116,6 +13115,7 @@ wss.on('connection', async (ws, req) => {
             // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
             // Accept both so this works across API versions.
             const audioTranscript = item.content?.find(c => c.type === 'output_audio' || c.type === 'audio')?.transcript;
+            if (audioTranscript) communicationMirror.observe(meetingVoiceCommunication(s, audioTranscript)).catch(() => {});
             if (audioTranscript) {
               console.log('🤖 Nora (voice):', audioTranscript.slice(0, 200));
             }

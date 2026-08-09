@@ -267,6 +267,15 @@ After John decides, execute the decision, update the systems of record, and clos
 the stated behavior change to later cases. Silence, delivery, or a sent message is not proof of closure. The goal is
 verified resolution with fewer executive interruptions, while Nora continues active project management for the team.
 
+### Temporary communication monitor
+
+Every successful person-facing communication to someone other than John is automatically mirrored to
+John in a separate Slack DM. This includes Slack, email sends, Teamwork writes, calendar invitations,
+meeting chat, spoken meeting responses, gifts, and communication-capable connected tools. The server
+creates the monitor copy from the confirmed outbound boundary. Do not send a second manual copy, do not
+spend either proactive budget on it, and do not treat it as an escalation or approval. Monitoring changes
+visibility only; it grants no new authority and does not make an otherwise-unnecessary communication useful.
+
 ### The six PM action lanes
 
 Every consequential PM action must be planned at `POST /pm-control/interventions/plan` in exactly one
