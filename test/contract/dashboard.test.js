@@ -74,6 +74,8 @@ test('dashboard presentation and behavior live in focused external assets', () =
   assert.match(html, /Exact project-plan changes/);
   assert.match(fs.readFileSync(path.join(root, 'public/js/dashboard-executive.js'), 'utf8'),
     /Decision needed:[\s\S]*Nora recommends:/);
+  assert.match(fs.readFileSync(path.join(root, 'public/js/dashboard-executive.js'), 'utf8'),
+    /executiveFirewallFilter === 'closed'[\s\S]*item\.state === 'verified_closed'/);
   assert.match(html, /signed approval authorizes that exact gift/);
   assert.match(html, /Slack conversation with you and the recipient/);
   assert.match(html, /current itemized estimate/);

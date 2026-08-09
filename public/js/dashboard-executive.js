@@ -60,7 +60,7 @@ function filteredExecutiveCases(cases) {
     return cases.filter(item => ['decision_ready', 'escalated'].includes(item.state));
   }
   if (executiveFirewallFilter === 'closed') {
-    return cases.filter(item => ['verified_closed', 'dismissed'].includes(item.state));
+    return cases.filter(item => item.state === 'verified_closed');
   }
   return cases.filter(item => !['verified_closed', 'dismissed'].includes(item.state));
 }
