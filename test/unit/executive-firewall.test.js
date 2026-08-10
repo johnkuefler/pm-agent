@@ -79,6 +79,25 @@ test('budget and scope language are recognized as executive gates', () => {
   assert.equal(firewall.gateFromText('This needs a scope change'), 'scope');
   assert.equal(firewall.gateFromText('Note anything out of scope before client review'), null);
   assert.equal(firewall.gateFromText('Ask the task owner for status'), null);
+  const titleOnly = intake({ source_ref: 'budget-noun',
+    summary: 'Run reported no cost and gave no reason' });
+  assert.equal(titleOnly.case.executive_gate, null);
+  assert.equal(titleOnly.case.requires_executive, false);
+});
+
+test('a possible gate becomes an executive obligation only with a complete packet', () => {
+  const possible = intake({ source_ref: 'possible-gate', requires_executive: true,
+    executive_gate: 'budget' });
+  assert.equal(possible.case.executive_gate, 'budget');
+  assert.equal(possible.case.requires_executive, false);
+  assert.equal(firewall.metrics(possible.state, { now }).unpacketized_executive, 0);
+  const prepared = firewall.prepareDecision(possible.state, possible.case.id, {
+    question: 'Approve recovery?', recommendation: 'Approve the bounded option.',
+    consequence: 'The project otherwise slips.', options: ['Approve', 'Accept slip'],
+    evidence: [{ type: 'estimate', ref: 'estimate-packet-invariant' }],
+  }, { now });
+  assert.equal(prepared.case.requires_executive, true);
+  assert.equal(prepared.case.state, 'decision_ready');
 });
 
 test('decision packets require recommendation, options, consequence, and evidence', () => {

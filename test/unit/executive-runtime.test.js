@@ -145,7 +145,8 @@ test('Teamwork template text cannot manufacture executive decisions', async t =>
   assert.equal(falsePositive.state, 'dismissed');
   assert.match(falsePositive.dismissal_reason, /did not establish/);
   assert.equal(genuineGate.state, 'resolving');
-  assert.equal(genuineGate.requires_executive, true);
+  assert.equal(genuineGate.requires_executive, false);
+  assert.equal(genuineGate.executive_gate, 'scope');
   assert.equal(genuineGate.decision_packet, null);
   assert.match(genuineGate.next_action, /owner recommendation/);
   assert.equal(state.metrics.decisions_ready, 0);

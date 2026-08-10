@@ -103,6 +103,13 @@ function emptyState(now = new Date()) {
 function normalizeState(input, now = new Date()) {
   const base = emptyState(now);
   if (!input || typeof input !== 'object' || Array.isArray(input)) return base;
+  const cases = Array.isArray(input.cases) ? input.cases.filter(item => item?.id)
+    .slice(-MAX_CASES) : [];
+  // Preserve case object identity because baseline suppression deliberately marks the normalized
+  // records in place. Only repair the invalid historical executive flag during normalization.
+  for (const item of cases) {
+    item.requires_executive = Boolean(item.requires_executive && item.decision_packet);
+  }
   return {
     ...base,
     ...input,
@@ -112,7 +119,7 @@ function normalizeState(input, now = new Date()) {
       resolution_sla_hours: { ...base.policy.resolution_sla_hours,
         ...(input.policy?.resolution_sla_hours || {}) } },
     quiet: { ...base.quiet, ...(input.quiet || {}) },
-    cases: Array.isArray(input.cases) ? input.cases.filter(item => item?.id).slice(-MAX_CASES) : [],
+    cases,
     events: Array.isArray(input.events) ? input.events.filter(item => item?.id).slice(-MAX_EVENTS) : [],
     feedback: Array.isArray(input.feedback)
       ? input.feedback.filter(item => item?.id).slice(-MAX_FEEDBACK) : [],
@@ -172,10 +179,12 @@ function intakeCase(input = {}, { state: original, now = new Date() } = {}) {
   const summary = clean(input.summary || input.title, 1200);
   if (!summary) throw new Error('case summary is required');
   const category = clean(input.category || 'coordination', 80).toLowerCase();
-  const inferredGate = input.infer_executive_gate === false
-    ? null : gateFromText(`${summary} ${input.detail || ''}`);
+  const inferredGate = input.infer_executive_gate === true
+    ? gateFromText(`${summary} ${input.detail || ''}`) : null;
   const gate = clean(input.executive_gate || inferredGate, 80).toLowerCase() || null;
-  const requiresExecutive = Boolean(input.requires_executive || (gate && EXECUTIVE_GATES.has(gate)));
+  const executiveGateApplies = Boolean(input.requires_executive
+    || (gate && EXECUTIVE_GATES.has(gate)));
+  const requiresExecutive = Boolean(executiveGateApplies && input.decision_packet);
   const materialCommitment = commitment({ summary, detail: clean(input.detail, 2400),
     severity: severity(input.severity), owner: clean(input.owner, 240), gate, evidence });
   const existing = state.cases.find(item => item.source_key === key && !CLOSED_STATES.has(item.state));
