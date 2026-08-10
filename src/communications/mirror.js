@@ -1,5 +1,7 @@
 'use strict';
 
+const { createSlackCommunicationMonitorEnricher } = require('../surfaces/slack/communication-monitor-context');
+
 const DIRECT_COMMUNICATION = /(?:^|[_-])(?:send|reply|notify|share|invite|schedule)(?:[_-]|$)|(?:^|[_-])(?:add|post|create)(?:[_-])(?:comment|message|gift)(?:[_-]|$)/i;
 const CALENDAR_COMMUNICATION = /(?:^|[_-])(?:create|update|cancel|schedule|invite)(?:[_-]).*(?:calendar|event|meeting)|(?:calendar|event|meeting).*(?:[_-])(?:create|update|cancel|schedule|invite)(?:[_-]|$)/i;
 const TASK_COMMUNICATION = /(?:^|[_-])(?:create|update|assign|complete|reopen)(?:[_-])(?:task|ticket)(?:[_-]|$)|(?:^|[_-])(?:task|ticket)(?:[_-])(?:create|update|assign|complete|reopen)(?:[_-]|$)/i;
@@ -93,8 +95,10 @@ function httpCommunication(response) {
   const payload = parseBody(config.data);
   if (/slack\.com\/api\/chat\.postMessage/i.test(url) && response?.data?.ok === true) {
     return {
-      surface: 'Slack', action: 'chat.postMessage', target: String(payload.channel || ''),
+      surface: 'Slack', action: 'chat.postMessage',
+      target: String(response.data?.channel || payload.channel || ''),
       thread: payload.thread_ts ? String(payload.thread_ts) : '',
+      message_ts: response.data?.ts ? String(response.data.ts) : '',
       exact: String(payload.text || (payload.blocks ? JSON.stringify(payload.blocks) : '')),
     };
   }
@@ -120,6 +124,28 @@ function meetingVoiceCommunication(session, text) {
 }
 
 function formatMirror(record, now = new Date()) {
+  if (record.surface === 'Slack') {
+    const lines = [
+      'Nora communication copy',
+      '',
+      `Destination: ${record.target_label || 'Slack destination (name unavailable)'}`,
+      '',
+      'What Nora was responding to:',
+      String(record.context || '').trim() || '(Slack did not return preceding teammate context.)',
+      '',
+      'Nora sent:',
+      String(record.exact || '').trim() || '(empty)',
+      '',
+      'Audit details',
+      `Sent: ${now.toISOString()}`,
+      `Surface: ${record.surface}`,
+      `Action: ${record.action}`,
+      `Slack target: ${record.target || 'not specified'}`,
+    ];
+    if (record.thread) lines.push(`Thread: ${record.thread}`);
+    if (record.message_ts) lines.push(`Message: ${record.message_ts}`);
+    return lines.join('\n').slice(0, MAX_TEXT);
+  }
   const lines = [
     'Communication monitor copy',
     `Sent: ${now.toISOString()}`,
@@ -139,6 +165,7 @@ function createCommunicationMirror({
   now = () => new Date(),
   logger = console,
   enabled = true,
+  enrichRecord = async record => record,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 } = {}) {
   let johnChannel = null;
@@ -173,7 +200,12 @@ function createCommunicationMirror({
       stats.skipped_john += 1;
       return { sent: false, reason: 'already_sent_to_john' };
     }
-    const message = formatMirror(record, now());
+    let enrichedRecord = record;
+    try { enrichedRecord = await enrichRecord(record) || record; }
+    catch (error) {
+      logger.warn?.(`Communication monitor enrichment failed: ${error.message}`);
+    }
+    const message = formatMirror(enrichedRecord, now());
     lastError = null;
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
@@ -224,8 +256,9 @@ function createCommunicationMirror({
 function createSlackCommunicationMirror({ axios, slackToken, resolveJohnSlackId,
   now, logger, enabled = true } = {}) {
   const headers = { Authorization: `Bearer ${slackToken}` };
+  const enrichRecord = createSlackCommunicationMonitorEnricher({ axios, headers, logger });
   const mirror = createCommunicationMirror({
-    resolveJohnSlackId, now, logger, enabled,
+    resolveJohnSlackId, now, logger, enabled, enrichRecord,
     openDirectMessage: async johnId => {
       const response = await axios.post('https://slack.com/api/conversations.open', { users: johnId },
         { headers, timeout: 6000, noraCommunicationMirror: true });

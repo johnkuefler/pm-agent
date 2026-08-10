@@ -8,9 +8,12 @@ const {
   toolCommunication,
   httpCommunication,
   meetingVoiceCommunication,
+  formatMirror,
   createCommunicationMirror,
   wrapCommunicationTools,
 } = require('../../src/communications/mirror');
+const { createSlackCommunicationMonitorEnricher } = require(
+  '../../src/surfaces/slack/communication-monitor-context');
 
 test('communication classification covers written, task, calendar, and gift boundaries', () => {
   for (const name of [
@@ -64,12 +67,13 @@ test('a confirmed Fleet change copies the requester, exact change, and provider 
 });
 
 test('confirmed Slack and meeting chat deliveries become monitor records', () => {
-  const slack = httpCommunication({ status: 200, data: { ok: true }, config: {
+  const slack = httpCommunication({ status: 200,
+    data: { ok: true, channel: 'C456', ts: '2.3' }, config: {
     url: 'https://slack.com/api/chat.postMessage',
     data: JSON.stringify({ channel: 'C123', thread_ts: '1.2', text: 'Exact Slack message' }),
   } });
-  assert.deepEqual(slack, { surface: 'Slack', action: 'chat.postMessage', target: 'C123',
-    thread: '1.2', exact: 'Exact Slack message' });
+  assert.deepEqual(slack, { surface: 'Slack', action: 'chat.postMessage', target: 'C456',
+    thread: '1.2', message_ts: '2.3', exact: 'Exact Slack message' });
   const meeting = httpCommunication({ status: 200, data: {}, config: {
     url: 'https://us-west-2.recall.ai/api/v1/bot/bot-1/send_chat_message/',
     data: JSON.stringify({ message: 'Meeting reply' }),
@@ -78,6 +82,59 @@ test('confirmed Slack and meeting chat deliveries become monitor records', () =>
   assert.equal(httpCommunication({ status: 200, data: { ok: true }, config: {
     url: 'https://slack.com/api/chat.postMessage', data: '{}', noraCommunicationMirror: true,
   } }), null);
+});
+
+test('Slack monitor enrichment resolves a channel name and the human thread context', async () => {
+  const get = async url => {
+    if (url.includes('conversations.info')) return { data: { ok: true,
+      channel: { id: 'C123', name: 'project-launch' } } };
+    if (url.includes('conversations.replies')) return { data: { ok: true, messages: [
+      { ts: '1.0', user: 'U1', text: 'Can we move launch to Friday?' },
+      { ts: '1.1', bot_id: 'B1', text: 'I will check.' },
+      { ts: '1.2', user: 'U2', text: 'Friday works if QA signs off.' },
+      { ts: '1.3', bot_id: 'B1', text: 'Nora outbound.' },
+    ] } };
+    if (url.includes('user=U1')) return { data: { ok: true,
+      user: { profile: { real_name: 'Mallory Maryman' } } } };
+    if (url.includes('user=U2')) return { data: { ok: true,
+      user: { profile: { real_name: 'Lydia Murphy' } } } };
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  const enrich = createSlackCommunicationMonitorEnricher({ axios: { get }, headers: {} });
+  const record = await enrich({ surface: 'Slack', target: 'C123', thread: '1.0',
+    message_ts: '1.3', exact: 'Nora outbound.' });
+  assert.equal(record.target_label, '#project-launch');
+  assert.match(record.context, /Original thread: Mallory Maryman: Can we move launch to Friday/);
+  assert.match(record.context, /Latest teammate message: Lydia Murphy: Friday works/);
+});
+
+test('Slack monitor enrichment names a DM and includes the preceding ask', async () => {
+  const get = async url => {
+    if (url.includes('conversations.info')) return { data: { ok: true,
+      channel: { id: 'D123', is_im: true, user: 'U1' } } };
+    if (url.includes('conversations.history')) return { data: { ok: true, messages: [
+      { ts: '2.0', user: 'U1', text: 'Please bring me two options by one.' },
+    ] } };
+    if (url.includes('users.info')) return { data: { ok: true,
+      user: { profile: { real_name: 'Mallory Maryman' } } } };
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  const enrich = createSlackCommunicationMonitorEnricher({ axios: { get }, headers: {} });
+  const record = await enrich({ surface: 'Slack', target: 'D123', message_ts: '2.1',
+    exact: 'Queued, I will have options back within the hour.' });
+  assert.equal(record.target_label, 'DM with Mallory Maryman');
+  assert.match(record.context, /Mallory Maryman: Please bring me two options by one/);
+});
+
+test('Slack monitor copy leads with readable context and keeps IDs in audit details', () => {
+  const copy = formatMirror({ surface: 'Slack', action: 'chat.postMessage',
+    target: 'C123', target_label: '#project-launch', thread: '1.0', message_ts: '1.3',
+    context: 'Mallory Maryman: Can we move launch to Friday?',
+    exact: 'Yes, pending QA sign-off.' }, new Date('2026-08-10T18:00:00.000Z'));
+  assert.match(copy, /Destination: #project-launch/);
+  assert.match(copy, /What Nora was responding to:\nMallory Maryman:/);
+  assert.match(copy, /Nora sent:\nYes, pending QA sign-off/);
+  assert.match(copy, /Audit details[\s\S]*Slack target: C123/);
 });
 
 test('voice monitoring skips a known John-only room and records other participants', () => {
