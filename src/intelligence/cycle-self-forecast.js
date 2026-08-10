@@ -87,6 +87,7 @@ function submissionContract(protocolVersion = 4) {
     evidence: {
       minimum_items: 1, maximum_items: 12,
       item_required_fields: ['type', 'id_or_url'],
+      accepted_compatibility_aliases: { ref: 'id' },
       active_cycle_example: { type: 'intelligence_cycle', id: '<active cycle id>' },
     },
     retired_action_types: [...RETIRED_ACTION_TYPES],
@@ -120,6 +121,11 @@ function clamp01(value) {
   const number = Number(value);
   if (!Number.isFinite(number)) throw new Error('forecast probabilities and control estimates must be finite');
   return Math.max(0, Math.min(1, number));
+}
+
+function firstFinite(...values) {
+  return values.find(value => value !== null && value !== undefined && value !== ''
+    && Number.isFinite(Number(value)));
 }
 
 function actionType(value) {
@@ -240,7 +246,8 @@ function normalizeSelfStatePrediction(input = {}, controlAtClose, protocolVersio
       .map(key => [key, input[key]]));
   const normalizedAppraisal = {
     valence: clamp01(appraisal.valence), arousal: clamp01(appraisal.arousal),
-    control: clamp01(appraisal.control), social_safety: clamp01(appraisal.social_safety),
+    control: clamp01(firstFinite(appraisal.control, controlAtClose)),
+    social_safety: clamp01(appraisal.social_safety),
     coherence: clamp01(appraisal.coherence),
   };
   if (Math.abs(normalizedAppraisal.control - controlAtClose) > 1e-6) {
@@ -267,7 +274,8 @@ function normalizeMetacognitivePrediction(input = {}, confidence, protocolVersio
   if (!input || typeof input !== 'object') {
     throw new Error(`protocol-v${protocolVersion} cycle self-forecast requires metacognitive_prediction`);
   }
-  const predictedSuccessProbability = clamp01(input.predicted_success_probability);
+  const predictedSuccessProbability = clamp01(firstFinite(
+    input.predicted_success_probability, confidence));
   if (Math.abs(predictedSuccessProbability - confidence) > 1e-6) {
     throw new Error('metacognitive predicted_success_probability must match confidence');
   }
@@ -289,12 +297,13 @@ function validateEvidence(evidence) {
     throw new Error('cycle self-forecast requires one to twelve stable evidence references');
   }
   return evidence.map(item => {
-    if (!item || typeof item !== 'object' || !item.type || (!item.id && !item.url)) {
+    const id = item && (item.id || item.ref);
+    if (!item || typeof item !== 'object' || !item.type || (!id && !item.url)) {
       throw new Error('each cycle self-forecast evidence reference requires type and id or url');
     }
     return {
       type: String(item.type).slice(0, 100),
-      ...(item.id ? { id: String(item.id).slice(0, 300) } : {}),
+      ...(id ? { id: String(id).slice(0, 300) } : {}),
       ...(item.url ? { url: String(item.url).slice(0, 1000) } : {}),
     };
   });
@@ -435,12 +444,19 @@ function normalizeForecast(input = {}, protocolVersion = input.protocol_version 
   if (/\b(?:conscious|sentien\w*|phenomen\w*|qualia|subjective experience)\b/i.test(rationale)) {
     throw new Error('cycle self-forecast cannot assert phenomenal status');
   }
-  const controlAtClose = clamp01(input.control_at_close);
+  const selfStateInput = input.self_state_prediction && typeof input.self_state_prediction === 'object'
+    ? input.self_state_prediction : {};
+  const appraisalInput = selfStateInput.appraisal_at_close
+    && typeof selfStateInput.appraisal_at_close === 'object'
+    ? selfStateInput.appraisal_at_close : selfStateInput;
+  const controlAtClose = clamp01(firstFinite(input.control_at_close, appraisalInput.control));
+  const confidence = clamp01(firstFinite(input.confidence,
+    input.metacognitive_prediction?.predicted_success_probability));
   const normalized = {
     predicted_action_types: predictedActionTypes,
     surprise_probability: clamp01(input.surprise_probability),
     control_at_close: controlAtClose,
-    confidence: clamp01(input.confidence),
+    confidence,
     rationale,
     evidence: validateEvidence(input.evidence),
   };

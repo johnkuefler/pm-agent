@@ -103,9 +103,13 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
       for (const risk of projectLedger.risks || []) {
         if (!['open', 'monitoring'].includes(risk.status)) continue;
         const project = projects.get(risk.project_key);
-        const gate = firewall.gateFromText(`${risk.title || ''} ${risk.decision_needed || ''}`);
-        const packet = gate && risk.decision_needed ? {
-          question: risk.decision_needed,
+        const decisionNeeded = String(risk.decision_needed || '').trim();
+        // A risk title can mention money, scope, or a client without presenting a decision. Treating
+        // those nouns as a John gate created silent executive obligations with no answerable packet.
+        const gate = decisionNeeded
+          ? firewall.gateFromText(`${decisionNeeded} ${risk.title || ''}`) : null;
+        const packet = gate ? {
+          question: decisionNeeded,
           recommendation: risk.next_action || 'Use the lowest-risk option that protects the committed outcome.',
           consequence: risk.impact || risk.description || risk.title,
           options: ['Approve Nora recommendation', 'Override with a different direction', 'Defer with a new deadline'],
@@ -120,6 +124,7 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
           next_action: risk.next_action || 'Confirm an owner and mitigation path.',
           resolution_plan: 'Work through the project owner and PM, update Teamwork, and verify the risk is mitigated.',
           executive_gate: gate, requires_executive: Boolean(gate), decision_packet: packet,
+          infer_executive_gate: false,
           evidence: risk.evidence || [{ type: 'project_risk', ref: risk.id }] }, { now });
       }
       for (const risk of projectLedger.risks || []) {

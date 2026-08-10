@@ -68,6 +68,47 @@ test('cycle self-forecasts normalize prospective judgments and reject phenomenal
   }), /must match control_at_close/);
 });
 
+test('cycle self-forecast ingress canonicalizes shared evidence and tied probability aliases', () => {
+  const normalized = cycleSelfForecast.normalizeForecast({
+    protocol_version: 3,
+    predicted_action_types: ['triage'],
+    surprise_probability: 0.2,
+    control_at_close: 'unknown',
+    confidence: 'unknown',
+    self_state_prediction: {
+      attention_slot_types_at_close: ['commitment'],
+      appraisal_at_close: { valence: 0.6, arousal: 0.3, control: 0.7,
+        social_safety: 0.8, coherence: 0.9 },
+      expected_action_count: 2,
+      reentry_probability: 0.1,
+    },
+    metacognitive_prediction: {
+      predicted_success_probability: 0.6,
+      predicted_largest_error_domain: 'attention',
+    },
+    rationale: 'Current orientation supports one bounded triage pass with a stable closing state.',
+    evidence: [{ type: 'intelligence_cycle', ref: 'cycle-compatible' }],
+  });
+  assert.equal(normalized.control_at_close, 0.7);
+  assert.equal(normalized.confidence, 0.6);
+  assert.deepEqual(normalized.evidence, [{ type: 'intelligence_cycle', id: 'cycle-compatible' }]);
+
+  const tiedFields = cycleSelfForecast.normalizeForecast({
+    ...normalized,
+    self_state_prediction: {
+      ...normalized.self_state_prediction,
+      appraisal_at_close: { ...normalized.self_state_prediction.appraisal_at_close,
+        control: 'unknown' },
+    },
+    metacognitive_prediction: {
+      ...normalized.metacognitive_prediction,
+      predicted_success_probability: 'unknown',
+    },
+  }, 3);
+  assert.equal(tiedFields.self_state_prediction.appraisal_at_close.control, 0.7);
+  assert.equal(tiedFields.metacognitive_prediction.predicted_success_probability, 0.6);
+});
+
 test('cycle self-forecast scoring separates self prediction from the frozen baseline', () => {
   const record = {
     forecast: { predicted_action_types: ['review'], surprise_probability: 0.2, control_at_close: 0.8 },

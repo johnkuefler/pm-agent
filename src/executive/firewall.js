@@ -172,7 +172,9 @@ function intakeCase(input = {}, { state: original, now = new Date() } = {}) {
   const summary = clean(input.summary || input.title, 1200);
   if (!summary) throw new Error('case summary is required');
   const category = clean(input.category || 'coordination', 80).toLowerCase();
-  const gate = clean(input.executive_gate || gateFromText(`${summary} ${input.detail || ''}`), 80).toLowerCase() || null;
+  const inferredGate = input.infer_executive_gate === false
+    ? null : gateFromText(`${summary} ${input.detail || ''}`);
+  const gate = clean(input.executive_gate || inferredGate, 80).toLowerCase() || null;
   const requiresExecutive = Boolean(input.requires_executive || (gate && EXECUTIVE_GATES.has(gate)));
   const materialCommitment = commitment({ summary, detail: clean(input.detail, 2400),
     severity: severity(input.severity), owner: clean(input.owner, 240), gate, evidence });
@@ -447,6 +449,25 @@ function notificationCandidates(original) {
     });
 }
 
+function resolutionCandidates(original, { now = new Date(), limit = 20 } = {}) {
+  const state = normalizeState(original, now);
+  const nowMs = new Date(now).getTime();
+  return state.cases.filter(item => !CLOSED_STATES.has(item.state)).sort((left, right) => {
+    const decisionDelta = Number(['decision_ready', 'escalated'].includes(right.state))
+      - Number(['decision_ready', 'escalated'].includes(left.state));
+    if (decisionDelta) return decisionDelta;
+    const leftOverdue = Number(left.resolution_due_at
+      && new Date(left.resolution_due_at).getTime() < nowMs);
+    const rightOverdue = Number(right.resolution_due_at
+      && new Date(right.resolution_due_at).getTime() < nowMs);
+    if (rightOverdue !== leftOverdue) return rightOverdue - leftOverdue;
+    const severityDelta = SEVERITIES.indexOf(right.severity) - SEVERITIES.indexOf(left.severity);
+    if (severityDelta) return severityDelta;
+    return new Date(left.resolution_due_at || left.created_at).getTime()
+      - new Date(right.resolution_due_at || right.created_at).getTime();
+  }).slice(0, Math.max(1, Math.min(100, Number(limit) || 20)));
+}
+
 function metrics(original, { now = new Date() } = {}) {
   const state = normalizeState(original, now);
   const closed = state.cases.filter(item => item.state === 'verified_closed');
@@ -466,6 +487,9 @@ function metrics(original, { now = new Date() } = {}) {
     decisions_ready: active.filter(item => ['decision_ready', 'escalated'].includes(item.state)).length,
     executing: active.filter(item => item.state === 'executing').length,
     overdue: overdue.length,
+    overdue_without_attempt: overdue.filter(item => !(item.attempts || []).length).length,
+    unpacketized_executive: active.filter(item => item.requires_executive
+      && !item.decision_packet).length,
     verified_closed: closed.length,
     handled_without_executive: handled,
     handled_without_executive_rate: closed.length ? handled / closed.length : 0,
@@ -517,9 +541,7 @@ function updatePolicy(original, input = {}, { now = new Date() } = {}) {
 
 function promptContext(original, { limit = 12 } = {}) {
   const state = normalizeState(original);
-  const active = state.cases.filter(item => !CLOSED_STATES.has(item.state))
-    .sort((left, right) => SEVERITIES.indexOf(right.severity) - SEVERITIES.indexOf(left.severity))
-    .slice(0, Math.max(1, Math.min(20, Number(limit) || 12)));
+  const active = resolutionCandidates(state, { limit });
   const summary = metrics(state);
   const lines = [
     '[Executive Firewall, durable accountability ledger]',
@@ -527,6 +549,7 @@ function promptContext(original, { limit = 12 } = {}) {
     `You own ${summary.active} active matter(s). ${summary.decisions_ready} are decision ready; ${summary.resolving} remain yours to resolve without executive involvement.`,
     'Your job is to absorb, resolve, and verify closure. Do not report observations, idle status, unchanged evidence, or work in progress to John.',
     'Contact owners and PMs before John. Use standing authority for coordination, internal scheduling, task management, routine follow-up, project-plan maintenance, meeting follow-through, and Fleet recovery.',
+    'Before discretionary research, advance the first overdue resolving matter below with one concrete owner action, system update, or evidence-backed blocker and next check. Do not merely rediscover or summarize it.',
     'John is the final gate only for budget, scope, major deadlines, client commitments, personnel, legal, security, external relationships, or genuinely exhausted delegated resolution.',
     'Never message John directly about a firewall case. Prepare a complete decision packet and let the firewall dispatcher enforce deduplication, grouping, and the shared interruption budget.',
     'After a decision, execute it, update the systems and people involved, and attach evidence before verified closure.',
@@ -577,6 +600,7 @@ module.exports = {
   dismissCase,
   recordFeedback,
   notificationCandidates,
+  resolutionCandidates,
   metrics,
   dailyBrief,
   updatePolicy,

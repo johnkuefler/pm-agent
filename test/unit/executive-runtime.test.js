@@ -151,3 +151,42 @@ test('Teamwork template text cannot manufacture executive decisions', async t =>
   assert.equal(state.metrics.decisions_ready, 0);
   assert.equal(reconciliation.reconciliation.dismissed_teamwork_false_positives, 1);
 });
+
+test('project risk nouns do not create a John obligation without a concrete decision', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-executive-project-risks-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const now = new Date('2026-08-10T15:00:00.000Z');
+  const risks = [{
+    id: 'risk-rate', project_key: 'project-1', status: 'open', severity: 'medium',
+    title: 'Retainer bill rate mismatch', impact: 'The budget language needs PM investigation.',
+    owner: 'Mallory', next_action: 'Verify the estimate and rate card.',
+    evidence: [{ type: 'project_risk', ref: 'risk-rate' }],
+  }, {
+    id: 'risk-scope', project_key: 'project-1', status: 'open', severity: 'high',
+    title: 'Launch recovery needs a scope choice',
+    decision_needed: 'Approve the proposed scope change for launch recovery.',
+    impact: 'The launch date otherwise moves.', owner: 'Mallory',
+    next_action: 'Approve the bounded recovery scope.',
+    evidence: [{ type: 'project_risk', ref: 'risk-scope' }],
+  }];
+  const runtime = createExecutiveFirewallRuntime({
+    dataDirectory: directory, databaseReady: () => false,
+    writeThrough: async (_key, operation) => operation(),
+    intelligence: { initiativeStatus: () => ({ remaining: 0 }), spendInitiative: () => null },
+    resolveOwner: () => 'UJOHN', postMessage: async () => true,
+    loadProjectControl: () => ({ projects: [{ key: 'project-1', pm: 'Mallory' }], risks }),
+    loadFleetSupervisor: async () => null,
+  });
+  await runtime.hydrate();
+  await runtime.reconcileSources({ now });
+  const state = runtime.snapshot().state;
+  const ordinary = state.cases.find(item => item.source_ref === 'risk-rate');
+  const decision = state.cases.find(item => item.source_ref === 'risk-scope');
+  assert.equal(ordinary.requires_executive, false);
+  assert.equal(ordinary.decision_packet, null);
+  assert.equal(ordinary.state, 'resolving');
+  assert.equal(decision.requires_executive, true);
+  assert.equal(decision.state, 'decision_ready');
+  assert.match(decision.decision_packet.question, /scope change/);
+  assert.equal(runtime.snapshot().metrics.unpacketized_executive, 0);
+});

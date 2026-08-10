@@ -33,6 +33,29 @@ test('ordinary PM intake is owned by Nora without becoming an executive decision
   assert.equal(firewall.notificationCandidates(result.state).length, 0);
 });
 
+test('resolution queue puts decision packets and overdue owner work ahead of new research', () => {
+  const overdue = intake({ source_ref: 'overdue', summary: 'Overdue owner follow-up',
+    resolution_due_at: '2026-08-08T14:00:00.000Z' });
+  const future = intake({ source_ref: 'future', summary: 'Future high-severity risk', severity: 'high',
+    resolution_due_at: '2026-08-09T15:00:00.000Z' }, overdue.state);
+  const gated = intake({ source_ref: 'decision', summary: 'Concrete budget decision',
+    requires_executive: true, executive_gate: 'budget' }, future.state);
+  const prepared = firewall.prepareDecision(gated.state, gated.case.id, {
+    question: 'Approve the recovery budget?', recommendation: 'Approve the bounded option.',
+    consequence: 'The project otherwise slips.', options: ['Approve', 'Accept slip'],
+    evidence: [{ type: 'estimate', ref: 'estimate-queue' }],
+  }, { now });
+  const queue = firewall.resolutionCandidates(prepared.state, { now });
+  assert.equal(queue[0].id, prepared.case.id);
+  assert.equal(queue[1].id, overdue.case.id);
+  const metrics = firewall.metrics(prepared.state, { now });
+  assert.equal(metrics.overdue_without_attempt, 1);
+  assert.equal(metrics.unpacketized_executive, 0);
+  const context = firewall.promptContext(prepared.state);
+  assert.match(context, /Before discretionary research, advance the first overdue resolving matter/);
+  assert.ok(context.indexOf('Concrete budget decision') < context.indexOf('Overdue owner follow-up'));
+});
+
 test('stable source identity absorbs unchanged duplicate noise', () => {
   const first = intake();
   const second = intake({}, first.state);
