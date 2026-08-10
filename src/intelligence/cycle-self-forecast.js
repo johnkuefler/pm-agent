@@ -296,17 +296,24 @@ function validateEvidence(evidence) {
   if (!Array.isArray(evidence) || evidence.length < 1 || evidence.length > 12) {
     throw new Error('cycle self-forecast requires one to twelve stable evidence references');
   }
-  return evidence.map(item => {
+  const normalized = evidence.flatMap(item => {
     const id = item && (item.id || item.ref);
     if (!item || typeof item !== 'object' || !item.type || (!id && !item.url)) {
-      throw new Error('each cycle self-forecast evidence reference requires type and id or url');
+      return [];
     }
-    return {
+    return [{
       type: String(item.type).slice(0, 100),
       ...(id ? { id: String(id).slice(0, 300) } : {}),
       ...(item.url ? { url: String(item.url).slice(0, 1000) } : {}),
-    };
+    }];
   });
+  // The hourly caller sometimes appends a speculative reference with no stable identifier after
+  // already citing the active cycle. One unusable extra must not erase valid evidence, but a
+  // forecast with no stable reference still fails closed and cannot enter the research ledger.
+  if (!normalized.length) {
+    throw new Error('each cycle self-forecast evidence reference requires type and id or url');
+  }
+  return normalized;
 }
 
 function normalizeBehavioralSelfPriorUse(input) {

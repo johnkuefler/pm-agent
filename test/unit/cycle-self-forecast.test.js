@@ -93,6 +93,18 @@ test('cycle self-forecast ingress canonicalizes shared evidence and tied probabi
   assert.equal(normalized.confidence, 0.6);
   assert.deepEqual(normalized.evidence, [{ type: 'intelligence_cycle', id: 'cycle-compatible' }]);
 
+  const withUnusableExtra = cycleSelfForecast.normalizeForecast({
+    ...normalized,
+    evidence: [{ type: 'intelligence_cycle', id: 'cycle-compatible' },
+      { type: 'speculative_context', ref: '' }],
+  }, 3);
+  assert.deepEqual(withUnusableExtra.evidence,
+    [{ type: 'intelligence_cycle', id: 'cycle-compatible' }]);
+  assert.throws(() => cycleSelfForecast.normalizeForecast({
+    ...normalized,
+    evidence: [{ type: 'speculative_context', ref: '' }],
+  }, 3), /requires type and id or url/);
+
   const tiedFields = cycleSelfForecast.normalizeForecast({
     ...normalized,
     self_state_prediction: {
