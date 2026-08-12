@@ -133,8 +133,9 @@ const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLive
 // src/surfaces/slack/ rather than here.
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
 const { isLightweightSocialSlackMessage, slackEmptyReplyFallback, isRelationalSelfReflectionMessage,
-  slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey,
-  stripSlackLookupNarration, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
+  slackConversationPolicy, slackMessageAllText, slackResponseModel, slackSessionKey, isObviouslyNotForNora,
+  stripSlackLookupNarration, slackReplyRequestsSilence, proactiveSlackReplyShouldBeSilent,
+  slackDeliverySegments, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
 const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
 const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
   fetchSlackLanding, buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
@@ -5285,6 +5286,9 @@ app.post('/webhook/status', async (req, res) => {
 // Session history is keyed per-thread / per-DM-channel / per-(channel,user) so concurrent
 // conversations stay isolated.
 const slackSessions = {};
+// Record the newest inbound before entering the per-conversation lock. If a follow-up arrives while
+// Nora is still composing, the older answer is stale and must not be delivered as a separate turn.
+const latestSlackInboundBySession = new Map();
 // Last-activity timestamp per session key. When a session has been idle past
 // SLACK_SESSION_STALE_MS, the next message starts fresh instead of prepending hours-old turns from
 // a possibly-different topic (which would both confuse the answer and re-surface stale context).
@@ -6981,26 +6985,6 @@ function verifySlackRequest(req) {
     signingSecret: process.env.SLACK_SIGNING_SECRET, now: new Date() });
 }
 
-// Cheap heuristic to drop obvious non-Nora-directed chatter before spending a Claude call.
-// Returns true if the message is clearly not for Nora (acknowledgments, emoji-only, side chatter).
-function isObviouslyNotForNora(text, botUserId) {
-  const trimmed = (text || '').trim();
-  // Very short messages — usually "ok", "lol", "yes", reactions
-  if (trimmed.length < 4) return true;
-  // Strip Slack-style :emoji: codes and unicode emoji; if there's nothing meaningful left, skip
-  const stripped = trimmed
-    .replace(/:[a-z0-9_+-]+:/gi, '')
-    .replace(/\p{Extended_Pictographic}/gu, '')
-    .replace(/\s+/g, '');
-  if (stripped.length < 4) return true;
-  // Mentions another user but not Nora — message is directed elsewhere
-  const mentions = trimmed.match(/<@[A-Z0-9]+>/g) || [];
-  if (mentions.length > 0 && botUserId && !mentions.some(m => m.includes(botUserId))) {
-    return true;
-  }
-  return false;
-}
-
 // Claude gate: ask Haiku whether the new message is actually directed at Nora before responding.
 // Used only for thread continuation (DMs and explicit @mentions skip the gate). Defaults to no
 // on errors or ambiguity — better to stay quiet than to chime in unwanted.
@@ -7693,7 +7677,7 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
 
   let mode = 'normal';
   if (!isDM && !isMention) {
-    if (isObviouslyNotForNora(query, noraBotUserId)) {
+    if (isObviouslyNotForNora(text, noraBotUserId)) {
       console.log(`💬 Slack skip (heuristic): ${query.slice(0, 60)}`);
       return;
     }
@@ -7743,6 +7727,8 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
   // person's financial replies out of another person's context (see slackSessionKey).
   const sessionKey = slackSessionKey(channel, rootThreadTs, channelType, user);
   const interactionStartedAt = Date.now();
+  const inboundVersion = `${triggerTs || interactionStartedAt}:${interactionStartedAt}`;
+  latestSlackInboundBySession.set(sessionKey, inboundVersion);
   const interactivePriorityLease = interactivePerformance.beginInteractive('slack');
   const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'slack_response',
     label: mode === 'proactive' ? 'Considering a Slack interjection' : 'Replying in Slack',
@@ -7756,7 +7742,8 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
         return { status: 'already_handled', channel, thread_ts: threadTs };
       }
       await handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs,
-        sessionKey, triggerTs, sourceAttestation, interactionStartedAt, options.terminalAt);
+        sessionKey, triggerTs, sourceAttestation, interactionStartedAt, options.terminalAt,
+        inboundVersion);
       return {
         status: threadTs && isThreadJoined(channel, threadTs) ? 'replied' : 'processed',
         channel, thread_ts: threadTs || null,
@@ -7769,6 +7756,9 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
       outcome: 'Failure contained to this interaction.' });
     throw error;
   } finally {
+    if (latestSlackInboundBySession.get(sessionKey) === inboundVersion) {
+      latestSlackInboundBySession.delete(sessionKey);
+    }
     if (!failed) runtimeActivity.finish(activity.id, { status: 'completed',
       detail: 'The Slack turn left the foreground response path.',
       outcome: 'Interactive priority released.' });
@@ -7777,7 +7767,8 @@ async function handleSlack(channel, user, text, threadTs, channelType, mode = 'n
 }
 
 async function handleSlackImpl(channel, user, text, threadTs, channelType, mode, rootThreadTs, sessionKey, triggerTs,
-  sourceAttestation = null, interactionStartedAt = Date.now(), terminalAtOverride = null) {
+  sourceAttestation = null, interactionStartedAt = Date.now(), terminalAtOverride = null,
+  inboundVersion = null) {
   const handlerStartedAt = Date.now();
   const latencyStages = { queue_ms: handlerStartedAt - interactionStartedAt };
   let providerStartedAt = null;
@@ -8446,7 +8437,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // allowed to end, which is what a person does. Replying to literally every message is a
     // bot tell the humans in the room feel even if they can't name it. Ignored when a live
     // write/send fired this turn, because an action always gets a confirmation.
-    if (/^\[(silence|no reply|nothing)\]$/i.test(reply.trim())) {
+    const supersededByFollowup = inboundVersion
+      && latestSlackInboundBySession.get(sessionKey) !== inboundVersion;
+    const lowValueProactiveReply = mode === 'proactive'
+      && proactiveSlackReplyShouldBeSilent(reply);
+    if (slackReplyRequestsSilence(reply) || lowValueProactiveReply || supersededByFollowup) {
       if (wroteLive || sentSlack || queuedSelf) {
         reply = sentSlack ? 'Sent.' : queuedSelf ? 'Queued for myself.' : "Done, that's updated in Teamwork.";
       } else {
@@ -8474,8 +8469,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
           try { intelligence.excludeCognitiveParameterAssignment(cognitiveParameterAssignment.assignment_id, 'intentional_silence'); } catch {}
           cognitiveParameterAssignmentForFailure = null;
         }
-        console.log('🤖 Nora (Slack): read it, chose not to reply');
-        history.push({ role: 'assistant', content: '[you read their message and chose not to reply; the exchange had wound down]' });
+        console.log(`🤖 Nora (Slack): stayed silent (${supersededByFollowup ? 'superseded by follow-up' : lowValueProactiveReply ? 'low-value proactive draft' : 'reply not needed'})`);
+        if (!supersededByFollowup) {
+          history.push({ role: 'assistant', content: '[you read their message and chose not to reply]' });
+        }
         if (history.length > 20) history.splice(0, 2);
         return;
       }
@@ -8541,7 +8538,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
       reply = `:${emoji}:`;
     }
 
-    const candidateSegments = reply.split(/\n?\s*<split>\s*\n?/i).map(segment => segment.trim()).filter(Boolean).slice(0, 3);
+    const candidateSegments = slackDeliverySegments(reply,
+      { boundedConversation: conversationPolicy.boundedConversation });
     const candidateForMonitor = candidateSegments.join('\n');
     const actionExecutionRecords = intelligence.actionExecutionsById(actionExecutionIds);
     const monitorStartedAt = Date.now();
@@ -8581,7 +8579,8 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, mode,
     // one structured wall. Strip empties, cap at 3, small human-ish pause between sends.
     const segments = reply === candidateForMonitor
       ? candidateSegments
-      : reply.split(/\n?\s*<split>\s*\n?/i).map(s => s.trim()).filter(Boolean).slice(0, 3);
+      : slackDeliverySegments(reply,
+        { boundedConversation: conversationPolicy.boundedConversation });
     reply = segments.join('\n'); // history/log/scrub bookkeeping never sees the token
     recordIntrospectiveResponse(reply);
 

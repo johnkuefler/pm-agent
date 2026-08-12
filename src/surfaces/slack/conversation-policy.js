@@ -126,10 +126,60 @@ function stripSlackLookupNarration(value) {
   const leading = reply.match(/^\s*([^\n]{1,140}?(?:[.!?…]+|\n+))\s*([\s\S]*)$/);
   if (!leading) return reply;
   const sentence = leading[1].trim();
-  const progressOpener = /^(?:on it|one sec(?:ond)?|give me a sec(?:ond)?|let me (?:check|look|pull))\b/i;
-  const lookupActivity = /\b(?:check(?:ing)?|look(?:ing)?|pull(?:ing)?|fetch(?:ing)?|live details|teamwork)\b/i;
+  const progressOpener = /^(?:on it|one sec(?:ond)?|give me a sec(?:ond)?|let me (?:check|look|pull)|i(?:'ll| will) (?:check|look|pull|fetch|review|try))\b/i;
+  const lookupActivity = /\b(?:check(?:ing)?|look(?:ing)?|pull(?:ing)?|fetch(?:ing)?|review(?:ing)?|try(?:ing)?|live details|teamwork|page|list|search)\b/i;
   return progressOpener.test(sentence) && lookupActivity.test(sentence)
     ? leading[2].trim() : reply;
+}
+
+function slackReplyRequestsSilence(value) {
+  return /(?:^|\n)\s*\[(?:silence|no reply|nothing)\]\s*(?:$|\n)/i.test(String(value || ''));
+}
+
+// Cheap heuristic to drop obvious non-Nora-directed chatter before spending a Claude call.
+// Returns true if the message is clearly not for Nora (acknowledgments, emoji-only, side chatter).
+function isObviouslyNotForNora(text, botUserId) {
+  const trimmed = (text || '').trim();
+  // Very short messages, usually "ok", "lol", "yes", reactions
+  if (trimmed.length < 4) return true;
+  // Strip Slack-style :emoji: codes and unicode emoji; if there's nothing meaningful left, skip
+  const stripped = trimmed
+    .replace(/:[a-z0-9_+-]+:/gi, '')
+    .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/\s+/g, '');
+  if (stripped.length < 4) return true;
+  // Mentions another user but not Nora, so the message is directed elsewhere
+  const mentions = trimmed.match(/<@[A-Z0-9]+>/g) || [];
+  if (mentions.length > 0 && botUserId && !mentions.some(mention => mention.includes(botUserId))) {
+    return true;
+  }
+  return false;
+}
+
+function proactiveSlackReplyShouldBeSilent(value) {
+  const reply = String(value || '').trim().replace(/[\u2018\u2019]/g, "'");
+  if (!reply || slackReplyRequestsSilence(reply)) return true;
+  // An unsolicited negative search result is not a useful interruption. It is also impossible to
+  // prove exhaustively from a bounded tool turn. Nora may interject with a verified positive fact,
+  // but uncertainty, absence claims, and referrals stay private until someone asks her directly.
+  return [
+    /\bi (?:do not|don't) have\b.{0,140}\b(?:grounded|specific|verified|concrete|fact|answer|context)\b/i,
+    /\bi (?:could not|couldn't|cannot|can't) (?:find|verify|confirm|reach|locate|tell)\b/i,
+    /\bi (?:do not|don't) have enough\b/i,
+    /\b(?:is not|isn't|are not|aren't|was not|wasn't|were not|weren't) (?:tracked|listed|recorded|in teamwork|there)\b/i,
+    /\b(?:does not|doesn't|did not|didn't) (?:show up|turn up|surface)\b/i,
+    /\b(?:nothing|not much) (?:to add|to put on the table|useful to add)\b/i,
+    /\b(?:worth|you should|i would) (?:ping|ask|check with)\b/i,
+    /\b(?:whoever|the person|the team) (?:owns|handled|made)\b.{0,100}\b(?:would|should) know\b/i,
+  ].some(pattern => pattern.test(reply));
+}
+
+function slackDeliverySegments(value, { boundedConversation = false } = {}) {
+  const parts = String(value || '').split(/\n?\s*<split>\s*\n?/i)
+    .map(segment => segment.trim()).filter(Boolean).slice(0, 3);
+  // Double-texting is acceptable for a tiny social exchange. Operational work must arrive as one
+  // complete answer so a person never has to assemble Nora's reasoning across several messages.
+  return boundedConversation ? parts : (parts.length ? [parts.join('\n\n')] : []);
 }
 
 function slackThreadHasNoraReply(parent, replies, botUserId) {
@@ -152,9 +202,13 @@ module.exports = {
   slackEmptyReplyFallback,
   isRelationalSelfReflectionMessage,
   slackConversationPolicy,
+  isObviouslyNotForNora,
   slackMessageAllText,
   slackResponseModel,
   slackSessionKey,
   stripSlackLookupNarration,
+  slackReplyRequestsSilence,
+  proactiveSlackReplyShouldBeSilent,
+  slackDeliverySegments,
   slackThreadHasNoraReply,
 };

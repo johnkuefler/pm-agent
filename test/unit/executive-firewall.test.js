@@ -41,8 +41,9 @@ test('resolution queue puts decision packets and overdue owner work ahead of new
   const gated = intake({ source_ref: 'decision', summary: 'Concrete budget decision',
     requires_executive: true, executive_gate: 'budget' }, future.state);
   const prepared = firewall.prepareDecision(gated.state, gated.case.id, {
-    question: 'Approve the recovery budget?', recommendation: 'Approve the bounded option.',
-    consequence: 'The project otherwise slips.', options: ['Approve', 'Accept slip'],
+    question: 'Should we fund the recovery crew?', recommendation: 'Fund the recovery crew.',
+    consequence: 'The project otherwise slips.',
+    options: ['Fund the recovery crew', 'Keep current staffing and move launch'],
     evidence: [{ type: 'estimate', ref: 'estimate-queue' }],
   }, { now });
   const queue = firewall.resolutionCandidates(prepared.state, { now });
@@ -92,8 +93,9 @@ test('a possible gate becomes an executive obligation only with a complete packe
   assert.equal(possible.case.requires_executive, false);
   assert.equal(firewall.metrics(possible.state, { now }).unpacketized_executive, 0);
   const prepared = firewall.prepareDecision(possible.state, possible.case.id, {
-    question: 'Approve recovery?', recommendation: 'Approve the bounded option.',
-    consequence: 'The project otherwise slips.', options: ['Approve', 'Accept slip'],
+    question: 'Should we fund recovery?', recommendation: 'Fund the recovery crew.',
+    consequence: 'The project otherwise slips.',
+    options: ['Fund the recovery crew', 'Keep current staffing and move launch'],
     evidence: [{ type: 'estimate', ref: 'estimate-packet-invariant' }],
   }, { now });
   assert.equal(prepared.case.requires_executive, true);
@@ -106,9 +108,9 @@ test('decision packets require recommendation, options, consequence, and evidenc
     { question: 'Approve spend?' }, { now }), /recommendation/);
   const prepared = firewall.prepareDecision(first.state, first.case.id, {
     question: 'Approve the additional production budget?',
-    recommendation: 'Approve the smaller recovery option.',
+    recommendation: 'Use the smaller recovery team.',
     consequence: 'The launch slips without additional production capacity.',
-    options: ['Approve recovery option', 'Accept the slip'],
+    options: ['Use the smaller recovery team', 'Keep current staffing and accept the launch slip'],
     evidence: [{ type: 'estimate', ref: 'estimate-9' }],
     executive_gate: 'budget',
   }, { now });
@@ -120,8 +122,9 @@ test('decision packets require recommendation, options, consequence, and evidenc
 test('one executive decision moves the case into follow-through execution', () => {
   const first = intake({ requires_executive: true, executive_gate: 'budget' });
   const prepared = firewall.prepareDecision(first.state, first.case.id, {
-    question: 'Approve recovery?', recommendation: 'Approve option A.',
-    consequence: 'The deadline otherwise slips.', options: ['Option A'],
+    question: 'Should we fund recovery?', recommendation: 'Fund the recovery crew.',
+    consequence: 'The deadline otherwise slips.',
+    options: ['Fund the recovery crew', 'Keep current staffing and move launch'],
     evidence: [{ type: 'estimate', ref: 'estimate-9' }],
   }, { now });
   const marked = firewall.markNotified(prepared.state, [prepared.case.id], { now,
@@ -164,19 +167,50 @@ test('executive feedback changes future prompt guidance without rewriting eviden
 test('decision message is grouped and asks for a compact reply', () => {
   const first = intake({ source_ref: 'one', requires_executive: true, executive_gate: 'budget' });
   const p1 = firewall.prepareDecision(first.state, first.case.id, {
-    question: 'Approve one?', recommendation: 'Approve.', consequence: 'Work stops otherwise.',
-    options: ['Approve'], evidence: [{ type: 'source', ref: 'one' }],
+    question: 'Should we fund production recovery?', recommendation: 'Fund production recovery.',
+    consequence: 'Work stops otherwise.',
+    options: ['Fund production recovery', 'Pause production until next quarter'],
+    evidence: [{ type: 'source', ref: 'one' }],
   }, { now });
   const second = intake({ source_ref: 'two', summary: 'Second gated matter',
     requires_executive: true, executive_gate: 'scope' }, p1.state);
   const p2 = firewall.prepareDecision(second.state, second.case.id, {
-    question: 'Approve two?', recommendation: 'Approve.', consequence: 'Scope remains blocked.',
-    options: ['Approve'], evidence: [{ type: 'source', ref: 'two' }],
+    question: 'Should we remove reporting from scope?',
+    recommendation: 'Remove reporting from launch scope.', consequence: 'Scope remains blocked.',
+    options: ['Remove reporting from launch scope', 'Move launch to retain reporting'],
+    evidence: [{ type: 'source', ref: 'two' }],
   }, { now });
   const message = firewall.decisionMessage(firewall.notificationCandidates(p2.state));
   assert.match(message, /2 decisions/);
   assert.match(message, /grouped them into one interruption/);
-  assert.match(message, /Reply with the case ID/);
+  assert.match(message, /Reply "case ID approve"/);
+});
+
+test('generic workflow choices are rejected and historical packets return to resolution', () => {
+  const first = intake({ requires_executive: true, executive_gate: 'major_deadline' });
+  assert.throws(() => firewall.prepareDecision(first.state, first.case.id, {
+    question: 'What should happen with the date?',
+    recommendation: 'Date the remaining tasks backward.',
+    consequence: 'Several dates are inconsistent.',
+    options: ['Approve Nora recommendation', 'Override with a different direction',
+      'Defer with a new deadline'],
+    evidence: [{ type: 'schedule', ref: 'schedule-1' }],
+  }, { now }), /real-world outcomes/);
+
+  const legacy = structuredClone(first.state);
+  const item = legacy.cases[0];
+  item.state = 'decision_ready';
+  item.requires_executive = true;
+  item.decision_packet = {
+    question: 'What should happen with the date?', recommendation: 'Date tasks backward.',
+    consequence: 'Dates are inconsistent.',
+    options: ['Approve Nora recommendation', 'Override with a different direction'],
+    evidence: [{ type: 'schedule', ref: 'schedule-1' }], deadline: now.toISOString(),
+  };
+  const normalized = firewall.normalizeState(legacy, now);
+  assert.equal(normalized.cases[0].state, 'resolving');
+  assert.equal(normalized.cases[0].decision_packet, null);
+  assert.match(normalized.cases[0].next_action, /Rebuild a concrete decision packet/);
 });
 
 test('Slack decision parser accepts compact case decisions and ignores ordinary messages', () => {

@@ -108,22 +108,20 @@ function createExecutiveFirewallRuntime({ db, dataDirectory, databaseReady, writ
         // those nouns as a John gate created silent executive obligations with no answerable packet.
         const gate = decisionNeeded
           ? firewall.gateFromText(`${decisionNeeded} ${risk.title || ''}`) : null;
-        const packet = gate ? {
-          question: decisionNeeded,
-          recommendation: risk.next_action || 'Use the lowest-risk option that protects the committed outcome.',
-          consequence: risk.impact || risk.description || risk.title,
-          options: ['Approve Nora recommendation', 'Override with a different direction', 'Defer with a new deadline'],
-          deadline: risk.due_at || undefined,
-          evidence: risk.evidence || [{ type: 'project_risk', ref: risk.id }],
-          executive_gate: gate,
-        } : null;
+        // A risk record names the issue, not the answer. Auto-building a packet from it produced
+        // generic approve/override/defer messages and forced John to parse the underlying schedule.
+        // Keep the risk in Nora's resolving queue until the owner supplies concrete alternatives.
+        const packet = null;
+        const nextAction = gate
+          ? `Get the project owner's recommended answer and at least two concrete choices for: ${decisionNeeded}`
+          : risk.next_action || 'Confirm an owner and mitigation path.';
         await intake({ source: 'project_risk', source_ref: risk.id, category: 'project_delivery',
           authority_class: 'coordination', project_key: risk.project_key,
           severity: risk.severity || 'medium', summary: risk.title,
           detail: risk.impact || risk.description, owner: risk.owner || project?.pm || 'Nora',
-          next_action: risk.next_action || 'Confirm an owner and mitigation path.',
+          next_action: nextAction,
           resolution_plan: 'Work through the project owner and PM, update Teamwork, and verify the risk is mitigated.',
-          executive_gate: gate, requires_executive: Boolean(gate), decision_packet: packet,
+          executive_gate: gate, requires_executive: false, decision_packet: packet,
           infer_executive_gate: false,
           evidence: risk.evidence || [{ type: 'project_risk', ref: risk.id }] }, { now });
       }

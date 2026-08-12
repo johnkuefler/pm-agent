@@ -46,7 +46,7 @@ function createExecutiveFirewallTools(runtime, context = {}) {
     {
       definition: {
         name: 'executive_firewall_prepare_decision',
-        description: 'Prepare a complete decision packet only when a fixed executive gate applies or delegated team resolution is genuinely exhausted. This does not directly message John. The firewall groups and budgets delivery.',
+        description: 'Prepare a complete decision packet only when a fixed executive gate applies or delegated team resolution is genuinely exhausted. Give John one concise question, your recommended real-world answer, and at least two distinct outcome choices. Include the recommended answer as one choice with matching wording. Generic approve, override, or defer options are rejected. This does not directly message John. The firewall groups and budgets delivery.',
         input_schema: { type: 'object', properties: {
           case_id: { type: 'string' }, question: { type: 'string' },
           recommendation: { type: 'string' }, options: { type: 'array', items: { type: 'string' } },

@@ -40,8 +40,9 @@ test('dispatcher groups decision packets into one budgeted executive interruptio
       next_action: 'Prepare the decision packet.',
       evidence: [{ type: 'test', ref: suffix }] });
     await runtime.prepareDecision(intake.case.id, {
-      question: `Approve ${suffix}?`, recommendation: 'Approve the bounded option.',
-      consequence: 'The project otherwise slips.', options: ['Approve', 'Accept slip'],
+      question: `Should we fund recovery ${suffix}?`,
+      recommendation: `Fund recovery ${suffix}.`, consequence: 'The project otherwise slips.',
+      options: [`Fund recovery ${suffix}`, `Move launch ${suffix}`],
       evidence: [{ type: 'test', ref: suffix }], executive_gate: 'budget',
     });
   }
@@ -92,8 +93,9 @@ test('the first source reconciliation establishes a silent executive baseline', 
   const intake = await runtime.intake({ source: 'test', source_ref: 'existing',
     severity: 'high', summary: 'Existing budget decision', executive_gate: 'budget',
     requires_executive: true, evidence: [{ type: 'test', ref: 'existing' }] });
-  await runtime.prepareDecision(intake.case.id, { question: 'Approve?', recommendation: 'Approve.',
-    consequence: 'Work stops.', options: ['Approve'],
+  await runtime.prepareDecision(intake.case.id, { question: 'Should we fund recovery?',
+    recommendation: 'Fund the recovery crew.', consequence: 'Work stops.',
+    options: ['Fund the recovery crew', 'Pause the affected work'],
     evidence: [{ type: 'test', ref: 'existing' }] });
   const cycle = await runtime.cycle({ notify: true });
   assert.equal(cycle.delivery.reason, 'silent_baseline');
@@ -132,8 +134,9 @@ test('Teamwork template text cannot manufacture executive decisions', async t =>
     detail: 'Note anything out of scope before pushing back to the client.', owner: 'Lydia Murphy',
     executive_gate: 'scope', requires_executive: true,
     decision_packet: { question: 'LE - Client review revisions',
-      recommendation: 'Accept the project owner recommendation unless it crosses the named executive gate.',
-      consequence: 'Template task text', options: ['Approve', 'Override', 'Defer'],
+      recommendation: 'Accept the project owner revision plan.',
+      consequence: 'Template task text',
+      options: ['Accept the project owner revision plan', 'Return revisions to client review'],
       evidence: [{ type: 'teamwork_decision_candidate', ref: 'teamwork:task:40272393' }] },
     evidence: [{ type: 'teamwork_decision_candidate', ref: 'teamwork:task:40272393' }],
   });
@@ -186,8 +189,9 @@ test('project risk nouns do not create a John obligation without a concrete deci
   assert.equal(ordinary.requires_executive, false);
   assert.equal(ordinary.decision_packet, null);
   assert.equal(ordinary.state, 'resolving');
-  assert.equal(decision.requires_executive, true);
-  assert.equal(decision.state, 'decision_ready');
-  assert.match(decision.decision_packet.question, /scope change/);
+  assert.equal(decision.requires_executive, false);
+  assert.equal(decision.state, 'resolving');
+  assert.equal(decision.decision_packet, null);
+  assert.match(decision.next_action, /project owner's recommended answer/);
   assert.equal(runtime.snapshot().metrics.unpacketized_executive, 0);
 });

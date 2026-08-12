@@ -64,6 +64,43 @@ function normalizeEvidence(value) {
   })).filter(item => item.ref);
 }
 
+function meaningfulWords(value) {
+  const ignored = new Set(['a', 'an', 'and', 'approve', 'choose', 'do', 'for', 'i', 'my', 'of',
+    'option', 'recommend', 'recommendation', 'the', 'this', 'to', 'use', 'with']);
+  return new Set(String(value || '').toLowerCase().match(/[a-z0-9]+/g)?.filter(word =>
+    word.length >= 3 && !ignored.has(word)) || []);
+}
+
+function decisionPacketQualityError(input = {}, { requireEvidence = true } = {}) {
+  const question = clean(input.question || input.decision, 5000);
+  const recommendation = clean(input.recommendation, 5000);
+  const consequence = clean(input.consequence, 5000);
+  const options = normalizeList(input.options, 8, 2000);
+  const evidence = normalizeEvidence(input.evidence);
+  if (!question || !recommendation || !consequence || options.length < 2
+    || (requireEvidence && !evidence.length)) {
+    return 'decision packet requires a concise question, recommendation, consequence, at least two concrete options, and evidence';
+  }
+  if (question.length > 320) return 'decision question must be 320 characters or fewer';
+  if (recommendation.length > 500) return 'decision recommendation must be 500 characters or fewer';
+  if (consequence.length > 700) return 'decision consequence must be 700 characters or fewer';
+  const normalizedOptions = options.map(option => option.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim());
+  if (new Set(normalizedOptions).size < 2) return 'decision options must be distinct';
+  const genericOption = /^(?:approve|override|reject|defer)(?: nora(?: s)? recommendation| with a different direction| with a new deadline)?$/;
+  if (normalizedOptions.some(option => genericOption.test(option))) {
+    return 'decision options must describe real-world outcomes, not approval workflow';
+  }
+  const recommendationWords = meaningfulWords(recommendation);
+  const matchesAnOption = options.some(option => {
+    const optionWords = meaningfulWords(option);
+    let overlap = 0;
+    for (const word of recommendationWords) if (optionWords.has(word)) overlap += 1;
+    return overlap >= 2;
+  });
+  if (!matchesAnOption) return 'decision recommendation must clearly select one of the concrete options';
+  return null;
+}
+
 function emptyState(now = new Date()) {
   return {
     protocol_version: PROTOCOL_VERSION,
@@ -106,8 +143,18 @@ function normalizeState(input, now = new Date()) {
   const cases = Array.isArray(input.cases) ? input.cases.filter(item => item?.id)
     .slice(-MAX_CASES) : [];
   // Preserve case object identity because baseline suppression deliberately marks the normalized
-  // records in place. Only repair the invalid historical executive flag during normalization.
+  // records in place. Retire historical packets that passed the old nonempty-field check but did
+  // not give John an answerable choice. The underlying case stays owned and returns to resolution.
   for (const item of cases) {
+    const packetError = item.decision_packet
+      ? decisionPacketQualityError(item.decision_packet) : null;
+    if (packetError) {
+      item.rejected_decision_packet = { ...item.decision_packet, rejected_reason: packetError };
+      item.decision_packet = null;
+      item.requires_executive = false;
+      if (['decision_ready', 'escalated'].includes(item.state)) item.state = 'resolving';
+      item.next_action = clean(`Rebuild a concrete decision packet through the project owner. ${item.next_action || ''}`, 1200);
+    }
     item.requires_executive = Boolean(item.requires_executive && item.decision_packet);
   }
   return {
@@ -301,10 +348,7 @@ function normalizeDecisionPacket(input = {}, caseItem) {
   const consequence = clean(input.consequence, 1600);
   const options = normalizeList(input.options, 5, 1000);
   const evidence = normalizeEvidence(input.evidence?.length ? input.evidence : caseItem.evidence);
-  if (!question || !recommendation || !consequence || !options.length || !evidence.length) {
-    throw new Error('decision packet requires question, recommendation, consequence, options, and evidence');
-  }
-  return {
+  const packet = {
     question,
     recommendation,
     options,
@@ -313,6 +357,9 @@ function normalizeDecisionPacket(input = {}, caseItem) {
     evidence,
     prepared_at: timestamp(input.prepared_at || new Date()),
   };
+  const qualityError = decisionPacketQualityError(packet);
+  if (qualityError) throw new Error(qualityError);
+  return packet;
 }
 
 function prepareDecision(original, caseId, input = {}, { now = new Date() } = {}) {
@@ -579,14 +626,16 @@ function decisionMessage(cases) {
   const blocks = list.map(item => {
     const packet = item.decision_packet;
     return [
-      `${item.id}: ${packet.question}`,
-      `My recommendation: ${packet.recommendation}`,
-      `Why it matters: ${packet.consequence}`,
-      `Options: ${packet.options.join(' | ')}`,
-      `Needed by: ${packet.deadline}`,
+      `Decision needed, ${item.id}`,
+      packet.question,
+      `My call: ${packet.recommendation}`,
+      'Concrete choices:',
+      ...packet.options.map((option, index) => `${index + 1}. ${option}`),
+      `Why now: ${packet.consequence}`,
+      `Decision due: ${packet.deadline}`,
     ].join('\n');
   });
-  return `${intro}\n\n${blocks.join('\n\n')}\n\nReply with the case ID and approve, override, reject, or defer. I will carry the decision through to verified closure.`;
+  return `${intro}\n\n${blocks.join('\n\n')}\n\nReply "case ID approve" for my call, or "case ID override: your choice." I will carry it through to verified closure.`;
 }
 
 module.exports = {
@@ -599,6 +648,7 @@ module.exports = {
   AUTHORITY_CLASSES,
   emptyState,
   normalizeState,
+  decisionPacketQualityError,
   gateFromText,
   intakeCase,
   recordAttempt,
