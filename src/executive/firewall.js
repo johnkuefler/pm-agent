@@ -508,10 +508,23 @@ function notificationCandidates(original) {
 function resolutionCandidates(original, { now = new Date(), limit = 20 } = {}) {
   const state = normalizeState(original, now);
   const nowMs = new Date(now).getTime();
-  return state.cases.filter(item => !CLOSED_STATES.has(item.state)).sort((left, right) => {
-    const decisionDelta = Number(['decision_ready', 'escalated'].includes(right.state))
-      - Number(['decision_ready', 'escalated'].includes(left.state));
-    if (decisionDelta) return decisionDelta;
+  return state.cases.filter(item => {
+    if (CLOSED_STATES.has(item.state)) return false;
+    // A real blocker with a future check time is already managed. Keeping it at the top of every
+    // hourly prompt caused repeated rereads and follow-ups while unrelated portfolio work waited.
+    return !item.next_check_at || new Date(item.next_check_at).getTime() <= nowMs;
+  }).sort((left, right) => {
+    const leftNeedsDecisionDelivery = Number(['decision_ready', 'escalated'].includes(left.state)
+      && left.decision_packet
+      && Number(left.notified_revision || 0) < Number(left.material_revision || 1));
+    const rightNeedsDecisionDelivery = Number(['decision_ready', 'escalated'].includes(right.state)
+      && right.decision_packet
+      && Number(right.notified_revision || 0) < Number(right.material_revision || 1));
+    if (rightNeedsDecisionDelivery !== leftNeedsDecisionDelivery) {
+      return rightNeedsDecisionDelivery - leftNeedsDecisionDelivery;
+    }
+    const executingDelta = Number(right.state === 'executing') - Number(left.state === 'executing');
+    if (executingDelta) return executingDelta;
     const leftOverdue = Number(left.resolution_due_at
       && new Date(left.resolution_due_at).getTime() < nowMs);
     const rightOverdue = Number(right.resolution_due_at
@@ -519,6 +532,13 @@ function resolutionCandidates(original, { now = new Date(), limit = 20 } = {}) {
     if (rightOverdue !== leftOverdue) return rightOverdue - leftOverdue;
     const severityDelta = SEVERITIES.indexOf(right.severity) - SEVERITIES.indexOf(left.severity);
     if (severityDelta) return severityDelta;
+    const leftLastAttempt = left.attempts?.at(-1)?.at;
+    const rightLastAttempt = right.attempts?.at(-1)?.at;
+    if (Boolean(leftLastAttempt) !== Boolean(rightLastAttempt)) return leftLastAttempt ? 1 : -1;
+    if (leftLastAttempt && rightLastAttempt) {
+      const attemptAgeDelta = new Date(leftLastAttempt).getTime() - new Date(rightLastAttempt).getTime();
+      if (attemptAgeDelta) return attemptAgeDelta;
+    }
     return new Date(left.resolution_due_at || left.created_at).getTime()
       - new Date(right.resolution_due_at || right.created_at).getTime();
   }).slice(0, Math.max(1, Math.min(100, Number(limit) || 20)));
@@ -535,6 +555,8 @@ function metrics(original, { now = new Date() } = {}) {
   const active = state.cases.filter(item => !CLOSED_STATES.has(item.state));
   const overdue = active.filter(item => item.resolution_due_at
     && new Date(item.resolution_due_at).getTime() < new Date(now).getTime());
+  const waitingForNextCheck = active.filter(item => item.next_check_at
+    && new Date(item.next_check_at).getTime() > new Date(now).getTime());
   return {
     generated_at: timestamp(now),
     total_cases: state.cases.length,
@@ -544,6 +566,7 @@ function metrics(original, { now = new Date() } = {}) {
     executing: active.filter(item => item.state === 'executing').length,
     overdue: overdue.length,
     overdue_without_attempt: overdue.filter(item => !(item.attempts || []).length).length,
+    waiting_for_next_check: waitingForNextCheck.length,
     unpacketized_executive: active.filter(item => item.requires_executive
       && !item.decision_packet).length,
     verified_closed: closed.length,
@@ -605,7 +628,11 @@ function promptContext(original, { limit = 12 } = {}) {
     `You own ${summary.active} active matter(s). ${summary.decisions_ready} are decision ready; ${summary.resolving} remain yours to resolve without executive involvement.`,
     'Your job is to absorb, resolve, and verify closure. Do not report observations, idle status, unchanged evidence, or work in progress to John.',
     'Contact owners and PMs before John. Use standing authority for coordination, internal scheduling, task management, routine follow-up, project-plan maintenance, meeting follow-through, and Fleet recovery.',
-    'Before discretionary research, advance the first overdue resolving matter below with one concrete owner action, system update, or evidence-backed blocker and next check. Do not merely rediscover or summarize it.',
+    'Resolution is a bounded lane, not the whole job. Advance at most two eligible cases per hourly run, then return to the wider portfolio. Preserve capacity for newly urgent work.',
+    'Prefer a concrete owner action, system update, dismissal candidate, or verified closure. Do not merely rediscover or summarize a case.',
+    'If a case is blocked, record the blocker and a realistic next_check_at. It leaves the eligible queue until then. Do not keep working it, reread it, or contact the same person again before that time unless they reply or material evidence changes.',
+    'Never send more than one proactive teammate contact from this lane in a run. Every contact still passes the shared attention budget, deduplication, working-hours, and anti-annoyance rails.',
+    'A firewall backlog never blocks an urgent inbound request, live delivery issue, scheduled meeting, or necessary portfolio PM work. Rotate rather than fixate.',
     'John is the final gate only for budget, scope, major deadlines, client commitments, personnel, legal, security, external relationships, or genuinely exhausted delegated resolution.',
     'Never message John directly about a firewall case. Prepare a complete decision packet and let the firewall dispatcher enforce deduplication, grouping, and the shared interruption budget.',
     'After a decision, execute it, update the systems and people involved, and attach evidence before verified closure.',

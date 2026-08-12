@@ -53,8 +53,37 @@ test('resolution queue puts decision packets and overdue owner work ahead of new
   assert.equal(metrics.overdue_without_attempt, 1);
   assert.equal(metrics.unpacketized_executive, 0);
   const context = firewall.promptContext(prepared.state);
-  assert.match(context, /Before discretionary research, advance the first overdue resolving matter/);
+  assert.match(context, /Advance at most two eligible cases per hourly run/);
+  assert.match(context, /Never send more than one proactive teammate contact/);
   assert.ok(context.indexOf('Concrete budget decision') < context.indexOf('Overdue owner follow-up'));
+});
+
+test('blocked cases wait until their next check and attempted peers rotate', () => {
+  const blocked = intake({ source_ref: 'blocked', summary: 'Waiting on owner evidence',
+    resolution_due_at: '2026-08-08T14:00:00.000Z' });
+  const deferred = firewall.recordAttempt(blocked.state, blocked.case.id, {
+    action: 'Asked the owner for the missing evidence', result: 'Owner will respond tomorrow',
+    next_check_at: '2026-08-09T15:00:00.000Z',
+    evidence: [{ type: 'slack_thread', ref: 'thread-blocked' }],
+  }, { now });
+  const untouched = intake({ source_ref: 'untouched', summary: 'Another overdue owner follow-up',
+    resolution_due_at: '2026-08-08T14:00:00.000Z' }, deferred.state);
+  const recentlyAttempted = intake({ source_ref: 'attempted', summary: 'Recently attempted follow-up',
+    resolution_due_at: '2026-08-08T14:00:00.000Z' }, untouched.state);
+  const attempted = firewall.recordAttempt(recentlyAttempted.state, recentlyAttempted.case.id, {
+    action: 'Updated the task owner', result: 'No outcome yet',
+    evidence: [{ type: 'teamwork_comment', ref: 'comment-attempted' }],
+  }, { now });
+
+  const queue = firewall.resolutionCandidates(attempted.state, { now });
+  assert.equal(queue.some(item => item.id === blocked.case.id), false);
+  assert.equal(queue[0].id, untouched.case.id);
+  assert.equal(queue[1].id, recentlyAttempted.case.id);
+  assert.equal(firewall.metrics(attempted.state, { now }).waiting_for_next_check, 1);
+
+  const tomorrow = new Date('2026-08-09T16:00:00.000Z');
+  assert.equal(firewall.resolutionCandidates(attempted.state, { now: tomorrow })
+    .some(item => item.id === blocked.case.id), true);
 });
 
 test('stable source identity absorbs unchanged duplicate noise', () => {

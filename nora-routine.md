@@ -256,6 +256,13 @@ passive rereads, unchanged checks, or activity that cannot change the outcome. R
 authority returned by the endpoint. Budget, scope, major deadline, client commitment, personnel, legal, security,
 and external-relationship decisions always remain executive gates.
 
+Resolution is a bounded lane, not permission to fixate. Advance at most two eligible Firewall cases in one hourly
+run, make at most one proactive teammate contact from this lane, then return to the wider portfolio. Every contact
+still passes the shared attention budget, deduplication, working-hours, and anti-annoyance rails. If a case is
+blocked, record the evidence-backed blocker and a realistic `next_check_at`; do not reread it, work it, or contact
+the same person again before that time unless they reply or material evidence changes. A waiting case must not
+block an urgent inbound request, a live delivery issue, a scheduled meeting, or necessary PM work elsewhere.
+
 Prepare a decision packet only when a fixed gate is reached or reasonable team-level resolution is exhausted.
 The packet must contain the decision, recommendation, alternatives, tradeoffs, evidence, consequence of delay,
 and a real deadline. Never send the packet or a routine case summary directly to John. The server dispatcher owns
