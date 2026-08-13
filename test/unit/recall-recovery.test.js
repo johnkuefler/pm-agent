@@ -78,3 +78,23 @@ test('one Recall failure does not block recovery of the next meeting', async () 
   assert.equal(persisted[0].bot_id, 'healthy');
   assert.equal(persisted[0].source, 'local_finalization');
 });
+
+test('the production recovery can clear one bounded outage backlog in a pass', async () => {
+  const { createRecallTranscriptRecoveryRuntime } = require('../../src/surfaces/meeting/recall-recovery');
+  const persisted = [];
+  const sessions = {};
+  const runtime = createRecallTranscriptRecoveryRuntime({
+    get: async url => ({ data: url.startsWith('download:') ? [] : finishedBot() }),
+    recallBase: 'https://recall.test', apiKey: 'test', controlTimeoutMs: 1000,
+    listTranscripts: async () => Array.from({ length: 16 }, (_, index) => staleRow(`bot-${index}`)),
+    getTranscript: async () => ({ transcript: [] }),
+    saveTranscript: async botId => persisted.push(botId),
+    sessions, chatSessions: {}, checkpointStalled: new Map(), checkpointAttempts: new Map(),
+    persistedCounts: new Map(), clearActiveBot() {}, refreshRecentMeetings: async () => {},
+    enqueuePostProcessing() {}, logger: { log() {}, warn() {} },
+  });
+  const result = await runtime.reconcile();
+  assert.equal(result.checked, 16);
+  assert.equal(result.recovered, 16);
+  assert.equal(persisted.length, 16);
+});

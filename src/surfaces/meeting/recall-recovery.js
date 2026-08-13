@@ -88,6 +88,7 @@ function createRecallTranscriptRecoveryRuntime({ get, recallBase, apiKey, contro
       logger.log?.(`Recovered and finalized Recall transcript ${botId} from ${source} (${transcript.length} utterances)`);
     },
     staleMs: 10 * 60 * 1000,
+    limit: 24,
     logger,
   });
 }
