@@ -133,6 +133,7 @@ const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLive
 const { parseRecallTranscriptEvent, parseRecallStatusEvent, localMeetingUtterance,
   appendUniqueUtterance, mergeKeyedTranscriptHistories } = require('./src/surfaces/meeting/recall-events');
 const { createRecallTranscriptRecoveryRuntime } = require('./src/surfaces/meeting/recall-recovery');
+const { createRecallWebhookVerificationMiddleware } = require('./src/surfaces/meeting/recall-verification');
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
@@ -517,12 +518,12 @@ function _writeThrough(entity, fn, options = {}) {
 // expand the body allowance for Slack or any other live surface.
 app.use(requestPerformance.middleware);
 app.use('/developmental-reading/sources', requireAuth, express.json({ limit: '8mb' }));
-
-// Capture raw body for Slack signature verification
 app.use(express.json({
   limit: '2mb',
   verify: (req, res, buf) => { req.rawBody = buf; }
 }));
+const verifyRecallRealtime = createRecallWebhookVerificationMiddleware({ getSecrets: () => [process.env.RECALL_WORKSPACE_VERIFICATION_SECRET] });
+const verifyRecallDashboard = createRecallWebhookVerificationMiddleware({ getSecrets: () => [process.env.RECALL_SVIX_WEBHOOK_SECRET, process.env.RECALL_WORKSPACE_VERIFICATION_SECRET] });
 app.use('/assets', express.static(path.join(__dirname, 'public'), {
   fallthrough: false,
   maxAge: 0,
@@ -4473,7 +4474,7 @@ async function drainAcknowledgedMeetingWork({ timeoutMs = 20000 } = {}) {
 // POST /webhook/recall-calendar — fires on calendar.update / calendar.sync_events.
 // For sync_events: re-list events updated since last_sync, find ones Nora is invited
 // to that have a meeting URL, schedule a bot for each (deduped by event id).
-app.post('/webhook/recall-calendar', async (req, res) => {
+app.post('/webhook/recall-calendar', verifyRecallDashboard, async (req, res) => {
   // Always 200 quickly so Recall doesn't retry; do the work async.
   res.json({ ok: true });
   const ownership = beginAcknowledgedMeetingWork('calendar-sync');
@@ -4652,7 +4653,7 @@ app.post('/register-bot', requireAuth, async (req, res) => {
 });
 
 // Recall.ai sends speaker-identified transcript chunks here (primary transcript path)
-app.post('/webhook/transcript', async (req, res) => {
+app.post('/webhook/transcript', verifyRecallRealtime, async (req, res) => {
   res.sendStatus(200);
   const ownership = beginAcknowledgedMeetingWork('transcript');
   let ownershipError = null;
@@ -4796,7 +4797,7 @@ function parseNoraModeCommand(text) {
   return null;
 }
 
-app.post('/webhook/chat', async (req, res) => {
+app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
   res.sendStatus(200);
   const ownership = beginAcknowledgedMeetingWork('meeting-chat');
   let ownershipError = null;
@@ -5194,7 +5195,7 @@ function recomputeAutoOneOnOne(session) {
 
 // Recall participant join/leave. Tracks present HUMANS (Nora herself excluded by name) so the
 // auto-1:1 flips off as soon as a 2nd person is in the room and back on if it drops to one.
-app.post('/webhook/participant', (req, res) => {
+app.post('/webhook/participant', verifyRecallRealtime, (req, res) => {
   res.sendStatus(200);
   try {
     const eventType = req.body?.event;
@@ -5215,7 +5216,7 @@ app.post('/webhook/participant', (req, res) => {
 });
 
 // Meeting status updates — track bot_id and clean up
-app.post('/webhook/status', async (req, res) => {
+app.post('/webhook/status', verifyRecallDashboard, async (req, res) => {
   res.sendStatus(200);
   const ownership = beginAcknowledgedMeetingWork('meeting-status');
   let ownershipError = null;
