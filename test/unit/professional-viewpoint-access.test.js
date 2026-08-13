@@ -29,7 +29,8 @@ function formViewpoint(store, index) {
   }));
   const dream = { id: `dream-${token}`, date: '2026-07-16' };
   const packet = reflection.packetFor({ memories, dream,
-    currentViewpoints: store.earnedViewpointsSnapshot().viewpoints });
+    currentViewpoints: store.earnedViewpointsSnapshot().viewpoints,
+    now: new Date('2026-07-16T15:00:00.000Z') });
   const output = {
     decision: 'form', abstention_reason: null,
     candidate: {

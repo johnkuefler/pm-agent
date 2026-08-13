@@ -128,7 +128,11 @@ const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneE
 const { describeTranscript, filterTranscriptsByStatus,
   sortTranscriptsNewestFirst } = require('./src/surfaces/meeting/transcript-index');
 const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLiveTranscript, applyUtteranceEditToSession,
-  applyUtteranceDeleteToSession } = require('./src/surfaces/meeting/transcript-checkpoint');
+  applyUtteranceDeleteToSession, transcriptStartsWith,
+  createMeetingTranscriptHydrator } = require('./src/surfaces/meeting/transcript-checkpoint');
+const { parseRecallTranscriptEvent, parseRecallStatusEvent, localMeetingUtterance,
+  appendUniqueUtterance, mergeKeyedTranscriptHistories } = require('./src/surfaces/meeting/recall-events');
+const { createRecallTranscriptRecoveryRuntime } = require('./src/surfaces/meeting/recall-recovery');
 // Slack surface. Extracted from this file; see CLAUDE.md for why new Slack code belongs in
 // src/surfaces/slack/ rather than here.
 const { boundedTerminalAt: boundedSlackTerminalAt } = require('./src/surfaces/slack/budget');
@@ -3971,7 +3975,8 @@ app.post('/voice-agent/response', async (req, res) => {
 
   if (session) {
     const isMuted = !!session.muted;
-    session.transcript.push({ speaker: isMuted ? 'Nora (muted)' : 'Nora', text, timestamp: new Date().toISOString() });
+    session.transcript.push(localMeetingUtterance(isMuted ? 'Nora (muted)' : 'Nora', text,
+      { kind: 'nora_voice' }));
     try {
       scheduleTranscriptCheckpoint(bot_id, session.transcript);
     } catch (err) {
@@ -4653,15 +4658,11 @@ app.post('/webhook/transcript', async (req, res) => {
   let ownershipError = null;
   try {
 
-  const event = req.body;
-  if (event.event !== 'transcript.data') return;
-
-  const bot_id = event.data?.bot?.id || event.data?.bot_id || event.bot_id || activeBotId;
-  const words = event.data?.data?.words;
-  const text = words?.map(w => w.text).join(' ') || event.data?.data?.text;
-  const speaker = event.data?.data?.participant?.name || 'Participant';
-
-  if (!text) return;
+  const parsed = parseRecallTranscriptEvent(req.body);
+  if (!parsed) return;
+  const bot_id = parsed.bot_id || activeBotId;
+  if (!bot_id) return;
+  const { speaker, text } = parsed.utterance;
   console.log(`[${speaker}]: ${text}`);
 
   if (!sessions[bot_id]) sessions[bot_id] = newSession();
@@ -4674,6 +4675,7 @@ app.post('/webhook/transcript', async (req, res) => {
     console.error(`Transcript resume failed for ${bot_id}; persistence will retry:`, error.message);
   }
   session.trialUnitKey = bot_id;
+  if (!appendUniqueUtterance(session.transcript, parsed.utterance)) return;
 
   session.lastRecallLineAt = Date.now(); // Recall transcript stream is alive; Whisper buffer fallback stands down
   session.buffer.push(`${speaker}: ${text}`);
@@ -4686,8 +4688,6 @@ app.post('/webhook/transcript', async (req, res) => {
     // A newly-heard speaker can flip the call from solo to group: retune turn-end eagerness live.
     syncVoiceEagerness(session);
   }
-
-  session.transcript.push({ speaker, text, timestamp: new Date().toISOString() });
 
   // On a NEW speaker, immediately push a fresh system prompt to OpenAI so the next
   // response includes the updated [Who's in this meeting] block with their name. The
@@ -4831,7 +4831,8 @@ app.post('/webhook/chat', async (req, res) => {
   // Add to transcript if session exists
   const session = sessions[bot_id];
   if (session) {
-    session.transcript.push({ speaker: `${speaker} (chat)`, text: finalText, timestamp: new Date().toISOString() });
+    session.transcript.push(localMeetingUtterance(`${speaker} (chat)`, finalText,
+      { kind: 'meeting_chat_inbound' }));
     session.buffer.push(`${speaker} (chat): ${finalText}`);
     if (session.buffer.length > 20) session.buffer.shift();
   }
@@ -5033,7 +5034,8 @@ app.post('/webhook/chat', async (req, res) => {
 
     // Add Nora's chat reply to transcript
     if (session) {
-      session.transcript.push({ speaker: 'Nora (chat)', text: reply, timestamp: new Date().toISOString() });
+      session.transcript.push(localMeetingUtterance('Nora (chat)', reply,
+        { kind: 'meeting_chat_outbound' }));
       try {
         const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
         scheduleTranscriptCheckpoint(bot_id, session.transcript);
@@ -5219,12 +5221,13 @@ app.post('/webhook/status', async (req, res) => {
   let ownershipError = null;
   try {
   console.log('📡 Status webhook:', JSON.stringify(req.body).slice(0, 300));
-  const { bot_id, data } = req.body;
+  const status = parseRecallStatusEvent(req.body);
+  const bot_id = status?.bot_id || null;
   if (bot_id) {
     activeBotId = bot_id;
     console.log('📡 Tracked bot_id from status:', bot_id);
   }
-  if (data?.status?.code === 'done') {
+  if (status?.code === 'done') {
     console.log(`Meeting ended. Cleaning up session ${bot_id}`);
     // Persist transcript before cleaning up — but never for dummy test agents, which are
     // stateless rehearsals and should leave no transcript file behind.
@@ -5233,7 +5236,7 @@ app.post('/webhook/status', async (req, res) => {
     if (session && !session.dummy && session.transcript && session.transcript.length > 0) {
       const transcriptData = {
         bot_id,
-        ended: new Date().toISOString(),
+        ended: status.updated_at,
         transcript: session.transcript.map(item => ({ ...item })),
       };
       try {
@@ -5250,7 +5253,7 @@ app.post('/webhook/status', async (req, res) => {
         session.cleanupAfterTranscriptSave = true;
         retainSessionForTranscriptRetry = true;
         queueTranscriptCheckpoint(bot_id, session.transcript, {
-          ended: new Date().toISOString(), delayMs: 2000,
+          ended: status.updated_at, delayMs: 2000,
         });
       }
       // These jobs own immutable meeting inputs and can proceed even when the final database
@@ -11137,49 +11140,17 @@ function scheduleTranscriptEpisodeCheckpoint(botId, transcript) {
   _transcriptEpisodeTimers.set(botId, timer);
 }
 
-function transcriptStartsWith(transcript, prefix) {
-  if (!Array.isArray(transcript) || !Array.isArray(prefix) || prefix.length > transcript.length) return false;
-  for (let index = 0; index < prefix.length; index += 1) {
-    if (JSON.stringify(transcript[index]) !== JSON.stringify(prefix[index])) return false;
-  }
-  return true;
-}
-
-async function ensureMeetingTranscriptHydrated(botId, session) {
-  if (!session || session.dummy || session.transcriptHydrated === true) return session;
-  if (session.transcriptHydrationPromise) return session.transcriptHydrationPromise;
-  const hydration = (async () => {
-    const durable = await getTranscriptDoc(botId);
-    const retained = Array.isArray(durable?.transcript) ? durable.transcript : [];
-    const current = Array.isArray(session.transcript) ? session.transcript : [];
-    if (retained.length && !transcriptStartsWith(current, retained)) {
-      session.transcript = [...retained, ...current];
-    }
-    _transcriptPersistedCounts.set(botId, retained.length);
-    _transcriptEpisodeRecordedCounts.set(botId, retained.length);
-    if (_transcriptEpisodePending.has(botId)) {
-      _transcriptEpisodePending.set(botId, session.transcript);
-    }
-    const recent = session.transcript.slice(-20);
-    session.buffer = recent.map(item => `${item.speaker || 'Participant'}: ${item.text || ''}`);
-    const retainedSpeakers = recent.map(item => item.speaker)
-      .filter(speaker => speaker && !/^(Nora|Nora \(muted\)|Nora \(chat\)|Screen share|Participant)$/i.test(speaker));
-    session.speakersHeard = new Set(retainedSpeakers);
-    session.knownSpeakers = new Set(retainedSpeakers);
-    session.transcriptHydrated = true;
-    return session;
-  })();
-  session.transcriptHydrationPromise = hydration;
-  try {
-    return await hydration;
-  } finally {
-    if (session.transcriptHydrationPromise === hydration) session.transcriptHydrationPromise = null;
-  }
-}
+const ensureMeetingTranscriptHydrated = createMeetingTranscriptHydrator({
+  getTranscript: getTranscriptDoc,
+  persistedCounts: _transcriptPersistedCounts,
+  episodeRecordedCounts: _transcriptEpisodeRecordedCounts,
+  episodePending: _transcriptEpisodePending,
+});
 
 function armTranscriptCheckpoint(botId, delayMs = 1000) {
   if (_transcriptCheckpointsClosing || _transcriptCheckpointTimers.has(botId)
-    || _transcriptCheckpointInFlight.has(botId) || !_transcriptCheckpointPending.has(botId)) return;
+    || _transcriptCheckpointInFlight.has(botId) || _transcriptCheckpointStalled.has(botId)
+    || !_transcriptCheckpointPending.has(botId)) return;
   const timer = setTimeout(() => {
     _transcriptCheckpointTimers.delete(botId);
     if (_transcriptCheckpointInFlight.has(botId)) return;
@@ -11190,6 +11161,7 @@ function armTranscriptCheckpoint(botId, delayMs = 1000) {
       recordEpisode: false, incremental: true,
     }).then(() => {
       _transcriptCheckpointAttempts.delete(botId);
+      _transcriptCheckpointStalled.delete(botId);
       if (pending.ended) {
         // Cache freshness is separately owned and bounded during shutdown. It must never extend
         // the critical transcript-durability checkpoint.
@@ -11241,12 +11213,14 @@ function armTranscriptCheckpoint(botId, delayMs = 1000) {
 }
 
 function queueTranscriptCheckpoint(botId, transcript, { ended = null, delayMs = 1000 } = {}) {
+  if (_transcriptCheckpointStalled.has(botId)) return false;
   const prior = _transcriptCheckpointPending.get(botId);
   _transcriptCheckpointPending.set(botId, {
     transcript,
     ended: ended || prior?.ended || null,
   });
   armTranscriptCheckpoint(botId, delayMs);
+  return true;
 }
 
 function scheduleTranscriptCheckpoint(botId, transcript) {
@@ -11462,6 +11436,27 @@ function recentMeetingsRefreshSnapshot(now = Date.now()) {
     cached_meetings: _recentMeetingsCache.length,
   };
 }
+
+const recallTranscriptRecovery = createRecallTranscriptRecoveryRuntime({
+  get: axios.get, recallBase: RECALL_BASE, apiKey: process.env.RECALL_API_KEY,
+  controlTimeoutMs: RECALL_CONTROL_TIMEOUT_MS,
+  listTranscripts: listTranscriptDocs,
+  getTranscript: getTranscriptDoc,
+  saveTranscript: saveTranscriptDoc, sessions, chatSessions,
+  checkpointStalled: _transcriptCheckpointStalled,
+  checkpointAttempts: _transcriptCheckpointAttempts,
+  persistedCounts: _transcriptPersistedCounts,
+  clearActiveBot: botId => { if (activeBotId === botId) activeBotId = null; },
+  refreshRecentMeetings: refreshRecentMeetingsCache,
+  enqueuePostProcessing: ({ botId, ended, transcript, meetingMeta }) => {
+    const data = { bot_id: botId, ended, transcript };
+    enqueuePostInteractionExtraction('recovered-meeting-intelligence', post =>
+      extractMeetingIntelligence(botId, data, meetingMeta, { post }));
+    enqueuePostInteractionExtraction('recovered-meeting-debrief', post =>
+      runMeetingDebrief(botId, data, meetingMeta, { post }));
+  },
+});
+
 async function drainRecentMeetingsRefresh({ timeoutMs = 10000 } = {}) {
   const active = _recentMeetingsRefreshInFlight;
   if (!active) return true;
@@ -12054,7 +12049,8 @@ async function describeScreenshareForTranscript(base64Png, botId) {
 
     const session = sessions[botId];
     if (!session) return;
-    session.transcript.push({ speaker: 'Screen share', text: description, timestamp: new Date().toISOString() });
+    session.transcript.push(localMeetingUtterance('Screen share', description,
+      { kind: 'screen_share' }));
     _screenshareHealth.descriptions_completed += 1;
     try {
       const dir = fs.existsSync(VOLUME_DIR) ? VOLUME_DIR : __dirname;
@@ -16118,6 +16114,10 @@ async function completePostListenStartup(background) {
     // The worker is serialized, low-priority, resource-gated, and preempted by Slack/meetings.
     scheduleRecurringRuntimeJob('recent-meetings-refresh', 10 * 60 * 1000,
       refreshRecentMeetingsCache, { initialDelayMs: 12000, timeoutMs: 30000 });
+    scheduleRecurringRuntimeJob('recall-transcript-recovery', 5 * 60 * 1000,
+      () => recallTranscriptRecovery.reconcile(), {
+        initialDelayMs: 60000, timeoutMs: 120000,
+      });
     scheduleRecurringRuntimeJob('soma-refresh', 60 * 1000, computeSoma, { timeoutMs: 15000 });
     scheduleRecurringRuntimeJob('daily-memory-maintenance', 60 * 60 * 1000,
       () => memoryMaintenance.run(), { initialDelayMs: 5 * 60 * 1000, timeoutMs: 60000 });

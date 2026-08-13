@@ -1,5 +1,7 @@
 'use strict';
 
+const { mergeKeyedTranscriptHistories } = require('./recall-events');
+
 // When a transcript checkpoint fails, how many more times is it worth trying?
 //
 // The write path refuses to overwrite durable history that the in-memory transcript does not
@@ -23,6 +25,45 @@ const RETRY_CEILING_MS = 30000;
 const BASE_RETRY_MS = 1000;
 
 const DIVERGENCE_PATTERN = /diverged from its durable prefix|expected-count conflict persisted|exceeds in-memory length/i;
+
+function transcriptStartsWith(transcript, prefix) {
+  if (!Array.isArray(transcript) || !Array.isArray(prefix) || prefix.length > transcript.length) return false;
+  return prefix.every((item, index) => JSON.stringify(transcript[index]) === JSON.stringify(item));
+}
+
+function createMeetingTranscriptHydrator({ getTranscript, persistedCounts,
+  episodeRecordedCounts, episodePending }) {
+  return async function ensureMeetingTranscriptHydrated(botId, session) {
+    if (!session || session.dummy || session.transcriptHydrated === true) return session;
+    if (session.transcriptHydrationPromise) return session.transcriptHydrationPromise;
+    const hydration = (async () => {
+      const durable = await getTranscript(botId);
+      const retained = Array.isArray(durable?.transcript) ? durable.transcript : [];
+      const current = Array.isArray(session.transcript) ? session.transcript : [];
+      if (retained.length && !transcriptStartsWith(current, retained)) {
+        session.transcript = mergeKeyedTranscriptHistories(retained, current)
+          || [...retained, ...current];
+      }
+      persistedCounts.set(botId, retained.length);
+      episodeRecordedCounts.set(botId, retained.length);
+      if (episodePending.has(botId)) episodePending.set(botId, session.transcript);
+      const recent = session.transcript.slice(-20);
+      session.buffer = recent.map(item => `${item.speaker || 'Participant'}: ${item.text || ''}`);
+      const retainedSpeakers = recent.map(item => item.speaker)
+        .filter(speaker => speaker && !/^(Nora|Nora \(muted\)|Nora \(chat\)|Screen share|Participant)$/i.test(speaker));
+      session.speakersHeard = new Set(retainedSpeakers);
+      session.knownSpeakers = new Set(retainedSpeakers);
+      session.transcriptHydrated = true;
+      return session;
+    })();
+    session.transcriptHydrationPromise = hydration;
+    try {
+      return await hydration;
+    } finally {
+      if (session.transcriptHydrationPromise === hydration) session.transcriptHydrationPromise = null;
+    }
+  };
+}
 
 function isUnresolvableDivergence(error) {
   return DIVERGENCE_PATTERN.test(String(error?.message || error || ''));
@@ -74,7 +115,17 @@ async function appendLiveTranscript({ botId, session, transcript, ended, db, per
       if (session) session.transcript = retained;
       expected = retained.length;
     } else {
-      throw new Error('transcript checkpoint diverged from its durable prefix; refusing destructive overwrite');
+      // Recall can redeliver an event after a process or transport boundary. Server-generated
+      // timestamps made the two copies byte-different even though they represented the same
+      // utterance. Stable source ids let us preserve every durable row, discard only confirmed
+      // duplicates, and append genuinely new rows. Legacy unkeyed history still fails closed.
+      const merged = mergeKeyedTranscriptHistories(retained, snapshot);
+      if (!merged) {
+        throw new Error('transcript checkpoint diverged from its durable prefix; refusing destructive overwrite');
+      }
+      snapshot = merged;
+      if (session) session.transcript = merged;
+      expected = retained.length;
     }
     result = await db.appendTranscript(botId, ended || null, snapshot.slice(expected), expected);
     if (!result.applied) throw new Error('transcript checkpoint expected-count conflict persisted after reload');
@@ -118,6 +169,8 @@ module.exports = {
   MAX_TRANSIENT_ATTEMPTS,
   MAX_DIVERGENCE_ATTEMPTS,
   RETRY_CEILING_MS,
+  transcriptStartsWith,
+  createMeetingTranscriptHydrator,
   isUnresolvableDivergence,
   retryDelayMs,
   checkpointRetryPlan,

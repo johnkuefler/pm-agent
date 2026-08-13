@@ -526,7 +526,7 @@ test('live server opts eligible Slack work into complete trials but isolates rel
   assert.match(server, /_transcriptCheckpointsClosing = false[\s\S]*?const background = options\.background/,
     'a clean in-process restart must reopen transcript checkpoint admission');
   assert.match(server,
-    /await ensureMeetingTranscriptHydrated\(bot_id, session\)[\s\S]{0,3000}session\.transcript\.push/,
+    /await ensureMeetingTranscriptHydrated\(bot_id, session\)[\s\S]{0,3000}appendUniqueUtterance\(session\.transcript/,
     'the first post-restart meeting utterance must restore its durable prefix before append');
   assert.match(server,
     /db\.appendTranscript\(botId, ended \|\| null, snapshot\.slice\(expected\), expected\)/,

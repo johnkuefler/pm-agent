@@ -105,6 +105,24 @@ test('a genuine divergence refuses to write at all', async () => {
     'the in-memory transcript must survive a refused write');
 });
 
+test('stable source ids reconcile a replayed or edited live copy', async () => {
+  const durable = [
+    { source_id: 'recall:a', text: 'durable edit' },
+    { source_id: 'recall:b', text: 'second' },
+  ];
+  const db = fakeDb({ durable, applyFirst: false });
+  const session = { transcript: [
+    { source_id: 'recall:a', text: 'old event body' },
+    { source_id: 'recall:c', text: 'new event' },
+  ] };
+  const result = await appendLiveTranscript({ botId: 'b', session, ended: null, db,
+    persistedCounts: new Map([['b', 2]]), transcriptStartsWith: startsWith });
+  assert.deepEqual(session.transcript.map(item => item.source_id),
+    ['recall:a', 'recall:b', 'recall:c']);
+  assert.equal(session.transcript[0].text, 'durable edit');
+  assert.equal(result.utterance_count, 3);
+});
+
 // Root cause: a dashboard edit rewrote durable history without touching the live session, so the
 // two drifted apart in the middle and no retry could ever reconcile them.
 test('an edit applied to the session keeps durable a prefix of live', () => {
