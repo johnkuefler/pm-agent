@@ -46,7 +46,8 @@ test('dashboard assets are focused, deploy-versioned, and valid JavaScript', () 
 
 test('core task, Slack, meeting, transcript, and settings controls remain visible', () => {
   for (const id of [
-    'task-list', 'slack-log-search', 'slack-log-range', 'slack-log-status', 'slack-log-list',
+    'task-list', 'new-task-destination', 'slack-log-search', 'slack-log-range',
+    'slack-log-status', 'slack-log-list',
     'url', 'transcript-list', 'calendar-status', 'mcp-list',
   ]) assert.match(html, new RegExp(`id="${id}"`));
 

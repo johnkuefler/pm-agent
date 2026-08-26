@@ -142,3 +142,52 @@ test('scheduled Slack delivery refuses a task without a recorded destination', a
   assert.equal(ctx.calls.deliveries.length, 0);
   assert.equal(ctx.getTasks()[0].status, 'pending');
 });
+
+test('task creation records a fixed Slack destination and source thread', () => {
+  const ctx = harness();
+  const res = response();
+
+  ctx.routes.get('post:/tasks')({ body: {
+    action: 'Post the weekly report', destination_channel: 'C031HHSBM1Q',
+    source_channel: 'slack:D123', source_thread_ts: '1787768000.001',
+  } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(ctx.getTasks()[0].metadata.destination_channel, 'C031HHSBM1Q');
+  assert.equal(ctx.getTasks()[0].source_thread_ts, '1787768000.001');
+});
+
+test('task update can safely repair or clear its fixed Slack destination', () => {
+  const task = { id: 'task-repair', action: 'Post report', status: 'pending',
+    metadata: { retained: true } };
+  const ctx = harness([task]);
+  const repaired = response();
+
+  ctx.routes.get('put:/tasks/:id')({
+    params: { id: task.id }, body: { destination_channel: 'C031HHSBM1Q' },
+  }, repaired);
+  assert.equal(repaired.statusCode, 200);
+  assert.deepEqual(ctx.getTasks()[0].metadata,
+    { retained: true, destination_channel: 'C031HHSBM1Q' });
+
+  const cleared = response();
+  ctx.routes.get('put:/tasks/:id')({
+    params: { id: task.id }, body: { destination_channel: '' },
+  }, cleared);
+  assert.equal(cleared.statusCode, 200);
+  assert.deepEqual(ctx.getTasks()[0].metadata, { retained: true });
+});
+
+test('task destination updates reject channel names and malformed ids', () => {
+  const task = { id: 'task-bad-destination', action: 'Post report', status: 'pending' };
+  const ctx = harness([task]);
+  const res = response();
+
+  ctx.routes.get('put:/tasks/:id')({
+    params: { id: task.id }, body: { destination_channel: '#pm-team' },
+  }, res);
+
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.error, /Slack channel or DM ID/);
+  assert.equal(ctx.getTasks()[0].metadata, undefined);
+});

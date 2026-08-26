@@ -42,7 +42,8 @@
         taskDataCache = {};
         tasks.forEach(t => { taskDataCache[t.id] = {
           action: t.action, detail: t.detail || '', assignee: t.assignee || '',
-          due: t.due || '', scheduled_for: t.scheduled_for || '', recurrence: t.recurrence || ''
+          due: t.due || '', scheduled_for: t.scheduled_for || '', recurrence: t.recurrence || '',
+          destination_channel: t.metadata?.destination_channel || ''
         }; });
         list.innerHTML = tasks.map(t => {
           const transcriptLink = t.source_bot_id
@@ -94,10 +95,11 @@
       const due = document.getElementById('new-task-due').value.trim();
       const schedRaw = document.getElementById('new-task-scheduled').value.trim();
       const recurrence = document.getElementById('new-task-recurrence').value.trim();
+      const destination_channel = document.getElementById('new-task-destination').value.trim();
       // <input type="datetime-local"> gives e.g. "2026-05-15T16:00" with no zone - convert to ISO
       const scheduled_for = schedRaw ? new Date(schedRaw).toISOString() : null;
       try {
-        const r = await api('/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, assignee, due, scheduled_for, recurrence: recurrence || null }) });
+        const r = await api('/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, assignee, due, scheduled_for, recurrence: recurrence || null, destination_channel: destination_channel || null }) });
         const d = await r.json();
         if (d.error) { s.className = 'toast err'; s.textContent = d.error; return; }
         document.getElementById('new-task-action').value = '';
@@ -105,6 +107,7 @@
         document.getElementById('new-task-due').value = '';
         document.getElementById('new-task-scheduled').value = '';
         document.getElementById('new-task-recurrence').value = '';
+        document.getElementById('new-task-destination').value = '';
         s.className = 'toast ok';
         s.textContent = d.scheduled_for
           ? `Scheduled for ${new Date(d.scheduled_for).toLocaleString()}`
@@ -150,6 +153,7 @@
           <input id="edit-task-scheduled-${id}" type="datetime-local" value="${escHtml(isoToLocalInput(data.scheduled_for))}" style="flex: 1;" title="Leave empty to clear schedule" />
           <input id="edit-task-recurrence-${id}" value="${escHtml(data.recurrence)}" placeholder="Recurrence (e.g. weekly:friday:16:00)" style="flex: 1;" />
         </div>
+        <input id="edit-task-destination-${id}" value="${escHtml(data.destination_channel)}" placeholder="Slack destination ID (optional)" style="margin-bottom: 6px;" />
         <div class="task-buttons">
           <button class="btn btn-primary btn-sm" onclick="saveTaskEdit('${escHtml(id)}')">Save</button>
           <button class="btn btn-danger btn-sm" onclick="loadTasks()">Cancel</button>
@@ -165,8 +169,9 @@
       const due = document.getElementById('edit-task-due-' + id).value.trim();
       const schedRaw = document.getElementById('edit-task-scheduled-' + id).value.trim();
       const recurrence = document.getElementById('edit-task-recurrence-' + id).value.trim();
+      const destination_channel = document.getElementById('edit-task-destination-' + id).value.trim();
       const scheduled_for = schedRaw ? new Date(schedRaw).toISOString() : null;
-      const r = await api('/tasks/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, detail, assignee, due, scheduled_for, recurrence: recurrence || null }) });
+      const r = await api('/tasks/' + id, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action, detail, assignee, due, scheduled_for, recurrence: recurrence || null, destination_channel: destination_channel || null }) });
       const d = await r.json();
       if (d.error) { alert(d.error); return; }
       loadTasks();

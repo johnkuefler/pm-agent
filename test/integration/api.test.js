@@ -69,8 +69,15 @@ test('health, API auth, and the reduced dashboard are available', async () => {
 test('tasks preserve scheduling, recurrence, completion, and deletion', async () => {
   const future = await request('/tasks', { method: 'POST', body: {
     action: 'Prepare the client status agenda', scheduled_for: '2099-01-01T15:00:00.000Z',
+    destination_channel: 'C031HHSBM1Q',
   } });
   assert.equal(future.response.status, 200);
+  assert.equal((await request(`/tasks/${future.body.id}`)).body.metadata.destination_channel,
+    'C031HHSBM1Q');
+  const repaired = await request(`/tasks/${future.body.id}`, { method: 'PUT', body: {
+    destination_channel: 'C07PV5G7T2N',
+  } });
+  assert.equal(repaired.body.task.metadata.destination_channel, 'C07PV5G7T2N');
   assert.equal((await request('/tasks?status=pending')).body.some(item => item.id === future.body.id), false);
   assert.equal((await request('/tasks?status=pending&include=all')).body.some(item => item.id === future.body.id), true);
 
