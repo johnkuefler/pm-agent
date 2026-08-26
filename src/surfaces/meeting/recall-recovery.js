@@ -76,7 +76,7 @@ function createRecallTranscriptRecoveryRuntime({ get, recallBase, apiKey, contro
     fetchDownload: async downloadUrl => (await get(downloadUrl, { timeout: 30000 })).data,
     persistTranscript: async ({ bot_id: botId, ended, transcript, source }) => {
       const meetingMeta = sessions[botId]?.meetingMeta || {};
-      await saveTranscript(botId, transcript, ended, { recordEpisode: false });
+      await saveTranscript(botId, transcript, ended);
       checkpointStalled.delete(botId);
       checkpointAttempts.delete(botId);
       persistedCounts.set(botId, transcript.length);

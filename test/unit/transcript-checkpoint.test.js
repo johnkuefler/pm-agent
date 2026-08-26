@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 
 const { MAX_TRANSIENT_ATTEMPTS, MAX_DIVERGENCE_ATTEMPTS, RETRY_CEILING_MS,
   isUnresolvableDivergence, retryDelayMs, checkpointRetryPlan, abandonedCheckpointReport,
-  appendLiveTranscript, applyUtteranceEditToSession,
+  appendLiveTranscript, createMeetingTranscriptHydrator, applyUtteranceEditToSession,
   applyUtteranceDeleteToSession } = require('../../src/surfaces/meeting/transcript-checkpoint');
 
 const DIVERGED = new Error('transcript checkpoint diverged from its durable prefix; refusing destructive overwrite');
@@ -72,6 +72,21 @@ function fakeDb({ durable = [], applyFirst = true }) {
 const startsWith = (list, prefix) => prefix.every((item, index) =>
   JSON.stringify(list[index]) === JSON.stringify(item));
 const line = text => ({ text });
+
+test('meeting transcript hydration has no dependency on removed episode bookkeeping', async () => {
+  const persistedCounts = new Map();
+  const hydrate = createMeetingTranscriptHydrator({
+    getTranscript: async () => ({ transcript: [line('saved')] }),
+    persistedCounts,
+  });
+  const session = { transcript: [line('saved'), line('new')], buffer: [] };
+
+  await hydrate('bot-episode-free', session);
+
+  assert.equal(session.transcriptHydrated, true);
+  assert.equal(persistedCounts.get('bot-episode-free'), 1);
+  assert.deepEqual(session.buffer, ['Participant: saved', 'Participant: new']);
+});
 
 test('a normal append sends only the tail past the durable count', async () => {
   const db = fakeDb({});
