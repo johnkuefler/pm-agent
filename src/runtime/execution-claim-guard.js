@@ -23,8 +23,11 @@ const REQUEST_PATTERNS = Object.freeze({
 });
 const TOOL_SUPPORT = Object.freeze({
   communication: /(?:send|post|message|email|notify|share|comment)/i,
-  create: /(?:create|add|open)/i,
-  update: /(?:update|edit|change|move|rename|assign|schedule|book|set)/i,
+  // Google Workspace exposes both Calendar creation and modification through one verified
+  // `manage_event` write. Treat that exact connector tool as support for either requested family;
+  // otherwise a successful Calendar write is hidden behind the generic unverified-action reply.
+  create: /(?:create|add|open|manage[_ ]?event)/i,
+  update: /(?:update|edit|change|move|rename|assign|schedule|book|set|manage[_ ]?event)/i,
   complete: /(?:complete|close|finish|resolve|reopen|update|mark)/i,
   delete: /(?:delete|remove)/i,
   upload: /(?:upload|attach)/i,

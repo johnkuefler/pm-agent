@@ -63,6 +63,19 @@ test('guard distinguishes external execution from ordinary thinking and handles 
   assert.equal(unverifiedDone.disposition, 'blocked');
 });
 
+test('a verified Google Workspace manage_event receipt supports calendar creation and updates', () => {
+  const receipt = execution({ tool_name: 'manage_event', tool_family: 'Google Workspace MCP' });
+  const created = guard.apply({ task: 'Create a calendar meeting for tomorrow.',
+    candidate: 'I created the calendar meeting for tomorrow at noon.', executions: [receipt] });
+  assert.equal(created.disposition, 'verified');
+  assert.deepEqual(created.claim_families, ['create']);
+
+  const updated = guard.apply({ task: 'Move the calendar meeting one hour later.',
+    candidate: 'I moved the calendar meeting one hour later.', executions: [receipt] });
+  assert.equal(updated.disposition, 'verified');
+  assert.deepEqual(updated.claim_families, ['update']);
+});
+
 test('claim attestations retain commitments rather than response text and fail closed under tampering', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-action-claim-'));
   let tick = 0;
