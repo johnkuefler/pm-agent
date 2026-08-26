@@ -39,6 +39,7 @@ const { registerCoworkInstructionsRoute } = require('./src/routes/cowork-instruc
 const { registerUiRoutes } = require('./src/routes/ui');
 const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
 const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
+const { registerSlackConversationRoutes } = require('./src/routes/registerSlackConversationRoutes');
 const { createInteractiveLatencyRecorder } = require('./src/surfaces/interactive-latency');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
@@ -74,6 +75,8 @@ const { isLightweightSocialSlackMessage, slackEmptyReplyFallback,
   stripSlackLookupNarration, slackReplyRequestsSilence,
   slackDeliverySegments, slackThreadHasNoraReply } = require('./src/surfaces/slack/conversation-policy');
 const { fitSlackSystemPrompt } = require('./src/surfaces/slack/prompt-fit');
+const { createSlackConversationAudit, slackAuditInteractionId, shouldAuditSlackInbound } =
+  require('./src/surfaces/slack/conversation-audit');
 const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
   buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
@@ -123,6 +126,10 @@ const operationStore = createOperationStore({
 // falls back to its original JSON-on-volume behavior — the safety net that keeps the
 // live system running if Postgres ever hiccups.
 let _dbReady = false;
+const slackConversationAudit = createSlackConversationAudit({
+  db,
+  databaseReady: () => _dbReady,
+});
 const _cache = {};   // entity → in-memory copy backing sync reads
 let _persistedTaskState = new Map();
 let _persistedSlackThreadState = new Map();
@@ -2864,23 +2871,38 @@ async function downloadSlackFile(downloadUrl, token, maxBytes, { deadlineAt = nu
   throw new Error(`Too many redirects (last status ${lastStatus})`);
 }
 
-async function handleSlackFiles(event, channel, user, threadTs, queryText, sourceAttestation = null) {
+async function handleSlackFiles(event, channel, user, threadTs, queryText, sourceAttestation = null,
+  auditInteractionId = null) {
   console.log(`📎 Slack file event from ${user} (channel ${channel}): ${event.files.length} file(s), text="${queryText.slice(0, 80)}"`);
   const slackToken = process.env.SLACK_BOT_TOKEN;
   if (!slackToken) {
     console.warn('📎 SLACK_BOT_TOKEN not set — cannot download Slack files');
+    await slackConversationAudit.mark(auditInteractionId, {
+      handling_status: 'failed', error: 'SLACK_BOT_TOKEN is not configured',
+    });
     return;
   }
   ensureInboxDir();
+  await slackConversationAudit.mark(auditInteractionId, { handling_status: 'processing_file' });
+  const responseTexts = [];
+  const responseTimestamps = [];
 
   // Confirm receipt before any download or model work. File intake is asynchronous from Slack's
   // perspective, but the sender should still see an immediate, provider-independent response.
-  await axios.post('https://slack.com/api/chat.postMessage', {
-    channel, thread_ts: threadTs, text: 'I see the attachment — pulling it down now.'
+  const receiptText = 'I see the attachment, pulling it down now.';
+  const receiptPost = await axios.post('https://slack.com/api/chat.postMessage', {
+    channel, thread_ts: threadTs, text: receiptText
   }, {
     headers: { Authorization: `Bearer ${slackToken}`, 'Content-Type': 'application/json' },
     timeout: SLACK_CONTROL_TIMEOUT_MS,
-  }).catch(error => console.warn('Slack file receipt post failed:', error.message));
+  }).catch(error => {
+    console.warn('Slack file receipt post failed:', error.message);
+    return null;
+  });
+  if (receiptPost?.data?.ok) {
+    responseTexts.push(receiptText);
+    if (receiptPost.data.ts) responseTimestamps.push(receiptPost.data.ts);
+  }
 
   const savedFiles = [];
   const failedFiles = [];
@@ -2931,8 +2953,9 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
     // Nothing we could save — surface that back to the sender so they don't wait forever.
     const reasons = failedFiles.map(f => `${f.name}: ${f.reason}`).join('; ').slice(0, 400);
     const text = `I saw the file${event.files.length > 1 ? 's' : ''} you sent but couldn't pull ${event.files.length > 1 ? 'any of them' : 'it'} down. Reason: ${reasons}. If the error mentions HTML or sign-in, the bot likely needs the files:read scope (or to be in the channel where the file was originally shared).`;
+    let failurePost = null;
     try {
-      await axios.post('https://slack.com/api/chat.postMessage', {
+      failurePost = await axios.post('https://slack.com/api/chat.postMessage', {
         channel,
         thread_ts: threadTs,
         text
@@ -2941,6 +2964,19 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
         timeout: SLACK_CONTROL_TIMEOUT_MS,
       });
     } catch {}
+    if (failurePost?.data?.ok) {
+      responseTexts.push(text);
+      if (failurePost.data.ts) responseTimestamps.push(failurePost.data.ts);
+    }
+    await slackConversationAudit.mark(auditInteractionId, {
+      handling_status: responseTexts.length ? 'delivered' : 'failed',
+      response_kind: 'file_intake',
+      response_text: responseTexts.join('\n'),
+      response_slack_timestamps: responseTimestamps,
+      responded: responseTexts.length > 0,
+      error: responseTexts.length ? null : reasons || 'Slack file intake failed',
+      metadata: { saved_file_count: 0, failed_file_count: failedFiles.length },
+    });
     return;
   }
 
@@ -2984,8 +3020,9 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
   const ackText = queryText
     ? `The ${savedFiles.length > 1 ? 'files are' : 'file is'} downloaded and queued. I'll follow up here.`
     : `The ${savedFiles.length > 1 ? 'files are' : 'file is'} downloaded. What would you like me to do with ${savedFiles.length > 1 ? 'them' : 'it'}?`;
+  let ackPost = null;
   try {
-    await axios.post('https://slack.com/api/chat.postMessage', {
+    ackPost = await axios.post('https://slack.com/api/chat.postMessage', {
       channel,
       thread_ts: threadTs,
       text: ackText
@@ -2996,6 +3033,20 @@ async function handleSlackFiles(event, channel, user, threadTs, queryText, sourc
   } catch (err) {
     console.warn('📎 Slack ACK post failed:', err.response?.data || err.message);
   }
+  if (ackPost?.data?.ok) {
+    responseTexts.push(ackText);
+    if (ackPost.data.ts) responseTimestamps.push(ackPost.data.ts);
+  }
+  await slackConversationAudit.mark(auditInteractionId, {
+    handling_status: responseTexts.length ? 'delivered' : 'failed',
+    response_kind: 'file_intake',
+    response_text: responseTexts.join('\n'),
+    response_slack_timestamps: responseTimestamps,
+    responded: responseTexts.length > 0,
+    error: responseTexts.length ? null : 'Slack file intake acknowledgments were not delivered',
+    metadata: { saved_file_count: savedFiles.length, failed_file_count: failedFiles.length,
+      queued_task_id: taskId },
+  });
 
   console.log(`📎 Created inbox task ${taskId} for ${savedFiles.length} file(s) — action: "${action}"`);
 }
@@ -3364,7 +3415,37 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   // Empty text is fine when files are attached — that's a "do something with this file"
   // intent and we route to the file inbox path below. Otherwise still bail.
   if (!query && !hasFiles) return;
-  if (isDMEvent && await teammateApprovals.handleSlackDecision({ text: query, rawText: text, user, channel, eventTs: event.ts, attestation: sourceAttestation })) return;
+  const joinedAuditThread = !!event.thread_ts && isThreadJoined(channel, event.thread_ts);
+  const auditInteractionId = shouldAuditSlackInbound(event, { joinedThread: joinedAuditThread })
+    ? slackAuditInteractionId(channel, event.ts) : null;
+  if (auditInteractionId) {
+    await slackConversationAudit.recordInbound({
+      interactionId: auditInteractionId,
+      slackEventId: body.event_id,
+      channelId: channel,
+      channelType: event.channel_type,
+      threadTs: event.thread_ts || null,
+      inboundTs: event.ts,
+      userId: user,
+      inboundText: query,
+      metadata: {
+        event_type: event.type,
+        event_subtype: event.subtype || null,
+        file_count: hasFiles ? event.files.length : 0,
+      },
+    });
+  }
+  if (isDMEvent) {
+    const handledApproval = await teammateApprovals.handleSlackDecision({
+      text: query, rawText: text, user, channel, eventTs: event.ts, attestation: sourceAttestation,
+    });
+    if (handledApproval) {
+      await slackConversationAudit.mark(auditInteractionId, {
+        handling_status: 'handled_by_approval_flow', response_kind: 'approval_flow',
+      });
+      return;
+    }
+  }
   // File-share path: ONLY in DMs. Without this gate, every file drop in a
   // A channel file drop should not trigger Nora to download and ask what to do with it.
   // File handling is
@@ -3374,9 +3455,14 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
     const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
     if (!isDM) {
       console.log(`📎 Ignoring channel file drop (channel_type=${event.channel_type}, channel=${channel}) — file handling is DM-only`);
+      await slackConversationAudit.mark(auditInteractionId, {
+        handling_status: 'intentionally_skipped',
+        metadata: { reason: 'channel_file_handling_is_dm_only' },
+      });
       return;
     }
-    await handleSlackFiles(event, channel, user, threadTs, query, sourceAttestation);
+    await handleSlackFiles(event, channel, user, threadTs, query, sourceAttestation,
+      auditInteractionId);
     return;
   }
 
@@ -3388,7 +3474,12 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   }
 
   // Decide whether to respond at the routing level (DM, mention, or active thread).
-  if (!shouldRespond(event)) return;
+  if (!shouldRespond(event)) {
+    await slackConversationAudit.mark(auditInteractionId, {
+      handling_status: 'intentionally_skipped', metadata: { reason: 'routing_gate' },
+    });
+    return;
+  }
 
   // For active-thread continuation without a fresh mention, apply a conservative gate.
   const isDM = event.channel_type === 'im' || event.channel_type === 'mpim';
@@ -3397,6 +3488,9 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
   if (!isDM && !isMention) {
     if (isObviouslyNotForNora(text, noraBotUserId)) {
       console.log(`💬 Slack skip (heuristic): ${query.slice(0, 60)}`);
+      await slackConversationAudit.mark(auditInteractionId, {
+        handling_status: 'intentionally_skipped', metadata: { reason: 'addressed_to_someone_else' },
+      });
       return;
     }
     const sessionKey = slackSessionKey(channel, event.thread_ts, event.channel_type);
@@ -3404,6 +3498,9 @@ async function processSlackWebhookEvent(body, sourceAttestation = null) {
     const engage = await shouldEngageInThread(history, query);
     if (!engage) {
       console.log(`💬 Slack skip (thread gate): ${query.slice(0, 60)}`);
+      await slackConversationAudit.mark(auditInteractionId, {
+        handling_status: 'intentionally_skipped', metadata: { reason: 'thread_engagement_gate' },
+      });
       return;
     }
   }
@@ -3476,18 +3573,20 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
   let providerStartedAt = null;
   let providerFinishedAt = null;
   let firstDeliveryRecorded = false;
+  let requesterName = null;
   const conversationPolicy = slackConversationPolicy(text);
   const boundedTerminalAt = def => boundedSlackTerminalAt(terminalAtOverride, def); // src/surfaces/slack/budget.js
   let slackTerminalAt = boundedTerminalAt(
     interactionStartedAt + (conversationPolicy.attachLiveTools
       ? SLACK_TOOL_TURN_TERMINAL_MS : SLACK_CONVERSATIONAL_TERMINAL_MS));
+  const turnRef = triggerTs ? `slack:${channel}:${triggerTs}`
+    : `slack:${channel}:turn-${interactionStartedAt}`;
+  await slackConversationAudit.mark(turnRef, { handling_status: 'processing' });
   try {
     const key = sessionKey;
     // Session keys intentionally span a conversation, but research receipts and action attestations
     // must bind to one inbound Slack event. Reusing the session key here caused later DM turns to
     // collide with already-closed assignments and earlier claim receipts.
-    const turnRef = triggerTs ? `slack:${channel}:${triggerTs}`
-      : `slack:${channel}:turn-${interactionStartedAt}`;
     if (!slackSessions[key]) slackSessions[key] = [];
     const history = slackSessions[key];
     // Stale-session reset: if this conversation has sat idle past the staleness window, drop the
@@ -3504,7 +3603,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     const identityStartedAt = Date.now();
     const requesterIdentity = await settleWithinAbortable(
       signal => getSlackUserIdentity(user, { signal }), 1200, null, 'Slack requester lookup');
-    const requesterName = requesterIdentity?.name || null;
+    requesterName = requesterIdentity?.name || null;
     latencyStages.identity_ms = Date.now() - identityStartedAt;
     const userLabel = requesterName ? `${requesterName} (Slack: <@${user}>)` : `Slack user <@${user}>`;
     history.push({ role: 'user', content: `[${userLabel}]: ${text}` });
@@ -3887,6 +3986,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
           history.push({ role: 'assistant', content: '[you read their message and chose not to reply]' });
         }
         if (history.length > 20) history.splice(0, 2);
+        await slackConversationAudit.mark(turnRef, {
+          handling_status: supersededByFollowup ? 'superseded' : 'no_response_needed',
+          response_kind: 'silence', user_name: requesterName,
+          metadata: { reason: supersededByFollowup ? 'newer_inbound_arrived' : 'reply_not_needed' },
+        });
         return;
       }
     }
@@ -3913,6 +4017,10 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
         history.push({ role: 'assistant', content: `[you reacted :${emoji}: to their message]` });
         if (history.length > 20) history.splice(0, 2);
         if (channelType !== 'im' && channelType !== 'mpim') markThreadJoined(channel, threadTs);
+        await slackConversationAudit.mark(turnRef, {
+          handling_status: 'delivered', response_kind: 'reaction', response_text: `:${emoji}:`,
+          user_name: requesterName, responded: true,
+        });
         return; // an emoji ack has nothing to extract
       }
       // Reaction unavailable (missing reactions:write scope or no trigger ts): the emoji alone
@@ -3964,6 +4072,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     // Post reply to Slack (first segment anchors the interaction log)
     let postRes = null;
     let allSegmentsPosted = segments.length > 0;
+    const postedSlackTimestamps = [];
     const deliveryStartedAt = Date.now();
     try {
       for (let i = 0; i < segments.length; i++) {
@@ -3991,6 +4100,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
         });
         if (!postRes) postRes = res;
         allSegmentsPosted = allSegmentsPosted && res?.data?.ok === true;
+        if (res?.data?.ok === true && res.data.ts) postedSlackTimestamps.push(res.data.ts);
         if (i === 0 && res?.data?.ok === true && !firstDeliveryRecorded) {
           latencyStages.postprocess_ms = deliveryStartedAt - (providerFinishedAt || handlerStartedAt);
           latencyStages.delivery_ms = Date.now() - deliveryStartedAt;
@@ -4014,23 +4124,44 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     if (postRes?.data?.ok && channelType !== 'im' && channelType !== 'mpim') {
       markThreadJoined(channel, threadTs);
     }
+    await slackConversationAudit.mark(turnRef, {
+      handling_status: 'delivered', response_kind: 'message', response_text: reply,
+      response_slack_timestamps: postedSlackTimestamps, user_name: requesterName, responded: true,
+    });
 
   } catch (err) {
     console.error('Slack handler error:', err.response?.data || err.message);
     // Try to post error message back
+    const errorText = 'Sorry, hit an error processing that. Check the logs.';
+    let errorPost = null;
     try {
       // Same rule as the success path: the failure notice is the last chance to say anything at
       // all, so it never inherits the deadline that just expired.
-      await axios.post('https://slack.com/api/chat.postMessage', {
+      errorPost = await axios.post('https://slack.com/api/chat.postMessage', {
         channel,
-        text: "Sorry, hit an error processing that. Check the logs.",
+        text: errorText,
         thread_ts: threadTs
       }, {
         headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` }, timeout: SLACK_DELIVERY_FLOOR_MS,
       });
     } catch {}
+    await slackConversationAudit.mark(turnRef, {
+      handling_status: errorPost?.data?.ok ? 'error_message_delivered' : 'failed',
+      response_kind: 'error', response_text: errorPost?.data?.ok ? errorText : null,
+      response_slack_timestamps: errorPost?.data?.ts ? [errorPost.data.ts] : [],
+      user_name: requesterName, responded: errorPost?.data?.ok === true,
+      error: String(err.response?.data?.error?.message || err.message || err).slice(0, 2000),
+    });
   }
 }
+
+registerSlackConversationRoutes(app, {
+  requireAuth,
+  db,
+  databaseReady: () => _dbReady,
+  resolveChannelNames,
+  resolveUserName: getSlackUserName,
+});
 
 // Slack thread admin — view and prune which threads Nora is "in" (will respond without re-mention)
 app.get('/slack/threads', requireAuth, async (req, res) => {

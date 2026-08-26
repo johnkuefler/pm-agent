@@ -28,6 +28,7 @@ GET /admin/inbox/file/:inboxId
 DELETE /admin/inbox/file/:inboxId
 POST /admin/inbox/file/:inboxId/upload-to-drive
 POST /webhook/slack
+GET /slack/conversations
 GET /slack/threads
 DELETE /slack/threads/:channel/:ts
 POST /slack/threads/:channel/:ts

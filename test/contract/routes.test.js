@@ -20,6 +20,6 @@ test('the complete HTTP route surface remains registered in the same order', () 
   const expected = fs.readFileSync(path.join(__dirname, '../fixtures/routes.txt'), 'utf8').trim().split(/\r?\n/);
   // This count is intentionally explicit. Product-surface additions and removals must update this
   // contract and the ordered fixture together.
-  assert.equal(expected.length, 85, 'route fixture should cover the transcription-only API surface');
+  assert.equal(expected.length, 86, 'route fixture should cover the transcription-only API surface');
   assert.deepEqual(actual, expected);
 });

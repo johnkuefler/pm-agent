@@ -191,6 +191,36 @@ async function init() {
       msgs_since_addressed integer NOT NULL DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.slack_conversation_audit (
+      interaction_id              text PRIMARY KEY,
+      slack_event_id              text,
+      channel_id                  text NOT NULL,
+      channel_name                text,
+      channel_type                text,
+      thread_ts                   text,
+      inbound_ts                  text NOT NULL,
+      user_id                     text,
+      user_name                   text,
+      inbound_text                text NOT NULL,
+      received_at                 timestamptz NOT NULL DEFAULT now(),
+      handling_status             text NOT NULL DEFAULT 'received',
+      response_kind               text,
+      response_text               text,
+      response_slack_timestamps   jsonb NOT NULL DEFAULT '[]'::jsonb,
+      responded_at                timestamptz,
+      error                       text,
+      metadata                    jsonb NOT NULL DEFAULT '{}'::jsonb,
+      updated_at                  timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS slack_conversation_audit_received_idx
+      ON ${DB_SCHEMA}.slack_conversation_audit (received_at DESC);
+    CREATE INDEX IF NOT EXISTS slack_conversation_audit_channel_idx
+      ON ${DB_SCHEMA}.slack_conversation_audit (channel_id, received_at DESC);
+    CREATE INDEX IF NOT EXISTS slack_conversation_audit_user_idx
+      ON ${DB_SCHEMA}.slack_conversation_audit (user_id, received_at DESC);
+    CREATE INDEX IF NOT EXISTS slack_conversation_audit_status_idx
+      ON ${DB_SCHEMA}.slack_conversation_audit (handling_status, received_at DESC);
+
     CREATE TABLE IF NOT EXISTS ${DB_SCHEMA}.mcp_servers (
       id        text PRIMARY KEY,
       data      jsonb NOT NULL,
@@ -617,6 +647,84 @@ async function close() {
   ready = false;
 }
 
+// ── Slack conversation audit ───────────────────────────────────────────────────
+async function upsertSlackConversationAudit(item) {
+  await q(
+    `INSERT INTO ${DB_SCHEMA}.slack_conversation_audit
+       (interaction_id, slack_event_id, channel_id, channel_type, thread_ts, inbound_ts,
+        user_id, inbound_text, metadata)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+     ON CONFLICT (interaction_id) DO UPDATE SET
+       slack_event_id=COALESCE(EXCLUDED.slack_event_id,
+         ${DB_SCHEMA}.slack_conversation_audit.slack_event_id),
+       channel_type=COALESCE(EXCLUDED.channel_type,
+         ${DB_SCHEMA}.slack_conversation_audit.channel_type),
+       thread_ts=COALESCE(EXCLUDED.thread_ts, ${DB_SCHEMA}.slack_conversation_audit.thread_ts),
+       user_id=COALESCE(EXCLUDED.user_id, ${DB_SCHEMA}.slack_conversation_audit.user_id),
+       inbound_text=EXCLUDED.inbound_text,
+       metadata=${DB_SCHEMA}.slack_conversation_audit.metadata || EXCLUDED.metadata,
+       updated_at=now()`,
+    [item.interaction_id, item.slack_event_id || null, item.channel_id,
+      item.channel_type || null, item.thread_ts || null, item.inbound_ts,
+      item.user_id || null, item.inbound_text || '', JSON.stringify(item.metadata || {})]
+  );
+}
+
+async function updateSlackConversationAudit(interactionId, patch = {}) {
+  const columns = {
+    handling_status: 'handling_status', response_kind: 'response_kind',
+    response_text: 'response_text', user_name: 'user_name', channel_name: 'channel_name',
+    error: 'error', response_slack_timestamps: 'response_slack_timestamps',
+  };
+  const values = [interactionId];
+  const assignments = [];
+  for (const [field, column] of Object.entries(columns)) {
+    if (!Object.prototype.hasOwnProperty.call(patch, field)) continue;
+    values.push(field === 'response_slack_timestamps'
+      ? JSON.stringify(patch[field] || []) : patch[field]);
+    assignments.push(`${column}=$${values.length}${field === 'response_slack_timestamps' ? '::jsonb' : ''}`);
+  }
+  if (patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata)) {
+    values.push(JSON.stringify(patch.metadata));
+    assignments.push(`metadata=metadata || $${values.length}::jsonb`);
+  }
+  if (patch.responded === true) assignments.push('responded_at=now()');
+  if (!assignments.length) return false;
+  assignments.push('updated_at=now()');
+  const result = await q(
+    `UPDATE ${DB_SCHEMA}.slack_conversation_audit SET ${assignments.join(', ')}
+     WHERE interaction_id=$1`, values);
+  return result.rowCount > 0;
+}
+
+async function listSlackConversationAudit({ limit = 100, since = null, channel = null,
+  user = null, status = null, q: search = null } = {}) {
+  const params = [];
+  const where = [];
+  const add = value => { params.push(value); return `$${params.length}`; };
+  if (since) where.push(`received_at >= ${add(since)}::timestamptz`);
+  if (channel) where.push(`channel_id = ${add(channel)}`);
+  if (user) where.push(`user_id = ${add(user)}`);
+  if (status) where.push(`handling_status = ${add(status)}`);
+  if (search) {
+    const ref = add(`%${search}%`);
+    where.push(`(inbound_text ILIKE ${ref} OR COALESCE(response_text, '') ILIKE ${ref}
+      OR COALESCE(error, '') ILIKE ${ref} OR COALESCE(user_name, '') ILIKE ${ref}
+      OR COALESCE(channel_name, '') ILIKE ${ref})`);
+  }
+  const boundedLimit = Math.max(1, Math.min(250, Number(limit) || 100));
+  params.push(boundedLimit);
+  const { rows } = await q(
+    `SELECT interaction_id, slack_event_id, channel_id, channel_name, channel_type, thread_ts,
+       inbound_ts, user_id, user_name, inbound_text, received_at, handling_status,
+       response_kind, response_text, response_slack_timestamps, responded_at, error,
+       metadata, updated_at
+     FROM ${DB_SCHEMA}.slack_conversation_audit
+     ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+     ORDER BY received_at DESC LIMIT $${params.length}`, params);
+  return rows;
+}
+
 module.exports = {
   dbEnabled, isReady, init, close, q, count, backgroundAllowed, diagnostics, DB_SCHEMA,
   loadAllTasks, replaceAllTasks, applyTaskChanges,
@@ -624,6 +732,7 @@ module.exports = {
   loadAllMcp, replaceAllMcp,
   loadAllMarkers, replaceAllMarkers, applyMarkerChanges,
   loadAllSlackThreads, replaceAllSlackThreads, applySlackThreadChanges,
+  upsertSlackConversationAudit, updateSlackConversationAudit, listSlackConversationAudit,
   upsertTranscript, appendTranscript, listTranscripts, getTranscript, deleteTranscript,
   getState, setState, setStateSerialized, getCompressedState, setCompressedState, deleteState,
   enqueueJob, claimNextQueuedJob, finishJob, interruptRunningJobs, recentJobs,
