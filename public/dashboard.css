@@ -167,6 +167,7 @@
     #page-meeting.active{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
     #page-tasks.active{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(320px,.75fr);gap:18px;align-items:start}
     #page-tasks>.section:nth-child(2){position:sticky;top:24px}
+    #page-slack.active{display:block}
     #page-admin.active{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;align-items:start}
     .mcp-auth-fields{display:grid;gap:6px;margin-top:8px;padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--surface-2)}
     .mcp-auth-fields[hidden]{display:none}
@@ -191,6 +192,37 @@
     pre{border:1px solid var(--border)!important;background:var(--bg)!important;color:var(--text-2)!important}
     .toggle-pill{border-radius:var(--radius-sm);background:var(--surface-2)}
 
+    /* Slack conversation troubleshooting */
+    .slack-log-shell{padding:0;overflow:hidden}
+    .slack-log-header{padding:22px 22px 17px;border-bottom:1px solid var(--border)}
+    .slack-log-header h2{margin-bottom:5px}.slack-log-header p{font-size:12px;line-height:1.5}
+    .slack-log-filters{display:grid;grid-template-columns:minmax(240px,1fr) minmax(150px,190px) minmax(170px,210px) auto;gap:10px;align-items:end;padding:17px 22px;background:var(--surface-2);border-bottom:1px solid var(--border)}
+    .slack-log-filters .field-group{margin-top:0}.slack-log-search-btn{min-height:42px}
+    .slack-log-summary{display:flex;flex-wrap:wrap;gap:7px 18px;padding:13px 22px;border-bottom:1px solid var(--border);color:var(--muted);font-size:11px}
+    .slack-log-summary:empty{display:none}.slack-log-summary strong{color:var(--text);font-variant-numeric:tabular-nums}
+    .slack-log-summary .has-issues,.slack-log-summary .has-issues strong{color:var(--danger)}
+    .slack-log-list{display:grid}.slack-log-list>.empty{padding:42px 22px}
+    .slack-log-card{min-width:0;padding:20px 22px;border-bottom:1px solid var(--border)}
+    .slack-log-card:last-child{border-bottom:0}.slack-log-card:hover{background:color-mix(in srgb,var(--surface-2) 62%,transparent)}
+    .slack-log-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:13px}
+    .slack-log-where{display:flex;min-width:0;flex-wrap:wrap;align-items:center;gap:4px 9px;font-size:12px}
+    .slack-log-where strong{color:var(--text);font-size:13px}.slack-log-where span{color:var(--accent-ink);font-weight:650}
+    .slack-log-where time{color:var(--dim);font-variant-numeric:tabular-nums}
+    .slack-outcome{flex:0 0 auto;padding:4px 9px;border:1px solid var(--border);border-radius:999px;font-size:10px;font-weight:750;letter-spacing:.02em}
+    .slack-outcome-success{border-color:var(--success-line);background:var(--success-soft);color:var(--success)}
+    .slack-outcome-danger{border-color:var(--danger-line);background:var(--danger-soft);color:var(--danger)}
+    .slack-outcome-info{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent-ink)}
+    .slack-outcome-quiet{background:var(--surface-2);color:var(--muted)}
+    .slack-log-message{display:grid;grid-template-columns:92px minmax(0,1fr);gap:14px;padding:10px 12px;border-radius:9px}
+    .slack-log-inbound{background:var(--surface-2)}.slack-log-response{margin-top:7px;border:1px solid var(--border)}
+    .slack-log-message-label{color:var(--dim);font-size:10px;font-weight:750;letter-spacing:.05em;text-transform:uppercase}
+    .slack-log-message-text{min-width:0;color:var(--text-2);font-size:13px;line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere}
+    .slack-log-pending .slack-log-message-text{color:var(--dim);font-style:italic}
+    .slack-log-error{display:grid;grid-template-columns:92px minmax(0,1fr);gap:14px;margin-top:8px;padding:9px 12px;border:1px solid var(--danger-line);border-radius:9px;background:var(--danger-soft);color:var(--danger);font-size:12px;line-height:1.45}
+    .slack-log-error span{overflow-wrap:anywhere}
+    .slack-log-load-error{display:grid;justify-items:start;gap:7px;padding:28px 22px;color:var(--danger);font-size:13px}
+    .slack-log-load-error span{color:var(--muted)}
+
     .command-backdrop{position:fixed;inset:0;z-index:20;display:none;place-items:start center;padding-top:min(18vh,150px);background:rgba(6,6,9,.58);backdrop-filter:blur(6px)}
     .command-backdrop.open{display:grid}.command-dialog{width:min(540px,calc(100vw - 32px));padding:10px;border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);box-shadow:0 28px 80px rgba(0,0,0,.34)}
     .command-results{display:grid;gap:3px;margin-top:8px}.command-result{padding:10px 12px;border:0;border-radius:8px;background:transparent;color:var(--text-2);cursor:pointer;text-align:left;font-weight:650}.command-result:hover,.command-result:focus{outline:none;background:var(--accent-soft);color:var(--accent-ink)}
@@ -212,6 +244,8 @@
       .content-actions .utility-btn:first-child{display:none}
       .section{padding:18px}.section h2[style]{align-items:flex-start!important;gap:10px}
       #page-meeting.active,#page-tasks.active,#page-admin.active{display:grid;grid-template-columns:minmax(0,1fr);gap:14px}
+      .slack-log-filters{grid-template-columns:minmax(0,1fr) minmax(150px,.5fr);padding:15px 18px}
+      .slack-search-field{grid-column:1/-1}
     }
     @media(max-width:600px){
       html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
@@ -249,6 +283,11 @@
       code,.admin-list-meta,.task-meta{overflow-wrap:anywhere;word-break:break-word}
       .command-backdrop{padding:calc(max(12px,env(safe-area-inset-top)) + 56px) max(12px,env(safe-area-inset-right)) max(12px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left))}
       .command-dialog{width:100%;max-height:calc(100dvh - 80px);overflow:auto}
+      .slack-log-header,.slack-log-card-head{flex-wrap:wrap}.slack-log-header{padding:18px 15px 14px}
+      .slack-log-filters{grid-template-columns:minmax(0,1fr);padding:14px 15px}.slack-search-field{grid-column:auto}
+      .slack-log-search-btn{width:100%}.slack-log-summary{padding:12px 15px}
+      .slack-log-card{padding:17px 15px}.slack-log-message,.slack-log-error{grid-template-columns:minmax(0,1fr);gap:5px}
+      .slack-outcome{white-space:normal}.slack-log-where{width:100%}
     }
     @media(max-width:360px){
       .content-head-copy{flex-basis:100%}.content-actions{margin-left:0}

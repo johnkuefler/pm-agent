@@ -85,6 +85,7 @@
 
     const pageMeta = {
       tasks: ['Work queue', 'Review Nora\'s pending and scheduled work.'],
+      slack: ['Slack log', 'Troubleshoot what people asked Nora and how she responded.'],
       meeting: ['Meetings', 'Join calls, manage meeting bots, and review transcripts.'],
       admin: ['Settings', 'Manage the connections and access controls Nora needs to operate.']
     };
@@ -107,6 +108,7 @@
       closeMobileNav();
       closeCommandPalette();
       if (name === 'tasks') loadTasks();
+      if (name === 'slack') loadSlackLog();
       if (name === 'meeting') {
         loadTranscripts();
         loadActiveBots();

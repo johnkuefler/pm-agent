@@ -9,7 +9,7 @@ const html = fs.readFileSync(path.join(root, 'dashboard.html'), 'utf8');
 
 test('dashboard exposes only operational PM views', () => {
   const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map(match => match[1]);
-  assert.deepEqual(tabs, ['tasks', 'meeting', 'admin']);
+  assert.deepEqual(tabs, ['tasks', 'slack', 'meeting', 'admin']);
   for (const tab of tabs) assert.match(html, new RegExp(`id="page-${tab}"`));
 
   const removed = ['projects', 'executive', 'fleet', 'transcripts', 'memory', 'live', 'intelligence',
@@ -31,6 +31,7 @@ test('dashboard assets are focused, deploy-versioned, and valid JavaScript', () 
     '/assets/js/dashboard-meeting.js',
     '/assets/js/dashboard-tasks.js',
     '/assets/js/dashboard-transcripts.js',
+    '/assets/js/dashboard-slack-log.js',
     '/assets/js/dashboard-admin.js',
     '/assets/js/dashboard-init.js',
   ]);
@@ -43,17 +44,23 @@ test('dashboard assets are focused, deploy-versioned, and valid JavaScript', () 
   }
 });
 
-test('core task, meeting, transcript, and settings controls remain visible', () => {
+test('core task, Slack, meeting, transcript, and settings controls remain visible', () => {
   for (const id of [
-    'task-list', 'url', 'transcript-list', 'calendar-status', 'mcp-list',
+    'task-list', 'slack-log-search', 'slack-log-range', 'slack-log-status', 'slack-log-list',
+    'url', 'transcript-list', 'calendar-status', 'mcp-list',
   ]) assert.match(html, new RegExp(`id="${id}"`));
 
   assert.doesNotMatch(html, /Send a Test Bot|Voice Agent|Nora's Memory|Executive Firewall|Fleet Supervisor|Project Autopilot|Legacy project context/);
 
   const core = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
   const meeting = fs.readFileSync(path.join(root, 'public/js/dashboard-meeting.js'), 'utf8');
+  const slack = fs.readFileSync(path.join(root, 'public/js/dashboard-slack-log.js'), 'utf8');
   assert.match(core, /Dashboard request timed out/);
   assert.match(meeting, /Nora is joining silently to transcribe/);
+  assert.match(slack, /\/slack\/conversations/);
+  assert.match(slack, /They asked/);
+  assert.match(slack, /Nora replied/);
+  assert.doesNotMatch(slack, /channel_id|user_id/);
   assert.doesNotMatch(meeting, /mute|one-on-one|mandate|project-hint/i);
   assert.doesNotMatch(meeting, /setInterval\(/);
 });

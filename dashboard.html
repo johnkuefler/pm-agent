@@ -30,6 +30,7 @@
         <div class="nav-group">
           <div class="nav-label">Nora</div>
           <button class="tab active" type="button" data-tab="tasks" aria-selected="true" onclick="showTab('tasks')">Work queue</button>
+          <button class="tab" type="button" data-tab="slack" aria-selected="false" onclick="showTab('slack')">Slack log</button>
           <button class="tab" type="button" data-tab="meeting" aria-selected="false" onclick="showTab('meeting')">Meetings</button>
           <button class="tab" type="button" data-tab="admin" aria-selected="false" onclick="showTab('admin')">Settings</button>
         </div>
@@ -115,6 +116,56 @@
         </div>
         <div id="task-status" class="toast"></div>
       </div>
+    </div>
+
+    <!-- Slack conversation log -->
+    <div id="page-slack" class="page">
+      <section class="section slack-log-shell" aria-labelledby="slack-log-heading">
+        <div class="section-header slack-log-header">
+          <div>
+            <h2 id="slack-log-heading">Nora's Slack conversations</h2>
+            <p>Review what someone asked, how Nora handled it, and the exact response she sent.</p>
+          </div>
+          <button class="btn btn-sm" type="button" onclick="loadSlackLog()">Refresh</button>
+        </div>
+
+        <form id="slack-log-filters" class="slack-log-filters" onsubmit="submitSlackLogFilters(event)">
+          <div class="field-group slack-search-field">
+            <label class="field-label" for="slack-log-search">Search conversations</label>
+            <input id="slack-log-search" type="search" autocomplete="off" placeholder="Search the ask, response, person, or channel" />
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="slack-log-range">Time range</label>
+            <select id="slack-log-range" onchange="loadSlackLog()">
+              <option value="1">Past 24 hours</option>
+              <option value="7" selected>Past 7 days</option>
+              <option value="30">Past 30 days</option>
+              <option value="all">All available</option>
+            </select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="slack-log-status">Outcome</label>
+            <select id="slack-log-status" onchange="loadSlackLog()">
+              <option value="">All outcomes</option>
+              <option value="delivered">Responded</option>
+              <option value="no_response_needed">No response needed</option>
+              <option value="intentionally_skipped">Intentionally skipped</option>
+              <option value="handled_by_approval_flow">Approval flow</option>
+              <option value="superseded">Superseded</option>
+              <option value="processing">Processing</option>
+              <option value="processing_file">Processing a file</option>
+              <option value="error_message_delivered">Error explained</option>
+              <option value="failed">Failed</option>
+            </select>
+          </div>
+          <button class="btn btn-primary slack-log-search-btn" type="submit">Search</button>
+        </form>
+
+        <div id="slack-log-summary" class="slack-log-summary" aria-live="polite"></div>
+        <div id="slack-log-list" class="slack-log-list" aria-busy="false">
+          <p class="empty">Open this view to load Nora's recent Slack conversations.</p>
+        </div>
+      </section>
     </div>
 
     <!-- Admin Tab -->
@@ -216,6 +267,7 @@
   <script src="/assets/js/dashboard-meeting.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-tasks.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-transcripts.js?v={{ASSET_VERSION}}"></script>
+  <script src="/assets/js/dashboard-slack-log.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-admin.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-init.js?v={{ASSET_VERSION}}"></script>
 </body>
