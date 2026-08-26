@@ -46,7 +46,9 @@ test('relative day labels use Central calendar days', () => {
 test('Recall bot config is transcription-only', () => {
   const config = helpers.buildBotConfig('nora.example.com', 'Nora Test');
   assert.equal(config.bot_name, 'Nora Test');
-  assert.equal(config.output_media, undefined);
+  assert.deepEqual(config.output_media, {
+    camera: { kind: 'webpage', config: { url: 'https://nora.example.com/voice-agent' } },
+  });
   assert.equal(config.recording_config.video_separate_png, undefined);
   assert.equal(config.recording_config.include_bot_in_recording, undefined);
   assert.deepEqual(config.recording_config.realtime_endpoints, [{
@@ -55,6 +57,13 @@ test('Recall bot config is transcription-only', () => {
     events: ['transcript.data'],
   }]);
   assert.equal(config.webhook_url, 'https://nora.example.com/webhook/status');
+});
+
+test('meeting avatar is static and cannot speak or run client code', () => {
+  const avatar = fs.readFileSync(path.join(__dirname, '../../meeting-avatar.html'), 'utf8');
+  assert.match(avatar, /Transcribing this meeting/);
+  assert.match(avatar, /class="avatar"[^>]*>N</);
+  assert.doesNotMatch(avatar, /<script|<audio|<video|WebSocket|fetch\(/i);
 });
 
 test('the request-driven prompt preserves Nora concise PM voice', () => {

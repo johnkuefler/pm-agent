@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Nora</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at 50% 38%, #36304b 0%, #1c1928 52%, #111019 100%);
+      color: #f8f7fb;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .identity { display: grid; justify-items: center; gap: 22px; }
+    .avatar {
+      display: grid;
+      place-items: center;
+      width: min(34vw, 250px);
+      aspect-ratio: 1;
+      border: 5px solid rgba(255, 255, 255, 0.18);
+      border-radius: 50%;
+      background: linear-gradient(145deg, #8b5cf6, #5b36b8);
+      box-shadow: 0 22px 70px rgba(0, 0, 0, 0.38), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      font-size: min(17vw, 128px);
+      font-weight: 750;
+      line-height: 1;
+      letter-spacing: -0.06em;
+      text-indent: -0.06em;
+    }
+    .name { font-size: clamp(30px, 5vw, 52px); font-weight: 700; letter-spacing: -0.03em; }
+    .status { font-size: clamp(16px, 2.5vw, 24px); color: #c9c4d8; }
+  </style>
+</head>
+<body>
+  <main class="identity" aria-label="Nora, silent meeting transcription bot">
+    <div class="avatar" aria-hidden="true">N</div>
+    <div class="name">Nora</div>
+    <div class="status">Transcribing this meeting</div>
+  </main>
+</body>
+</html>

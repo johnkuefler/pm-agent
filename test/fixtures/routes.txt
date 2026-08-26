@@ -11,6 +11,7 @@ GET /routine
 PUT /routine
 GET /routine/history
 POST /routine/rollback
+GET /voice-agent
 POST /join
 GET /calendar/connect
 GET /calendar/oauth/callback

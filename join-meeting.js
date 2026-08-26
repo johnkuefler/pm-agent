@@ -9,6 +9,9 @@ async function sendNoraToMeeting(zoomUrl) {
   const res = await axios.post(`${RECALL_BASE}/bot/`, {
     meeting_url: zoomUrl,
     bot_name: "Nora",
+    output_media: {
+      camera: { kind: 'webpage', config: { url: `${SERVER_URL}/voice-agent` } }
+    },
     recording_config: {
       transcript: {
         provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }

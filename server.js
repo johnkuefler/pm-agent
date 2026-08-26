@@ -1020,12 +1020,21 @@ app.post('/routine/rollback', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Recall bot configuration is deliberately transcription-only. Nora records speaker-labelled
-// context and does not publish camera/audio, speak, chat, or inspect screen shares.
+// Recall needs a webpage camera source to display Nora in the participant tile. This page is
+// deliberately static and silent. The legacy path keeps already-scheduled bots from opening a 404.
+app.get('/voice-agent', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'meeting-avatar.html'));
+});
+
+// Recall bot configuration is transcription-only. The webpage camera is a static identity card;
+// Nora does not publish audio, speak, chat, or inspect screen shares.
 function buildBotConfig(serverHost, botName = 'Nora') {
   const SERVER_URL = `https://${serverHost}`;
   return {
     bot_name: botName,
+    output_media: {
+      camera: { kind: 'webpage', config: { url: `${SERVER_URL}/voice-agent` } }
+    },
     recording_config: {
       transcript: {
         provider: { assembly_ai_v3_streaming: { speech_model: 'universal-streaming-english' } }
@@ -1042,8 +1051,8 @@ function buildBotConfig(serverHost, botName = 'Nora') {
 function newSession() {
   return { buffer: [], transcript: [], lastRecallLineAt: 0 };
 }
-// The server's own public host, for callbacks (output_media webpage + relay WS) when there's no
-// inbound request to read it from — e.g. a join triggered from a Slack tool, not the dashboard.
+// The server's own public host for Recall callbacks and the static avatar page when there is no
+// inbound request to read it from, such as a join triggered from Slack.
 function publicHost(fallback) {
   return process.env.RAILWAY_PUBLIC_DOMAIN
     || (process.env.PUBLIC_URL || '').replace(/^https?:\/\//, '').replace(/\/$/, '')
