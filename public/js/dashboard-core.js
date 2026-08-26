@@ -84,27 +84,16 @@
     }
 
     const pageMeta = {
-      live: ['Live', 'See Nora\'s hourly work, conversations, and background processes as they happen.'],
-      meeting: ['Meeting', 'Send Nora into a call with the right context, mandate, and participation mode.'],
-      tasks: ['Tasks', 'Review Nora\'s action queue, schedule follow-up work, and close completed items.'],
-      projects: ['Portfolio', 'See what needs management now, what Nora knows, and why she is staying quiet or stepping in.'],
-      executive: ['Executive Firewall', 'See what Nora resolved for the team, what she still owns, and the few decisions that actually require you.'],
-      fleet: ['Fleet', 'See the incidents Nora is quietly managing across the agent team, plus the evidence behind any human interruption.'],
-      transcripts: ['Transcripts', 'Review and correct the conversations Nora captured in meetings.'],
-      memory: ['Memory', 'Search, maintain, and vectorize the facts Nora can recall.'],
-      dreams: ['Dreams', 'Review nightly consolidation, reflection, and learning.'],
-      markers: ['Markers', 'Inspect the operational records that prevent repeated work.'],
-      routine: ['Routine', 'Edit the ordered work Nora performs during each scheduled session.'],
-      charter: ['Charter', 'Define what Nora may decide, commit to, or escalate on your behalf.'],
-      self: ['Self', 'Understand Nora\'s system state, continuity, wants, autobiography, and persona.'],
-      intelligence: ['Intelligence', 'See what Nora is doing now, then open learning, self-model, research, or history only when you need it.'],
-      admin: ['Administration', 'Monitor connections, bots, access controls, calendar automation, and sync health.']
+      projects: ['Portfolio', 'Review Teamwork projects that need a decision, an owner, or a schedule correction.'],
+      tasks: ['Work queue', 'Review Nora\'s pending and scheduled work.'],
+      meeting: ['Meetings', 'Join calls, manage meeting bots, and review transcripts.'],
+      admin: ['Settings', 'Manage the connections and access controls Nora needs to operate.']
     };
 
     let currentFilter = 'pending';
 
     function showTab(name) {
-      if (!pageMeta[name]) name = 'meeting';
+      if (!pageMeta[name]) name = 'projects';
       document.querySelectorAll('.tab').forEach(t => {
         const active = t.dataset.tab === name;
         t.classList.toggle('active', active);
@@ -118,21 +107,15 @@
       history.replaceState(null, '', location.pathname + location.search + '#' + name);
       closeMobileNav();
       closeCommandPalette();
-      if (name === 'meeting' && typeof checkMuteState === 'function') checkMuteState();
-      if (name === 'memory') loadMemory();
-      if (name === 'live') loadRuntimeActivity();
       if (name === 'tasks') loadTasks();
       if (name === 'projects') loadProjects();
-      if (name === 'executive') loadExecutiveFirewall();
-      if (name === 'fleet') loadFleetSupervisor();
-      if (name === 'transcripts') loadTranscripts();
-      if (name === 'dreams') loadDreams();
-      if (name === 'markers') loadMarkers();
-      if (name === 'routine') loadRoutineEditor();
-      if (name === 'charter') loadCharterEditor();
-      if (name === 'self') loadSelfTab();
-      if (name === 'intelligence') loadIntelligence();
-      else if (typeof suspendIntelligence === 'function') suspendIntelligence();
+      if (name === 'meeting') {
+        checkMuteState();
+        loadTranscripts();
+        loadActiveBots();
+        loadScheduledBots();
+        loadCalendarStatus();
+      }
       if (name === 'admin') loadAdmin();
     }
 

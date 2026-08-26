@@ -144,6 +144,7 @@ vite.config.ts.timestamp-*
 .vite/
 # Nora runtime state — written to the Railway /data volume at runtime, never committed.
 nora-dreams.json
+nora-intelligence.json
 nora-interactions.json
 nora-markers.json
 

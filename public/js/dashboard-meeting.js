@@ -9,8 +9,6 @@ async function joinMeeting() {
         if (project) body.project = project;
         const mandate = (document.getElementById('join-mandate') || {}).value;
         if (mandate && mandate.trim()) body.mandate = mandate.trim();
-        const diagnostics = !!(document.getElementById('join-meeting-diagnostics') || {}).checked;
-        if (diagnostics) body.meeting_diagnostics = true;
         // Pass who's sending Nora so the realtime prompt knows who she's about to
         // talk to. John is the primary dashboard operator; in 90%+ of manual sends
         // he is also the person on the call. The realtime prompt frames this as
@@ -20,33 +18,11 @@ async function joinMeeting() {
         const d = await r.json();
         if (d.bot_id) {
           const hint = d.project_hint ? ` (project: ${d.project_hint})` : '';
-          const diag = d.meeting_diagnostics ? ' Meeting diagnostics are visible.' : '';
-          s.className = 'toast ok'; s.textContent = 'Nora joined (muted by default - use the button below to unmute). Bot ID: ' + d.bot_id + hint + diag;
+          s.className = 'toast ok'; s.textContent = 'Nora joined in transcription-first mode. Bot ID: ' + d.bot_id + hint;
           document.getElementById('mute-controls').style.display = 'block';
           checkMuteState();
         }
         else { s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d)); }
-      } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
-    }
-
-    async function joinDummy() {
-      const s = document.getElementById('dummy-status');
-      const u = document.getElementById('dummy-url').value.trim();
-      const name = document.getElementById('dummy-name').value.trim();
-      const prompt = document.getElementById('dummy-prompt').value.trim();
-      if (!u) { s.className = 'toast err'; s.textContent = 'Paste a meeting link first'; return; }
-      s.className = 'toast ok'; s.textContent = 'Sending test bot...';
-      try {
-        const body = { meeting_url: u };
-        if (name) body.bot_name = name;
-        if (prompt) body.prompt = prompt;
-        const r = await api('/dummy/join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-        const d = await r.json();
-        if (d.bot_id) {
-          s.className = 'toast ok'; s.textContent = `Test bot "${d.bot_name}" joined (unmuted). Bot ID: ${d.bot_id}. Remove it from Admin → Active Bots when done.`;
-        } else {
-          s.className = 'toast err'; s.textContent = 'Error: ' + (d.error ? JSON.stringify(d.error) : JSON.stringify(d));
-        }
       } catch (e) { s.className = 'toast err'; s.textContent = 'Failed: ' + e.message; }
     }
 
@@ -111,7 +87,6 @@ async function joinMeeting() {
       { ep: 'one-on-one', key: 'oneOnOne', pill: 'pill-oneonone' },
       { ep: 'lean-in',    key: 'leanIn',   pill: 'pill-leanin' },
       { ep: 'proactive',  key: 'proactive', pill: 'pill-proactive' },
-      { ep: 'meeting-diagnostics', key: 'meetingDiagnostics', pill: 'pill-diagnostics' },
     ];
     async function toggleFlag(ep) {
       try {

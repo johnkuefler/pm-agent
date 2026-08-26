@@ -1,12 +1,7 @@
-// Portfolio command center. This loads after dashboard-knowledge.js and replaces the legacy
-// project-memory list with the durable project-control story while keeping context editing available.
+// Teamwork-first project browser. This screen is intentionally read-only apart from sync.
 var selectedPortfolioProjectKey = null;
-var selectedPortfolioDecisionProjectKey = null;
-var portfolioDecisionReturnFocus = null;
 var projectPortfolioFilter = 'attention';
-var projectPortfolioState = {
-  projects: [], legacy: [], risks: [], evaluation: {}, report: {}, hydration: {}, autopilot: {},
-};
+var projectPortfolioState = { projects: [], risks: [], report: {}, hydration: {} };
 
 function portfolioDateValue(value) {
   const parsed = value ? new Date(value).getTime() : NaN;
@@ -23,8 +18,7 @@ function portfolioDate(value, fallback = 'Not scheduled') {
   if (parsed === null) return fallback;
   return new Intl.DateTimeFormat(undefined, {
     month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
-  })
-    .format(new Date(parsed));
+  }).format(new Date(parsed));
 }
 
 function portfolioRelativeTime(value) {
@@ -34,25 +28,24 @@ function portfolioRelativeTime(value) {
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.round(hours / 24)}d ago`;
+  return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
 }
 
 function portfolioProjectSignals(project) {
   const schedule = project.hydration?.schedule || {};
   const due = portfolioDateValue(project.next_milestone_due);
-  const openRisks = projectPortfolioState.risks.filter(risk => risk.project_key === project.key);
+  const openRisks = projectPortfolioState.risks.filter(risk => risk.project_key === project.key
+    && ['open', 'monitoring'].includes(risk.status));
   const decisions = Number(project.decision_state?.open_count) || 0;
   const overdueTasks = Number(schedule.overdue_tasks) || 0;
   const unassignedTasks = Number(schedule.unassigned_tasks) || 0;
   const hydrated = project.hydration?.source === 'teamwork_project_story';
   const checkpointOverdue = due !== null && due < portfolioStartOfToday();
-  const healthAttention = project.health === 'red' || project.health === 'amber';
-  const incomplete = Number(project.completeness?.ratio) < 1;
-  const attention = checkpointOverdue || overdueTasks > 0 || decisions > 0 || openRisks.length > 0
-    || healthAttention || (hydrated && incomplete);
+  const healthAttention = ['red', 'amber'].includes(project.health);
+  const attention = checkpointOverdue || overdueTasks > 0 || decisions > 0
+    || openRisks.length > 0 || healthAttention || unassignedTasks > 0;
   return { due, openRisks, decisions, overdueTasks, unassignedTasks, hydrated,
-    checkpointOverdue, healthAttention, incomplete, attention };
+    checkpointOverdue, healthAttention, attention };
 }
 
 function portfolioPriority(project) {
@@ -61,190 +54,33 @@ function portfolioPriority(project) {
     ['low', 'medium', 'high', 'critical'].indexOf(risk.severity) + 1), 0);
   return severity * 120 + (project.health === 'red' ? 400 : project.health === 'amber' ? 220 : 0)
     + (signal.checkpointOverdue ? 180 : 0) + Math.min(120, signal.overdueTasks * 12)
-    + Math.min(100, signal.decisions * 14) + Math.min(50, signal.unassignedTasks * 3)
-    + (signal.incomplete && signal.hydrated ? 20 : 0);
-}
-
-function portfolioMetric(label, value, detail, tone = '', filter = '') {
-  const tag = filter ? 'button' : 'div';
-  const attrs = filter ? ` type="button" onclick="setProjectFilter('${filter}')"` : '';
-  return `<${tag} class="portfolio-stat ${tone}"${attrs}><span>${escHtml(label)}</span>`
-    + `<strong>${escHtml(value)}</strong><small>${escHtml(detail)}</small></${tag}>`;
+    + Math.min(100, signal.decisions * 14) + Math.min(50, signal.unassignedTasks * 3);
 }
 
 function renderPortfolioStats() {
-  const projectReport = projectPortfolioState.report.projects || {};
-  const quality = projectPortfolioState.evaluation.quality || {};
-  const hydrated = Number(projectReport.teamwork_hydrated) || 0;
-  const complete = projectPortfolioState.projects.filter(project =>
-    project.hydration?.source === 'teamwork_project_story' && project.completeness?.ratio === 1).length;
-  const attention = projectPortfolioState.projects.filter(project => {
-    const signal = portfolioProjectSignals(project);
-    return signal.hydrated && signal.attention;
-  }).length;
-  const antiAnnoyance = Math.round((quality.dimensions?.anti_annoyance || 0) * 100);
-  document.getElementById('pm-control-stats').innerHTML = [
-    portfolioMetric('Live project stories', hydrated, 'refreshed from Teamwork', 'is-primary', 'active'),
-    portfolioMetric('Needs attention', attention, 'verified exceptions', attention ? 'is-warn' : '', 'attention'),
-    portfolioMetric('Past-due checkpoints', projectReport.milestone_overdue || 0,
-      'next delivery dates', projectReport.milestone_overdue ? 'is-danger' : '', 'overdue'),
-    portfolioMetric('Decision candidates', projectReport.decision_candidates || 0,
-      'approval or sign-off work', projectReport.decision_candidates ? 'is-warn' : '', 'decisions'),
-    portfolioMetric('Complete stories', `${complete}/${hydrated}`, 'objective, owner, phase, checkpoint'),
-    portfolioMetric('Quiet discipline', `${antiAnnoyance}%`, `${quality.noisy_days || 0} noisy days`,
-      antiAnnoyance >= 95 ? 'is-success' : 'is-warn'),
-  ].join('');
+  const active = projectPortfolioState.projects.filter(project => portfolioProjectSignals(project).hydrated);
+  const signals = active.map(portfolioProjectSignals);
+  const values = [
+    ['Active projects', active.length],
+    ['Needs attention', signals.filter(signal => signal.attention).length],
+    ['Overdue tasks', signals.reduce((sum, signal) => sum + signal.overdueTasks, 0)],
+    ['Unassigned tasks', signals.reduce((sum, signal) => sum + signal.unassignedTasks, 0)],
+    ['Open decisions', signals.reduce((sum, signal) => sum + signal.decisions, 0)],
+  ];
+  document.getElementById('pm-control-stats').innerHTML = values.map(([label, value]) =>
+    `<div class="portfolio-stat"><span>${escHtml(label)}</span><strong>${value}</strong></div>`).join('');
 }
 
 function renderHydrationStatus() {
+  const status = document.getElementById('pm-hydration-status');
   const hydration = projectPortfolioState.hydration || {};
-  const element = document.getElementById('pm-hydration-status');
-  const state = hydration.state || 'idle';
-  element.dataset.state = state;
-  if (state === 'running') element.lastElementChild.textContent = 'Refreshing Teamwork project stories now';
-  else if (state === 'failed') element.lastElementChild.textContent =
-    `Hydration needs attention: ${hydration.error || 'unknown failure'}`;
-  else if (state === 'succeeded') element.lastElementChild.textContent =
-    `Teamwork current · ${hydration.result?.projects_seen || 0} stories · checked ${portfolioRelativeTime(hydration.completed_at)}`;
-  else element.lastElementChild.textContent = 'Waiting for the first Teamwork refresh';
-}
-
-function renderPortfolioPosture() {
-  const quality = projectPortfolioState.evaluation.quality || {};
-  const dimensions = quality.dimensions || {};
-  const rows = [
-    ['Overall PM quality', quality.score || 0],
-    ['Project coverage', dimensions.project_coverage || 0],
-    ['Intervention quality', dimensions.intervention_quality || 0],
-    ['Learning closure', dimensions.learning_closure || 0],
-  ];
-  document.getElementById('pm-control-posture').innerHTML = `
-    <div class="portfolio-posture-lead"><strong>${escHtml(String(quality.rollout_stage || 'shadow_calibration').replaceAll('_', ' '))}</strong>
-      <span>Bounded autonomy stays evidence-first. Hydration never spends a human interruption.</span></div>
-    <div class="portfolio-meter-list">${rows.map(([label, value]) => `
-      <div class="portfolio-meter-row"><div><span>${escHtml(label)}</span><strong>${Math.round(value * 100)}%</strong></div>
-      <div class="portfolio-meter"><i style="width:${Math.max(0, Math.min(100, value * 100))}%"></i></div></div>`).join('')}</div>
-    <div class="portfolio-quiet-note"><strong>Anti-annoyance:</strong> ${quality.noisy_days || 0} days exceeded the one-interruption limit.</div>`;
-}
-
-function renderPortfolioDecisions() {
-  const candidates = projectPortfolioState.projects.flatMap(project =>
-    (project.decision_state?.candidates || []).map(candidate => ({ ...candidate, project })));
-  candidates.sort((left, right) => (portfolioDateValue(left.due_at) || Infinity)
-    - (portfolioDateValue(right.due_at) || Infinity));
-  document.getElementById('pm-control-decisions').innerHTML = candidates.length
-    ? candidates.slice(0, 6).map(candidate => `
-      <button class="portfolio-radar-item" type="button" data-project-key="${escHtml(candidate.project.key)}" data-decision-id="${escHtml(candidate.id)}" onclick="viewDecisionCandidate(this.dataset.projectKey,this.dataset.decisionId)">
-        <span>${escHtml(candidate.project.name)}</span><strong>${escHtml(candidate.title)}</strong>
-        <small>${escHtml(portfolioDate(candidate.due_at))} · ${escHtml((candidate.assignees || []).join(', ') || 'unassigned')} · View details</small>
-      </button>`).join('')
-    : '<p class="portfolio-empty">No decision candidates are currently visible.</p>';
-}
-
-function viewDecisionCandidate(projectKey, candidateId) {
-  const project = projectPortfolioState.projects.find(item => item.key === projectKey);
-  const candidate = project?.decision_state?.candidates?.find(item => String(item.id) === String(candidateId));
-  if (!project || !candidate) return;
-  const detail = document.getElementById('decision-detail');
-  const description = candidate.description || '';
-  const confidence = Math.round((project.hydration?.field_sources?.decision_state?.confidence || 0) * 100);
-  const interpretation = 'Nora surfaced this because an open Teamwork task contains approval, sign-off, review, confirmation, or decision language. It is a candidate for attention, not proof that work is blocked.';
-  portfolioDecisionReturnFocus = document.activeElement;
-  selectedPortfolioDecisionProjectKey = project.key;
-  document.getElementById('decision-detail-title').textContent = candidate.title;
-  document.getElementById('decision-detail-content').innerHTML = `
-    <div class="decision-source-detail ${description ? '' : 'is-missing'}">
-      <span>Teamwork task detail</span>
-      <p>${escHtml(description || 'No description is recorded for this Teamwork task. The task title is currently the only source detail Nora has.')}</p>
-    </div>
-    <div class="decision-fact-grid">
-      <div><span>Project</span><strong>${escHtml(project.name)}</strong></div>
-      <div><span>Owner</span><strong>${escHtml((candidate.assignees || []).join(', ') || 'Unassigned')}</strong></div>
-      <div><span>Needed by</span><strong>${escHtml(portfolioDate(candidate.due_at))}</strong></div>
-      <div><span>Teamwork list</span><strong>${escHtml(candidate.tasklist || 'Not provided')}</strong></div>
-      <div><span>Priority</span><strong>${escHtml(candidate.priority || 'Not set')}</strong></div>
-      <div><span>Progress</span><strong>${Math.round(Number(candidate.progress) || 0)}%</strong></div>
-    </div>
-    <section class="decision-explanation">
-      <h3>Why Nora surfaced this</h3>
-      <p>${escHtml(interpretation)}</p>
-      <small>${confidence ? `${confidence}% heuristic confidence · ` : ''}${escHtml(candidate.evidence_ref || `teamwork:task:${candidate.id}`)}${candidate.updated_at ? ` · source updated ${escHtml(portfolioDate(candidate.updated_at))}` : ''}</small>
-    </section>
-    ${description ? '' : '<section class="decision-missing-context"><h3>Context still needed</h3><p>Add the exact decision question, viable options, and final approver to the Teamwork task. Nora will preserve that detail on the next project refresh.</p></section>'}`;
-  detail.classList.add('open');
-  detail.setAttribute('aria-hidden', 'false');
-  document.getElementById('decision-detail-close').focus();
-}
-
-function closeDecisionDetail(event) {
-  const detail = document.getElementById('decision-detail');
-  if (event && event.target !== detail) return;
-  if (!detail || !detail.classList.contains('open')) return;
-  detail.classList.remove('open');
-  detail.setAttribute('aria-hidden', 'true');
-  if (portfolioDecisionReturnFocus?.isConnected) portfolioDecisionReturnFocus.focus();
-  portfolioDecisionReturnFocus = null;
-}
-
-function viewDecisionProject() {
-  const projectKey = selectedPortfolioDecisionProjectKey;
-  closeDecisionDetail();
-  if (projectKey) viewProject(projectKey);
-}
-
-function renderPortfolioRisks() {
-  const severity = ['low', 'medium', 'high', 'critical'];
-  const risks = [...projectPortfolioState.risks].sort((left, right) =>
-    severity.indexOf(right.severity) - severity.indexOf(left.severity));
-  document.getElementById('pm-control-risks').innerHTML = risks.length ? risks.slice(0, 6).map(risk => `
-    <button class="portfolio-radar-item is-risk" type="button" data-project-key="${escHtml(risk.project_key)}" onclick="viewProject(this.dataset.projectKey)">
-      <span>${escHtml(risk.severity)} risk</span><strong>${escHtml(risk.title)}</strong>
-      <small>${escHtml(risk.owner || 'unowned')} · ${escHtml(risk.next_action || risk.decision_needed || 'next action missing')}</small>
-    </button>`).join('')
-    : '<div class="portfolio-clear-state"><span aria-hidden="true">✓</span><div><strong>No verified delivery risks</strong><p>Nora will not manufacture a red status from missing source data.</p></div></div>';
-}
-
-function renderAutopilotSummary() {
-  const report = projectPortfolioState.autopilot || {};
-  const charters = report.charters || {};
-  const actions = report.actions || {};
-  const meetings = report.meetings || {};
-  document.getElementById('pm-autopilot-summary').innerHTML = `
-    <div class="autopilot-summary">
-      <div class="autopilot-mode-row">
-        <div><strong>${Number(charters.shadow) || 0}</strong><span>shadow</span></div>
-        <div><strong>${Number(charters.copilot) || 0}</strong><span>copilot</span></div>
-        <div><strong>${Number(charters.managed) || 0}</strong><span>managed</span></div>
-      </div>
-      <p class="autopilot-summary-note"><strong>${Number(actions.pending) || 0} pending actions</strong><br>${Number(meetings.open) || 0} open meeting cycles. Quiet projects produce no report.</p>
-    </div>`;
-}
-
-function portfolioProjectCard(project) {
-  const signal = portfolioProjectSignals(project);
-  const dueText = signal.checkpointOverdue
-    ? `Past due ${portfolioDate(project.next_milestone_due)}` : portfolioDate(project.next_milestone_due);
-  const chips = [];
-  if (signal.checkpointOverdue) chips.push(['Past-due checkpoint', 'danger']);
-  if (signal.overdueTasks) chips.push([`${signal.overdueTasks} overdue task${signal.overdueTasks === 1 ? '' : 's'}`, 'danger']);
-  if (signal.decisions) chips.push([`${signal.decisions} decision${signal.decisions === 1 ? '' : 's'}`, 'warn']);
-  if (signal.unassignedTasks) chips.push([`${signal.unassignedTasks} unassigned`, 'neutral']);
-  if (signal.incomplete) chips.push(['Story incomplete', 'neutral']);
-  if (!chips.length) chips.push(['No current exception', 'success']);
-  const source = project.hydration?.field_sources?.objective?.derived
-    ? 'Source-grounded inference' : 'Verified Teamwork story';
-  return `<button class="portfolio-project-card${signal.attention ? ' needs-attention' : ''}" type="button" data-project-key="${escHtml(project.key)}" onclick="viewProject(this.dataset.projectKey)">
-    <div class="portfolio-card-top"><span>${escHtml(project.client || 'Client not recorded')}</span>
-      <span class="portfolio-phase">${escHtml(project.phase || 'Phase unknown')}</span></div>
-    <h3>${escHtml(project.name)}</h3><p class="portfolio-objective">${escHtml(project.objective || 'Objective not yet established.')}</p>
-    <div class="portfolio-card-facts">
-      <div><span>Project manager</span><strong>${escHtml(project.pm || 'Not assigned')}</strong></div>
-      <div><span>Next checkpoint</span><strong>${escHtml(project.next_milestone || 'Not established')}</strong><small>${escHtml(dueText)}</small></div>
-    </div>
-    <div class="portfolio-chip-row">${chips.slice(0, 4).map(([label, tone]) =>
-      `<span class="portfolio-chip is-${tone}">${escHtml(label)}</span>`).join('')}</div>
-    <div class="portfolio-card-foot"><span>${escHtml(source)}</span><span>Open story</span></div>
-  </button>`;
+  status.dataset.state = hydration.state || 'idle';
+  if (hydration.state === 'running') status.lastElementChild.textContent = 'Syncing Teamwork now';
+  else if (hydration.state === 'failed') status.lastElementChild.textContent =
+    `Sync failed: ${hydration.error || 'unknown error'}`;
+  else if (hydration.state === 'succeeded') status.lastElementChild.textContent =
+    `Current as of ${portfolioRelativeTime(hydration.completed_at)}`;
+  else status.lastElementChild.textContent = 'Teamwork has not synced yet';
 }
 
 function setProjectFilter(filter) {
@@ -257,36 +93,50 @@ function setProjectFilter(filter) {
   renderProjectPortfolio();
 }
 
+function portfolioProjectCard(project) {
+  const signal = portfolioProjectSignals(project);
+  const chips = [];
+  if (signal.checkpointOverdue) chips.push(['Checkpoint past due', 'danger']);
+  if (signal.overdueTasks) chips.push([`${signal.overdueTasks} overdue`, 'danger']);
+  if (signal.unassignedTasks) chips.push([`${signal.unassignedTasks} unassigned`, 'warn']);
+  if (signal.decisions) chips.push([`${signal.decisions} decision${signal.decisions === 1 ? '' : 's'}`, 'warn']);
+  if (!chips.length) chips.push(['On track', 'success']);
+  return `<button class="portfolio-project-card${signal.attention ? ' needs-attention' : ''}" type="button" data-project-key="${escHtml(project.key)}" onclick="viewProject(this.dataset.projectKey)">
+    <div class="portfolio-card-main"><span>${escHtml(project.client || 'Client not recorded')}</span><h3>${escHtml(project.name)}</h3>
+      <p>${escHtml(project.objective || 'Project objective not recorded in Teamwork.')}</p></div>
+    <div class="portfolio-card-owner"><span>PM</span><strong>${escHtml(project.pm || 'Unassigned')}</strong></div>
+    <div class="portfolio-card-date"><span>Next checkpoint</span><strong>${escHtml(project.next_milestone || 'Not scheduled')}</strong><small>${escHtml(portfolioDate(project.next_milestone_due))}</small></div>
+    <div class="portfolio-chip-row">${chips.slice(0, 3).map(([label, tone]) =>
+      `<span class="portfolio-chip is-${tone}">${escHtml(label)}</span>`).join('')}</div>
+  </button>`;
+}
+
 function renderProjectPortfolio() {
-  const search = String(document.getElementById('portfolio-search')?.value || '').trim().toLowerCase();
-  const all = projectPortfolioState.projects;
-  const active = all.filter(project => portfolioProjectSignals(project).hydrated);
+  const active = projectPortfolioState.projects.filter(project => portfolioProjectSignals(project).hydrated);
   const counts = {
     attention: active.filter(project => portfolioProjectSignals(project).attention).length,
-    decisions: active.filter(project => portfolioProjectSignals(project).decisions > 0).length,
     overdue: active.filter(project => {
       const signal = portfolioProjectSignals(project);
       return signal.checkpointOverdue || signal.overdueTasks > 0;
     }).length,
-    active: active.length,
-    all: all.length,
+    decisions: active.filter(project => portfolioProjectSignals(project).decisions > 0).length,
+    all: active.length,
   };
   Object.entries(counts).forEach(([name, count]) => {
     const element = document.getElementById(`portfolio-filter-${name}-count`);
     if (element) element.textContent = count;
   });
-  let projects = all.filter(project => {
+
+  let projects = active.filter(project => {
     const signal = portfolioProjectSignals(project);
-    if (projectPortfolioFilter === 'attention') return signal.hydrated && signal.attention;
-    if (projectPortfolioFilter === 'decisions') return signal.hydrated && signal.decisions > 0;
-    if (projectPortfolioFilter === 'overdue') return signal.hydrated
-      && (signal.checkpointOverdue || signal.overdueTasks > 0);
-    if (projectPortfolioFilter === 'active') return signal.hydrated;
+    if (projectPortfolioFilter === 'attention') return signal.attention;
+    if (projectPortfolioFilter === 'overdue') return signal.checkpointOverdue || signal.overdueTasks > 0;
+    if (projectPortfolioFilter === 'decisions') return signal.decisions > 0;
     return true;
   });
-  if (search) projects = projects.filter(project => [project.name, project.client, project.pm,
-    project.phase, project.objective, project.next_milestone].some(value =>
-    String(value || '').toLowerCase().includes(search)));
+  const search = String(document.getElementById('portfolio-search')?.value || '').trim().toLowerCase();
+  if (search) projects = projects.filter(project => [project.name, project.client, project.pm]
+    .some(value => String(value || '').toLowerCase().includes(search)));
   const sort = document.getElementById('portfolio-sort')?.value || 'priority';
   projects.sort((left, right) => {
     if (sort === 'project') return left.name.localeCompare(right.name);
@@ -298,462 +148,116 @@ function renderProjectPortfolio() {
       || (portfolioDateValue(left.next_milestone_due) || Infinity)
       - (portfolioDateValue(right.next_milestone_due) || Infinity);
   });
-  document.getElementById('portfolio-result-summary').textContent = `${projects.length} project${projects.length === 1 ? '' : 's'} in this view, ranked from the current durable story.`;
+  document.getElementById('portfolio-result-summary').textContent =
+    `${projects.length} of ${active.length} active Teamwork projects shown`;
   document.getElementById('project-list').innerHTML = projects.length
     ? projects.map(portfolioProjectCard).join('')
-    : '<div class="portfolio-empty"><strong>No projects match this view.</strong><span>Try another filter or clear the search.</span></div>';
+    : '<div class="portfolio-empty"><strong>No projects match this view.</strong><span>Choose another filter or clear the search.</span></div>';
 }
 
 async function loadProjects() {
-  const list = document.getElementById('project-list');
   document.getElementById('portfolio-overview').style.display = '';
   document.getElementById('project-detail').style.display = 'none';
-  document.getElementById('project-edit').style.display = 'none';
-  list.innerHTML = '<div class="portfolio-loading"><span></span><span></span><span></span></div>';
+  const list = document.getElementById('project-list');
+  list.innerHTML = '<div class="portfolio-loading"><span></span><span></span></div>';
   try {
-    const responses = await Promise.all([
-      api('/projects'), api('/pm-control'), api('/pm-control/evaluation'), api('/pm-control/hydration'),
-      api('/pm-control/autopilot/report'),
-    ]);
-    if (responses.some(response => !response.ok)) throw new Error('One or more portfolio sources failed');
-    const [legacy, control, evaluation, hydration, autopilot] = await Promise.all(
-      responses.map(response => response.json()));
-    projectPortfolioState.legacy = Array.isArray(legacy) ? legacy : [];
+    const responses = await Promise.all([api('/pm-control'), api('/pm-control/hydration')]);
+    if (responses.some(response => !response.ok)) throw new Error('Project plans could not be loaded');
+    const [control, hydration] = await Promise.all(responses.map(response => response.json()));
     projectPortfolioState.projects = control.ledger?.projects || [];
-    projectPortfolioState.risks = (control.ledger?.risks || []).filter(risk =>
-      risk.status === 'open' || risk.status === 'monitoring');
+    projectPortfolioState.risks = control.ledger?.risks || [];
     projectPortfolioState.report = control.report || {};
-    projectPortfolioState.evaluation = evaluation || {};
     projectPortfolioState.hydration = hydration || {};
-    projectPortfolioState.autopilot = autopilot || {};
     renderPortfolioStats();
     renderHydrationStatus();
-    renderPortfolioPosture();
-    renderPortfolioDecisions();
-    renderPortfolioRisks();
-    renderAutopilotSummary();
     renderProjectPortfolio();
   } catch (error) {
-    list.innerHTML = `<div class="portfolio-load-error"><strong>Portfolio unavailable</strong><span>${escHtml(error.message)}</span><button class="btn btn-sm" type="button" onclick="loadProjects()">Try again</button></div>`;
+    list.innerHTML = `<div class="portfolio-load-error"><strong>Projects unavailable</strong><span>${escHtml(error.message)}</span><button class="btn btn-sm" type="button" onclick="loadProjects()">Try again</button></div>`;
   }
 }
 
 async function refreshProjectStories(button) {
   const prior = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Syncing Teamwork';
   const status = document.getElementById('pm-hydration-status');
+  button.disabled = true;
+  button.textContent = 'Syncing';
   status.dataset.state = 'running';
-  status.lastElementChild.textContent = 'Refreshing Teamwork project stories now';
+  status.lastElementChild.textContent = 'Syncing Teamwork now';
   try {
-    const response = await api('/pm-control/hydrate/teamwork', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, body: '{}', timeoutMs: 120000 });
+    const response = await api('/pm-control/hydrate/teamwork', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', timeoutMs: 120000,
+    });
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || 'Teamwork sync failed');
     await loadProjects();
   } catch (error) {
     status.dataset.state = 'failed';
-    status.lastElementChild.textContent = `Teamwork sync failed: ${error.message}`;
+    status.lastElementChild.textContent = `Sync failed: ${error.message}`;
   } finally {
     button.disabled = false;
     button.textContent = prior;
   }
 }
 
-function projectDetailSection(title, content, wide = false) {
-  return `<section class="section portfolio-story-section${wide ? ' is-wide' : ''}"><span class="portfolio-kicker">${escHtml(title)}</span>${content}</section>`;
+function projectDetailSection(title, content) {
+  return `<section class="section portfolio-story-section"><h3>${escHtml(title)}</h3>${content}</section>`;
 }
 
-async function viewProject(key) {
+function viewProject(key) {
   const project = projectPortfolioState.projects.find(item => item.key === key);
   if (!project) return;
   selectedPortfolioProjectKey = key;
   document.getElementById('portfolio-overview').style.display = 'none';
-  document.getElementById('project-edit').style.display = 'none';
-  document.getElementById('project-detail').style.display = 'block';
+  document.getElementById('project-detail').style.display = 'grid';
   document.getElementById('project-detail-name').textContent = project.name;
   document.getElementById('project-detail-client').textContent = project.client || 'Client not recorded';
+  document.getElementById('project-detail-teamwork').textContent = project.teamwork_id
+    ? `Teamwork project ${project.teamwork_id}` : 'Teamwork project ID unavailable';
   const signal = portfolioProjectSignals(project);
   const badges = [
     [project.health === 'unknown' ? 'Health not assessed' : `${project.health} health`, project.health],
-    [project.phase || 'Phase unknown', 'neutral'],
-    [signal.hydrated ? 'Teamwork live' : 'Legacy record', signal.hydrated ? 'success' : 'neutral'],
+    [project.phase || 'Phase not recorded', 'neutral'],
   ];
   document.getElementById('project-detail-badges').innerHTML = badges.map(([label, tone]) =>
     `<span class="portfolio-chip is-${escHtml(tone)}">${escHtml(label)}</span>`).join('');
-  document.getElementById('project-detail-info').innerHTML = '<div class="portfolio-loading"><span></span><span></span></div>';
-  document.getElementById('project-autopilot-panel').innerHTML = '<div class="portfolio-empty">Loading Project Autopilot charter and action history.</div>';
-  document.getElementById('project-memories').innerHTML = '';
-  let legacy = null;
-  try {
-    const response = await api('/projects/' + encodeURIComponent(project.name));
-    if (response.ok) legacy = await response.json();
-  } catch {}
+
   const schedule = project.hydration?.schedule || {};
-  const critical = project.critical_path || [];
-  const candidates = project.decision_state?.candidates || [];
-  const sources = Object.entries(project.hydration?.field_sources || {});
-  const story = `<h3>${escHtml(project.objective || 'Objective not yet established.')}</h3>
-    <p>${escHtml(project.health_reason || 'No health claim has been made without verified evidence.')}</p>`;
-  const control = `<div class="portfolio-fact-grid">
-    <div><span>Project manager</span><strong>${escHtml(project.pm || 'Not assigned')}</strong></div>
-    <div><span>Current phase</span><strong>${escHtml(project.phase || 'Not established')}</strong></div>
-    <div><span>Next checkpoint</span><strong>${escHtml(project.next_milestone || 'Not established')}</strong><small>${escHtml(portfolioDate(project.next_milestone_due))}</small></div>
-    <div><span>Story completeness</span><strong>${Math.round((project.completeness?.ratio || 0) * 100)}%</strong><small>${escHtml((project.completeness?.missing || []).join(', ') || 'minimum picture complete')}</small></div>
-  </div>`;
-  const scheduleContent = `<div class="portfolio-schedule-grid">
+  const decisions = project.decision_state?.candidates || [];
+  const criticalPath = project.critical_path || [];
+  const risks = signal.openRisks;
+  const overview = `<p class="portfolio-objective-detail">${escHtml(project.objective || 'Project objective not recorded in Teamwork.')}</p>
+    <div class="portfolio-fact-grid">
+      <div><span>Project manager</span><strong>${escHtml(project.pm || 'Unassigned')}</strong></div>
+      <div><span>Current phase</span><strong>${escHtml(project.phase || 'Not recorded')}</strong></div>
+      <div><span>Next checkpoint</span><strong>${escHtml(project.next_milestone || 'Not scheduled')}</strong><small>${escHtml(portfolioDate(project.next_milestone_due))}</small></div>
+      <div><span>Health</span><strong>${escHtml(project.health || 'Unknown')}</strong><small>${escHtml(project.health_reason || 'No verified health reason recorded')}</small></div>
+    </div>`;
+  const scheduleView = `<div class="portfolio-schedule-grid">
     <div><strong>${Number(schedule.open_tasks) || 0}</strong><span>open tasks</span></div>
     <div class="${Number(schedule.overdue_tasks) ? 'is-danger' : ''}"><strong>${Number(schedule.overdue_tasks) || 0}</strong><span>overdue</span></div>
     <div><strong>${Number(schedule.unassigned_tasks) || 0}</strong><span>unassigned</span></div>
-    <div><strong>${Number(schedule.open_milestones) || 0}</strong><span>open milestones</span></div>
+    <div><strong>${Number(schedule.open_milestones) || 0}</strong><span>milestones</span></div>
   </div>`;
-  const path = critical.length ? `<ol class="portfolio-path-list">${critical.map(item => `<li>${escHtml(item)}</li>`).join('')}</ol>`
-    : '<p class="portfolio-empty">No critical-path task is currently inferred.</p>';
-  const decisions = candidates.length ? `<div class="portfolio-decision-list">${candidates.map(candidate => `
-    <button class="portfolio-decision-item" type="button" data-project-key="${escHtml(project.key)}" data-decision-id="${escHtml(candidate.id)}" onclick="viewDecisionCandidate(this.dataset.projectKey,this.dataset.decisionId)"><strong>${escHtml(candidate.title)}</strong><span>${escHtml(portfolioDate(candidate.due_at))} · ${escHtml((candidate.assignees || []).join(', ') || 'unassigned')} · View details</span></button>`).join('')}</div>`
-    : '<p class="portfolio-empty">No approval, sign-off, or decision candidate is currently visible.</p>';
-  const provenance = sources.length ? `<div class="portfolio-source-list">${sources.map(([field, source]) => `
-    <div><span>${escHtml(field.replaceAll('_', ' '))}</span><strong>${source.derived ? 'Nora inferred' : 'Source exact'}</strong><small>${Math.round((source.confidence || 0) * 100)}% confidence · ${escHtml(String(source.source || '').replaceAll('_', ' '))}</small></div>`).join('')}</div>`
-    : '<p class="portfolio-empty">This legacy record has no field-level provenance.</p>';
+  const pathView = criticalPath.length
+    ? `<ol class="portfolio-path-list">${criticalPath.map(item => `<li>${escHtml(item)}</li>`).join('')}</ol>`
+    : '<p class="portfolio-empty">No critical path is recorded.</p>';
+  const decisionView = decisions.length ? `<div class="portfolio-detail-list">${decisions.map(item => `
+    <article><strong>${escHtml(item.title)}</strong><p>${escHtml(item.description || 'Decision detail is missing from the Teamwork task.')}</p><small>${escHtml((item.assignees || []).join(', ') || 'Unassigned')} · ${escHtml(portfolioDate(item.due_at))}</small></article>`).join('')}</div>`
+    : '<p class="portfolio-empty">No open decision candidates.</p>';
+  const riskView = risks.length ? `<div class="portfolio-detail-list">${risks.map(risk => `
+    <article><strong>${escHtml(risk.title)}</strong><p>${escHtml(risk.next_action || risk.decision_needed || 'Next action not recorded')}</p><small>${escHtml(risk.severity)} · ${escHtml(risk.owner || 'Unowned')}</small></article>`).join('')}</div>`
+    : '<p class="portfolio-empty">No open delivery risks.</p>';
   document.getElementById('project-detail-info').innerHTML = [
-    projectDetailSection('Delivery objective', story, true),
-    projectDetailSection('Control picture', control, true),
-    projectDetailSection('Schedule load', scheduleContent),
-    projectDetailSection('Critical path', path),
-    projectDetailSection('Decision candidates', decisions),
-    projectDetailSection('Why Nora believes this', provenance),
+    projectDetailSection('Project plan', overview),
+    projectDetailSection('Schedule', scheduleView),
+    projectDetailSection('Critical path', pathView),
+    projectDetailSection('Decisions', decisionView),
+    projectDetailSection('Risks', riskView),
   ].join('');
-  const memories = legacy?.memories || [];
-  document.getElementById('project-memories').innerHTML = `<span class="portfolio-kicker">Durable context</span>
-    <h2>Memory and research</h2>${legacy?.details ? `<p class="portfolio-legacy-detail">${escHtml(legacy.details)}</p>` : ''}
-    ${memories.length ? `<div class="portfolio-memory-list">${memories.map(memory => `<div><p>${escHtml(memory.fact)}</p><small>${escHtml(memory.added || '')}</small></div>`).join('')}</div>`
-    : '<p class="portfolio-empty">No additional memories are tagged to this project.</p>'}`;
-  await loadProjectAutopilot(project);
-}
-
-function autopilotAuthorityLabel(key) {
-  return ({
-    schedule_internal_meetings: 'Schedule internal meetings',
-    create_tasks: 'Create tasks',
-    assign_tasks: 'Assign named owners',
-    update_routine_dates: 'Move routine dates',
-    request_updates: 'Request updates',
-    facilitate_meetings: 'Facilitate meetings',
-    record_decisions: 'Record decisions',
-    update_project_plan: 'Maintain project plan',
-  })[key] || key.replaceAll('_', ' ');
-}
-
-function autopilotCharterForm(project, charter) {
-  const authority = charter?.authority || {};
-  const defaults = {
-    schedule_internal_meetings: true, create_tasks: false, assign_tasks: false,
-    update_routine_dates: false, request_updates: true, facilitate_meetings: true,
-    record_decisions: true, update_project_plan: true,
-  };
-  const authorityOptions = Object.keys(defaults).map(key => {
-    const checked = charter ? Boolean(authority[key]) : defaults[key];
-    return `<label class="autopilot-authority-option"><input type="checkbox" data-autopilot-authority="${key}"${checked ? ' checked' : ''}><span>${escHtml(autopilotAuthorityLabel(key))}</span></label>`;
-  }).join('');
-  return `<form class="autopilot-form" onsubmit="return false">
-    <div class="autopilot-form-grid">
-      <label>Operating mode<select data-autopilot-field="mode">
-        ${['shadow', 'copilot', 'managed'].map(mode => `<option value="${mode}"${(charter?.mode || 'shadow') === mode ? ' selected' : ''}>${mode}</option>`).join('')}
-      </select></label>
-      <label>Accountable sponsor<input data-autopilot-field="sponsor" value="${escHtml(charter?.sponsor || 'John Kuefler')}" placeholder="Human sponsor"></label>
-    </div>
-    <label>Bounded mandate<textarea data-autopilot-field="mandate" placeholder="What Nora owns on this project">${escHtml(charter?.mandate || `Own routine delivery coordination for ${project.name} while preserving human scope, budget, client, and major deadline gates.`)}</textarea></label>
-    <label>Success criteria, one per line<textarea data-autopilot-field="success_criteria" placeholder="Observable delivery outcomes">${escHtml((charter?.success_criteria || ['Keep critical work owned and current', 'Close decisions before they block the next checkpoint', 'Use meetings only when they create a decision']).join('\n'))}</textarea></label>
-    <label>Stakeholders, comma separated<input data-autopilot-field="stakeholders" value="${escHtml((charter?.stakeholders || [project.pm].filter(Boolean)).join(', '))}" placeholder="People Nora coordinates with"></label>
-    <div><span class="portfolio-kicker">Standing internal authority</span><div class="autopilot-authority-grid">${authorityOptions}</div></div>
-    <div class="autopilot-form-grid">
-      <label>Routine date shift limit<input type="number" min="0" max="14" data-autopilot-field="date_limit" value="${Number(authority.routine_date_shift_limit_days) || 0}"></label>
-      <label>Meeting limit per week<input type="number" min="1" max="5" data-autopilot-field="meeting_limit" value="${Number(authority.max_meetings_per_week) || 2}"></label>
-    </div>
-    <label>Pilot authorization note<textarea data-autopilot-field="pilot_note" placeholder="Why this autonomy level is appropriate">${escHtml(charter?.pilot_note || '')}</textarea></label>
-    <div class="autopilot-actions">
-      <button class="btn btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="saveProjectAutopilot(this.dataset.projectKey, false, this)">Save draft</button>
-      <button class="btn btn-primary btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="saveProjectAutopilot(this.dataset.projectKey, true, this)">${charter?.status === 'active' ? 'Save and reactivate' : 'Save and activate'}</button>
-    </div>
-    <div class="autopilot-status" role="status"></div>
-  </form>`;
-}
-
-function autopilotActionItem(action, projectKey) {
-  const canApprove = ['proposed', 'approval_required'].includes(action.state) && !action.human_facing;
-  return `<div class="autopilot-stream-item">
-    <span>${escHtml(action.state)} · ${escHtml(action.type.replaceAll('_', ' '))}</span>
-    <strong>${escHtml(action.description)}</strong>
-    <small>${Math.round((action.prediction?.confidence || 0) * 100)}% expected to help · ${escHtml(action.success_criteria)}</small>
-    ${action.human_facing && ['proposed', 'approval_required'].includes(action.state)
-      ? '<small>Requires the existing PM intervention rail before authorization.</small>' : ''}
-    ${canApprove ? `<button class="btn btn-sm" type="button" data-action-id="${escHtml(action.id)}" data-project-key="${escHtml(projectKey)}" data-required-input="${escHtml(action.required_input || '')}" onclick="approveProjectAutopilotAction(this)">Approve action</button>` : ''}
-  </div>`;
-}
-
-function autopilotMeetingItem(meeting, projectKey) {
-  const canApprove = meeting.state === 'planned';
-  return `<div class="autopilot-stream-item">
-    <span>${escHtml(meeting.state)} · meeting cycle</span>
-    <strong>${escHtml(meeting.title)}</strong>
-    <small>${escHtml(meeting.objective)}${meeting.scheduled_for ? ` · ${escHtml(portfolioDate(meeting.scheduled_for))}` : ''}</small>
-    ${canApprove ? `<button class="btn btn-sm" type="button" data-meeting-id="${escHtml(meeting.id)}" data-project-key="${escHtml(projectKey)}" onclick="approveProjectAutopilotMeeting(this)">Approve meeting</button>` : ''}
-  </div>`;
-}
-
-function renderProjectAutopilot(project, view) {
-  const panel = document.getElementById('project-autopilot-panel');
-  const charter = view.charter;
-  if (!charter) {
-    panel.innerHTML = `<div class="autopilot-head"><div><span class="portfolio-kicker">Project Autopilot</span>
-      <h2>Start with a supervised pilot</h2><p>Shadow observes, copilot proposes, and managed executes only the internal authorities you grant here. Every fixed human gate remains in force.</p></div></div>
-      <div class="autopilot-fixed-gates"><strong>Always human-gated:</strong> external email, client commitments, scope, budget, financial disclosure, and major deadline changes.</div>
-      ${autopilotCharterForm(project, null)}`;
-    return;
-  }
-  const granted = Object.entries(charter.authority || {}).filter(([key, value]) => value === true
-    && !key.startsWith('max_')).map(([key]) => `<span>${escHtml(autopilotAuthorityLabel(key))}</span>`).join('');
-  const actions = [...(view.actions || [])].reverse().slice(0, 8);
-  const meetings = [...(view.meetings || [])].reverse().slice(0, 6);
-  const observed = (view.observations || []).length;
-  const helpful = (view.observations || []).filter(item => ['helped', 'resolved'].includes(item.outcome)).length;
-  const modeHeading = {
-    shadow: 'Shadow project oversight',
-    copilot: 'Copilot project management',
-    managed: 'Managed project delivery',
-  }[charter.mode] || 'Project Autopilot';
-  panel.innerHTML = `<div class="autopilot-head"><div><span class="portfolio-kicker">Project Autopilot</span>
-      <h2>${escHtml(modeHeading)}</h2>
-      <p>${escHtml(charter.mandate)}</p></div>
-      <div class="autopilot-actions"><span class="autopilot-mode is-${escHtml(charter.status === 'paused' ? 'paused' : charter.mode)}">${escHtml(charter.status)} · ${escHtml(charter.mode)}</span>
-        ${charter.status === 'active' ? `<button class="btn btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="reconcileProjectAutopilot(this.dataset.projectKey, this)">Reconcile now</button><button class="btn btn-sm" type="button" data-project-key="${escHtml(project.key)}" onclick="pauseProjectAutopilot(this.dataset.projectKey, this)">Pause pilot</button>` : ''}</div></div>
-    <div class="autopilot-fact-grid">
-      <div><span>Human sponsor</span><strong>${escHtml(charter.sponsor)}</strong></div>
-      <div><span>Pending actions</span><strong>${actions.filter(item => ['proposed', 'approval_required', 'authorized'].includes(item.state)).length}</strong></div>
-      <div><span>Open meetings</span><strong>${meetings.filter(item => !['reconciled', 'cancelled', 'shadow'].includes(item.state)).length}</strong></div>
-      <div><span>Observed usefulness</span><strong>${observed ? `${helpful}/${observed}` : 'Collecting evidence'}</strong></div>
-    </div>
-    <div><span class="portfolio-kicker">Granted internal authority</span><div class="autopilot-authority">${granted || '<span>No standing writes</span>'}</div></div>
-    <div class="autopilot-fixed-gates"><strong>Still human-gated:</strong> external email, client commitments, scope, budget, financial disclosure, major deadline changes, and every external-attendee meeting.</div>
-    <div class="autopilot-stream-grid">
-      <div class="autopilot-stream"><h3>Action history</h3>${actions.length ? actions.map(item => autopilotActionItem(item, project.key)).join('') : '<p class="portfolio-empty">No source event has justified an action.</p>'}</div>
-      <div class="autopilot-stream"><h3>Meeting lifecycle</h3>${meetings.length ? meetings.map(item => autopilotMeetingItem(item, project.key)).join('') : '<p class="portfolio-empty">No meeting cycle is open.</p>'}</div>
-    </div>
-    <details><summary>Configure charter</summary>${autopilotCharterForm(project, charter)}</details>`;
-}
-
-async function loadProjectAutopilot(project) {
-  const panel = document.getElementById('project-autopilot-panel');
-  try {
-    const response = await api('/pm-control/autopilot/projects/' + encodeURIComponent(project.key));
-    const view = await response.json();
-    if (!response.ok) throw new Error(view.error || 'Project Autopilot unavailable');
-    renderProjectAutopilot(project, view);
-  } catch (error) {
-    panel.innerHTML = `<div class="portfolio-load-error"><strong>Project Autopilot unavailable</strong><span>${escHtml(error.message)}</span></div>`;
-  }
-}
-
-function projectAutopilotFormBody(panel) {
-  const field = name => panel.querySelector(`[data-autopilot-field="${name}"]`);
-  const authority = {};
-  panel.querySelectorAll('[data-autopilot-authority]').forEach(input => {
-    authority[input.dataset.autopilotAuthority] = input.checked;
-  });
-  authority.routine_date_shift_limit_days = Number(field('date_limit').value) || 0;
-  authority.max_meetings_per_week = Number(field('meeting_limit').value) || 2;
-  authority.meeting_cooldown_hours = 24;
-  return {
-    mode: field('mode').value,
-    sponsor: field('sponsor').value.trim(),
-    mandate: field('mandate').value.trim(),
-    success_criteria: field('success_criteria').value.split('\n').map(value => value.trim()).filter(Boolean),
-    stakeholders: field('stakeholders').value.split(',').map(value => value.trim()).filter(Boolean),
-    pilot_note: field('pilot_note').value.trim(),
-    authority,
-  };
-}
-
-async function saveProjectAutopilot(projectKey, activate, button) {
-  const form = button.closest('.autopilot-form');
-  const status = form.querySelector('.autopilot-status');
-  const body = projectAutopilotFormBody(form);
-  const prior = button.textContent;
-  button.disabled = true;
-  button.textContent = activate ? 'Activating pilot' : 'Saving charter';
-  status.className = 'autopilot-status';
-  status.textContent = '';
-  try {
-    let response = await operatorApi('/pm-control/autopilot/charters/' + encodeURIComponent(projectKey), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    let result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Charter save failed');
-    if (activate) {
-      response = await operatorApi(`/pm-control/autopilot/charters/${encodeURIComponent(projectKey)}/activate`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode: body.mode, pilot_note: body.pilot_note }),
-      });
-      result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Pilot activation failed');
-      await api('/pm-control/autopilot/reconcile', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_key: projectKey, source: 'operator_activation' }) });
-    }
-    status.className = 'autopilot-status is-success';
-    status.textContent = activate ? 'Pilot active' : 'Charter saved';
-    await loadProjects();
-    await viewProject(projectKey);
-  } catch (error) {
-    status.className = 'autopilot-status is-error';
-    status.textContent = error.message;
-  } finally {
-    button.disabled = false;
-    button.textContent = prior;
-  }
-}
-
-async function reconcileProjectAutopilot(projectKey, button) {
-  const prior = button.textContent;
-  button.disabled = true;
-  button.textContent = 'Reconciling';
-  try {
-    const response = await api('/pm-control/autopilot/reconcile', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_key: projectKey, source: 'operator_dashboard' }) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Reconciliation failed');
-    await loadProjectAutopilot(projectPortfolioState.projects.find(item => item.key === projectKey));
-  } catch (error) { alert(`Project Autopilot failed: ${error.message}`); }
-  finally { button.disabled = false; button.textContent = prior; }
-}
-
-async function pauseProjectAutopilot(projectKey, button) {
-  const reason = prompt('Why are you pausing this project pilot?');
-  if (!reason) return;
-  button.disabled = true;
-  try {
-    const response = await operatorApi(`/pm-control/autopilot/charters/${encodeURIComponent(projectKey)}/pause`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reason }),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Pause failed');
-    await loadProjects();
-    await viewProject(projectKey);
-  } catch (error) { alert(`Pause failed: ${error.message}`); }
-  finally { button.disabled = false; }
-}
-
-async function approveProjectAutopilotAction(button) {
-  const body = {};
-  if (button.dataset.requiredInput) {
-    const resolution = prompt(`Provide the required ${button.dataset.requiredInput}:`);
-    if (!resolution) return;
-    body.resolution = resolution;
-  }
-  button.disabled = true;
-  try {
-    const response = await operatorApi(`/pm-control/autopilot/actions/${encodeURIComponent(button.dataset.actionId)}/approve`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Action approval failed');
-    await loadProjectAutopilot(projectPortfolioState.projects.find(item => item.key === button.dataset.projectKey));
-  } catch (error) { alert(`Action approval failed: ${error.message}`); }
-  finally { button.disabled = false; }
-}
-
-async function approveProjectAutopilotMeeting(button) {
-  button.disabled = true;
-  try {
-    const response = await operatorApi(`/pm-control/autopilot/meetings/${encodeURIComponent(button.dataset.meetingId)}/approve`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Meeting approval failed');
-    await loadProjectAutopilot(projectPortfolioState.projects.find(item => item.key === button.dataset.projectKey));
-  } catch (error) { alert(`Meeting approval failed: ${error.message}`); }
-  finally { button.disabled = false; }
 }
 
 function closeProject() {
   selectedPortfolioProjectKey = null;
   document.getElementById('project-detail').style.display = 'none';
-  document.getElementById('project-edit').style.display = 'none';
   document.getElementById('portfolio-overview').style.display = '';
-}
-
-function showAddProject() {
-  selectedPortfolioProjectKey = null;
-  editingProjectName = null;
-  document.getElementById('portfolio-overview').style.display = 'none';
-  document.getElementById('project-detail').style.display = 'none';
-  document.getElementById('project-edit-title').textContent = 'Add project context';
-  document.getElementById('project-edit-name').value = '';
-  document.getElementById('project-edit-details').value = '';
-  document.getElementById('project-edit-name').disabled = false;
-  document.getElementById('project-context-delete').style.display = 'none';
-  document.getElementById('project-edit').style.display = 'block';
-  document.getElementById('project-status').className = 'toast';
-}
-
-function editProject() {
-  const project = projectPortfolioState.projects.find(item => item.key === selectedPortfolioProjectKey);
-  if (!project) return;
-  const legacy = projectPortfolioState.legacy.find(item =>
-    item.name.toLowerCase() === project.name.toLowerCase());
-  editingProjectName = legacy?.name || null;
-  document.getElementById('project-edit-title').textContent = legacy
-    ? 'Edit legacy project context' : 'Add project context';
-  document.getElementById('project-edit-name').value = project.name;
-  document.getElementById('project-edit-details').value = legacy?.details || '';
-  document.getElementById('project-edit-name').disabled = Boolean(legacy);
-  document.getElementById('project-context-delete').style.display = legacy ? '' : 'none';
-  document.getElementById('project-detail').style.display = 'none';
-  document.getElementById('project-edit').style.display = 'block';
-  document.getElementById('project-status').className = 'toast';
-}
-
-function cancelEditProject() {
-  document.getElementById('project-edit').style.display = 'none';
-  if (selectedPortfolioProjectKey) viewProject(selectedPortfolioProjectKey);
-  else closeProject();
-  editingProjectName = null;
-}
-
-async function saveProject() {
-  const status = document.getElementById('project-status');
-  const name = document.getElementById('project-edit-name').value.trim();
-  const details = document.getElementById('project-edit-details').value.trim();
-  if (!name) { status.className = 'toast err'; status.textContent = 'Project name is required'; return; }
-  try {
-    const response = editingProjectName ? await api('/projects/' + encodeURIComponent(editingProjectName), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ details }),
-    }) : await api('/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, details }) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Context save failed');
-    status.className = 'toast ok';
-    status.textContent = 'Project context saved';
-    const returnKey = selectedPortfolioProjectKey;
-    setTimeout(async () => {
-      await loadProjects();
-      if (returnKey) viewProject(returnKey);
-    }, 350);
-  } catch (error) {
-    status.className = 'toast err';
-    status.textContent = `Failed: ${error.message}`;
-  }
-}
-
-async function deleteProject() {
-  if (!editingProjectName) return;
-  if (!confirm(`Delete the legacy context record for "${editingProjectName}"? Project control data and memories remain intact.`)) return;
-  try {
-    const response = await api('/projects/' + encodeURIComponent(editingProjectName), { method: 'DELETE' });
-    if (!response.ok) throw new Error('Context deletion failed');
-    await loadProjects();
-    if (selectedPortfolioProjectKey) viewProject(selectedPortfolioProjectKey);
-  } catch (error) { alert(`Failed: ${error.message}`); }
 }

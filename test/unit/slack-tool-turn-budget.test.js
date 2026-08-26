@@ -2,7 +2,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const interactivePerformance = require('../../src/intelligence/interactive-performance');
-const { acknowledgesMissingInformation, researchCouldHelp } = require('../../src/surfaces/slack/reply-intent');
 const { readServerSource, sourceRegion } = require('../helpers/server-source');
 
 const handler = sourceRegion('async function handleSlackImpl', 'async function getNoraBotUserId');
@@ -51,45 +50,6 @@ test('Slack gets as many tool rounds as Zoom', () => {
     'four rounds cannot cover a multi-attendee booking');
 });
 
-// The gap detector is a provider call whose own instructions exclude action requests and
-// confidently answered questions. It ignored both on three consecutive scheduling turns and filed
-// calendar availability as documentation homework. Research searches Drive and Confluence, so it
-// can only help when what is missing is documentation.
-test('a turn answered from live connectors does not queue documentation research', () => {
-  assert.match(handler, /const researchCouldHelp = slackResearchCouldHelp\(firedTools, reply\)/,
-    'live tool use must gate research extraction');
-  // The three misfires from the log: calendar tools fired, she answered, research got queued anyway.
-  assert.equal(researchCouldHelp(['list_calendars', 'list_events'],
-    'Both open: before 7:15am CT, and 4:00 to 4:30pm CT.'), false);
-  assert.equal(researchCouldHelp(['create_event'],
-    'Booked, "john testing - ignore" tomorrow at 3:15 for 15 minutes.'), false);
-  // A turn with no live read is still the detector's job to judge.
-  assert.equal(researchCouldHelp([], 'That process is owned by the delivery team.'), true);
-  // A live read that came up empty is a real documentation gap.
-  assert.equal(researchCouldHelp(['search_drive'], "I couldn't find any brief for that."), true);
-  assert.match(handler, /!isProactive && !conversationPolicy\.boundedConversation && researchCouldHelp/,
-    'the gate has to be applied at the research call site, not just computed');
-});
-
-test('coming up empty is still a real documentation gap', () => {
-  // These must keep queueing research: she consulted a live source and found nothing.
-  for (const reply of [
-    "I don't have the brief for that one.",
-    "I couldn't find any records of that engagement.",
-    'There is no documentation on that process yet.',
-    "I'd have to ask Kinsey, that is not written down anywhere I can see.",
-    "Nothing in Drive about the Q3 rebrand.",
-    "I can't access that folder.",
-  ]) {
-    assert.equal(acknowledgesMissingInformation(reply), true, `should read as a gap: ${reply}`);
-  }
-  // These must not: she answered from a live read, and no amount of Drive searching helps.
-  for (const reply of [
-    'Both open: before 7:15am CT, and 4:00 to 4:30pm CT.',
-    'Booked, "john testing - ignore" tomorrow at 3:15 for 15 minutes with a Zoom link.',
-    'Kinsey is free after 4:00 and you are free after 3:15.',
-    'That task is assigned to Brandee and due Friday.',
-  ]) {
-    assert.equal(acknowledgesMissingInformation(reply), false, `should not read as a gap: ${reply}`);
-  }
+test('Slack extraction does not manufacture research tasks', () => {
+  assert.doesNotMatch(handler, /extractResearchNeeds|slackResearchCouldHelp/);
 });

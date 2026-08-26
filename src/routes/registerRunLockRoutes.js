@@ -212,6 +212,7 @@ function registerRunLockRoutes(app, requireAuth, {
           lifecycle,
           released_at: new Date(Number(clock())).toISOString(),
           expired: current.expires_at <= Number(clock()) || restartResumeExpired(current, Number(clock())),
+          status: req.query.status || (req.body && req.body.status) || null,
         }) || lifecycle;
       } catch (error) {
         console.error(`Run lock lifecycle release failed for ${current.holder}: ${error.message}`);

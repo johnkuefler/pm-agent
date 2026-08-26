@@ -20,7 +20,6 @@ function healthySnapshot() {
     background_work: { post_interaction: { queued: 0 },
       transcript_checkpoints: { pending: 0, retrying: 0, maximum_retry_attempt: 0 },
       recurring_jobs: { jobs: [] }, startup_tasks: { active: [], recent_failures: [] },
-      api_opportunity_operations: { pending: 0, last_error: null },
       slack_webhook_events: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
       acknowledged_meeting_work: { active_count: 0, oldest_active_ms: 0, recent_failures: [] },
       recent_meetings_cache: { in_flight: false, active_ms: 0, consecutive_failures: 0 } },
@@ -76,18 +75,6 @@ test('reliability exposes unresolved entity writes and meaningful queue accumula
   assert.equal(verdict.status, 'action_required');
   assert.equal(verdict.action_required[0].code, 'entity_persistence_failure');
   assert.equal(verdict.degraded[0].code, 'entity_write_backlog');
-});
-
-test('reliability exposes approved API operation backlog and failures', () => {
-  const snapshot = healthySnapshot();
-  snapshot.background_work.api_opportunity_operations = {
-    pending: 7, in_flight: 1, last_error: 'connector failed',
-  };
-  const verdict = assessRuntimeReliability(snapshot, { now });
-  assert.equal(verdict.status, 'degraded');
-  assert.deepEqual(verdict.degraded.map(item => item.code), [
-    'api_opportunity_operation_backlog', 'api_opportunity_operation_failure',
-  ]);
 });
 
 test('reliability escalates acknowledged Slack work that cannot reach a terminal state', () => {

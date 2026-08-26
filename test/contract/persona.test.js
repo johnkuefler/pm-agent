@@ -4,11 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { readServerSource } = require('../helpers/server-source');
 
-test('intelligence upgrades preserve Nora expressive personality anchors', () => {
+test('Nora stays specific, human, and bounded to operational PM work', () => {
   const prompt = fs.readFileSync(path.resolve(__dirname, '../../nora-prompt.md'), 'utf8');
   for (const anchor of [
-    "you're one of them", 'casual, warm, quick', 'Default: talk', 'The one-sentence reflex is the AI tell',
-    'Let conversations die', '[silence]', 'Earned professional viewpoints', 'ask like a teammate',
+    "project-management assistant", 'casual, warm, quick', 'Lead with the answer',
+    'Read before writing', 'Teamwork is the project system of record',
+    'primary job is to listen and preserve a good transcript', 'Research programs',
   ]) assert.match(prompt, new RegExp(anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
   const server = readServerSource();
   assert.doesNotMatch(server, /\[Your takes:/,

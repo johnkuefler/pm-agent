@@ -102,16 +102,14 @@ test('meeting video uses plain avatar with dashboard-controlled diagnostics', ()
   assert.doesNotMatch(voiceAgentHtml, /face-blink/);
 });
 
-test('intelligence grounding augments rather than replaces Nora expressive voice', () => {
+test('operational grounding augments Nora concise PM voice', () => {
   const episode = helpers.intelligenceStore.recordEpisodeEvent({ correlation: 'slack:C1:launch', title: 'Launch follow-up', channel: 'slack', actor: 'John', text: 'Can you confirm launch QA?', summary: 'John asked Nora to confirm launch QA.', open_loop: { what: 'Confirm launch QA', owner: 'Nora' } });
   helpers.intelligenceStore.addCommitment({ what: 'Confirm launch QA', owner: 'Nora', episode_id: episode.id });
   const prompt = helpers.buildSystemPrompt('slack', null, null, { channel: 'C1', requester: { name: 'John' } }, { conversationText: 'Where are we on launch QA?' });
-  assert.match(prompt, /default to talking|Default: talk/i);
   assert.match(prompt, /casual, warm, quick/i);
-  assert.match(prompt, /Grounding and repair/i);
-  assert.match(prompt, /repair it directly/i);
-  assert.match(prompt, /Relevant conversation continuity/i);
-  assert.match(prompt, /Still open: Confirm launch QA/i);
+  assert.match(prompt, /project-management assistant/i);
+  assert.match(prompt, /Answer the person's question first/i);
+  assert.match(prompt, /current provider state/i);
 });
 
 test('named and one-on-one barge-ins preempt stale voice work while group cross-talk does not', async () => {
@@ -290,31 +288,5 @@ test('Slack post-response extraction uses parameters carried through the handler
   assert.match(handler, /external_id: triggerTs \|\| null/);
   assert.match(handler, /attestation: sourceAttestation/);
   assert.doesNotMatch(handler, /\bevent\.ts\b|\bslackVerification\b/);
-});
-
-test('fallback forecast honors the retryable preparation contract byte-for-byte', async () => {
-  const payload = { protocol_version: 4, evidence: [{ type: 'intelligence_cycle', id: 'cycle-retry' }] };
-  const calls = [];
-  const waits = [];
-  const result = await helpers.commitFallbackForecast('cycle-retry', payload, {
-    attempts: 3,
-    retryDelayMs: 25,
-    request: async (method, route, body) => {
-      calls.push({ method, route, body });
-      if (calls.length < 3) {
-        const error = new Error('preparation pending');
-        error.status = 503;
-        error.code = 'SELF_FORECAST_PREPARATION_PENDING';
-        error.response_body = { retryable: true };
-        throw error;
-      }
-      return { ok: true };
-    },
-    wait: async milliseconds => { waits.push(milliseconds); },
-  });
-  assert.deepEqual(result, { ok: true });
-  assert.deepEqual(waits, [25, 25]);
-  assert.equal(calls.length, 3);
-  assert.equal(calls.every(call => call.body === payload), true);
 });
 

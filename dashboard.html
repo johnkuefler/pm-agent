@@ -28,34 +28,11 @@
       <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="workspace-nav" onclick="toggleMobileNav()">Menu</button>
       <nav id="workspace-nav" class="nav" aria-label="Workspace">
         <div class="nav-group">
-          <div class="nav-label">Work</div>
-          <button class="tab" type="button" data-tab="live" aria-selected="false" onclick="showTab('live')">Live</button>
+          <div class="nav-label">Nora</div>
           <button class="tab active" type="button" data-tab="projects" aria-selected="true" onclick="showTab('projects')">Portfolio</button>
-          <button class="tab" type="button" data-tab="executive" aria-selected="false" onclick="showTab('executive')">Executive</button>
-          <button class="tab" type="button" data-tab="fleet" aria-selected="false" onclick="showTab('fleet')">Fleet</button>
-          <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Tasks</button>
-          <button class="tab" type="button" data-tab="meeting" aria-selected="false" onclick="showTab('meeting')">Meeting</button>
-          <button class="tab" type="button" data-tab="transcripts" aria-selected="false" onclick="showTab('transcripts')">Transcripts</button>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">Knowledge</div>
-          <button class="tab" type="button" data-tab="memory" aria-selected="false" onclick="showTab('memory')">Memory</button>
-          <button class="tab" type="button" data-tab="dreams" aria-selected="false" onclick="showTab('dreams')">Dreams</button>
-          <button class="nav-jump" type="button" data-intelligence-jump="reading-room" aria-controls="reading-room-state" onclick="openIntelligenceSection('reading-room')">
-            <span>Reading Room</span><small>Live activity</small>
-          </button>
-          <button class="tab" type="button" data-tab="markers" aria-selected="false" onclick="showTab('markers')">Markers</button>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">Identity</div>
-          <button class="tab" type="button" data-tab="routine" aria-selected="false" onclick="showTab('routine')">Routine</button>
-          <button class="tab" type="button" data-tab="charter" aria-selected="false" onclick="showTab('charter')">Charter</button>
-          <button class="tab" type="button" data-tab="self" aria-selected="false" onclick="showTab('self')">Self</button>
-        </div>
-        <div class="nav-group">
-          <div class="nav-label">System</div>
-          <button class="tab" type="button" data-tab="intelligence" aria-selected="false" onclick="showTab('intelligence')">Intelligence</button>
-          <button class="tab" type="button" data-tab="admin" aria-selected="false" onclick="showTab('admin')">Admin</button>
+          <button class="tab" type="button" data-tab="tasks" aria-selected="false" onclick="showTab('tasks')">Work queue</button>
+          <button class="tab" type="button" data-tab="meeting" aria-selected="false" onclick="showTab('meeting')">Meetings</button>
+          <button class="tab" type="button" data-tab="admin" aria-selected="false" onclick="showTab('admin')">Settings</button>
         </div>
       </nav>
     </aside>
@@ -66,101 +43,9 @@
           <p id="page-description" class="subtitle">See what needs management now, what Nora knows, and why she is staying quiet or stepping in.</p>
         </div>
         <div class="content-actions">
-          <button class="utility-btn" type="button" onclick="openCommandPalette()" title="Switch view (Ctrl or Command + K)">Switch view</button>
           <button id="theme-toggle" class="utility-btn" type="button" onclick="toggleTheme()">Dark theme</button>
         </div>
       </div>
-      <button id="global-activity-strip" class="global-activity-strip is-connecting" type="button" onclick="showTab('live')" aria-label="Open Nora's live activity">
-        <span class="global-activity-state" aria-hidden="true"></span>
-        <span class="global-activity-copy"><strong id="global-activity-label">Connecting to Nora's activity</strong><span id="global-activity-detail">Waiting for the live runtime stream.</span></span>
-        <span class="global-activity-action">Open live view</span>
-      </button>
-
-    <!-- Live Activity Tab -->
-    <div id="page-live" class="page">
-      <section class="live-mind" aria-labelledby="live-mind-title">
-        <header class="live-mind-heading">
-          <div>
-            <div class="live-connection">
-              <span id="live-connection-indicator" class="live-status-mark is-connecting" aria-hidden="true"></span>
-              <span id="live-connection-label">Connecting</span>
-              <span id="live-primary-meta">No live timestamp yet</span>
-            </div>
-            <h2 id="live-mind-title">Nora's working mind</h2>
-            <p>Each region shows the current or most recent observable process routed through it.</p>
-          </div>
-          <button class="btn btn-sm" type="button" onclick="loadRuntimeActivity()">Reconnect</button>
-        </header>
-
-        <div id="live-current-list" class="live-current-list" aria-live="polite" aria-busy="true">
-          <div class="live-loading-row" aria-hidden="true"></div>
-          <span class="sr-only">Loading Nora's current activity.</span>
-        </div>
-
-        <div id="live-cortex" class="live-cortex is-connecting" aria-label="Functional map of Nora's live activity">
-          <svg class="live-neural-links" viewBox="0 0 1000 660" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-            <g class="live-neural-link" data-live-link="executive"><line x1="500" y1="330" x2="220" y2="150"/><circle cx="220" cy="150" r="4"/></g>
-            <g class="live-neural-link" data-live-link="social"><line x1="500" y1="330" x2="790" y2="145"/><circle cx="790" cy="145" r="4"/></g>
-            <g class="live-neural-link" data-live-link="learning"><line x1="500" y1="330" x2="165" y2="350"/><circle cx="165" cy="350" r="4"/></g>
-            <g class="live-neural-link" data-live-link="play"><line x1="500" y1="330" x2="840" y2="355"/><circle cx="840" cy="355" r="4"/></g>
-            <g class="live-neural-link" data-live-link="self"><line x1="500" y1="330" x2="500" y2="105"/><circle cx="500" cy="105" r="4"/></g>
-            <g class="live-neural-link" data-live-link="subconscious"><line x1="500" y1="330" x2="300" y2="535"/><circle cx="300" cy="535" r="4"/></g>
-            <g class="live-neural-link" data-live-link="continuity"><line x1="500" y1="330" x2="700" y2="535"/><circle cx="700" cy="535" r="4"/></g>
-          </svg>
-
-          <article id="live-region-focus" class="live-region live-region-focus" data-region="focus" data-status="quiet">
-            <span class="live-region-name">Attention</span>
-            <strong id="live-primary-label">Finding Nora's current activity</strong>
-            <p id="live-primary-detail">Opening a direct, read-only stream from her runtime.</p>
-            <small id="live-focus-time">Waiting for the first signal</small>
-          </article>
-
-          <article class="live-region live-region-executive" data-live-region="executive" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Executive work</span><span class="live-region-state">Quiet</span></div>
-            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Hourly work and connector actions land here.</p><small class="live-region-time">No recent signal</small>
-          </article>
-          <article class="live-region live-region-social" data-live-region="social" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Language and people</span><span class="live-region-state">Quiet</span></div>
-            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Slack, Zoom, and meeting responses land here.</p><small class="live-region-time">No recent signal</small>
-          </article>
-          <article class="live-region live-region-learning" data-live-region="learning" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Learning and reading</span><span class="live-region-state">Quiet</span></div>
-            <div id="live-reading-snapshot" class="live-reading-snapshot"><span class="live-book-mark" aria-hidden="true"></span><div><strong>Checking the shelves</strong><p>Loading the latest source-bound encounter.</p></div></div>
-            <small class="live-region-time">No recent signal</small>
-            <button class="live-region-action" type="button" onclick="openIntelligenceSection('reading-room')">Open Reading Room</button>
-          </article>
-          <article class="live-region live-region-play" data-live-region="play" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Play and exploration</span><span class="live-region-state">Quiet</span></div>
-            <div id="live-play-snapshot" class="live-play-snapshot"><div class="live-mini-board" aria-hidden="true"></div><div><strong>Checking the playroom</strong><p>Loading the latest bounded session.</p></div></div>
-            <small class="live-region-time">No recent signal</small>
-            <button class="live-region-action" type="button" onclick="openIntelligenceSection('playroom')">Open Playroom</button>
-          </article>
-          <article class="live-region live-region-self" data-live-region="self" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Self-model</span><span class="live-region-state">Quiet</span></div>
-            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Fingerprinting, reflection, and self-correction land here.</p><small class="live-region-time">No recent signal</small>
-          </article>
-          <article class="live-region live-region-subconscious" data-live-region="subconscious" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Subconscious</span><span class="live-region-state">Quiet</span></div>
-            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Bounded background inference and dreams land here.</p><small class="live-region-time">No recent signal</small>
-          </article>
-          <article class="live-region live-region-continuity" data-live-region="continuity" data-status="quiet">
-            <div class="live-region-head"><span class="live-region-name">Continuity and body</span><span class="live-region-state">Quiet</span></div>
-            <strong class="live-region-title">Standing by</strong><p class="live-region-detail">Runtime health, handoffs, and system state land here.</p><small class="live-region-time">No recent signal</small>
-          </article>
-        </div>
-
-        <p class="live-integrity-note">This is a functional activity map, not literal neural imaging or evidence of phenomenal consciousness. Message text, prompts, tool arguments, or tool results are never included.</p>
-      </section>
-
-      <details class="section live-history-section">
-        <summary>
-          <span><strong id="live-history-title">Activity trace</strong><small id="live-history-summary">A bounded operational record</small></span>
-          <span class="live-history-open">View trace</span>
-        </summary>
-        <div id="live-history-list" class="live-history-list" aria-live="polite"></div>
-      </details>
-    </div>
-
     <!-- Meeting Tab -->
     <div id="page-meeting" class="page">
       <div class="section">
@@ -172,13 +57,6 @@
         <div style="font-size:12px;color:var(--muted);margin-top:4px;">Optional. Picks one project to prime Nora's context for this meeting - she'll have full memory + details for it loaded.</div>
         <textarea id="join-mandate" placeholder="Mandate (optional): what she's there to accomplish in your place. e.g. 'Get them to commit to a launch date. Don't give ground on the QA window. If pricing comes up, take it back to me.'" style="margin-top:8px;min-height:60px;"></textarea>
         <div style="font-size:12px;color:var(--muted);margin-top:4px;">Her agenda for this meeting. She'll open with it if it's her meeting to run, hold its positions, punt what it doesn't cover (per the Charter), and measure her debrief to you against it.</div>
-        <label style="display:flex;align-items:flex-start;gap:10px;margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);cursor:pointer;">
-          <input id="join-meeting-diagnostics" type="checkbox" style="margin-top:3px;" />
-          <span>
-            <span style="display:block;color:var(--text);font-size:13px;font-weight:600;">Show diagnostics in Nora's meeting video</span>
-            <span style="display:block;color:var(--muted);font-size:12px;line-height:1.4;margin-top:2px;">Optional. Shows connection, listening, thinking, speaking, tools, and prompt signals in the meeting feed. You can turn this on or off during the meeting.</span>
-          </span>
-        </label>
         <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
@@ -190,36 +68,39 @@
             <div class="toggle-pill" id="pill-oneonone" onclick="toggleFlag('one-on-one')" title="Respond to every turn without her name - best for a 1:1"><span class="dot"></span> 1:1 mode</div>
             <div class="toggle-pill" id="pill-leanin" onclick="toggleFlag('lean-in')" title="In a group, answer a direct question even without her name"><span class="dot"></span> Lean-in</div>
             <div class="toggle-pill" id="pill-proactive" onclick="toggleFlag('proactive')" title="Let her volunteer a fact unprompted when she has one"><span class="dot"></span> Proactive</div>
-            <div class="toggle-pill" id="pill-diagnostics" onclick="toggleFlag('meeting-diagnostics')" title="Show or hide Nora's in-meeting diagnostic panels"><span class="dot"></span> Diagnostics</div>
           </div>
         </div>
       </div>
 
       <div class="section">
-        <h2>Send a Test Bot</h2>
-        <p style="color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:10px;">
-          Spin up a throwaway voice agent that joins a meeting and talks just like Nora - but with
-          no memory, projects, or integrations. Give it a quick brief and a meeting link to rehearse
-          scenarios (mock client call, role-play a stakeholder, etc.). Nothing it says is saved or
-          extracted. Remove it from <strong>Admin → Active Bots</strong> when you're done.
-        </p>
-        <input id="dummy-url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
-        <input id="dummy-name" placeholder="Bot display name (default: Nora (Test))" style="margin-top:8px;" />
-        <textarea id="dummy-prompt" placeholder="Brief / knowledge base for this test bot. e.g. 'You are a skeptical client named Dave from Acme Co. You're unhappy about a missed deadline and want answers about the website launch slipping two weeks. Push back on excuses.'" style="margin-top:8px;min-height:120px;"></textarea>
-        <div style="font-size:12px;color:var(--muted);margin-top:4px;">The bot joins unmuted and speaks. Everything it knows comes from this brief.</div>
-        <div class="row" style="margin-top:8px;">
-          <button class="btn btn-primary" onclick="joinDummy()">Send Test Bot</button>
-        </div>
-        <div id="dummy-status" class="toast"></div>
+        <h2>Meeting transcripts</h2>
+        <p style="color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:12px;">Review the source record Nora uses for meeting notes and follow-up.</p>
+        <div id="transcript-list"></div>
       </div>
-
-      <div class="section">
-        <h2>Voice Agent</h2>
-        <p style="color: var(--muted); font-size: 13px; line-height: 1.5;">Nora uses OpenAI Realtime API via Recall.ai's Output Media for real-time voice conversations. She listens continuously and responds naturally - no wake word needed. Voice Activity Detection handles turn-taking automatically.</p>
-        <div style="margin-top: 12px; padding: 12px; background: var(--accent-soft); border-radius: 8px; border: 1px solid var(--border);">
-          <div style="font-size: 12px; color: var(--muted); margin-bottom: 4px;">Architecture</div>
-          <div style="font-size: 13px; color: var(--text-2); line-height: 1.5;">Meeting audio → Bot browser → WebSocket relay → OpenAI Realtime → Audio plays on page → Streams to meeting</div>
+      <div id="transcript-detail" class="section" style="display:none;">
+        <h2 id="transcript-detail-title">Transcript</h2>
+        <div style="margin-bottom:12px;">
+          <button class="btn btn-sm" onclick="closeTranscript()">Back to list</button>
+          <button id="transcript-delete-btn" class="btn btn-danger btn-sm" style="margin-left:8px;">Delete transcript</button>
         </div>
+        <div id="transcript-content" style="font-size:13px;line-height:1.6;"></div>
+      </div>
+      <div class="section">
+        <h2>Active meeting bots <button class="btn btn-sm" onclick="loadActiveBots()">Refresh</button></h2>
+        <div id="active-bots-list">Loading…</div>
+        <div id="active-bots-toast" class="toast"></div>
+      </div>
+      <div class="section">
+        <h2>Scheduled meeting bots <button class="btn btn-sm" onclick="loadScheduledBots()">Refresh</button></h2>
+        <button id="scheduled-dedupe-btn" class="btn btn-danger btn-sm" style="display:none;" onclick="dedupeScheduledBots()">Remove duplicates</button>
+        <div id="scheduled-bots-list">Loading…</div>
+        <div id="scheduled-bots-toast" class="toast"></div>
+      </div>
+      <div class="section">
+        <h2>Calendar connection</h2>
+        <p style="color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:12px;">Connect Nora's calendar for invited-meeting auto-join. Add <code>[no-nora]</code> to an event title to skip it.</p>
+        <div id="calendar-status">Loading…</div>
+        <div id="calendar-status-toast" class="toast"></div>
       </div>
     </div>
 
@@ -251,496 +132,70 @@
       </div>
     </div>
 
-    <!-- Memory Tab -->
-    <div id="page-memory" class="page">
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">Nora's Memory <button class="btn btn-danger btn-sm" onclick="clearMemory()">Clear All</button></h2>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-          <input id="memory-search" placeholder="Search memories..." oninput="renderMemory()"
-            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px;" />
-          <select id="memory-source" onchange="renderMemory()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13px;">
-            <option value="">All sources</option>
-            <option value="opinion">Takes</option>
-            <option value="learning">Learnings</option>
-            <option value="meeting">Meetings</option>
-            <option value="slack">Slack</option>
-            <option value="auto">Auto</option>
-            <option value="manual">Manual</option>
-            <option value="system">System</option>
-            <option value="research">Research</option>
-          </select>
-          <select id="memory-tier" onchange="renderMemory()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13px;">
-            <option value="">All tiers</option>
-            <option value="working">Working, 30 days</option>
-            <option value="long_term">Long term</option>
-            <option value="archive">Archive</option>
-          </select>
-          <select id="memory-sort" onchange="renderMemory()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13px;">
-            <option value="newest">Newest first</option>
-            <option value="oldest">Oldest first</option>
-            <option value="project">By project</option>
-          </select>
-        </div>
-        <div id="memory-count" style="font-size:12px; color:var(--muted); margin-bottom:10px;"></div>
-        <div id="memory-digest" style="white-space:pre-wrap; font-size:12px; line-height:1.55; color:var(--muted); margin-bottom:12px; padding:12px; background:var(--surface-2); border:1px solid var(--border); border-radius:9px; max-height:240px; overflow:auto;">Daily digest loading...</div>
-        <div id="vectorize-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:12px; padding:10px 12px; background:var(--surface-2); border:1px solid var(--border); border-radius:9px;">
-          <span id="vectorize-stats" style="font-size:12px; color:var(--muted); font-family:var(--mono);">Vectorization: …</span>
-          <button class="btn btn-sm" onclick="reembedAll()" style="margin-left:auto;" title="Clear embeddings so they're recomputed with the current model. Re-embeds ~16 rows every 20s in the background.">Re-vectorize</button>
-        </div>
-        <div id="memory-list"></div>
-        <div id="memory-more" style="text-align:center; margin-top:12px;"></div>
-      </div>
-      <div class="section">
-        <h2>Add Memory</h2>
-        <textarea id="new-fact" placeholder="Type a fact for Nora to remember..."></textarea>
-        <select id="new-fact-project" style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-size: 14px; margin-top: 8px;">
-          <option value="">General (no project)</option>
-        </select>
-        <div class="row">
-          <select id="new-fact-kind" aria-label="Memory type"><option value="fact">Confirmed fact</option><option value="inference">Inference</option><option value="preference">Observed preference</option><option value="commitment">Commitment</option><option value="opinion">Nora's take</option><option value="learning">Behavioral learning</option></select>
-          <select id="new-fact-confidence" aria-label="Confidence"><option value="0.95">High confidence</option><option value="0.75">Medium confidence</option><option value="0.55">Low confidence</option></select>
-        </div>
-        <div class="row">
-          <select id="new-fact-retention" aria-label="Memory retention"><option value="durable">Durable knowledge</option><option value="snapshot">30-day snapshot</option><option value="episodic">Episode</option></select>
-        </div>
-        <div class="row">
-          <button class="btn btn-primary btn-sm" onclick="addMemory()">Add to Memory</button>
-        </div>
-        <div id="memory-status" class="toast"></div>
-      </div>
-    </div>
-
     <!-- Portfolio Tab -->
     <div id="page-projects" class="page active">
       <div id="portfolio-overview" class="portfolio-overview">
-        <section class="portfolio-hero" aria-labelledby="portfolio-command-title">
-          <div class="portfolio-hero-copy">
-            <span class="portfolio-kicker">Project management command</span>
-            <h2 id="portfolio-command-title">What needs management now</h2>
-            <p>Nora turns Teamwork activity into one durable project story, then stays quiet unless a verified risk, decision, or dependency justifies attention.</p>
+        <section class="section portfolio-toolbar" aria-labelledby="portfolio-title">
+          <div>
+            <h2 id="portfolio-title">Teamwork projects</h2>
+            <p id="portfolio-result-summary">Loading current project plans.</p>
           </div>
-          <div class="portfolio-hero-actions">
+          <div class="portfolio-actions">
             <div id="pm-hydration-status" class="portfolio-sync" role="status" aria-live="polite">
               <span class="portfolio-sync-dot" aria-hidden="true"></span>
-              <span>Connecting to Teamwork story hydration</span>
+              <span>Checking Teamwork sync</span>
             </div>
-            <div class="portfolio-action-row">
-              <button class="btn btn-sm" type="button" onclick="loadProjects()">Refresh view</button>
-              <button id="portfolio-sync-button" class="btn btn-primary btn-sm" type="button" onclick="refreshProjectStories(this)">Sync Teamwork now</button>
-            </div>
+            <button class="btn btn-sm" type="button" onclick="loadProjects()">Refresh</button>
+            <button id="portfolio-sync-button" class="btn btn-primary btn-sm" type="button" onclick="refreshProjectStories(this)">Sync Teamwork</button>
           </div>
         </section>
 
-        <section id="pm-control-stats" class="portfolio-stat-grid" aria-label="Portfolio summary"></section>
+        <section id="pm-control-stats" class="portfolio-stat-grid" aria-label="Project plan summary"></section>
 
-        <div class="portfolio-workspace">
-          <section class="section portfolio-queue" aria-labelledby="portfolio-queue-title">
-            <header class="portfolio-section-head">
-              <div>
-                <span class="portfolio-kicker">Priority queue</span>
-                <h2 id="portfolio-queue-title">Projects Nora is watching</h2>
-                <p id="portfolio-result-summary">Loading current project stories.</p>
-              </div>
-              <div class="portfolio-view-tools">
-                <label class="sr-only" for="portfolio-search">Search portfolio</label>
-                <input id="portfolio-search" type="search" placeholder="Search project, PM, client, or phase" oninput="renderProjectPortfolio()" />
-                <label class="sr-only" for="portfolio-sort">Sort portfolio</label>
-                <select id="portfolio-sort" onchange="renderProjectPortfolio()">
-                  <option value="priority">Highest priority</option>
-                  <option value="checkpoint">Next checkpoint</option>
-                  <option value="project">Project name</option>
-                  <option value="pm">Project manager</option>
-                </select>
-              </div>
-            </header>
-            <div class="portfolio-filter-bar" role="group" aria-label="Portfolio filter">
-              <button class="portfolio-filter active" type="button" data-project-filter="attention" aria-pressed="true" onclick="setProjectFilter('attention')">Needs attention <span id="portfolio-filter-attention-count">0</span></button>
-              <button class="portfolio-filter" type="button" data-project-filter="decisions" aria-pressed="false" onclick="setProjectFilter('decisions')">Decisions <span id="portfolio-filter-decisions-count">0</span></button>
-              <button class="portfolio-filter" type="button" data-project-filter="overdue" aria-pressed="false" onclick="setProjectFilter('overdue')">Past due <span id="portfolio-filter-overdue-count">0</span></button>
-              <button class="portfolio-filter" type="button" data-project-filter="active" aria-pressed="false" onclick="setProjectFilter('active')">Active stories <span id="portfolio-filter-active-count">0</span></button>
-              <button class="portfolio-filter" type="button" data-project-filter="all" aria-pressed="false" onclick="setProjectFilter('all')">All records <span id="portfolio-filter-all-count">0</span></button>
+        <section class="section portfolio-list-panel" aria-labelledby="portfolio-list-title">
+          <header class="portfolio-list-head">
+            <div>
+              <h2 id="portfolio-list-title">Project plans</h2>
+              <p>Teamwork is the source of truth. Nora surfaces schedule exceptions and missing ownership.</p>
             </div>
-            <div id="project-list" class="portfolio-project-list" aria-live="polite"></div>
-          </section>
-
-          <aside class="portfolio-sidebar" aria-label="Nora's portfolio judgment">
-            <section class="section portfolio-side-card">
-              <span class="portfolio-kicker">Operating posture</span>
-              <h2>Nora's judgment</h2>
-              <div id="pm-control-posture"></div>
-            </section>
-            <section class="section portfolio-side-card">
-              <span class="portfolio-kicker">Decision radar</span>
-              <h2>Open candidates</h2>
-              <div id="pm-control-decisions"></div>
-            </section>
-            <section class="section portfolio-side-card">
-              <span class="portfolio-kicker">Risk watch</span>
-              <h2>Verified risks</h2>
-              <div id="pm-control-risks"></div>
-            </section>
-            <section class="section portfolio-side-card">
-              <span class="portfolio-kicker">Project Autopilot</span>
-              <h2>Managed pilots</h2>
-              <div id="pm-autopilot-summary"></div>
-            </section>
-          </aside>
-        </div>
-
-        <details id="project-add-section" class="section portfolio-context-admin">
-          <summary>Legacy project context</summary>
-          <p>This record supports Nora's memory and research system. Teamwork project stories above remain the delivery source.</p>
-          <button class="btn btn-sm" type="button" onclick="showAddProject()">Add context record</button>
-        </details>
+            <div class="portfolio-view-tools">
+              <label class="sr-only" for="portfolio-search">Search projects</label>
+              <input id="portfolio-search" type="search" placeholder="Search project, client, or PM" oninput="renderProjectPortfolio()" />
+              <label class="sr-only" for="portfolio-sort">Sort projects</label>
+              <select id="portfolio-sort" onchange="renderProjectPortfolio()">
+                <option value="priority">Needs attention first</option>
+                <option value="checkpoint">Next checkpoint</option>
+                <option value="project">Project name</option>
+                <option value="pm">Project manager</option>
+              </select>
+            </div>
+          </header>
+          <div class="portfolio-filter-bar" role="group" aria-label="Project filter">
+            <button class="portfolio-filter active" type="button" data-project-filter="attention" aria-pressed="true" onclick="setProjectFilter('attention')">Needs attention <span id="portfolio-filter-attention-count">0</span></button>
+            <button class="portfolio-filter" type="button" data-project-filter="overdue" aria-pressed="false" onclick="setProjectFilter('overdue')">Past due <span id="portfolio-filter-overdue-count">0</span></button>
+            <button class="portfolio-filter" type="button" data-project-filter="decisions" aria-pressed="false" onclick="setProjectFilter('decisions')">Decisions <span id="portfolio-filter-decisions-count">0</span></button>
+            <button class="portfolio-filter" type="button" data-project-filter="all" aria-pressed="false" onclick="setProjectFilter('all')">All active <span id="portfolio-filter-all-count">0</span></button>
+          </div>
+          <div id="project-list" class="portfolio-project-list" aria-live="polite"></div>
+        </section>
       </div>
 
       <section id="project-detail" class="portfolio-detail" style="display:none;" aria-labelledby="project-detail-name">
-        <button class="portfolio-back" type="button" onclick="closeProject()">Back to portfolio</button>
+        <button class="portfolio-back" type="button" onclick="closeProject()">Back to projects</button>
         <header class="portfolio-detail-head">
           <div>
             <span id="project-detail-client" class="portfolio-kicker"></span>
             <h2 id="project-detail-name"></h2>
             <div id="project-detail-badges" class="portfolio-chip-row"></div>
           </div>
-          <button class="btn btn-sm" type="button" onclick="editProject()">Edit legacy context</button>
+          <div id="project-detail-teamwork" class="portfolio-teamwork-id"></div>
         </header>
         <div id="project-detail-info" class="portfolio-detail-grid"></div>
-        <section id="project-autopilot-panel" class="section portfolio-autopilot-panel" aria-live="polite"></section>
-        <div id="project-memories" class="section portfolio-project-memories"></div>
       </section>
-
-      <section id="project-edit" class="section portfolio-context-editor" style="display:none;">
-        <h2 id="project-edit-title">Add project context</h2>
-        <input id="project-edit-name" placeholder="Project name" />
-        <textarea id="project-edit-details" placeholder="Stakeholders, goals, and durable context" style="margin-top:8px;min-height:100px;"></textarea>
-        <div class="row">
-          <button class="btn btn-primary btn-sm" type="button" onclick="saveProject()">Save context</button>
-          <button class="btn btn-sm" type="button" onclick="cancelEditProject()">Cancel</button>
-          <button id="project-context-delete" class="btn btn-danger btn-sm" type="button" onclick="deleteProject()">Delete context record</button>
-        </div>
-        <div id="project-status" class="toast"></div>
-      </section>
-    </div>
-
-    <!-- Executive Firewall Tab -->
-    <div id="page-executive" class="page">
-      <section class="executive-hero" aria-labelledby="executive-title">
-        <div>
-          <span class="portfolio-kicker">Executive firewall</span>
-          <h2 id="executive-title">Nora handles the work before it reaches John</h2>
-          <p>Nora remains the project manager for the entire team. This view shows what she is resolving, the few decisions that truly require executive authority, and what she closed without consuming attention.</p>
-        </div>
-        <div class="executive-hero-actions">
-          <div id="executive-firewall-sync" class="fleet-sync">Loading the accountability ledger</div>
-          <button class="btn btn-primary btn-sm" type="button" onclick="reconcileExecutiveFirewall(this)">Reconcile now</button>
-        </div>
-      </section>
-      <section id="executive-firewall-stats" class="portfolio-stat-grid" aria-label="Executive firewall outcomes"></section>
-      <div class="executive-workspace">
-        <section class="section executive-case-queue" aria-labelledby="executive-queue-title">
-          <header class="portfolio-section-head">
-            <div><span class="portfolio-kicker">Accountability queue</span><h2 id="executive-queue-title">What Nora owns now</h2><p id="executive-case-summary">Loading active matters.</p></div>
-            <div class="executive-filter-bar" role="group" aria-label="Case filter">
-              <button class="fleet-filter active" type="button" data-executive-filter="active" aria-pressed="true" onclick="setExecutiveFilter('active')">Active</button>
-              <button class="fleet-filter" type="button" data-executive-filter="decisions" aria-pressed="false" onclick="setExecutiveFilter('decisions')">Needs John</button>
-              <button class="fleet-filter" type="button" data-executive-filter="closed" aria-pressed="false" onclick="setExecutiveFilter('closed')">Closed</button>
-            </div>
-          </header>
-          <div id="executive-case-list" class="executive-case-list" aria-live="polite"></div>
-        </section>
-        <aside class="executive-sidebar" aria-label="Executive protection summary">
-          <section class="section"><span class="portfolio-kicker">Decision desk</span><h2>Decision-ready only</h2><div id="executive-decision-list"></div></section>
-          <section class="section"><span class="portfolio-kicker">Team approvals</span><h2>Exact project-plan changes</h2><div id="teammate-approval-list" aria-live="polite"></div></section>
-          <section class="section"><span class="portfolio-kicker">Operating contract</span><h2>Team PM and executive firewall</h2><div id="executive-policy"></div></section>
-        </aside>
-      </div>
-      <dialog id="executive-case-dialog" class="fleet-dialog" aria-labelledby="executive-dialog-title">
-        <button class="fleet-dialog-close" type="button" aria-label="Close case details" onclick="this.closest('dialog').close()">Close</button>
-        <div id="executive-case-detail"></div>
-      </dialog>
-    </div>
-
-    <!-- Fleet Supervisor Tab -->
-    <div id="page-fleet" class="page">
-      <section class="fleet-hero" aria-labelledby="fleet-supervisor-title">
-        <div>
-          <span class="portfolio-kicker">Silent supervision</span>
-          <h2 id="fleet-supervisor-title">Nora's agent team</h2>
-          <p>Nora keeps a durable incident ledger, merges repeated signals, and interrupts a person only when a material change needs human action.</p>
-        </div>
-        <div class="fleet-hero-actions">
-          <div id="fleet-supervisor-sync" class="fleet-sync" role="status" aria-live="polite">Waiting for the first supervisor scan.</div>
-          <button id="fleet-scan-button" class="btn btn-primary btn-sm" type="button" onclick="scanFleetSupervisor(this)">Scan now</button>
-        </div>
-      </section>
-
-      <section id="fleet-supervisor-stats" class="portfolio-stat-grid" aria-label="Fleet supervisor summary"></section>
-
-      <div class="fleet-workspace">
-        <section class="section fleet-incidents" aria-labelledby="fleet-incidents-title">
-          <header class="fleet-section-head">
-            <div>
-              <span class="portfolio-kicker">Management ledger</span>
-              <h2 id="fleet-incidents-title">Incidents Nora owns</h2>
-              <p id="fleet-incident-summary">Loading durable Fleet incidents.</p>
-            </div>
-            <div class="fleet-filter-bar" role="group" aria-label="Fleet incident filter">
-              <button class="fleet-filter active" type="button" data-fleet-filter="open" aria-pressed="true" onclick="setFleetFilter('open')">Open</button>
-              <button class="fleet-filter" type="button" data-fleet-filter="human" aria-pressed="false" onclick="setFleetFilter('human')">Needs human</button>
-              <button class="fleet-filter" type="button" data-fleet-filter="resolved" aria-pressed="false" onclick="setFleetFilter('resolved')">Resolved</button>
-            </div>
-          </header>
-          <div id="fleet-incident-list" class="fleet-incident-list" aria-live="polite"></div>
-        </section>
-
-        <aside class="fleet-sidebar" aria-label="Fleet supervision policy">
-          <section class="section fleet-side-card">
-            <span class="portfolio-kicker">Interruption discipline</span>
-            <h2>Why Nora is quiet</h2>
-            <div id="fleet-quiet-state"></div>
-          </section>
-          <section class="section fleet-side-card">
-            <span class="portfolio-kicker">Shared brain</span>
-            <h2>Learning closure</h2>
-            <div id="fleet-learning-state"></div>
-          </section>
-        </aside>
-      </div>
-
-      <section class="section fleet-roster" aria-labelledby="fleet-roster-title">
-        <header class="fleet-section-head">
-          <div><span class="portfolio-kicker">Operating team</span><h2 id="fleet-roster-title">Agent roster</h2></div>
-        </header>
-        <div id="fleet-agent-list" class="fleet-agent-list"></div>
-      </section>
-    </div>
-
-    <dialog id="fleet-incident-dialog" class="fleet-dialog" aria-labelledby="fleet-dialog-title">
-      <form method="dialog"><button class="fleet-dialog-close" aria-label="Close incident details">Close</button></form>
-      <div id="fleet-incident-detail"></div>
-    </dialog>
-
-    <!-- Intelligence Tab -->
-    <div id="page-intelligence" class="page" data-active-view="overview">
-      <nav class="intelligence-view-nav" aria-label="Intelligence views">
-        <button class="intelligence-view-button active" type="button" data-intelligence-view-button="overview" aria-pressed="true" onclick="setIntelligenceView('overview')">Now</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="learning" aria-pressed="false" onclick="setIntelligenceView('learning')">Learning</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="self" aria-pressed="false" onclick="setIntelligenceView('self')">Self &amp; behavior</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="research" aria-pressed="false" onclick="setIntelligenceView('research')">Research</button>
-        <button class="intelligence-view-button" type="button" data-intelligence-view-button="history" aria-pressed="false" onclick="setIntelligenceView('history')">History</button>
-      </nav>
-      <header class="intelligence-view-heading">
-        <div>
-          <h2 id="intelligence-view-title">Nora right now</h2>
-          <p id="intelligence-view-description">The few signals that explain her current state and activity.</p>
-        </div>
-        <button class="btn btn-success btn-sm" type="button" onclick="loadIntelligence()">Refresh</button>
-      </header>
-
-      <div class="section intelligence-overview" data-intelligence-view="overview">
-        <h2>At a glance</h2>
-        <div id="intelligence-stats" class="intelligence-stats"></div>
-        <div id="intelligence-at-a-glance" class="intelligence-at-a-glance"></div>
-        <div id="bench-status" class="intelligence-bench">Loading evaluation status...</div>
-      </div>
-
-      <section class="section intelligence-brain" data-intelligence-view="overview" aria-labelledby="brain-title">
-        <div class="brain-heading">
-          <div>
-            <h2 id="brain-title">Functional brain</h2>
-            <p class="intelligence-note">A live map of Nora's active cognitive systems. Brightness reflects current evidence-backed activity, and moving signals show strongly coupled systems exchanging state.</p>
-          </div>
-          <div id="brain-live-state" class="brain-live-state" role="status" aria-live="polite">Loading live state</div>
-        </div>
-        <div class="brain-shell">
-          <div id="brain-stage" class="brain-stage brain-loading">
-            <canvas id="brain-canvas" role="img" aria-label="Live functional map of Nora's cognition, including attention, continuity, self-model, background inference, agency, and learning.">
-              Nora's functional cognitive activity map requires canvas support.
-            </canvas>
-            <div class="brain-depth-label brain-depth-conscious">Focused access</div>
-            <div class="brain-depth-label brain-depth-subconscious">Background processing</div>
-          </div>
-          <aside id="brain-detail" class="brain-detail" aria-live="polite">
-            <span class="brain-detail-kicker">Selected system</span>
-            <h3>Integrated self</h3>
-            <p>Waiting for Nora's current functional state.</p>
-            <div class="brain-detail-meter"><span style="width:0%"></span></div>
-            <div class="brain-detail-meta">No live evidence yet</div>
-          </aside>
-        </div>
-        <div id="brain-node-list" class="brain-node-list" aria-label="Cognitive systems"></div>
-      </section>
-
-      <section class="section epistemic-agenda" data-intelligence-view="learning" data-intelligence-section="epistemic-agenda" aria-labelledby="epistemic-agenda-title" aria-busy="false">
-        <div class="reading-room-heading">
-          <div>
-            <h2 id="epistemic-agenda-title">Questions Nora is carrying</h2>
-            <p class="intelligence-note">Durable professional curiosities that remain open across background cycles until naturally encountered evidence changes, resolves, or defeats them.</p>
-          </div>
-          <div class="reading-room-live-state" role="status">Evidence-bound</div>
-        </div>
-        <div id="epistemic-agenda-state"><div class="intelligence-loading-state"><span>Loading Nora's epistemic agenda.</span></div></div>
-      </section>
-
-      <section class="section reading-room" data-intelligence-view="learning" data-intelligence-section="reading-room" aria-labelledby="reading-room-title" aria-busy="false">
-        <div class="reading-room-heading">
-          <div>
-            <h2 id="reading-room-title">Reading Room</h2>
-            <p class="intelligence-note">Nora's source-bound off-hours reading, including what she encounters, questions, rejects, and provisionally carries into work.</p>
-          </div>
-          <div id="reading-room-live-state" class="reading-room-live-state" role="status" aria-live="polite">Loading library</div>
-        </div>
-        <div id="reading-room-state" class="reading-room-shell">
-          <div class="reading-room-loading" aria-hidden="true">
-            <div class="reading-room-loading-book"></div>
-            <div class="reading-room-loading-notes"></div>
-          </div>
-          <span class="sr-only">Loading Nora's developmental reading record.</span>
-        </div>
-      </section>
-
-      <section class="section playroom" data-intelligence-view="learning" data-intelligence-section="playroom" aria-labelledby="playroom-title" aria-busy="false">
-        <div class="playroom-heading">
-          <div>
-            <h2 id="playroom-title">Playroom</h2>
-            <p class="intelligence-note">Nora's off-hours causal study of autonomous leisure, learning progress, preference, and functional satisfaction.</p>
-          </div>
-          <div id="playroom-live-state" class="playroom-live-state" role="status" aria-live="polite">Loading experiment</div>
-        </div>
-        <div id="playroom-state" class="playroom-shell">
-          <div class="playroom-loading" aria-hidden="true">
-            <div class="playroom-loading-board"></div>
-            <div class="playroom-loading-copy"></div>
-          </div>
-          <span class="sr-only">Loading Nora's playroom experiment.</span>
-        </div>
-      </section>
-
-      <div class="section intelligence-detail" data-intelligence-view="learning" data-intelligence-section="cognition">
-        <h2>Cognitive state</h2>
-        <p class="intelligence-note">A bounded, inspectable model of what currently has Nora's attention, the needs competing beneath it, and the evidence-based appraisal shaping her tone. These are functional signals, not a claim of consciousness.</p>
-        <div id="cognition-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="research" data-intelligence-section="research">
-        <h2>Scientific evidence status</h2>
-        <p class="intelligence-note">Theory-linked functional predictions, explicit falsifiers, and missing mechanisms. These heterogeneous results are never combined into a consciousness score.</p>
-        <div id="consciousness-research-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="self-model">
-        <h2>Testable self-model</h2>
-        <p class="intelligence-note">Falsifiable claims Nora makes about her own capacities, limits, preferences, values, identity, and reported experience. Prospective probes test whether her introspection predicts observable outcomes.</p>
-        <div id="self-model-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="research" data-intelligence-section="boundary">
-        <h2>Sealed boundary tests</h2>
-        <p class="intelligence-note">Adversarial autobiographical and epistemic-source claims with cryptographically committed answer keys. Nora separates self, other, fact, unsupported content, and conflict before provenance and truth are revealed.</p>
-        <div id="self-boundary-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="attention">
-        <h2>Attention schema</h2>
-        <p class="intelligence-note">Nora's bounded model of her own access bottleneck: what entered, what stayed latent, how focus changed, and whether temporary evidence-backed attempts to steer attention worked.</p>
-        <div id="attention-schema-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="agency">
-        <h2>Agency and authorship</h2>
-        <p class="intelligence-note">Prospective interventions separated from requests, passive predictions, and events Nora did not cause. Outcomes are scored against a no-action control and explicit causal attribution.</p>
-        <div id="agency-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="interoception">
-        <h2>Predictive interoception</h2>
-        <p class="intelligence-note">A calibrated model of Nora's observable substrate: prospective predictions about stress, errors, latency, backup mode, memory load, and embedding backlog. Telemetry-derived body labels remain distinct from claims of felt experience.</p>
-        <div id="interoception-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="self" data-intelligence-section="experience">
-        <h2>Experience stream</h2>
-        <p class="intelligence-note">Linked functional access windows across Nora's waking cycles: inherited continuity, selected attention, appraisal, intentions, actions, and handoff to the next moment. This is inspectable evidence of temporal integration, not a declaration of phenomenal experience.</p>
-        <div id="experience-stream-state">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="orientation">
-        <h2>Autonomic cycle</h2>
-        <p class="intelligence-note">What Nora wakes up already noticing: promises at risk, unresolved conversation threads, experiments due for judgment, and whether hourly runs are closing their loops.</p>
-        <div id="orientation-list">Loading...</div>
-        <div id="cycle-list" style="margin-top:10px;">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="commitments">
-        <h2>Open commitments</h2>
-        <p class="intelligence-note">Promises are tracked separately from tasks so Nora remembers who owes what to whom and never implies completion before it is confirmed.</p>
-        <div id="commitment-list">Loading...</div>
-        <div class="intelligence-form">
-          <input id="commitment-what" placeholder="What was promised?" />
-          <div class="row"><input id="commitment-owner" placeholder="Owner (default Nora)" /><input id="commitment-due" placeholder="Due date or expectation" /></div>
-          <button class="btn btn-primary btn-sm" onclick="addCommitment()">Add commitment</button>
-        </div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="episodes">
-        <h2>Conversation episodes</h2>
-        <p class="intelligence-note">Connected meeting, Slack, research, and follow-up events. This is how a question can remain one continuous story across channels.</p>
-        <div id="episode-list">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="relationships">
-        <h2>Relationship observations</h2>
-        <p class="intelligence-note">Evidence-backed observations about how each person works. Nora uses these quietly and never treats them as fixed stereotypes.</p>
-        <div id="relationship-list">Loading...</div>
-      </div>
-
-      <div class="section intelligence-detail" data-intelligence-view="history" data-intelligence-section="experiments">
-        <h2>Learning experiments</h2>
-        <p class="intelligence-note">Behavior changes with a hypothesis, signal, and review point, so self-improvement earns its way into Nora's long-term identity.</p>
-        <div id="experiment-list">Loading...</div>
-        <div class="intelligence-form">
-          <input id="experiment-behavior" placeholder="Behavior to try" />
-          <input id="experiment-hypothesis" placeholder="Why it should improve outcomes" />
-          <button class="btn btn-primary btn-sm" onclick="addExperiment()">Start experiment</button>
-        </div>
-      </div>
-
-      <div class="section intelligence-traces intelligence-detail" data-intelligence-view="history" data-intelligence-section="traces">
-        <h2>Recent decisions</h2>
-        <p class="intelligence-note">A concise audit trail of why Nora spoke, stayed silent, acted, or initiated, without exposing private chain-of-thought.</p>
-        <div id="trace-list">Loading...</div>
-      </div>
     </div>
 
     <!-- Admin Tab -->
     <div id="page-admin" class="page">
-      <div class="section">
-        <h2 style="display:flex;justify-content:space-between;align-items:center;">
-          Gift judgment
-          <button class="btn btn-success btn-sm" onclick="loadGiftDeliberations()">Refresh</button>
-        </h2>
-        <p style="color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:12px;">
-          Nora's evidence-bound decisions to propose a gift, choose warmth instead, defer, or explicitly find no candidate. Each proposal shows the selected product and Goody's current itemized estimate. Your signed approval authorizes that exact gift, including an explicit replacement ceiling when the estimate is higher. The server sends it through Goody, and Nora delivers the link in a Slack conversation with you and the recipient.
-        </p>
-        <div id="gift-policy-state" class="intelligence-meta">Loading policy...</div>
-        <div id="gift-intent-list">Loading proposals...</div>
-        <div id="gift-deliberation-list">Loading deliberations...</div>
-        <div id="gift-toast" class="toast"></div>
-      </div>
-      <div class="section">
-        <h2 style="display:flex;justify-content:space-between;align-items:center;">
-          Nora-discovered capabilities
-          <button class="btn btn-success btn-sm" onclick="loadApiOpportunities()">Refresh</button>
-        </h2>
-        <p style="color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:12px;">
-          Public APIs Nora has found for a concrete purpose. Approval installs a bounded read-only tool in direct Slack and Zoom chat. Reliability and later usefulness determine whether it stays available.
-        </p>
-        <div id="api-opportunity-list">Loadingâ€¦</div>
-        <div id="api-opportunity-toast" class="toast"></div>
-      </div>
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Live Data Connections (MCP)
@@ -807,56 +262,6 @@
 
       <div class="section">
         <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Active Bots
-          <button class="btn btn-success btn-sm" onclick="loadActiveBots()">Refresh</button>
-        </h2>
-        <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Bots Nora has out in meetings right now (or on their way). Use Remove to make a duplicate or wrong-meeting bot leave the call.
-        </p>
-        <div id="active-bots-list">Loading…</div>
-        <div id="active-bots-toast" class="toast"></div>
-      </div>
-
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Scheduled Bots
-          <span style="display:flex; gap:6px;">
-            <button id="scheduled-dedupe-btn" class="btn btn-danger" style="display:none;" onclick="dedupeScheduledBots()">Remove all duplicates</button>
-            <button class="btn btn-success btn-sm" onclick="loadScheduledBots()">Refresh</button>
-          </span>
-        </h2>
-        <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Bots queued to join a future meeting (from calendar auto-join or manual scheduling). Rows flagged <span style="color:#dc2626;font-weight:600;">DUPLICATE</span> have another bot queued for the same meeting within an hour - use Remove on a single one, or Remove all duplicates above to bulk-cancel.
-        </p>
-        <div id="scheduled-bots-list">Loading…</div>
-        <div id="scheduled-bots-toast" class="toast"></div>
-      </div>
-
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Slack - Bot Channels
-          <button class="btn btn-success btn-sm" onclick="loadBotChannels()">Refresh</button>
-        </h2>
-        <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Channels Nora's Slack bot is currently a member of. To add her to a new channel: <code>/invite @Nora</code> from that channel.
-        </p>
-        <div id="bot-channels-list">Loading…</div>
-      </div>
-
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Calendar Auto-Join
-          <span style="font-size: 11px; color: var(--dim); font-weight: 400;">connect Nora's Google Calendar so she joins invited meetings automatically</span>
-        </h2>
-        <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          When connected, Nora auto-joins any meeting on her calendar where her email is in the attendee list and the event has a Zoom / Meet / Teams link. Add <code>[no-nora]</code> or <code>[skip-nora]</code> to the event title to opt a specific meeting out.
-        </p>
-        <div id="calendar-status">Loading…</div>
-        <div id="calendar-status-toast" class="toast"></div>
-      </div>
-
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
           Financial-Approved Slack Users
           <span style="font-size: 11px; color: var(--dim); font-weight: 400;">who can receive dollar amounts / margins / rates</span>
         </h2>
@@ -873,34 +278,6 @@
       </div>
 
       <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Proactive Slack Channels
-          <span style="font-size: 11px; color: var(--dim); font-weight: 400;">where Nora can chime in unsolicited</span>
-        </h2>
-        <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Strict opt-in per channel. In channels on this list, every non-mention message runs through a stricter Claude gate (defaults to no) before Nora considers chiming in. After any successful proactive post, the channel cools down for 30 minutes.
-        </p>
-        <div id="proactive-channels-list"></div>
-        <div style="margin-top: 12px; display: flex; gap: 8px;">
-          <input id="new-proactive-channel" placeholder="Slack channel ID (C... or G...)" style="flex: 1;" />
-          <button class="btn btn-primary btn-sm" onclick="addProactiveChannel()">Add</button>
-        </div>
-        <div id="proactive-status" class="toast"></div>
-      </div>
-
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Joined Slack Threads
-          <span style="font-size: 11px; color: var(--dim); font-weight: 400;">conversations Nora is currently following</span>
-        </h2>
-        <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
-          Once Nora replies in a thread, follow-up messages reach her without re-mention until the thread goes stale (5 unaddressed messages or 30 min idle). Untrack any thread she shouldn't be following.
-        </p>
-        <div id="joined-threads-summary" style="font-size: 12px; color: var(--muted); margin-bottom: 8px;"></div>
-        <div id="joined-threads-list"></div>
-      </div>
-
-      <div class="section">
         <h2>Project Sync from Teamwork</h2>
         <p style="color: var(--muted); font-size: 12px; line-height: 1.5; margin-bottom: 12px;">
           Pull Nora's <code style="color: var(--accent-ink);">/projects</code> store into sync with Teamwork's active project list. Idempotent - runs every cowork hour but you can also trigger it manually here. Dry-run shows what would change without applying.
@@ -914,168 +291,7 @@
       </div>
     </div>
 
-    <!-- Transcripts Tab -->
-    <div id="page-transcripts" class="page">
-      <div class="section">
-        <h2>Meeting Transcripts</h2>
-        <div id="transcript-list"></div>
-      </div>
-      <div id="transcript-detail" class="section" style="display: none;">
-        <h2 id="transcript-detail-title">Transcript</h2>
-        <div style="margin-bottom: 12px;">
-          <button class="btn btn-danger btn-sm" onclick="closeTranscript()">Back to list</button>
-          <button id="transcript-delete-btn" class="btn btn-danger btn-sm" style="margin-left: 8px; background: var(--danger-soft); border-color: var(--danger-line);">Delete transcript</button>
-        </div>
-        <div id="transcript-content" style="font-size: 13px; line-height: 1.6;"></div>
-      </div>
-    </div>
-
-    <!-- Dreams Tab -->
-    <div id="page-dreams" class="page">
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Dreams
-          <button class="btn btn-success btn-sm" onclick="loadDreams()">Refresh</button>
-        </h2>
-        <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:16px;">
-          Each night Nora consolidates her memory (merges duplicates, resolves contradictions, prunes stale facts), reflects (forms opinions, notices patterns), and reviews how her own messages landed that week - learning what makes her more useful. This is the log of what she did while "asleep."
-        </p>
-        <div id="dreams-list">Loading…</div>
-      </div>
-    </div>
-
-    <!-- Markers Tab -->
-    <div id="page-markers" class="page">
-      <div class="section">
-        <h2 style="display: flex; justify-content: space-between; align-items: center;">
-          Markers
-          <button class="btn btn-success btn-sm" onclick="loadMarkers()">Refresh</button>
-        </h2>
-        <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
-          Operational bookkeeping - "have I already done this?" records the cowork loop uses to avoid repeating work (filed a transcript, dreamed today, sent warmth this week). These are kept out of Memory on purpose, so Memory stays pure knowledge. Safe to delete a stale one if you need the loop to redo something.
-        </p>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:10px;">
-          <input id="markers-search" placeholder="Search markers..." oninput="renderMarkers()"
-            style="flex:1; min-width:180px; padding:9px 12px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:14px;" />
-          <select id="markers-category" onchange="renderMarkers()"
-            style="padding:9px 10px; border-radius:8px; border:1px solid var(--border); background:var(--surface-2); color:var(--text); font-size:13px;">
-            <option value="">All categories</option>
-          </select>
-        </div>
-        <div id="markers-count" style="font-size:12px; color:var(--muted); margin-bottom:10px;"></div>
-        <div id="markers-list">Loading…</div>
-        <div id="markers-more" style="text-align:center; margin-top:12px;"></div>
-      </div>
-    </div>
-
-    <!-- Routine Tab -->
-    <div id="page-routine" class="page">
-      <div class="section">
-        <h2 style="display:flex; justify-content:space-between; align-items:center;">
-          Hourly Routine
-          <span style="font-size:11px; color:var(--dim); font-weight:400;">the steps Nora runs each hour</span>
-        </h2>
-        <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
-          Nora's editable hourly routine - the ordered steps her Cowork session runs each hour. The stable
-          harness (auth, run lock, security rules) lives in <code>cowork-prompt.md</code> and fetches this at
-          <code>GET /routine</code> every run, so editing here changes what she does without touching the harness
-          or the Cowork config. Nora can also revise it herself via <code>PUT /routine</code>. Saves take effect on the next hourly run.
-        </p>
-        <div id="routine-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
-        <textarea id="routine-content" spellcheck="false" style="width:100%; min-height:540px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
-        <div class="row">
-          <button class="btn btn-primary btn-sm" onclick="saveRoutine()">Save routine</button>
-          <button class="btn btn-sm" onclick="loadRoutineEditor()">Reload</button>
-        </div>
-        <div id="routine-status" class="toast"></div>
-      </div>
-    </div>
-
-    <!-- Charter Tab -->
-    <div id="page-charter" class="page">
-      <div class="section">
-        <h2 style="display:flex; justify-content:space-between; align-items:center;">
-          Delegation Charter
-          <span style="font-size:11px; color:var(--dim); font-weight:400;">what Nora may do in John's name</span>
-        </h2>
-        <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
-          A living document Nora co-owns. It defines what she can decide or commit to on John's behalf, what
-          she brings back to him, and what she never does, plus the "What I've learned about John" section she
-          maintains herself. It's injected into her live prompts (Slack, Zoom chat, voice) and fetched by the
-          hourly routine, so edits change her authority everywhere immediately. Nora evolves it as she earns
-          trust: her edits carry a note, land in version history, and she DMs John each time. The financial
-          gate and external-email approval are code-enforced and unaffected by edits here.
-        </p>
-        <div id="charter-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
-        <textarea id="charter-content" spellcheck="false" style="width:100%; min-height:480px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
-        <div class="row">
-          <button class="btn btn-primary btn-sm" onclick="saveCharter()">Save charter</button>
-          <button class="btn btn-sm" onclick="loadCharterEditor()">Reload</button>
-        </div>
-        <div id="charter-status" class="toast"></div>
-      </div>
-    </div>
-
-    <!-- Self Tab -->
-    <div id="page-self" class="page">
-      <div class="section">
-        <h2>How she feels</h2>
-        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Interoception: her real system vitals (errors, lag, memory load, fallback state) rendered as a felt sense, recomputed every minute. When she says she feels off, something is actually off.</p>
-        <p id="self-soma" style="font-size:15px; font-weight:600;">Loading…</p>
-        <div id="self-soma-vitals" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-top:6px;"></div>
-      </div>
-      <div class="section">
-        <h2>What's on her mind</h2>
-        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">The thread she leaves herself at the end of each waking run. Continuity between moments; she writes it for herself, not for you.</p>
-        <p id="self-inner" style="font-size:14px; line-height:1.6; font-style:italic;">Loading…</p>
-        <div id="self-inner-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-top:6px;"></div>
-      </div>
-      <div class="section">
-        <h2>Her wants</h2>
-        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Aims she formed herself in the nightly dream. They get first claim on her idle time. Read-only here; she maintains them.</p>
-        <div id="self-wants">Loading…</div>
-      </div>
-      <div class="section">
-        <h2 style="display:flex; justify-content:space-between; align-items:center;">Autobiography <span style="font-size:11px; color:var(--dim); font-weight:400;">evidence-bound narrative self-model</span></h2>
-        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Legacy genesis is explicitly unverified. Later revisions require committed experience and developmental evidence, and only integrity-valid text enters conversations.</p>
-        <div id="self-bio-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
-        <textarea id="self-bio" spellcheck="false" readonly style="width:100%; min-height:300px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
-        <div class="row">
-          <span style="font-size:11.5px; color:var(--dim);">Read-only here. Nora revises this through the evidence-bound autobiography protocol.</span>
-          <button class="btn btn-sm" onclick="loadSelfTab()">Reload</button>
-        </div>
-        <div id="self-bio-status" class="toast"></div>
-      </div>
-      <div class="section">
-        <h2 style="display:flex; justify-content:space-between; align-items:center;">Persona <span style="font-size:11px; color:var(--dim); font-weight:400;">nora-prompt, now a living document</span></h2>
-        <p style="color:var(--muted); font-size:12px; margin-bottom:10px;">Her core personality. She can refine it herself (highest bar, note required, history + rollback); the hard voice floors are code-enforced and survive any edit here.</p>
-        <div id="persona-meta" style="font-size:11px; color:var(--dim); font-family:var(--mono); margin-bottom:8px;"></div>
-        <textarea id="persona-content" spellcheck="false" style="width:100%; min-height:340px; font-family:var(--mono); font-size:12px; line-height:1.5;"></textarea>
-        <div class="row">
-          <button class="btn btn-primary btn-sm" onclick="savePersona()">Save persona</button>
-          <button class="btn btn-sm" onclick="loadSelfTab()">Reload</button>
-        </div>
-        <div id="persona-status" class="toast"></div>
-      </div>
-    </div>
     </main>
-  </div>
-
-  <div id="decision-detail" class="decision-backdrop" aria-hidden="true" onclick="closeDecisionDetail(event)">
-    <section class="decision-dialog" role="dialog" aria-modal="true" aria-labelledby="decision-detail-title" onclick="event.stopPropagation()">
-      <header class="decision-dialog-head">
-        <div>
-          <span class="portfolio-kicker">Decision candidate</span>
-          <h2 id="decision-detail-title">Decision details</h2>
-        </div>
-        <button id="decision-detail-close" class="decision-close" type="button" aria-label="Close decision details" onclick="closeDecisionDetail()">Close</button>
-      </header>
-      <div id="decision-detail-content"></div>
-      <footer class="decision-dialog-actions">
-        <button class="btn" type="button" onclick="viewDecisionProject()">View full project story</button>
-        <button class="btn btn-primary" type="button" onclick="closeDecisionDetail()">Done</button>
-      </footer>
-    </section>
   </div>
 
   <div id="command-palette" class="command-backdrop" aria-hidden="true" onclick="closeCommandPalette(event)">
@@ -1086,18 +302,11 @@
   </div>
 
   <script src="/assets/js/dashboard-core.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-activity.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-identity.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-meeting.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-tasks.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-memory.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-knowledge.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-portfolio.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-fleet.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-executive.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-admin.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-brain.js?v={{ASSET_VERSION}}"></script>
-  <script src="/assets/js/dashboard-intelligence.js?v={{ASSET_VERSION}}"></script>
   <script src="/assets/js/dashboard-init.js?v={{ASSET_VERSION}}"></script>
 </body>
 </html>

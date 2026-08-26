@@ -50,7 +50,7 @@ function requireEvaluatorAuth(req, res, next) {
 // Basic auth middleware for the dashboard UI pages. Username is ignored (any value works);
 // the password check is against DASHBOARD_PASSWORD env var. If unset, auth is skipped (dev).
 //
-// This protects /, /instructions, /architecture from unauthenticated browsing. Once a user
+// This protects the operator dashboard from unauthenticated browsing. Once a user
 // passes Basic auth, the dashboard HTML is rendered with NORA_API_KEY embedded so the
 // dashboard JS can call API endpoints with the key.
 function requireDashboardAuth(req, res, next) {

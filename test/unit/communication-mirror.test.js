@@ -15,10 +15,10 @@ const {
 const { createSlackCommunicationMonitorEnricher } = require(
   '../../src/surfaces/slack/communication-monitor-context');
 
-test('communication classification covers written, task, calendar, and gift boundaries', () => {
+test('communication classification covers written, task, and calendar boundaries', () => {
   for (const name of [
     'gmail_send_email', 'slack_send_message', 'teamwork_add_comment',
-    'teamwork_create_task', 'gcal_create_event', 'send_gift',
+    'teamwork_create_task', 'gcal_create_event',
   ]) assert.equal(isCommunicationTool(name), true, name);
   for (const name of ['fleet_status', 'list_agent_runs', 'gmail_search', 'get_calendar']) {
     assert.equal(isCommunicationTool(name), false, name);

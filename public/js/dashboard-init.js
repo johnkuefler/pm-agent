@@ -1,12 +1,9 @@
 function enhanceFormFields() {
       const labels = {
-        url:'Meeting link','project-hint':'Project context','join-mandate':'Meeting mandate','dummy-url':'Test meeting link',
-        'dummy-name':'Bot display name','dummy-prompt':'Scenario brief','new-task-action':'Task','new-task-assignee':'Assignee',
-        'new-task-due':'Due note','new-task-scheduled':'Schedule','new-task-recurrence':'Recurrence','memory-search':'Search memory',
-        'memory-source':'Source','memory-sort':'Sort order','new-fact':'Fact to remember','new-fact-project':'Project',
-        'project-edit-name':'Project name','project-edit-details':'Project details','new-approved-userid':'Slack user ID','new-approved-name':'Display name',
-        'new-proactive-channel':'Slack channel ID','markers-search':'Search markers','markers-category':'Category',
-        'routine-content':'Routine document','charter-content':'Charter document','self-bio':'Autobiography','persona-content':'Persona document'
+        url:'Meeting link','project-hint':'Project context','join-mandate':'Meeting mandate',
+        'new-task-action':'Task','new-task-assignee':'Assignee','new-task-due':'Due note',
+        'new-task-scheduled':'Schedule','new-task-recurrence':'Recurrence',
+        'new-approved-userid':'Slack user ID','new-approved-name':'Display name'
       };
       Object.entries(labels).forEach(([id, text]) => {
         const control = document.getElementById(id);
@@ -33,7 +30,6 @@ function enhanceFormFields() {
         openCommandPalette();
       } else if (event.key === 'Escape') {
         closeCommandPalette();
-        if (typeof closeDecisionDetail === 'function') closeDecisionDetail();
         closeMobileNav();
       }
     });
@@ -48,7 +44,6 @@ function enhanceFormFields() {
       const preferredTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
       applyTheme(savedTheme || preferredTheme);
       enhanceFormFields();
-      startRuntimeActivity();
       const oauth = new URLSearchParams(location.search);
       if (oauth.has('mcp_connected') || oauth.has('mcp_error')) {
         location.hash = 'admin';

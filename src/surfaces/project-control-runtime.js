@@ -3,12 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const projectControl = require('../intelligence/project-control');
-const projectAutopilot = require('../intelligence/project-autopilot');
 const teamworkProjectStory = require('../integrations/teamwork-project-story');
-const { registerProjectControlRoutes } = require('../routes/registerProjectControlRoutes');
 
 function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, writeThrough,
-  intelligence, projectStory = teamworkProjectStory }) {
+  projectStory = teamworkProjectStory }) {
   const filePath = path.join(localDataDir, 'nora-project-control.json');
   let writeQueue = Promise.resolve();
   let hydrationPromise = null;
@@ -59,11 +57,7 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
   }
 
   function ingestMeeting(input) {
-    return mutate(ledger => {
-      const control = projectControl.ingestMeeting(ledger, input);
-      const autopilot = projectAutopilot.ingestMeetingEvidence(control.ledger, input);
-      return { ...control, ledger: autopilot.ledger, autopilot };
-    });
+    return mutate(ledger => projectControl.ingestMeeting(ledger, input));
   }
 
   function promptContext(options) {
@@ -99,21 +93,10 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
       const stories = projectStory.buildProjectStories(snapshot);
       const result = dryRun
         ? projectStory.applyProjectStories(load(), stories, { dryRun: true })
-        : await mutate(ledger => {
-          const applied = projectStory.applyProjectStories(ledger, stories);
-          const autopilot = projectAutopilot.reconcilePortfolio(applied.ledger, {
-            source: 'teamwork_project_story_hydration',
-          });
-          return { ...applied, ledger: autopilot.ledger, autopilot: {
-            events_created: autopilot.events.length,
-            actions_created: autopilot.actions.length,
-            events_resolved: autopilot.resolved_events.length,
-          } };
-        });
+        : await mutate(ledger => projectStory.applyProjectStories(ledger, stories));
       const summary = { projects_seen: result.projects_seen, created: result.created,
         updated: result.updated, unchanged: result.unchanged, fields_filled: result.fields_filled,
-        dry_run: result.dry_run, pagination: snapshot.pagination,
-        autopilot: result.autopilot || null };
+        dry_run: result.dry_run, pagination: snapshot.pagination };
       hydrationStatus = { ...hydrationStatus, state: 'succeeded',
         completed_at: new Date().toISOString(), result: summary };
       return { ...result, pagination: snapshot.pagination };
@@ -134,23 +117,26 @@ function createProjectControlRuntime({ localDataDir, db, cache, isDbReady, write
       ({ signal }) => hydrateFromTeamwork({ signal }), { initialDelayMs: 45 * 1000, timeoutMs: 2 * 60 * 1000 });
   }
 
-  function register(app, { requireAuth, requireOperatorAuth }) {
-    registerProjectControlRoutes(app, {
-      requireAuth,
-      requireOperatorAuth,
-      loadProjectControl: load,
-      saveProjectControl: save,
-      mutateProjectControl: mutate,
-      getInitiativeStatus: scope => intelligence.initiativeStatus(scope),
-      spendInitiative: (scope, metadata) => intelligence.spendInitiative(scope, metadata),
-      hydrateProjectStories: hydrateFromTeamwork,
-      getProjectHydrationStatus: getHydrationStatus,
+  function registerDashboard(app, { requireAuth }) {
+    app.get('/pm-control', requireAuth, (_req, res) => {
+      const ledger = load();
+      res.json({ report: projectControl.report(ledger), ledger });
+    });
+    app.get('/pm-control/hydration', requireAuth, (_req, res) => res.json(getHydrationStatus()));
+    app.post('/pm-control/hydrate/teamwork', requireAuth, async (req, res) => {
+      try {
+        const result = await hydrateFromTeamwork({ signal: req.deadlineSignal });
+        const { ledger: _ledger, ...response } = result;
+        res.json({ ok: true, ...response });
+      } catch (error) {
+        res.status(400).json({ error: error.message });
+      }
     });
   }
 
   return { load, save, mutate, hydrate, ingestMeeting, ingestExtractedMeeting,
     promptContext, appendPromptContext, hydrateFromTeamwork, getHydrationStatus,
-    scheduleHydration, register };
+    scheduleHydration, registerDashboard };
 }
 
 module.exports = { createProjectControlRuntime };

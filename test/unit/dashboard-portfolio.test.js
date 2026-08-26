@@ -32,21 +32,15 @@ function project(overrides = {}) {
   };
 }
 
-test('portfolio opens as Nora default workspace and retains every existing room', () => {
+test('portfolio opens as Nora default workspace inside the reduced product', () => {
   assert.match(html, /data-tab="projects" aria-selected="true"/);
   assert.match(html, /id="page-projects" class="page active"/);
-  assert.match(html, /What needs management now/);
-  assert.match(html, /Nora's judgment/);
-  assert.match(html, /id="pm-autopilot-summary"/);
-  assert.match(html, /id="project-autopilot-panel"/);
-  assert.match(html, /id="decision-detail"/);
-  assert.match(html, /id="decision-detail-content"/);
-  assert.match(source, /Why Nora believes this/);
-  assert.match(source, /viewDecisionCandidate/);
-  assert.match(source, /Teamwork task detail/);
-  assert.match(source, /Context still needed/);
+  assert.match(html, /Teamwork projects/);
+  assert.match(html, /Teamwork is the source of truth/);
+  assert.doesNotMatch(html, /Nora's judgment|Project Autopilot|decision-detail|project-edit/);
+  assert.doesNotMatch(source, /autopilot|operatorApi|saveProject|deleteProject/);
   assert.match(html, /data-project-filter="attention"/);
-  assert.equal([...html.matchAll(/data-tab="([^"]+)"/g)].length, 15);
+  assert.equal([...html.matchAll(/data-tab="([^"]+)"/g)].length, 4);
 });
 
 test('portfolio attention is source-bound and does not turn unknown health red', () => {
@@ -70,7 +64,7 @@ test('decision candidates and verified risks independently raise portfolio prior
   assert.equal(portfolio.signals(decision).decisions, 2);
   assert.ok(portfolio.priority(decision) > portfolio.priority(quiet));
 
-  portfolio.state.risks.push({ project_key: 'project-1', severity: 'high' });
+  portfolio.state.risks.push({ project_key: 'project-1', severity: 'high', status: 'open' });
   const riskSignals = portfolio.signals(quiet);
   assert.equal(riskSignals.openRisks.length, 1);
   assert.equal(riskSignals.attention, true);
@@ -88,14 +82,9 @@ test('Teamwork date-only timestamps stay on their source calendar day', () => {
 
 test('portfolio loads the durable PM sources together and never starts its own polling loop', () => {
   assert.match(source, /api\('\/pm-control'\)/);
-  assert.match(source, /api\('\/pm-control\/evaluation'\)/);
   assert.match(source, /api\('\/pm-control\/hydration'\)/);
-  assert.match(source, /api\('\/pm-control\/autopilot\/report'\)/);
-  assert.match(source, /api\('\/projects'\)/);
-  assert.match(source, /operatorApi\(`\/pm-control\/autopilot\/charters/);
-  assert.match(source, /operatorApi\(`\/pm-control\/autopilot\/actions/);
-  assert.match(source, /operatorApi\(`\/pm-control\/autopilot\/meetings/);
-  assert.match(source, /Hydration never spends a human interruption/);
+  assert.match(source, /api\('\/pm-control\/hydrate\/teamwork'/);
+  assert.doesNotMatch(source, /\/projects'|evaluation|autopilot|operatorApi/);
   assert.doesNotMatch(source, /setInterval\(/);
   assert.doesNotThrow(() => new vm.Script(source));
 });

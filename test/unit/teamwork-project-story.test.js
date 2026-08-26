@@ -213,7 +213,6 @@ test('project control runtime persists hydration and registers the silent refres
   const runtime = createProjectControlRuntime({
     localDataDir, db: {}, cache: {}, isDbReady: () => false,
     writeThrough: async (_name, operation) => operation(),
-    intelligence: { initiativeStatus: () => ({ remaining: 0 }), spendInitiative: () => null },
     projectStory: fakeStory,
   });
   let registration = null;

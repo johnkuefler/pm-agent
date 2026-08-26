@@ -43,7 +43,6 @@ test('completion claims require a successful same-family write receipt', () => {
   assert.equal(twoClaimsOneReceipt.disposition, 'blocked');
   assert.equal(twoClaimsOneReceipt.detected_claim_count, 2);
 });
-
 test('guard distinguishes external execution from ordinary thinking and handles terse completion claims', () => {
   const reflection = guard.apply({ task: 'What do you recommend?',
     candidate: 'I updated my recommendation after considering the risk.', executions: [] });
@@ -108,36 +107,8 @@ test('claim attestations retain commitments rather than response text and fail c
   assert.equal(agency.report.replay_valid_action_claim_attestations, 3);
   assert.equal(agency.report.verified_completion_claims, 1);
   assert.equal(agency.report.blocked_unverified_completion_claims, 1);
-  const indicator = store.consciousnessResearchStatus().indicators
-    .find(item => item.id === 'executed_action_self_boundary');
-  assert.equal(indicator.evidence.receipt_verified_completion_claims, 1);
-  assert.equal(indicator.evidence.blocked_unverified_completion_claims, 1);
-
   const tampered = structuredClone(attestation);
   tampered.disposition = 'blocked';
   assert.equal(store.actionClaimAttestationAudit(tampered).complete_chain_verified, false);
   fs.rmSync(dir, { recursive: true, force: true });
-});
-
-test('Slack runtime keeps the receipt guard active when an unrelated blinded study suppresses the model monitor', async () => {
-  const { __test } = require('../../server');
-  const contextAssignment = { intervention: 'dream_insight_access', assignment_id: 'sealed-study-unit' };
-  const blocked = await __test.monitorProspectiveSlackOutput({
-    task: 'Please send the Slack message.', candidate: 'I sent the Slack message.',
-    interactionRef: 'guard-runtime-blocked', contextAssignment, actionExecutionRecords: [],
-    post: async () => { throw new Error('provider monitor must remain suppressed'); },
-  });
-  assert.equal(blocked.monitored, false);
-  assert.equal(blocked.actionClaimGuard.disposition, 'blocked');
-  assert.equal(blocked.response, guard.BLOCKED_RESPONSE);
-
-  const verified = await __test.monitorProspectiveSlackOutput({
-    task: 'Please send the Slack message.', candidate: 'I sent the Slack message.',
-    interactionRef: 'guard-runtime-verified', contextAssignment,
-    actionExecutionRecords: [execution({ tool_name: 'slack_send_message' })],
-    post: async () => { throw new Error('provider monitor must remain suppressed'); },
-  });
-  assert.equal(verified.monitored, false);
-  assert.equal(verified.actionClaimGuard.disposition, 'verified');
-  assert.equal(verified.response, 'I sent the Slack message.');
 });

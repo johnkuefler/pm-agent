@@ -6,9 +6,7 @@ const path = require('path');
 const root = path.join(__dirname, '..', '..');
 
 function readRoutineSource() {
-  return ['nora-routine.md', 'nora-research-routine.md']
-    .map(name => fs.readFileSync(path.join(root, name), 'utf8'))
-    .join('\n\n');
+  return fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
 }
 
 module.exports = { readRoutineSource };

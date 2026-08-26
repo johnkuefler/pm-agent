@@ -29,7 +29,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const background = snapshot.background_work || {};
   const recurringJobs = background.recurring_jobs || {};
   const startupTasks = background.startup_tasks || {};
-  const apiOpportunityOperations = background.api_opportunity_operations || {};
   const slackWebhookEvents = background.slack_webhook_events || {};
   const acknowledgedMeetingWork = background.acknowledged_meeting_work || {};
   const recentMeetingsCache = background.recent_meetings_cache || {};
@@ -222,15 +221,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
       count: Number(transcriptCheckpoints.retrying),
       attempts: Number(transcriptCheckpoints.maximum_retry_attempt) || undefined,
       message: 'A meeting transcript checkpoint is retrying after a persistence failure.' });
-  }
-  if (Number(apiOpportunityOperations.pending) > 5) {
-    degraded.push({ code: 'api_opportunity_operation_backlog',
-      count: Number(apiOpportunityOperations.pending),
-      message: 'Approved third-party API operations or their outcome receipts are accumulating.' });
-  }
-  if (apiOpportunityOperations.last_error) {
-    degraded.push({ code: 'api_opportunity_operation_failure',
-      message: 'An approved third-party API operation or outcome receipt recently failed.' });
   }
   const recentSlackWebhookFailures = (slackWebhookEvents.recent_failures || []).filter(item => {
     const at = new Date(item?.at || 0).getTime();

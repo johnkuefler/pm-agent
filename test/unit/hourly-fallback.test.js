@@ -2,7 +2,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const cycleSelfForecast = require('../../src/intelligence/cycle-self-forecast');
 const { hourlyFallbackDecision, fallbackForecast, FALLBACK_COOLDOWN_MS,
   FAILED_FALLBACK_RETRY_MS } =
   require('../../src/runtime/hourly-fallback');
@@ -91,9 +90,8 @@ test('fallback forecast is a valid v4 payload without a mature prior', () => {
   const input = fallbackForecast({ cycleId: 'fallback-cycle', soma: { vitals: {
     errors10: 0, warns10: 0, onBackup: false, embedBacklog: 0,
   } } });
-  const normalized = cycleSelfForecast.normalizeForecast(input, 4);
   assert.equal(input.protocol_version, 4);
-  assert.deepEqual(normalized.predicted_action_types,
+  assert.deepEqual([...input.predicted_action_types].sort(),
     ['fallback_observation', 'local_task_execution', 'slack_recovery']);
 });
 
@@ -102,8 +100,7 @@ test('fallback forecast binds but does not overclaim use of a mature behavioral 
   const input = fallbackForecast({ cycleId: 'fallback-v7', priorSnapshot: {
     available: true, prior: { id: 'prior-1', content_commitment: commitment },
   } });
-  const normalized = cycleSelfForecast.normalizeForecast(input, 7);
   assert.equal(input.protocol_version, 7);
-  assert.equal(normalized.behavioral_self_prior_commitment, commitment);
-  assert.equal(normalized.behavioral_self_prior_use.disposition, 'not_relevant');
+  assert.equal(input.behavioral_self_prior_commitment, commitment);
+  assert.equal(input.behavioral_self_prior_use.disposition, 'not_relevant');
 });

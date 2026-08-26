@@ -2,7 +2,7 @@
 
 const { createSlackCommunicationMonitorEnricher } = require('../surfaces/slack/communication-monitor-context');
 
-const DIRECT_COMMUNICATION = /(?:^|[_-])(?:send|reply|notify|share|invite|schedule)(?:[_-]|$)|(?:^|[_-])(?:add|post|create)(?:[_-])(?:comment|message|gift)(?:[_-]|$)/i;
+const DIRECT_COMMUNICATION = /(?:^|[_-])(?:send|reply|notify|share|invite|schedule)(?:[_-]|$)|(?:^|[_-])(?:add|post|create)(?:[_-])(?:comment|message)(?:[_-]|$)/i;
 const CALENDAR_COMMUNICATION = /(?:^|[_-])(?:create|update|cancel|schedule|invite)(?:[_-]).*(?:calendar|event|meeting)|(?:calendar|event|meeting).*(?:[_-])(?:create|update|cancel|schedule|invite)(?:[_-]|$)/i;
 const TASK_COMMUNICATION = /(?:^|[_-])(?:create|update|assign|complete|reopen)(?:[_-])(?:task|ticket)(?:[_-]|$)|(?:^|[_-])(?:task|ticket)(?:[_-])(?:create|update|assign|complete|reopen)(?:[_-]|$)/i;
 const SECRET_FIELD = /token|secret|password|authorization|credential|api[_-]?key|cookie/i;

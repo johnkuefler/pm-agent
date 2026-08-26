@@ -3,8 +3,6 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const artifactUpload = require('../../src/integrations/drive-artifact-upload');
-const { registerCoworkInstructionsRoute } = require('../../src/routes/cowork-instructions');
-const { readRoutineSource } = require('../helpers/routine-source');
 
 const input = {
   bytes: Buffer.from('real binary bytes\0\1', 'utf8'),
@@ -28,7 +26,6 @@ test('prepares a byte- and destination-bound artifact commitment', () => {
   assert.equal(artifactUpload.prepareArtifactRequest({ ...input, parentFolderId: 'root' })
     .request.parent_folder_id, 'root');
 });
-
 test('rejects unsafe metadata, empty bodies, and oversized artifacts before provider access', () => {
   assert.throws(() => artifactUpload.prepareArtifactRequest({ ...input, bytes: Buffer.alloc(0) }),
     /cannot be empty/);
@@ -70,28 +67,4 @@ test('ledger compaction retains pending work and bounds settled receipts', () =>
   assert.equal(compacted.records.filter(record => record.state === 'pending').length, 2);
   assert.deepEqual(compacted.records.filter(record => record.state === 'completed')
     .map(record => record.idempotency_key), ['task-key-007', 'task-key-006']);
-});
-
-test('unattended-work instructions expose raw upload, retry, and receipt verification', () => {
-  const root = path.resolve(__dirname, '../..');
-  const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
-  const routine = readRoutineSource();
-  for (const text of [cowork, routine]) {
-    assert.match(text, /\/admin\/drive\/upload-artifact/);
-    assert.match(text, /--data-binary/);
-    assert.match(text, /Idempotency-Key/);
-    assert.match(text, /receipt\.request\.sha256/);
-  }
-
-  let handler;
-  registerCoworkInstructionsRoute({ get(route, callback) {
-    if (route === '/cowork-instructions') handler = callback;
-  } });
-  let rendered = '';
-  assert.doesNotThrow(() => handler({}, {
-    type() { return this; },
-    send(value) { rendered = value; },
-  }));
-  assert.match(rendered, /\$\{BASE\}\/admin\/drive\/upload-artifact/);
-  assert.match(rendered, /task-\$\{TASK_ID\}-\$\{ARTIFACT_SHA\}/);
 });

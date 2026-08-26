@@ -5,7 +5,7 @@ const { inferMemoryRetentionClass } = require('./memory-lifecycle');
 const MEMORY_KINDS = new Set(['fact', 'inference', 'preference', 'commitment', 'opinion', 'learning', 'episode']);
 const MEMORY_STATUSES = new Set(['active', 'superseded', 'disputed', 'expired']);
 const EMOTIONAL_MEMORY_PATTERN = /\b(upset|angry|furious|frustrat|trust|relief|warmth|thank|thanks|appreciat|apolog|worried|concern|anxious|happy|excited|proud|hurt|disappoint|stress|overwhelm|urgent|crisis|escalat|missed|overdue|blocked)\b/i;
-const SOCIAL_MEMORY_PATTERN = /\b(john|mallory|dawn|ali|andy|brandon|brande[e]?|elle|chelsea|teammate|client|prefers?|likes?|dislikes?|corrected|asked|told|said|wants?|needs?|relationship|communication|feedback|warmth|gift)\b/i;
+const SOCIAL_MEMORY_PATTERN = /\b(john|mallory|dawn|ali|andy|brandon|brande[e]?|elle|chelsea|teammate|client|prefers?|likes?|dislikes?|corrected|asked|told|said|wants?|needs?|relationship|communication|feedback|warmth)\b/i;
 
 function clamp(value, min = 0, max = 1) {
   const number = Number(value);
@@ -50,7 +50,7 @@ function inferSocialWeight(record = {}) {
   const channel = String(sourceRef?.channel || '').toLowerCase();
   let weight = SOCIAL_MEMORY_PATTERN.test(fact) ? 0.55 : 0;
   if (source === 'meeting' || channel.includes('meeting') || channel.includes('slack') || channel.includes('gmail')) weight = Math.max(weight, 0.45);
-  if (/\b(prefers?|communication|corrected|feedback|relationship|trust|warmth|gift)\b/i.test(fact)) weight = Math.max(weight, 0.7);
+  if (/\b(prefers?|communication|corrected|feedback|relationship|trust|warmth)\b/i.test(fact)) weight = Math.max(weight, 0.7);
   if (/\b(john|mallory|dawn|ali|andy|brandon|brande[e]?|elle|chelsea)\b/i.test(fact)) weight = Math.max(weight, 0.6);
   return weight;
 }

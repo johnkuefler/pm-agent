@@ -15,36 +15,6 @@ const { __test } = require('../../server');
 const { readServerSource } = require('../helpers/server-source');
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-test('fallback forecast retries spend one shared runtime deadline', async () => {
-  const requestTimeouts = [];
-  const waits = [];
-  const retryable = Object.assign(new Error('projection is still preparing'), {
-    code: 'SELF_FORECAST_PREPARATION_PENDING',
-  });
-  await assert.rejects(__test.commitFallbackForecast('cycle-bounded', {}, {
-    attempts: 3,
-    deadlineAt: Date.now() + 13500,
-    request: async (_method, _route, _payload, timeoutMs) => {
-      requestTimeouts.push(timeoutMs);
-      throw retryable;
-    },
-    wait: async milliseconds => { waits.push(milliseconds); },
-  }), error => error === retryable);
-  assert.equal(requestTimeouts.length, 3);
-  assert.ok(requestTimeouts.every(timeout => timeout > 0 && timeout <= 1500),
-    'each retry must receive only the wall-clock budget left before the cleanup reserve');
-  assert.deepEqual(waits, [1000, 1000]);
-});
-
-test('fallback forecast never starts after its runtime deadline is exhausted', async () => {
-  let requests = 0;
-  await assert.rejects(__test.commitFallbackForecast('cycle-expired', {}, {
-    deadlineAt: Date.now() - 1,
-    request: async () => { requests += 1; },
-  }), error => error.code === 'hourly_fallback_deadline_exceeded');
-  assert.equal(requests, 0);
-});
-
 test('hourly coverage connector reads propagate cancellation and remaining budgets', () => {
   const source = __test.fallbackOperationalSweep.toString();
   assert.match(source, /signal => peopleTool\.execute/);
@@ -58,32 +28,14 @@ test('hourly coverage connector reads propagate cancellation and remaining budge
   assert.match(source, /signal => binding\.execute\(args, \{ signal, timeoutMs: gmailBudgetMs \}\)/);
 });
 
-test('operational recovery is scheduled independently from optional background intelligence', () => {
+test('operational recovery remains scheduled without optional background intelligence', () => {
   const source = readServerSource();
   const recoveryStart = source.indexOf("scheduleRecurringRuntimeJob('operational-recovery-cycle'");
-  const reflectionStart = source.indexOf("scheduleRecurringRuntimeJob('background-intelligence-cycle'");
-  const scheduler = source.slice(recoveryStart,
-    source.indexOf("scheduleRecurringRuntimeJob('stale-research-projection-refresh'"));
-  assert.ok(recoveryStart >= 0 && reflectionStart > recoveryStart);
+  const scheduler = source.slice(recoveryStart);
+  assert.ok(recoveryStart >= 0);
   assert.match(scheduler, /const trigger = runNumber === 1 \? 'startup' : 'five-minute-scheduler'/);
-  assert.ok(scheduler.indexOf('await runHourlyFallbackRuntime({ trigger })') < reflectionStart - recoveryStart);
-  assert.doesNotMatch(source.slice(recoveryStart, reflectionStart), /runBackgroundIntelligenceRuntime/);
-  assert.match(scheduler,
-    /scheduleRecurringRuntimeJob\('background-intelligence-cycle', 30 \* 60 \* 1000/,
-    'research and reflection should retain a completion-aware but slower cadence');
-});
-
-test('self-forecast commit briefly joins its existing replay preparation instead of forcing a retry', () => {
-  const routeSource = fs.readFileSync(
-    path.join(__dirname, '..', '..', 'src', 'routes', 'intelligence.js'), 'utf8');
-  const forecastRoute = routeSource.slice(
-    routeSource.indexOf("app.post('/intelligence/cycles/:id/self-forecast'"),
-    routeSource.indexOf("app.post('/intelligence/cycles/:id/self-forecast/revision'"));
-  assert.match(forecastRoute,
-    /await store\.waitForCycleSelfForecastRuntimePreparation\(\{ timeoutMs: 2500 \}\)/);
-  assert.ok(forecastRoute.indexOf('waitForCycleSelfForecastRuntimePreparation')
-    < forecastRoute.indexOf('store.preregisterCycleSelfForecast'),
-  'the worker join must happen before the mutation attempts to consume the prepared replay');
+  assert.match(scheduler, /await runHourlyFallbackRuntime\(\{ trigger \}\)/);
+  assert.doesNotMatch(source, /background-intelligence-cycle|stale-research-projection-refresh/);
 });
 
 test('coverage result counting handles MCP envelopes without retaining message content', () => {

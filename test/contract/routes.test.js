@@ -18,16 +18,8 @@ test('the complete HTTP route surface remains registered in the same order', () 
     .filter(layer => layer.route)
     .flatMap(layer => Object.keys(layer.route.methods).map(method => `${method.toUpperCase()} ${layer.route.path}`));
   const expected = fs.readFileSync(path.join(__dirname, '../fixtures/routes.txt'), 'utf8').trim().split(/\r?\n/);
-  // 409 to 449: the project control plane, including the 20-route Autopilot lifecycle.
-  // Deliberate. Nora needs durable projects, risks, decisions, interventions, outcomes,
-  // project-scoped authority, meeting control, and policy visibility to operate as a project manager.
-  // Three Fleet supervisor routes expose its read-only ledger, silent manual scan, and operator
-  // acknowledgment without widening Nora's Fleet authority.
-  // Eleven Executive Firewall routes add durable intake, team-first resolution, decision packets,
-  // executive feedback, verified closure, and operator policy without creating a second PM system.
-  // Three teammate approval routes create exact, named, approval-bound Teamwork proposals without
-  // adding a generic execution endpoint or a reminder surface.
-  // This count moving is meant to be an argument, not a formality.
-  assert.equal(expected.length, 506, 'route fixture should cover the complete known API surface');
+  // This count is intentionally explicit. Product-surface additions and removals must update this
+  // contract and the ordered fixture together.
+  assert.equal(expected.length, 145, 'route fixture should cover the reduced known API surface');
   assert.deepEqual(actual, expected);
 });

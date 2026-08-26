@@ -26,7 +26,6 @@ function createRequestPerformanceMonitor({ slowMs = 1000, maxRoutes = 100,
     if ((req.method === 'GET' && ['/self-model', '/cognition',
       '/consciousness-research/status'].includes(path))
       || path === '/admin/drive/upload-artifact'
-      || path.startsWith('/process-metacognition-studies')
       || /\/(?:subject-pair|subject|probe|evaluate)$/.test(path)) return longDeadlineMs;
     return deadlineMs;
   }
