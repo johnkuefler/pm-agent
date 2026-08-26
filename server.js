@@ -95,6 +95,7 @@ const { createProcessResourceMonitor } = require('./src/runtime/process-resource
 const { createWriteThroughQueue } = require('./src/runtime/write-through-queue');
 const { createRecurringJobRegistry, quarantineMessage } = require('./src/runtime/recurring-jobs');
 const { createAdaptiveWorkerLoop } = require('./src/runtime/adaptive-worker-loop');
+const { boundedNativeTask, buildNativeTaskPacket } = require('./src/runtime/native-task-packet');
 const { captureMarkerPersistence, diffMarkerPersistence } = require('./src/runtime/marker-delta');
 const { captureTaskPersistence, diffTaskPersistence } = require('./src/runtime/task-delta');
 const { captureSlackThreadPersistence, diffSlackThreadPersistence } =
@@ -4761,33 +4762,6 @@ function nativeHourlyMcpBindings() {
   };
 }
 
-function boundedNativeTask(task) {
-  if (!task) return null;
-  const text = (value, maximum) => String(value || '').slice(0, maximum);
-  const metadata = task.metadata && typeof task.metadata === 'object'
-    ? Object.fromEntries(Object.entries(task.metadata).slice(0, 20).map(([key, value]) => [
-      text(key, 120),
-      value == null || ['string', 'number', 'boolean'].includes(typeof value)
-        ? (typeof value === 'string' ? text(value, 1000) : value)
-        : text(JSON.stringify(value), 1000),
-    ])) : null;
-  return {
-    id: text(task.id, 160),
-    action: text(task.action, 1200),
-    detail: text(task.detail, 4000),
-    context: text(task.context, 3000),
-    due: text(task.due, 80),
-    scheduled_for: text(task.scheduled_for, 80),
-    recurrence: text(task.recurrence, 120),
-    source_channel: text(task.source_channel, 160),
-    source_user: text(task.source_user, 160),
-    source_thread_ts: text(task.source_thread_ts, 160),
-    source_bot_id: text(task.source_bot_id, 200),
-    source_external_id: text(task.source_external_id, 200),
-    metadata,
-  };
-}
-
 function nativeHourlyTaskToolset(task, successfulActions) {
   const tools = [];
   const executors = {};
@@ -4937,7 +4911,7 @@ async function runNativeHourlyTask(task, {
     .map(item => item.tool_name));
   const toolset = toolsetFactory(task, successfulActions);
   const taskPacket = {
-    ...boundedNativeTask(task),
+    ...(await buildNativeTaskPacket(task, { resolveChannelName })),
     prior_verified_write_receipts: executionHistory.succeeded_writes,
   };
   const reqBody = {

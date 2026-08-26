@@ -249,13 +249,19 @@ function registerTaskRoutes(app, deps) {
     const tasks = loadTasks();
     const task = tasks.find(t => t.id === req.params.id);
     if (!task) return res.status(404).json({ error: 'task not found' });
-    const { action, detail, assignee, due, scheduled_for, recurrence, destination_channel } = req.body;
+    const { action, detail, assignee, due, scheduled_for, recurrence, metadata,
+      destination_channel } = req.body;
     if (recurrence !== undefined && recurrence !== null && recurrence !== '' && !isValidRecurrence(recurrence)) {
       return res.status(400).json({ error: 'invalid recurrence — expected daily:HH:MM, weekdays:HH:MM, weekly:dayname:HH:MM, monthly:N:HH:MM, or every:N:weeks:HH:MM' });
     }
     let destination;
+    const destinationProvided = destination_channel !== undefined
+      || (metadata && typeof metadata === 'object'
+        && Object.prototype.hasOwnProperty.call(metadata, 'destination_channel'));
     try {
-      destination = cleanSlackDestination(destination_channel);
+      const requestedDestination = destination_channel !== undefined
+        ? destination_channel : metadata?.destination_channel;
+      destination = cleanSlackDestination(requestedDestination);
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }
@@ -265,7 +271,7 @@ function registerTaskRoutes(app, deps) {
     if (due !== undefined) task.due = due;
     if (scheduled_for !== undefined) task.scheduled_for = scheduled_for || null;
     if (recurrence !== undefined) task.recurrence = recurrence || null;
-    if (destination_channel !== undefined) {
+    if (destinationProvided) {
       task.metadata = metadataWithDestination(task.metadata, destination);
     }
     saveTasks(tasks);

@@ -191,3 +191,17 @@ test('task destination updates reject channel names and malformed ids', () => {
   assert.match(res.body.error, /Slack channel or DM ID/);
   assert.equal(ctx.getTasks()[0].metadata, undefined);
 });
+
+test('task update accepts the metadata destination shape used by scheduled runners', () => {
+  const task = { id: 'task-metadata-repair', action: 'Post report', status: 'pending' };
+  const ctx = harness([task]);
+  const res = response();
+
+  ctx.routes.get('put:/tasks/:id')({
+    params: { id: task.id },
+    body: { metadata: { destination_channel: 'C031HHSBM1Q' } },
+  }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(ctx.getTasks()[0].metadata.destination_channel, 'C031HHSBM1Q');
+});
