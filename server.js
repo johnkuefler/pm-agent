@@ -2939,7 +2939,7 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
     // Live tools for the in-meeting @nora chat. Typed chat is as reliable as Slack (no voice
     // transcription errors, there's a written record everyone can see), so it gets the FULL Teamwork
     // set: READ and WRITE, same as Slack. Plus web search for quick external lookups.
-    const TW_WRITE_Z = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task', 'teamwork_reopen_task', 'teamwork_add_comment']);
+    const TW_WRITE_Z = TW_WRITE_NAMES;
     const zoomToolSetupStartedAt = Date.now();
     const zoomToolDefs = zoomAttachLiveTools
       ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 2 }] : [];
@@ -3492,13 +3492,13 @@ async function twApiGet(pathAndQuery, { signal, timeoutMs = 12000 } = {}) {
 // Write helper (POST/PUT/DELETE) — used by the create/update/complete/comment tools. Uses
 // Teamwork's stable v1 endpoints (well-documented for writes). DELETE is used internally for
 // test cleanup only; it is NOT exposed as a tool (Nora cannot delete from chat).
-async function twApiSend(method, pathAndQuery, body) {
+async function twApiSend(method, pathAndQuery, body, { signal, timeoutMs = 15000 } = {}) {
   const twKey = process.env.TEAMWORK_API_KEY, twBase = process.env.TEAMWORK_BASE_URL;
   const auth = 'Basic ' + Buffer.from(`${twKey}:`).toString('base64');
   const r = await axios({
     method, url: `${twBase}${pathAndQuery}`,
     headers: { Authorization: auth, 'Content-Type': 'application/json' },
-    data: body, timeout: 15000
+    data: body, timeout: Math.max(1, Math.min(15000, Number(timeoutMs) || 15000)), signal,
   });
   return r.data;
 }
@@ -5851,7 +5851,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     if (toolDefs.length > 1) {
       let note = '\n\nLIVE TOOLS attached to THIS reply. This is your real inventory right now; use them to pull current data' + (isDirect ? ' (and, for Teamwork, make changes)' : '') + ' rather than guessing or deferring:';
       if (teamworkOn && isDirect) {
-        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload, or who across the team has room and who is overbooked via teamwork_team_capacity (pass min_free_hours for "who can take a 10h build"); plus milestones, tasklists, people, comments) AND CHANGE (create projects, milestones, task lists, and tasks; update tasks; mark complete/reopen; add comments). Resolve the relevant project, task list, and people before writing. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete Teamwork records. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
+        note += ' • TEAMWORK: READ (find projects; list tasks filtered by assignee and due date, which is how you answer "what\'s due tomorrow for me/<person>": resolve the person with teamwork_list_people, then teamwork_list_tasks with their id + the date; check how booked someone is over a date range for scheduling, e.g. "how booked is Santi next week", via teamwork_user_workload, or who across the team has room and who is overbooked via teamwork_team_capacity (pass min_free_hours for "who can take a 10h build"); plus milestones, tasklists, people, comments) AND CHANGE (create projects, milestones, task lists, and tasks; update tasks; mark complete/reopen; add comments). For an approved plan containing multiple task lists or tasks, use teamwork_apply_project_plan ONCE instead of creating every item through separate tool calls. Resolve the relevant project and people before writing. Only create/change when clearly asked. If ambiguous, confirm first. After any change, say exactly what you did. You CANNOT delete Teamwork records. For dates, use the [Right now] block to know what "today"/"tomorrow" are.';
       } else if (teamworkOn) {
         note += ' • TEAMWORK (read-only here): find projects, list/get tasks, milestones, tasklists, people, comments. Use it to VERIFY a fact before saying it.';
       }
@@ -5888,7 +5888,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       // Fast conversational/status turns are retrieval-and-expression tasks, not deep planning.
       // Sonnet keeps those human-speed; Opus remains the default for substantive PM work.
       model: slackResponseModel(text),
-      max_tokens: 600, // room for live-data answers to synthesize
+      max_tokens: attachLiveTools ? 6000 : 600,
       system: cachedSystem(slackStable, tail),
       // Copy — the tool loop appends turns to reqBody.messages; we must not mutate the shared
       // in-memory history (it would replay raw tool_use/tool_result blocks on the next reply).
@@ -5929,11 +5929,13 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
       ({ response, firedTools, actionExecutionIds } = await runClaudeToolLoop(reqBody, anthropicHeaders, toolExecutors, 6, {
         deferredMeta: mcpBindings.meta,
         writeToolNames: [...LIVE_WRITE, 'slack_send_message', 'nora_queue_recurring_task', 'nora_join_meeting'],
-        toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2, teamwork_list_people: 2 },
+        toolCallLimits: { teamwork_find_projects: 2, teamwork_list_tasklists: 2,
+          teamwork_list_people: 2, teamwork_apply_project_plan: 1 },
         origin: { kind: 'slack', channel, thread_ts: threadTs || null, requester: user },
         deadlineMs: modelBudgetMs,
         providerTimeoutMs: Math.min(attachLiveTools
           ? 20000 : SLACK_CONVERSATIONAL_PROVIDER_TIMEOUT_MS, modelBudgetMs),
+        toolTimeoutMs: attachLiveTools ? 40000 : 12000,
       }));
     } catch (err) {
       // Safety net: if tools/MCP ever cause a rejection, retry WITHOUT them so a Slack reply
@@ -7203,7 +7205,7 @@ async function runNativeHourlyTask(task, {
   };
   const reqBody = {
     model: 'claude-opus-4-8',
-    max_tokens: 1400,
+    max_tokens: 6000,
     system: [
       'You are Nora executing exactly one explicitly queued operational task in an unattended Railway run.',
       'Do the requested work now with the supplied tools. Do not perform unrelated cleanup, proactive reminders, experiments, or self-modification.',
@@ -7228,7 +7230,7 @@ async function runNativeHourlyTask(task, {
         post,
         deadlineMs: taskBudgetMs,
         providerTimeoutMs: Math.min(15000, taskBudgetMs),
-        toolTimeoutMs: 10000,
+        toolTimeoutMs: 22000,
         writeStartMinimumMs: 15000,
         writeStartMinimumByTool: { nora_complete_local_task: 5000 },
         writeToolNames: toolset.writeToolNames,
