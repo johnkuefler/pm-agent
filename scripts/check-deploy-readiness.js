@@ -37,7 +37,7 @@ function assessRoutineContract(routine = {}) {
 // So a wedged lane no longer blocks. It is reported loudly and the deploy proceeds, because
 // restarting the process is the remedy for a wedged lane rather than a risk to it. Genuine
 // in-flight work still blocks, which is the property this gate exists to protect.
-const WEDGED_RETRY_ATTEMPTS = 10;
+const WEDGED_RETRY_ATTEMPTS = 6;
 
 // The same mistake in a third costume, and this one caught the deploy that fixed it.
 //

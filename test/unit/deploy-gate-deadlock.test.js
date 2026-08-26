@@ -67,6 +67,7 @@ test('a lane retrying but not yet past its ceiling still blocks', () => {
 });
 
 test('the wedged test needs both an active retry and an exhausted ceiling', () => {
+  assert.equal(WEDGED_RETRY_ATTEMPTS, 6, 'the deploy gate must match the transcript retry ceiling');
   assert.equal(transcriptCheckpointsWedged({ retrying: 1, maximum_retry_attempt: 8376 }), true);
   assert.equal(transcriptCheckpointsWedged({ retrying: 0, maximum_retry_attempt: 8376 }), false,
     'a high-water mark with nothing retrying is history, not a stuck lane');
