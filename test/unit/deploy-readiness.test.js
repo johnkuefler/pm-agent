@@ -22,12 +22,9 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
       if (url.endsWith('/run-lock')) return response({ locked: false,
         expired_lease_pending_recovery: false });
       if (url.endsWith('/routine')) return response(validRoutine);
-      if (url.endsWith('/consciousness-research/autopilot')) return response({
-        interactive_priority: { active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0,
-          background_provider_in_flight: 0 },
-      });
-      if (url.endsWith('/self-model/fingerprints')) return response({ report: { active: 0 }, runs: [] });
-      if (url.endsWith('/runtime/performance')) return response({ background_work: {
+      if (url.endsWith('/runtime/performance')) return response({
+        interactive_priority: { active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0 },
+        background_work: {
         post_interaction: { queued: 0, busy: false },
         transcript_checkpoints: { pending: 0, scheduled: 0 },
       }, persistence: { pending_revisions: 0, strict_waiters: 0, flush_running: false,
@@ -38,18 +35,16 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
   assert.deepEqual(result.blockers, []);
   assert.deepEqual(calls.map(item => item.url).sort(), [
     'https://nora.example/admin/active-bots',
-    'https://nora.example/consciousness-research/autopilot',
     'https://nora.example/routine', 'https://nora.example/run-lock',
     'https://nora.example/runtime/performance',
-    'https://nora.example/self-model/fingerprints',
   ]);
   assert.ok(calls.every(item => item.authorization === 'Bearer test-key'));
 });
 
-test('deployment readiness fails closed on missing or misordered live cognition protocols', () => {
-  const missing = assessRoutineContract({ content: '## Step 0.5: Start the Intelligence Cycle' });
+test('deployment readiness fails closed on missing or misordered PM routine phases', () => {
+  const missing = assessRoutineContract({ content: '# Nora scheduled PM routine' });
   assert.equal(missing.valid, false);
-  assert.ok(missing.missing_markers.includes('## Step 0.7: EXPECT'));
+  assert.ok(missing.missing_markers.includes('## 3. Maintain project plans'));
   const misordered = assessRoutineContract({ content: [...REQUIRED_ROUTINE_MARKERS]
     .reverse().join('\n\n') });
   assert.equal(misordered.valid, false);
@@ -72,13 +67,13 @@ test('deployment readiness reports active lifecycle, recovery, and meeting block
     ['run_lock', 'run_recovery_pending', 'active_meeting']);
 });
 
-test('deployment readiness protects live replies and their quiet window without waiting on preemptible research', () => {
+test('deployment readiness protects live replies and their quiet window', () => {
   const result = assessDeployReadiness({
     lock: { locked: false }, activeBots: { count: 0, bots: [] }, routine: validRoutine,
-    researchAutopilot: { interactive_priority: {
+    runtimePerformance: { interactive_priority: {
       active_interactions: 1, active_surfaces: { slack: 1 }, quiet_remaining_ms: 12000,
       last_interactive_surface: 'slack', background_provider_in_flight: 1,
-      background_labels: ['research-autopilot'],
+      background_labels: ['optional-background-work'],
     } },
   });
   assert.equal(result.ready, false);
@@ -87,14 +82,12 @@ test('deployment readiness protects live replies and their quiet window without 
   ]);
 });
 
-test('preemptible scheduled intelligence does not stall an otherwise safe deployment', () => {
+test('preemptible background work does not stall an otherwise safe deployment', () => {
   const result = assessDeployReadiness({
     lock: { locked: false }, activeBots: { count: 0, bots: [] }, routine: validRoutine,
-    researchAutopilot: { interactive_priority: {
-      active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0,
-      background_provider_in_flight: 1, background_labels: ['scheduled-intelligence'],
-    } },
     runtimePerformance: {
+      interactive_priority: { active_interactions: 0, active_surfaces: {}, quiet_remaining_ms: 0,
+        background_provider_in_flight: 1, background_labels: ['scheduled-work'] },
       background_work: { post_interaction: { queued: 0, busy: false },
         transcript_checkpoints: { pending: 0, scheduled: 0 } },
       persistence: { pending_revisions: 0, strict_waiters: 0, flush_running: false,
@@ -104,16 +97,6 @@ test('preemptible scheduled intelligence does not stall an otherwise safe deploy
   });
   assert.equal(result.ready, true);
   assert.deepEqual(result.blockers, []);
-});
-
-test('deployment readiness preserves the build bound to an active behavioral fingerprint', () => {
-  const result = assessDeployReadiness({ lock: { locked: false },
-    activeBots: { count: 0, bots: [] }, routine: validRoutine,
-    behavioralFingerprints: { report: { active: 1 },
-      runs: [{ id: 'fingerprint-1', status: 'active' }] } });
-  assert.equal(result.ready, false);
-  assert.deepEqual(result.blockers, [{ kind: 'build_bound_behavioral_fingerprint', count: 1,
-    run_ids: ['fingerprint-1'] }]);
 });
 
 test('deployment readiness waits for post-interaction, transcript, and persistence drains', () => {

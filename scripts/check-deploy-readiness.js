@@ -2,16 +2,18 @@
 
 const DEFAULT_BASE_URL = 'https://pm-agent-production-c49e.up.railway.app';
 const REQUIRED_ROUTINE_MARKERS = Object.freeze([
-  '## Step 0.5: Start the Intelligence Cycle',
-  '## Step 0.7: EXPECT',
-  '## Step 0.75: Consume the Subject Research Inbox',
-  'DIALS phase two is a blinded causal measurement',
+  '# Nora scheduled PM routine',
+  '## 2. Execute due scheduled tasks',
+  '## 3. Maintain project plans',
+  '## 4. Maintain calendars',
+  '## 5. Process meetings',
+  '## 7. Close',
 ]);
 
 function assessRoutineContract(routine = {}) {
   const content = typeof routine.content === 'string' ? routine.content : '';
   const missingMarkers = REQUIRED_ROUTINE_MARKERS.filter(marker => !content.includes(marker));
-  const orderedSteps = REQUIRED_ROUTINE_MARKERS.slice(0, 3).map(marker => content.indexOf(marker));
+  const orderedSteps = REQUIRED_ROUTINE_MARKERS.map(marker => content.indexOf(marker));
   const stepOrderValid = orderedSteps.every(index => index >= 0)
     && orderedSteps.every((index, position) => position === 0 || index > orderedSteps[position - 1]);
   return { valid: Boolean(content) && missingMarkers.length === 0 && stepOrderValid,
@@ -79,7 +81,7 @@ function transcriptCheckpointsWedged(checkpoints = {}) {
 }
 
 function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
-  researchAutopilot = null, behavioralFingerprints = null, runtimePerformance = null } = {}) {
+  runtimePerformance = null } = {}) {
   const blockers = [];
   // Conditions that would once have blocked forever. Surfaced, never silent, but not a veto.
   const wedged = [];
@@ -98,8 +100,8 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
     const contract = assessRoutineContract(routine);
     if (!contract.valid) blockers.push({ kind: 'routine_contract', ...contract });
   }
-  if (researchAutopilot) {
-    const priority = researchAutopilot.interactive_priority || {};
+  if (runtimePerformance) {
+    const priority = runtimePerformance.interactive_priority || {};
     const activeInteractions = Math.max(0, Number(priority.active_interactions) || 0);
     const activeSurfaces = priority.active_surfaces && typeof priority.active_surfaces === 'object'
       ? priority.active_surfaces : {};
@@ -112,22 +114,8 @@ function assessDeployReadiness({ lock = {}, activeBots = {}, routine = null,
       blockers.push({ kind: 'interactive_quiet_window', quiet_remaining_ms: quietRemainingMs,
         last_interactive_surface: priority.last_interactive_surface || null });
     }
-    // Scheduled intelligence is explicitly preemptible, is cancelled and drained by the shutdown
-    // coordinator before final persistence, and retries on the next scheduler pass. Blocking on
-    // this lane made deployability depend on catching a tiny idle gap between recurring background
-    // cycles. Human interactions, run lifecycles, meetings, and durable writes remain blockers.
-  }
-  if (behavioralFingerprints) {
-    const activeRuns = Array.isArray(behavioralFingerprints.runs)
-      ? behavioralFingerprints.runs.filter(run => run.status === 'active') : [];
-    const activeCount = Math.max(Number(behavioralFingerprints.report?.active) || 0,
-      activeRuns.length);
-    if (activeCount > 0) {
-      blockers.push({ kind: 'build_bound_behavioral_fingerprint', count: activeCount,
-        run_ids: activeRuns.map(run => run.id).filter(Boolean) });
-    }
-  }
-  if (runtimePerformance) {
+    // Optional background work is preemptible and drains during shutdown. Human interactions,
+    // run lifecycles, meetings, and durable writes remain blockers.
     const checkpointLane = runtimePerformance.background_work?.transcript_checkpoints || {};
     const laneWedged = transcriptCheckpointsWedged(checkpointLane);
     if (runtimePerformance.reliability?.status === 'action_required') {
@@ -220,12 +208,6 @@ async function checkDeployReadiness({
     fetchJson('/run-lock', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/admin/active-bots', { baseUrl: normalizedBase, apiKey, fetchImpl }),
     fetchJson('/routine', { baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000 }),
-    fetchJson('/consciousness-research/autopilot', {
-      baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000,
-    }),
-    fetchJson('/self-model/fingerprints', {
-      baseUrl: normalizedBase, apiKey, fetchImpl, timeoutMs: 90000,
-    }),
     fetchJson('/runtime/performance', { baseUrl: normalizedBase, apiKey, fetchImpl }),
   ]);
 
@@ -248,10 +230,8 @@ async function checkDeployReadiness({
   }
   const failed = probes.find(probe => probe.status === 'rejected');
   if (failed) throw failed.reason;
-  const [lock, activeBots, routine, researchAutopilot, behavioralFingerprints,
-    runtimePerformance] = probes.map(probe => probe.value);
-  return { ...assessDeployReadiness({ lock, activeBots, routine, researchAutopilot,
-    behavioralFingerprints, runtimePerformance }),
+  const [lock, activeBots, routine, runtimePerformance] = probes.map(probe => probe.value);
+  return { ...assessDeployReadiness({ lock, activeBots, routine, runtimePerformance }),
     checked_at: new Date().toISOString(),
     base_url: normalizedBase };
 }

@@ -2,15 +2,11 @@
 
 const DEFAULT_BASE_URL = 'https://pm-agent-production-c49e.up.railway.app';
 const DEFAULT_PATHS = Object.freeze([
-  '/self',
-  '/intelligence/dashboard-summary',
-  '/nora-bench',
-  '/self-model?allow_stale=1&view=dashboard',
-  '/consciousness-research/status',
-  '/consciousness-research/autopilot',
+  '/health',
+  '/run-lock',
+  '/admin/active-bots',
   '/runtime/performance',
   '/runtime-activity',
-  '/decision-traces?limit=20',
 ]);
 
 async function probePath(baseUrl, path, { apiKey, fetchImpl = globalThis.fetch,
@@ -28,7 +24,6 @@ async function probePath(baseUrl, path, { apiKey, fetchImpl = globalThis.fetch,
       diagnostics = {
         interactive_priority: runtime.interactive_priority,
         background_work: runtime.background_work,
-        research_projections: runtime.research_projections,
         process_resources: runtime.process_resources,
         hourly_lifecycle: runtime.hourly_lifecycle,
         reliability: runtime.reliability,
@@ -39,30 +34,6 @@ async function probePath(baseUrl, path, { apiKey, fetchImpl = globalThis.fetch,
           last_total_ms: runtime.persistence.last_total_ms,
           failures: runtime.persistence.failures,
         } : null,
-      };
-    } else if (response.ok && path === '/consciousness-research/autopilot') {
-      const runtime = JSON.parse(Buffer.from(body).toString('utf8'));
-      const cycle = runtime.background_intelligence_cycle;
-      diagnostics = {
-        background_intelligence_cycle: cycle ? {
-          state: cycle.state,
-          trigger: cycle.trigger,
-          stopped_reason: cycle.stopped_reason,
-          runtime_budget: cycle.runtime_budget,
-          step_timings: cycle.step_timings,
-          at: cycle.at,
-        } : null,
-        interactive_priority: runtime.interactive_priority,
-      };
-    } else if (response.ok && path.startsWith('/decision-traces')) {
-      const traceBody = JSON.parse(Buffer.from(body).toString('utf8'));
-      const traces = Array.isArray(traceBody) ? traceBody : traceBody.traces || traceBody.items || [];
-      diagnostics = {
-        interactive_latency: traces.filter(item => item.action === 'response_latency').map(item => ({
-          channel: item.channel, decision: item.decision, created: item.created || item.at || null,
-          latency_ms: item.outcome?.latency_ms, budget_ms: item.outcome?.budget_ms,
-          stages: item.outcome?.stages || null,
-        })),
       };
     }
     return {
