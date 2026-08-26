@@ -62,16 +62,6 @@ function parseRecallStatusEvent(event = {}, { now = new Date() } = {}) {
   return { bot_id: botId, code, updated_at: new Date(updatedAt).toISOString() };
 }
 
-function localMeetingUtterance(speaker, text, { now = new Date(), kind = 'local' } = {}) {
-  return {
-    speaker: clean(speaker) || 'Nora',
-    text: clean(text),
-    timestamp: new Date(now).toISOString(),
-    source: kind,
-    source_id: `${kind}:${crypto.randomUUID()}`,
-  };
-}
-
 function appendUniqueUtterance(transcript, utterance) {
   if (!Array.isArray(transcript) || !utterance?.text) return false;
   if (utterance.source_id && transcript.some(item => item?.source_id === utterance.source_id)) {
@@ -153,7 +143,6 @@ module.exports = {
   recallUtteranceSourceId,
   parseRecallTranscriptEvent,
   parseRecallStatusEvent,
-  localMeetingUtterance,
   appendUniqueUtterance,
   mergeKeyedTranscriptHistories,
   recordingStartedAt,

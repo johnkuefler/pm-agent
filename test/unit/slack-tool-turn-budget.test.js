@@ -41,11 +41,11 @@ test('a tool turn is budgeted separately but still traced as Slack', () => {
 });
 
 // Booking a meeting is read one calendar per attendee, find the gap, create the event, confirm it.
-// Slack was capped at four rounds while Zoom had six, and running out mid-sequence is
+// Slack used to be capped at four rounds, and running out mid-sequence is
 // indistinguishable from the work being impossible. The write lives in the tail.
-test('Slack gets as many tool rounds as Zoom', () => {
+test('Slack gets enough tool rounds for calendar scheduling', () => {
   assert.match(handler, /runClaudeToolLoop\(reqBody, anthropicHeaders, toolExecutors, 6, \{/,
-    'the Slack tool loop must not be tighter than the Zoom one');
+    'the Slack tool loop must cover multi-step calendar work');
   assert.doesNotMatch(handler, /runClaudeToolLoop\(reqBody, anthropicHeaders, toolExecutors, 4, \{/,
     'four rounds cannot cover a multi-attendee booking');
 });

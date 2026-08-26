@@ -2,9 +2,7 @@
 
 // First-delivery measurement for every human-facing surface.
 //
-// This lives beside the surfaces rather than inside one because all three report through it, and
-// because the budget a turn is measured against is surface policy: an 8 second chat reply, a 30
-// second tool turn that reads two calendars before booking, a 2 second spoken response.
+// This lives beside Slack because conversational and tool-using turns have different budgets.
 //
 // Two rules hold regardless of caller. Telemetry is strictly post-delivery, so a failure here can
 // never turn a successful response into a failed one. And a surface with no budget is not measured
@@ -24,7 +22,7 @@ function createInteractiveLatencyRecorder({ recordTrace }) {
         // The surface names the budget; the channel names where the turn happened. A tool turn is
         // budgeted apart from a chat reply but is still one Slack conversation to anything reading
         // traces by channel, rather than two half-populated ones.
-        channel: surface === 'realtime' ? 'meeting' : surface === 'slack-tools' ? 'slack' : surface,
+        channel: surface === 'slack-tools' ? 'slack' : surface,
         action: 'response_latency',
         decision: assessment.within_budget ? 'within_budget' : 'over_budget',
         confidence: 1,

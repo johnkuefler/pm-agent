@@ -64,8 +64,8 @@ function createRecallTranscriptRecovery({ listTranscripts, getTranscript, fetchB
 }
 
 function createRecallTranscriptRecoveryRuntime({ get, recallBase, apiKey, controlTimeoutMs,
-  listTranscripts, getTranscript, saveTranscript, sessions, chatSessions, checkpointStalled,
-  checkpointAttempts, persistedCounts, clearActiveBot, refreshRecentMeetings,
+  listTranscripts, getTranscript, saveTranscript, sessions, checkpointStalled,
+  checkpointAttempts, persistedCounts, refreshRecentMeetings,
   enqueuePostProcessing, logger = console }) {
   return createRecallTranscriptRecovery({
     listTranscripts,
@@ -81,8 +81,6 @@ function createRecallTranscriptRecoveryRuntime({ get, recallBase, apiKey, contro
       checkpointAttempts.delete(botId);
       persistedCounts.set(botId, transcript.length);
       delete sessions[botId];
-      delete chatSessions[botId];
-      clearActiveBot(botId);
       await refreshRecentMeetings();
       if (transcript.length) enqueuePostProcessing({ botId, ended, transcript, meetingMeta });
       logger.log?.(`Recovered and finalized Recall transcript ${botId} from ${source} (${transcript.length} utterances)`);

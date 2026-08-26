@@ -71,7 +71,7 @@ test('a stale connected status cannot hide a missing OAuth credential', async ()
   assert.match(tested.status_message, /saved credential is required/);
 });
 
-test('MCP manager discovers tools, hard-filters writes, and executes the same binding for every surface', async () => {
+test('MCP manager discovers tools, hard-filters writes, and executes Slack bindings', async () => {
   const { manager, calls } = fixture();
   const created = await manager.create({ name: 'Projects API', url: 'https://mcp.example.com/mcp', auth_type: 'none' });
   const tested = await manager.testConnection(created.id);
@@ -79,11 +79,7 @@ test('MCP manager discovers tools, hard-filters writes, and executes the same bi
   assert.equal(tested.tools.length, 2);
   assert.equal(tested.tools.filter(tool => tool.allowed).length, 1);
   const slack = manager.bindings({ financialApproved: false });
-  const zoom = manager.bindings({ financialApproved: false });
-  const voice = manager.bindings({ financialApproved: false, voice: true });
   assert.equal(slack.claudeTools.length, 1);
-  assert.equal(zoom.claudeTools[0].name, slack.claudeTools[0].name);
-  assert.equal(voice.openaiTools[0].name, slack.claudeTools[0].name);
   await slack.executors[slack.claudeTools[0].name]({ q: 'launch' });
   assert.deepEqual(calls[0], { name: 'find_projects', arguments: { q: 'launch' } });
 });
@@ -169,15 +165,15 @@ test('bearer and custom-header credentials are attached only inside the transpor
   assert.doesNotMatch(JSON.stringify(manager.list()), /bearer-value|token-value|secret-value/);
 });
 
-test('voice remains read-only even when a connection explicitly allows writes elsewhere', async () => {
+test('read-only bindings omit writes even when a connection allows them', async () => {
   const { manager } = fixture();
   const created = await manager.create({ name: 'Writable', url: 'https://mcp.example.com/mcp', auth_type: 'none', access_mode: 'full' });
   await manager.testConnection(created.id);
   const regular = manager.bindings({ allowWrites: true });
-  const voice = manager.bindings({ voice: true });
+  const readOnly = manager.bindings();
   assert.equal(regular.claudeTools.length, 2);
-  assert.equal(voice.openaiTools.length, 1);
-  assert.doesNotMatch(voice.openaiTools[0].name, /delete/);
+  assert.equal(readOnly.claudeTools.length, 1);
+  assert.doesNotMatch(readOnly.claudeTools[0].name, /delete/);
 });
 
 test('Fleet writes require a current request-scoped allowlist even with full connection access', async () => {

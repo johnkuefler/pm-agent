@@ -3,7 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { parseRecallTranscriptEvent, parseRecallStatusEvent, localMeetingUtterance,
+const { parseRecallTranscriptEvent, parseRecallStatusEvent,
   appendUniqueUtterance, mergeKeyedTranscriptHistories, recallDownloadToUtterances,
   mergeAuthoritativeRecallTranscript } = require('../../src/surfaces/meeting/recall-events');
 
@@ -42,13 +42,6 @@ test('Recall transcript replays and revisions retain one stable source identity'
   assert.equal(appendUniqueUtterance(transcript, first.utterance), true);
   assert.equal(appendUniqueUtterance(transcript, replay.utterance), false);
   assert.equal(transcript.length, 1);
-});
-
-test('local meeting utterances get unique durable identities', () => {
-  const first = localMeetingUtterance('Nora', 'One');
-  const second = localMeetingUtterance('Nora', 'One');
-  assert.match(first.source_id, /^local:/);
-  assert.notEqual(first.source_id, second.source_id);
 });
 
 test('current and legacy Recall completion events both parse', () => {

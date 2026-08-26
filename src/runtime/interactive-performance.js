@@ -6,15 +6,11 @@ const PROTOCOL_VERSION = 14;
 const BUDGET_MS = Object.freeze({
   slack: 8000,
   'slack-tools': 30000,
-  'zoom-chat': 6000,
-  realtime: 2000,
 });
 // Prompt ceilings protect enough request and thread context for project and calendar work.
 const PROMPT_BUDGET_CHARS = Object.freeze({
   slack: 115000,
   'slack-tools': 115000,
-  'zoom-chat': 40000,
-  realtime: 45000,
 });
 const INTERACTIVE_QUIET_WINDOW_MS = 15000;
 const INTERACTIVE_ACTIVE_RETRY_MS = 30000;

@@ -48,25 +48,13 @@
     <!-- Meeting Tab -->
     <div id="page-meeting" class="page">
       <div class="section">
-        <h2>Send Nora to a Meeting</h2>
+        <h2>Send Nora to transcribe a meeting</h2>
+        <p style="color:var(--muted);font-size:12px;line-height:1.5;margin-bottom:12px;">Nora joins as a silent transcription bot. She does not speak, post chat, or inspect screen shares.</p>
         <input id="url" placeholder="Paste Zoom, Google Meet, or Teams meeting link..." />
-        <select id="project-hint" style="width:100%;margin-top:8px;padding:10px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;font-size:14px;">
-          <option value="">No project hint (general meeting)</option>
-        </select>
-        <div style="font-size:12px;color:var(--muted);margin-top:4px;">Optional. Adds the selected project's local details to this meeting only.</div>
-        <textarea id="join-mandate" placeholder="Mandate (optional): what she's there to accomplish in your place. e.g. 'Get them to commit to a launch date. Don't give ground on the QA window. If pricing comes up, take it back to me.'" style="margin-top:8px;min-height:60px;"></textarea>
-        <div style="font-size:12px;color:var(--muted);margin-top:4px;">The explicit agenda Nora should follow if she is asked to participate in this meeting.</div>
         <div class="row" style="margin-top:8px;">
           <button class="btn btn-primary" onclick="joinMeeting()">Send Nora</button>
         </div>
         <div id="join-status" class="toast"></div>
-        <div id="mute-controls" style="margin-top: 14px; display: none;">
-          <button id="mute-btn" class="btn" onclick="toggleMute()">Mute Nora</button>
-          <span id="mute-status" style="margin-left: 8px; font-size: 13px; color: var(--muted);"></span>
-          <div class="toggle-row">
-            <div class="toggle-pill" id="pill-oneonone" onclick="toggleFlag('one-on-one')" title="Respond to every turn without her name - best for a 1:1"><span class="dot"></span> 1:1 mode</div>
-          </div>
-        </div>
       </div>
 
       <div class="section">
@@ -137,7 +125,7 @@
           <button class="btn btn-success btn-sm" onclick="loadMcpConnections()">Refresh</button>
         </h2>
         <p style="color:var(--muted); font-size:12px; line-height:1.5; margin-bottom:12px;">
-          Remote MCP servers Nora can use from <strong>Slack, Zoom chat, and Zoom voice</strong>. Credentials and full URLs are encrypted and never returned to the browser. Connections default to hard read-only filtering; explicitly enable write-capable tools only when you intend to delegate that authority.
+          Remote MCP servers Nora can use from <strong>Slack</strong>. Credentials and full URLs are encrypted and never returned to the browser. Connections default to hard read-only filtering; explicitly enable write-capable tools only when you intend to delegate that authority.
         </p>
         <div id="mcp-list">Loading…</div>
         <div style="margin-top:14px; border-top:1px solid var(--surface-2); padding-top:12px;">
@@ -186,7 +174,7 @@
               <option value="never">Never defer (always run live)</option>
             </select>
           </label>
-          <div style="font-size:12px; color:var(--muted); margin-top:4px;">Deferred tools run in a background job and post their result back to the thread a few minutes later, so a live Slack/Zoom turn never times out waiting.</div>
+          <div style="font-size:12px; color:var(--muted); margin-top:4px;">Deferred tools run in a background job and post their result back to the Slack thread a few minutes later.</div>
           <div class="row" style="margin-top:8px;">
             <button id="mcp-save-btn" class="btn btn-primary btn-sm" onclick="saveMcpConnection()">Add</button>
             <button class="btn btn-sm" onclick="resetMcpForm()" style="background:var(--surface-2); color:var(--muted); border:1px solid var(--border);">Cancel</button>

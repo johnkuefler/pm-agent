@@ -33,7 +33,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
   const backgroundAdmission = snapshot.background_admission || {};
   const responsiveness = snapshot.interactive_responsiveness || {};
   const entityWrites = snapshot.entity_writes || {};
-  const realtimeTransport = snapshot.realtime_transport || {};
   const deferredJobs = snapshot.deferred_jobs || {};
   const processHealth = snapshot.process_health || {};
   const processResources = snapshot.process_resources || {};
@@ -258,32 +257,6 @@ function assessRuntimeReliability(snapshot = {}, { now = Date.now() } = {}) {
     degraded.push({ code: 'entity_write_backlog', count: Number(entityWrites.pending),
       message: 'Durable entity writes are accumulating.' });
   }
-  const recentStaleSockets = (realtimeTransport.recent_stale || []).filter(item => {
-    const at = new Date(item?.at || 0).getTime();
-    return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
-  });
-  if (recentStaleSockets.length >= 3) {
-    actionRequired.push({ code: 'repeated_realtime_transport_stalls', count: recentStaleSockets.length,
-      message: 'The live meeting transport repeatedly became half-open recently.' });
-  } else if (recentStaleSockets.length) {
-    degraded.push({ code: 'realtime_transport_recovered', count: recentStaleSockets.length,
-      message: 'A half-open live meeting socket was detected and recycled recently.' });
-  }
-  const recentStuckVoiceResponses = (realtimeTransport.response_watchdog?.recent_timeouts || [])
-    .filter(item => {
-      const at = new Date(item?.at || 0).getTime();
-      return Number.isFinite(at) && at > 0 && assessedAt - at <= RECENT_SLOW_WINDOW_MS;
-    });
-  if (recentStuckVoiceResponses.length >= 3) {
-    actionRequired.push({ code: 'repeated_realtime_response_stalls',
-      count: recentStuckVoiceResponses.length,
-      message: 'Live meeting responses repeatedly exceeded their terminal deadline.' });
-  } else if (recentStuckVoiceResponses.length) {
-    degraded.push({ code: 'realtime_response_recovered',
-      count: recentStuckVoiceResponses.length,
-      message: 'A stuck live meeting response was cancelled and its turn gate recovered.' });
-  }
-
   if (!Number(responsiveness.current_protocol_samples)) {
     observations.push({ code: 'interactive_samples_collecting',
       message: 'The current response-latency protocol is still collecting fresh samples.' });

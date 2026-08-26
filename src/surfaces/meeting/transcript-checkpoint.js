@@ -34,7 +34,7 @@ function transcriptStartsWith(transcript, prefix) {
 function createMeetingTranscriptHydrator({ getTranscript, persistedCounts,
   episodeRecordedCounts, episodePending }) {
   return async function ensureMeetingTranscriptHydrated(botId, session) {
-    if (!session || session.dummy || session.transcriptHydrated === true) return session;
+    if (!session || session.transcriptHydrated === true) return session;
     if (session.transcriptHydrationPromise) return session.transcriptHydrationPromise;
     const hydration = (async () => {
       const durable = await getTranscript(botId);
@@ -49,10 +49,6 @@ function createMeetingTranscriptHydrator({ getTranscript, persistedCounts,
       if (episodePending.has(botId)) episodePending.set(botId, session.transcript);
       const recent = session.transcript.slice(-20);
       session.buffer = recent.map(item => `${item.speaker || 'Participant'}: ${item.text || ''}`);
-      const retainedSpeakers = recent.map(item => item.speaker)
-        .filter(speaker => speaker && !/^(Nora|Nora \(muted\)|Nora \(chat\)|Screen share|Participant)$/i.test(speaker));
-      session.speakersHeard = new Set(retainedSpeakers);
-      session.knownSpeakers = new Set(retainedSpeakers);
       session.transcriptHydrated = true;
       return session;
     })();

@@ -53,7 +53,8 @@ test('core task, meeting, transcript, and settings controls remain visible', () 
   const core = fs.readFileSync(path.join(root, 'public/js/dashboard-core.js'), 'utf8');
   const meeting = fs.readFileSync(path.join(root, 'public/js/dashboard-meeting.js'), 'utf8');
   assert.match(core, /Dashboard request timed out/);
-  assert.match(meeting, /if \(meetingStatusRefreshInFlight\) return;/);
+  assert.match(meeting, /Nora is joining silently to transcribe/);
+  assert.doesNotMatch(meeting, /mute|one-on-one|mandate|project-hint/i);
   assert.doesNotMatch(meeting, /setInterval\(/);
 });
 

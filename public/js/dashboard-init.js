@@ -1,6 +1,6 @@
 function enhanceFormFields() {
       const labels = {
-        url:'Meeting link','project-hint':'Project context','join-mandate':'Meeting mandate',
+        url:'Meeting link',
         'new-task-action':'Task','new-task-assignee':'Assignee','new-task-due':'Due note',
         'new-task-scheduled':'Schedule','new-task-recurrence':'Recurrence',
         'new-approved-userid':'Slack user ID','new-approved-name':'Display name'

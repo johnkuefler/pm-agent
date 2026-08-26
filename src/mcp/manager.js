@@ -468,21 +468,20 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
     catch (error) { await invalidateClient(connectionId); throw error; }
   }
 
-  function bindings({ financialApproved = false, voice = false, allowWrites = false, fleetAuthority = null } = {}) {
-    const claudeTools = [], openaiTools = [], executors = {}, inventory = [], meta = {};
+  function bindings({ financialApproved = false, allowWrites = false, fleetAuthority = null } = {}) {
+    const claudeTools = [], executors = {}, inventory = [], meta = {};
     for (const connection of listRaw()) {
       if (connection.enabled === false || connection.status !== 'connected' || (connection.financial && !financialApproved)) continue;
       for (const tool of connection.tools || []) {
         if (!toolIsAllowed(connection, tool, fleetAuthority)) continue;
         const writeCapable = toolIsWriteCapable(tool);
-        if ((voice || !allowWrites) && writeCapable) continue;
+        if (!allowWrites && writeCapable) continue;
         const name = safeToolName(connection, tool.name);
         const fleetWriteNotice = isFleetConnection(connection) && writeCapable
           ? ' Use only for the explicit request in the current verified Slack turn. Provider success is copied to John.' : '';
         const description = `[${connection.name}] ${tool.description || tool.name}${fleetWriteNotice}`.slice(0, 1000);
         const schema = tool.inputSchema || { type: 'object', properties: {} };
         claudeTools.push({ name, description, input_schema: schema });
-        openaiTools.push({ type: 'function', name, description, parameters: schema });
         executors[name] = (args, options = {}) => callTool(connection.id, tool.name, args,
           { timeout: options.timeoutMs || 16000, signal: options.signal, fleetAuthority });
         // meta lets a live turn recognize a deferred tool and enqueue it (by connection + real
@@ -492,7 +491,7 @@ function createMcpManager({ loadConnections, saveConnections, encryptionSecret, 
           access_mode: isFleetConnection(connection) && writeCapable ? 'request_scoped' : (connection.access_mode || 'read_only'), deferred: meta[name].deferred });
       }
     }
-    return { claudeTools, openaiTools, executors, inventory, meta };
+    return { claudeTools, executors, inventory, meta };
   }
 
   return {

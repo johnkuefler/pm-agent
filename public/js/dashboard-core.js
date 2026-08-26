@@ -108,7 +108,6 @@
       closeCommandPalette();
       if (name === 'tasks') loadTasks();
       if (name === 'meeting') {
-        checkMuteState();
         loadTranscripts();
         loadActiveBots();
         loadScheduledBots();

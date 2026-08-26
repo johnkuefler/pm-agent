@@ -1,8 +1,8 @@
 # Nora
 
 A production AI project-management agent for LimeLight Marketing. Node/Express on Railway,
-PostgreSQL 18 + pgvector, a Slack app, Recall.ai meeting attendance, a realtime voice surface, and
-an hourly autonomous loop. Real people depend on this during their workday, so correctness and
+PostgreSQL 18 + pgvector, a Slack app, Recall.ai meeting transcription, and an hourly scheduled
+task loop. Real people depend on this during their workday, so correctness and
 recoverability outrank cleverness everywhere in this repo.
 
 ## Writing rules
