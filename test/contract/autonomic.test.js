@@ -6,6 +6,7 @@ const path = require('node:path');
 const root = path.resolve(__dirname, '../..');
 const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
 const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
+const harness = fs.readFileSync(path.join(root, 'cowork-prompt.md'), 'utf8');
 
 test('scheduled work executes only explicit due tasks', () => {
   for (const capability of [
@@ -18,6 +19,15 @@ test('scheduled work executes only explicit due tasks', () => {
   assert.match(routine, /Deliver only when requested/);
   assert.match(routine, /Do not send project alerts, blocker notices, status nudges/);
   assert.doesNotMatch(routine, /Maintain project plans|Reconcile active Teamwork projects/);
+});
+
+test('scheduled Slack delivery is bot-only and task-scoped', () => {
+  for (const source of [routine, cowork, harness]) {
+    assert.match(source, /POST \/tasks\/:id\/deliver/);
+    assert.match(source, /Never (?:send Slack through|use) a connected Slack tool/i);
+  }
+  assert.match(routine, /posts as the Nora bot/i);
+  assert.match(routine, /Do not send a second message/i);
 });
 
 test('research and novelty work are outside Nora role', () => {

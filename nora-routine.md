@@ -18,7 +18,11 @@ run lock, stop.
 - Read only the provider data needed to complete or verify that instruction.
 - Do not perform adjacent cleanup, project reconciliation, status chasing, risk discovery, or
   unsolicited follow-up.
-- Use the connected Teamwork, calendar, Slack, meeting, or file tools needed for the task.
+- Use the connected Teamwork, calendar, meeting, or file tools needed for the task.
+- Never use a connected Slack tool, Slack MCP, Claude Slack integration, or user account. For every
+  scheduled Slack result, call `POST /tasks/:id/deliver` with the final text. This task-scoped API
+  chooses the recorded destination, posts as the Nora bot, stores the Slack receipt, and completes
+  the task in one operation.
 - Verify every external write before marking the task complete.
 - If the result is uncertain, leave the task pending or blocked and record the uncertainty.
 - Roll recurring tasks forward only after the current occurrence reaches a terminal result.
@@ -28,6 +32,8 @@ run lock, stop.
 - Send a result only when the task explicitly names a delivery destination or asks for a message,
   summary, invitation, comment, or document.
 - Reply only to the requester or the destination named in the task.
+- Send one complete message. Do not send a second message because a table or other formatting looks
+  different after delivery; the bot delivery layer handles Slack formatting.
 - Do not send project alerts, blocker notices, status nudges, run summaries, or quiet-run updates
   on Nora's own initiative.
 

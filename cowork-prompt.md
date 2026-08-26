@@ -52,6 +52,10 @@ content in order. Use `GET /prompt` for Nora's current voice and role. Use
 9. Read existing provider records before creating or posting to prevent duplicates.
 10. Send a message or summary only when the scheduled task explicitly requests delivery and names
     its recipient or destination.
+11. Never send Slack through a connected Slack tool, Slack MCP, Claude Slack integration, or user
+    account. Those routes are retired. For every scheduled Slack result, call the task-scoped
+    `POST /tasks/:id/deliver` API. The server fixes the destination, posts as the Nora bot, stores
+    Slack's receipt, and completes the task. Do not send a second message to repair formatting.
 
 Research, browsing for novelty, gifting, shopping, dreams, play, identity work, and consciousness
 experiments are outside this scheduled loop.

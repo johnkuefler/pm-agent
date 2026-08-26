@@ -26,9 +26,55 @@ function cleanTaskResult(value) {
   };
 }
 
+function taskSlackDestination(task) {
+  const fixed = String(task?.metadata?.destination_channel || '').trim();
+  if (fixed) return { channel: fixed, thread_ts: null };
+  const source = String(task?.source_channel || '');
+  if (!source.startsWith('slack:')) return null;
+  const channel = source.slice('slack:'.length).trim();
+  return channel ? { channel, thread_ts: String(task.source_thread_ts || '').trim() || null } : null;
+}
+
 function registerTaskRoutes(app, deps) {
   const { requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
-    onTaskCreated, onTaskCompleted, onTaskDeleted } = deps;
+    onTaskCreated, onTaskCompleted, onTaskDeleted, deliverSlack } = deps;
+  const deliveryChains = new Map();
+
+  function finishTask(tasks, task, resultValue) {
+    if (resultValue) task.result = cleanTaskResult(resultValue);
+    const completedAt = new Date().toISOString();
+    if (task.recurrence) {
+      const next = computeNextRun(task.recurrence, new Date());
+      if (next) {
+        if (task.delivery) task.last_delivery = task.delivery;
+        delete task.delivery;
+        task.last_run = completedAt;
+        task.scheduled_for = next;
+        task.completed = null;
+        task.status = 'pending';
+        saveTasks(tasks);
+        if (onTaskCompleted) onTaskCompleted(task, { recurring: true, completed_at: completedAt });
+        console.log(`Recurring task fired and rolled: ${task.id} ${task.action} -> next ${next}`);
+        return { recurring: true, rolled_to: next };
+      }
+      console.warn(`Recurring task ${task.id} has unparseable recurrence "${task.recurrence}"; completing as one-shot`);
+    }
+    task.status = 'done';
+    task.completed = completedAt;
+    saveTasks(tasks);
+    if (onTaskCompleted) onTaskCompleted(task, { recurring: false, completed_at: completedAt });
+    console.log('Task completed:', task.id, task.action);
+    return { recurring: false, rolled_to: null };
+  }
+
+  function withDeliveryLock(taskId, operation) {
+    const previous = deliveryChains.get(taskId) || Promise.resolve();
+    const current = previous.then(operation, operation);
+    const tail = current.then(() => {}, () => {});
+    deliveryChains.set(taskId, tail);
+    tail.then(() => { if (deliveryChains.get(taskId) === tail) deliveryChains.delete(taskId); });
+    return current;
+  }
 
   // Task queue API
   app.get('/tasks', requireAuth, (req, res) => {
@@ -92,30 +138,59 @@ function registerTaskRoutes(app, deps) {
     } catch (error) {
       return res.status(400).json({ error: error.message });
     }
-    const completedAt = new Date().toISOString();
-    // Recurring tasks recycle: same row, next scheduled_for, status back to pending.
-    // last_run records the most recent completion for audit.
-    if (task.recurrence) {
-      const next = computeNextRun(task.recurrence, new Date());
-      if (next) {
-        task.last_run = completedAt;
-        task.scheduled_for = next;
-        task.completed = null;
-        task.status = 'pending';
-      saveTasks(tasks);
-      if (onTaskCompleted) onTaskCompleted(task, { recurring: true, completed_at: completedAt });
-        console.log(`🔁 Recurring task fired and rolled: ${task.id} ${task.action} → next ${next}`);
-        return res.json({ ok: true, task, rolled_to: next });
-      }
-      // If recurrence somehow fails to compute, fall through to a normal completion.
-      console.warn(`⚠️ Recurring task ${task.id} has unparseable recurrence "${task.recurrence}" — completing as one-shot`);
+    const completion = finishTask(tasks, task, task.result || null);
+    res.json({ ok: true, task, ...(completion.rolled_to ? { rolled_to: completion.rolled_to } : {}) });
+  });
+
+  // Scheduled Slack delivery is fixed to the task's recorded destination and always uses the
+  // Nora bot. The caller cannot select an account or redirect the message. A successful Slack
+  // receipt and task completion are stored together, and concurrent retries serialize by task id.
+  app.post('/tasks/:id/deliver', requireAuth, async (req, res) => {
+    try {
+      const outcome = await withDeliveryLock(req.params.id, async () => {
+        const tasks = loadTasks();
+        const task = tasks.find(t => t.id === req.params.id);
+        if (!task) return { status: 404, body: { error: 'task not found' } };
+        if (task.delivery?.provider === 'slack_bot' && task.delivery.ts) {
+          return { status: 200, body: { ok: true, already: true, task,
+            delivery: task.delivery } };
+        }
+        if (task.status === 'done') {
+          return { status: 409, body: { error: 'task is already complete without a bot delivery receipt' } };
+        }
+        if (!isTaskEligibleNow(task, new Date())) {
+          return { status: 409, body: { error: 'task is not due yet' } };
+        }
+        const text = String(req.body?.text || '').trim();
+        if (!text) return { status: 400, body: { error: 'text is required' } };
+        const destination = taskSlackDestination(task);
+        if (!destination) {
+          return { status: 409, body: { error: 'task has no fixed Slack destination or Slack origin' } };
+        }
+        if (typeof deliverSlack !== 'function') {
+          return { status: 503, body: { error: 'Nora bot delivery is unavailable' } };
+        }
+        const receipt = await deliverSlack(destination.channel, text, destination.thread_ts);
+        if (!receipt?.ok || !receipt.ts) {
+          return { status: 502, body: { error: `Slack bot delivery failed: ${receipt?.error || 'unverified provider response'}` } };
+        }
+        const delivery = {
+          provider: 'slack_bot', channel: receipt.channel || destination.channel,
+          thread_ts: destination.thread_ts, ts: receipt.ts, delivered_at: new Date().toISOString(),
+        };
+        task.delivery = delivery;
+        const completion = finishTask(tasks, task, {
+          status: 'completed',
+          summary: String(req.body?.summary || text).slice(0, 4000),
+          completed_by: 'Nora bot delivery',
+        });
+        return { status: 200, body: { ok: true, task, delivery,
+          ...(completion.rolled_to ? { rolled_to: completion.rolled_to } : {}) } };
+      });
+      return res.status(outcome.status).json(outcome.body);
+    } catch (error) {
+      return res.status(500).json({ error: String(error?.message || error).slice(0, 500) });
     }
-    task.status = 'done';
-    task.completed = completedAt;
-  saveTasks(tasks);
-  if (onTaskCompleted) onTaskCompleted(task, { recurring: false, completed_at: completedAt });
-    console.log('✅ Task completed:', task.id, task.action);
-    res.json({ ok: true, task });
   });
 
   app.patch('/tasks/:id/result', requireAuth, (req, res) => {
@@ -162,4 +237,4 @@ function registerTaskRoutes(app, deps) {
   });
 }
 
-module.exports = { registerTaskRoutes, cleanTaskResult };
+module.exports = { registerTaskRoutes, cleanTaskResult, taskSlackDestination };

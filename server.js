@@ -4487,6 +4487,7 @@ registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects });
 
 registerTaskRoutes(app, {
   requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
+  deliverSlack: postSlackMessageReceipt,
 });
 
 let _hourlyFallbackInFlight = false;
