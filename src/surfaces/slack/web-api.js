@@ -5,7 +5,8 @@
 // above stays pure and the handler above that stays about conversation rather than transport.
 
 const axios = require('axios');
-const { SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./table-format');
+const { SLACK_TABLE_FORMATTING_INSTRUCTION, normalizeSlackMrkdwn,
+  formatSlackMessagePayload } = require('./table-format');
 
 // Resolve a Slack user ID to a real display name via users.info. Cached in-memory for
 // 24h so repeat lookups within the same hot session don't hammer Slack's API. Returns
@@ -299,5 +300,6 @@ module.exports = {
   resolveChannelName,
   resolveChannelNames,
   SLACK_TABLE_FORMATTING_INSTRUCTION,
+  normalizeSlackMrkdwn,
   formatSlackMessagePayload,
 };

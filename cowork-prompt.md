@@ -52,6 +52,9 @@ content in order. Use `GET /prompt` for Nora's current voice and role. Use
 9. Read existing provider records before creating or posting to prevent duplicates.
 10. Send a message or summary only when the scheduled task explicitly requests delivery and names
     its recipient or destination.
+    Treat that destination as a stakeholder inbox, not a run log. Lead with the result, blocker, or
+    decision. Keep an ordinary update under 80 words and 600 characters, omit technical process
+    narration and repeated status, and use Slack mrkdwn with single asterisks for bold.
 11. Never send Slack through a connected Slack tool, Slack MCP, Claude Slack integration, or user
     account. Those routes are retired. For every scheduled Slack result, call the task-scoped
     `POST /tasks/:id/deliver` API. The server fixes the destination, posts as the Nora bot, stores

@@ -11,7 +11,42 @@ const MAX_TABLE_CHARS = 10000;
 const MAX_SECTION_CHARS = 2900;
 const MAX_MESSAGE_BLOCKS = 50;
 
-const SLACK_TABLE_FORMATTING_INSTRUCTION = '\n\nSLACK FORMATTING: When the answer genuinely compares at least two records across at least two labeled columns, use a compact Markdown pipe table with a header separator row. Do not wrap the table in a code fence. The Slack delivery layer renders valid pipe tables as native tables. Use ordinary prose or bullets for everything else.';
+const SLACK_TABLE_FORMATTING_INSTRUCTION = '\n\nSTAKEHOLDER COMMUNICATION: Send a message only when it answers the request, reports a new result or blocker, or asks for one decision. Lead with that outcome, blocker, or question. Keep an ordinary update under 80 words and 600 characters, with one message job and no process narration. A requested detailed summary or paste-ready deliverable may be longer. Use short paragraphs and useful bullets. Write Slack mrkdwn, not standard Markdown: bold with *single asterisks*, never **double asterisks**. Use a short bold line instead of a Markdown # heading. When the answer genuinely compares at least two records across at least two labeled columns, use a compact Markdown pipe table with a header separator row. Do not wrap the table in a code fence. The Slack delivery layer renders valid pipe tables as native tables.';
+
+function normalizeSlackMrkdwn(value) {
+  const protectedCode = [];
+  const protect = match => {
+    const token = `\uE000${protectedCode.length}\uE001`;
+    protectedCode.push(match);
+    return token;
+  };
+  let text = String(value || '').replace(/\r\n?/g, '\n');
+  text = text.replace(/```[\s\S]*?(?:```|$)/g, protect);
+  text = text.replace(/`[^`\n]*`/g, protect);
+  text = text
+    .replace(/!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<$2|$1>');
+  // Provider output can contain underscores or asterisks inside URLs and Slack entity tokens.
+  // Protect them before rewriting emphasis so formatting repair never changes the destination.
+  text = text.replace(/<[^>\n]+>/g, protect);
+  text = text.replace(/https?:\/\/[^\s<]+/g, protect);
+
+  text = text
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^([ \t]{0,3})#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/gm, '$1*$2*')
+    .replace(/^(\s*)[-+*]\s+(?=\S)/gm, '$1• ')
+    .replace(/\*\*\*(?=\S)([^\n]*?\S)\*\*\*/g, '*_$1_*')
+    .replace(/___(?=\S)([^\n]*?\S)___/g, '*_$1_*')
+    .replace(/\*\*(?=\S)([^\n]*?\S)\*\*/g, '*$1*')
+    .replace(/__(?=\S)([^\n]*?\S)__/g, '*$1*')
+    .replace(/~~(?=\S)([^\n]*?\S)~~/g, '~$1~')
+    .replace(/\u2014/g, '-')
+    .replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, '\n\n')
+    .trim();
+
+  text = text.replace(/\uE000(\d+)\uE001/g, (_match, index) => protectedCode[Number(index)] || '');
+  return text;
+}
 
 function splitMarkdownTableRow(line) {
   let source = String(line || '').trim();
@@ -53,7 +88,7 @@ function cleanCell(value) {
   let text = String(value || '').trim().replace(/<br\s*\/?\s*>/gi, '\n');
   text = text.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '$1 ($2)');
   text = text.replace(/<(https?:\/\/[^>|]+)\|([^>]+)>/g, '$2 ($1)');
-  const wrappers = [['**', '**'], ['__', '__'], ['~~', '~~'], ['`', '`']];
+  const wrappers = [['**', '**'], ['__', '__'], ['~~', '~~'], ['*', '*'], ['_', '_'], ['~', '~'], ['`', '`']];
   for (const [start, end] of wrappers) {
     if (text.startsWith(start) && text.endsWith(end) && text.length > start.length + end.length) {
       text = text.slice(start.length, -end.length).trim();
@@ -171,13 +206,14 @@ function markdownTablesToBlocks(text) {
 }
 
 function formatSlackMessagePayload(text) {
-  const fallback = String(text || '').trim();
+  const fallback = normalizeSlackMrkdwn(text);
   const blocks = markdownTablesToBlocks(fallback);
   return blocks ? { text: fallback, blocks } : { text: fallback };
 }
 
 module.exports = {
   SLACK_TABLE_FORMATTING_INSTRUCTION,
+  normalizeSlackMrkdwn,
   splitMarkdownTableRow,
   markdownTablesToBlocks,
   formatSlackMessagePayload,

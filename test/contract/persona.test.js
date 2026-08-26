@@ -10,6 +10,8 @@ test('Nora stays specific, human, and bounded to operational PM work', () => {
     "project-management assistant", 'casual, warm, quick', 'Lead with the answer',
     'Read before writing', 'Teamwork is the project system of record',
     'primary job is to listen and preserve a good transcript', 'Research programs',
+    'Treat Slack, Teamwork comments, and other human inboxes as places for useful outcomes',
+    'ten seconds to read', 'Use Slack mrkdwn',
   ]) assert.match(prompt, new RegExp(anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'));
   const server = readServerSource();
   assert.doesNotMatch(server, /\[Your takes:/,

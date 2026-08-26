@@ -80,7 +80,8 @@ const { createSlackConversationAudit, slackAuditInteractionId, shouldAuditSlackI
 const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread, fetchSlackChannelHistory,
   buildSlackThreadHistory, resolveSlackChannelByName, resolveSlackUserByName,
   postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
-  resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
+  resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, normalizeSlackMrkdwn,
+  formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
 const interactivePerformance = require('./src/runtime/interactive-performance');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
@@ -841,8 +842,17 @@ ${now.toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'full', 
       `- ${project.name}: ${String(project.details || project.status || 'No local summary').slice(0, 800)}`).join('\n');
   }
 
-  volatile += `\n\n[Slack behavior]
-Use short paragraphs. Put the answer or completed action first. State uncertainty plainly.`;
+  volatile += `\n\n[Stakeholder communication]
+Send only a useful answer, new result, actionable blocker, requested deliverable, material correction,
+or one decision question. Otherwise return [silence]. Give the message one job and lead with it.
+Ordinary updates stay under 80 words and 600 characters. A requested detailed summary or paste-ready
+deliverable may be longer, but must use short sections and useful bullets. Omit process narration,
+internal tools, repeated status, and promises to check again.
+
+[Slack behavior]
+Use short paragraphs. Put the answer or completed action first. State uncertainty plainly. Use Slack
+mrkdwn with *single asterisks* for bold, never **double asterisks**. Use a short bold line instead of
+a Markdown heading, and use bullets for three or more parallel items.`;
 
   if (opts.cacheSplit) {
     return {
@@ -4060,10 +4070,11 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     // Burst delivery: a casual multi-beat reply can arrive as 2-3 short messages (the model
     // puts <split> on its own line between beats), like a person double-texting, instead of
     // one structured wall. Strip empties, cap at 3, small human-ish pause between sends.
-    const segments = reply === candidateForGuard
+    const segments = (reply === candidateForGuard
       ? candidateSegments
       : slackDeliverySegments(reply,
-        { boundedConversation: conversationPolicy.boundedConversation });
+        { boundedConversation: conversationPolicy.boundedConversation }))
+      .map(normalizeSlackMrkdwn).filter(Boolean);
     reply = segments.join('\n'); // history/log/scrub bookkeeping never sees the token
     console.log('🤖 Nora (Slack):', reply);
     history.push({ role: 'assistant', content: reply });

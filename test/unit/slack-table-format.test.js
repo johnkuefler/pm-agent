@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 
 const { sourceRegion } = require('../helpers/server-source');
 const { splitMarkdownTableRow, markdownTablesToBlocks,
-  formatSlackMessagePayload } = require('../../src/surfaces/slack/table-format');
+  normalizeSlackMrkdwn, formatSlackMessagePayload } = require('../../src/surfaces/slack/table-format');
 const { postSlackMessage, postSlackMessageReceipt } = require('../../src/surfaces/slack/web-api');
 
 test('Slack pipe-table rows preserve escaped pipes and inline code pipes', () => {
@@ -58,6 +58,51 @@ test('Slack Web API delivery uses native table blocks without losing thread or f
   assert.equal(calls[0].payload.text, text);
   assert.equal(calls[0].payload.thread_ts, '1712345.0001');
   assert.equal(calls[0].payload.blocks[0].type, 'table');
+});
+
+test('Slack meeting summaries render headings, bold labels, bullets, and spacing cleanly', () => {
+  const source = [
+    "Here's the latest meeting summary:",
+    '',
+    '**Meeting \u2014 Aug 26, 2026**',
+    '**Speakers:** Kinsey Landry, Kayla Clark',
+    '',
+    '',
+    '## Key topics',
+    '',
+    '- **BI onboarding** \u2014 Technical setup starts tomorrow.',
+    '- **UAT** \u2014 Testing runs for four weeks.',
+  ].join('\n');
+  const formatted = normalizeSlackMrkdwn(source);
+  assert.equal(formatted, [
+    "Here's the latest meeting summary:",
+    '',
+    '*Meeting - Aug 26, 2026*',
+    '*Speakers:* Kinsey Landry, Kayla Clark',
+    '',
+    '*Key topics*',
+    '',
+    '• *BI onboarding* - Technical setup starts tomorrow.',
+    '• *UAT* - Testing runs for four weeks.',
+  ].join('\n'));
+  assert.doesNotMatch(formatted, /\*\*/);
+  assert.doesNotMatch(formatted, /\n{3,}/);
+});
+
+test('Slack formatting repair preserves fenced and inline code exactly', () => {
+  const source = [
+    '**Result:** use `**literal**` here.',
+    '```md',
+    '**literal in fence**',
+    '```',
+    '[Preview](https://example.com/preview)',
+    'Raw: https://example.com/__asset__?mode=**exact**',
+  ].join('\n');
+  const formatted = normalizeSlackMrkdwn(source);
+  assert.match(formatted, /^\*Result:\* use `\*\*literal\*\*` here\./);
+  assert.match(formatted, /```md\n\*\*literal in fence\*\*\n```/);
+  assert.match(formatted, /<https:\/\/example\.com\/preview\|Preview>/);
+  assert.match(formatted, /https:\/\/example\.com\/__asset__\?mode=\*\*exact\*\*$/);
 });
 
 test('Slack direct-message delivery returns the durable channel and message receipt', async () => {
