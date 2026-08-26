@@ -21,7 +21,6 @@ for (const [name, contents] of Object.entries({
   'nora-dreams.json': '[]',
   'nora-interactions.json': '[]',
   'nora-routine.md': '# Routine\nInitial routine',
-  'nora-charter.md': '# Charter\nInitial charter',
   'transcript-test-bot.json': JSON.stringify({
     bot_id: 'test-bot',
     ended: '2026-07-10T18:00:00.000Z',

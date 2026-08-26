@@ -54,8 +54,6 @@ test('meeting chat commands require direct, terse instructions', () => {
   assert.equal(helpers.parseNoraMuteCommand('Nora, mute yourself'), 'mute');
   assert.equal(helpers.parseNoraMuteCommand('Nora, you can speak again'), 'unmute');
   assert.equal(helpers.parseNoraMuteCommand('Should Nora mute herself?'), null);
-  assert.equal(helpers.parseNoraModeCommand('Nora, lean in'), 'leanin');
-  assert.equal(helpers.parseNoraModeCommand('Nora, wait until I call your name'), 'strict');
 });
 
 test('meeting URL normalization handles Recall string and object shapes', () => {

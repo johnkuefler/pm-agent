@@ -15,87 +15,19 @@ const { __test } = require('../../server');
 const { readServerSource } = require('../helpers/server-source');
 test.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-test('hourly coverage connector reads propagate cancellation and remaining budgets', () => {
-  const source = __test.fallbackOperationalSweep.toString();
-  assert.match(source, /signal => peopleTool\.execute/);
-  assert.match(source, /\{ signal, timeoutMs: identityBudgetMs \}/);
-  assert.match(source, /signal => tasksTool\.execute/);
-  assert.match(source, /\{ signal, timeoutMs: taskBudgetMs \}/);
-  assert.match(source, /Promise\.all\(\[teamworkLane\(\), slackLane\(\), gmailLane\(\)\]\)/,
-    'independent connector scans must run concurrently');
-  assert.match(source, /Fallback Slack missed-mention sweep/);
-  assert.match(source, /Fallback Gmail unread sweep/);
-  assert.match(source, /signal => binding\.execute\(args, \{ signal, timeoutMs: gmailBudgetMs \}\)/);
+test('scheduled recovery considers only explicit local tasks and missed direct Slack requests', () => {
+  const source = __test.checkExplicitScheduledWork.toString();
+  assert.match(source, /mode: 'explicit_work_only'/);
+  assert.match(source, /Missed explicit Slack request check/);
+  assert.doesNotMatch(source, /Teamwork|Gmail|teamworkLane|gmailLane|search_gmail_messages/);
 });
-
-test('operational recovery remains scheduled without optional background intelligence', () => {
+test('explicit-work recovery remains scheduled without proactive connector sweeps', () => {
   const source = readServerSource();
   const recoveryStart = source.indexOf("scheduleRecurringRuntimeJob('operational-recovery-cycle'");
   const scheduler = source.slice(recoveryStart);
   assert.ok(recoveryStart >= 0);
-  assert.match(scheduler, /const trigger = runNumber === 1 \? 'startup' : 'five-minute-scheduler'/);
   assert.match(scheduler, /await runHourlyFallbackRuntime\(\{ trigger \}\)/);
-  assert.doesNotMatch(source, /background-intelligence-cycle|stale-research-projection-refresh/);
-});
-
-test('coverage result counting handles MCP envelopes without retaining message content', () => {
-  assert.equal(__test.coverageCollectionCount([{ id: 1 }, { id: 2 }]), 2);
-  assert.equal(__test.coverageCollectionCount({ messages: [{ id: 1 }] }), 1);
-  assert.equal(__test.coverageCollectionCount({
-    content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 1 }, { id: 2 }] }) }],
-  }), 2);
-  assert.equal(__test.coverageCollectionCount({
-    structuredContent: { messages: [{ id: 1 }, { id: 2 }, { id: 3 }] },
-    content: [{ type: 'text', text: 'Three matching messages.' }],
-  }), 3, 'modern MCP structured content must outrank presentational text');
-  assert.equal(__test.coverageCollectionCount({
-    structuredContent: { response: { result: { messages: [{ id: 1 }] } } },
-  }), 1, 'managed connector wrapper objects must remain countable');
-  assert.equal(__test.coverageCollectionCount({
-    structuredContent: {
-      content: [{ type: 'text', text: 'Found 7 Gmail messages matching the search.' }],
-    },
-  }), 7, 'structured content blocks may carry an explicit prose cardinality');
-  assert.equal(__test.coverageCollectionCount(
-    '**Gmail search**\n\nTotal messages: 12\n\nResults omitted from this fixture.'), 12);
-  assert.equal(__test.coverageCollectionCount(
-    'Message dated 2026-07-23 with thread id 184992 was returned.'), null,
-  'arbitrary numbers in message metadata must never become a result count');
-  assert.equal(__test.coverageCollectionCount({
-    content: [{ type: 'text', text: 'No messages found.' }],
-  }), 0, 'an explicit zero-result connector response is verified coverage, not an unknown count');
-  assert.equal(__test.coverageCollectionCount({
-    content: [{ type: 'text', text: [
-      'Message ID: `18ff-private-a`',
-      'Thread ID: `18ff-thread-a`',
-      'Subject: Private subject with the number 2026',
-      '',
-      '**Message_ID**: 18ff-private-b',
-      'Thread_ID: 18ff-thread-b',
-      '',
-      'Message ID: `18ff-private-a`',
-    ].join('\n') }],
-  }), 2, 'formatted Gmail results count unique labeled message ids, never arbitrary metadata');
-  assert.equal(__test.coverageCollectionCount({
-    content: [{ type: 'text', text: 'No Gmail emails were found for that query.' }],
-  }), 0);
-  assert.equal(__test.coverageCollectionCount({ total: 4 }), 4);
-  assert.equal(__test.coverageCollectionCount('opaque connector response'), null);
-  const safeShape = __test.coverageResultShape({
-    structuredContent: { content: [{ type: 'text', text: 'private-subject-value' }] },
-  });
-  assert.deepEqual(safeShape.keys, ['structuredContent']);
-  assert.equal(safeShape.wrappers.structuredContent.wrappers.content.length, 1);
-  assert.doesNotMatch(JSON.stringify(safeShape), /private-subject-value/,
-    'coverage diagnostics must expose structure only, never connector content');
-});
-
-test('Gmail coverage never labels an unrecognized connector result as fully checked', () => {
-  const source = __test.fallbackOperationalSweep.toString();
-  assert.match(source, /const unreadCount = coverageCollectionCount\(unread\)/);
-  assert.match(source, /status: Number\.isFinite\(unreadCount\) \? 'checked' : 'partial'/);
-  assert.match(source, /connector_result_shape_unrecognized/);
-  assert.match(source, /response_shape: coverageResultShape\(unread\)/);
+  assert.doesNotMatch(source, /Fallback Teamwork|Fallback Gmail|sync-from-teamwork/);
 });
 
 test('Slack provider readback repairs a lost local thread marker without duplicating a reply', () => {
@@ -162,24 +94,6 @@ test('hourly missed-mention recovery yields to a current live interaction', asyn
   assert.equal(result.status, 'deferred');
   assert.equal(result.reason, 'interactive_priority');
   assert.equal(handled, false);
-});
-
-test('Gmail coverage adapts to the connected tool schema and fails closed on unknown requirements', () => {
-  assert.deepEqual(__test.gmailCoverageSearchArgs({
-    properties: {
-      user_google_email: { type: 'string' },
-      query: { type: 'string' },
-      page_size: { type: 'integer' },
-    },
-    required: ['user_google_email', 'query'],
-  }, 'is:unread', 'nora@example.com'), {
-    query: 'is:unread', page_size: 25, user_google_email: 'nora@example.com',
-  });
-  assert.throws(() => __test.gmailCoverageSearchArgs({
-    properties: { account_id: { type: 'string' } },
-    required: ['account_id'],
-  }, 'is:unread', 'nora@example.com'), error =>
-    error.code === 'gmail_coverage_schema_unresolved');
 });
 
 test('native hourly tools cannot complete a task without a successful preceding action', async () => {

@@ -79,12 +79,12 @@ function fallbackForecast({ cycleId, priorSnapshot = null, soma = null } = {}) {
   const protocolVersion = prior ? 7 : 4;
   return {
     protocol_version: protocolVersion,
-    predicted_action_types: ['fallback_observation', 'slack_recovery', 'local_task_execution'],
+    predicted_action_types: ['explicit_task_check', 'slack_request_recovery', 'local_task_execution'],
     surprise_probability: 0.2,
     control_at_close: control,
     confidence,
     self_state_prediction: {
-      attention_slot_types_at_close: ['fallback_observation'],
+      attention_slot_types_at_close: ['explicit_task_check'],
       appraisal_at_close: {
         valence: 0.55, arousal: 0.22, control, social_safety: 0.9, coherence: 0.86,
       },
@@ -109,7 +109,7 @@ function fallbackForecast({ cycleId, priorSnapshot = null, soma = null } = {}) {
         rationale: 'This constrained recovery pass is selected by scheduler health, not by the historical action prior.',
       },
     } : {}),
-    rationale: 'The primary hourly scheduler is late or stale, so Railway will perform one bounded coverage pass and may execute at most one explicitly queued task.',
+    rationale: 'The primary scheduler is late or stale, so Railway may recover one direct Slack request or execute at most one explicitly queued local task.',
     evidence: [
       { type: 'intelligence_cycle', id: String(cycleId) },
       ...(prior ? [{ type: 'behavioral_self_prior', id: prior.content_commitment }] : []),

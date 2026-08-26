@@ -41,10 +41,10 @@ test('deployment readiness requires both an idle run lifecycle and no active mee
   assert.ok(calls.every(item => item.authorization === 'Bearer test-key'));
 });
 
-test('deployment readiness fails closed on missing or misordered PM routine phases', () => {
-  const missing = assessRoutineContract({ content: '# Nora scheduled PM routine' });
+test('deployment readiness fails closed on missing or misordered scheduled-task phases', () => {
+  const missing = assessRoutineContract({ content: '# Nora scheduled task routine' });
   assert.equal(missing.valid, false);
-  assert.ok(missing.missing_markers.includes('## 3. Maintain project plans'));
+  assert.ok(missing.missing_markers.includes('## 2. Execute explicit due tasks'));
   const misordered = assessRoutineContract({ content: [...REQUIRED_ROUTINE_MARKERS]
     .reverse().join('\n\n') });
   assert.equal(misordered.valid, false);

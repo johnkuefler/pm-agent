@@ -92,7 +92,7 @@ test('fallback forecast is a valid v4 payload without a mature prior', () => {
   } } });
   assert.equal(input.protocol_version, 4);
   assert.deepEqual([...input.predicted_action_types].sort(),
-    ['fallback_observation', 'local_task_execution', 'slack_recovery']);
+    ['explicit_task_check', 'local_task_execution', 'slack_request_recovery']);
 });
 
 test('fallback forecast binds but does not overclaim use of a mature behavioral prior', () => {

@@ -7,15 +7,17 @@ const root = path.resolve(__dirname, '../..');
 const routine = fs.readFileSync(path.join(root, 'nora-routine.md'), 'utf8');
 const cowork = fs.readFileSync(path.join(root, 'src/routes/cowork-instructions.js'), 'utf8');
 
-test('scheduled work is a bounded PM operating loop', () => {
+test('scheduled work executes only explicit due tasks', () => {
   for (const capability of [
-    'Teamwork', 'calendar', 'Slack', 'meeting transcripts', 'project plans', 'task triage',
+    'Teamwork', 'calendar', 'Slack', 'meeting transcripts', 'project planning', 'task triage',
   ]) assert.match(`${routine}\n${cowork}`, new RegExp(capability, 'i'));
 
   assert.match(routine, /Acquire the run lock/);
   assert.match(routine, /Verify every external write/);
-  assert.match(routine, /Do not create duplicate tasks or reminders/);
-  assert.match(routine, /Do not send a message merely because the scheduled run occurred/);
+  assert.match(routine, /Do not scan Teamwork, Slack, Gmail, calendars/);
+  assert.match(routine, /Deliver only when requested/);
+  assert.match(routine, /Do not send project alerts, blocker notices, status nudges/);
+  assert.doesNotMatch(routine, /Maintain project plans|Reconcile active Teamwork projects/);
 });
 
 test('research and novelty work are outside Nora role', () => {

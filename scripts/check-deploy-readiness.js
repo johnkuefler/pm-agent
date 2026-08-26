@@ -2,12 +2,12 @@
 
 const DEFAULT_BASE_URL = 'https://pm-agent-production-c49e.up.railway.app';
 const REQUIRED_ROUTINE_MARKERS = Object.freeze([
-  '# Nora scheduled PM routine',
-  '## 2. Execute due scheduled tasks',
-  '## 3. Maintain project plans',
-  '## 4. Maintain calendars',
-  '## 5. Process meetings',
-  '## 7. Close',
+  '# Nora scheduled task routine',
+  '## 1. Start',
+  '## 2. Execute explicit due tasks',
+  '## 3. Deliver only when requested',
+  '## 4. Close',
+  '## Scope boundary',
 ]);
 
 function assessRoutineContract(routine = {}) {

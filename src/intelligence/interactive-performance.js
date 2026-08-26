@@ -36,7 +36,7 @@ const BUDGET_MS = Object.freeze({
 // raises the Slack prompt ceiling above the real compiled envelope.
 //
 // Why the Slack ceilings are so much higher than the others: fitSlackSystemPrompt can only trim the
-// volatile half, because the stable half is the prompt-cached persona and charter. It computes
+// volatile half, because the stable half is the prompt-cached persona and fixed operating rules. It computes
 // available = budget - stable.length, so once the stable block approaches the ceiling, live
 // conversation context is squeezed to nothing while the stable block passes through untouched. At
 // 38000 against a measured p95 of 103530 that was happening constantly: p50 sat at exactly 38000

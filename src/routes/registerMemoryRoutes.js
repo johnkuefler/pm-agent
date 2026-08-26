@@ -3,7 +3,7 @@
 function registerMemoryRoutes(app, deps) {
   const { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db, isDbReady,
     normalizeMemoryRecord, getExpectationSurprise = () => null,
-    getCognitiveParameters = () => ({ expectation: { surprising_memory_salience_floor: 0.6 } }),
+    getOperationalDefaults = () => ({ expectation: { surprising_memory_salience_floor: 0.6 } }),
     memoryLifecycle = null, getMemoryDigest = () => null } = deps;
 
   // Memory API — view and edit Nora's memory
@@ -48,15 +48,6 @@ function registerMemoryRoutes(app, deps) {
     const { fact, source, project } = req.body;
     if (!fact) return res.status(400).json({ error: 'fact is required' });
     const memorySource = source || 'manual';
-    if (memoryLifecycle) {
-      const admission = memoryLifecycle.autonomousMemoryAdmission(loadMemory(), {
-        ...req.body, source: memorySource,
-      });
-      if (!admission.allowed) {
-        return res.status(429).json({ error: 'daily autonomous memory budget reached',
-          used: admission.used, limit: admission.limit, retry_after: admission.retry_after });
-      }
-    }
     // Memory CAN contain financial content. Distribution is gated at the live handler's
     // output side. Memory is the source of truth; output is where the approval check happens.
     const canonicalProject = project ? ensureProject(project) : '';
@@ -68,7 +59,7 @@ function registerMemoryRoutes(app, deps) {
     const entry = normalizeMemoryRecord({ ...req.body, id: newMemoryId(), fact, project: canonicalProject,
       added: new Date().toISOString().split('T')[0], source: memorySource,
       ...(expectationSurprise ? {
-        salience: Math.max(getCognitiveParameters().expectation.surprising_memory_salience_floor,
+        salience: Math.max(getOperationalDefaults().expectation.surprising_memory_salience_floor,
           Number(req.body.salience) || 0),
         expectation_surprise: { id: expectationSurprise.id, forecast_id: expectationSurprise.forecast_id,
           claim_id: expectationSurprise.prediction_id, scope: expectationSurprise.scope },
@@ -79,8 +70,7 @@ function registerMemoryRoutes(app, deps) {
     res.json({ ok: true, id: entry.id, memory: entry });
   });
 
-  // PREFERRED delete path: by stable id, immune to array-shift. The cowork loop (esp. the
-  // dream's batch pruning) MUST use this, not the index endpoint below.
+  // Preferred delete path: stable ids are immune to array shifts.
   app.delete('/memory/by-id/:id', requireAuth, async (req, res) => {
     const { result } = await mutateMemory(m => {
       const i = m.findIndex(x => x.id === req.params.id);
@@ -92,8 +82,7 @@ function registerMemoryRoutes(app, deps) {
     res.json({ ok: true, removed: result });
   });
 
-  // Atomic bulk delete by id — the dream prunes a whole set in ONE serialized operation
-  // against current state, so there's no multi-call window for the array to shift underneath.
+  // Atomic bulk delete by id prevents concurrent index shifts.
   // Body: { ids: ["m-...", ...] }. Returns the entries actually removed.
   app.post('/memory/bulk-delete', requireAuth, async (req, res) => {
     const ids = Array.isArray(req.body.ids) ? req.body.ids : [];

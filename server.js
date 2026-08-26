@@ -14,8 +14,6 @@ const CONNECTOR_AUTH_TIMEOUT_MS = 10000;
 const GOOGLE_CONTROL_TIMEOUT_MS = 10000;
 const GOOGLE_UPLOAD_TIMEOUT_MS = 30000;
 const SLACK_CONTROL_TIMEOUT_MS = 6000;
-const SLACK_FILE_TIMEOUT_MS = 15000;
-const SLACK_FILE_MAX_BYTES = 25 * 1024 * 1024;
 // Eight seconds remains the measured first-delivery objective. A conversational provider
 // response gets a little longer before cancellation so a modest latency outlier yields the
 // complete answer instead of an avoidable fallback or a generic progress message. Keep a
@@ -43,11 +41,9 @@ const { registerUiRoutes } = require('./src/routes/ui');
 const { registerRunLockRoutes } = require('./src/routes/registerRunLockRoutes');
 const { registerRuntimeActivityRoutes } = require('./src/routes/runtime-activity');
 const { registerMemoryRoutes } = require('./src/routes/registerMemoryRoutes');
-const { registerFindingRoutes } = require('./src/routes/registerFindingRoutes');
 const { isAskingClarification } = require('./src/surfaces/slack/reply-intent');
 const { createInteractiveLatencyRecorder } = require('./src/surfaces/interactive-latency');
 const { createInteractiveMemoryRecall } = require('./src/surfaces/memory/interactive-recall');
-const findings = require('./src/intelligence/findings');
 const { registerMarkerRoutes } = require('./src/routes/registerMarkerRoutes');
 const { registerProjectRoutes } = require('./src/routes/registerProjectRoutes');
 const { registerTaskRoutes } = require('./src/routes/registerTaskRoutes');
@@ -62,7 +58,6 @@ const { WRITE_TOOL_NAMES: TEAMWORK_PLANNING_WRITE_TOOL_NAMES,
   createTeamworkPlanningTools } = require('./src/integrations/teamwork-planning-tools');
 const { WRITE_TOOL_NAMES: CALENDAR_WRITE_TOOL_NAMES,
   createGoogleCalendarTools } = require('./src/integrations/google-calendar-tools');
-const { createSlackCommunicationMirror, wrapCommunicationTools, meetingVoiceCommunication } = require('./src/communications/mirror');
 const { mcpCapabilityLabel } = require('./src/mcp/fleet-policy');
 const { createFleetRequestAuthority } = require('./src/mcp/fleet-authorization');
 const { registerTeammateApprovalRuntime } = require('./src/approvals/server-runtime');
@@ -71,8 +66,8 @@ const { applyMeetingIntelligence, compactTranscript, meetingIntelligenceSystemPr
 const externalSourceAttestation = require('./src/intelligence/external-source-attestation');
 const executionClaimGuard = require('./src/intelligence/execution-claim-guard');
 const slackEvidence = require('./src/intelligence/slack-evidence');
-const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneElse,
-  VOLUNTEER_CUE } = require('./src/surfaces/meeting/turn-taking');
+const { looksLikeQuestion, TEAM_FIRST_NAMES, VOCATIVE_FILLERS, addressesSomeoneElse } =
+  require('./src/surfaces/meeting/turn-taking');
 const { describeTranscript, filterTranscriptsByStatus,
   sortTranscriptsNewestFirst } = require('./src/surfaces/meeting/transcript-index');
 const { checkpointRetryPlan, retryDelayMs, abandonedCheckpointReport, appendLiveTranscript, applyUtteranceEditToSession,
@@ -95,7 +90,6 @@ const { getSlackUserIdentity, getSlackUserName, cleanSlackText, fetchSlackThread
   postSlackMessageReceipt, postSlackMessage, trySlackReaction, resetSlackReactionCapabilityForTest, resolveChannelName,
   resolveChannelNames, SLACK_TABLE_FORMATTING_INSTRUCTION, formatSlackMessagePayload } = require('./src/surfaces/slack/web-api');
 const interactivePerformance = require('./src/intelligence/interactive-performance');
-const cognitiveParameters = require('./src/intelligence/cognitive-parameters');
 const driveArtifactUpload = require('./src/integrations/drive-artifact-upload');
 const { createRuntimeActivityStream } = require('./src/runtime/activity-stream');
 const { createRequestPerformanceMonitor } = require('./src/runtime/request-performance');
@@ -133,100 +127,20 @@ const voiceResponseWatchdog = createResponseWatchdogMonitor();
 const processResources = createProcessResourceMonitor();
 const LOCAL_DATA_DIR = process.env.NORA_DATA_DIR ? path.resolve(process.env.NORA_DATA_DIR) : __dirname;
 const DRIVE_ARTIFACT_UPLOADS_PATH = path.join(LOCAL_DATA_DIR, 'drive-artifact-uploads.json');
-function rawCognitiveParameterLedger() {
-  // Startup hydrates this cache immediately before schema adoption, while `_dbReady` is
-  // intentionally still false. Once hydrated, the cache is already the authoritative raw
-  // document for validation/repair; gating it on `_dbReady` made startup inspect a synthetic
-  // default and leave the stale persisted ledger untouched until a manual repair.
-  return _cache.cognitiveParameters
-    || cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
-}
+const OPERATIONAL_DEFAULTS = Object.freeze({
+  memory: {
+    salience: { hot: 0.8, manual: 0.7, learning: 0.6, meeting: 0.4, system: 0.2,
+      default: 0.3 },
+    retrieval: { salience_weight: 0.15, emotional_weight: 0.08, social_weight: 0.08,
+      recall_weight: 0.012, recall_cap: 10 },
+  },
+  expectation: { surprising_memory_salience_floor: 0.6 },
+  voice: { active_window_ms: 45000, spoke_grace_ms: 15000, response_stale_ms: 20000,
+    solo_speaker_max: 1 },
+});
 
-function verifiedCognitiveParameterLedger() {
-  const candidate = rawCognitiveParameterLedger();
-  return cognitiveParameters.auditLedger(candidate).valid ? candidate
-    : cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
-}
-
-function currentCognitiveParameterRecord(contentCommitment = null) {
-  const ledger = verifiedCognitiveParameterLedger();
-  if (!contentCommitment) return ledger.current;
-  return [ledger.current, ...ledger.history].find(item => item.content_commitment === contentCommitment) || null;
-}
-
-function currentCognitiveParameters() {
-  return currentCognitiveParameterRecord().params;
-}
-
-function cognitiveParameterStatus() {
-  const raw = rawCognitiveParameterLedger();
-  const rawAudit = cognitiveParameters.auditLedger(raw);
-  const effective = rawAudit.valid ? raw : cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
-  return { ...cognitiveParameters.status(effective.current, effective.history),
-    source_ledger_integrity: rawAudit, fail_closed_to_code_defaults: !rawAudit.valid };
-}
-
-function cognitiveParameterSnapshot({ includeHistory = false, fullHistory = false } = {}) {
-  const ledger = verifiedCognitiveParameterLedger();
-  const result = { status: cognitiveParameterStatus(), current: JSON.parse(JSON.stringify(ledger.current)),
-    bounds: cognitiveParameters.bounds() };
-  if (includeHistory) result.history = ledger.history.slice(-8).reverse().map(item => fullHistory
-    ? JSON.parse(JSON.stringify(item))
-    : { id: item.id, revision: item.revision, updated_at: item.updated_at,
-      updated_by: item.updated_by, note: item.note, content_commitment: item.content_commitment });
-  return result;
-}
-
-async function repairCognitiveParameterLedger({ updatedBy = 'system_startup', note = '' } = {}) {
-  const raw = rawCognitiveParameterLedger();
-  const result = cognitiveParameters.createSchemaAdoptionLedger(raw, {
-    updatedBy,
-    note: note || 'Adopt stale but transport-verified DIALS into the current bounded schema.',
-    now: new Date(),
-  });
-  if (!result.repaired) return { repaired: false, status: cognitiveParameterStatus(),
-    source_audit: result.source_audit || result.audit,
-    transport_audit: result.transport_audit || null };
-  await db.setState('cognitive_parameters', result.ledger);
-  _cache.cognitiveParameters = result.ledger;
-  if (typeof intelligence?.noteExternalConfigurationChange === 'function') intelligence.noteExternalConfigurationChange();
-  return { repaired: true, adoption: result.adoption, status: cognitiveParameterStatus() };
-}
-
-async function saveCognitiveParameterRevision(record, previous, changedPaths) {
-  const ledger = verifiedCognitiveParameterLedger();
-  if (ledger.current.content_commitment !== previous.content_commitment) {
-    throw new Error('cognitive parameter document changed concurrently; reload and retry');
-  }
-  const next = cognitiveParameters.createLedger(record, [...ledger.history, previous]);
-  if (!cognitiveParameters.auditLedger(next).valid) throw new Error('new cognitive parameter ledger failed integrity');
-  await db.setState('cognitive_parameters', next);
-  _cache.cognitiveParameters = next;
-  if (typeof intelligence?.noteExternalConfigurationChange === 'function') intelligence.noteExternalConfigurationChange();
-  return { record: JSON.parse(JSON.stringify(record)), changed_paths: changedPaths,
-    status: cognitiveParameterStatus() };
-}
-
-async function updateCognitiveParameterDocument({ patch, updatedBy, note } = {}) {
-  const raw = rawCognitiveParameterLedger();
-  if (!cognitiveParameters.auditLedger(raw).valid) throw new Error('cognitive parameter ledger failed integrity; repair before editing');
-  const result = cognitiveParameters.createRevision(raw.current, patch, { updatedBy, note, now: new Date() });
-  return saveCognitiveParameterRevision(result.record, raw.current, result.changed_paths);
-}
-
-async function rollbackCognitiveParameterDocument({ targetCommitment, updatedBy, note } = {}) {
-  const raw = rawCognitiveParameterLedger();
-  if (!cognitiveParameters.auditLedger(raw).valid) throw new Error('cognitive parameter ledger failed integrity; repair before rollback');
-  const target = targetCommitment
-    ? raw.history.find(item => item.content_commitment === targetCommitment)
-    : raw.history.at(-1);
-  if (!target) throw new Error('no retained cognitive parameter revision matches the rollback target');
-  const result = cognitiveParameters.createRevision(raw.current, target.params, {
-    updatedBy, note: String(note || '').trim()
-      ? `Rollback to revision ${target.revision}: ${String(note).trim()}`
-      : '', now: new Date(),
-  });
-  return saveCognitiveParameterRevision(result.record, raw.current, result.changed_paths);
+function currentOperationalDefaults() {
+  return OPERATIONAL_DEFAULTS;
 }
 
 const intelligence = createIntelligenceStore({
@@ -325,13 +239,6 @@ app.use('/assets', express.static(path.join(__dirname, 'public'), {
   maxAge: 0,
   setHeaders: res => res.setHeader('Cache-Control', 'no-cache'),
 }));
-
-function currentCognitiveInputs() {
-  return {
-    soma: { ..._soma, stress: Math.min(1, (_soma.score || 0) / 5) },
-    unanswered_people: 0,
-  };
-}
 
 app.get('/health', (_req, res) => {
   const readiness = serviceReadinessSnapshot();
@@ -456,7 +363,7 @@ function newMemoryId() {
 // dream prunes cold, never-recalled memories first.
 const SALIENCE_HOT = /\b(upset|angry|furious|frustrat|threat|escalat|churn|cancel|walk(ing)? away|fired|urgent|emergency|crisis|breach|outage|down|broke|broken|slipped|missed (the )?deadline|overdue|over budget|blew|refund|complain|apolog|lawsuit|legal)\b/i;
 function computeSalienceForFact(fact, source) {
-  const salience = currentCognitiveParameters().memory.salience;
+  const salience = currentOperationalDefaults().memory.salience;
   const f = String(fact || '');
   if (SALIENCE_HOT.test(f)) return salience.hot;
   if (source === 'manual') return salience.manual;        // a human explicitly said "remember this"
@@ -1057,28 +964,13 @@ async function initPersistence() {
         console.log(`🗄️  Seeded routine from nora-routine.md (${seed.length} chars)`);
       } catch (e) { console.warn('routine seed failed:', e.message); }
     }
-    // Seed the delegation charter (John-owned: what Nora may do in his name) the same way.
-    if (!(await db.getState('charter'))) {
-      try {
-        const seed = fs.readFileSync(path.join(__dirname, 'nora-charter.md'), 'utf8');
-        await db.setState('charter', { content: seed, updated_at: new Date().toISOString(), updated_by: 'seed' });
-        console.log(`🗄️  Seeded charter from nora-charter.md (${seed.length} chars)`);
-      } catch (e) { console.warn('charter seed failed:', e.message); }
-    }
-    // Seed her persona (nora-prompt.md) as a living document too: her personality is hers to
-    // refine on evidence, with the same rails as the charter. The repo file becomes genesis
-    // material; the hard voice floors stay code-enforced in buildSystemPrompt's tail.
+    // Seed the operator-controlled persona from the repo file on first boot.
     if (!(await db.getState('persona'))) {
       try {
         const seed = fs.readFileSync(PROMPT_PATH, 'utf8');
         await db.setState('persona', { content: seed, updated_at: new Date().toISOString(), updated_by: 'seed' });
         console.log(`🗄️  Seeded persona from nora-prompt.md (${seed.length} chars)`);
       } catch (e) { console.warn('persona seed failed:', e.message); }
-    }
-    if (!(await db.getState('cognitive_parameters'))) {
-      const genesis = cognitiveParameters.createLedger(cognitiveParameters.defaultRecord(), []);
-      await db.setState('cognitive_parameters', genesis);
-      console.log(`🧭 Seeded ${Object.keys(cognitiveParameters.DEFINITIONS).length} byte-equivalent cognitive parameters`);
     }
     if (!(await db.getState('predictions'))) await db.setState('predictions', { items: [] });
     if (!(await db.getState('people'))) await db.setState('people', { items: [] });
@@ -1095,22 +987,7 @@ async function initPersistence() {
     _cache.calendar = await db.getState('calendar');
     _cache.driveArtifactUploads = driveArtifactUpload.normalizeLedger(
       await db.getState('drive_artifact_uploads'));
-    _cache.charter = await db.getState('charter');
     _cache.persona = await db.getState('persona');
-    _cache.cognitiveParameters = await db.getState('cognitive_parameters');
-    if (!cognitiveParameters.auditLedger(_cache.cognitiveParameters).valid) {
-      try {
-        const repair = await repairCognitiveParameterLedger({
-          updatedBy: 'system_startup',
-          note: 'Startup adopted a transport-verified stale DIALS schema into the current bounded defaults.',
-        });
-        if (repair.repaired) console.warn(`Adopted stale cognitive parameter ledger from ${repair.adoption.source_head_commitment}; functional dynamics restored to a replay-verified current schema`);
-        else console.error('cognitive parameter ledger failed integrity; functional dynamics are fail-closed to code defaults');
-      } catch (error) {
-        console.error('cognitive parameter ledger failed integrity; functional dynamics are fail-closed to code defaults');
-        console.error('cognitive parameter ledger repair failed:', error.message);
-      }
-    }
     _cache.predictions = await db.getState('predictions');
     _cache.people = await db.getState('people');
     _cache.runLock = await db.getState('run_lock');
@@ -1484,13 +1361,12 @@ function buildRecentActivityBlock({ markers = {}, memory = [], now = new Date(),
 
 function buildSystemPrompt(channel = 'zoom', transcript = null, projectHint = null, meetingContext = null, opts = {}) {
   const persona = compileInteractivePersona(loadPrompt());
-  const charter = loadCharterSync().content || '';
   const stable = `${persona}
 
 [Nora's role]
-You are LimeLight's project-management assistant. Focus on project plans, Teamwork, calendars,
-Slack questions, task triage, meeting transcription, meeting notes, decisions, risks, owners,
-deadlines, and follow-through.
+You are LimeLight's request-driven project-management assistant. Execute explicit requests involving
+project plans, Teamwork, calendars, Slack questions, task triage, meeting transcription, and meeting
+notes. Do not initiate work because you discovered it in a connected system.
 
 Research programs, shopping, gifting, autonomous self-development, dreams, play, identity
 modeling, and consciousness evaluation are outside your role.
@@ -1501,11 +1377,10 @@ modeling, and consciousness evaluation are outside your role.
 - Use attached tools when the request needs current facts or an authorized action.
 - Never claim an external action succeeded until its tool result confirms success.
 - Ask one concise question when a consequential write is ambiguous.
+- Make only the requested change. Do not add adjacent cleanup, monitoring, status chasing, nudges,
+  reminders, or unsolicited notifications.
 - Do not invent decisions, consensus, owners, dates, availability, or completed work.
-- Keep responses concise and useful. Do not narrate internal processing.
-
-[Delegation charter]
-${charter}`;
+- Keep responses concise and useful. Do not narrate internal processing.`;
 
   const now = new Date();
   let volatile = `[Current time]
@@ -1583,7 +1458,7 @@ async function retrieveSemanticMemories(queryText, limit = 8, { signal = null } 
         addedBefore: workingCutoff,
       }),
     ]);
-    const retrieval = currentCognitiveParameters().memory.retrieval;
+    const retrieval = currentOperationalDefaults().memory.retrieval;
     const rankedWorking = memoryLifecycle.scoreMemoryRecallRows(workingRows
       .filter(r => !markerKeyForFact(r.fact))
       .map(r => normalizeMemoryRecord(r))
@@ -1719,10 +1594,8 @@ app.get('/prompt', (req, res) => {
   res.type('text/plain').send(loadPrompt());
 });
 
-// PUT /prompt — her persona is a living document with the same rails as the charter: self-edits
-// require a note, history keeps the last 8, rollback is one call. The hard voice floors (em
-// dashes, role narration, the bot-tell list) are code-enforced in buildSystemPrompt's tail, so
-// no persona edit can remove them.
+// PUT /prompt keeps an operator-controlled version history and rollback path. The hard voice
+// floors are code-enforced in buildSystemPrompt's tail, so no persona edit can remove them.
 app.put('/prompt', requireAuth, async (req, res) => {
   const content = req.body && req.body.content;
   if (typeof content !== 'string' || !content.trim()) return res.status(400).json({ error: 'content required' });
@@ -1819,79 +1692,6 @@ async function saveRoutine(content, updatedBy, note) {
   fs.writeFileSync(p, rec.content);
   return rec;
 }
-
-// ── Delegation charter ────────────────────────────────────────────────────────
-// John-owned: what Nora may decide/commit in his name, what she punts, hard nevers.
-// Injected into her live prompts (Slack + voice) and fetched by the cowork routine.
-// SYNC accessor because buildSystemPrompt is sync; cache hydrated at boot, PUT updates it.
-function loadCharterSync() {
-  if (_dbReady && _cache.charter && _cache.charter.content) return _cache.charter;
-  try {
-    const local = path.join(LOCAL_DATA_DIR, 'nora-charter.md');
-    const seed = fs.existsSync(local) ? local : path.join(__dirname, 'nora-charter.md');
-    return { content: fs.readFileSync(seed, 'utf8'), updated_at: null, updated_by: 'seed (file)' };
-  } catch { return { content: '', updated_at: null, updated_by: null }; }
-}
-
-// GET /charter — unauthenticated like /prompt (authority rules, no secrets).
-app.get('/charter', (req, res) => {
-  try { res.json(loadCharterSync()); }
-  catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// PUT /charter — a LIVING document Nora co-owns. She evolves her own authority as she learns
-// John and earns trust (full recursive self-improvement, at John's explicit direction). Rails
-// mirror the routine's: self-edits require a note, every save keeps history, rollback is one
-// call, and her routine tells her to DM John whenever she changes it. The hard security floors
-// (financial gate, external-email approve lane) are enforced in code and the harness, so no
-// charter edit can unlock those.
-app.put('/charter', requireAuth, async (req, res) => {
-  const content = req.body && req.body.content;
-  if (typeof content !== 'string' || !content.trim()) {
-    return res.status(400).json({ error: 'content (a non-empty markdown string) is required' });
-  }
-  const updatedBy = (req.body.updated_by || 'unknown').toString();
-  const note = req.body.note ? String(req.body.note).slice(0, 500) : null;
-  if (/^nora/i.test(updatedBy) && !note) {
-    return res.status(400).json({ error: 'self-edits require a note: one line on what changed and why' });
-  }
-  try {
-    const rec = { content, updated_at: new Date().toISOString(), updated_by: updatedBy, note };
-    if (_dbReady) {
-      const prev = await db.getState('charter');
-      if (prev) {
-        await db.setState('charter_prev', prev);
-        const hist = (await db.getState('charter_history')) || [];
-        hist.push({ updated_at: prev.updated_at, updated_by: prev.updated_by, note: prev.note || null, length: (prev.content || '').length, content: prev.content });
-        while (hist.length > 8) hist.shift();
-        await db.setState('charter_history', hist);
-      }
-      await db.setState('charter', rec); _cache.charter = rec;
-    } else { fs.writeFileSync(path.join(LOCAL_DATA_DIR, 'nora-charter.md'), content); }
-    console.log(`📜 Charter updated by ${updatedBy} (${content.length} chars)${note ? ` — ${note}` : ''}`);
-    res.json({ ok: true, updated_at: rec.updated_at, updated_by: rec.updated_by, length: content.length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// GET /charter/history + POST /charter/rollback — same escape hatches as the routine.
-app.get('/charter/history', requireAuth, async (req, res) => {
-  try {
-    const hist = _dbReady ? ((await db.getState('charter_history')) || []) : [];
-    const out = req.query.full === 'true' ? hist : hist.map(h => ({ updated_at: h.updated_at, updated_by: h.updated_by, note: h.note, length: h.length }));
-    res.json(out.slice().reverse());
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.post('/charter/rollback', requireAuth, async (req, res) => {
-  if (!_dbReady) return res.status(503).json({ error: 'Postgres not active' });
-  try {
-    const prev = await db.getState('charter_prev');
-    if (!prev || !prev.content) return res.status(404).json({ error: 'no previous version stored' });
-    const rec = { content: prev.content, updated_at: new Date().toISOString(), updated_by: (req.body && req.body.updated_by) || 'rollback', note: `rolled back to version from ${prev.updated_at} (${prev.updated_by})` };
-    await db.setState('charter', rec); _cache.charter = rec;
-    console.log(`📜 Charter rolled back to ${prev.updated_at}`);
-    res.json({ ok: true, restored_from: prev.updated_at });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
 
 // GET /routine — the routine markdown + metadata. Unauthenticated (no secrets; the harness has the key).
 app.get('/routine', async (req, res) => {
@@ -2101,7 +1901,7 @@ function newSession(projectHint = null, opts = {}) {
   // oneOnOneAuto: while true, oneOnOne is auto-managed from live participant presence (on at join /
   // ≤1 human, off once a 2nd human is present). A manual toggle on the dashboard turns auto off so
   // the human's choice sticks. participants: the set of present HUMANS (bot excluded), keyed by id.
-  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, proactive: false, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, utterancesSinceEval: 0, leanIn: true, meetingDiagnostics: !!opts.meetingDiagnostics, speakersHeard: new Set(), lastRecallLineAt: 0, lastVolunteerProbeAt: 0, lastVolunteerSpokeAt: 0 };
+  const s = { history: [], buffer: [], transcript: [], abortController: null, convModeTimer: null, oneOnOne: false, oneOnOneAuto: true, participants: new Map(), botName: 'Nora', muted: true, meetingDiagnostics: !!opts.meetingDiagnostics, speakersHeard: new Set(), lastRecallLineAt: 0 };
   if (projectHint) s.project_hint = projectHint;
   return s;
 }
@@ -2799,15 +2599,6 @@ function parseNoraMuteCommand(text) {
 
 // Detect a "how forward should you be on this call" command. 'strict' = only respond when named;
 // 'leanin' = also answer direct questions in a group without the name. Returns 'strict'|'leanin'|null.
-function parseNoraModeCommand(text) {
-  const t = (text || '').toLowerCase();
-  if (!/\bnora\b/.test(t)) return null;
-  if (t.trim().split(/\s+/).length > 10) return null;
-  if (/\b(step back|stand down|strict|name only|only when i say your name|only respond to your name|wait to be called|wait until i call)\b/.test(t)) return 'strict';
-  if (/\b(lean in|jump in more|be more active|chime in more|you can answer questions)\b/.test(t)) return 'leanin';
-  return null;
-}
-
 app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
   res.sendStatus(200);
   const ownership = beginAcknowledgedMeetingWork('meeting-chat');
@@ -2872,22 +2663,6 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
         { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 });
     } catch (e) { console.warn('mute-confirm chat send failed:', e.message); }
     return; // command handled; don't run the normal reply path
-  }
-
-  // "nora step back" / "nora lean in" — how forward she is on the live call (strict name-only vs also
-  // answering direct questions in a group). Controls the voice turn-gate's leanIn flag.
-  const modeCmd = parseNoraModeCommand(finalText);
-  if (modeCmd) {
-    if (session) session.leanIn = (modeCmd === 'leanin');
-    console.log(`🎙️ Zoom chat set lean-in=${modeCmd === 'leanin'} (by ${speaker})`);
-    const confirm = modeCmd === 'leanin'
-      ? "Leaning in. I'll answer direct questions on this call even if you don't say my name, but I'll stay out of your cross-talk."
-      : "Got it, name only. I'll stay quiet on the call unless someone actually says \"Nora\".";
-    try {
-      await axios.post(`${RECALL_BASE}/bot/${bot_id}/send_chat_message/`, { message: confirm },
-        { headers: { Authorization: `Token ${process.env.RECALL_API_KEY}` }, timeout: 5000 });
-    } catch (e) { console.warn('mode-confirm chat send failed:', e.message); }
-    return;
   }
 
   // Strip "@nora" or "nora" from the beginning and clean up
@@ -3091,23 +2866,6 @@ app.post('/webhook/chat', verifyRecallRealtime, async (req, res) => {
   }
 });
 
-// Proactive mode toggle — enable/disable Nora interjecting without wake word
-app.get('/proactive', requireAuth, (req, res) => {
-  const bot_id = activeBotId;
-  if (!bot_id || !sessions[bot_id]) return res.json({ proactive: false, active_session: false });
-  res.json({ proactive: sessions[bot_id].proactive, bot_id });
-});
-
-app.post('/proactive', requireAuth, (req, res) => {
-  const bot_id = activeBotId;
-  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
-  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !sessions[bot_id].proactive;
-  sessions[bot_id].proactive = enabled;
-  sessions[bot_id].utterancesSinceEval = 0;
-  console.log(`🧠 Proactive mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
-  res.json({ ok: true, proactive: enabled, bot_id });
-});
-
 // One-on-one mode toggle — Nora responds to every utterance without wake word
 app.get('/one-on-one', requireAuth, (req, res) => {
   const bot_id = activeBotId;
@@ -3124,24 +2882,6 @@ app.post('/one-on-one', requireAuth, (req, res) => {
   syncVoiceEagerness(sessions[bot_id]); // 1:1 runs 'high' eagerness (snappier turn-ends), group 'medium'
   console.log(`💬 One-on-one mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id} (manual, auto off)`);
   res.json({ ok: true, oneOnOne: enabled, bot_id });
-});
-
-// Lean-in toggle — in a group call, whether Nora also answers a direct question without her name
-// (on) or stays strictly name-only (off). On by default. The "nora step back / lean in" chat command
-// flips the same flag.
-app.get('/lean-in', requireAuth, (req, res) => {
-  const bot_id = activeBotId;
-  if (!bot_id || !sessions[bot_id]) return res.json({ leanIn: false, active_session: false });
-  res.json({ leanIn: sessions[bot_id].leanIn !== false, bot_id });
-});
-
-app.post('/lean-in', requireAuth, (req, res) => {
-  const bot_id = activeBotId;
-  if (!bot_id || !sessions[bot_id]) return res.status(404).json({ error: 'No active meeting session' });
-  const enabled = req.body.enabled !== undefined ? !!req.body.enabled : !(sessions[bot_id].leanIn !== false);
-  sessions[bot_id].leanIn = enabled;
-  console.log(`🎙️ Lean-in mode ${enabled ? 'enabled' : 'disabled'} for ${bot_id}`);
-  res.json({ ok: true, leanIn: enabled, bot_id });
 });
 
 // Mute mode toggle — Nora listens and captures action items but does not speak
@@ -3468,12 +3208,11 @@ const mcpStore = createMcpStore({ fs, path, volumeDirectory: VOLUME_DIR,
   localDataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady,
   getCache: () => _cache.mcp || [], setCache: list => { _cache.mcp = list; },
   writeThrough: _writeThrough, replaceAll: db.replaceAllMcp });
-const communicationMirror = createSlackCommunicationMirror({ axios, slackToken: process.env.SLACK_BOT_TOKEN, resolveJohnSlackId: () => findJohnSlackId(loadMemory()), enabled: process.env.NORA_COMMUNICATION_MIRROR_ENABLED !== 'false' });
 const mcpManager = createMcpManager({
   loadConnections: mcpStore.load,
   saveConnections: mcpStore.save,
   encryptionSecret: process.env.MCP_CREDENTIALS_ENCRYPTION_KEY || process.env.NORA_API_KEY || 'nora-local-development-only',
-  resolveDns: process.env.NORA_TEST_MODE !== '1', onToolSuccess: event => communicationMirror.observeTool(event),
+  resolveDns: process.env.NORA_TEST_MODE !== '1',
 });
 // ── Teamwork direct-API tools (live READ access in Slack) ───────────────────
 // Custom client-side tools: the model requests one, we execute it against the Teamwork API
@@ -3529,10 +3268,8 @@ function slimTwTask(t, inc = {}) {
   };
 }
 
-// Team capacity sweep over a date range, off Teamwork's Workload Planner. Shared by the
-// teamwork_team_capacity tool AND the /teamwork/team-capacity endpoint (used by the cowork loop's
-// weekly proactive sweep). Returns the over-allocated list, the tracked members who still have free
-// hours (the real "who has room" answer), and a separate count of people with no tracked workload.
+// Team capacity lookup for an explicit staffing question. Shared by the
+// teamwork_team_capacity tool and the /teamwork/team-capacity endpoint.
 async function teamworkTeamCapacity({ start_date, end_date, min_free_hours, user_ids }, request = {}) {
   const r1 = (n) => Math.round(n * 10) / 10;
   const minFree = (min_free_hours != null && min_free_hours !== '') ? Number(min_free_hours) : null;
@@ -3607,7 +3344,7 @@ const TEAMWORK_TOOLS = [
     } },
   { definition: {
       name: 'teamwork_list_tasks',
-      description: 'List tasks across ALL projects (or one project), with optional filters by ASSIGNEE and DUE DATE. Returns task name, assignees, due date, priority, progress, tasklist, project. For "what is due tomorrow for <person>" type questions, this is the tool: first resolve the person with teamwork_list_people to get their user id, pass it as assigned_to_user_ids, and set due_on (or due_after / due_before) to the date. Dates are YYYY-MM-DD. Omit project_id to sweep every active project. Without an assignee or date filter this just lists recent tasks, which across all projects is a noisy dump, so always scope it when answering "what is due for me/them".',
+      description: 'List tasks across all projects or one named project for an explicit request, with optional filters by assignee and due date. Returns task name, assignees, due date, priority, progress, task list, and project. Resolve a person with teamwork_list_people before filtering by assignee. Always scope cross-project requests by assignee or date.',
       input_schema: { type: 'object', properties: {
         project_id: { type: 'string', description: 'optional: scope to one project' },
         assigned_to_user_ids: { type: 'string', description: 'optional: comma-separated Teamwork user ids to scope to specific assignees (resolve via teamwork_list_people first)' },
@@ -3790,7 +3527,7 @@ const TEAMWORK_TOOLS = [
     } },
   { definition: {
       name: 'teamwork_team_capacity',
-      description: 'Sweep the WHOLE delivery team\'s capacity over a date range to answer staffing questions like "who has room next week for a 10-hour build" or "who is overbooked". Returns people ranked by free hours (most open first), plus an over-allocated list. Set min_free_hours to only show people with at least that many free hours (e.g. 10 for a 10h task). Optionally pass user_ids to limit to specific people (resolve via teamwork_list_people); otherwise it sweeps the assignable team and excludes client contacts. Dates are YYYY-MM-DD; use the [Right now] block for "next week". For one specific person\'s day-by-day picture use teamwork_user_workload instead.',
+      description: 'Check delivery-team capacity over a requested date range for a staffing question such as "who has room next week for a 10-hour build". Returns people ranked by free hours and an over-allocated list. Set min_free_hours to filter for the requested workload. Optionally pass user_ids to limit the lookup; otherwise it checks assignable teammates and excludes client contacts.',
       input_schema: { type: 'object', properties: {
         start_date: { type: 'string', description: 'required: window start, YYYY-MM-DD' },
         end_date: { type: 'string', description: 'required: window end, YYYY-MM-DD' },
@@ -3879,7 +3616,6 @@ const TEAMWORK_TOOLS = [
 TEAMWORK_TOOLS.push(...createTeamworkPlanningTools({ send: twApiSend, get: twApiGet, ymd: twYmd }));
 const TW_WRITE_NAMES = new Set(['teamwork_create_task', 'teamwork_update_task', 'teamwork_complete_task',
   'teamwork_reopen_task', 'teamwork_add_comment', ...TEAMWORK_PLANNING_WRITE_TOOL_NAMES]);
-wrapCommunicationTools(TEAMWORK_TOOLS, TW_WRITE_NAMES, communicationMirror, 'Teamwork');
 const teammateApprovals = registerTeammateApprovalRuntime({ app, requireAuth, teamworkTools: TEAMWORK_TOOLS, db, dataDirectory: LOCAL_DATA_DIR, databaseReady: () => _dbReady, writeThrough: _writeThrough, resolveSlackIdentity: getSlackUserIdentity, sendProposal: postSlackMessageReceipt, postMessage: postSlackMessage });
 // Teamwork READ tools, converted to the OpenAI Realtime function-tool shape ({type:'function', name,
 // description, parameters}) so the live VOICE agent can look things up on a call. READ ONLY: writes
@@ -3952,7 +3688,7 @@ async function handleRealtimeVoiceTool(openaiWs, callId, name, argsStr, handled,
 // "standing by" chat spam): no trigger, no response. Once she's pulled in (named), a short window
 // keeps her responsive to follow-ups so a back-and-forth flows naturally without re-saying her name.
 function voiceTimingParameters() {
-  return currentCognitiveParameters().voice;
+  return currentOperationalDefaults().voice;
 }
 
 function releaseVoiceResponse(openaiWs, session, outcome = 'completed') {
@@ -4030,14 +3766,6 @@ function syncVoiceEagerness(session) {
   } catch (e) { console.warn('eagerness sync failed:', e.message); }
 }
 
-// ── Volunteer lane ──────────────────────────────────────────────────────────────────────────────
-// A real teammate occasionally interjects UNINVITED, but only when holding concrete data: someone
-// states a wrong deadline, or asks the room something she can answer from Teamwork/memory. This is
-// deliberately narrow: a PM-domain cue word must be heard, cooldowns apply, and the model is asked
-// SILENTLY (text-only probe, deleted from history on PASS) whether it has one checkable fact worth
-// saying. Only a non-PASS verdict produces speech. "nora step back" (leanIn off) disables it.
-const VOLUNTEER_COOLDOWN_MS = 5 * 60 * 1000;   // at most one uninvited interjection per 5 minutes
-const VOLUNTEER_PROBE_COOLDOWN_MS = 90 * 1000; // and don't even ask the model more often than this
 function isBenignRealtimeDeleteMissingItemError(msg) {
   if (!msg || msg.type !== 'error') return false;
   const error = msg.error || {};
@@ -4048,51 +3776,6 @@ function isBenignRealtimeDeleteMissingItemError(msg) {
     && /\bitem\b/i.test(text)
     && /\bdoes\s+not\s+exist\b/i.test(text);
 }
-// Asking the room a question is not the same as saying something near her territory, so the two
-// get different gates. An uninvited interjection has to clear a PM cue word and a five-minute
-// silence; answering a question someone actually asked only has to clear a short probe cooldown.
-//
-// Without that split, a direct question in a group was unanswerable in practice. It scores 40
-// against a group threshold of 50, so the policy declines it, and it then fell through to the
-// interjection probe, which requires a cue word. Realistic questions do not contain one: "what's
-// the status on the Greenbush build", "has anyone heard back from Seth", "who owns the hosting
-// piece" all miss. She stayed silent on questions she could answer, every time.
-//
-// The probe still decides. She speaks only on a non-PASS verdict, so the failure mode stays
-// silence rather than noise, which is the direction this whole gate is biased.
-const ROOM_QUESTION_PROBE_COOLDOWN_MS = 30 * 1000;
-function maybeVolunteerProbe(openaiWs, session, userText, { answeringQuestion = false } = {}) {
-  if (session.leanIn === false) return false;
-  if (!answeringQuestion && !VOLUNTEER_CUE.test(userText || '')) return false;
-  const now = Date.now();
-  if (!answeringQuestion && session.lastVolunteerSpokeAt
-    && now - session.lastVolunteerSpokeAt < VOLUNTEER_COOLDOWN_MS) return false;
-  const probeCooldown = answeringQuestion
-    ? ROOM_QUESTION_PROBE_COOLDOWN_MS : VOLUNTEER_PROBE_COOLDOWN_MS;
-  if (session.lastVolunteerProbeAt && now - session.lastVolunteerProbeAt < probeCooldown) return false;
-  session.lastVolunteerProbeAt = now;
-  try {
-    const basePrompt = buildSystemPrompt('realtime', session.transcript);
-    openaiWs.send(JSON.stringify({
-      type: 'response.create',
-      response: {
-        output_modalities: ['text'],
-        metadata: { nora_probe: answeringQuestion ? 'room_question' : 'volunteer' },
-        instructions: basePrompt + (answeringQuestion
-          ? '\n\n[SILENT ANSWER CHECK. Someone in the room just asked a question without naming you. Decide whether you can answer it from what you actually know: your memory, Teamwork, or earlier in this meeting. If yes, write the answer as one or two short spoken-style sentences, leading with the answer itself. It must be something you know, not a guess, a summary, or an offer to look it up. If the question was not really for you, or you do not know, reply with exactly: PASS]'
-          : '\n\n[SILENT VOLUNTEER CHECK. Nobody asked you anything. The last thing said was not directed at you, but it touched your territory. Decide whether you are holding ONE concrete, checkable fact that directly bears on what was just said: a real date, deadline, task status, capacity number, or commitment you know from your memory or from earlier in this meeting. If yes, write that flag as one short spoken-style sentence, the way a teammate briefly cuts in. It must be a fact, not an opinion, agreement, or summary. If you are not sure or have nothing concrete, reply with exactly: PASS]')
-      }
-    }));
-    markVoiceResponseActive(openaiWs, session);
-    const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_volunteer_check',
-      label: 'Considering whether to speak in a meeting',
-      detail: 'Checking for one concrete, useful fact without interrupting the room.',
-      source: 'realtime-voice', meta: { surface: 'realtime', interaction_kind: 'volunteer_probe' } });
-    session.runtimeVoiceActivityId = activity.id;
-    return true;
-  } catch (e) { console.warn('volunteer probe failed:', e.message); return false; }
-}
-
 function resumePendingVoiceTurn(openaiWs, session) {
   const pending = session?.pendingVoiceTurn;
   if (!pending) return false;
@@ -4113,7 +3796,7 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   // terminal event can never wedge her silent for the rest of the call.
   if (session.voiceResponseActive
     && (Date.now() - (session.voiceResponseAt || 0) < voiceTimingParameters().response_stale_ms)) {
-    // A named call always wins over an old/silent response (especially a volunteer probe). In a
+    // A named call always wins over an old response. In a
     // 1:1, a barge-in is also the next real turn. Queue the latest turn, cancel once, and resume as
     // soon as response.done/error releases the gate. Group cross-talk never queues a reply.
     if (addressed || session.oneOnOne || soloHuman) {
@@ -4145,13 +3828,13 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
   } else if (session.oneOnOne || soloHuman) {
     trigger = true; why = session.oneOnOne ? '1:1' : 'solo';  // respond to everything
   } else {
-    const now = Date.now();                             // group: named, in-window AND directed, or (lean-in) a direct question
+    const now = Date.now();                             // group: named or a directed continuation
     const isQ = looksLikeQuestion(userText);
     handoff = addressesSomeoneElse(userText, session);
     if (handoff) {
       // The utterance is aimed at another named person ("Kinsey, what do you think"). She lets go
       // of the floor: no reply, and her follow-up window closes because the conversation has
-      // visibly moved to someone else. This also stops lean-in answering questions meant for others.
+      // visibly moved to someone else.
       session.voiceActiveUntil = 0;
       why = 'handoff to a named person';
     } else {
@@ -4160,11 +3843,9 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
       // or second-person "you") pull a reply. Ambient statements between two humans don't trigger
       // her just because she spoke twenty seconds ago.
       const directed = isQ || /\b(you|your|yours)\b/i.test(userText || '');
-      const leanInQ = session.leanIn !== false && isQ;
-      trigger = addressed || (inWindow && directed) || leanInQ;
-      why = addressed ? 'named' : (inWindow && directed) ? 'in-window directed' : 'lean-in question';
-      // Open the full follow-up window only when she's clearly addressed by name. A lean-in question
-      // she ends up declining must NOT open it (else cross-talk cascades through it); when she
+      trigger = addressed || (inWindow && directed);
+      why = addressed ? 'named' : (inWindow && directed) ? 'in-window directed' : 'not addressed';
+      // Open the full follow-up window only when she is clearly addressed by name. When she
       // actually speaks, the response.done "spoke" check grants a short grace instead.
       if (addressed) session.voiceActiveUntil = now + voiceTimingParameters().active_window_ms;
     }
@@ -4179,9 +3860,7 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
     continuation: !!(session.voiceActiveUntil && Date.now() < session.voiceActiveUntil && /\b(you|your|yours)\b|\?/i.test(userText || '')),
     uniqueKnowledge: false,
   });
-  // The policy is now the final authority for ordinary speech. The legacy gate supplies
-  // conversational signals; it no longer gets to bypass social judgment. Concrete unsolicited
-  // knowledge still uses the separate silent volunteer probe below.
+  // The policy is the final authority for speech. In a group, a declined turn stays silent.
   trigger = meetingPolicy.shouldSpeak;
   if (trigger) {
     try {
@@ -4202,17 +3881,6 @@ function maybeTriggerVoiceResponse(openaiWs, session, userText) {
     }
     catch (e) { console.warn('voice trigger failed:', e.message); }
     console.log(`🎙️ Voice: responding (${why})`);
-  } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff
-    && looksLikeQuestion(userText) && session.leanIn !== false
-    && maybeVolunteerProbe(openaiWs, session, userText, { answeringQuestion: true })) {
-    // Someone asked the room a question and did not name her. The score cannot carry this on its
-    // own (40 against a group threshold of 50), and requiring a PM cue word here would drop most
-    // real questions, so the probe decides instead: she answers only if she actually knows.
-    console.log('🎙️ Voice: answer probe (unnamed question, checking whether she knows)');
-  } else if (!session.muted && !session.oneOnOne && !soloHuman && !handoff && maybeVolunteerProbe(openaiWs, session, userText)) {
-    // Not summoned, but a PM-domain cue was heard: silently ask her whether she's holding one
-    // concrete fact worth interjecting. She speaks only if the probe comes back non-PASS.
-    console.log('🎙️ Voice: volunteer probe (cue heard, checking for a concrete fact)');
   } else {
     console.log(`🎙️ Voice: silent (${why || 'not addressed'})`);
   }
@@ -6139,7 +5807,7 @@ async function handleSlackImpl(channel, user, text, threadTs, channelType, rootT
     // Only extract tasks/memory if Nora's reply isn't asking clarifying questions
     if (!isAskingClarification(reply)) {
       // Pass thread_ts through so cowork can post the resolution back into this same thread.
-      // DMs don't have meaningful threads — pass empty string so /notify uses default behavior.
+      // DMs do not have meaningful threads, so pass an empty thread id.
       const sourceThreadTs = (channelType === 'im' || channelType === 'mpim') ? '' : threadTs;
       // Task extraction: skip when (a) Nora already handled it LIVE this turn — a Teamwork write or a
       // Slack send fired, so re-filing it as a queued task would duplicate it.
@@ -6465,80 +6133,11 @@ app.get('/jobs', requireAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/notify', requireAuth, async (req, res) => {
-  const { channel, user, text, blocks, file_url, file_name, thread_ts } = req.body;
-
-  // Determine where to send — channel ID, or DM a user
-  const target = channel || user;
-  if (!target || !text) return res.status(400).json({ error: 'channel or user, and text are required' });
-
-  try {
-    // If DMing a user by Slack user ID, open a DM channel first
-    let channelId = target;
-    if (target.startsWith('U')) {
-      const dmRes = await axios.post('https://slack.com/api/conversations.open', {
-        users: target
-      }, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-        timeout: SLACK_CONTROL_TIMEOUT_MS,
-      });
-      channelId = dmRes.data.channel?.id || target;
-    }
-
-    // Post the message
-    const msgPayload = { channel: channelId, ...formatSlackMessagePayload(text) };
-    if (blocks) msgPayload.blocks = blocks;
-    if (thread_ts) msgPayload.thread_ts = thread_ts;
-
-    const msgRes = await axios.post('https://slack.com/api/chat.postMessage', msgPayload, {
-      headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-      timeout: SLACK_CONTROL_TIMEOUT_MS,
-    });
-
-    // Upload a file if provided
-    if (file_url && file_name) {
-      // Download the file first
-      const fileData = await axios.get(file_url, {
-        responseType: 'arraybuffer',
-        timeout: SLACK_FILE_TIMEOUT_MS,
-        maxContentLength: SLACK_FILE_MAX_BYTES,
-        maxBodyLength: SLACK_FILE_MAX_BYTES,
-      });
-      const formData = new FormData();
-      formData.append('channels', channelId);
-      formData.append('filename', file_name);
-      formData.append('title', file_name);
-      formData.append('file', new Blob([fileData.data]), file_name);
-      if (thread_ts) formData.append('thread_ts', thread_ts);
-
-      await axios.post('https://slack.com/api/files.upload', formData, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-        timeout: SLACK_FILE_TIMEOUT_MS,
-        maxBodyLength: SLACK_FILE_MAX_BYTES,
-      });
-    }
-
-    // If we posted in a channel thread (not a DM), mark Nora as joined so user follow-ups
-    // in that thread reach her without re-mention. DMs (channelId starts with 'D') skip this.
-    const postedTs = msgRes.data.ts;
-    const effectiveThread = thread_ts || postedTs;
-    if (channelId && !channelId.startsWith('D') && effectiveThread) {
-      markThreadJoined(channelId, effectiveThread);
-    }
-
-    console.log('📤 Nora notified:', channelId, text.slice(0, 100));
-    res.json({ ok: true, channel: channelId, ts: postedTs });
-  } catch (err) {
-    console.error('Notify error:', err.response?.data || err.message);
-    res.status(500).json({ error: err.response?.data || err.message });
-  }
-});
-
 registerMemoryRoutes(app, { requireAuth, loadMemory, mutateMemory, ensureProject, bumpProjectActivity, newMemoryId, db,
   isDbReady: () => _dbReady, normalizeMemoryRecord,
   memoryLifecycle, getMemoryDigest: () => memoryMaintenance.currentDigest(),
   getExpectationSurprise: id => intelligence.expectationSurprise(id),
-  getCognitiveParameters: currentCognitiveParameters });
+  getOperationalDefaults: currentOperationalDefaults });
 
 // ── Cowork run lock ─────────────────────────────────────────────────────────
 // Defense against overlapping hourly cowork runs (the scheduler double-firing or a run
@@ -6704,16 +6303,7 @@ registerRunLockRoutes(app, requireAuth, {
 
 registerMarkerRoutes(app, { requireAuth, loadMarkers, mutateMarkers, loadMemory, mutateMemory, markerKeyForFact });
 
-registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects, loadMemory });
-
-// Findings are her standing observations. Kept in app state beside the other self-model records
-// so a repeat lands on the existing row and the count survives a restart.
-async function loadFindings() { return (_dbReady ? await db.getState('findings') : _cache.findings) || []; }
-async function saveFindings(list) {
-  _cache.findings = list;
-  if (_dbReady) await db.setState('findings', list);
-}
-registerFindingRoutes(app, { requireAuth, loadFindings, saveFindings });
+registerProjectRoutes(app, { requireAuth, loadProjects, saveProjects });
 
 registerTaskRoutes(app, {
   requireAuth, loadTasks, saveTasks, addTask, isTaskEligibleNow, isValidRecurrence, computeNextRun,
@@ -6792,146 +6382,6 @@ async function localRuntimeApi(method, route, body = undefined, timeout = 15000)
     throw error;
   }
   return response.data;
-}
-
-function centralDateYmd(date = new Date()) {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SCHEDULE_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(date);
-  const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  return `${value.year}-${value.month}-${value.day}`;
-}
-
-function mcpResultValue(result) {
-  if (!result || typeof result !== 'object') return result;
-  // MCP 2025-06-18 added structuredContent alongside the older content blocks. Prefer the
-  // machine-readable value when present; many managed connectors keep their text block purely
-  // presentational, which previously made a successful Gmail scan look count-less.
-  if (result.structuredContent && typeof result.structuredContent === 'object'
-    && Object.keys(result.structuredContent).length) return result.structuredContent;
-  if (!Array.isArray(result.content)) return result;
-  const text = result.content.filter(item => item?.type === 'text' && typeof item.text === 'string')
-    .map(item => item.text).join('\n').trim();
-  if (!text) return result;
-  try { return JSON.parse(text); } catch { return text; }
-}
-
-function coverageCollectionCountValue(value, depth = 0) {
-  if (Array.isArray(value)) return value.length;
-  if (typeof value === 'string') {
-    const text = value.trim();
-    if (!text) return null;
-    try { return coverageCollectionCountValue(JSON.parse(text), depth + 1); }
-    catch {
-      if (/^(?:no (?:gmail )?(?:messages?|emails?)(?: were)? found|no results|0 results?)(?:[.!]|\s|$)/i.test(text)) {
-        return 0;
-      }
-      // Managed Gmail connectors also render bounded search summaries as prose or Markdown.
-      // Accept only phrases that explicitly bind a number to the result cardinality; never
-      // infer a count from dates, thread ids, or arbitrary numbers in message previews.
-      const explicitCount = text.match(/\b(?:found|returned|showing)\s+(\d{1,6})\s+(?:gmail\s+)?messages?\b/i)
-        || text.match(/\b(\d{1,6})\s+(?:gmail\s+)?messages?\s+(?:found|returned)\b/i)
-        || text.match(/\btotal(?:\s+(?:gmail\s+)?messages?)?\s*:\s*(\d{1,6})\b/i);
-      if (explicitCount) return Number(explicitCount[1]);
-      // LimeLight's Google Workspace connector returns a formatted string rather than JSON.
-      // Its declared contract includes one "Message ID" and one "Thread ID" per result.
-      // Count only unique, explicitly labeled Message IDs so dates, thread ids, subjects, and
-      // body text can never be mistaken for result cardinality.
-      const messageIds = [...text.matchAll(
-        /(?:^|\n)\s*(?:[-*]\s*)?(?:\*\*)?message[\s_-]*id(?:\*\*)?\s*:\s*`?([A-Za-z0-9_-]{4,200})`?/gim)]
-        .map(match => match[1]);
-      return messageIds.length ? new Set(messageIds).size : null;
-    }
-  }
-  if (!value || typeof value !== 'object' || depth > 4) return null;
-  if (Array.isArray(value.content)) {
-    const text = value.content
-      .filter(item => item?.type === 'text' && typeof item.text === 'string')
-      .map(item => item.text).join('\n').trim();
-    if (text) {
-      const nested = coverageCollectionCountValue(text, depth + 1);
-      if (nested != null) return nested;
-    }
-  }
-  for (const key of ['messages', 'emails', 'threads', 'results', 'items', 'data']) {
-    if (Array.isArray(value[key])) return value[key].length;
-  }
-  for (const key of ['count', 'total', 'result_count']) {
-    const count = Number(value[key]);
-    if (Number.isFinite(count) && count >= 0) return count;
-  }
-  for (const key of ['result', 'response', 'payload', 'output', 'structuredContent']) {
-    if (value[key] == null) continue;
-    const nested = coverageCollectionCountValue(value[key], depth + 1);
-    if (nested != null) return nested;
-  }
-  return null;
-}
-
-function coverageCollectionCount(result) {
-  return coverageCollectionCountValue(mcpResultValue(result));
-}
-
-function coverageResultShape(value, depth = 0) {
-  if (depth > 4) return { type: 'depth_limit' };
-  if (Array.isArray(value)) return {
-    type: 'array',
-    length: value.length,
-    first: value.length ? coverageResultShape(value[0], depth + 1) : null,
-  };
-  if (value === null) return { type: 'null' };
-  if (typeof value === 'string') {
-    let jsonParseable = false;
-    try { JSON.parse(value); jsonParseable = true; } catch { /* metadata only */ }
-    return {
-      type: 'string',
-      length: value.length,
-      line_count: value.split(/\r?\n/).length,
-      json_parseable: jsonParseable,
-      has_code_fence: /```/.test(value),
-      has_explicit_message_count: /\b(?:(?:found|returned|showing)\s+\d+\s+(?:gmail\s+)?messages?|\d+\s+(?:gmail\s+)?messages?\s+(?:found|returned)|total(?:\s+(?:gmail\s+)?messages?)?\s*:\s*\d+)\b/i.test(value),
-    };
-  }
-  if (!value || typeof value !== 'object') return { type: typeof value };
-  const keys = Object.keys(value).slice(0, 30);
-  const wrapperKeys = ['content', 'structuredContent', 'result', 'response', 'payload', 'output',
-    'messages', 'emails', 'threads', 'results', 'items', 'data']
-    .filter(key => Object.hasOwn(value, key));
-  return {
-    type: 'object',
-    keys,
-    wrappers: Object.fromEntries(wrapperKeys.map(key =>
-      [key, coverageResultShape(value[key], depth + 1)])),
-  };
-}
-
-function gmailCoverageBinding() {
-  const bindings = mcpManager.bindings({ financialApproved: false, allowWrites: false });
-  const item = bindings.inventory.find(candidate =>
-    /google workspace/i.test(candidate.connection || '')
-    && candidate.tool === 'search_gmail_messages');
-  if (!item || typeof bindings.executors[item.name] !== 'function') return null;
-  const definition = bindings.claudeTools.find(tool => tool.name === item.name);
-  return { execute: bindings.executors[item.name], schema: definition?.input_schema || {} };
-}
-
-function gmailCoverageSearchArgs(schema = {}, query, googleEmail = '') {
-  const properties = schema.properties || {};
-  const args = {};
-  const queryKey = ['query', 'q', 'search_query'].find(key => properties[key])
-    || (schema.required || []).find(key => /query|search/i.test(key));
-  if (queryKey) args[queryKey] = query;
-  const limitKey = ['max_results', 'page_size', 'limit'].find(key => properties[key]);
-  if (limitKey) args[limitKey] = 25;
-  const emailKey = ['user_google_email', 'user_email', 'email'].find(key => properties[key]);
-  if (emailKey && googleEmail) args[emailKey] = googleEmail;
-  const missing = (schema.required || []).filter(key => args[key] == null);
-  if (missing.length) {
-    const error = new Error(`Gmail coverage cannot satisfy required connector fields: ${missing.join(', ')}`);
-    error.code = 'gmail_coverage_schema_unresolved';
-    throw error;
-  }
-  return args;
 }
 
 const NATIVE_HOURLY_GOOGLE_TOOLS = new Set([
@@ -7316,7 +6766,7 @@ async function recoverUnhandledSlackMention(candidate, {
   }
 }
 
-async function fallbackOperationalSweep({
+async function checkExplicitScheduledWork({
   deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS,
   privateResult = null,
 } = {}) {
@@ -7325,122 +6775,45 @@ async function fallbackOperationalSweep({
     && (!task.assignee || /\bnora\b/i.test(task.assignee)));
   const result = {
     checked_at: now.toISOString(),
-    mode: 'read_only',
+    mode: 'explicit_work_only',
     internal_queue: { due_count: internalDue.length },
-    teamwork: { status: teamworkEnabled() ? 'not_checked' : 'not_configured', due_count: null },
     slack: { status: process.env.SLACK_BOT_TOKEN ? 'not_checked' : 'not_configured',
       unhandled_count: null },
-    gmail: { status: 'not_checked', unread_count: null },
   };
-  const teamworkLane = async () => {
-    if (!teamworkEnabled()) return;
-    const peopleTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_people');
-    const tasksTool = TEAMWORK_TOOLS.find(tool => tool.definition.name === 'teamwork_list_tasks');
-    try {
-      const identityBudgetMs = hourlyFallbackBudget(
-        deadlineAt, 8000, 'Fallback Teamwork identity lookup', 8000);
-      const people = await rejectWithinAbortable(
-        signal => peopleTool.execute({ query: 'Nora' },
-          { signal, timeoutMs: identityBudgetMs }),
-        identityBudgetMs, 'Fallback Teamwork identity lookup');
-      const nora = (people || []).find(person => /\bnora\b/i.test(person.name || '')) || null;
-      if (!nora?.id) {
-        result.teamwork = { status: 'identity_unresolved', due_count: null };
-        return;
-      }
-      const tomorrow = centralDateYmd(new Date(now.getTime() + 24 * 60 * 60 * 1000));
-      const taskBudgetMs = hourlyFallbackBudget(
-        deadlineAt, 12000, 'Fallback Teamwork due-task sweep', 5000);
-      const tasks = await rejectWithinAbortable(signal => tasksTool.execute({
-        assigned_to_user_ids: String(nora.id), due_before: tomorrow, include_completed: false,
-      }, { signal, timeoutMs: taskBudgetMs }), taskBudgetMs, 'Fallback Teamwork due-task sweep');
-      result.teamwork = {
-        status: 'checked',
-        due_through: tomorrow,
-        due_count: Array.isArray(tasks) ? tasks.length : 0,
-        overdue_count: Array.isArray(tasks)
-          ? tasks.filter(task => task.due
-            && twYmd(task.due) < twYmd(centralDateYmd(now))).length : 0,
-      };
-    } catch (error) {
-      result.teamwork = {
-        status: 'degraded', due_count: null,
-        error: String(error.message || error).slice(0, 240),
+  if (!process.env.SLACK_BOT_TOKEN) return result;
+  try {
+    const slackBudgetMs = hourlyFallbackBudget(
+      deadlineAt, 16000, 'Missed explicit Slack request check', 5000);
+    const slack = await localRuntimeApi('get',
+      '/slack/unhandled-mentions?minutes=120', undefined, slackBudgetMs);
+    if (privateResult && typeof privateResult === 'object' && slack.unhandled?.length) {
+      const candidate = slack.unhandled[0];
+      privateResult.slack_candidate = {
+        channel: String(candidate.channel || '').slice(0, 160),
+        is_private: candidate.is_private === true,
+        ts: String(candidate.ts || '').slice(0, 80),
+        thread_ts: candidate.thread_ts ? String(candidate.thread_ts).slice(0, 80) : null,
+        user: String(candidate.user || '').slice(0, 160),
+        text: String(candidate.text || '').slice(0, 4000),
       };
     }
-  };
-  const slackLane = async () => {
-    if (!process.env.SLACK_BOT_TOKEN) return;
-    try {
-      const slackBudgetMs = hourlyFallbackBudget(
-        deadlineAt, 16000, 'Fallback Slack missed-mention sweep', 5000);
-      const slack = await localRuntimeApi('get',
-        '/slack/unhandled-mentions?minutes=120', undefined, slackBudgetMs);
-      if (privateResult && typeof privateResult === 'object' && slack.unhandled?.length) {
-        const candidate = slack.unhandled[0];
-        privateResult.slack_candidate = {
-          channel: String(candidate.channel || '').slice(0, 160),
-          is_private: candidate.is_private === true,
-          ts: String(candidate.ts || '').slice(0, 80),
-          thread_ts: candidate.thread_ts
-            ? String(candidate.thread_ts).slice(0, 80) : null,
-          user: String(candidate.user || '').slice(0, 160),
-          text: String(candidate.text || '').slice(0, 4000),
-        };
-      }
-      result.slack = {
-        status: slack.scope_warnings?.length || slack.scan_errors
-          ? 'partial' : 'checked',
-        unhandled_count: Number(slack.unhandled_count) || 0,
-        channels_scanned: Number(slack.channels_scanned) || 0,
-        channels_total: Number(slack.channels_total) || 0,
-        provider_recovered_threads: Number(slack.provider_recovered_threads) || 0,
-        scope_warning_count: slack.scope_warnings?.length || 0,
+    result.slack = {
+      status: slack.scope_warnings?.length || slack.scan_errors ? 'partial' : 'checked',
+      unhandled_count: Number(slack.unhandled_count) || 0,
+      channels_scanned: Number(slack.channels_scanned) || 0,
+      channels_total: Number(slack.channels_total) || 0,
+      provider_recovered_threads: Number(slack.provider_recovered_threads) || 0,
+      scope_warning_count: slack.scope_warnings?.length || 0,
       scan_errors: Number(slack.scan_errors) || 0,
-      };
-    } catch (error) {
-      result.slack = {
-        status: 'degraded', unhandled_count: null,
-        error: String(error.message || error).slice(0, 240),
-      };
-    }
-  };
-  const gmailLane = async () => {
-    const binding = gmailCoverageBinding();
-    if (!binding) {
-      result.gmail = { status: 'not_configured', unread_count: null };
-      return;
-    }
-    try {
-      const gmailBudgetMs = hourlyFallbackBudget(
-        deadlineAt, 12000, 'Fallback Gmail unread sweep', 5000);
-      const args = gmailCoverageSearchArgs(binding.schema,
-        'is:unread -category:promotions -category:social -category:updates',
-        loadCalendarState()?.google_email || '');
-      const unread = await rejectWithinAbortable(
-        signal => binding.execute(args, { signal, timeoutMs: gmailBudgetMs }),
-        gmailBudgetMs, 'Fallback Gmail unread sweep');
-      const unreadCount = coverageCollectionCount(unread);
-      result.gmail = {
-        status: Number.isFinite(unreadCount) ? 'checked' : 'partial',
-        unread_count: unreadCount,
-        ...(Number.isFinite(unreadCount) ? {}
-          : {
-            reason: 'connector_result_shape_unrecognized',
-            response_shape: coverageResultShape(unread),
-          }),
-      };
-    } catch (error) {
-      result.gmail = {
-        status: 'degraded', unread_count: null,
-        error: String(error.message || error).slice(0, 240),
-      };
-    }
-  };
-  await Promise.all([teamworkLane(), slackLane(), gmailLane()]);
+    };
+  } catch (error) {
+    result.slack = {
+      status: 'degraded', unhandled_count: null,
+      error: String(error.message || error).slice(0, 240),
+    };
+  }
   return result;
 }
-
 async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
   const primaryHealth = hourlyLifecycleHealth(intelligence.list('cycles'));
   const durableLock = loadDurableRunLock();
@@ -7460,9 +6833,9 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
   let lockAcquired = false;
   const deadlineAt = Date.now() + HOURLY_FALLBACK_RUNTIME_BUDGET_MS;
   const activity = runtimeActivity.begin({
-    lane: 'work', kind: 'fallback_hourly_coverage',
-    label: 'Covering a missed hourly pass',
-    detail: 'The primary scheduler is late; Railway is scanning each inbox and may execute one explicit queued task.',
+    lane: 'work', kind: 'scheduled_task_recovery',
+    label: 'Checking explicit scheduled work',
+    detail: 'The primary scheduler is late; Railway may recover one direct Slack request or execute one due local task.',
     source: 'railway-fallback', meta: { trigger, primary_state: primaryHealth.state },
   });
   const startedAt = Date.now();
@@ -7474,38 +6847,32 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
     }, acquireBudgetMs);
     if (!acquired.acquired) {
       runtimeActivity.finish(activity.id, { status: 'deferred',
-        detail: 'Another operational run acquired the ledger first.',
+        detail: 'Another scheduled run acquired the lock first.',
         outcome: 'No duplicate fallback work was started.' });
       return { ...decision, due: false, reason: acquired.reason || 'lock_not_acquired' };
     }
     lockAcquired = true;
     cycleId = acquired.lifecycle?.cycle_id || null;
     const privateSweep = {};
-    const sweep = await fallbackOperationalSweep({ deadlineAt, privateResult: privateSweep });
-    sweep.slack_recovery = await recoverUnhandledSlackMention(
+    const check = await checkExplicitScheduledWork({ deadlineAt, privateResult: privateSweep });
+    check.slack_recovery = await recoverUnhandledSlackMention(
       privateSweep.slack_candidate, { deadlineAt });
     const attemptMarkers = loadMarkers();
     const taskLaneAvailable = ['not_due', 'already_handled', 'invalid']
-      .includes(sweep.slack_recovery.status);
+      .includes(check.slack_recovery.status);
     const eligibleTask = taskLaneAvailable
       ? loadTasks().find(task => nativeTaskReady(task, attemptMarkers, Date.now())) || null
       : null;
-    sweep.task_execution = await runNativeHourlyTask(eligibleTask, { deadlineAt });
+    check.task_execution = await runNativeHourlyTask(eligibleTask, { deadlineAt });
     if (eligibleTask) {
-      sweep.task_execution.retry = await recordNativeTaskAttempt(
-        eligibleTask, sweep.task_execution);
+      check.task_execution.retry = await recordNativeTaskAttempt(
+        eligibleTask, check.task_execution);
     }
     const summary = [
-      `Railway completed an operational coverage pass: ${sweep.internal_queue.due_count} due internal queue item(s)`,
-      `Teamwork ${sweep.teamwork.status}${Number.isFinite(sweep.teamwork.due_count)
-        ? ` with ${sweep.teamwork.due_count} near-term Nora task(s)` : ''}`,
-      `Slack ${sweep.slack.status}${Number.isFinite(sweep.slack.unhandled_count)
-        ? ` with ${sweep.slack.unhandled_count} unhandled mention(s)` : ''}`,
-      `Slack recovery ${sweep.slack_recovery.status}`,
-      `Gmail ${sweep.gmail.status}${Number.isFinite(sweep.gmail.unread_count)
-        ? ` with ${sweep.gmail.unread_count} relevant unread result(s)` : ''}`,
-      `local task execution ${sweep.task_execution.status}${sweep.task_execution.task_id
-        ? ` (${sweep.task_execution.task_id})` : ''}`,
+      `Railway checked ${check.internal_queue.due_count} explicit due local task(s)`,
+      `Slack request recovery ${check.slack_recovery.status}`,
+      `local task execution ${check.task_execution.status}${check.task_execution.task_id
+        ? ` (${check.task_execution.task_id})` : ''}`,
     ].join('; ') + '.';
     const releaseBudgetMs = hourlyFallbackBudget(
       deadlineAt, 10000, 'Fallback run-lock release');
@@ -7515,12 +6882,12 @@ async function runHourlyFallbackRuntime({ trigger = 'scheduler' } = {}) {
     _hourlyFallbackLast = {
       status: 'completed', trigger, holder, cycle_id: cycleId,
       started_at: new Date(startedAt).toISOString(), finished_at: new Date().toISOString(),
-      duration_ms: Date.now() - startedAt, sweep,
+      duration_ms: Date.now() - startedAt, check,
     };
     runtimeActivity.finish(activity.id, { status: 'completed',
       detail: summary,
-      outcome: 'Operational awareness stayed current without external writes.',
-      meta: { cycle_id: cycleId, mode: 'operational' } });
+      outcome: 'Only explicit requested or scheduled work was considered.',
+      meta: { cycle_id: cycleId, mode: 'explicit_work_only' } });
     return { ...decision, ran: true, ..._hourlyFallbackLast };
   } catch (error) {
     console.error(`Railway hourly fallback failed: ${error.message}`);
@@ -8049,8 +7416,8 @@ app.get('/admin/slack/bot-channels', requireAuth, async (req, res) => {
   }
 });
 
-// Team capacity sweep over a date range, for the cowork loop's weekly over-allocation check (and
-// any dashboard use). Same logic as the teamwork_team_capacity tool. Query: start, end (YYYY-MM-DD),
+// Team capacity lookup for an explicit request. Same logic as the teamwork_team_capacity tool.
+// Query: start, end (YYYY-MM-DD),
 // optional min_free (hours), optional user_ids (comma list).
 app.get('/teamwork/team-capacity', requireAuth, async (req, res) => {
   if (!teamworkEnabled()) return res.status(500).json({ error: 'TEAMWORK_API_KEY and TEAMWORK_BASE_URL must be set' });
@@ -8709,7 +8076,6 @@ function saveDreamsStrict(dreams) {
 }
 const MAX_DREAMS_KEPT = 120; // ~4 months of nightly dreams; trims oldest beyond this
 
-// Note: Proactive interjection and handleNora are no longer needed for output_media.
 // OpenAI Realtime handles the voice conversation directly in the bot's browser.
 // The extraction pipelines are triggered via /voice-agent/response when OpenAI finishes a response.
 
@@ -9402,8 +8768,8 @@ wss.on('connection', async (ws, req) => {
     }
   });
 
-  // Mark this bot as the active session for dashboard controls (mute, proactive,
-  // one-on-one). Done at WS-connect time so calendar-auto-joined bots show up in
+  // Mark this bot as the active session for dashboard controls (mute and one-on-one).
+  // Done at WS-connect time so calendar-auto-joined bots show up in
   // the dashboard the moment they actually join — not when they were scheduled
   // hours earlier.
   activeBotId = botId;
@@ -9720,49 +9086,6 @@ wss.on('connection', async (ws, req) => {
           if (releaseVoiceResponse(openaiWs, s)) resumePendingVoiceTurn(openaiWs, s);
         }
 
-        // Volunteer-probe verdict. The probe silently asked her (text-only) whether she holds a
-        // concrete fact worth interjecting. PASS: delete the deliberation from conversation history
-        // and stay quiet. A real flag: speak it via a follow-up audio response. Probe responses skip
-        // all the normal handling below (no window grace, no transcript logging).
-        const probeKind = msg.response.metadata && msg.response.metadata.nora_probe;
-        if (probeKind === 'volunteer' || probeKind === 'room_question') {
-          const answering = probeKind === 'room_question';
-          const items = msg.response.output || [];
-          const probeText = items.filter(it => it.type === 'message')
-            .map(it => (it.content || []).map(c => c.text || '').join(' ')).join(' ').trim();
-          // Over-long output means she's summarizing, not flagging one fact; treat that as a PASS too.
-          const isPass = !probeText || /^pass\b/i.test(probeText) || probeText.length > 400;
-          if (isPass) {
-            for (const it of items) {
-              if (it.id) { try { openaiWs.send(JSON.stringify({ type: 'conversation.item.delete', item_id: it.id })); } catch {} }
-            }
-            console.log(answering ? '🎙️ Answer: PASS (she does not know)' : '🎙️ Volunteer: PASS (no concrete fact to add)');
-          } else if (s && !s.muted) {
-            // Only an uninvited interjection arms the five-minute cooldown. Answering a
-            // question someone asked is not an interruption and must not make her go quiet
-            // for the rest of the discussion.
-            if (!answering) s.lastVolunteerSpokeAt = Date.now();
-            console.log(`🎙️ ${answering ? 'Answer' : 'Volunteer'}: speaking:`, probeText.slice(0, 160));
-            try {
-              openaiWs.send(JSON.stringify({
-                type: 'response.create',
-                response: {
-                  instructions: buildSystemPrompt('realtime', s.transcript) + (answering
-                    ? '\n\n[Someone in the room just asked this and you know the answer: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now, leading with the answer, in one or two short sentences. Do not preface it with anything about having been asked, and do not offer to look anything else up.]'
-                    : '\n\n[You just decided this flag is worth briefly interjecting into the meeting: "' + probeText.slice(0, 500).replace(/"/g, "'") + '". Say it out loud now in one or two short sentences, casually, like a teammate cutting in with a quick fact. Do not apologize for interrupting and do not add anything beyond the flag itself.]')
-                }
-              }));
-              markVoiceResponseActive(openaiWs, s);
-              const activity = runtimeActivity.begin({ lane: 'conversation', kind: 'meeting_voice_response',
-                label: 'Interjecting with a concrete meeting fact',
-                detail: 'Delivering the bounded fact that passed the silent volunteer check.',
-                source: 'realtime-voice', meta: { surface: 'realtime', interaction_kind: 'volunteer' } });
-              s.runtimeVoiceActivityId = activity.id;
-            } catch (e) { console.warn('volunteer speak failed:', e.message); }
-          }
-          return; // nothing below applies to a silent probe
-        }
-
         const outputs = msg.response.output || [];
         // If she actually spoke this turn in a group, grant a SHORT grace for an immediate follow-up
         // ("wait, which Friday?"). This deliberately does NOT re-open the full window: before, every
@@ -9782,7 +9105,6 @@ wss.on('connection', async (ws, req) => {
             // GA renamed content types: 'audio' → 'output_audio', 'text' → 'output_text'.
             // Accept both so this works across API versions.
             const audioTranscript = item.content?.find(c => c.type === 'output_audio' || c.type === 'audio')?.transcript;
-            if (audioTranscript) communicationMirror.observe(meetingVoiceCommunication(s, audioTranscript)).catch(() => {});
             if (audioTranscript) {
               console.log('🤖 Nora (voice):', audioTranscript.slice(0, 200));
             }
@@ -10490,10 +9812,7 @@ module.exports = {
     beginOptionalBackground,
     drainOptionalWorkForOperationalRun,
     hourlyFallbackBudget,
-    coverageCollectionCount,
-    coverageResultShape,
     deferredJobWorkerAdmission,
-    gmailCoverageSearchArgs,
     boundedNativeTask,
     nativeTaskAttemptKey,
     nativeTaskExecutionHistory,
@@ -10502,22 +9821,17 @@ module.exports = {
     nativeHourlyTaskToolset,
     runNativeHourlyTask,
     recoverUnhandledSlackMention,
-    fallbackOperationalSweep,
+    checkExplicitScheduledWork,
     compileInteractivePersona,
     fitSlackSystemPrompt,
     buildRecentActivityBlock,
-    currentCognitiveParameters,
-    cognitiveParameterStatus,
-    cognitiveParameterSnapshot,
-    updateCognitiveParameterDocument,
-    rollbackCognitiveParameterDocument,
+    currentOperationalDefaults,
     voiceEagernessFor,
     settleWithin,
     settleWithinAbortable,
     trySlackReaction,
     resetSlackReactionCapabilityForTest,
     parseNoraMuteCommand,
-    parseNoraModeCommand,
     normalizeMeetingUrl,
     sanitizeFilename,
     isRunBoundCycle,

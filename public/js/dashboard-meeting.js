@@ -81,12 +81,9 @@ async function joinMeeting() {
       finally { meetingStatusRefreshInFlight = false; }
     }
 
-    // The three in-meeting behavior toggles (1:1 / lean-in / proactive). Each has a
-    // GET (returns { <flag>, active_session }) and a POST that flips it, mirroring /mute.
+    // The explicit 1:1 mode mirrors /mute.
     const MEETING_FLAGS = [
       { ep: 'one-on-one', key: 'oneOnOne', pill: 'pill-oneonone' },
-      { ep: 'lean-in',    key: 'leanIn',   pill: 'pill-leanin' },
-      { ep: 'proactive',  key: 'proactive', pill: 'pill-proactive' },
     ];
     async function toggleFlag(ep) {
       try {

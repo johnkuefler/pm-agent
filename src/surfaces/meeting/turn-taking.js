@@ -7,8 +7,7 @@
 // stopped it. Pure string judgement, no session state and no I/O, so the awkward cases can be
 // tested exhaustively without standing up a realtime session.
 
-// Does this utterance look like a question (so lean-in mode can answer a direct ask even without her
-// name)? Statements / cross-talk that aren't questions never trip lean-in.
+// Does this utterance look like a question for a directed continuation?
 function looksLikeQuestion(t) {
   const s = (t || '').trim();
   if (!s) return false;
@@ -17,7 +16,7 @@ function looksLikeQuestion(t) {
 }
 // ── Handoff detection ───────────────────────────────────────────────────────────────────────────
 // "Kinsey, what do you think?" is the single most important signal that an utterance is NOT for
-// Nora, even when it's a question (lean-in) or lands inside her follow-up window. When the room
+// Nora, even when it lands inside her follow-up window. When the room
 // hands the floor to a named person, she lets go: no reply, window closes. Known-name list is the
 // static team roster plus whoever Recall has actually heard on this call (catches clients/guests).
 // Deliberately biased toward false positives: mistakes here make her QUIETER, never chattier.
@@ -55,12 +54,10 @@ function addressesSomeoneElse(t, session) {
   }
   return false;
 }
-const VOLUNTEER_CUE = /\b(deadline|due|overdue|timeline|launch|ship(?:ping|s|ped)?|estimate|scope|budget|hours|capacity|booked|bandwidth|overloaded|milestone|sprint|blocked|blocker|task|teamwork)\b/i;
 
 module.exports = {
   looksLikeQuestion,
   TEAM_FIRST_NAMES,
   VOCATIVE_FILLERS,
   addressesSomeoneElse,
-  VOLUNTEER_CUE,
 };

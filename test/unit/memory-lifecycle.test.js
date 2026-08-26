@@ -35,15 +35,6 @@ test('retention expires only old unprotected point-in-time snapshots', () => {
   assert.equal(plan.updates[0].status, 'expired');
 });
 
-test('autonomous research has a shared daily write budget without limiting human memory', () => {
-  const memories = Array.from({ length: 15 }, (_, index) =>
-    memory(`r-${index}`, '2026-08-07', { source: 'research' }));
-  assert.equal(lifecycle.autonomousMemoryAdmission(memories,
-    { source: 'research' }, now).allowed, false);
-  assert.equal(lifecycle.autonomousMemoryAdmission(memories,
-    { source: 'manual' }, now).allowed, true);
-});
-
 test('daily digest is bounded and retains exact source identities', () => {
   const memories = Array.from({ length: 80 }, (_, index) => memory(`m-${index}`,
     index < 40 ? '2026-08-01' : '2026-05-01', {

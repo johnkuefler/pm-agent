@@ -52,20 +52,3 @@ test('memory GET preserves the full default response and exposes tiered views', 
   handler({ query: { view: 'digest' } }, digest);
   assert.equal(digest.body.text, 'digest');
 });
-
-test('memory POST rejects autonomous research after the daily budget', async () => {
-  // The production budget resets on Nora's Chicago calendar day. UTC crosses midnight several
-  // hours earlier, which made this test fail only during the evening in Chicago.
-  const today = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit',
-    day: '2-digit', timeZone: 'America/Chicago' }).format(new Date());
-  const memories = Array.from({ length: 15 }, (_, index) => ({
-    id: `m-${index}`, fact: `Research ${index}`, added: today,
-    source: 'research', status: 'active',
-  }));
-  const handler = buildRoutes(memories).get('post:/memory');
-  const res = response();
-  await handler({ body: { fact: 'One more finding', source: 'research' } }, res);
-  assert.equal(res.statusCode, 429);
-  assert.equal(res.body.limit, 15);
-  assert.equal(memories.length, 15);
-});

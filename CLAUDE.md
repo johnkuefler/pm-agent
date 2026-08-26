@@ -109,8 +109,8 @@ and default parameter values are not. Run the tests.
 
 ## Non-negotiable safety floors
 
-These are enforced in code, not in prompts, and Nora cannot edit them even though she can edit her
-own charter, routine, and persona:
+These are enforced in code, not in prompts, and Nora cannot edit them. The routine and persona are
+operator-controlled configuration:
 
 - **Financial disclosure** is restricted to an approved recipient list, with an egress scrubber at
   the Slack boundary as defense in depth.

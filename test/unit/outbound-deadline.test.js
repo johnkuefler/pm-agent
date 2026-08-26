@@ -69,10 +69,3 @@ test('every direct backend axios request has a local terminal condition', () => 
   assert.deepEqual(failures, [],
     `outbound requests need an explicit timeout or abort signal: ${failures.join(', ')}`);
 });
-
-test('paginated connector loops have a batch deadline, not only per-request deadlines', () => {
-  const projects = fs.readFileSync(path.join(root, 'src', 'routes', 'registerProjectRoutes.js'), 'utf8');
-  assert.match(projects, /syncDeadlineAt = Date\.now\(\) \+ 30000/);
-  assert.match(projects, /Teamwork project sync exceeded 30s total deadline/);
-  assert.match(projects, /timeout: Math\.min\(8000, remainingMs\)/);
-});

@@ -44,7 +44,7 @@ test('request-scoped Fleet writes replace the read-only dispatch boundary for on
   assert.match(note, /verified LimeLight teammate/);
   assert.match(note, /set_agent_once_instructions/);
   assert.match(note, /Make only the requested change/);
-  assert.match(note, /automatically copied to John/);
+  assert.doesNotMatch(note, /automatically copied to John/);
   assert.doesNotMatch(note, /create a Teamwork task/);
 });
 

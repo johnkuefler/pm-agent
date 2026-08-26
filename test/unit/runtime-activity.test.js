@@ -92,7 +92,7 @@ test('runtime activity routes stream snapshots and bind hourly phases to the act
   const reportRes = response();
   await routes.get('POST /runtime-activity/report')({ body: { phase: 'tasks' } }, reportRes);
   assert.equal(reportRes.body.ok, true);
-  assert.equal(stream.snapshot().current[0].label, 'Working the task queues');
+  assert.equal(stream.snapshot().current[0].label, 'Executing a scheduled task');
   assert.equal(stream.snapshot().recent[0].kind, 'hourly_phase');
 
   const invalidRes = response();

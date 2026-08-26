@@ -81,8 +81,8 @@ async function fetchSlackThread(channel, threadTs, { signal = undefined } = {}) 
   }
 }
 
-// Pull the recent CHANNEL conversation (conversations.history) so a PROACTIVE interjection sees
-// the surrounding discussion, not just the single top-level message that tripped the gate. A
+// Pull the recent channel conversation (conversations.history) so an explicit request sees
+// the surrounding discussion, not just the single top-level message that triggered handling. A
 // non-threaded channel message has no "thread," so fetchSlackThread would return just that one
 // line and Nora would be reacting with zero context. Returns the raw Slack messages in
 // chronological order (oldest→newest, ending with the trigger) or null on failure.
@@ -191,7 +191,7 @@ async function resolveSlackUserByName(name) {
   return hit ? _slackUserByName[hit] : null;
 }
 
-// Post a Slack message to a channel or (U…) user, threaded if given. Mirrors /notify.
+// Post a requested Slack reply to a channel or user, threaded if given.
 async function postSlackMessageReceipt(target, text, threadTs, { post = axios.post } = {}) {
   if (!target || !text) return { ok: false, error: 'target and text are required' };
   let channelId = target;

@@ -1,19 +1,10 @@
 'use strict';
 
 const HOURLY_PHASES = Object.freeze({
-  orientation: ['Orienting to the hour', 'Loading identity, continuity, current commitments, and operating context.'],
-  forecast: ['Planning the run', 'Committing a testable forecast before operational work begins.'],
-  context: ['Refreshing working context', 'Reviewing memory, projects, and the evidence needed for this pass.'],
-  cleanup: ['Checking operational hygiene', 'Reviewing stale bookkeeping and bounded maintenance work.'],
-  tasks: ['Working the task queues', 'Checking assigned work and completing authorized requests.'],
-  transcripts: ['Reviewing meeting follow-through', 'Checking new meeting records and client filing needs.'],
-  files: ['Handling queued files', 'Reviewing file requests and approved Drive destinations.'],
-  email: ['Checking email', 'Scanning the connected email lanes for requests that need action.'],
-  slack: ['Checking Slack coverage', 'Looking for missed direct requests and unresolved conversation threads.'],
-  deadlines: ['Reviewing deadlines', 'Checking live project deadlines and grounded follow-up needs.'],
-  relationships: ['Considering teammate follow-through', 'Checking whether a useful, non-repetitive human follow-up is due.'],
-  reflection: ['Running off-hours development', 'Using eligible quiet time for bounded reflection, reading, play, or knowledge work.'],
-  summary: ['Closing the hourly pass', 'Summarizing actual work, constraints, and the next continuity handoff.'],
+  start: ['Starting scheduled work', 'Loading only due local tasks explicitly assigned to Nora.'],
+  tasks: ['Executing a scheduled task', 'Completing one authorized request within its stated scope.'],
+  delivery: ['Delivering a requested result', 'Sending only to the destination named in the task.'],
+  close: ['Closing scheduled work', 'Recording the verified outcome and releasing the run lock.'],
 });
 
 function registerRuntimeActivityRoutes(app, { requireAuth, requireDashboardAuth, stream,

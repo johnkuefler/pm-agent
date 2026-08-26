@@ -5,14 +5,12 @@ const crypto = require('node:crypto');
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETENTION_CLASSES = new Set(['durable', 'snapshot', 'episodic']);
 const DURABLE_KINDS = new Set(['preference', 'commitment', 'learning', 'opinion']);
-const AUTONOMOUS_SOURCES = new Set(['research', 'idle-research', 'autonomous-research']);
 const SNAPSHOT_PATTERN = /\b(as of|currently|today|this week|this month|status|blocked|on track|in progress|pending|scheduled|due|deadline|launch(?:es|ed|ing)?|forecast|remaining|hours?|percent|phase|milestone)\b|\b\d{4}-\d{2}-\d{2}\b|\b\d{1,2}\/\d{1,2}\/\d{2,4}\b|\b\d+(?:\.\d+)?%\b/i;
 const EXPLICIT_MEMORY_PATTERN = /\b(remember(?: that)?|do not forget|don't forget|keep in mind)\b/i;
 
 const DEFAULT_MEMORY_POLICY = Object.freeze({
   working_days: 30,
   snapshot_expiry_days: 30,
-  autonomous_daily_limit: 15,
   digest_max_items: 36,
   digest_max_chars: 6000,
   digest_per_project: 3,
@@ -103,18 +101,6 @@ function planMemoryRetention(memories = [], now = new Date(), policy = DEFAULT_M
     });
   }
   return { updates, examined: memories.length };
-}
-
-function autonomousMemoryAdmission(memories = [], candidate = {}, now = new Date(),
-  policy = DEFAULT_MEMORY_POLICY) {
-  const source = String(candidate.source || '').trim().toLowerCase();
-  if (!AUTONOMOUS_SOURCES.has(source)) return { allowed: true, used: 0,
-    limit: policy.autonomous_daily_limit };
-  const today = dayKey(now);
-  const used = memories.filter(memory => AUTONOMOUS_SOURCES.has(
-    String(memory.source || '').trim().toLowerCase()) && cleanDay(memory.added) === today).length;
-  return { allowed: used < policy.autonomous_daily_limit, used,
-    limit: policy.autonomous_daily_limit, retry_after: `${today}T23:59:59` };
 }
 
 function digestScore(memory, now, policy) {
@@ -218,9 +204,7 @@ function scoreMemoryRecallRows(rows = [], retrieval = {}) {
 }
 
 module.exports = {
-  AUTONOMOUS_SOURCES,
   DEFAULT_MEMORY_POLICY,
-  autonomousMemoryAdmission,
   buildMemoryDigest,
   classifyMemoryTier,
   dayKey,

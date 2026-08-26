@@ -4,7 +4,6 @@
       await Promise.all([loadMcpConnections(), loadFinancialApproved()]);
     }
 
-
     // ===== Live MCP connections =====
     let _editingMcpId = null;
     async function loadMcpConnections() {
@@ -367,33 +366,4 @@
         await api('/slack/financial-approved/' + encodeURIComponent(userId), { method: 'DELETE' });
         loadFinancialApproved();
       } catch (e) { alert('Failed: ' + e.message); }
-    }
-
-    // Teamwork project sync
-    async function runTeamworkSync(dryRun) {
-      const s = document.getElementById('sync-status');
-      const out = document.getElementById('sync-result');
-      s.className = 'toast ok'; s.textContent = dryRun ? 'Running dry-run...' : 'Syncing from Teamwork...';
-      out.style.display = 'none';
-      try {
-        const r = await api('/projects/sync-from-teamwork', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ dry_run: !!dryRun })
-        });
-        const d = await r.json();
-        if (d.ok) {
-          const verb = dryRun ? 'Would create' : 'Created';
-          s.className = 'toast ok';
-          s.textContent = `${verb} ${d.created}, promoted ${d.promoted}, ${d.unchanged} unchanged · scanned ${d.after_filter} of ${d.teamwork_total} TW projects (${d.pages_fetched} page${d.pages_fetched === 1 ? '' : 's'})`;
-          out.textContent = JSON.stringify(d, null, 2);
-          out.style.display = 'block';
-        } else {
-          s.className = 'toast err'; s.textContent = d.error || 'Sync failed';
-          out.textContent = JSON.stringify(d, null, 2);
-          out.style.display = 'block';
-        }
-      } catch (e) {
-        s.className = 'toast err'; s.textContent = 'Failed: ' + e.message;
-      }
     }
